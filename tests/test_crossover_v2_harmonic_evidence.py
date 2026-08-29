@@ -25,6 +25,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
+from jasper.active_speaker.crossover_v2.feature_classifier import (
+    FeatureClassificationRefused,
+    load_round_captures,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     HARMONICS_ARTIFACT,
     PACKET_SCHEMA_VERSION,
@@ -953,6 +957,37 @@ def _ring(tmp_path: Path, rows: Sequence[tuple[str, str, str | None]]) -> Path:
         (ring / "sidecar" / f"{name}.json").write_text(json.dumps(doc))
         (ring / "wav" / f"{name}.wav").write_bytes(b"")
     return ring
+
+
+def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
+    """``--dumps`` means ONE directory across two tools, proven on one ring.
+
+    ``jasper-read-distortion`` and ``jasper-classify-features`` both take the
+    ring ROOT — the ``dumps/wav/`` beside ``dumps/sidecar/`` split a
+    pre-removal bank produced. An operator who had to know which tool wanted
+    the parent would eventually hand one of them the wrong path and get a
+    silent empty answer, so this asserts on BEHAVIOUR — one fixture ring, both
+    readers observed finding the same sidecar — rather than on the two
+    spelling the same pattern, which is a thing that can be true while the
+    contract is broken.
+
+    These two are what is LEFT of the glob's readers. The evidence packet was
+    the third and no longer reads it at all: it wanted a number the banked
+    take now carries, where these two want capture BYTES no record holds.
+    """
+    ring = _ring(tmp_path, [("1_measure_a", "aaa", "mine")])
+    round_dir = tmp_path / "round"
+    round_dir.mkdir()
+
+    assert [c["wav_sha256"] for c in he._bind_measure_captures(ring)] == ["aaa"]
+
+    # The classifier refuses this ring — one non-admissible capture is not a
+    # round — but its refusal COUNTS what the glob found, which is the half
+    # being pinned here.
+    with pytest.raises(FeatureClassificationRefused) as refusal:
+        load_round_captures(round_dir, ring, session_id="mine")
+    assert refusal.value.detail["phases_seen"] == {"measure": 1}
+    assert refusal.value.detail["dumps_dir"] == ring.name
 
 
 def test_the_ring_is_scoped_to_this_round_and_deduplicated_by_content(tmp_path):

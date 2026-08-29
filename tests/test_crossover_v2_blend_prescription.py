@@ -70,7 +70,6 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_prescription_bytes,
 )
 from jasper.active_speaker.crossover_v2 import (
-    feature_classifier,
     planning,
     position_cycle,
 )
@@ -80,9 +79,6 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_RANDOM,
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
-)
-from jasper.active_speaker.crossover_v2.feature_classifier import (
-    FeatureClassificationRefused,
 )
 from jasper.audio_measurement.spatial_combine import BandSpread
 from jasper.active_speaker.crossover_v2.evidence_packet import (
@@ -96,10 +92,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
     LateralPose,
     entry_baseline_record,
     lateral_pose_record,
-)
-from jasper.attribution.session_identity import (
-    SessionIdentity,
-    stamp_session_identity,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
@@ -788,11 +780,6 @@ def test_two_rounds_in_one_bundle_refuse_rather_than_guess(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-#: The bundle session id ``_bundle`` writes into ``info.json``. Restated here so
-#: a ring sidecar can be stamped with it (and, in one test, deliberately not).
-_BUNDLE_SESSION_ID = "c2a1812b849e"
-
-
 def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]]:
     """One accepted pose per bearing, banked where the speaker banks them.
 
@@ -1105,79 +1092,78 @@ def test_the_packet_reads_the_before_through_the_readers_own_accept_rule(tmp_pat
 
 
 # --------------------------------------------------------------------------- #
-# per-capture SNR — from the operator capture-retention ring
+# per-capture SNR — from the round's own banked takes
 # --------------------------------------------------------------------------- #
 
 
-def _ring_sidecar(
-    ring: Path,
-    name: str,
+def _bank_take_with_diagnostic(
+    session: Path,
+    take_id: str,
     *,
-    session_id: str | None = _BUNDLE_SESSION_ID,
+    phase: str = "measure",
     diagnostic: dict[str, Any] | None = None,
 ) -> Path:
-    """One dump-ring sidecar, in the shape banked corpora carry.
+    """One banked take carrying the analysis block a capture produced.
 
-    The speaker-side ring that wrote these is gone; corpora banked before its
-    removal still hold them, and this is the shape their readers open.
-
-    ``ring`` is the ring ROOT, the directory a caller passes; the sidecar lands
-    in the ``sidecar/`` split ``bank-crossover-round.sh`` used to produce,
-    which is where ``RING_SIDECAR_GLOB`` looks for it.
-
-    ``session_id=None`` writes the LEGACY shape — a sidecar from before the
-    identity stamp existed, which is the corpus WO-0 actually had to read.
+    The shape ``bind_position_retention`` writes: the store's envelope, the
+    take's own identity, and the ``diagnostic`` the analyze seam handed it.
+    ``diagnostic=None`` writes a take that carried no analysis at all — the
+    shape every round banked before that carry existed.
     """
-    directory = ring / "sidecar"
-    directory.mkdir(parents=True, exist_ok=True)
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    positions = round_dir / "positions"
+    positions.mkdir(exist_ok=True)
     payload: dict[str, Any] = {
-        "phase": "measure",
-        "device_label": "iPhone",
-        "wav_sha256": "pose-sha-1",
-        "diagnostic": diagnostic if diagnostic is not None else {
-            "phase": "measure",
-            "delay_us": 421.0,
-            "woofer_snr_db": 31.2,
-            "woofer_snr_verdict": "ok",
-            "woofer_snr_band": "transition",
-            "woofer_alignment_snr_db": 22.5,
-            "woofer_alignment_snr_verdict": "insufficient",
-            "gain_plan_snr_floor_ok": True,
-        },
+        "schema_version": 1,
+        "kind": "jts_crossover_v2_position_evidence",
+        "phase": phase,
+        "position_id": take_id.rsplit("_a", 1)[0],
+        "index": 1,
+        "attempt": 1,
+        "take_id": take_id,
+        "wav_sha256": f"{take_id}-sha",
     }
-    if session_id is not None:
-        stamp_session_identity(payload, SessionIdentity(session_id=session_id))
-    path = directory / name
+    if diagnostic is not None:
+        payload["diagnostic"] = diagnostic
+    path = positions / f"{take_id}.json"
     path.write_text(json.dumps(payload))
     return path
 
 
-def test_per_capture_snr_is_published_for_this_session_and_counted_for_the_rest(
-    tmp_path,
-):
-    """The ring is a ROLLING buffer, so attribution is fail-closed.
+_DEFAULT_DIAGNOSTIC: dict[str, Any] = {
+    "phase": "measure",
+    "delay_us": 421.0,
+    "woofer_snr_db": 31.2,
+    "woofer_snr_verdict": "ok",
+    "woofer_snr_band": "transition",
+    "woofer_alignment_snr_db": 22.5,
+    "woofer_alignment_snr_verdict": "insufficient",
+    "gain_plan_snr_floor_ok": True,
+}
 
-    A pull takes whatever the ring held, which can include an earlier round's
-    captures — WO-0 measured directory mtime actively misrouting them. Only the
-    captures this bundle's own session identity claims are published, and the
-    two kinds of leftover are COUNTED rather than dropped: a reader that saw a
-    short list without them would not know the ring had more in it.
+
+def test_per_capture_snr_is_published_from_the_rounds_own_banked_takes(tmp_path):
+    """The SNR comes out of the bundle, so there is nothing to attribute.
+
+    It used to come from a rolling ring outside the bundle that could hold an
+    earlier round's captures, and three counters plus a banked session
+    identity existed to decide which sidecars were even this round's. A take
+    under this bundle's own artifacts root is this bundle's by construction.
     """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json")
-    _ring_sidecar(ring, "2_measure.json", session_id="ffffffffffff")
-    _ring_sidecar(ring, "3_measure.json", session_id=None)
+    _bank_take_with_diagnostic(
+        session, "measure_01_a01", diagnostic=dict(_DEFAULT_DIAGNOSTIC),
+    )
 
-    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+    block = build_crossover_evidence_packet(session)["capture_snr"]
 
     assert block["available"] is True
-    assert (block["n_captures"], block["n_other_session"], block["n_unattributed"]) == (
-        1, 1, 1,
-    )
-    # Named by the digest the positions rows already carry, so a reader can
-    # join the two without this module deciding what a disagreement means.
-    assert block["captures"][0]["wav_sha256"] == "pose-sha-1"
+    assert (block["n_captures"], block["n_takes_seen"]) == (1, 1)
+    # Named by the two identities the packet's other take rows already carry,
+    # so a reader can join them without this module deciding what a
+    # disagreement means.
+    assert block["captures"][0]["take_id"] == "measure_01_a01"
+    assert block["captures"][0]["wav_sha256"] == "measure_01_a01-sha"
     # The SNR columns and NOTHING else off the flat diagnostic block.
     assert set(block["captures"][0]["snr"]) == {
         "woofer_snr_db", "woofer_snr_verdict", "woofer_snr_band",
@@ -1187,59 +1173,60 @@ def test_per_capture_snr_is_published_for_this_session_and_counted_for_the_rest(
     assert "delay_us" not in block["captures"][0]["snr"]
 
 
-def test_an_attributed_capture_with_no_snr_still_gets_its_row(tmp_path):
+def test_a_banked_take_with_no_snr_still_gets_its_row(tmp_path):
     """The block counts what it does not publish, so it drops nothing quietly.
 
-    A capture this session owns whose analysis reported no SNR is neither
-    another session's nor unattributed. Skipping it would make ``n_captures``
-    a count of something other than what the ring held for this round, while
-    the block's own note claims one row per attributed capture.
+    A take whose analysis reported no SNR is not a take with no analysis.
+    Skipping it would make ``n_captures`` a count of something other than the
+    takes this round banked an analysis for.
     """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_check.json", diagnostic={"phase": "check", "delay_us": 1.0})
-
-    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
-
-    assert (block["n_captures"], block["n_other_session"], block["n_unattributed"]) == (
-        1, 0, 0,
+    _bank_take_with_diagnostic(
+        session, "check_01_a01", phase="check",
+        diagnostic={"phase": "check", "delay_us": 1.0},
     )
+
+    block = build_crossover_evidence_packet(session)["capture_snr"]
+
+    assert (block["n_captures"], block["n_takes_seen"]) == (1, 1)
     assert block["captures"][0]["snr"] == {}
 
 
-def test_a_ring_that_holds_nothing_for_this_session_says_so_rather_than_looking_empty(
-    tmp_path,
-):
+def test_a_take_that_carried_no_analysis_is_counted_rather_than_hidden(tmp_path):
+    """``n_takes_seen`` is every take; the difference is what carried nothing.
+
+    Records banked before a take carried its own analysis stay exactly as
+    readable, and a block that simply omitted them would report a round with
+    no captures as a round with no takes.
+    """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json", session_id="ffffffffffff")
+    _bank_take_with_diagnostic(session, "measure_01_a01", diagnostic=None)
+    _bank_take_with_diagnostic(
+        session, "measure_02_a01", diagnostic=dict(_DEFAULT_DIAGNOSTIC),
+    )
 
-    packet = build_crossover_evidence_packet(session, dump_ring_dir=ring)
+    block = build_crossover_evidence_packet(session)["capture_snr"]
 
-    assert packet["capture_snr"]["available"] is False
-    assert packet["capture_snr"]["status"] == "not_evaluated"
-    assert "1 belonged to another" in packet["capture_snr"]["reason"]
-    stated = [e for e in packet["not_evaluated"] if e["field"] == "capture_snr"]
-    assert len(stated) == 1
-    assert stated[0]["reason"] == packet["capture_snr"]["reason"]
+    assert (block["n_captures"], block["n_takes_seen"]) == (1, 2)
+    assert [row["take_id"] for row in block["captures"]] == ["measure_02_a01"]
 
 
 def test_a_non_finite_snr_becomes_null_and_names_its_column(tmp_path):
-    """A ring sidecar is written with a plain ``json.dumps`` — it CAN carry NaN.
+    """A banked take is written with the store's canonical JSON, but a rescan
+    of one hand-edited on a laptop CAN carry ``NaN``.
 
     ``json_fingerprint`` refuses a non-finite number, so copying one through
-    would leave a round with no packet at all over a value in an off-by-default
-    forensic ring. It becomes ``null`` and its column is named, because "not
-    computable" and "not carried" are different facts.
+    would leave a round with no packet at all over one unmeasurable value. It
+    becomes ``null`` and its column is named, because "not computable" and
+    "not carried" are different facts.
     """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json", diagnostic={
+    _bank_take_with_diagnostic(session, "measure_01_a01", diagnostic={
         "woofer_snr_db": float("nan"),
         "tweeter_snr_db": 30.0,
     })
 
-    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+    block = build_crossover_evidence_packet(session)["capture_snr"]
 
     assert block["captures"][0]["snr"]["woofer_snr_db"] is None
     assert block["captures"][0]["snr"]["tweeter_snr_db"] == 30.0
@@ -1293,12 +1280,11 @@ def test_every_snr_figure_says_which_kind_of_uncertainty_it_is_not(tmp_path):
     stale the day the producer grows another SNR field.
     """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json", diagnostic={
+    _bank_take_with_diagnostic(session, "measure_01_a01", diagnostic={
         "phase": "measure", "delay_us": 421.0, **_REAL_SNR_COLUMNS,
     })
 
-    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+    block = build_crossover_evidence_packet(session)["capture_snr"]
 
     # Every SNR column of a real capture reached the packet…
     assert set(block["captures"][0]["snr"]) == set(_REAL_SNR_COLUMNS)
@@ -1343,87 +1329,38 @@ def test_an_undeclared_snr_shape_is_named_rather_than_travelling_unlabelled(
     evidence would be worse — and NAMED.
     """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json", diagnostic={
+    _bank_take_with_diagnostic(session, "measure_01_a01", diagnostic={
         "woofer_snr_db": 30.0, "thermal_snr_margin_db": 4.0,
     })
 
-    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+    block = build_crossover_evidence_packet(session)["capture_snr"]
 
     assert block["undeclared_fields"] == ["thermal_snr_margin_db"]
     assert "thermal_snr_margin_db" in block["captures"][0]["snr"]
 
 
-def test_a_path_one_level_too_deep_does_not_read_as_an_empty_ring(tmp_path):
-    """A wrong `--dumps` must not come back as a confident true absence.
+def test_a_round_whose_takes_carry_no_analysis_says_so_rather_than_looking_empty(
+    tmp_path,
+):
+    """An absence with the count behind it, never a bare empty list.
 
-    Pointing at ``dumps/sidecar`` instead of the ring root finds nothing, and
-    the old reason said "no capture attributed to this session (0 belonged to
-    another, 0 carried no readable identity)" — a sentence with a breakdown
-    behind it, indistinguishable from a ring that genuinely held nothing for
-    this round.
+    Records banked before a take carried its own analysis are the ordinary
+    case for every corpus already on disk, so the reason names how many takes
+    the round DID bank — a reader that saw only ``available: false`` could not
+    tell that from a round that banked nothing at all.
     """
     session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json")
+    _bank_take_with_diagnostic(session, "measure_01_a01", diagnostic=None)
 
-    too_deep = build_crossover_evidence_packet(
-        session, dump_ring_dir=ring / "sidecar"
-    )["capture_snr"]
-
-    assert too_deep["available"] is False
-    assert too_deep["n_sidecars_seen"] == 0
-    assert "ring ROOT" in too_deep["reason"]
-    assert "one level too deep" in too_deep["reason"]
-    # The right path, for contrast: same tree, one directory up.
-    assert build_crossover_evidence_packet(
-        session, dump_ring_dir=ring
-    )["capture_snr"]["n_captures"] == 1
-
-
-def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
-    """``--dumps`` means ONE directory across two tools, proven on one ring.
-
-    ``jasper-classify-features`` and ``jasper-crossover-prescriber`` both take
-    the ring ROOT, which is the split shape ``bank-crossover-round.sh`` writes
-    (``dumps/wav/`` beside ``dumps/sidecar/``). An operator who had to know
-    which tool wanted the parent would eventually hand one of them the wrong
-    path and get a silent empty answer, so this asserts on BEHAVIOUR — one
-    fixture ring, both readers observed finding the same sidecar — rather than
-    on the two spelling the same pattern, which is a thing that can be true
-    while the contract is broken.
-    """
-    session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json")
-
-    assert build_crossover_evidence_packet(
-        session, dump_ring_dir=ring
-    )["capture_snr"]["n_captures"] == 1
-
-    # The classifier refuses this ring — one non-admissible capture is not a
-    # round — but its refusal COUNTS what the glob found, which is the half
-    # being pinned here.
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    with pytest.raises(FeatureClassificationRefused) as refusal:
-        feature_classifier.load_round_captures(
-            round_dir, ring, session_id=_BUNDLE_SESSION_ID
-        )
-    assert refusal.value.reason == feature_classifier.NO_ADMISSIBLE_CAPTURES
-    assert refusal.value.detail["phases_seen"] == {"measure": 1}
-
-
-def test_an_absent_ring_is_reported_rather_than_papered_over(tmp_path):
-    """The ring is OFF by default, so this is the ordinary case, not a fault."""
-    session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
-    assert packet["capture_snr"]["available"] is False
-    assert "off by default" in packet["capture_snr"]["reason"]
 
-    absent = build_crossover_evidence_packet(
-        session, dump_ring_dir=tmp_path / "nowhere"
-    )
-    assert absent["capture_snr"]["reason"] == "source_absent"
+    assert packet["capture_snr"]["available"] is False
+    assert packet["capture_snr"]["status"] == "not_evaluated"
+    assert packet["capture_snr"]["n_takes_seen"] == 1
+    assert "banked 1 take(s)" in packet["capture_snr"]["reason"]
+    stated = [e for e in packet["not_evaluated"] if e["field"] == "capture_snr"]
+    assert len(stated) == 1
+    assert stated[0]["reason"] == packet["capture_snr"]["reason"]
 
 
 # --------------------------------------------------------------------------- #
@@ -2899,27 +2836,6 @@ def test_the_cli_emits_a_packet_and_exits_zero(tmp_path):
     assert emitted["kind"] == "jts_crossover_v2_evidence_packet"
     # The summary is on stderr so a piped packet is never contaminated.
     assert "not evaluated:" in err
-
-
-def test_the_cli_hands_the_capture_ring_to_the_packet(tmp_path):
-    """``--dumps`` is the third optional evidence path, on ``--drivers``' rule.
-
-    The ring sits OUTSIDE the bundle — a sibling of it in a banked round — so
-    the packet cannot find it from ``session_dir``. Without the flag the block
-    is honestly absent; with it the per-capture SNR is there.
-    """
-    session, _ = _bundle(tmp_path)
-    ring = tmp_path / "dumps"
-    _ring_sidecar(ring, "1_measure.json")
-
-    _, without, _ = _run_cli(["packet", str(session), "--json"])
-    assert json.loads(without)["capture_snr"]["available"] is False
-
-    code, out, _ = _run_cli(["packet", str(session), "--dumps", str(ring), "--json"])
-    assert code == cli.EXIT_OK
-    block = json.loads(out)["capture_snr"]
-    assert block["available"] is True
-    assert block["captures"][0]["snr"]["woofer_snr_db"] == 31.2
 
 
 def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):

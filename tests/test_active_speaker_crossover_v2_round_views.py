@@ -295,68 +295,6 @@ def _bank_verify_measured(
     return path
 
 
-def _stamp_ring_sidecar(
-    round_dir: Path, name: str, *, session_id: str = "sess1", nested: str = "",
-) -> Path:
-    """One session-stamped ring sidecar, optionally inside a nested ring.
-
-    ``nested`` names a subdirectory under ``dumps/`` — the shape a real
-    multi-run bank produces (``dumps/{final,night-all,phase7}/sidecar/``) and
-    the one a flat ``dumps/sidecar`` glob cannot see.
-    """
-    from jasper.attribution.session_identity import (
-        SessionIdentity,
-        stamp_session_identity,
-    )
-
-    ring = round_dir / "dumps" / nested if nested else round_dir / "dumps"
-    sidecar_dir = ring / "sidecar"
-    sidecar_dir.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, Any] = {
-        "phase": "measure",
-        "wav_sha256": "ring-sha",
-        "diagnostic": {"woofer_snr_db": 31.2, "woofer_snr_verdict": "ok"},
-    }
-    stamp_session_identity(payload, SessionIdentity(session_id=session_id))
-    path = sidecar_dir / name
-    path.write_text(json.dumps(payload))
-    return path
-
-
-def test_load_banked_round_hands_the_capture_ring_to_the_packet(tmp_path):
-    """The wiring this module owns: the ring root reaches the evidence packet.
-
-    ``load_banked_round`` passes ``<round-dir>/dumps``, so every packet these
-    views build carries per-capture SNR when the operator banked a ring. It
-    shipped without a test; this is that test.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    assert load_banked_round(round_dir).packet["capture_snr"]["available"] is False
-
-    _stamp_ring_sidecar(round_dir, "1_measure.json")
-
-    block = load_banked_round(round_dir).packet["capture_snr"]
-    assert block["available"] is True
-    assert block["n_captures"] == 1
-    assert block["captures"][0]["snr"]["woofer_snr_db"] == 31.2
-
-
-def test_a_nested_ring_reaches_the_packet_from_the_ring_root(tmp_path):
-    """``load_banked_round`` hands the ring ROOT to the packet, so a real
-    multi-run bank (``dumps/{final,night-all,phase7}/sidecar/``) is found.
-    A flat ``dumps/sidecar`` glob would see none of it — the disagreement
-    #2796 cost this module once.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    _stamp_ring_sidecar(round_dir, "1_measure.json", nested="night-all")
-
-    assert load_banked_round(round_dir).packet["capture_snr"]["n_captures"] == 1
-
-
 def test_verify_pose_curve_reads_the_banked_curve_onto_the_rounds_grid(tmp_path):
     """The VERIFY curve is READ from the bank, and made comparable in one hop.
 

@@ -426,9 +426,11 @@ def load_round_captures(
     verdict is filed. ``dumps_dir`` is the banked capture ring's root: sidecar
     JSON beside its WAV, in either the flat ``wav/`` + ``sidecar/`` shape or a
     per-phase nesting of it, found by
-    :data:`~.evidence_packet.RING_SIDECAR_GLOB` — the packet's ``capture_snr``
-    block reads the same ring through the same constant, so the two tools'
-    ``--dumps`` cannot come to mean different directories.
+    :data:`~.evidence_packet.RING_SIDECAR_GLOB` —
+    :func:`~.harmonic_evidence.read_round_harmonics` reads the same ring
+    through the same constant, so ``jasper-classify-features --dumps`` and
+    ``jasper-read-distortion --dumps`` cannot come to mean different
+    directories.
 
     ``session_id`` scopes the ring to this round. It is the BUNDLE session id
     (``info.json``'s ``session_id``), which is what a sidecar stamps into

@@ -84,8 +84,8 @@ class BankedRoundRecommender:
     directory are two views of one round by construction.
 
     ``state_path`` is the crossover-v2 flow state, banked separately from the
-    bundle; the other two optional paths are the packet builder's own and are
-    passed through unchanged. Whether a state was supplied is a fact
+    bundle; ``driver_draft_path`` is the packet builder's own and is passed
+    through unchanged. Whether a state was supplied is a fact
     ``status_document`` reports on, so it is carried rather than inferred.
     """
 
@@ -95,12 +95,10 @@ class BankedRoundRecommender:
         *,
         state_path: Path | None = None,
         driver_draft_path: Path | None = None,
-        dump_ring_dir: Path | None = None,
     ) -> None:
         self._bundle_dir = Path(bundle_dir)
         self._state_path = state_path
         self._driver_draft_path = driver_draft_path
-        self._dump_ring_dir = dump_ring_dir
 
     async def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
         """What should happen next, over exactly the records named.
@@ -142,7 +140,6 @@ class BankedRoundRecommender:
                 self._bundle_dir,
                 state_path=self._state_path,
                 driver_draft_path=self._driver_draft_path,
-                dump_ring_dir=self._dump_ring_dir,
             ), ""
         except (CrossoverEvidencePacketError, OSError) as exc:
             return None, str(exc)
