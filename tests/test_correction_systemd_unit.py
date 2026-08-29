@@ -59,5 +59,15 @@ def test_install_sh_creates_correction_state_dirs():
         "/var/lib/jasper/correction/sessions",
         "/var/lib/jasper/correction/calibration_mics",
         "/var/lib/jasper/correction/tones",
+        # The active_speaker* trees /sound/ and /correction/ share; must be
+        # created at install time too, or the first root-lane writer mints
+        # them root:root 0700 and locks jasper-web out until the next
+        # deploy's heal_shared_state_modes runs.
+        "/var/lib/jasper/active_speaker",
+        "/var/lib/jasper/active_speaker/sessions",
+        "/var/lib/jasper/active_speaker_captures",
+        "/var/lib/jasper/active_speaker_sweeps",
+        "/var/lib/jasper/active_speaker_stimuli",
+        "/var/lib/jasper/active_speaker_tone_artifacts",
     ]:
         assert path in body

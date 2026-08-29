@@ -122,11 +122,12 @@ heal_shared_state_modes() {
         "f:0640:${STATE_DIR}/bt_roles.json"
         "f:0640:${STATE_DIR}/active_speaker_measurements.json"
         # The capture/sweep/tone trees the /correction/ and /sound/ commissioning
-        # arms share. Nothing creates them at install time; whichever surface
-        # measured first made them with a bare mkdir, so a box that ran
-        # /correction/ while it was root carries root:root 0700 (its UMask=0077)
-        # and the dropped writer cannot even traverse in. 2770 group `jasper`
-        # matches what install.sh gives their /var/lib/jasper/correction siblings.
+        # arms share. install.sh's install_camilladsp() now creates these at
+        # install time (2770 group `jasper`, matching their
+        # /var/lib/jasper/correction siblings); this heal stays for boxes
+        # deployed before that landed, where whichever surface measured first
+        # had already made them with a bare mkdir — root:root 0700 (its
+        # UMask=0077), leaving the dropped writer unable to even traverse in.
         "d:2770:${STATE_DIR}/active_speaker"
         "d:2770:${STATE_DIR}/active_speaker/sessions"
         "d:2770:${STATE_DIR}/active_speaker_captures"
