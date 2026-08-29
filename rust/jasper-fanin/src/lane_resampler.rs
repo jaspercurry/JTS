@@ -201,6 +201,18 @@ pub struct LaneResampler {
     /// Frames left in the startup de-click ramp. Set to one render period on
     /// every lock, then counted down to zero while rendering real audio.
     startup_ramp_frames_remaining: usize,
+    /// Frames left in the SHUTDOWN de-click ramp — the mirror of the startup
+    /// one. Armed with one render period whenever a session ends
+    /// (`unlock_for_underfill`, `reset`), so the lane glides its last emitted
+    /// frame to zero instead of stepping there in one sample. Without it a host
+    /// that stops streaming mid-waveform produces a step discontinuity, which
+    /// is an audible click at the DAC. Zero means "emit true silence".
+    shutdown_ramp_frames_remaining: usize,
+    /// The last frame this lane emitted, per channel, at spine scale. The
+    /// shutdown ramp decays THIS toward zero, so the tail starts exactly where
+    /// the audio stopped. Cleared once the tail is spent. `i32` holds either
+    /// width losslessly (the narrow path writes `i16` values).
+    last_frame: Vec<i32>,
     /// Consecutive real render periods since the most recent lock. Early
     /// underfills during acquisition retain buffered input so the lane can keep
     /// priming; after this reaches `max_prime_periods`, underfill is treated as
@@ -330,6 +342,8 @@ impl LaneResampler {
             prime_periods: 0,
             max_prime_periods,
             startup_ramp_frames_remaining: 0,
+            shutdown_ramp_frames_remaining: 0,
+            last_frame: vec![0; channels],
             real_periods_since_lock: 0,
             input_frames: Arc::new(AtomicU64::new(0)),
             output_frames: Arc::new(AtomicU64::new(0)),
@@ -442,8 +456,7 @@ impl LaneResampler {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
             RenderPlan::Silence => {
-                self.render_silence(out);
-                return 0;
+                return self.render_silence(out);
             }
             RenderPlan::Emit { ratio } => ratio,
         };
@@ -463,6 +476,7 @@ impl LaneResampler {
             }
             self.advance_cursor(ratio);
         }
+        self.remember_last_frame_narrow(out);
         self.finish_period()
     }
 
@@ -479,8 +493,7 @@ impl LaneResampler {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
             RenderPlan::Silence => {
-                self.render_silence_wide(out);
-                return 0;
+                return self.render_silence_wide(out);
             }
             RenderPlan::Emit { ratio } => ratio,
         };
@@ -500,6 +513,7 @@ impl LaneResampler {
             }
             self.advance_cursor(ratio);
         }
+        self.remember_last_frame_wide(out);
         self.finish_period()
     }
 
@@ -520,6 +534,48 @@ impl LaneResampler {
     fn advance_cursor(&mut self, ratio: f64) {
         self.next_input_frame += ratio;
         self.startup_ramp_frames_remaining = self.startup_ramp_frames_remaining.saturating_sub(1);
+    }
+
+    /// The shutdown de-click gain for frame `frame` of the tail period. Mirrors
+    /// [`Self::frame_ramp_gain`]: that one climbs to unity over a period, this
+    /// one falls from unity to exactly zero, so the period after the tail is
+    /// true silence with no residual step.
+    fn shutdown_gain(&self, frame: usize) -> f64 {
+        1.0 - (frame + 1) as f64 / self.period_frames as f64
+    }
+
+    /// Arm the shutdown de-click tail, unless the lane was already silent.
+    ///
+    /// Called from every session-ending path. The tail can only scale the last
+    /// emitted frame DOWN toward zero, so it can never raise output above what
+    /// the lane was already producing.
+    fn arm_shutdown_ramp(&mut self) {
+        if self.last_frame.iter().any(|&s| s != 0) {
+            self.shutdown_ramp_frames_remaining = self.period_frames;
+        }
+    }
+
+    /// Record the period's LAST emitted frame so a later shutdown can decay
+    /// from it. Once per period, not once per frame — this is the render
+    /// thread and only the final frame is ever read back.
+    fn remember_last_frame_narrow(&mut self, out: &[i16]) {
+        let base = (self.period_frames - 1) * self.channels;
+        for channel in 0..self.channels {
+            self.last_frame[channel] = out[base + channel] as i32;
+        }
+    }
+
+    /// Wide sibling of [`Self::remember_last_frame_narrow`].
+    fn remember_last_frame_wide(&mut self, out: &[i32]) {
+        let base = (self.period_frames - 1) * self.channels;
+        self.last_frame
+            .copy_from_slice(&out[base..base + self.channels]);
+    }
+
+    /// Retire a spent tail so every later silent period is true digital zero.
+    fn finish_shutdown_tail(&mut self) {
+        self.shutdown_ramp_frames_remaining = 0;
+        self.last_frame.fill(0);
     }
 
     /// Post-emit bookkeeping shared by both widths: free the ring history behind
@@ -673,6 +729,7 @@ impl LaneResampler {
         self.locked_state.store(false, Ordering::Relaxed);
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
+        self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
         // Session-boundary snap: re-seat the next `try_lock` at the full
         // acquisition ceiling — a fresh cold start must acquire deep. Instant +
@@ -727,6 +784,17 @@ impl LaneResampler {
         self.locked_state.store(true, Ordering::Relaxed);
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = self.period_frames;
+        // A fresh lock supersedes any pending tail: the startup ramp owns the
+        // transition back to audio, so a stale tail must not play under it.
+        self.shutdown_ramp_frames_remaining = 0;
+        // Clearing the remembered frame is NOT redundant with the line above.
+        // `plan_period` can lock here and then `unlock_for_underfill` in the
+        // SAME call — both the minimum-safe-fill and read-past-the-edge gates
+        // sit after `try_lock` — without emitting a frame in between. That
+        // unlock arms the tail; if the frame from the PREVIOUS session were
+        // still remembered, the lane would decay stale audio into a session it
+        // never played. Clearing here makes that arm a no-op.
+        self.last_frame.fill(0);
         self.real_periods_since_lock = 0;
         self.controller.reset();
         self.lock_count.fetch_add(1, Ordering::Relaxed);
@@ -744,6 +812,7 @@ impl LaneResampler {
         self.next_input_frame = 0.0;
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
+        self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
         // Session-boundary snap: the underfill unlock is where a stopped host
         // (Mac sleeps / stops streaming) ends the session, so the NEXT lock
@@ -792,18 +861,51 @@ impl LaneResampler {
         self.locked
     }
 
-    fn render_silence(&mut self, out: &mut [i16]) {
+    /// Render one period of silence — or, when a session has just ended, the
+    /// shutdown de-click tail. Returns what the caller must MIX: the tail is
+    /// real audio, so it reports `period_frames`; true silence reports 0. A
+    /// tail that reported 0 would be written here and then dropped by the
+    /// mixer's `sum_buf[..active]` slice, making the de-click a no-op.
+    fn render_silence(&mut self, out: &mut [i16]) -> usize {
+        if self.shutdown_ramp_frames_remaining > 0 {
+            for frame in 0..self.period_frames {
+                let gain = self.shutdown_gain(frame);
+                for channel in 0..self.channels {
+                    out[frame * self.channels + channel] =
+                        clamp_i16(self.last_frame[channel] as f64 * gain);
+                }
+            }
+            self.finish_shutdown_tail();
+            self.output_frames
+                .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+            return self.period_frames;
+        }
         out.fill(0);
         self.count_silence_period();
+        0
     }
 
     /// The wide sibling of [`Self::render_silence`]. Digital zero is the same
     /// value at either width, so this differs only in the slice type — and it
     /// shares the counter bump so a silent period is accounted identically no
     /// matter which width the lane renders.
-    fn render_silence_wide(&mut self, out: &mut [i32]) {
+    fn render_silence_wide(&mut self, out: &mut [i32]) -> usize {
+        if self.shutdown_ramp_frames_remaining > 0 {
+            for frame in 0..self.period_frames {
+                let gain = self.shutdown_gain(frame);
+                for channel in 0..self.channels {
+                    out[frame * self.channels + channel] =
+                        (self.last_frame[channel] as f64 * gain) as i32;
+                }
+            }
+            self.finish_shutdown_tail();
+            self.output_frames
+                .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+            return self.period_frames;
+        }
         out.fill(0);
         self.count_silence_period();
+        0
     }
 
     fn count_silence_period(&mut self) {
@@ -1894,8 +1996,15 @@ mod tests {
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         r.reset();
-        // After reset, silent until re-prefilled.
-        assert_eq!(r.render_period(&mut out), 0);
+        // Ending a session emits one de-click tail period (pinned by
+        // session_end_glides_the_last_frame_to_zero), THEN silence until
+        // re-prefilled.
+        assert_eq!(r.render_period(&mut out), PERIOD as usize, "de-click tail");
+        assert_eq!(
+            r.render_period(&mut out),
+            0,
+            "then silent until re-prefilled"
+        );
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(
             r.render_period(&mut out),
@@ -2043,6 +2152,146 @@ mod tests {
             "startup ramp should rise within the first real period"
         );
         assert_eq!(r.startup_ramp_frames_remaining, 0);
+    }
+
+    /// The mirror of `first_locked_period_is_ramped_from_silence`. A session
+    /// that ends mid-waveform must GLIDE the last emitted frame to zero over
+    /// one period. Without the tail the first silent sample after real audio is
+    /// a full-amplitude step — the click a household hears when a host stops
+    /// streaming.
+    #[test]
+    fn session_end_glides_the_last_frame_to_zero() {
+        let mut r = build();
+        let period = PERIOD as usize;
+        let mut out = vec![0i16; period * 2];
+
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        assert_eq!(r.render_period(&mut out), period);
+        let last_peak = out[(period - 1) * 2..period * 2]
+            .iter()
+            .map(|&s| i32::from(s).abs())
+            .max()
+            .unwrap();
+        assert!(
+            last_peak > 500,
+            "fixture must end on real audio, got {last_peak}"
+        );
+
+        // The session ends. This period is the tail, not a hard cut.
+        r.reset();
+        assert_eq!(
+            r.render_period(&mut out),
+            period,
+            "the tail is real audio and must be reported so the mixer sums it"
+        );
+
+        let magnitudes: Vec<i32> = (0..period)
+            .map(|f| {
+                out[f * 2..f * 2 + 2]
+                    .iter()
+                    .map(|&s| i32::from(s).abs())
+                    .max()
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            magnitudes[0] > 0,
+            "tail must start from the last emitted frame, not from zero"
+        );
+        assert!(
+            magnitudes[0] <= last_peak,
+            "tail may only attenuate: {} > {last_peak}",
+            magnitudes[0]
+        );
+        assert_eq!(
+            magnitudes[period - 1],
+            0,
+            "tail must land exactly on zero so the next period adds no step"
+        );
+        for pair in magnitudes.windows(2) {
+            assert!(
+                pair[1] <= pair[0],
+                "tail must decay monotonically: {pair:?}"
+            );
+        }
+
+        r.render_period(&mut out);
+        assert!(
+            out.iter().all(|&s| s == 0),
+            "every period after the tail is true digital silence"
+        );
+    }
+
+    /// A fresh lock supersedes a pending tail: the startup ramp owns the return
+    /// to audio, so a stale tail must never play underneath it.
+    #[test]
+    fn a_fresh_lock_discards_a_pending_shutdown_tail() {
+        let mut r = build();
+        let period = PERIOD as usize;
+        let mut out = vec![0i16; period * 2];
+
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        assert_eq!(r.render_period(&mut out), period);
+        r.reset();
+        assert!(
+            r.shutdown_ramp_frames_remaining > 0,
+            "ending a session with real audio arms the tail"
+        );
+
+        // Re-feed and re-lock before the tail ever renders.
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        assert_eq!(r.render_period(&mut out), period, "locks again");
+        assert_eq!(
+            r.shutdown_ramp_frames_remaining, 0,
+            "the pending tail is discarded by the new lock"
+        );
+        assert!(
+            r.last_frame.iter().any(|&s| s != 0),
+            "a locked lane remembers the frame it just emitted"
+        );
+    }
+
+    /// `try_lock` clears the remembered FRAME, not just the tail counter.
+    /// `plan_period` can lock and then `unlock_for_underfill` inside ONE call —
+    /// both post-lock gates return Silence — arming a tail before any frame is
+    /// emitted. Were the previous session's frame still remembered, that tail
+    /// would decay stale audio into a session that never played.
+    #[test]
+    fn a_fresh_lock_forgets_the_previous_sessions_frame() {
+        let mut r = build();
+        let period = PERIOD as usize;
+        let mut out = vec![0i16; period * 2];
+
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        assert_eq!(r.render_period(&mut out), period);
+        assert!(
+            r.last_frame.iter().any(|&s| s != 0),
+            "session one must leave a frame that could go stale"
+        );
+
+        r.reset();
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        r.try_lock();
+        assert!(
+            r.last_frame.iter().all(|&s| s == 0),
+            "a fresh lock must forget the previous session's frame"
+        );
+
+        // So an unlock before this session emits anything arms no tail.
+        r.arm_shutdown_ramp();
+        assert_eq!(
+            r.shutdown_ramp_frames_remaining, 0,
+            "nothing emitted this session, so nothing to decay"
+        );
+    }
+
+    /// A lane that never emitted audio must not arm a tail — there is nothing
+    /// to decay from, and a tail of zeros would only cost a period of work.
+    #[test]
+    fn a_silent_lane_arms_no_tail() {
+        let mut r = build();
+        r.reset();
+        assert_eq!(r.shutdown_ramp_frames_remaining, 0);
     }
 
     /// WARM-UP FIX, part 2 (the headline): a cold start (EMPTY ring) fed STEADY
