@@ -1,0 +1,232 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Renderer-neutral frequency-response views over banked round evidence."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+import numpy as np
+
+from jasper.audio_measurement.spatial_combine import (
+    DEFAULT_DIAG_FRACTION,
+    DEFAULT_SPEC_FRACTION,
+)
+from jasper.active_speaker.flat_spec import evaluate_flat_spec
+
+SCHEMA = "jts_frequency_view/1"
+MEASUREMENT_FAMILY = "summed_cloud"
+
+
+class FrequencyViewError(ValueError):
+    """An evidence packet cannot supply a frequency-response view."""
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _curve(
+    *,
+    series_id: str,
+    label: str,
+    kind: str,
+    freqs_hz: Any,
+    magnitude_db: Any,
+    reference_db: Any,
+    smoothing_fraction: int | None,
+    visible: bool,
+    **metadata: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(freqs_hz, Sequence) or isinstance(freqs_hz, (str, bytes)):
+        return None
+    if not isinstance(magnitude_db, Sequence) or isinstance(magnitude_db, (str, bytes)):
+        return None
+    if not freqs_hz or len(freqs_hz) != len(magnitude_db):
+        return None
+    return {
+        "id": series_id,
+        "label": label,
+        "kind": kind,
+        "freqs_hz": list(freqs_hz),
+        "magnitude_db": list(magnitude_db),
+        "reference_db": (
+            reference_db
+            if isinstance(reference_db, (int, float)) and not isinstance(reference_db, bool)
+            else None
+        ),
+        "smoothing_fractional_octave": smoothing_fraction,
+        "visible_by_default": visible,
+        **metadata,
+    }
+
+
+def _position_label(row: Mapping[str, Any]) -> str:
+    degrees = row.get("position_deg")
+    raw_role = str(row.get("role") or "")
+    role = {"onax": "On axis", "offax": "Off axis"}.get(
+        raw_role, raw_role.replace("_", " ").title(),
+    )
+    if isinstance(degrees, int) and not isinstance(degrees, bool):
+        angle = f"{degrees:+d}°" if degrees else "0°"
+        return f"{angle} · {role}" if role else angle
+    return role or str(row.get("position_id") or "Measurement")
+
+
+def _baseline_frame(entry: Mapping[str, Any]) -> tuple[float | None, list[list[float]]]:
+    """Return the baseline's own display reference and excluded intervals."""
+
+    try:
+        report = evaluate_flat_spec(
+            np.asarray(entry.get("freqs_hz"), dtype=np.float64),
+            np.asarray(entry.get("magnitude_db"), dtype=np.float64),
+            np.asarray(entry.get("excluded"), dtype=bool),
+            smoothing_fraction=DEFAULT_SPEC_FRACTION,
+        )
+    except (OverflowError, TypeError, ValueError):
+        return None, []
+    return report.reference_db, [list(interval) for interval in report.excluded_intervals]
+
+
+def _run(packet: Mapping[str, Any], slot: str) -> dict[str, Any]:
+    session = _mapping(packet.get("session"))
+    run_id = str(session.get("bundle_session_id") or "").strip()
+    if not run_id:
+        raise FrequencyViewError("evidence packet has no bundle session id")
+
+    spec = _mapping(packet.get("spec"))
+    reference_db = spec.get("reference_db")
+    curve = _mapping(packet.get("curve"))
+    positions = _mapping(packet.get("positions"))
+    grid = _mapping(positions.get("curve_grid"))
+    round_block = _mapping(packet.get("round"))
+    honesty = _mapping(packet.get("honesty_mask"))
+    identity = _mapping(packet.get("identity"))
+
+    series: list[dict[str, Any]] = []
+    average = _curve(
+        series_id="average",
+        label="Run average",
+        kind="average",
+        freqs_hz=curve.get("freqs_hz"),
+        magnitude_db=curve.get("magnitude_db"),
+        reference_db=reference_db,
+        smoothing_fraction=DEFAULT_SPEC_FRACTION,
+        visible=True,
+        role="summed",
+        position=None,
+    )
+    if average is not None:
+        series.append(average)
+
+    entry = _mapping(packet.get("entry_baseline"))
+    if entry.get("available"):
+        baseline_reference_db, baseline_excluded = _baseline_frame(entry)
+        baseline = _curve(
+            series_id="entry_baseline",
+            label="Before correction · 0°",
+            kind="entry_baseline",
+            freqs_hz=entry.get("freqs_hz"),
+            magnitude_db=entry.get("magnitude_db"),
+            reference_db=baseline_reference_db,
+            smoothing_fraction=DEFAULT_SPEC_FRACTION,
+            visible=False,
+            role="summed",
+            position={"axis": "horizontal", "deg": 0},
+            captured_at=entry.get("captured_at"),
+            program_id=entry.get("program_id"),
+            reference_mark=entry.get("reference_mark"),
+            graph_fingerprint=entry.get("graph_fingerprint"),
+            excluded=entry.get("excluded") or [],
+            excluded_intervals_hz=baseline_excluded,
+        )
+        if baseline is not None:
+            series.append(baseline)
+
+    position_freqs = grid.get("freqs_hz")
+    position_smoothing = grid.get("smoothing_fraction")
+    if not isinstance(position_smoothing, int) or isinstance(position_smoothing, bool):
+        position_smoothing = DEFAULT_DIAG_FRACTION
+    for index, raw in enumerate(positions.get("positions") or []):
+        row = _mapping(raw)
+        position_id = str(row.get("position_id") or f"position_{index + 1}")
+        member = _curve(
+            series_id=position_id,
+            label=_position_label(row),
+            kind="position",
+            freqs_hz=position_freqs,
+            magnitude_db=row.get("magnitude_db"),
+            reference_db=reference_db,
+            smoothing_fraction=position_smoothing,
+            visible=False,
+            role=row.get("role"),
+            position={
+                "axis": row.get("position_axis"),
+                "deg": row.get("position_deg"),
+                "mark_distance_m": row.get("mark_distance_m"),
+            },
+            take_id=row.get("take_id"),
+            validity_floor_hz=row.get("validity_floor_hz"),
+        )
+        if member is not None:
+            series.append(member)
+
+    angles = _mapping(positions.get("angle_deg"))
+    mic = _mapping(identity.get("mic"))
+    return {
+        "slot": slot,
+        "id": run_id,
+        "label": f"Run {slot.upper()}",
+        "measurement_family": MEASUREMENT_FAMILY,
+        "started_at": session.get("started_at"),
+        "round_id": session.get("round_id"),
+        "state": session.get("state"),
+        "metadata": {
+            "position_count": positions.get("n_positions") or 0,
+            "angles_deg": angles.get("angles_deg") or [],
+            "reference_db": reference_db,
+            "smoothing": {
+                "average_fractional_octave": DEFAULT_SPEC_FRACTION,
+                "positions_fractional_octave": position_smoothing,
+            },
+            "validity_floor_hz": honesty.get("validity_floor_hz"),
+            "trusted_floor_hz": honesty.get("trusted_floor_hz"),
+            "excluded_bands_hz": honesty.get("merged_excluded_bands_hz") or [],
+            "entry_graph_fingerprint": round_block.get("entry_graph_fingerprint"),
+            "applied_graph_fingerprint": round_block.get("applied_graph_fingerprint"),
+            "adoption": _mapping(round_block.get("adoption")),
+            "verification": _mapping(round_block.get("verification")),
+            "topology_id": identity.get("topology_id"),
+            "topology_fingerprint": identity.get("topology_fingerprint"),
+            "build_sha": identity.get("build_sha"),
+            "mic_calibration_id": mic.get("calibration_id"),
+        },
+        "series": series,
+    }
+
+
+def build_frequency_view(
+    run_a: Mapping[str, Any],
+    run_b: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project one or two evidence packets into the shared graph contract."""
+
+    runs = [_run(run_a, "a")]
+    if run_b is not None:
+        runs.append(_run(run_b, "b"))
+    return {
+        "schema": SCHEMA,
+        "normalization": {
+            "kind": "series_reference",
+            "note": (
+                "Every series declares its display reference_db. Run averages and "
+                "positions use the stored run reference; the retained before-"
+                "correction curve uses its own reference from the shipped flat-spec "
+                "evaluator."
+            ),
+        },
+        "runs": runs,
+    }

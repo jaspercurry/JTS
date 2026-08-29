@@ -192,21 +192,31 @@ check(
 // captured; everything else is a no-op so the real draw path runs unmodified.
 function recordingContext() {
   const strokes = [];
+  const fills = [];
   let dash = [];
   let style = "";
+  let fillStyle = "";
+  let alpha = 1;
+  let path = [];
   return {
-    strokes,
+    strokes, fills,
     setTransform() {}, scale() {}, clearRect() {}, save() {}, restore() {},
-    beginPath() {}, moveTo() {}, lineTo() {}, rect() {}, clip() {},
-    fillRect() {}, fillText() {},
+    beginPath() { path = []; },
+    moveTo(x, y) { path.push({ op: "move", x, y }); },
+    lineTo(x, y) { path.push({ op: "line", x, y }); },
+    rect() {}, clip() {},
+    fillRect(x, y, width, height) {
+      fills.push({ style: fillStyle, alpha, x, y, width, height });
+    },
+    fillText() {},
     setLineDash(value) { dash = value.slice(); },
-    stroke() { strokes.push({ style, dash: dash.slice() }); },
+    stroke() { strokes.push({ style, dash: dash.slice(), path: path.slice() }); },
     set strokeStyle(value) { style = value; },
     get strokeStyle() { return style; },
-    set fillStyle(_v) {}, get fillStyle() { return ""; },
+    set fillStyle(value) { fillStyle = value; }, get fillStyle() { return fillStyle; },
     set lineWidth(_v) {}, get lineWidth() { return 1; },
     set font(_v) {}, get font() { return ""; },
-    set globalAlpha(_v) {}, get globalAlpha() { return 1; },
+    set globalAlpha(value) { alpha = value; }, get globalAlpha() { return alpha; },
   };
 }
 
@@ -224,9 +234,18 @@ globalThis.getComputedStyle = () => ({
 });
 globalThis.window = { devicePixelRatio: 1 };
 
+const { cssColor, drawFrequencyChart } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/frequency-chart.js"),
+);
+globalThis.__cssColor = cssColor;
+globalThis.__drawFrequencyChart = drawFrequencyChart;
+
 const { drawCloudChart } = await loadEsm(
   repoPath("deploy/assets/correction/js/crossover/chart.js"),
-  { rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]] },
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: "const cssColor = globalThis.__cssColor; const drawFrequencyChart = globalThis.__drawFrequencyChart;\n",
+  },
 );
 
 function drawWith(payload) {
@@ -238,6 +257,18 @@ function drawWith(payload) {
     height: 0,
   };
   const drew = drawCloudChart(canvas, payload);
+  return { drew, ctx };
+}
+
+function drawGeneric(payload) {
+  const ctx = recordingContext();
+  const canvas = {
+    getBoundingClientRect: () => ({ width: 640, height: 240 }),
+    getContext: () => ctx,
+    width: 0,
+    height: 0,
+  };
+  const drew = drawFrequencyChart(canvas, payload);
   return { drew, ctx };
 }
 
@@ -271,6 +302,115 @@ const curve = (db) => ({ freqs_hz: [300, 700, 1000], magnitude_db: [db, db, db] 
     "chart: the measured curve stays SOLID — the dash never leaks onto a " +
     "measured series",
     { got: measured },
+  );
+}
+
+{
+  const { ctx } = drawWith({
+    measureCurve: curve(-26),
+    verifyCurve: curve(-36),
+    predictedCurve: null,
+    measureReferenceDb: -27,
+    verifyReferenceDb: -37,
+    predictedReferenceDb: null,
+    specBands: SPEC_BANDS,
+    excludedIntervals: [],
+  });
+  const measurePath = ctx.strokes.find((stroke) => stroke.style === "MEASURE").path;
+  const verifyPath = ctx.strokes.find((stroke) => stroke.style === "VERIFY").path;
+  check(
+    JSON.stringify(measurePath) === JSON.stringify(verifyPath),
+    "chart: equal response shapes at different levels share one visual frame " +
+    "because each curve uses its own reference",
+  );
+}
+
+{
+  const base = {
+    freqs_hz: [300, 700],
+    magnitude_db: [-27.3, -26.3],
+  };
+  const withUngradedExtreme = {
+    freqs_hz: [300, 700, 19900],
+    magnitude_db: [-27.3, -26.3, -100],
+  };
+  const clean = drawWith({
+    measureCurve: base,
+    verifyCurve: null,
+    predictedCurve: null,
+    measureReferenceDb: -27.3,
+    verifyReferenceDb: null,
+    predictedReferenceDb: null,
+    specBands: SPEC_BANDS,
+    excludedIntervals: [],
+  });
+  const extreme = drawWith({
+    measureCurve: withUngradedExtreme,
+    verifyCurve: null,
+    predictedCurve: null,
+    measureReferenceDb: -27.3,
+    verifyReferenceDb: null,
+    predictedReferenceDb: null,
+    specBands: SPEC_BANDS,
+    excludedIntervals: [],
+  });
+  const cleanPath = clean.ctx.strokes.find((stroke) => stroke.style === "MEASURE").path;
+  const extremePath = extreme.ctx.strokes.find((stroke) => stroke.style === "MEASURE").path;
+  check(
+    cleanPath[0].y === extremePath[0].y && cleanPath[1].y === extremePath[1].y,
+    "chart: an ungraded top-octave extreme does not change graded-range scaling",
+  );
+}
+
+{
+  const { ctx } = drawWith({
+    measureCurve: curve(-26),
+    verifyCurve: null,
+    predictedCurve: null,
+    measureReferenceDb: -27.3,
+    verifyReferenceDb: null,
+    predictedReferenceDb: null,
+    specBands: SPEC_BANDS,
+    excludedIntervals: [
+      { f_lo_hz: 1, f_hi_hz: 10 },
+      { f_lo_hz: 500, f_hi_hz: 700 },
+      { f_lo_hz: 30000, f_hi_hz: 40000 },
+    ],
+  });
+  check(
+    ctx.fills.filter((fill) => fill.style === "EXCLUDED" && fill.width > 0).length === 1,
+    "chart: stored exclusions are shaded without painting out-of-range bands at an edge",
+  );
+}
+
+{
+  const visible = {
+    curve: { freqs_hz: [300, 700], magnitude_db: [0, 1] },
+    referenceDb: 0,
+    color: "VISIBLE",
+    draw: true,
+  };
+  const hidden = {
+    curve: { freqs_hz: [300, 700], magnitude_db: [-20, -20] },
+    referenceDb: 0,
+    color: "HIDDEN",
+    draw: false,
+  };
+  const before = drawGeneric({
+    series: [visible, hidden],
+    frequencyRangeHz: [20, 20000],
+    domainRangeHz: [250, 2000],
+  });
+  const after = drawGeneric({
+    series: [visible, { ...hidden, draw: true }],
+    frequencyRangeHz: [20, 20000],
+    domainRangeHz: [250, 2000],
+  });
+  const beforePath = before.ctx.strokes.find((stroke) => stroke.style === "VISIBLE").path;
+  const afterPath = after.ctx.strokes.find((stroke) => stroke.style === "VISIBLE").path;
+  check(
+    JSON.stringify(beforePath) === JSON.stringify(afterPath),
+    "chart: revealing a hidden series does not rescale curves already on screen",
   );
 }
 

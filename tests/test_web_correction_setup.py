@@ -369,6 +369,32 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b'id="mic-support"' not in resp
 
 
+def test_get_crossover_measurements_renders_history_page():
+    resp = _drive("/crossover/measurements/")
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert b"/assets/correction/js/crossover/measurements.js" in resp
+    assert b'id="measurement-run-a"' in resp
+
+
+def test_get_crossover_measurement_data_dispatches_a_and_b(monkeypatch):
+    from jasper.web import correction_crossover_measurements
+
+    monkeypatch.setattr(
+        correction_crossover_measurements,
+        "build_data",
+        lambda **kwargs: {
+            "a": kwargs["run_a_id"],
+            "b": kwargs["run_b_id"],
+        },
+    )
+    resp = _drive("/crossover/measurements/data?a=aaa&b=bbb")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {
+        "a": "aaa", "b": "bbb",
+    }
+
+
 def test_follower_keeps_local_crossover_measurement_post(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(correction_setup, "guard_mutating_request", lambda _handler: True)

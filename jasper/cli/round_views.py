@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, four subcommands — each a thin argparse wrapper over
+One console script, five subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. This module reads banked round directories (the
 tree ``scripts/bank-crossover-round.sh`` produces), calls the product view,
@@ -27,6 +27,8 @@ Subcommands:
 * ``agreement <round-dir>`` — per-position sign/magnitude testimony for
   every feature in the trusted sweep, built from the same per-seat curves
   ``per-seat`` computes. Writes ``<round-dir>/agreement.json``.
+* ``frequency <round-a> [<round-b>]`` — the renderer-neutral frequency view
+  shared with the JTS web page. Writes ``<round-a>/frequency_view.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout), and prints a one-line human summary to stderr either
@@ -53,6 +55,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     repeatability_spread,
     verify_pose_curve,
 )
+from jasper.active_speaker.crossover_v2.frequency_view import build_frequency_view
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -211,6 +214,28 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_frequency(args: argparse.Namespace) -> int:
+    try:
+        run_a = load_banked_round(Path(args.round_a))
+        run_b = load_banked_round(Path(args.round_b)) if args.round_b else None
+        payload = build_frequency_view(
+            run_a.packet,
+            run_b.packet if run_b is not None else None,
+        )
+    except _ROUND_READ_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    written = _write_json(
+        payload, args.out, Path(args.round_a) / "frequency_view.json"
+    )
+    print(
+        f"frequency: {len(payload['runs'])} run(s)"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _add_norm_band_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--norm-lo", type=float, default=400.0, help="normalisation band low edge, Hz (default 400)")
     parser.add_argument("--norm-hi", type=float, default=8000.0, help="normalisation band high edge, Hz (default 8000)")
@@ -221,8 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jasper-round-views",
         description=(
             "The round-grading comparison views: frozen-reference grading, "
-            "per-seat curves, session-to-session repeatability, and per-seat "
-            "agreement — over a banked round directory."
+            "per-seat curves, session-to-session repeatability, per-seat "
+            "agreement, and the shared frequency view — over banked rounds."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -256,6 +281,12 @@ def build_parser() -> argparse.ArgumentParser:
     agreement.add_argument("--testify-db", type=float, default=0.4, help="minimum |seat dB| to testify or dissent")
     agreement.add_argument("--out", default=None, help="write the result here (- for stdout)")
     agreement.set_defaults(func=_cmd_agreement)
+
+    frequency = sub.add_parser("frequency", help="build the shared frequency-response view")
+    frequency.add_argument("round_a", help="banked round directory for run A")
+    frequency.add_argument("round_b", nargs="?", help="optional banked round directory for run B")
+    frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    frequency.set_defaults(func=_cmd_frequency)
 
     return parser
 
