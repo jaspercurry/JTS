@@ -69,16 +69,26 @@ the roster's own accounting: make `polarity=inverted` play and bank
 (`crossover_alignment.py`'s `POLARITY_KEEP` / `POLARITY_INVERT` already
 decide on measured null depth; nothing has fed them one).
 
-**3. R-3/R-4 near-field: PARKED.** Both stay stubbed
+**3. R-3/R-4 near-field: PARKED — the standing ~1 kHz room-comb ruling is
+superseded in its REMEDY, not its FINDING.** Both stay stubbed
 (`measure_spec.py`'s `NEAR_FIELD_SPLICE_NOT_IMPLEMENTED` /
-`DISTORTION_VS_LEVEL_NOT_IMPLEMENTED`); R-3's capture keeps banking against a
-splice that has not landed, R-4's ladder keeps banking against a consumer
-that has not landed. Stated consequence, recorded because the campaign
-depends on it: the standing ~1 kHz room-comb ruling — EQ in that region is
-forbidden until near-field measurement can separate driver from room —
-**REMAINS IN FORCE**. Campaign candidates avoid that region until near-field
-revives. The ~2.5 kHz crossover work in part 1 is unaffected — it sits over
-an octave away from the parked region.
+`DISTORTION_VS_LEVEL_NOT_IMPLEMENTED`); neither is being built. This part of
+the ruling reached the owner in two chat statements in the same session, the
+second arriving minutes after the first to refine it: (i) *"we dont test
+nearfield. that is parked"*; (ii) *"we can gate much lower rhan [sic]
+1khz."* The comb FINDING stands — ungated in-room data near ~1 kHz still
+shows the room, not the driver. What changes is the REMEDY: time-gated
+analysis, not near-field measurement, is now the sanctioned basis for EQ
+decisions through that region. The mechanism already ships — every capture's
+analysis carries a gated validity floor (`validity_floor_hz`, computed by
+`_gate_floor_hz` in `program_analysis.py`) — and jts3's reflection-free
+window (~7 ms, per the room caveat in
+[`historical/crossover-measurement-reproducibility-plan.md`](../historical/crossover-measurement-reproducibility-plan.md))
+puts that floor at roughly 140–150 Hz. Consequence: the campaign's trusted
+range is bounded **below** by the gate floor, not by near-field's absence —
+only sub-gate-floor frequencies still wait for near-field's revival. The
+~2.5 kHz crossover work in part 1 and the gated linearization range are both
+unrestricted.
 
 **4. The "PROVISIONAL pending W6 bench validation" banner: DELETE.** The
 banner is quoted as still-standing by ADR-0181 and ADR-0182
@@ -107,9 +117,9 @@ owner-present, daytime, per the household's standing rule.
   with.
 - R-3 and R-4 stay parked; the campaign's trusted range excludes the
   near-field-dependent floor extension (the 357 Hz trusted floor, per the
-  roster) until they revive. The ~1 kHz room-comb finding stays exactly as
-  forbidding as it was — nothing here relaxes it, and no candidate in this
-  campaign may touch that region.
+  roster) until they revive. The ~1 kHz room-comb ruling's REMEDY is now
+  gating, not near-field — see ruling 3 — so candidates are not barred from
+  that region; only sub-gate-floor frequencies still wait.
 - The PROVISIONAL banner disappears from the tuning constants once its
   follow-up PR lands. ADR-0181 and ADR-0182 are not edited to match — ADRs
   are immutable — so a reader who reaches either after the banner PR merges
