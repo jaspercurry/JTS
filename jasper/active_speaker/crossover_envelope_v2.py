@@ -289,6 +289,7 @@ def _finite(value: Any) -> float | None:
 def _linearization_octave_rows(
     octaves: Any,
     reasons: Any,
+    driver_classes: Any = None,
 ) -> list[dict[str, Any]]:
     """Gauge fix (2026-07-24): per-role top-octave rows (>= 8k/12k/16k) —
     the OBSERVE-layer honesty ladder's disclosure numbers
@@ -333,8 +334,19 @@ def _linearization_octave_rows(
     here and in the renderer that prints them
     (``deploy/assets/correction/js/crossover/main.js``), so no surface
     presents a per-driver fit residual as "the measurement".
+
+    ``driver_classes`` (audit item 4i) is ``_candidate_summary``'s
+    ``linearization_driver_class`` — the role's declared
+    ``LinearizationFit.driver_class``, passed through as ``row["driver_class"]``
+    exactly as opaquely as ``reason`` is: this function does not compare it
+    against ``"unknown"`` or anything else. The renderer needs it to tell an
+    already-declared class's own prior apart from the undeclared default —
+    only the second has a ``/sound/setup/`` action left to take. Omitted, not
+    empty-stringed, when absent, the same present/absent discipline
+    ``reason`` uses.
     """
     reason_rows = _mapping(reasons)
+    class_rows = _mapping(driver_classes)
     rows: list[dict[str, Any]] = []
     for role, per_role in sorted(
         _mapping(octaves).items(),
@@ -354,7 +366,11 @@ def _linearization_octave_rows(
                 band["reason"] = code
             bands.append(band)
         if bands:
-            rows.append({"role": str(role), "bands": bands})
+            row: dict[str, Any] = {"role": str(role), "bands": bands}
+            driver_class = class_rows.get(role)
+            if isinstance(driver_class, str) and driver_class:
+                row["driver_class"] = driver_class
+            rows.append(row)
     return rows
 
 
@@ -475,6 +491,7 @@ def _candidate_review_payload(
         "linearization_octaves": _linearization_octave_rows(
             candidate.get("linearization_octaves"),
             candidate.get("linearization_octave_reasons"),
+            candidate.get("linearization_driver_class"),
         ),
         # "This correction costs N dB of maximum level" (PR-L5), reaching a
         # screen-facing payload for the first time (two-stage commission D4).
@@ -1641,6 +1658,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # whether Apply can or should happen at all; this one qualifies the
     # evidence behind a proposal that is otherwise fine.
     nudges.extend(_ripple_reservation_nudges(status))
+    nudges.extend(_calibration_reservation_nudges(status))
     apply_issue = _mapping(v2.get("apply_blocked"))
     # Gated on the fact the sentence is about: Sound holds a saved revision and
     # the DSP apply behind it is not confirmed. It used to ALSO require the Fc
@@ -2352,6 +2370,48 @@ def _ripple_reservation_lines(status: Mapping[str, Any]) -> list[str]:
         f"predicted ripple {ripple:.2f} dB, above the {threshold:.1f} dB "
         "disclosure threshold"
     ]
+
+
+#: Audit gauntlet 5a: nothing on the tuning path named the mic-registration
+#: step, so a household never learned an uncalibrated MEASURE was accepted.
+#: One plain sentence, matching :data:`RIPPLE_RESERVATION_COPY`'s own "not a
+#: lecture" register, pointing at the concrete surface
+#: (jasper.cli.doctor.correction.check_correction_latest_bundle's sibling
+#: doctor line names the same two steps — Microphone, Fetch calibration — in
+#: its own register).
+MIC_CALIBRATION_RESERVATION_COPY = (
+    "This measurement used no calibrated microphone, so the result may be "
+    "less accurate than usual. Register one under Microphone on /correction/."
+)
+
+
+def _calibration_reservation(status: Mapping[str, Any]) -> bool:
+    """Whether the banked MEASURE ran with no resolved mic calibration
+    (audit gauntlet 5a). The validating reader for a key
+    ``crossover_v2_status_block`` copies through unchecked, mirroring
+    :func:`_ripple_reservation`.
+    """
+    return bool(_mapping(_v2(status).get("measure")).get("calibration_reservation"))
+
+
+def _calibration_reservation_nudges(status: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The household's one sentence naming the mic-registration step, or
+    nothing at all.
+
+    ``warn``, unlike the ripple reservation's ``info``: this one is directly
+    actionable before the NEXT measurement (register a calibrated mic under
+    Microphone on /correction/), so it gets the severity the doctor's sibling
+    check for the identical fact
+    (``jasper.cli.doctor.correction.check_correction_latest_bundle``) uses,
+    not the "nothing to do about it" register a ripple reading gets.
+    """
+    if not _calibration_reservation(status):
+        return []
+    return [{
+        "code": "crossover_v2_mic_calibration_reservation",
+        "severity": "warn",
+        "text": MIC_CALIBRATION_RESERVATION_COPY,
+    }]
 
 
 def _attempt_db(value: Any) -> str | None:
@@ -4278,6 +4338,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 )
                 + _round_adoption_nudges(v2)
                 + _ripple_reservation_nudges(status)
+                + _calibration_reservation_nudges(status)
             ),
             status=status,
             candidate_review=_candidate_review_payload(candidate or None),

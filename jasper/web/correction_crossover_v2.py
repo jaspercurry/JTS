@@ -2727,8 +2727,18 @@ def bind_production_analyze(
         # "reference". Threaded onto every phase's priors (not just
         # MEASURE); only `ProgramAnalysis` from a MEASURE analysis actually
         # surfaces it (see program_analysis.ProgramAnalysis.mic_tier).
+        #
+        # `mic_calibrated` rides the SAME replace call, from the SAME `curve`
+        # this function already resolved above — the household-facing sibling
+        # of the `meta["calibration"]` annotation a few lines up, which
+        # nothing reads back for a screen (audit gauntlet 5a). Threaded onto
+        # every phase's priors for the same reason `mic_tier` is; only a
+        # MEASURE analysis has a consumer today
+        # (CrossoverV2Session._measure_verdict).
         priors = dataclasses.replace(
-            priors, mic_tier=mic_tier_for_model(getattr(record, "model", None)),
+            priors,
+            mic_tier=mic_tier_for_model(getattr(record, "model", None)),
+            mic_calibrated=curve is not None,
         )
         analysis = _pa.analyze_program_capture(
             program,

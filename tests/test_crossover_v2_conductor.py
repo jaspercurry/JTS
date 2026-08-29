@@ -933,6 +933,38 @@ def test_alignment_confidence_at_the_trust_floor_banks_nothing():
     assert c.measure_alignment_reservation is None
 
 
+def test_uncalibrated_measure_accepts_and_banks_a_reservation():
+    """Audit gauntlet 5a, at the conductor: disclose, never block.
+
+    Same shape as the alignment-confidence reservation above — the capture
+    is ACCEPTED and carries an honest reservation instead of refusing, and
+    the fact is read off ``analysis.mic_calibrated`` alone, never guessed
+    from ``mic_tier`` (a resolved-but-unrecognized-model mic ALSO reports the
+    conservative "phone" tier while genuinely being calibrated — see
+    ``tests/test_correction_crossover_v2_endpoints.py``'s bare-curve case)."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(program, mic_calibrated=False)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert not verdict.get("code")
+    assert fakes.published_candidates
+    assert c.candidate is not None
+    assert c.measure_calibration_reservation is True
+
+
+def test_a_calibrated_measure_banks_no_calibration_reservation():
+    """The converse — the disclosure's own "clean measurement" counterpart."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(program, mic_calibrated=True)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.measure_calibration_reservation is None
+
+
 def test_no_alignment_estimate_skips_the_confidence_gate():
     """A trims-only candidate (no alignment estimate at all) is never
     confidence-gated — same condition the former nudge used."""

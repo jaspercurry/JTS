@@ -210,8 +210,10 @@ def test_the_field_census_reproduces_the_committed_classification():
     for field, found in classified.items():
         by_class.setdefault(found, set()).add(field)
 
-    assert by_class[PASSTHROUGH] == {"phase", "program_id", "mic_tier"}
+    assert by_class[PASSTHROUGH] == {
+        "phase", "program_id", "mic_tier", "mic_calibrated",
+    }
     assert by_class[PROJECTION] == {"glitch_detected"}
     assert by_class[INPUT_PREDICATE] == {"configured_path_composed"}
     assert len(by_class[PRODUCED]) == 20
-    assert len(classified) == 25
+    assert len(classified) == 26

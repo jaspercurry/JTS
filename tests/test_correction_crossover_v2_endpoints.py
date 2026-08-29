@@ -3967,6 +3967,61 @@ def test_stage_2_keeps_the_measuring_sessions_ripple_reservation(monkeypatch):
     )
 
 
+def test_stage_2_keeps_the_measuring_sessions_calibration_reservation(monkeypatch):
+    """Audit gauntlet 5a's carry-forward sibling to the ripple test above:
+    the DONE screen must show the mic-calibration caveat even though stage 2
+    runs under a NEW conductor that never ran MEASURE — the same hazard, the
+    same fix (the ``measure`` dict carries forward as a whole), and the same
+    reason: the screen that tells the household the speaker is tuned is
+    exactly where an unstated caveat becomes an overclaim.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        MIC_CALIBRATION_RESERVATION_COPY,
+        build_crossover_envelope_v2,
+    )
+
+    v2host.save_v2_state({
+        "session_id": "cap_measuring_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": "fp-measured"},
+        "applied": True,
+        "measure": {"calibration_reservation": True},
+        "evidence": {"bundle_session_id": "bundle-stage-1"},
+    })
+
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-stage-2"},
+    )
+
+    # Surface 1: the durable state — carried across the bundle hop.
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["measure"]["calibration_reservation"] is True
+
+    # Surface 2: /state's projection.
+    assert (
+        v2status.crossover_v2_status_block()["measure"]["calibration_reservation"]
+        is True
+    )
+
+    # Surface 3: the screen the household actually reads.
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            **v2status.crossover_v2_status_block(),
+            "phase": PHASE_DONE,
+            "verify": {"outcome": "pass"},
+        },
+    })
+    assert MIC_CALIBRATION_RESERVATION_COPY in [n["text"] for n in env["nudges"]]
+
+
 def test_a_fresh_measurement_clears_a_previous_sessions_ripple_reservation():
     """The converse, and the reason the predicate is MEASURE rather than an
     unconditional carry: a new measuring session owns the answer to "how good
@@ -7433,6 +7488,10 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
     assert seen["priors"] is not incoming_priors
     # Every other field survives the replace unchanged.
     assert seen["priors"].crossover_fc_hz == FC_HZ
+    # Audit gauntlet 5a: the SAME replace call also threads whether a curve
+    # resolved, from the SAME `curve` this function already computed.
+    assert incoming_priors.mic_calibrated is None
+    assert seen["priors"].mic_calibrated is True
 
 
 def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resolves(monkeypatch):
@@ -7464,6 +7523,11 @@ def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resol
         phase="verify",
     )
     assert seen["priors"].mic_tier == "phone"
+    # No calibration resolved: `curve` is None too, and the fact is exactly
+    # this (never inferred from the tier, which the next test's bare-curve
+    # case would get backwards — a real curve there resolves the SAME
+    # conservative "phone" tier while genuinely being calibrated).
+    assert seen["priors"].mic_calibrated is False
 
 
 def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(monkeypatch):
@@ -7500,6 +7564,13 @@ def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(mon
         phase="verify",
     )
     assert seen["priors"].mic_tier == "phone"
+    # The load-bearing case (audit gauntlet 5a): `mic_tier` alone would read
+    # this exactly like the no-calibration-at-all case above — both resolve
+    # to "phone" — but a REAL curve WAS applied here, just from a record
+    # whose model tier is unrecognized. `mic_calibrated` must not collapse
+    # the two: a household with this bare-curve mic must never be told to
+    # register one it already has.
+    assert seen["priors"].mic_calibrated is True
 
 
 
@@ -8051,6 +8122,74 @@ def test_a_role_with_verdicts_but_no_octave_numbers_persists_no_reasons():
     }
 
 
+def test_candidate_summary_carries_the_declared_driver_class_beside_each_role():
+    """Audit item 4i: the household-facing remedy for an undeclared
+    ``driver_class`` needs the ACTUAL declared class beside the reason, so it
+    can tell "unknown" (an action is available at /sound/setup/) apart from a
+    real class's own prior (there is none) — ``LinearizationFit.driver_class``
+    is already computed and serialized (``to_dict``'s ``"driver_class"`` key);
+    this is its own household-reachable projection, the third sibling of the
+    reason/number projections above, keyed the same subset-of-the-octave-set
+    way.
+    """
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-abc",
+        analysis={"alignment_confidence": 0.9,
+                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
+        source_preset=_preset(),
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization={
+            "woofer": {
+                "role": "woofer",
+                "observe_octave_summary": {"8000": -0.3},
+                "reason_summary": {"8000": "envelope_limited_by_class_prior"},
+                "driver_class": "unknown",
+            },
+        },
+        linearization_outcome="fitted",
+    )
+
+    summary = v2host._candidate_summary(candidate)
+
+    assert summary["linearization_driver_class"] == {"woofer": "unknown"}
+
+
+def test_a_role_with_no_octave_numbers_persists_no_driver_class():
+    """Same subset-of-the-octave-set rule
+    :func:`test_a_role_with_verdicts_but_no_octave_numbers_persists_no_reasons`
+    pins for reasons, for the identical cause: a driver_class value with no
+    octave row to sit beside it is a value the review screen never displays.
+    """
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-abc",
+        analysis={"alignment_confidence": 0.9,
+                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
+        source_preset=_preset(),
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization={
+            "tweeter": {
+                "role": "tweeter",
+                "observe_octave_summary": {},
+                "reason_summary": {"8000": "envelope_out_of_band"},
+                "driver_class": "soft_dome",
+            },
+        },
+        linearization_outcome="fitted",
+    )
+
+    summary = v2host._candidate_summary(candidate)
+
+    assert summary["linearization_driver_class"] == {}
+
+
 def test_candidate_summary_linearization_fields_default_empty():
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverCandidate,
@@ -8069,6 +8208,7 @@ def test_candidate_summary_linearization_fields_default_empty():
     assert summary["linearization_outcome"] == ""
     assert summary["linearization_octaves"] == {}
     assert summary["linearization_octave_reasons"] == {}
+    assert summary["linearization_driver_class"] == {}
 
 
 def test_candidate_summary_carries_whether_the_polarity_was_pinned():

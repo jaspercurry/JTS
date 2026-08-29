@@ -50,6 +50,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     KEEP_MISSED_EXHAUSTED_TEXT,
     SERIES_COMPLETE_DEFAULT_TEXT,
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
+    MIC_CALIBRATION_RESERVATION_COPY,
     RIPPLE_RESERVATION_COPY,
     _PHASE_STEP,
     _per_band_flatness_lines,
@@ -2082,6 +2083,53 @@ def test_a_candidate_with_no_recorded_reasons_renders_exactly_as_before():
     ]
 
 
+def test_class_prior_limited_octaves_carry_their_declared_driver_class():
+    """Audit item 4i: the renderer (main.js) needs the declared driver_class
+    beside the reason code to tell an already-declared class's own real prior
+    apart from the undeclared ("unknown") default — only main.js decides what
+    to say about that pair, so this pins the structured passthrough this
+    module is responsible for and nothing about rendered prose.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            linearization_outcome="fitted",
+            linearization_octaves={
+                "tweeter": {"8000": -0.2, "12000": -6.5, "16000": -11.0},
+            },
+            linearization_octave_reasons={
+                "tweeter": {
+                    "8000": "envelope_fitted",
+                    "12000": "envelope_limited_by_class_prior",
+                    "16000": "envelope_limited_by_class_prior",
+                },
+            },
+            linearization_driver_class={"tweeter": "unknown"},
+        ),
+    ))
+    row = env["candidate_review"]["linearization_octaves"][0]
+    assert row["driver_class"] == "unknown"
+    assert row["bands"] == [
+        {"hz": 8000, "delta_db": -0.2, "reason": "envelope_fitted"},
+        {"hz": 12000, "delta_db": -6.5, "reason": "envelope_limited_by_class_prior"},
+        {"hz": 16000, "delta_db": -11.0, "reason": "envelope_limited_by_class_prior"},
+    ]
+
+
+def test_a_role_with_no_declared_driver_class_omits_the_key():
+    """Absent, not empty-stringed — the same present/absent discipline
+    ``reason`` uses, so a pre-#4i candidate (or a role ``_candidate_summary``
+    never resolved a class for) renders exactly as before this key existed.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            linearization_outcome="fitted",
+            linearization_octaves={"woofer": {"8000": -0.3, "16000": -2.8}},
+        ),
+    ))
+    row = env["candidate_review"]["linearization_octaves"][0]
+    assert "driver_class" not in row
+
+
 def test_the_browser_and_python_agree_on_the_out_of_band_octave_code():
     """The one cross-language reason literal, pinned (#2638).
 
@@ -2107,6 +2155,50 @@ def test_the_browser_and_python_agree_on_the_out_of_band_octave_code():
     )
     assert match, "the renderer no longer carries a named out-of-band reason code"
     assert match.group(1) == ReasonCode.OUT_OF_BAND.value
+
+
+def test_the_browser_and_python_agree_on_the_class_prior_octave_code():
+    """The second cross-language reason literal, pinned (audit item 4i).
+
+    Same guard shape and the same reason as the out-of-band test above: the
+    renderer decides whether a class-prior-limited band earns a remedy
+    sentence by comparing the band's server-supplied ``reason`` against a
+    literal it cannot import.
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.active_speaker.linearization_envelope import ReasonCode
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR = '([a-z0-9_]+)';", source,
+    )
+    assert match, "the renderer no longer carries a named class-prior reason code"
+    assert match.group(1) == ReasonCode.LIMITED_BY_CLASS_PRIOR.value
+
+
+def test_the_class_prior_remedy_points_at_the_driver_class_declaration_route():
+    """The remedy pointer's route, pinned at the structured level — never the
+    rendered sentence's prose, only the ``href`` string it is built from
+    (audit item 4i; the safety-limits deep-link rows in refusal_copy.py are
+    the mirrored shape, ``{id, label, href}``).
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const CLASS_PRIOR_REMEDY = \{.*?href: '([^']+)',", source, re.DOTALL,
+    )
+    assert match, "the renderer no longer carries a named class-prior remedy href"
+    assert match.group(1) == "/sound/setup/"
 
 
 def test_done_candidate_review_carries_the_alignment_objective():
@@ -5658,6 +5750,52 @@ def test_the_reservation_numbers_ride_the_expert_disclosure():
     # asked to judge a decibel figure.
     assert "15.2" not in RIPPLE_RESERVATION_COPY
     assert "15.0" not in RIPPLE_RESERVATION_COPY
+
+
+def test_the_calibration_reservation_reaches_both_decision_screens():
+    """Audit gauntlet 5a: an accepted MEASURE with no resolved mic
+    calibration says so, in one plain sentence, on the two screens the
+    ripple reservation above owes it to and for the same reason: one is
+    where the household decides, the other is where they are told the
+    speaker is tuned.
+    """
+    review = build_crossover_envelope_v2(
+        _review_status(measure={"calibration_reservation": True})
+    )
+    done = build_crossover_envelope_v2(
+        _done_status(measure={"calibration_reservation": True})
+    )
+    for env in (review, done):
+        texts = [n["text"] for n in env["nudges"]]
+        assert MIC_CALIBRATION_RESERVATION_COPY in texts
+        # ONE sentence, not a lecture — the same 80/20 scope the ripple
+        # reservation's own single-sentence rule follows.
+        assert texts.count(MIC_CALIBRATION_RESERVATION_COPY) == 1
+        reservation = next(
+            n for n in env["nudges"]
+            if n["text"] == MIC_CALIBRATION_RESERVATION_COPY
+        )
+        # `warn`, not `info`: unlike the ripple reading, this one is directly
+        # actionable before the NEXT measurement.
+        assert reservation["severity"] == "warn"
+        assert reservation["code"] == "crossover_v2_mic_calibration_reservation"
+    # The sentence names the concrete surface, never a vague "check your
+    # setup" — the structured fact this pin is actually about.
+    assert "/correction/" in MIC_CALIBRATION_RESERVATION_COPY
+
+
+def test_a_calibrated_capture_says_nothing_about_the_mic_at_all():
+    """No reservation banked means silence — the same counterpart every
+    disclosure needs (mirrors
+    ``test_a_clean_capture_says_nothing_about_ripple_at_all``).
+    """
+    for env in (
+        build_crossover_envelope_v2(_review_status()),
+        build_crossover_envelope_v2(_done_status()),
+    ):
+        assert all(
+            n["text"] != MIC_CALIBRATION_RESERVATION_COPY for n in env["nudges"]
+        )
 
 
 def test_the_expert_line_quotes_the_threshold_the_capture_was_judged_against():

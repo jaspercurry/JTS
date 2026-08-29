@@ -1465,6 +1465,11 @@ def test_check_correction_latest_bundle_warns_without_calibration(
 
     assert r.status == "warn"
     assert "no calibrated mic" in r.detail
+    # Audit gauntlet 5a: the remedy names the concrete surface, not just the
+    # problem — the /correction/ page's Microphone section and its
+    # fetch-by-serial step.
+    assert "/correction/" in r.detail
+    assert "Fetch calibration" in r.detail
 
 
 def test_check_correction_latest_bundle_warns_when_failed(
