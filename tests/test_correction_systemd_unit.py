@@ -7,6 +7,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .test_install_state_group_write import _extract as _extract_bash_function
+
 ROOT = Path(__file__).resolve().parent.parent
 UNIT_PATH = ROOT / "deploy" / "jasper-correction-web.service"
 INSTALL_SH = ROOT / "deploy" / "install.sh"
@@ -59,5 +61,39 @@ def test_install_sh_creates_correction_state_dirs():
         "/var/lib/jasper/correction/sessions",
         "/var/lib/jasper/correction/calibration_mics",
         "/var/lib/jasper/correction/tones",
+        # The active_speaker* trees /sound/ and /correction/ share; must be
+        # created at install time too, or the first root-lane writer mints
+        # them root:root 0700 and locks jasper-web out until the next
+        # deploy's heal_shared_state_modes runs.
+        "/var/lib/jasper/active_speaker",
+        "/var/lib/jasper/active_speaker/sessions",
+        "/var/lib/jasper/active_speaker_captures",
+        "/var/lib/jasper/active_speaker_sweeps",
+        "/var/lib/jasper/active_speaker_stimuli",
+        "/var/lib/jasper/active_speaker_tone_artifacts",
     ]:
         assert path in body
+
+
+def test_install_sh_active_speaker_dirs_match_heal_allowlist():
+    """A prose pointer between install.sh and heal_shared_state_modes
+    doesn't fail CI: reuses the two existing extraction helpers (this
+    module's own install.sh function-body slice, and
+    test_install_state_group_write._extract for the heal's bash source) so a
+    path added to one list and not the other reds here instead of silently
+    reviving the fresh-install lockout bug."""
+    install_body = INSTALL_SH.read_text()
+    func_start = install_body.index("install_camilladsp()")
+    func_end = install_body.index("\n}\n", func_start)
+    install_paths = set(re.findall(
+        r"/var/lib/jasper/active_speaker\S*", install_body[func_start:func_end]
+    ))
+
+    heal_body = _extract_bash_function("heal_shared_state_modes")
+    heal_paths = {
+        p.replace("${STATE_DIR}", "/var/lib/jasper")
+        for p in re.findall(r'"d:2770:(\$\{STATE_DIR\}/active_speaker[^"]*)"', heal_body)
+    }
+
+    assert install_paths, "install_camilladsp() must still list active_speaker* paths"
+    assert install_paths == heal_paths

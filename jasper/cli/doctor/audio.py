@@ -40,6 +40,7 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _active_audio_dac_env,
+    _group_writable_dir,
     _parked_as_bonded_follower,
     _active_audio_dac_id,
     _run,
@@ -710,9 +711,11 @@ def _camilla_configs_writable_result(
     staging fail with ``PermissionError`` and surfaces to the household as
     "could not load the silent active-speaker setup" (the jts3 2026-07-06
     incident). Catch that here instead of at the wizard.
-    """
 
-    import grp
+    Delegates the group/mode predicate to ``_shared._group_writable_dir``
+    (shared with ``correction._not_writable_by_group`` and
+    ``env.check_state_dir`` — this used to be a fourth near-copy of the same
+    stat-and-compare logic)."""
 
     label = "CamillaDSP config dir writable"
     try:
@@ -722,14 +725,10 @@ def _camilla_configs_writable_result(
     except OSError as exc:
         return CheckResult(label, "warn", f"{path}: {exc}")
 
-    try:
-        group_name = grp.getgrgid(st.st_gid).gr_name
-    except (KeyError, OSError):
-        group_name = str(st.st_gid)
+    writable, group_name = _group_writable_dir(st, expected_group=expected_group)
     mode = st.st_mode & 0o7777
-    group_writable = bool(st.st_mode & 0o0020)  # S_IWGRP
     detail = f"{path} mode={mode:04o} group={group_name}"
-    if group_name != expected_group or not group_writable:
+    if not writable:
         return CheckResult(
             label,
             "fail",

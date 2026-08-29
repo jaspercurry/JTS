@@ -964,13 +964,24 @@ install_camilladsp() {
     # Shared correction/test artifacts are written by the correction web flow and
     # by jasper-web's active-speaker commissioning tone path. Keep the tree
     # group-writable for the dropped service users instead of root-only.
+    #
+    # The active_speaker* paths below are the same capture/sweep/tone trees
+    # /sound/ and /correction/ share; this list must stay in sync with
+    # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
+    # the same six paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
         /var/lib/jasper/correction \
         /var/lib/jasper/correction/sweeps \
         /var/lib/jasper/correction/captures \
         /var/lib/jasper/correction/sessions \
         /var/lib/jasper/correction/calibration_mics \
-        /var/lib/jasper/correction/tones
+        /var/lib/jasper/correction/tones \
+        /var/lib/jasper/active_speaker \
+        /var/lib/jasper/active_speaker/sessions \
+        /var/lib/jasper/active_speaker_captures \
+        /var/lib/jasper/active_speaker_sweeps \
+        /var/lib/jasper/active_speaker_stimuli \
+        /var/lib/jasper/active_speaker_tone_artifacts
 
     if [[ ! -x "${CAMILLA_DIR}/camilladsp" ]]; then
         local tmpdir

@@ -4,7 +4,9 @@
 
 """Unit tests for the jasper-doctor correction domain."""
 
+import grp
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +19,11 @@ from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
-from .doctor_test_support import _registered_check_names, _write_identity_env
+from .doctor_test_support import (
+    _pretend_group_is_jasper,
+    _registered_check_names,
+    _write_identity_env,
+)
 
 
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
@@ -240,6 +246,83 @@ def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
     r = doctor.check_correction_state_dirs()
     assert r.status == "warn"
     assert "missing" in r.detail
+
+
+# ---------- nanny-audit item 10: os.access(W_OK) always reports root's own
+# access, not the dropped jasper-web writer's — a root:root 0700 dir (the
+# fresh-install bug: nothing minted these before this same box's fix in
+# install.sh, so the first root-lane writer created them with a bare mkdir)
+# read as "ok" while jasper-web was locked out.
+
+
+def _own_group() -> str:
+    return grp.getgrgid(os.getgid()).gr_name
+
+
+@pytest.mark.parametrize(
+    "mode, group, expect_flagged",
+    [
+        (0o2770, None, False),
+        (0o2750, None, True),  # the exact regression: group-write stripped
+        # setgid lost (2770 -> 0770): a root-run process creating a NEW
+        # subdirectory later (e.g. a session folder) would land it
+        # group-root, not group-jasper, locking the non-root arm out of it.
+        (0o0770, None, True),
+        (0o2770, "jts-no-such-group-xyz", True),
+        (0o0700, None, True),  # the fresh-install bug: no group bits at all
+    ],
+    ids=[
+        "group-writable", "group-readonly", "setgid-lost", "wrong-group",
+        "owner-only-0700",
+    ],
+)
+def test_not_writable_by_group_verdicts(tmp_path, mode, group, expect_flagged):
+    d = tmp_path / "sweeps"
+    d.mkdir()
+    os.chmod(d, mode)
+
+    flagged = doctor.correction._not_writable_by_group(
+        [d], expected_group=group or _own_group()
+    )
+
+    assert (str(d) in flagged) is expect_flagged
+
+
+def test_check_correction_state_dirs_fails_when_locked_out_by_mode(
+    monkeypatch, tmp_path
+):
+    """os.access(p, os.W_OK) is always True for jasper-doctor's own root
+    caller regardless of a directory's actual mode, so it cannot see that the
+    dropped jasper-web writer is locked out. The fix must FAIL and name the
+    locked-out service user instead of the caller's own (irrelevant) access.
+
+    _pretend_group_is_jasper pins the group match so MODE ALONE (0700 — no
+    group write/search bits, the fresh-install shape) is what fails this,
+    not an incidental group mismatch with the dev/CI box's own group
+    (without it, this test would still pass with the mode arm deleted
+    entirely, since a plain tmp_path dir's real group is never "jasper" on a
+    dev machine — that would make it dishonest about what it pins). The
+    group-mismatch and setgid-loss arms are covered directly by the
+    parametrized test_not_writable_by_group_verdicts above.
+
+    CheckResult carries no structured field for "which identity is locked
+    out", so `"jasper-web" in r.detail` stays a detail-string assertion —
+    the same convention this module already uses for other identifying
+    substrings (e.g. "socket active" above)."""
+    _pretend_group_is_jasper(monkeypatch)
+    root = tmp_path / "correction"
+    root.mkdir()
+    os.chmod(root, 0o700)
+    for name in ("sweeps", "captures", "sessions", "calibration_mics"):
+        d = root / name
+        d.mkdir()
+        os.chmod(d, 0o700)
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
+
+    r = doctor.check_correction_state_dirs()
+
+    assert r.status == "fail"
+    assert "jasper-web" in r.detail
 
 
 def test_check_correction_uploaded_calibration_sign_flags_only_uploads(

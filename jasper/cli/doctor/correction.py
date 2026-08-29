@@ -19,7 +19,7 @@ import time
 from datetime import datetime as _datetime, timezone
 from pathlib import Path
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _group_writable_dir, _run
 from ...active_speaker.environment import (
     camilla_statefile_path,
     read_camilla_statefile_config_path,
@@ -236,6 +236,42 @@ def check_correction_https_assets() -> CheckResult:
         f"https://127.0.0.1/assets/app.css → HTTP {status} (expected 200); redeploy.",
     )
 
+# jasper-correction-web and jasper-web (WS1 drop) both run as this user; see
+# privsep.MANIFEST. Named here so a writability failure tells the operator
+# WHO is locked out, not just that the doctor's own check succeeded.
+_CORRECTION_SERVICE_USER = "jasper-web"
+
+
+def _not_writable_by_group(
+    paths: list[Path], *, expected_group: str = "jasper"
+) -> list[str]:
+    """Which of ``paths`` (already confirmed to be existing directories) a
+    non-root, ``expected_group``-member service user could NOT write into.
+
+    ``os.access(p, os.W_OK)`` cannot answer this: ``jasper-doctor`` runs as
+    root, and ``os.access`` reports every path writable to the *caller* — root
+    can write regardless of a directory's actual mode — so a root:root 0700
+    directory (the fresh-install bug this guards) read as "ok" while the
+    dropped ``jasper-web`` writer was locked out.
+
+    Delegates the actual predicate to ``_shared._group_writable_dir`` (shared
+    with ``audio._camilla_configs_writable_result`` and
+    ``env.check_state_dir`` — this used to be a third near-copy of the same
+    stat-and-compare logic); see its docstring for the write+search+setgid
+    reasoning. ``privsep`` / ``secret_compartments`` document and solve the
+    identical root-caller blind spot on the read side."""
+    not_writable: list[str] = []
+    for p in paths:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        writable, _ = _group_writable_dir(st, expected_group=expected_group)
+        if not writable:
+            not_writable.append(str(p))
+    return not_writable
+
+
 @doctor_check(order=27, group="correction")
 def check_correction_state_dirs() -> CheckResult:
     root = _correction_root()
@@ -248,7 +284,7 @@ def check_correction_state_dirs() -> CheckResult:
     ]
     missing = [str(p) for p in expected if not p.exists()]
     not_dirs = [str(p) for p in expected if p.exists() and not p.is_dir()]
-    not_writable = [str(p) for p in expected if p.is_dir() and not os.access(p, os.W_OK)]
+    not_writable = _not_writable_by_group([p for p in expected if p.is_dir()])
     if not_dirs:
         return CheckResult(
             "correction state dirs", "fail",
@@ -257,7 +293,7 @@ def check_correction_state_dirs() -> CheckResult:
     if not_writable:
         return CheckResult(
             "correction state dirs", "fail",
-            "not writable: " + ", ".join(not_writable),
+            f"not writable by {_CORRECTION_SERVICE_USER}: " + ", ".join(not_writable),
         )
     if missing:
         return CheckResult(
