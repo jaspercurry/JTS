@@ -793,10 +793,10 @@ def test_linearization_rejects_freq_at_or_above_nyquist(bad_freq):
     not a proof). 25000.0 is not an arbitrary probe: it is
     ``ceiling_hz * 1.25`` for the reference-tier confidence ceiling the
     2026-08-29 horn-droop correction ruling moved to 20 kHz -- exactly the
-    corner ``linearization_fit._hf_continuation_stage`` would have emitted for
-    a ``metal_dome`` tweeter before its own Nyquist skip
-    (``_HF_TAPER_NYQUIST_HZ``) was added. This guard must refuse it on its
-    own, whether or not that upstream skip stays correct."""
+    corner ``linearization_fit._hf_continuation_stage`` designs for a
+    ``metal_dome`` tweeter before its own Nyquist clamp
+    (``_HF_TAPER_NYQUIST_HZ``) pulls it back. This guard must refuse it on its
+    own, whether or not that upstream clamp stays correct."""
     preset = _preset()
     with pytest.raises(ActiveSpeakerConfigError, match="Nyquist"):
         emit_active_speaker_baseline_config(

@@ -1456,8 +1456,8 @@ def _validated_biquad_entry(
     still says which stage refused.
 
     The Nyquist refusal (``freq >= sample_rate / 2``) is this module's OWN
-    proof, independent of whatever produced the record: a fit-engine skip
-    condition (``linearization_fit._HF_TAPER_NYQUIST_HZ``) is a design-time
+    proof, independent of whatever produced the record: a fit-engine placement
+    bound (``linearization_fit._HF_TAPER_NYQUIST_HZ``) is a design-time
     choice about what that ONE stage should emit, not a guarantee about every
     biquad this function will ever see — "the emitter would never write this"
     is not a proof (the doctrine `branch_chain.py` already states for exactly
