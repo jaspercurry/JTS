@@ -175,8 +175,13 @@ def pose_of(record: Mapping[str, Any]) -> CapturePose:
     ``vertical_deg`` reads 0 for a record banked before the field existed, and
     that is a recovery rather than a guess: every capture this bank could hold
     from before it was taken at mark height, because nothing could state any
-    other elevation. ``bool`` is rejected before ``int`` because it subclasses
-    it, so a hand-edited ``true`` cannot read back as 1° up.
+    other elevation.
+
+    **Whole degrees only, the same value ``PositionGeometry`` will accept.** A
+    float is not truncated into a neighbouring pose — it is not an elevation
+    this tree can have written, so it reads as "no elevation stated" exactly as
+    a missing key does. ``bool`` is rejected before ``int`` because it
+    subclasses it, so a hand-edited ``true`` cannot read back as 1° up.
     """
     degrees = record.get("position_deg")
     level = record.get("stimulus_dbfs")
@@ -186,9 +191,9 @@ def pose_of(record: Mapping[str, Any]) -> CapturePose:
         position_deg=None if degrees is None else int(degrees),
         stimulus_dbfs=None if level is None else float(level),
         vertical_deg=(
-            0
-            if isinstance(elevation, bool) or not isinstance(elevation, (int, float))
-            else int(elevation)
+            elevation
+            if isinstance(elevation, int) and not isinstance(elevation, bool)
+            else 0
         ),
     )
 

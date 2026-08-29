@@ -293,6 +293,26 @@ def test_every_unbuilt_mic_only_regime_is_a_named_stub(
     assert code in STUB_CODES
 
 
+def test_the_elevation_hole_is_disclosed_by_the_value_not_by_the_axis_word():
+    """R-5a is owed for any spec that banks an elevation, on either axis.
+
+    The two angles are orthogonal, so a HORIZONTAL walk raised off mark height
+    banks exactly the evidence a vertical walk does. Keying the disclosure on
+    the axis word alone would let a compound spec bank an unanalysed elevation
+    and report nothing pending.
+    """
+    compound = MeasureSpec(
+        kind=MEASURE_KIND_BASELINE, positions=(22,), vertical_deg=22,
+    )
+
+    assert [s.code for s in stubbed_capabilities(compound)] == [
+        VERTICAL_AXIS_NOT_IMPLEMENTED
+    ]
+    assert stubbed_capabilities(
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,))
+    ) == ()
+
+
 def test_the_stub_sentence_renders_the_rulings_canonical_example():
     """The one wording pin, and the only prose assertion in this file.
 
@@ -364,6 +384,13 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         {"kind": MEASURE_KIND_BASELINE, "position_axis": "diagonal"},
         {"kind": MEASURE_KIND_BASELINE, "vertical_deg": 7.5},
         {"kind": MEASURE_KIND_BASELINE, "vertical_deg": True},
+        # A vertical walk commands no horizontal bearing, so it states none —
+        # the invariant every pooled bearing set downstream relies on.
+        {
+            "kind": MEASURE_KIND_BASELINE,
+            "position_axis": POSITION_AXIS_VERTICAL,
+            "positions": (15,),
+        },
         {"kind": MEASURE_KIND_BASELINE, "positions": (22.5,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (True,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (0, 22), "pose_prompts": ("a",)},
@@ -1390,8 +1417,9 @@ def _pose(record: Mapping[str, Any]) -> CapturePose:
 
 
 @pytest.mark.parametrize(
-    "banked", [{}, {"vertical_deg": None}, {"vertical_deg": True}],
-    ids=["absent", "null", "not-a-number"],
+    "banked",
+    [{}, {"vertical_deg": None}, {"vertical_deg": True}, {"vertical_deg": 7.6}],
+    ids=["absent", "null", "not-a-number", "not-whole"],
 )
 def test_a_record_that_states_no_elevation_reads_back_at_mark_height(banked):
     """A bundle banked before the field existed pairs exactly as it always did.
@@ -1402,8 +1430,10 @@ def test_a_record_that_states_no_elevation_reads_back_at_mark_height(banked):
     banked today at the same bearing — otherwise reading an old bank would
     orphan every baseline in it.
 
-    ``bool`` is rejected before ``int`` because it subclasses it: a hand-edited
-    ``true`` must not read back as 1° up.
+    A value this tree cannot have written reads the same way rather than being
+    coerced into a neighbouring pose: ``true`` must not become 1° up, and 7.6
+    must not become 7 — ``PositionGeometry`` refuses both, so a reader that
+    accepted them would disagree with the writer about what the bank holds.
     """
     old = pose_of({"position_axis": "horizontal", "position_deg": 22, **banked})
 

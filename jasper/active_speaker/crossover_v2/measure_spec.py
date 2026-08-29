@@ -307,6 +307,19 @@ class MeasureSpec:
                     "a pose bearing is a whole number of degrees, got "
                     f"{bearing!r}"
                 )
+        if self.positions and self.position_axis == POSITION_AXIS_VERTICAL:
+            # Two declared fields saying incompatible things, checked together
+            # for the reason ``polarity``/``inverted_role`` are: ``positions``
+            # are HORIZONTAL bearings, and nothing on this rig commands one on
+            # a vertical walk. Not an axis block — ``vertical_deg`` is free on
+            # either axis — but the invariant every downstream reader is told
+            # to rely on: a vertical walk's takes carry no bearing, which is
+            # what keeps them out of every pooled bearing set.
+            raise ValueError(
+                f"a {POSITION_AXIS_VERTICAL!r} walk commands no horizontal "
+                f"bearing, so it states no positions; got {self.positions!r}. "
+                "State where the microphone was raised to with vertical_deg"
+            )
         if self.pose_prompts and len(self.pose_prompts) != len(self.positions or (0,)):
             raise ValueError(
                 "pose_prompts must name every position or none: "
@@ -397,6 +410,9 @@ def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
         codes.append(REVERSE_NULL_DEPTH_NOT_IMPLEMENTED)
     if spec.level_ladder_dbfs:
         codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)
-    if spec.position_axis == POSITION_AXIS_VERTICAL:
+    if spec.position_axis == POSITION_AXIS_VERTICAL or spec.vertical_deg:
+        # Keyed on the ELEVATION, not on the axis word: the two are orthogonal,
+        # so a horizontal walk raised off mark height banks the same unanalysed
+        # evidence a vertical walk does and is owed the same disclosure.
         codes.append(VERTICAL_AXIS_NOT_IMPLEMENTED)
     return tuple(_STUBS[code] for code in codes)

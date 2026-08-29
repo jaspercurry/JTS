@@ -330,13 +330,22 @@ class CloudPositionPrompt:
     #: drift this table's derived ``wide`` property exists to avoid. Set by
     #: :func:`_pose` from the row's own ``side`` bearing, never by hand.
     lateral_sign: int = 0
-    #: Which side of mark HEIGHT a VERTICAL row sits on: ``-1`` BELOW, ``+1``
-    #: ABOVE, ``0`` for a row that asks for no raise or lower. The elevation
-    #: twin of ``lateral_sign``, and machine-readable for the same reason: the
-    #: only other statement of the direction is the word "ABOVE"/"BELOW" inside
-    #: ``headline``. Set by :func:`_pose` from the row's own ``updown`` bearing,
-    #: never by hand.
+    #: Which side of mark HEIGHT a row sits on: ``-1`` BELOW, ``+1`` ABOVE,
+    #: ``0`` for a row that asks for no raise or lower. The elevation twin of
+    #: ``lateral_sign``, and machine-readable for the same reason: the only
+    #: other statement of the direction is the word "ABOVE"/"BELOW" inside
+    #: ``headline``. Set by :func:`_pose` from the row's own ``updown`` bearing.
     vertical_sign: int = 0
+    #: How far above (or below) mark height the row asks for, in centimetres —
+    #: the elevation twin of ``offset_cm``, and a SEPARATE field rather than a
+    #: re-reading of it because a COMPOUND row moves two different distances at
+    #: once (the second geometry-retake rung goes 75 cm sideways AND 30 cm up).
+    #: One shared magnitude would have to state one of them wrongly.
+    #:
+    #: ``0`` means the row asks for no raise, which is a true statement about
+    #: every lateral row. A row that DOES ask for one must set it, or its record
+    #: claims mark height for a pose the operator raised.
+    vertical_offset_cm: float = 0.0
 
     @property
     def wide(self) -> bool:
@@ -407,6 +416,7 @@ def _pose(
         raise ValueError(
             f"cloud position role must be one of {POSITION_ROLES}, got {role!r}"
         )
+    vertical_sign = _VERTICAL_SIGNS.get(str(bearing.get("updown") or ""), 0)
     return CloudPositionPrompt(
         headline=template.format(
             d=format_position_distance(offset_cm), **bearing
@@ -415,11 +425,13 @@ def _pose(
         offset_cm=offset_cm,
         role=role,
         # Derived from the row's OWN bearing word, so the sign and the sentence
-        # cannot disagree. A row supplies at most one of the two words, and the
-        # axis it says nothing about keeps the neutral 0: a lateral row moves
-        # at mark height, and a vertical row is back over the mark.
+        # cannot disagree. Every table row names exactly one direction word, so
+        # its single ``offset_cm`` is the one displacement it moved, and the
+        # axis it says nothing about keeps the neutral 0: a lateral row moves at
+        # mark height, and a vertical row is back over the mark.
         lateral_sign=_LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0),
-        vertical_sign=_VERTICAL_SIGNS.get(str(bearing.get("updown") or ""), 0),
+        vertical_sign=vertical_sign,
+        vertical_offset_cm=offset_cm if vertical_sign else 0.0,
     )
 
 
@@ -697,16 +709,11 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
 def position_elevation_deg(prompt: CloudPositionPrompt) -> int:
     """The signed ELEVATION of one pose above mark height, in WHOLE degrees.
 
-    :func:`position_angle_deg`'s twin, deriving the other angle from the same
-    ``offset_cm`` against the same :data:`MARK_DISTANCE_M` — a vertical row's
-    ``offset_cm`` is its RISE above (or drop below) the mark, exactly as a
-    lateral row's is its sideways displacement, so one arithmetic serves both.
-
-    **That sharing holds only because a row names at most one direction word.**
-    Every table row is either lateral or vertical, so its single ``offset_cm``
-    is unambiguously the one displacement it moved. A compound row — ``side``
-    AND ``updown`` — would need two, and would have to carry them before either
-    angle here could be read.
+    :func:`position_angle_deg`'s twin: the same ``atan(displacement / mark
+    distance)`` against the same :data:`MARK_DISTANCE_M`, over the row's OWN
+    ``vertical_offset_cm``. It reads that field rather than ``offset_cm``
+    because a compound row moves both ways at once and the two distances differ
+    — see :attr:`CloudPositionPrompt.vertical_offset_cm`.
 
     **Total, and it refuses nothing.** A row that asks for no raise or lower
     signs ``0``, and 0 is TRUE of it: the pose is at mark height. That is why
@@ -721,7 +728,7 @@ def position_elevation_deg(prompt: CloudPositionPrompt) -> int:
     """
     if prompt.vertical_sign == 0:
         return 0
-    radians = math.atan2(float(prompt.offset_cm) / 100.0, MARK_DISTANCE_M)
+    radians = math.atan2(float(prompt.vertical_offset_cm) / 100.0, MARK_DISTANCE_M)
     return int(round(prompt.vertical_sign * math.degrees(radians)))
 
 
@@ -843,6 +850,25 @@ CLOUD_GEOMETRY_RETRY_PROMPTS: tuple[str, ...] = (
     f"mark and {format_position_distance(WIDE_OFFSET_MIN_CM)} ABOVE mark "
     "height.",
 )
+
+#: The RISE each retake rung asks for, one per rung, in centimetres — the
+#: machine-readable half of the sentences above. Rung 2 is the tree's one
+#: COMPOUND pose (sideways AND up), and it is built outside :func:`_pose`, so
+#: without this its record would state mark height for a microphone the
+#: household was told to raise. Read straight into
+#: :attr:`CloudPositionPrompt.vertical_offset_cm` by the flow's
+#: ``_prompt_shown_for``, so the number and the sentence come from one place.
+CLOUD_GEOMETRY_RETRY_RISE_CM: tuple[float, ...] = (0.0, WIDE_OFFSET_MIN_CM)
+
+# Import-time guard in this file's own register: a third rung added to the copy
+# above without a rise beside it would silently bank mark height for whatever
+# it asks for.
+if len(CLOUD_GEOMETRY_RETRY_RISE_CM) != len(CLOUD_GEOMETRY_RETRY_PROMPTS):
+    raise ValueError(
+        "every geometry-retake rung must state the rise it asks for: "
+        f"{len(CLOUD_GEOMETRY_RETRY_PROMPTS)} rungs, "
+        f"{len(CLOUD_GEOMETRY_RETRY_RISE_CM)} rises"
+    )
 
 
 def _min_positions_for_two_wide_offsets(
