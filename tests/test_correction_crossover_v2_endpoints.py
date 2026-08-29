@@ -2808,6 +2808,217 @@ def test_a_take_with_no_play_behind_it_names_no_provenance(
     assert "provenance" not in banked
 
 
+#: The frames the page says it recorded, against the ``RECEIVED_FRAMES`` the
+#: host decodes below: one render quantum short of arriving, which is the
+#: 2026-08-03 loss shape and the reason the ledger exists.
+DECLARED_FRAMES = 4800
+RECEIVED_FRAMES = DECLARED_FRAMES - 128
+
+
+def _lossy_page_report():
+    """A page report the host's own count disagrees with — a real defect."""
+    return {
+        "frames": DECLARED_FRAMES, "encoded_frames": DECLARED_FRAMES,
+        "block_gaps": 0, "block_gap_frames": 0, "zero_run_count": 0,
+    }
+
+
+def _analysis_double(epsilon_ppm=1.25):
+    """An analysis the REAL summary and the REAL ledger can both be run over.
+
+    Deliberately not a ``ProgramAnalysis``: what these pins are about is the
+    CARRY, and ``analysis_diagnostic_summary`` is duck-typed by contract (its
+    own docstring names this file's stubbing as the reason). The numbers it
+    reads are real ones, so the block it produces is really computed rather
+    than a literal a stub handed back.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        phase=PHASE_MEASURE,
+        drift=SimpleNamespace(
+            epsilon_ppm=epsilon_ppm,
+            max_residual_samples=0.5,
+            repeat_level_delta_db=0.25,
+            glitch_detected=False,
+            glitch_inputs=(),
+            discontinuity_samples=0.0,
+            discontinuity_after_segment="",
+            per_role_epsilon_ppm={},
+        ),
+    )
+
+
+def _bank_one_analyzed_take(
+    tmp_path, monkeypatch, relay, *, report, epsilon_ppm=1.25, index=9,
+):
+    """Analyze one capture through the REAL seams, then bank it. Returns both.
+
+    Driven through ``bind_v2_stage_seams`` for the reason the provenance pins
+    above give: the carry is a coupling BETWEEN two seams, so a pin that built
+    the two binders itself would never notice the day the binder stopped
+    handing them the same slot.
+    """
+    from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    analysis = _analysis_double(epsilon_ppm=epsilon_ppm)
+
+    def _analyze_program_capture(
+        _program, samples, _rate, *, capture_report=None, **_kw
+    ):
+        # The REAL reconciliation, over the frames this host really decoded
+        # and the counters the page really reported — the one number in the
+        # block set that a stub could not stand in for.
+        analysis.frame_ledger = reconcile_capture_frames(
+            capture_report, received_frames=len(samples),
+        )
+        return analysis
+
+    monkeypatch.setattr(
+        pa_mod, "analyze_program_capture", _analyze_program_capture,
+    )
+
+    _bank, refs, bundle_dir, store = _retention_bundle(tmp_path, relay)
+    seams = _stage_seams_over(store, relay, refs, CaptureProvenanceRecorder())
+    result = _FakeResult(capture_integrity=report)
+    # One quantum short of what the page declared: the host's count is the
+    # WAV's own, so the ledger below reconciles two real numbers.
+    result.wav = _mono_wav_bytes(RECEIVED_FRAMES)
+    seams.analyze(
+        build_verify_program(FC_HZ, sweep_s=0.5),
+        result,
+        MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(),
+        phase=PHASE_MEASURE,
+    )
+    record = _entry_baseline_take(index=index)
+    assert seams.bank_take(CaptureResult(wav=b"analyzed-bytes"), record)
+    banked = json.loads(
+        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
+         / relay / "positions" / f"{record['take_id']}.json").read_text()
+    )
+    return banked, analysis
+
+
+def test_a_banked_take_carries_the_three_blocks_the_analysis_computed(
+    tmp_path, monkeypatch,
+):
+    """The data-loss window the dump ring's death opened, closed.
+
+    ``diagnostic``, ``capture_integrity`` and ``frame_ledger`` were the ring
+    sidecar's, and #3250 deleted the ring — since then the analyze seam has
+    computed all three and dropped them, so a round banked from here on could
+    not be graded on frame loss at all. The banked record is the only
+    retention path there is, so it carries them.
+
+    Real content, not presence: the ledger is the REAL
+    ``reconcile_capture_frames`` over the frames this host decoded against the
+    counters the page reported, and it names the losing hop. A carry that
+    passed the blocks through unchanged from some earlier capture, or wrote a
+    placeholder, fails on those numbers rather than on a key check.
+    """
+    from jasper.audio_measurement.frame_ledger import LOST_AT_ENCODER_TO_HOST
+
+    report = _lossy_page_report()
+    banked, analysis = _bank_one_analyzed_take(
+        tmp_path, monkeypatch, "cap_blocks_session", report=report,
+    )
+
+    # The recorder's own counters, verbatim — the checker's read set.
+    assert banked["capture_integrity"] == report
+    # The reconciliation, and the hop it names: the page encoded a quantum
+    # this host never received, so the loss is real and attributed.
+    ledger = banked["frame_ledger"]
+    assert ledger == analysis.frame_ledger.to_dict()
+    assert ledger["encoded_frames"] == DECLARED_FRAMES
+    assert ledger["received_frames"] == RECEIVED_FRAMES
+    assert ledger["lost_at"] == [LOST_AT_ENCODER_TO_HOST]
+    # The flat numeric account, computed over this analysis and no other.
+    diagnostic = banked["diagnostic"]
+    assert diagnostic["phase"] == PHASE_MEASURE
+    assert diagnostic["epsilon_ppm"] == 1.25
+    assert diagnostic["frames_received"] == RECEIVED_FRAMES
+
+
+def test_an_unmeasurable_diagnostic_never_costs_the_whole_take_record(
+    tmp_path, monkeypatch,
+):
+    """A ``NaN`` in one block drops that field, never the record.
+
+    The evidence store canonicalises with ``allow_nan=False`` and the
+    retention seam fail-softs, so one unmeasurable number reaching the record
+    unscrubbed would refuse the write and lose the take entirely — the take
+    id, the digest, the pose, everything — over a diagnostic. That is worse
+    than the loss this change exists to stop, so the field is dropped and
+    reads as absent while the record banks.
+    """
+    banked, _analysis = _bank_one_analyzed_take(
+        tmp_path, monkeypatch, "cap_nan_session",
+        report=_lossy_page_report(), epsilon_ppm=float("nan"),
+    )
+
+    assert "epsilon_ppm" not in banked["diagnostic"]
+    # The record itself is intact, blocks and all.
+    assert banked["diagnostic"]["phase"] == PHASE_MEASURE
+    assert banked["frame_ledger"]["received_frames"] == RECEIVED_FRAMES
+    assert banked["take_id"]
+
+
+def test_a_take_with_no_analyze_behind_it_carries_no_blocks(
+    tmp_path, monkeypatch,
+):
+    """Single-shot, for the reason the provenance drain already gives.
+
+    A second bank with no analyze between is a capture the analyze seam
+    cannot speak for. Stale blocks on a write-once forensic record are worse
+    than absent ones: absent is visibly absent, where a stale ``frame_ledger``
+    would credit this take with another capture's frame accounting.
+    """
+    from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    monkeypatch.setattr(
+        pa_mod, "analyze_program_capture",
+        lambda *_a, **_kw: _analysis_double(),
+    )
+    _bank, refs, bundle_dir, store = _retention_bundle(
+        tmp_path, "cap_no_analyze_session",
+    )
+    seams = _stage_seams_over(
+        store, "cap_no_analyze_session", refs, CaptureProvenanceRecorder(),
+    )
+    seams.analyze(
+        build_verify_program(FC_HZ, sweep_s=0.5),
+        _FakeResult(),
+        MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(),
+        phase=PHASE_MEASURE,
+    )
+    seams.bank_take(CaptureResult(wav=b"first"), _entry_baseline_take(index=9))
+
+    second = _entry_baseline_take(index=10)
+    assert seams.bank_take(CaptureResult(wav=b"second"), second)
+
+    banked = json.loads(
+        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
+         / "cap_no_analyze_session" / "positions" / f"{second['take_id']}.json"
+         ).read_text()
+    )
+    assert not {"diagnostic", "capture_integrity", "frame_ledger"} & set(banked)
+
+
 @pytest.mark.parametrize(
     "phase", [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
 )
