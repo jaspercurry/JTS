@@ -2354,6 +2354,13 @@ built when the session adopts the walk — so `--polarity inverted` with no
 staged without the pair at all is a normal-polarity walk: the keys are
 additive and the schema version did not move.
 
+**An inverted walk needs a WIRED session** (`walk_polarity_needs_wired`). The
+sign flip rides the engine's MEASURE leg, and only the wired source binds one —
+the Pi's own microphone records what the Pi plays. Every other source runs
+MEASURE on the flow leg, which has no spec and would play the ordinary graph,
+so the walk refuses rather than banking a normal capture under a record that
+says `inverted`.
+
 `stage` refuses while a measurement session already holds the speaker, read off
 the durable session-volume state — the one cross-process fact, since the
 correction web's own relay slot and measurement interlock are module-globals a
@@ -2397,7 +2404,7 @@ Read the journal, not the code, to find out what happened:
 | `crossover_v2_angle_walk_refused` | the slug, and the arithmetic when it is a capacity refusal |
 | `crossover_v2_lateral_walk_closed` | `session_id`, `consumer`, `planned`, `captured`, `mark_return_drift_db` — fires on every lateral walk; publishes nothing else |
 
-**Seven refusals.** Every one REFUSES THE OPEN
+**Eight refusals.** Every one REFUSES THE OPEN
 ([ADR-0006](adr/0006-staged-walk-refuses-the-open.md)) rather than opening the
 session in its ordinary shape, and the document is consumed — except on the
 spool's two unreadable arms, which deliberately do not consume so a permissions
@@ -2413,6 +2420,7 @@ happened; do not assume it.
 | `walk_lateral_group_already_planned` | the session already walks a lateral group |
 | `walk_stop_no_longer_valid` | a banked stop no longer satisfies the seam (a hand-edited angle); the detail carries the seam's own sentence |
 | `walk_polarity_not_accepted` | the walk's `(polarity, inverted_role)` pair is not one `MeasureSpec` accepts — either half alone is refused; the detail carries the spec's own sentence |
+| `walk_polarity_needs_wired` | the walk asks for a sign-flipped branch and this session's capture source is not `wired` — only wired binds the engine MEASURE leg the flip rides; the detail names the source |
 
 The spool's own slugs (`angle_request_spool_*`, `measurement_session_already_live`)
 reach the same journal line, so this table is the take's half, not the whole

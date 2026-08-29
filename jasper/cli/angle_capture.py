@@ -384,7 +384,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "how the session's design-axis MEASURE capture rides: normal, or "
             "inverted with --inverted-role naming the branch flipped (the "
-            "reverse-null; one act at one place, so it is not per angle)"
+            "reverse-null; one act at one place, so it is not per angle). "
+            "Needs a WIRED session: only that source plays MEASURE through "
+            "the engine leg, so an inverted walk refuses any other"
         ),
     )
     parser.add_argument(

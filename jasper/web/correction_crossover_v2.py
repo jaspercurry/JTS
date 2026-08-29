@@ -2055,6 +2055,7 @@ def _take_staged_angle_walk(
     base_entries: int,
     lateral_group_present: bool,
     plans_cloud_group: bool,
+    capture_source: str,
 ) -> tuple[tuple[Any, ...], str, Any] | None:
     """This session's staged angle walk as ``(poses, consumer, spec)``, or ``None``.
 
@@ -2063,7 +2064,7 @@ def _take_staged_angle_walk(
 
     **A staged walk this session cannot honour REFUSES THE OPEN**
     (:class:`CrossoverV2Refused`), with the producing module's own slug in the
-    sentence. The four refusal classes are the spool's ``AngleRequestRefused``,
+    sentence. The four refusal classes it CATCHES are the spool's ``AngleRequestRefused``,
     the seam's ``LateralWalkRefused``, the bare ``CrossoverV2FlowError`` the
     spool re-raises for a banked stop that no longer satisfies the seam's
     contract (a hand-edited angle), which that module deliberately does not
@@ -2090,6 +2091,14 @@ def _take_staged_angle_walk(
     refuses the open here, in the spec's own sentence, rather than reaching a
     capture callback as a 500.
 
+    ``capture_source`` is read for ONE question: only a wired session binds the
+    engine MEASURE leg (:func:`_bind_engine_measure_leg` returns ``None`` with
+    no local capture half), and every other source runs MEASURE on the flow
+    leg, which has no ``spec`` and would play the ordinary graph. So a walk
+    asking for a sign-flipped branch on a non-wired source is one this session
+    cannot honour — it refuses, rather than banking a normal capture under a
+    record that says ``inverted`` and a journal line that says so too.
+
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
     permissions mistake refuses every session until it is fixed rather than
@@ -2106,6 +2115,7 @@ def _take_staged_angle_walk(
     """
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
+        WALK_POLARITY_NEEDS_WIRED,
         WALK_POLARITY_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
@@ -2124,7 +2134,10 @@ def _take_staged_angle_walk(
     from jasper.active_speaker.crossover_v2.journey import (
         LATERAL_CONSUMER_FORWARD_MODEL,
     )
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.active_speaker.crossover_v2.measure_spec import (
+        MeasureSpec,
+        inverted_roles_for,
+    )
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2177,6 +2190,15 @@ def _take_staged_angle_walk(
         )
     except ValueError as exc:
         raise refused(WALK_POLARITY_NOT_ACCEPTED, str(exc)) from exc
+    if inverted_roles_for(measure_spec) and capture_source != SOURCE_WIRED:
+        # Asked through the ONE translation rather than by re-reading the
+        # polarity word, so "does anything ride flipped" keeps a single owner.
+        raise refused(
+            WALK_POLARITY_NEEDS_WIRED,
+            "a reverse-polarity capture plays through the engine MEASURE leg, "
+            f"which only a {SOURCE_WIRED} session binds; this session's "
+            f"capture source is {capture_source!r}",
+        )
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
@@ -6425,6 +6447,7 @@ def prepare_v2_session(
             base_entries=len(stage1_index_phase),
             lateral_group_present=include_lateral,
             plans_cloud_group=include_cloud_measure,
+            capture_source=capture_source,
         )
         lateral_prompts: tuple[Any, ...] | None = None
         lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR

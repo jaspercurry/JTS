@@ -30,6 +30,10 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.capture_source import (
+    SOURCE_RELAY,
+    SOURCE_WIRED,
+)
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     MEASURE_KIND_CANDIDATE,
@@ -86,13 +90,14 @@ def _arm_shape():
 
 def _take(
     shape=None, *, base_entries=3, lateral_group_present=False,
-    plans_cloud_group=False,
+    plans_cloud_group=False, capture_source=SOURCE_WIRED,
 ):
     return v2host._take_staged_angle_walk(
         shape if shape is not None else _hand_shape(),
         base_entries=base_entries,
         lateral_group_present=lateral_group_present,
         plans_cloud_group=plans_cloud_group,
+        capture_source=capture_source,
     )
 
 
@@ -437,6 +442,37 @@ def test_a_one_sided_polarity_refuses_the_open_in_the_specs_own_words(slot, capl
     assert f"reason={ac.WALK_POLARITY_NOT_ACCEPTED}" in line
     assert "consumed=true" in line and "session_continues=false" in line
     assert spool.staged_angle_request_pending() is False
+
+
+def test_an_inverted_walk_refuses_a_source_that_cannot_play_the_flip(slot, caplog):
+    """Only a WIRED session binds the engine MEASURE leg, so only a wired
+    session can play a sign flip.
+
+    Every other source runs MEASURE on the flow leg, which has no spec and
+    plays the ordinary graph — so adopting the walk there would bank a normal
+    capture under a record that says ``inverted``, and journal
+    ``polarity=inverted`` for a walk in which nothing inverted played. It
+    refuses instead, and NOTHING is journaled as taken.
+    """
+    spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
+    with caplog.at_level(logging.WARNING):
+        sentence = _refused(capture_source=SOURCE_RELAY)
+
+    assert ac.WALK_POLARITY_NEEDS_WIRED in sentence
+    line, = _events(caplog)
+    assert f"reason={ac.WALK_POLARITY_NEEDS_WIRED}" in line
+    assert "crossover_v2_angle_walk_taken" not in line
+    assert spool.staged_angle_request_pending() is False
+
+    # The refusal is the SOURCE's and only the source's: the same walk on a
+    # wired session is taken…
+    spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
+    assert _take(capture_source=SOURCE_WIRED) is not None
+
+    # …and a normal walk is untouched by the question, because nothing rides
+    # flipped and there is nothing the flow leg cannot play.
+    spool.stage_angle_request(ac.per_driver_at([0]))
+    assert _take(capture_source=SOURCE_RELAY) is not None
 
 
 # --- one take, four surfaces --------------------------------------------------

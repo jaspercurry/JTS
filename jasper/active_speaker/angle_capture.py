@@ -130,6 +130,7 @@ __all__ = [
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
     "WALK_POLARITY_NOT_ACCEPTED",
+    "WALK_POLARITY_NEEDS_WIRED",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -658,6 +659,17 @@ WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 #: keeps ``_validated_angle``'s.
 WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 
+#: The walk asks for a sign-flipped branch and this session's capture source
+#: cannot deliver one. Only a WIRED session binds the engine's MEASURE leg (the
+#: Pi's own microphone records what the Pi plays); every other source runs
+#: MEASURE on the flow leg, which knows nothing about polarity and would play
+#: the ordinary graph. Refusing is the only honest arm: the alternative banks a
+#: normal capture under a record that says ``inverted``. Declared here so the
+#: vocabulary has one home; raised by the CALLER, since this module does not
+#: read session facts — the same split :data:`WALK_LATERAL_GROUP_ALREADY_PLANNED`
+#: already uses.
+WALK_POLARITY_NEEDS_WIRED = "walk_polarity_needs_wired"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -666,6 +678,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
     WALK_POLARITY_NOT_ACCEPTED,
+    WALK_POLARITY_NEEDS_WIRED,
 })
 
 
