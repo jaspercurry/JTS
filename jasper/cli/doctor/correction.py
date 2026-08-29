@@ -480,7 +480,9 @@ def check_correction_latest_bundle() -> CheckResult:
     if not latest.get("mic_calibration"):
         return CheckResult(
             "latest correction bundle", "warn",
-            summary + "; last completed measurement used no calibrated mic",
+            summary + "; last completed measurement used no calibrated mic — "
+            "calibrate one under Microphone on /correction/ (enter the "
+            "serial number and Fetch calibration)",
         )
     return CheckResult("latest correction bundle", "ok", summary)
 

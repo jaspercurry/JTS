@@ -783,6 +783,38 @@ def _candidate_octave_reasons(
     return out
 
 
+def _candidate_octave_driver_classes(
+    linearization: Any, octaves: Mapping[str, Mapping[str, float]],
+) -> dict[str, str]:
+    """Per-role declared ``driver_class`` (``LinearizationFit.driver_class``),
+    the third sibling of :func:`_candidate_octave_summary`'s numbers and
+    :func:`_candidate_octave_reasons`'s verdicts (audit item 4i).
+
+    Gated on the same ``octaves``-has-a-role-with-numbers membership as
+    :func:`_candidate_octave_reasons`, for the identical reason: a role with
+    no fit numbers has nothing on this screen for a driver_class value to
+    annotate.
+
+    A SEPARATE key rather than folded into ``_candidate_octave_reasons``'s
+    dict, matching that function's own "separate key" rule: driver_class is a
+    per-FIT scalar (one value for the whole role), not a per-band verdict, so
+    a reader for one never has to parse the other's shape to find it. Needed
+    because ``LIMITED_BY_CLASS_PRIOR`` fires for every declared class, not
+    only the undeclared ("unknown") one — the remedy this exists for
+    (crossover_envelope_v2._linearization_octave_rows) must tell an already-
+    declared class apart from an undeclared one, since only the second has
+    an action left to take.
+    """
+    out: dict[str, str] = {}
+    for role, fit in (linearization or {}).items():
+        if not isinstance(fit, Mapping) or str(role) not in octaves:
+            continue
+        driver_class = fit.get("driver_class")
+        if isinstance(driver_class, str) and driver_class:
+            out[str(role)] = driver_class
+    return out
+
+
 def _candidate_summary(
     candidate: Any, *, topology_pinned: bool = False,
     headroom_cost_basis: str | None = None,
@@ -853,6 +885,15 @@ def _candidate_summary(
         # driver did." Both are honest; only one is about performance, and the
         # screen was showing the second as if it were the first.
         "linearization_octave_reasons": _candidate_octave_reasons(
+            candidate.linearization, octaves
+        ),
+        # Which declared driver_class produced each role's octave verdicts
+        # above (audit item 4i) — the fact
+        # crossover_envelope_v2._linearization_octave_rows needs to tell an
+        # already-declared class's own prior apart from the undeclared
+        # ("unknown") default, so the remedy it attaches never tells a
+        # household to redeclare a class it already named.
+        "linearization_driver_class": _candidate_octave_driver_classes(
             candidate.linearization, octaves
         ),
         # "This correction costs N dB of maximum level" (linearization-integrity
@@ -1062,6 +1103,11 @@ def build_conductor_state(
     alignment_reservation = getattr(
         conductor, "measure_alignment_reservation", None
     )
+    # Same duck-typed read, same reason: a stand-in conductor predating audit
+    # gauntlet 5a means "nothing reserved" here too.
+    calibration_reservation = getattr(
+        conductor, "measure_calibration_reservation", None
+    )
     # #2923: same duck-typed read, on ``snap`` rather than ``conductor`` since
     # this one lives on ``V2ConductorSnapshot`` itself — a snapshot stand-in
     # built before this field existed means "not banked", which is what the
@@ -1213,8 +1259,13 @@ def build_conductor_state(
                     if alignment_reservation
                     else {}
                 ),
+                **(
+                    {"calibration_reservation": True}
+                    if calibration_reservation
+                    else {}
+                ),
             }
-            if ripple_reservation or alignment_reservation
+            if ripple_reservation or alignment_reservation or calibration_reservation
             else None
         ),
         "verify": (

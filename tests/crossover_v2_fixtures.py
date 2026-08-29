@@ -274,6 +274,7 @@ def _measure_analysis(
     program, *, glitch=False, clipped=False, linearity=True,
     alignment=None, locate_confidence=0.9, gate_ms=8.0,
     predicted_ripple_db=0.8, sweep_locations=None, pilot_snr_ok=None,
+    mic_calibrated=None,
 ) -> ProgramAnalysis:
     freqs = np.linspace(100.0, 20000.0, 64)
     locations = (
@@ -305,6 +306,7 @@ def _measure_analysis(
         pilot_snr_ok=pilot_snr_ok,
         predicted_sum=(freqs, np.zeros(64)),
         glitch_detected=glitch,
+        mic_calibrated=mic_calibrated,
     )
 
 

@@ -207,6 +207,34 @@ const LINEARIZATION_OUTCOME_TEXT = {
 // octave rows in renderCandidateReview().
 const OCTAVE_REASON_OUT_OF_BAND = 'envelope_out_of_band';
 
+// Audit item 4i: the second reason code this module reads, and the same
+// second-copy-pinned-by-test contract as the one above
+// (jasper.active_speaker.linearization_envelope.ReasonCode.LIMITED_BY_CLASS_PRIOR).
+// An undeclared driver_class resolves to the "unknown" class prior — the most
+// conservative row in _CLASS_PRIOR_FULL_TO_HZ — and banked this code with no
+// household surface ever naming the /sound/setup/ field that lifts it. Gated
+// on driver_class === 'unknown' at the render site below, never on the reason
+// code alone: the same code fires for an ALREADY-declared class's own real
+// prior, where redeclaring it is not an action the household has left to take.
+const OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR = 'envelope_limited_by_class_prior';
+
+// The remedy pointer for an undeclared-class-prior band — the established
+// remedy/next-action shape ({id, label, href}) refusal_copy.py's safety-limits
+// deep-link rows use (REASON_PROGRAM_PROFILE_MISSING /
+// _NOT_CONFIRMED), not a new one. No fragment: unlike
+// "#confirm-safety-limits", /sound/setup/ renders no anchor for driver_class,
+// so a deep link would land on nothing — the bare page, which opens on its
+// own first unfinished step, IS the action, the same "no fragment" contract
+// REASON_PROGRAM_PROFILE_MISSING uses for the identical reason. The
+// Technical details paragraph is plain text with no links today, so only
+// `href` reaches the screen below — `id`/`label` are kept anyway because the
+// task is to MIRROR the shape, not a subset of it.
+const CLASS_PRIOR_REMEDY = {
+  id: 'declare_driver_class',
+  label: "Declare this driver's technology class",
+  href: '/sound/setup/',
+};
+
 // The measured-crossover candidate the household reviews before applying
 // (crossover_envelope_v2._candidate_review_payload — trims / delay / polarity,
 // derived from the conductor's _candidate_summary). W6.10 blocker #2: the prior
@@ -414,7 +442,9 @@ function renderCandidateReview(review) {
   // (tests/test_crossover_envelope_v2.py::
   //  test_the_browser_and_python_agree_on_the_out_of_band_octave_code).
   // Every other reason code describes a band the driver DOES radiate, where
-  // the number is a real residual, and renders unchanged.
+  // the number is a real residual, and renders unchanged — except
+  // LIMITED_BY_CLASS_PRIOR on an undeclared class, which gains one remedy
+  // sentence alongside its (unchanged) number; see below.
   const octaveRows = Array.isArray(review.linearization_octaves) ?
     review.linearization_octaves : [];
   const octaveLabel = (band) => `${Math.round(Number(band.hz) / 1000)}k`;
@@ -436,6 +466,20 @@ function renderCandidateReview(review) {
       details.push(
         `${row.role} ${outOfBand.map(octaveLabel).join(', ')}: outside this ` +
         'driver’s band — not corrected');
+    }
+    // Audit item 4i: an undeclared driver_class capped correction on this
+    // row. Gated on driver_class === 'unknown', never on the reason code
+    // alone — the same code fires for an ALREADY-declared class's own real
+    // prior, where naming /sound/setup/ again would be a false remedy. One
+    // sentence, not per-band: the row already named which octaves and their
+    // numbers above.
+    const classPriorLimited = bands.some(
+      (band) => band.reason === OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR);
+    if (classPriorLimited && row.driver_class === 'unknown') {
+      details.push(
+        `${row.role}: this driver's technology class is not declared, so ` +
+        'correction above this range is capped conservatively — declare it ' +
+        `at ${CLASS_PRIOR_REMEDY.href} for a less conservative limit`);
     }
   });
   if (details.length) {

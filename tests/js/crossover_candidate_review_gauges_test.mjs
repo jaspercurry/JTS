@@ -16,6 +16,11 @@
 //     covers) renders byte-for-byte the same "Technical details" text as
 //     before this gauge existed — additive fields must never perturb the
 //     pre-existing disclosure for older/ineligible candidates.
+// Audit item 4i (silent-deadends-gain-pointers) added a fourth case: an
+// undeclared driver_class's LIMITED_BY_CLASS_PRIOR band gains one remedy
+// sentence naming /sound/setup/, gated so an ALREADY-declared class's own
+// real prior — or a candidate with no driver_class at all — never gets a
+// remedy it cannot honestly attach.
 
 import assert from "node:assert/strict";
 import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
@@ -357,6 +362,110 @@ render({
     ),
     "a non-out-of-band reason code leaves the residual line untouched — the " +
     "fix is scoped to the one code whose number is not performance",
+    { got: text },
+  );
+}
+
+// --- 7. Audit item 4i: an undeclared driver_class gets a remedy pointer ---
+// LIMITED_BY_CLASS_PRIOR still shows its number (unlike OUT_OF_BAND above,
+// which suppresses it) — this is a real, measured residual, only capped by
+// the class prior — and gains ONE extra sentence naming /sound/setup/.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    linearization_outcome: "fitted",
+    linearization_octaves: [
+      {
+        role: "tweeter",
+        driver_class: "unknown",
+        bands: [
+          { hz: 8000, delta_db: -0.2, reason: "envelope_fitted" },
+          { hz: 12000, delta_db: -6.5, reason: "envelope_limited_by_class_prior" },
+          { hz: 16000, delta_db: -11.0, reason: "envelope_limited_by_class_prior" },
+        ],
+      },
+    ],
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === (
+      "alignment confidence 0.71; candidate cand-proof; " +
+      "driver linearization: fitted; " +
+      "tweeter fit residual vs target (design-axis capture, not the spatial " +
+      "measurement): 8k -0.2 dB, 12k -6.5 dB, 16k -11.0 dB; " +
+      "tweeter: this driver's technology class is not declared, so " +
+      "correction above this range is capped conservatively — declare it " +
+      "at /sound/setup/ for a less conservative limit."
+    ),
+    "an undeclared driver_class keeps its residual numbers AND gains one " +
+    "remedy sentence naming /sound/setup/",
+    { got: text },
+  );
+}
+
+// The correctness case: the SAME reason code fires for an ALREADY-declared
+// class's own real prior, where the remedy would be FALSE — the household
+// named the class, and there is nothing left to declare. No sentence must
+// render, ever, for a real class value.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    linearization_outcome: "fitted",
+    linearization_octaves: [
+      {
+        role: "tweeter",
+        driver_class: "soft_dome",
+        bands: [
+          { hz: 12000, delta_db: -6.5, reason: "envelope_limited_by_class_prior" },
+        ],
+      },
+    ],
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === (
+      "alignment confidence 0.71; candidate cand-proof; " +
+      "driver linearization: fitted; " +
+      "tweeter fit residual vs target (design-axis capture, not the spatial " +
+      "measurement): 12k -6.5 dB."
+    ),
+    "an ALREADY-declared driver_class never gets the remedy sentence — only " +
+    "the undeclared default earns it",
+    { got: text },
+  );
+  check(
+    !text.includes("/sound/setup/"),
+    "no /sound/setup/ pointer renders for a class the household already named",
+    { got: text },
+  );
+}
+
+// Absent driver_class (a pre-#4i candidate, or a role _candidate_summary
+// never resolved a class for) must fail the SAME way as an unrecognized
+// one — never rendering a remedy it cannot honestly attach.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    linearization_outcome: "fitted",
+    linearization_octaves: [
+      {
+        role: "tweeter",
+        bands: [
+          { hz: 12000, delta_db: -6.5, reason: "envelope_limited_by_class_prior" },
+        ],
+      },
+    ],
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    !text.includes("/sound/setup/"),
+    "no driver_class at all also renders no remedy sentence",
     { got: text },
   );
 }

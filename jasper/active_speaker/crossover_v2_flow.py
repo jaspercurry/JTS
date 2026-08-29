@@ -2878,6 +2878,12 @@ class CrossoverV2Session:
         # candidate was built from.
         self._measure_ripple_reservation: dict[str, Any] | None = None
         self._measure_alignment_reservation: dict[str, Any] | None = None
+        # Audit gauntlet 5a: the accepted MEASURE ran with no resolved
+        # measurement-mic calibration. ``True`` when reservation-worthy,
+        # ``None`` otherwise — same reset lifecycle and the same reason as
+        # the two reservations above (describes THE ACCEPTED CAPTURE alone).
+        # See ``_note_mic_calibration_reservation``.
+        self._measure_calibration_reservation: bool | None = None
 
     # --- program composition -------------------------------------------------
 
@@ -3589,6 +3595,18 @@ class CrossoverV2Session:
         """
         reservation = self._measure_alignment_reservation
         return dict(reservation) if reservation else None
+
+    @property
+    def measure_calibration_reservation(self) -> bool | None:
+        """``True`` when the accepted MEASURE ran with no resolved
+        measurement-mic calibration; ``None`` when it was calibrated, or the
+        fact was never resolved (audit gauntlet 5a).
+
+        Unlike its two dict-shaped siblings above there is no number to
+        carry — the disclosure IS the fact — so this is a bare tri-state
+        rather than a reservation record.
+        """
+        return self._measure_calibration_reservation
 
     @property
     def verify_pilot_transfer_reference(self) -> Mapping[str, Any] | None:
@@ -4794,6 +4812,33 @@ class CrossoverV2Session:
             threshold_db=float(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB),
         )
 
+    def _note_mic_calibration_reservation(self) -> None:
+        """Bank the disclosure that the accepted MEASURE had no resolved mic
+        calibration (audit gauntlet 5a).
+
+        Same contract as :meth:`_note_ripple_reservation`, deliberately: it
+        records and decides nothing, and must never acquire a branch that
+        could change what the caller already decided — the capture is
+        ACCEPTED either way. ``bind_production_analyze``'s own docstring
+        states why: "the analysis still runs — relative timing/level stay
+        valid" without a resolved calibration, so nothing here is a
+        component-damage or hearing-safety mechanism (measurement-loop-
+        doctrine.md §4's closed list, which this is not on) — only the
+        absolute-SPL commissioning stop (``mic_calibration_unavailable``,
+        a DIFFERENT calibration concern from a DIFFERENT flow) hard-stops on
+        missing calibration, and this disclosure leaves it untouched.
+
+        WARNING for :meth:`_note_ripple_reservation`'s reason: the session
+        proceeds, so this is not an error, but the household is being handed
+        a tuning built on an uncalibrated reading and an operator reading the
+        journal at INFO would have to know to look for it.
+        """
+        self._measure_calibration_reservation = True
+        log_event(
+            logger, "correction.crossover_v2_mic_calibration_disclosed",
+            level=logging.WARNING, session_id=self.session_id,
+        )
+
     def _note_alignment_confidence_reservation(
         self, confidence: float, delay_us: float
     ) -> None:
@@ -4843,6 +4888,7 @@ class CrossoverV2Session:
         self._last_measure_guard = ""
         self._measure_ripple_reservation = None
         self._measure_alignment_reservation = None
+        self._measure_calibration_reservation = None
         # The seven linearization fields this used to reset with them are gone
         # (#2291 Phase 2b): a build returns its own :class:`_LinearizationState`
         # and nothing outlives the build, so there is no prior attempt's value
@@ -4918,6 +4964,12 @@ class CrossoverV2Session:
             self._note_alignment_confidence_reservation(
                 analysis.alignment.confidence, analysis.alignment.delay_us
             )
+        # Audit gauntlet 5a: disclose, never block — an explicit ``False``
+        # only (never ``None``, which is "not resolved either way" per
+        # ``ProgramAnalysis.mic_calibrated``'s own contract, and must not be
+        # guessed into a reservation it never earned).
+        if analysis.mic_calibrated is False:
+            self._note_mic_calibration_reservation()
         if analysis.candidate is None:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call

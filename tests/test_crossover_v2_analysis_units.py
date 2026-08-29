@@ -197,13 +197,14 @@ PRODUCED_FIELDS = frozenset(
     }
 )
 
-# The five that belong to no unit: three copy an input parameter, one projects
+# The six that belong to no unit: four copy an input parameter, one projects
 # another field, one is a predicate over inputs alone.
 UNOWNED_FIELDS = frozenset(
     {
         "phase",
         "program_id",
         "mic_tier",
+        "mic_calibrated",
         "glitch_detected",
         "configured_path_composed",
     }
@@ -214,7 +215,7 @@ def test_the_units_partition_the_produced_program_analysis_fields():
     """Fifteen units over twenty fields, asserted by identity, not by count.
 
     The union is exactly the *produced* class of the ``ProgramAnalysis`` field
-    census. The five fields that copy an input, project another field, or are a
+    census. The six fields that copy an input, project another field, or are a
     predicate over inputs belong to no unit and must not appear here.
     """
     declared = {field.name for field in dataclasses.fields(pa.ProgramAnalysis)}

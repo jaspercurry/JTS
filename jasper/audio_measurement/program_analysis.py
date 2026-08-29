@@ -1257,6 +1257,15 @@ class MeasurementPriors:
     candidate_required_band_hz_by_role: Mapping[
         str, tuple[float, float]
     ] | None = None
+    # Whether a resolved measurement-mic calibration curve was applied to
+    # this capture, threaded in by the same
+    # ``jasper.web.correction_crossover_v2.bind_production_analyze`` call that
+    # sets ``mic_tier`` above, from the same resolved calibration record.
+    # ``None`` (every construction site that predates this field, and
+    # CHECK/VERIFY priors, which never set it) means "not resolved either
+    # way" — never a guess that a calibration was applied. See
+    # ``ProgramAnalysis.mic_calibrated``'s docstring for the one consumer.
+    mic_calibrated: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -1977,6 +1986,15 @@ class ProgramAnalysis:
     # capture nothing arbitrated (one candidate, or no witness) is unambiguous
     # by construction, not un-evidenced.
     anchor_ambiguous: bool = False
+    # Pure passthrough of MeasurementPriors.mic_calibrated, mirroring
+    # ``mic_tier`` above and set at the same site (_analyze_measure): whether
+    # a resolved measurement-mic calibration curve was applied to this
+    # capture. ``None`` (every construction site that predates this field,
+    # and CHECK/VERIFY analyses, which never set it) means "not resolved
+    # either way" — the v2 session's MEASURE disclosure
+    # (CrossoverV2Session._measure_verdict) treats only an explicit
+    # ``False`` as reservation-worthy, never a guess.
+    mic_calibrated: bool | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -6455,6 +6473,7 @@ def _analyze_measure(
         alignment=alignment,
         candidate=candidate,
         mic_tier=priors.mic_tier,
+        mic_calibrated=priors.mic_calibrated,
         # Exact: composition returns its input untouched iff every prior map
         # is None, and raises if only some are.
         configured_path_composed=(
