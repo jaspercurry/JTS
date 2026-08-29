@@ -71,8 +71,8 @@ function testBandCountUnderMax() {
   ok();
 }
 
-// 3. Every band's edges increase and are finite — matches AmbientBand's own
-//    Pi-side __post_init__ validation (lo_hz > 0, hi_hz > lo_hz, finite).
+// 3. Every band's edges increase and are finite (lo_hz > 0, hi_hz > lo_hz).
+//    The emitter owns this invariant: no Pi-side reader validates it.
 function testBandEdgesAreValid() {
   const bands = computeOctaveBandStats(toneSamples({}), 48000);
   for (const band of bands) {

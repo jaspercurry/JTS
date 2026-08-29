@@ -25,11 +25,10 @@ it is not lost either — it is what the fader lands on when the measurement
 claim releases.
 
 **One declared level.** Five overlapping notions collapse here:
-``listening_level``, ``measurement_volume_db``, ``locked_main_volume_db``,
-``SolvedLevel.main_volume_db`` and ``fader_db``. A claim's ``level_db`` is the
-only one left. (``SolvedLevel.main_volume_db`` is a proposal that no writer ever
-wrote; it becomes an argument to :meth:`VolumeOwner.acquire_level`, never a
-second seat of truth.)
+``listening_level``, ``measurement_volume_db``, ``locked_main_volume_db``
+and ``fader_db``. A claim's ``level_db`` is the only one left: any level a
+caller derives arrives as an argument to :meth:`VolumeOwner.acquire_level`,
+never as a second seat of truth.
 
 **One confirm tolerance, and it is not minted here.**
 :data:`~jasper.active_speaker.volume_latch.READBACK_TOLERANCE_DB` via

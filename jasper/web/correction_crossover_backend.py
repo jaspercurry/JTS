@@ -1014,11 +1014,10 @@ class CrossoverLevelLease:
         ``"snr_shortfall"`` (``shortfall_db`` raises the assumed ambient),
         just a different origin: the completion path
         (``jasper.web.correction_crossover_backend.record_driver_capture``)
-        computes ``shortfall_db`` from the solver's OWN required threshold
-        (``level_solver.driver_solve_requirement_db`` -- the same figure
-        ``solve_level`` gates on) minus the finalized capture's measured
-        worst-band SNR, not the bare per-band acceptance floor those bands
-        were gated against.
+        computes ``shortfall_db`` from the required threshold
+        ``level_solver.driver_solve_requirement_db`` returns, minus the
+        finalized capture's measured worst-band SNR -- not the bare per-band
+        acceptance floor those bands were gated against.
 
         ``trigger="clip"`` (W2.2, hardware run 18): a driver capture
         clipped the mic even though the solve predicted a safe level --
@@ -1128,9 +1127,8 @@ class CrossoverLevelLease:
         is measured relative to ``commissioning_gain_db + main_volume_db``
         WITHOUT the sweep amplitude term -- the sweep/tone amplitudes cancel
         because both are pinned at the same constant today. This method
-        converts by subtracting that constant so the stored gain plugs
-        directly into ``solve_level``'s ``mic_clip_gain_map_db`` on the same
-        footing as the tone-derived ``gain_map_db`` it replaces.
+        converts by subtracting that constant so the stored gain sits on
+        the same footing as the tone-derived ``gain_map_db`` it replaces.
         """
 
         if not math.isfinite(measured_mic_peak_dbfs) or not math.isfinite(
