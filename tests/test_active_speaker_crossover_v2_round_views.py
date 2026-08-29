@@ -809,6 +809,20 @@ def test_cli_per_seat_writes_seats_including_absent_verify_reason(tmp_path):
     assert payload["verify_pose"]["reason"]
 
 
+def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    rc = main(["frequency", str(round_dir)])
+
+    assert rc == 0
+    payload = json.loads((round_dir / "frequency_view.json").read_text())
+    assert payload["schema"] == "jts_frequency_view/1"
+    assert payload["runs"][0]["series"][0]["kind"] == "average"
+
+
 def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli.round_views import main
 

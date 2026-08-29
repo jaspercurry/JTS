@@ -7851,6 +7851,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/session-report",
                 "/calibration/models",
                 "/crossover",
+                "/crossover/measurements",
+                "/crossover/measurements/data",
                 "/crossover/status",
                 "/crossover/envelope",
                 "/bass",
@@ -7884,6 +7886,34 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         cfg["hostname"], ctx["csrf_token"],
                     )
                 )
+                return
+            if path == "/crossover/measurements":
+                from . import correction_crossover_measurements
+                ctx = begin_request(self)
+                self._send_html(
+                    correction_crossover_measurements.render_page(
+                        cfg["hostname"], ctx["csrf_token"],
+                    )
+                )
+                return
+            if path == "/crossover/measurements/data":
+                from jasper.active_speaker import bundles as active_bundles
+                from . import correction_crossover_measurements
+
+                query = parse_qs(urlparse(self.path).query)
+                run_a_id = (query.get("a") or [""])[0] or None
+                run_b_id = (query.get("b") or [""])[0] or None
+                try:
+                    self._send_json(correction_crossover_measurements.build_data(
+                        sessions_dir=active_bundles.sessions_dir(),
+                        run_a_id=run_a_id,
+                        run_b_id=run_b_id,
+                    ))
+                except correction_crossover_measurements.MeasurementViewRequestError as exc:
+                    self._send_client_error(str(exc))
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    logger.exception("/crossover/measurements/data failed")
+                    self._send_json({"error": str(exc)}, status=500)
                 return
             if path == "/crossover/status":
                 from . import correction_crossover_flow

@@ -1,0 +1,214 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import pytest
+
+from jasper.active_speaker.crossover_v2.frequency_view import (
+    FrequencyViewError,
+    build_frequency_view,
+)
+from jasper.web import correction_crossover_measurements
+
+
+def _packet(run_id: str, *, offset: float = 0.0) -> dict:
+    return {
+        "session": {
+            "bundle_session_id": run_id,
+            "round_id": f"round-{run_id}",
+            "started_at": 1000.0 + offset,
+            "state": "applied",
+        },
+        "identity": {
+            "topology_id": "speaker",
+            "graph_fingerprint": "graph",
+            "mic": {"calibration_id": "mic-a"},
+        },
+        "round": {
+            "entry_graph_fingerprint": "before",
+            "applied_graph_fingerprint": "after",
+            "adoption": {"outcome": "keep"},
+            "verification": {"spec": "passed"},
+        },
+        "spec": {"reference_db": -24.0},
+        "curve": {
+            "freqs_hz": [100.0, 1000.0, 10000.0],
+            "magnitude_db": [-25.0 + offset, -24.0 + offset, -26.0 + offset],
+        },
+        "positions": {
+            "n_positions": 2,
+            "angle_deg": {"available": True, "angles_deg": [-7, 0]},
+            "curve_grid": {
+                "freqs_hz": [100.0, 1000.0, 10000.0],
+                "fractional_octave": 12,
+                "smoothing_fraction": 6,
+            },
+            "positions": [
+                {
+                    "position_id": "axis",
+                    "role": "onax",
+                    "position_axis": "horizontal",
+                    "position_deg": 0,
+                    "mark_distance_m": 1.0,
+                    "magnitude_db": [-25.0, -24.0, -26.0],
+                },
+                {
+                    "position_id": "left",
+                    "role": "offax",
+                    "position_axis": "horizontal",
+                    "position_deg": -7,
+                    "mark_distance_m": 1.0,
+                    "magnitude_db": [-26.0, -25.0, -29.0],
+                },
+            ],
+        },
+        "entry_baseline": {
+            "available": True,
+            "captured_at": "2026-08-29T12:00:00Z",
+            "program_id": "summed_sweep",
+            "reference_mark": "design_axis",
+            "graph_fingerprint": "before",
+            "freqs_hz": [100.0, 1000.0, 10000.0],
+            "magnitude_db": [-25.0, -25.0, -27.0],
+            "excluded": [False, False, True],
+        },
+        "honesty_mask": {
+            "validity_floor_hz": 80.0,
+            "trusted_floor_hz": 200.0,
+            "merged_excluded_bands_hz": [[900.0, 1100.0]],
+        },
+    }
+
+
+def test_frequency_view_exposes_stored_average_baseline_and_positions():
+    view = build_frequency_view(_packet("aaa"))
+
+    assert view["schema"] == "jts_frequency_view/1"
+    run = view["runs"][0]
+    assert (run["slot"], run["id"], run["measurement_family"]) == (
+        "a", "aaa", "summed_cloud",
+    )
+    assert [series["id"] for series in run["series"]] == [
+        "average", "entry_baseline", "axis", "left",
+    ]
+    assert [series["visible_by_default"] for series in run["series"]] == [
+        True, False, False, False,
+    ]
+    assert run["series"][1]["smoothing_fractional_octave"] == 3
+    assert run["series"][1]["excluded_intervals_hz"] == [[10000.0, 10000.0]]
+    assert run["series"][2]["label"] == "0° · On axis"
+    assert run["series"][3]["label"] == "-7° · Off axis"
+    assert run["metadata"]["smoothing"] == {
+        "average_fractional_octave": 3,
+        "positions_fractional_octave": 6,
+    }
+    assert run["metadata"]["mic_calibration_id"] == "mic-a"
+
+
+def test_frequency_view_gives_the_baseline_its_own_reference_frame():
+    packet = _packet("aaa")
+    packet["entry_baseline"]["magnitude_db"] = [-35.0, -34.0, -36.0]
+
+    view = build_frequency_view(packet)
+    average, baseline = view["runs"][0]["series"][:2]
+
+    assert average["reference_db"] == -24.0
+    assert baseline["reference_db"] == -34.0
+    assert [
+        magnitude - average["reference_db"]
+        for magnitude in average["magnitude_db"]
+    ] == [-1.0, 0.0, -2.0]
+    assert [
+        magnitude - baseline["reference_db"]
+        for magnitude in baseline["magnitude_db"]
+    ] == [-1.0, 0.0, -2.0]
+
+
+def test_frequency_view_adds_optional_run_b_without_changing_run_a():
+    view = build_frequency_view(_packet("aaa"), _packet("bbb", offset=1.0))
+
+    assert [(run["slot"], run["id"]) for run in view["runs"]] == [
+        ("a", "aaa"), ("b", "bbb"),
+    ]
+    assert view["runs"][0]["series"][0]["magnitude_db"] == [
+        -25.0, -24.0, -26.0,
+    ]
+
+
+def test_frequency_view_requires_the_packet_bundle_identity():
+    with pytest.raises(FrequencyViewError, match="bundle session id"):
+        build_frequency_view({})
+
+
+def test_measurement_page_uses_the_canonical_shell_and_static_module():
+    page = correction_crossover_measurements.render_page("jts.local", "csrf-token").decode()
+
+    assert page.startswith("<!doctype html>")
+    assert "/assets/correction/crossover-measurements.css?v=" in page
+    assert "/assets/correction/js/crossover/measurements.js" in page
+    assert 'id="measurement-run-a"' in page
+    assert 'id="measurement-run-b"' in page
+    assert 'id="measurement-chart"' in page
+
+
+def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
+    from jasper.active_speaker import bundles
+    from jasper.active_speaker.crossover_v2 import evidence_packet
+
+    entries = [
+        {"session_id": "bbb", "bundle_dir": str(tmp_path / "bbb"), "started_at": 2.0, "state": "applied"},
+        {"session_id": "aaa", "bundle_dir": str(tmp_path / "aaa"), "started_at": 1.0, "state": "applied"},
+    ]
+    monkeypatch.setattr(bundles, "list_bundles", lambda _root: entries)
+    monkeypatch.setattr(
+        evidence_packet, "round_artifact_dir", lambda bundle: (bundle / "round", None),
+    )
+    monkeypatch.setattr(
+        evidence_packet,
+        "build_crossover_evidence_packet",
+        lambda bundle: _packet(bundle.name),
+    )
+
+    data = correction_crossover_measurements.build_data(
+        sessions_dir=tmp_path, run_a_id="aaa", run_b_id="bbb",
+    )
+
+    assert data["catalog_schema"] == "jts_frequency_catalog/1"
+    assert [entry["id"] for entry in data["catalog"]] == ["bbb", "aaa"]
+    assert data["selected"] == {"a": "aaa", "b": "bbb"}
+    assert [run["id"] for run in data["view"]["runs"]] == ["aaa", "bbb"]
+
+
+def test_web_data_returns_an_empty_view_when_no_runs_exist(tmp_path, monkeypatch):
+    from jasper.active_speaker import bundles
+
+    monkeypatch.setattr(bundles, "list_bundles", lambda _root: [])
+    empty = correction_crossover_measurements.build_data(
+        sessions_dir=tmp_path, run_a_id="missing",
+    )
+    assert empty["view"] is None
+
+
+def test_web_data_rejects_a_run_outside_the_catalog(tmp_path, monkeypatch):
+    from jasper.active_speaker import bundles
+    from jasper.active_speaker.crossover_v2 import evidence_packet
+
+    monkeypatch.setattr(bundles, "list_bundles", lambda _root: [{
+        "session_id": "known",
+        "bundle_dir": str(tmp_path / "known"),
+        "started_at": 1.0,
+        "state": "applied",
+    }])
+    monkeypatch.setattr(
+        evidence_packet, "round_artifact_dir", lambda bundle: (bundle / "round", None),
+    )
+
+    with pytest.raises(
+        correction_crossover_measurements.MeasurementViewRequestError,
+        match="measurement run not found",
+    ):
+        correction_crossover_measurements.build_data(
+            sessions_dir=tmp_path, run_a_id="../outside",
+        )
