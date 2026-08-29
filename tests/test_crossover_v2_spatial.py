@@ -522,8 +522,9 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 #: ``spatial._take_identity``.
 _ENGINE_RECORD_FIELDS = (
     "session_id", "measure_kind", "baseline_record_id", "position_deg",
-    "position_axis", "prompt", "candidate_id", "regime", "polarity",
-    "graph_fingerprint", "level_db", "stimulus_dbfs", "incident", "wav_path",
+    "position_axis", "vertical_deg", "prompt", "candidate_id", "regime",
+    "polarity", "graph_fingerprint", "level_db", "stimulus_dbfs", "incident",
+    "wav_path",
 )
 
 
@@ -531,7 +532,7 @@ _ENGINE_RECORD_FIELDS = (
     "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
 )
 def test_every_take_builder_carries_the_whole_engine_record(builder):
-    """All fourteen, on all four — parametrized, because it is one question.
+    """All fifteen, on all four — parametrized, because it is one question.
 
     Six of these were banked by NO builder before this pin: the comparand
     (``baseline_record_id``), which candidate was under test (``candidate_id``),

@@ -773,10 +773,11 @@ def lateral_pose_curve(
 POSITION_AXIS_HORIZONTAL = "horizontal"
 
 #: A pose stated as a move ABOVE or BELOW mark height.  Nothing on this rig
-#: rotates in elevation — the prompts ask for a raise or a lower — so a pose on
-#: this axis carries no bearing at all
+#: rotates in elevation — the prompts ask for a raise or a lower, and a person
+#: performs it — so a pose on this axis commands no horizontal bearing
 #: (:attr:`PositionGeometry.degrees` is ``None``), which is a different fact
-#: from "0°" and must never read as one.
+#: from "0°" and must never read as one.  WHERE it was raised to is
+#: :attr:`PositionGeometry.vertical_deg`.
 POSITION_AXIS_VERTICAL = "vertical"
 
 #: Every axis a pose can be stated on, so a reader can CHECK the value rather
@@ -786,58 +787,73 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 
 @dataclass(frozen=True)
 class PositionGeometry:
-    """WHERE a prompted capture was taken, as three numbers instead of a sentence.
+    """WHERE a prompted capture was taken, as numbers instead of a sentence.
 
-    The three facts an owner ruling (2026-08-24) named as the minimum a pose
-    record owes a reader: **angle, axis, and distance**.  Before it, a cloud
+    The facts an owner ruling (2026-08-24) named as the minimum a pose record
+    owes a reader: **angle, axis, and distance**.  Before it, a cloud
     position's only statement of place was the household ``prompt`` string, and
     the 2026-08 new-horn campaign read that prose as a mic being carried
     sideways when the rig had rotated — a misreading prose cannot rule out,
     cannot be diffed, and cannot be compared across rounds.
 
     **The frame, stated once so nothing downstream has to restate it.**
-    ``degrees`` is the signed whole-degree bearing of the pose measured from the
-    speaker, negative LEFT of the design axis as seen from the microphone
-    looking at the speaker; ``axis`` is which of :data:`POSITION_AXES` that
-    bearing lives on; ``mark_distance_m`` is the speaker-to-MARK distance the
-    bearing is DERIVED AGAINST.  That last one is a reference length, never a
-    surveyed capsule distance: nothing in a round measures how far the
-    microphone actually ended up, so a reader gets the bearing and the length
-    it was taken against, and neither is a claim about the other.
+    ``degrees`` is the signed whole-degree HORIZONTAL bearing of the pose
+    measured from the speaker, negative LEFT of the design axis as seen from the
+    microphone looking at the speaker; ``vertical_deg`` is the signed
+    whole-degree ELEVATION of the pose above mark height, in the same frame and
+    derived against the same length, negative BELOW; ``axis`` is which of
+    :data:`POSITION_AXES` the pose's stated move was on; ``mark_distance_m`` is
+    the speaker-to-MARK distance both angles are DERIVED AGAINST.  That last one
+    is a reference length, never a surveyed capsule distance: nothing in a round
+    measures how far the microphone actually ended up, so a reader gets the
+    angles and the length they were taken against, and neither is a claim about
+    the other.
 
-    ``degrees`` is ``None`` wherever no signed bearing was commanded — always on
-    :data:`POSITION_AXIS_VERTICAL`, where the rig raises and lowers the
+    **The two angles are ORTHOGONAL and default differently, which is a fact
+    rather than an inconsistency to iron out.**  ``degrees`` is ``None``
+    wherever no signed bearing was commanded — on
+    :data:`POSITION_AXIS_VERTICAL`, where the operator raises or lowers the
     microphone rather than swinging it, and on the horizontal axis for a pose
     whose RECORD declares no side (both geometry-locked retake rungs).  ``None``
     is the honest answer in both; 0 would be a lie that reads as "on the design
-    axis".
+    axis".  ``vertical_deg`` has no such case and so needs no ``None``: a pose
+    nobody raised is genuinely AT mark height, and 0 states that truly.  A
+    compound pose — sideways *and* raised — therefore states both numbers, which
+    is the move a single axis-plus-value pair could only describe half of.
 
     Whole degrees, for the reason the derivation that produces them gives: the
     poses come from tape-measure offsets to a mark placed "about" 1 m out, and
     a tenth of a degree would claim a precision the placement never had.
 
+    **No combination of axis and angle is refused here.**  A vertical walk is
+    performed BY HAND, so the values this carries are the operator's to state
+    and this type's to record faithfully; the automation that genuinely cannot
+    swing in elevation refuses at its own seam
+    (``capture_plan.position_angle_deg``), where the refusal is about a
+    positioner rather than about a pose.
+
     Derived by ``crossover_v2_flow.position_geometry``, which owns the pose
-    table and the sign convention and names each ``None`` case; carried here
+    table and both sign conventions and names each ``None`` case; carried here
     because this module owns what a retained take RECORDS.
     """
 
     axis: str
     degrees: int | None
     mark_distance_m: float
+    vertical_deg: int = 0
 
     def __post_init__(self) -> None:
         if self.axis not in POSITION_AXES:
             raise ValueError(
                 f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
             )
-        if self.axis == POSITION_AXIS_VERTICAL and self.degrees is not None:
-            # Loud rather than silently banked: a bearing on the vertical axis
-            # is a number nothing on this rig can have commanded, and a reader
-            # who trusted it would place the microphone somewhere it never was.
+        # Whole degrees, as above. `bool` is an `int` and is never an elevation.
+        if isinstance(self.vertical_deg, bool) or not isinstance(
+            self.vertical_deg, int
+        ):
             raise ValueError(
-                "a vertical pose carries no bearing — this rig raises and "
-                f"lowers the microphone rather than swinging it, got "
-                f"{self.degrees!r} degrees"
+                "a pose elevation is a whole number of degrees above mark "
+                f"height, got {self.vertical_deg!r}"
             )
 
 
@@ -1115,13 +1131,16 @@ def cloud_position_record(
     (owner ruling, 2026-08-24).  Until it existed this record carried no
     geometry at all — the ``prompt`` sentence was the only statement of place,
     and the 2026-08 new-horn campaign read a rotation out of it as a sideways
-    carry.  The three keys it lands (``position_deg``, ``position_axis``,
-    ``mark_distance_m``) are stamped from the pose the operator was actually
-    given; ``prompt`` stays beside them as the human instruction and stops
-    being the source of truth.  ``position_deg`` deliberately spells the same
-    word :func:`lateral_pose_record` already does — one vocabulary for one
-    question — and is ``None`` wherever no bearing was commanded.  See
-    :class:`PositionGeometry` for the frame all three sit in.
+    carry.  The four keys it lands (``position_deg``, ``position_axis``,
+    ``vertical_deg``, ``mark_distance_m``) are stamped from the pose the
+    operator was actually given; ``prompt`` stays beside them as the human
+    instruction and stops being the source of truth.  ``position_deg``
+    deliberately spells the same word :func:`lateral_pose_record` already does
+    — one vocabulary for one question — and is ``None`` wherever no bearing was
+    commanded.  ``vertical_deg`` is absent from records banked before it
+    existed, and a reader takes that absence as 0 — the pose was at mark
+    height, which is what every pose this record shape had until then was.  See
+    :class:`PositionGeometry` for the frame all four sit in.
 
     ``curves`` is WHAT WAS MEASURED, in :func:`pose_curve_record`'s shape and
     under the key :func:`lateral_pose_record` already spells — see
@@ -1144,6 +1163,7 @@ def cloud_position_record(
         "role": role,
         "position_deg": geometry.degrees,
         "position_axis": geometry.axis,
+        "vertical_deg": geometry.vertical_deg,
         "mark_distance_m": geometry.mark_distance_m,
         "captured_at": captured_at,
         "gate_window_ms": gate_window_ms,
@@ -1290,10 +1310,9 @@ def lateral_pose_record(
     capture-retention ring.  :func:`take_kind` is that classification, and it
     is stamped on the record here rather than left for a reader to redo.
 
-    ``position_axis`` is horizontal by construction: this record carries a
-    signed whole-degree bearing, and :class:`PositionGeometry` refuses a
-    bearing on the vertical axis.  Stated so a reader of the bank does not have
-    to know that to place the microphone.
+    ``position_axis`` is horizontal by construction: the lateral walk states
+    every one of its poses as a sideways move at mark height.  Stated so a
+    reader of the bank does not have to know that to place the microphone.
 
     ``captured_at`` is minted at retention, not carried on the pose, for the
     reason :func:`entry_baseline_record` mints its own: a
@@ -1331,6 +1350,7 @@ def lateral_pose_record(
         "role": pose.role,
         "position_deg": int(position_deg),
         "position_axis": POSITION_AXIS_HORIZONTAL,
+        "vertical_deg": 0,
         "offset_cm": float(pose.offset_cm),
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
@@ -1413,6 +1433,7 @@ def phase_capture_record(
         "regime": regime,
         "position_deg": DESIGN_AXIS_DEG,
         "position_axis": POSITION_AXIS_HORIZONTAL,
+        "vertical_deg": 0,
         "curves": [dict(curve) for curve in curves],
     }
 
@@ -1500,6 +1521,7 @@ def entry_baseline_record(
         "prompt": prompt,
         "position_deg": DESIGN_AXIS_DEG,
         "position_axis": POSITION_AXIS_HORIZONTAL,
+        "vertical_deg": 0,
         "regime": regime,
         "captured_at": captured_at,
         "freqs_hz": [float(hz) for hz in freqs_hz],

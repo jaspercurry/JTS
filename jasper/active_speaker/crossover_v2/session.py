@@ -837,10 +837,12 @@ class TuningSession:
         record, not two spellings of the same place.
 
         On the vertical axis this rig commands no bearing at all, so an
-        unpositioned vertical walk is ``None`` rather than a ``0`` that
-        ``PositionGeometry`` would refuse. Unreachable today — a vertical spec
-        is a stub that captures nothing — and written so that stops being true
-        without this becoming wrong.
+        unpositioned vertical walk is ``None`` rather than a ``0``. That
+        distinction is load-bearing now that a vertical spec captures: ``None``
+        is what keeps a raised take out of every pooled bearing set downstream
+        (``evidence_packet._angle_deg_block`` is the one a reader sees), where a
+        ``0`` would join the horizontal seats as "on the design axis". Where the
+        microphone was raised to rides ``vertical_deg`` instead.
         """
         if spec.positions:
             return spec.positions
@@ -969,6 +971,7 @@ class TuningSession:
             position_axis=spec.position_axis,
             position_deg=bearing,
             stimulus_dbfs=stimulus_dbfs,
+            vertical_deg=spec.vertical_deg,
         ))
 
     def _disclose(self, stubs: tuple[CapabilityStub, ...]) -> None:
@@ -1048,6 +1051,7 @@ class TuningSession:
             ),
             "position_deg": bearing,
             "position_axis": spec.position_axis,
+            "vertical_deg": spec.vertical_deg,
             "prompt": prompt,
             "candidate_id": spec.candidate_id,
             "regime": spec.regime,

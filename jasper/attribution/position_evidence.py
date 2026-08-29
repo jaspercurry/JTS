@@ -102,6 +102,7 @@ _RECORD_FIELDS: tuple[str, ...] = (
     # cases and names the fields that separate them.
     "position_deg",
     "position_axis",
+    "vertical_deg",
     "mark_distance_m",
     "gate_window_ms",
     "gate_floor_source",
@@ -178,11 +179,24 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "rather than quantified here."
     ),
     "position_axis": (
-        "Which axis this pose was stated on — horizontal (a bearing in the "
-        "plane the microphone swings through) or vertical (a move above or "
-        "below mark height, which carries no bearing at all). Read it before "
-        "reading position_deg: it is what separates 'no bearing exists for "
-        "this pose' from 'this round banks none'."
+        "Which axis this pose's stated move was on — horizontal (a bearing in "
+        "the plane the microphone swings through) or vertical (a raise or a "
+        "lower, which commands no bearing at all). Read it before reading "
+        "position_deg: it is what separates 'no bearing exists for this pose' "
+        "from 'this round banks none'."
+    ),
+    "vertical_deg": (
+        "This position's SIGNED whole-degree elevation above mark height, "
+        "negative BELOW, derived against mark_distance_m exactly as "
+        "position_deg is and from the pose it was prompted at rather than "
+        "parsed out of that prompt's English. The two angles are orthogonal: a "
+        "pose states both, and 0 here means AT mark height rather than "
+        "'unknown' — which is why this is absent only on a round banked before "
+        "the field existed, and a reader takes that absence as 0 because "
+        "nothing could state any other elevation then. A commanded pose "
+        "recorded verbatim, not a measurement. NO analysis reads it: every "
+        "aggregate in the round pools seats without regard to height, so a "
+        "raised seat is recorded and displayed and nothing more."
     ),
     "mark_distance_m": (
         "The speaker-to-MARK distance position_deg was derived against, in "

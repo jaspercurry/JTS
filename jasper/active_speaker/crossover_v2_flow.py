@@ -369,6 +369,7 @@ AUTO_ADVANCE_TAP = _plan.AUTO_ADVANCE_TAP
 CAPTURE_ENTRY_MARGIN_MS = _plan.CAPTURE_ENTRY_MARGIN_MS
 CAPTURE_PLAN_MAX_ATTEMPTS = _plan.CAPTURE_PLAN_MAX_ATTEMPTS
 CLOUD_GEOMETRY_RETRY_PROMPTS = _plan.CLOUD_GEOMETRY_RETRY_PROMPTS
+CLOUD_GEOMETRY_RETRY_RISE_CM = _plan.CLOUD_GEOMETRY_RETRY_RISE_CM
 CLOUD_POSITION_PROMPTS = _plan.CLOUD_POSITION_PROMPTS
 CLOUD_RETAKE_ALLOWANCE = _plan.CLOUD_RETAKE_ALLOWANCE
 CLOUD_VERIFY_POSE_PROMPTS = _plan.CLOUD_VERIFY_POSE_PROMPTS
@@ -3794,13 +3795,18 @@ class CrossoverV2Session:
         slot = self._slot_of_index(index)
         if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED:
             used = max(self._geometry_retries_used.get(phase, 1), 1)
-            rung = CLOUD_GEOMETRY_RETRY_PROMPTS[
-                min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
-            ]
+            index_ = min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
+            rung = CLOUD_GEOMETRY_RETRY_PROMPTS[index_]
+            # Rung 2 is COMPOUND — 75 cm sideways AND 30 cm up — so its rise is
+            # stated rather than left to read as mark height, which is what a
+            # record built from ``offset_cm`` alone would claim.
+            rise_cm = CLOUD_GEOMETRY_RETRY_RISE_CM[index_]
             return CloudPositionPrompt(
                 rung,
                 offset_cm=GEOMETRY_RETRY_OFFSET_CM,
                 role=POSITION_ROLE_OFFAX,
+                vertical_sign=1 if rise_cm else 0,
+                vertical_offset_cm=rise_cm,
             )
         return self._cloud_prompt(phase, index)
 
