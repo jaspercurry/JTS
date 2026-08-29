@@ -236,3 +236,40 @@ def test_a_raising_persist_still_gives_the_fader_back(row, monkeypatch):
     assert asyncio.run(_drive()) == [
         "close" if row.id.endswith("-close") else "abandon"
     ]
+
+
+#: The two post-walk sites, whose ``finally`` holds a whole ``if done/else``.
+POST_WALK = tuple(row for row in ROWS if "-complete-" in row.id)
+
+
+@pytest.mark.parametrize("row", POST_WALK, ids=lambda row: row.id)
+def test_a_failing_drain_does_not_replace_the_persists_own_error(row, monkeypatch):
+    """A drain raising inside the ``finally`` would REPLACE the in-flight
+    persist error and change the failure identity the outer net logs and
+    flips ``/status.relay`` on.
+
+    What stops it is that BOTH branches are best-effort over the same
+    ``(OSError, RuntimeError, ValueError)`` tuple — ``_abandon_best_effort``
+    for one, the inline close guard for the other. This pins that symmetry:
+    strip either guard and the persist's own error stops being the one that
+    arrives.
+    """
+    def _raise(*a: Any, **k: Any) -> None:
+        raise DISK_FULL
+
+    monkeypatch.setattr(v2host, row.persist, _raise)
+
+    async def _drain_fails() -> None:
+        raise ValueError("the fader would not answer")
+
+    async def _drive() -> None:
+        with pytest.raises(OSError) as caught:
+            await row.drive(
+                v2host.V2VolumeHooks(
+                    open=_opened, close=_drain_fails, abandon=_drain_fails,
+                ),
+                monkeypatch,
+            )
+        assert caught.value is DISK_FULL, "the drain's error replaced the persist's"
+
+    asyncio.run(_drive())
