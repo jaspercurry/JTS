@@ -5479,10 +5479,10 @@ def _handle_relay_level_match(
         return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
         # A human-paced level ramp through _run_relay_level_match, NOT a single
         # capture: each control op is bounded by _RELAY_CONTROL_TIMEOUT_S but the
-        # ramp as a whole leans on the relay TTL (900 s) as its backstop, so
-        # unlike the single-capture kinds it CAN outlive an inbound-idle window.
-        # Held since #1860 — main's real tracker, threaded through the handler
-        # cfg exactly like the crossover-v2 kinds.
+        # ramp as a whole leans on the relay TTL (``DEFAULT_TTL_S``) as its
+        # backstop, so unlike the single-capture kinds it CAN outlive an
+        # inbound-idle window. Held since #1860 — main's real tracker, threaded
+        # through the handler cfg exactly like the crossover-v2 kinds.
         idle_hold=idle_hold,
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
@@ -6120,10 +6120,10 @@ def _handle_crossover_relay_level_match(
         return_url=_request_local_return_url(handler, "/correction/crossover/"),
         # A human-paced level ramp through _run_relay_level_match, NOT a single
         # capture: each control op is bounded by _RELAY_CONTROL_TIMEOUT_S but the
-        # ramp as a whole leans on the relay TTL (900 s) as its backstop, so
-        # unlike the single-capture kinds it CAN outlive an inbound-idle window.
-        # Held since #1860 — main's real tracker, threaded through the handler
-        # cfg exactly like the crossover-v2 kinds.
+        # ramp as a whole leans on the relay TTL (``DEFAULT_TTL_S``) as its
+        # backstop, so unlike the single-capture kinds it CAN outlive an
+        # inbound-idle window. Held since #1860 — main's real tracker, threaded
+        # through the handler cfg exactly like the crossover-v2 kinds.
         idle_hold=idle_hold,
     )
     return {"relay": relay, "level_match": lease.level_match_snapshot()}
