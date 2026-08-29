@@ -4,6 +4,7 @@
 
 """Unit tests for the jasper-doctor env domain."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ import pytest
 from jasper.cli import doctor
 from jasper.cli.doctor.env import _classify_state_group_write
 
-from .doctor_test_support import _registered_check_names
+from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
 
 
 # ---------------------------------------------------------------- env loading
@@ -168,16 +169,6 @@ def os_environ_get(name: str) -> str | None:
 # is the readonly-DB outage condition.
 
 
-def _pretend_group_is_jasper(monkeypatch):
-    """CI has no `jasper` group; resolve every gid to it."""
-    import grp
-    import types
-
-    monkeypatch.setattr(
-        grp, "getgrgid", lambda _gid: types.SimpleNamespace(gr_name="jasper")
-    )
-
-
 def test_state_group_write_no_files_is_ok(tmp_path):
     assert _classify_state_group_write(tmp_path / "usage.db").status == "ok"
 
@@ -208,3 +199,60 @@ def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status):
 
 def test_state_group_write_check_is_registered():
     assert "check_state_dir_group_writable" in _registered_check_names()
+
+
+# ---------- check_state_dir: os.access(W_OK) always reports jasper-doctor's
+# own root access, not the non-root jasper-voice/-mux writers'. Converged
+# onto the same _shared._group_writable_dir predicate as
+# audio.check_camilla_configs_writable and correction.check_correction_state_dirs,
+# but require_setgid=False: ensure_state_dir (install.sh) leaves STATE_DIR
+# itself plain root:jasper 0770, not setgid, because every writer here
+# already declares Group=jasper in its own unit rather than relying on
+# setgid inheritance.
+
+
+def test_check_state_dir_warns_when_missing(monkeypatch, tmp_path):
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaSyTest",
+        JASPER_USAGE_DB=str(tmp_path / "missing" / "usage.db"),
+    )
+
+    r = doctor.check_state_dir(cfg)
+
+    assert r.status == "warn"
+
+
+def test_check_state_dir_ok_when_group_writable_without_setgid(monkeypatch, tmp_path):
+    """The real STATE_DIR posture (0770, no setgid) must not be flagged —
+    require_setgid=False is load-bearing here, unlike the correction/
+    active_speaker and CamillaDSP-configs trees."""
+    _pretend_group_is_jasper(monkeypatch)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    os.chmod(state_dir, 0o770)
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaSyTest",
+        JASPER_USAGE_DB=str(state_dir / "usage.db"),
+    )
+
+    r = doctor.check_state_dir(cfg)
+
+    assert r.status == "ok"
+
+
+def test_check_state_dir_fails_when_not_group_writable(monkeypatch, tmp_path):
+    _pretend_group_is_jasper(monkeypatch)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    os.chmod(state_dir, 0o700)
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaSyTest",
+        JASPER_USAGE_DB=str(state_dir / "usage.db"),
+    )
+
+    r = doctor.check_state_dir(cfg)
+
+    assert r.status == "fail"

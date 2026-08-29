@@ -11,7 +11,6 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import datetime
-import grp
 import json
 import os
 import re
@@ -20,7 +19,7 @@ import time
 from datetime import datetime as _datetime, timezone
 from pathlib import Path
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _group_writable_dir, _run
 from ...active_speaker.environment import (
     camilla_statefile_path,
     read_camilla_statefile_config_path,
@@ -253,22 +252,22 @@ def _not_writable_by_group(
     root, and ``os.access`` reports every path writable to the *caller* — root
     can write regardless of a directory's actual mode — so a root:root 0700
     directory (the fresh-install bug this guards) read as "ok" while the
-    dropped ``jasper-web`` writer was locked out. ``privsep`` /
-    ``secret_compartments`` document and solve the identical root-caller blind
-    spot on the read side; ``audio._camilla_configs_writable_result`` solves
-    the same write-side problem for one directory via the same group-name +
-    group-write-bit test this mirrors."""
+    dropped ``jasper-web`` writer was locked out.
+
+    Delegates the actual predicate to ``_shared._group_writable_dir`` (shared
+    with ``audio._camilla_configs_writable_result`` and
+    ``env.check_state_dir`` — this used to be a third near-copy of the same
+    stat-and-compare logic); see its docstring for the write+search+setgid
+    reasoning. ``privsep`` / ``secret_compartments`` document and solve the
+    identical root-caller blind spot on the read side."""
     not_writable: list[str] = []
     for p in paths:
         try:
             st = p.stat()
         except OSError:
             continue
-        try:
-            group_name = grp.getgrgid(st.st_gid).gr_name
-        except (KeyError, OSError):
-            group_name = str(st.st_gid)
-        if group_name != expected_group or not (st.st_mode & 0o0020):
+        writable, _ = _group_writable_dir(st, expected_group=expected_group)
+        if not writable:
             not_writable.append(str(p))
     return not_writable
 

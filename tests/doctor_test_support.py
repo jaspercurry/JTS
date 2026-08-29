@@ -13,6 +13,22 @@ def _registered_check_names() -> set[str]:
     return {check.func.__name__ for check in doctor.registered_checks()}
 
 
+def _pretend_group_is_jasper(monkeypatch):
+    """CI has no `jasper` group; resolve every gid to it.
+
+    Patches the shared ``grp`` module object, so it takes effect regardless
+    of which doctor submodule performs the lookup (``_shared._group_writable_dir``,
+    ``_classify_state_group_write``, …) — all of them do a bare ``import grp``
+    and read ``grp.getgrgid`` off the same module.
+    """
+    import grp
+    import types
+
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: types.SimpleNamespace(gr_name="jasper")
+    )
+
+
 def _fresh_cfg(monkeypatch, **vars_) -> Config:
     """Build a ``Config`` with only the requested provider vars set."""
     drop = [

@@ -10,11 +10,10 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from ...config import Config
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import CheckResult, _group_writable_dir
 
 @doctor_check(order=0, group="env")
 def check_env_file() -> CheckResult:
@@ -46,11 +45,32 @@ def check_speaker_name() -> CheckResult:
 
 @doctor_check(order=23, group="env", label="state dir", needs_cfg=True)
 def check_state_dir(cfg: Config) -> CheckResult:
+    """``os.access(p, os.W_OK)`` cannot answer this: jasper-doctor runs as
+    root, and ``os.access`` reports every path writable to the *caller*
+    regardless of its actual mode. Uses the same group/mode predicate as
+    ``audio.check_camilla_configs_writable`` and
+    ``correction.check_correction_state_dirs``, but with
+    ``require_setgid=False``: ``ensure_state_dir`` (install.sh) leaves this
+    dir plain ``root:jasper 0770``, not setgid — every writer here
+    (jasper-voice, jasper-mux, …) already declares ``Group=jasper`` in its
+    own systemd unit, so new entries get the right group from the writer's
+    own identity rather than needing setgid inheritance from the parent."""
     p = Path(cfg.usage_db).parent
     if not p.exists():
         return CheckResult("state dir", "warn", f"{p} missing (will be created on first run)")
-    if not os.access(str(p), os.W_OK):
-        return CheckResult("state dir", "fail", f"{p} not writable")
+    try:
+        st = p.stat()
+    except OSError as exc:
+        return CheckResult("state dir", "fail", f"{p}: {exc}")
+    writable, group_name = _group_writable_dir(
+        st, expected_group="jasper", require_setgid=False
+    )
+    if not writable:
+        return CheckResult(
+            "state dir", "fail",
+            f"{p} not writable by the non-root jasper-* daemons "
+            f"(group={group_name} mode={oct(st.st_mode & 0o7777)})",
+        )
     return CheckResult("state dir", "ok", str(p))
 
 @doctor_check(order=23.5, group="env", label="state group-write", needs_cfg=True)

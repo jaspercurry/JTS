@@ -1058,10 +1058,13 @@ def _own_group() -> str:
     [
         (0o2775, None, "ok"),
         (0o2755, None, "fail"),  # the exact regression: group-write stripped
+        # setgid lost (2775 -> 0775): a root-run process creating a NEW
+        # subdirectory later would land it group-root, not group-jasper.
+        (0o0775, None, "fail"),
         (0o2775, "jts-no-such-group-xyz", "fail"),
         (None, None, "warn"),  # dir absent
     ],
-    ids=["group-writable", "group-readonly", "wrong-group", "absent"],
+    ids=["group-writable", "group-readonly", "setgid-lost", "wrong-group", "absent"],
 )
 def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status):
     d = tmp_path / "configs"

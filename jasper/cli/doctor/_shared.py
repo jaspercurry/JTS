@@ -29,10 +29,12 @@ No logic changed in the split. Names that tests patch (e.g.
 domain module, so a check reads them from its own namespace."""
 from __future__ import annotations
 
+import grp
 import hashlib
 import os
 import re
 import shlex
+import stat as _stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -217,6 +219,49 @@ def _camilla_block_field(text: str, block: str, key: str) -> str | None:
         if match:
             return match.group(1).strip().strip("'\"")
     return None
+
+def _group_writable_dir(
+    st: os.stat_result, *, expected_group: str, require_setgid: bool = True
+) -> tuple[bool, str]:
+    """Whether a non-root process in group ``expected_group`` could create or
+    replace entries in the directory behind stat result ``st``.
+
+    Three conditions, not one:
+
+    - group-owned by ``expected_group``;
+    - the group WRITE *and* SEARCH/execute bits (``0o030``) — POSIX needs
+      search on a directory, not just write, to add or remove an entry in
+      it, so write alone is not enough;
+    - (when ``require_setgid``) the setgid bit, so a subdirectory a
+      ROOT-run process later creates inside this tree inherits
+      ``expected_group`` from its parent instead of landing group-root (the
+      creator's own primary group) and locking the non-root arm out of that
+      nested path. Only meaningful for trees a root-run writer can add NEW
+      subdirectories to that the non-root arm must also reach — pass
+      ``require_setgid=False`` for a plain state dir whose every writer
+      already declares its own ``Group=`` in its systemd unit, where
+      inheritance is not how that dir gets its group.
+
+    Returns ``(writable, resolved_group_name)`` so callers can build their
+    own detail message; the name falls back to the numeric gid string when
+    it has no group-database entry.
+
+    ``os.access(path, os.W_OK)`` cannot answer this: jasper-doctor and
+    install.sh's helpers run as root, and ``os.access`` reports every path
+    writable to the *caller* regardless of its actual mode — root can write
+    regardless of mode bits. This is the shared predicate for that
+    root-caller blind spot on the write side; ``privsep.py`` /
+    ``secret_compartments.py`` document and solve the identical problem on
+    the read side.
+    """
+    try:
+        group_name = grp.getgrgid(st.st_gid).gr_name
+    except (KeyError, OSError):
+        group_name = str(st.st_gid)
+    writable = group_name == expected_group and (st.st_mode & 0o030) == 0o030
+    if require_setgid:
+        writable = writable and bool(st.st_mode & _stat.S_ISGID)
+    return writable, group_name
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
