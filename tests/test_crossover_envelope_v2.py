@@ -105,9 +105,9 @@ from jasper.web.correction_crossover_v2 import (
     GRADE_SPATIAL_FAILED,
     GRADE_SPATIAL_PASSED,
     GRADE_SPATIAL_UNMEASURABLE,
-    _compact_cloud_status,
     _post_apply_grade,
 )
+from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "apply", "verify")
 
@@ -4773,7 +4773,8 @@ def _prediction(
 ) -> dict:
     """One ``_prediction_status`` projection, in the shape the wire sends.
 
-    Mirrors ``jasper.web.correction_crossover_v2._prediction_status``'s output
+    Mirrors ``jasper.web.correction_crossover_v2_status._prediction_status``'s
+    output
     key-for-key rather than inventing a convenient shape — the four
     absence/presence combinations exercised below are its OWN enumerated
     states, and a fixture that smoothed them over would pin nothing.

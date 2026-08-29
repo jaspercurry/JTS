@@ -136,7 +136,7 @@ PHASE_DONE = "done"
 # a journey walks its own :attr:`JourneyPlan.phases` — the subset its index map
 # actually addresses, in this order — never this tuple directly. Consumers that
 # only have the persisted state read its ``session_phases`` field and fall back
-# to this tuple (see ``jasper.web.correction_crossover_v2._phase_from_state``).
+# to this tuple (see ``jasper.web.correction_crossover_v2_status._phase_from_state``).
 CAPTURE_PHASES = (
     PHASE_CHECK,
     PHASE_MEASURE,

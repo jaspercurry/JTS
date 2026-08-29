@@ -107,6 +107,7 @@ from jasper.capture_relay.session import (
 from jasper.active_speaker.crossover_v2.round_anchor import round_anchor_record
 from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web import correction_crossover_v2_relay as v2relay
 
 from tests.conftest import seat_process_volume_owner
@@ -406,7 +407,7 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
 
     def play(phase: str, program: Any) -> None:
         if phases_seen is not None:
-            block = v2host.crossover_v2_status_block()
+            block = v2status.crossover_v2_status_block()
             phases_seen.append((phase, block["phase"] if block else None))
         if on_play is not None:
             # Observed at the START of a capture, so it reports the durable
@@ -845,7 +846,7 @@ def test_production_happy_path_is_local_check_measure_then_review():
 
     screens = [_envelope_for(p)["screen"] for _s, p in phases_seen]
     assert screens == ["microphone_check", "measure"]
-    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert v2status.crossover_v2_status_block()["phase"] == "review"
 
 
 # --- the split: nothing applies without an explicit household POST (D1) ------
@@ -925,7 +926,7 @@ def test_no_session_path_applies_anything(monkeypatch):
     assert state.get("applied") is not True
     assert state["failure"] is None
     # A measure-only session resolves to the review interlude, never "done".
-    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert v2status.crossover_v2_status_block()["phase"] == "review"
     # The phone signalled the set complete exactly once; the Pi answered with
     # capture_set_complete only after that signal.
     assert phone.completions_posted == 1
@@ -1046,8 +1047,8 @@ def test_an_express_session_runs_end_to_end_through_the_real_runner():
     assert confirms[0]["candidate_fingerprint"] == candidate.fingerprint
     # …and nothing was applied by any of it.
     assert v2host.load_v2_state().get("applied") is not True
-    assert v2host.crossover_v2_status_block()["tier"] == TIER_EXPRESS
-    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert v2status.crossover_v2_status_block()["tier"] == TIER_EXPRESS
+    assert v2status.crossover_v2_status_block()["phase"] == "review"
 
     # Stage 2 is where express's end screen lives now — one entry at the mark.
     from jasper.active_speaker.crossover_v2_flow import (
@@ -1141,7 +1142,7 @@ def test_a_remote_session_holds_every_capture_until_its_driver_reports_position(
     # of them — a refusal would have ended the session and a spent budget would
     # have pushed the attempt number past the index.
     assert phone.begun == (plan.capture_target, plan.capture_target)
-    assert v2host.crossover_v2_status_block()["tier"] == TIER_REMOTE
+    assert v2status.crossover_v2_status_block()["tier"] == TIER_REMOTE
     # Nothing is left waiting once the walk is done.
     assert gate.pending() is None
 
@@ -1940,7 +1941,7 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
                 # differs — see _CloudEchoBand.)
                 assert provenance["derived_lo_hz"] == pipeline["echo_band_hz"][0]
         assert conductor.group_cloud_result(phase) == pipeline
-    compact = v2host.crossover_v2_status_block()["cloud"]
+    compact = v2status.crossover_v2_status_block()["cloud"]
     assert set(compact) == {PHASE_CLOUD_MEASURE}
     for entry in compact.values():
         assert isinstance(entry["geometry_locked"], bool)
@@ -3025,7 +3026,7 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
         },
     })
 
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     cloud = block["cloud"]
     assert set(cloud) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
 
@@ -3115,7 +3116,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
         },
     })
 
-    measure = v2host.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
+    measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["reference_db"] is None
     assert measure["overall_passed"] is True
 
@@ -3146,7 +3147,7 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
         },
     })
 
-    measure = v2host.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
+    measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["geometry_locked"] is True
     assert measure["excluded_interval_count"] is None
     assert measure["overall_passed"] is None
@@ -3160,7 +3161,7 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
 
 def test_state_cloud_block_is_none_before_any_group_closes():
     v2host.save_v2_state({"session_id": "cap_fresh"})
-    assert v2host.crossover_v2_status_block()["cloud"] is None
+    assert v2status.crossover_v2_status_block()["cloud"] is None
 
 
 def test_cloud_summary_stamps_the_producing_session_id():
@@ -3201,12 +3202,12 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
         },
     }
 
-    fresh = v2host._compact_cloud_status(
+    fresh = v2status._compact_cloud_status(
         stamped_state, current_session_id="cap_producer_session",
     )
     assert fresh[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
-    stale = v2host._compact_cloud_status(
+    stale = v2status._compact_cloud_status(
         stamped_state, current_session_id="cap_rearm_session",
     )
     assert stale[PHASE_CLOUD_VERIFY]["provenance_note"] == (
@@ -3219,7 +3220,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
             "geometry": {"locked": False}, "positions": [], "pipeline": pipeline,
         },
     }
-    legacy = v2host._compact_cloud_status(
+    legacy = v2status._compact_cloud_status(
         legacy_state, current_session_id="cap_rearm_session",
     )
     assert legacy[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
@@ -3227,7 +3228,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
     # Backward compatibility: an existing caller that never passes
     # current_session_id at all (every test seam before this PR) still gets
     # the honest "unknown" reading, not a crash or a fabricated verdict.
-    no_current = v2host._compact_cloud_status(stamped_state)
+    no_current = v2status._compact_cloud_status(stamped_state)
     assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
 
@@ -3322,7 +3323,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     }
 
     # Surface 2: /state's compact projection.
-    compact = v2host.crossover_v2_status_block()["cloud"]
+    compact = v2status.crossover_v2_status_block()["cloud"]
     assert compact is not None
     assert compact[PHASE_CLOUD_MEASURE]["geometry_locked"] is True
     assert compact[PHASE_CLOUD_MEASURE]["overall_passed"] is False
@@ -3334,7 +3335,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     status = {
         "active": True,
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2host.crossover_v2_status_block(),
+        "crossover_v2": v2status.crossover_v2_status_block(),
     }
     envelope = build_crossover_envelope_v2(status)
     assert envelope["cloud"] is not None
@@ -3408,7 +3409,7 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
     # Honestly None -- "this session has not closed a group yet" -- never
     # the previous session's stale verdict.
     assert state["cloud"] is None
-    assert v2host.crossover_v2_status_block()["cloud"] is None
+    assert v2status.crossover_v2_status_block()["cloud"] is None
 
 
 def _seeded_session_with_a_banked_finding(copy: str) -> None:
@@ -3537,7 +3538,7 @@ def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
     # Surface 2: /state's projection.
     assert [
         row["household_copy"]
-        for row in v2host.crossover_v2_status_block()["findings"]
+        for row in v2status.crossover_v2_status_block()["findings"]
     ] == [copy]
 
     # Surface 3: the screen the household actually reads.
@@ -3548,7 +3549,7 @@ def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
-            **v2host.crossover_v2_status_block(),
+            **v2status.crossover_v2_status_block(),
             "phase": PHASE_DONE,
             "verify": {"outcome": "pass"},
         },
@@ -3574,7 +3575,7 @@ def test_a_fresh_measurement_that_banks_nothing_clears_the_old_finding():
 
     state = v2host.load_v2_state()
     assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in (state["evidence"] or {})
-    assert v2host.crossover_v2_status_block()["findings"] == []
+    assert v2status.crossover_v2_status_block()["findings"] == []
 
 
 # --- G1's ripple reservation across the stage-2 bundle hop (#2087) ------------
@@ -3627,7 +3628,7 @@ def test_stage_2_keeps_the_measuring_sessions_ripple_reservation(monkeypatch):
 
     # Surface 2: /state's projection.
     assert (
-        v2host.crossover_v2_status_block()["measure"]["ripple_reservation"]
+        v2status.crossover_v2_status_block()["measure"]["ripple_reservation"]
         == reservation
     )
 
@@ -3639,7 +3640,7 @@ def test_stage_2_keeps_the_measuring_sessions_ripple_reservation(monkeypatch):
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
-            **v2host.crossover_v2_status_block(),
+            **v2status.crossover_v2_status_block(),
             "phase": PHASE_DONE,
             "verify": {"outcome": "pass"},
         },
@@ -3666,7 +3667,7 @@ def test_a_fresh_measurement_clears_a_previous_sessions_ripple_reservation():
     )
 
     assert v2host.load_v2_state()["measure"] is None
-    assert v2host.crossover_v2_status_block()["measure"] is None
+    assert v2status.crossover_v2_status_block()["measure"] is None
 
 
 # --- the projection contract, pinned AT the projection layer ------------------
@@ -3743,7 +3744,7 @@ def test_a_row_without_a_real_sentence_is_dropped_never_coerced(copy):
     a bundle that never banked one.
     """
     _findings_state([{"household_copy": copy, "at": time.time()}])
-    assert v2host.crossover_v2_status_block()["findings"] == []
+    assert v2status.crossover_v2_status_block()["findings"] == []
 
 
 def test_a_good_row_survives_beside_every_unusable_one():
@@ -3756,7 +3757,7 @@ def test_a_good_row_survives_beside_every_unusable_one():
         "not even an object",
         {"household_copy": "", "at": time.time()},
     ])
-    assert v2host.crossover_v2_status_block()["findings"] == [
+    assert v2status.crossover_v2_status_block()["findings"] == [
         {"household_copy": "A real one.", "at": 1_700_000_000.0},
     ]
 
@@ -3784,7 +3785,7 @@ def test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it(at):
     the wizard's 1.5 s poll path, where an escape is a 500 on a plain page load.
     """
     _findings_state([{"household_copy": "A real one.", "at": at}])
-    assert v2host.crossover_v2_status_block()["findings"] == [
+    assert v2status.crossover_v2_status_block()["findings"] == [
         {"household_copy": "A real one.", "at": None},
     ]
 
@@ -3800,7 +3801,7 @@ def test_the_projection_reads_only_its_two_fields():
         "mechanism": "M7",
         "evidence": {"disagreement_db": 3.2307},
     }])
-    assert v2host.crossover_v2_status_block()["findings"] == [
+    assert v2status.crossover_v2_status_block()["findings"] == [
         {"household_copy": "A real one.", "at": 1_700_000_000.0},
     ]
 
@@ -3810,7 +3811,7 @@ def test_a_malformed_projection_block_reads_as_no_findings(rows):
     """A whole projection key that is not a list of objects is "nothing banked",
     never a crash on the poll path."""
     _findings_state(rows)
-    assert v2host.crossover_v2_status_block()["findings"] == []
+    assert v2status.crossover_v2_status_block()["findings"] == []
 
 
 def test_a_corrupt_session_phases_list_never_reads_as_done():
@@ -3824,7 +3825,7 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
         "session_phases": ["nonsense", "also-not-a-phase"],
         "applied": False,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_MEASURE
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_MEASURE
 
     # A partially-recognisable list keeps only what it can name — and that IS
     # enough to walk, so it is used rather than discarded.
@@ -3834,7 +3835,7 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
         "session_phases": ["nonsense", PHASE_VERIFY],
         "applied": True,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_VERIFY
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_VERIFY
 
 
 # --- the stage-1 PHASE_DONE collision (two-stage commission PR-T2) ------------
@@ -3861,7 +3862,7 @@ def test_a_measure_only_session_resolves_to_review_never_done():
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "applied": False,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_REVIEW
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
 def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done():
@@ -3885,9 +3886,9 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "applied": True,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_VERIFY
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_VERIFY
     # …and the review interlude is NOT re-offered.
-    assert v2host.crossover_v2_status_block()["phase"] != "review"
+    assert v2status.crossover_v2_status_block()["phase"] != "review"
 
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
@@ -3896,7 +3897,7 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2host.crossover_v2_status_block(),
+        "crossover_v2": v2status.crossover_v2_status_block(),
     })
     assert env["screen"] == "verify"
     # The stage-2 entry point, tier-matched by the durable state's own tier.
@@ -3921,7 +3922,7 @@ def test_a_session_that_verified_still_resolves_to_done():
             "session_phases": list(phases),
             "applied": True,
         })
-        assert v2host.crossover_v2_status_block()["phase"] == PHASE_DONE, phases
+        assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE, phases
 
 
 def test_a_corrupt_state_cannot_reach_the_review_screen_either():
@@ -3942,7 +3943,7 @@ def test_a_corrupt_state_cannot_reach_the_review_screen_either():
         "session_phases": ["nonsense", "also-not-a-phase"],
         "applied": False,
     })
-    phase = v2host.crossover_v2_status_block()["phase"]
+    phase = v2status.crossover_v2_status_block()["phase"]
     assert phase != PHASE_REVIEW
     # MEASURE is accepted and VERIFY is not, so the shipped special case owns
     # this state — the honest "the apply is in flight" answer, not a terminal.
@@ -4103,7 +4104,7 @@ def test_the_held_window_is_not_the_review_screen(monkeypatch):
 
     # HELD: walked, unconfirmed, no candidate.
     assert conductor.cloud_measure_group_awaiting_confirm() is True
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["phase"] == "closing"
     assert block["cloud_close"] == "awaiting_confirm"
     env = build_crossover_envelope_v2({
@@ -4124,7 +4125,7 @@ def test_the_held_window_is_not_the_review_screen(monkeypatch):
     # CONFIRMED, fit in flight: the host persists BEFORE running the close.
     conductor.note_group_close_started()
     v2host.persist_conductor_state(conductor, failure_code=None)
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["phase"] == "closing"
     assert block["cloud_close"] == "running"
     env = build_crossover_envelope_v2({
@@ -4141,7 +4142,7 @@ def test_the_held_window_is_not_the_review_screen(monkeypatch):
     # CLOSED: the candidate exists, and only now is it the household's move.
     assert conductor.confirm_cloud_measure_group()["candidate_fingerprint"]
     v2host.persist_conductor_state(conductor, failure_code=None)
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["phase"] == "review"
     assert block["cloud_close"] == ""
 
@@ -4188,7 +4189,7 @@ def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
 
     # …and the speaker page is byte-for-byte the held window it was before it:
     # still "confirm on the measurement page", still not busy, nothing to decide.
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["phase"] == "closing"
     assert block["cloud_close"] == "awaiting_confirm"
     assert block["candidate"] is None
@@ -4207,7 +4208,7 @@ def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
     # And the household's confirm lands the review screen straight away.
     assert conductor.confirm_cloud_measure_group()["candidate_fingerprint"]
     v2host.persist_conductor_state(conductor, failure_code=None)
-    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert v2status.crossover_v2_status_block()["phase"] == "review"
 
 
 def test_the_held_set_offers_its_two_moves_but_never_over_a_live_hold(monkeypatch):
@@ -4235,7 +4236,7 @@ def test_the_held_set_offers_its_two_moves_but_never_over_a_live_hold(monkeypatc
         attempt += 1
         conductor.consume_capture(index, attempt, CaptureResult(wav=b"w"))
         v2host.persist_conductor_state(conductor, failure_code=None)
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["cloud_close"] == "awaiting_confirm"
 
     def envelope_for(relay):
@@ -4352,7 +4353,7 @@ def test_the_runner_starts_the_eager_fit_on_the_group_close_accept(monkeypatch):
     # nothing applied.
     assert [kind for kind, _ in published] == ["check", "candidate"]
     assert v2host.load_v2_state().get("applied") is not True
-    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert v2status.crossover_v2_status_block()["phase"] == "review"
     assert phone.completions_posted == 1
 
 
@@ -4380,7 +4381,7 @@ def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "applied": False,
     })
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["phase"] == "review"
     env = build_crossover_envelope_v2({
         "active": True,
@@ -5118,13 +5119,13 @@ def test_the_tier_rides_the_durable_state_and_state_block():
         "accepted_phases": [PHASE_CHECK],
         "tier": "express",
     })
-    assert v2host.crossover_v2_status_block()["tier"] == "express"
+    assert v2status.crossover_v2_status_block()["tier"] == "express"
     # State written before tiers existed says nothing, and nothing is invented.
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK],
     })
-    assert v2host.crossover_v2_status_block()["tier"] is None
+    assert v2status.crossover_v2_status_block()["tier"] is None
 
 
 # --- two-stage commission D4: the prediction on the wire ------------------
@@ -5218,7 +5219,7 @@ def test_the_prediction_reaches_the_status_block_with_its_verdict():
     conductor = _closed_cloud_conductor()
     v2host.persist_conductor_state(conductor, failure_code=None)
 
-    prediction = v2host.crossover_v2_status_block()["prediction"]
+    prediction = v2status.crossover_v2_status_block()["prediction"]
     stored = conductor.measure_predicted_spec_report
     assert prediction["overall_passed"] == stored["overall_passed"]
     assert prediction["reference_db"] == pytest.approx(stored["reference_db"])
@@ -5262,7 +5263,7 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     ``test_realized_chart_lengths_stay_within_cap_for_both_curve_families``)
     over 1..5000 plus 2000 random larger lengths: max observed output was
     exactly 256, never more, for any input."""
-    n = v2host.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
+    n = v2status.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
     freqs = [100.0 + i for i in range(n)]
     mags = [float(i % 5) for i in range(n)]
     raw = {"freqs_hz": freqs, "magnitude_db": mags}
@@ -5274,20 +5275,20 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
         },
         "verify_priors": {"predicted_sum": raw},
     })
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     predicted = block["prediction"]["curve"]
     # THE pin: one owner, so identical input yields byte-identical output.
     assert predicted == block["cloud_chart"][PHASE_CLOUD_MEASURE]["curve"]
     assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
     # Genuinely decimated, to exactly the shared owner's (now ceiling-division)
     # stride -- re-derived: ceil(1031 / 256) = 5, not floor's 4.
-    stride = -(-n // v2host.CHART_CURVE_MAX_JSON_POINTS)
+    stride = -(-n // v2status.CHART_CURVE_MAX_JSON_POINTS)
     assert stride == 5
     assert len(predicted["freqs_hz"]) == len(range(0, n, stride))
     assert len(predicted["freqs_hz"]) == 207
     # The hard ceiling itself: never CAP + stride (the old soft promise),
     # always CAP outright.
-    assert len(predicted["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS
+    assert len(predicted["freqs_hz"]) <= v2status.CHART_CURVE_MAX_JSON_POINTS
 
 
 def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
@@ -5319,18 +5320,18 @@ def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
         mag_db = np.zeros(freqs.size)
 
         persisted_pred = v2host._decimate_sum((freqs, mag_db))
-        rendered_pred = v2host._decimate_curve_for_chart(
+        rendered_pred = v2status._decimate_curve_for_chart(
             persisted_pred["freqs_hz"], persisted_pred["magnitude_db"],
         )
         persisted_cloud = _decimate_curve_for_json(freqs, mag_db)
-        rendered_cloud = v2host._decimate_curve_for_chart(
+        rendered_cloud = v2status._decimate_curve_for_chart(
             persisted_cloud["freqs_hz"], persisted_cloud["magnitude_db"],
         )
 
         # The hard ceiling itself, for BOTH curve families -- this is what
         # the constants-equality guard could never see.
-        assert len(rendered_pred["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS
-        assert len(rendered_cloud["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS
+        assert len(rendered_pred["freqs_hz"]) <= v2status.CHART_CURVE_MAX_JSON_POINTS
+        assert len(rendered_cloud["freqs_hz"]) <= v2status.CHART_CURVE_MAX_JSON_POINTS
 
         # Same-frame density parity: the bug's own signature was an
         # UNBOUNDED mismatch (504 undecimated vs. 257, ~2x and growing with
@@ -5416,13 +5417,13 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     bands — never ``False``, which would read as a measured failure, and never
     ``True``, which the compact-cloud rule already forbids fabricating."""
     v2host.save_v2_state({"session_id": "cap_x", "verify_priors": None})
-    assert v2host.crossover_v2_status_block()["prediction"] is None
+    assert v2status.crossover_v2_status_block()["prediction"] is None
 
     v2host.save_v2_state({
         "session_id": "cap_x",
         "verify_priors": {"predicted_sum": None, "predicted_spec": None},
     })
-    assert v2host.crossover_v2_status_block()["prediction"] is None
+    assert v2status.crossover_v2_status_block()["prediction"] is None
 
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -5431,7 +5432,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
             "predicted_spec": None,
         },
     })
-    prediction = v2host.crossover_v2_status_block()["prediction"]
+    prediction = v2status.crossover_v2_status_block()["prediction"]
     assert prediction["curve"]["freqs_hz"] == [100.0, 200.0]
     assert prediction["overall_passed"] is None
     assert prediction["spec_bands"] == []
@@ -5497,18 +5498,18 @@ def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog)
         v2host.persist_conductor_state(
             conductor, failure_code="correction_not_an_improvement",
         )
-        v2host.crossover_v2_status_block()
+        v2status.crossover_v2_status_block()
     priors = v2host.load_v2_state()["verify_priors"]
     assert priors["predicted_sum"] is None
     assert priors["predicted_spec"] is not None
 
-    prediction = v2host.crossover_v2_status_block()["prediction"]
+    prediction = v2status.crossover_v2_status_block()["prediction"]
     assert prediction["curve"] is None
     # A graded miss, NOT an ungradeable unknown.
     assert prediction["overall_passed"] is False
     assert prediction["spec_bands"]
     assert prediction["reference_db"] is not None
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == "not_applied"
     assert grade["graded"] is True
     # No outcome, and therefore no classification line: the round is graded as
@@ -5836,7 +5837,7 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
             realized_db=float(index),
         )
 
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["attempts_loop"] == {
         "last_decision": loop["last_decision"],
         "store_count": 7,
@@ -5861,7 +5862,7 @@ def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():
         "pre_apply_profile": {"status": "applied"},
     })
     v2host.observe_restore()
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
 def test_restore_refuses_when_nothing_applied():
@@ -6055,7 +6056,7 @@ def test_status_block_surfaces_apply_blocked():
         "applied": False,
         "apply_blocked": {"id": "measured_candidate_preset_mismatch", "message": "x"},
     })
-    assert v2host.crossover_v2_status_block()["apply_blocked"] == {
+    assert v2status.crossover_v2_status_block()["apply_blocked"] == {
         "id": "measured_candidate_preset_mismatch", "message": "x",
     }
 
@@ -6070,7 +6071,7 @@ def test_status_block_reports_an_applied_but_ungraded_result():
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": True,
     })
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_UNVERIFIED
     assert grade["graded"] is False
     assert grade["verify_outcome"] is None
@@ -6086,7 +6087,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
         "applied": True,
         "verify": {"outcome": "pass"},
     })
-    by_verify = v2host.crossover_v2_status_block()["post_apply_grade"]
+    by_verify = v2status.crossover_v2_status_block()["post_apply_grade"]
     # Verified at the mark only — express's whole grade, and distinguishable
     # from a walked post-apply group WITHOUT consulting `tier`.
     assert by_verify["state"] == v2host.GRADE_MARK_VERIFIED
@@ -6112,7 +6113,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
             },
         },
     })
-    by_cloud = v2host.crossover_v2_status_block()["post_apply_grade"]
+    by_cloud = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert by_cloud["state"] == v2host.GRADE_GRADED
     # A grade that exists and FAILED is still a grade — "we checked and it is
     # out of spec" is a different claim from "we never checked", and item 7's
@@ -6206,7 +6207,7 @@ def _honest_result_state(
 )
 def test_honest_result_truth_table(changes, expected):
     v2host.save_v2_state(_honest_result_state(**changes))
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     grade = block["post_apply_grade"]
     assert grade.get("outcome") == expected
     if changes.get("applied", True):
@@ -6322,7 +6323,7 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     state["pre_apply_profile"] = {"kind": "prior", "config": {"path": "/tmp/p.yml"}}
 
     v2host.save_v2_state(state)
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     grade = block["post_apply_grade"]
 
     assert grade["outcome"] == "verified_target"
@@ -6394,7 +6395,7 @@ def test_a_legacy_fc_selection_is_inert_and_never_refuses():
     )
     for legacy in legacy_shapes:
         v2host.save_v2_state(_no_sweep_state(fc_selection=legacy))
-        block = v2host.crossover_v2_status_block()
+        block = v2status.crossover_v2_status_block()
 
         # Graded from VERIFY alone, identically to the same round without it.
         assert block["post_apply_grade"]["outcome"] == "verified_target", legacy
@@ -6434,7 +6435,7 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
     with caplog.at_level(logging.INFO, logger=v2host.__name__):
         v2host.persist_conductor_state(conductor, failure_code=None)
         v2host.persist_conductor_state(conductor, failure_code=None)
-        v2host.crossover_v2_status_block()
+        v2status.crossover_v2_status_block()
     lines = [
         record.message for record in caplog.records
         if "event=correction.crossover_v2_result_classified" in record.message
@@ -6455,7 +6456,7 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
         gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
     )
     monkeypatch.setattr(
-        v2host, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
+        v2status, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
     )
     with caplog.at_level(logging.INFO, logger=v2host.__name__):
         v2host.persist_conductor_state(conductor, failure_code=None)
@@ -6510,7 +6511,7 @@ def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
             passed=False, flatness=_GRADED_AND_FAILED_FLATNESS,
         ),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_GRADED  # unchanged vocabulary
     assert grade["spatial"] == v2host.GRADE_SPATIAL_FAILED
     # A failed grade is a COMPLETED grade — the tier delivered what it
@@ -6526,7 +6527,7 @@ def test_a_full_session_that_only_verified_at_the_mark_is_incomplete():
     absent — a true local result rendered as the wider claim. The local pass
     is preserved; what is added is that it is not what Full promised."""
     v2host.save_v2_state(_applied_state(tier=TIER_FULL))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_MARK_VERIFIED  # the local pass stands
     assert grade["graded"] is True
     assert grade["scope"] == v2host.GRADE_SCOPE_MARK
@@ -6539,7 +6540,7 @@ def test_an_express_session_verified_at_the_mark_is_complete_and_scoped():
     whole promise. Judging it against Full's would warn every express session
     ever run — the mirror of the defect."""
     v2host.save_v2_state(_applied_state(tier=TIER_EXPRESS))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2host.GRADE_SCOPE_MARK
     assert grade["complete"] is True
 
@@ -6551,7 +6552,7 @@ def test_a_closed_and_passing_group_is_a_complete_spatial_grade():
             **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
         }),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["spatial"] == v2host.GRADE_SPATIAL_PASSED
     assert grade["scope"] == v2host.GRADE_SCOPE_SPATIAL
     assert grade["complete"] is True
@@ -6573,7 +6574,7 @@ def test_a_group_that_could_not_be_graded_is_not_reported_as_a_failure():
             "max_db": None, "max_hz": None, "evaluable": False, "passed": False,
         }),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["spatial"] == v2host.GRADE_SPATIAL_UNMEASURABLE
     assert grade["spatial_worst_db"] is None
     # No spatial CLAIM exists, so the delivered width falls back to whatever
@@ -6591,7 +6592,7 @@ def test_a_failing_group_with_no_gauge_at_all_stays_a_failure():
     v2host.save_v2_state(_applied_state(
         tier=TIER_FULL, cloud_verify=_closed_cloud_group(passed=False),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["spatial"] == v2host.GRADE_SPATIAL_FAILED
     assert grade["spatial_worst_db"] is None  # no gauge, no number invented
 
@@ -6602,12 +6603,12 @@ def test_an_unreadable_tier_is_judged_on_delivery_not_on_a_guessed_promise():
     about a promise it never read would be worse than saying what it said —
     the same degrade rule the ``state`` vocabulary already follows."""
     v2host.save_v2_state(_applied_state(tier=None))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2host.GRADE_SCOPE_MARK
     assert grade["complete"] is True
 
     v2host.save_v2_state(_applied_state(tier="tier-from-2027"))
-    later = v2host.crossover_v2_status_block()["post_apply_grade"]
+    later = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert later["complete"] is True
 
 
@@ -6615,7 +6616,7 @@ def test_a_verify_that_did_not_pass_delivers_no_scope_at_all():
     v2host.save_v2_state(_applied_state(
         tier=TIER_FULL, verify_outcome="inconclusive",
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_INCONCLUSIVE
     assert grade["scope"] == v2host.GRADE_SCOPE_NONE
     assert grade["complete"] is False
@@ -6640,7 +6641,7 @@ def test_a_failed_verify_is_not_masked_by_a_passing_spatial_grade():
         claims={"integration": {"status": "fail", "max_db": 4.2}},
         cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_FAILED
     assert grade["graded"] is False
     # The rider (#2160, ratified 2026-08-17): the spatial instrument's own
@@ -6665,7 +6666,7 @@ def test_a_failed_absolute_claim_caps_the_badge_on_a_clean_capture():
         },
         cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_FAILED
     assert grade["graded"] is False
     assert grade["verify_outcome"] == "pass"  # both facts, neither overwritten
@@ -6684,7 +6685,7 @@ def test_an_outcome_fail_whose_claims_could_not_grade_still_caps_the_badge():
         },
         cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_FAILED
 
 
@@ -6696,7 +6697,7 @@ def test_an_inconclusive_verify_is_not_masked_by_a_closed_group():
         tier=TIER_FULL, verify_outcome="inconclusive",
         cloud_verify=_closed_cloud_group(passed=False),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_INCONCLUSIVE
     assert grade["graded"] is False
 
@@ -6713,7 +6714,7 @@ def test_a_clean_pass_still_grades_on_the_wider_spatial_claim():
         },
         cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
     ))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_GRADED
     assert grade["graded"] is True
     assert grade["complete"] is True
@@ -6726,20 +6727,20 @@ def test_a_state_file_with_no_claims_block_is_graded_on_its_outcome_alone():
         tier=TIER_FULL, verify_outcome="pass",
         cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
     ))
-    legacy = v2host.crossover_v2_status_block()["post_apply_grade"]
+    legacy = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert legacy["state"] == v2host.GRADE_GRADED
 
     v2host.save_v2_state(_applied_state(
         tier=TIER_FULL, verify_outcome="fail",
         cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
     ))
-    legacy_fail = v2host.crossover_v2_status_block()["post_apply_grade"]
+    legacy_fail = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert legacy_fail["state"] == v2host.GRADE_FAILED
 
 
 def test_status_block_never_asks_an_unapplied_session_for_a_grade():
     v2host.save_v2_state({"session_id": "cap_none", "applied": False})
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_NOT_APPLIED
     # Nothing promised, so nothing outstanding: `complete=False` here would
     # warn every speaker that has never been commissioned.
@@ -6761,14 +6762,14 @@ def test_status_block_reports_can_undo_only_with_a_real_pre_apply_profile():
         "applied": True,
         "pre_apply_profile": None,
     })
-    assert v2host.crossover_v2_status_block()["can_undo"] is False
+    assert v2status.crossover_v2_status_block()["can_undo"] is False
 
     v2host.save_v2_state({
         "session_id": "cap_with_prior",
         "applied": True,
         "pre_apply_profile": {"kind": "prior", "config": {"path": "/tmp/x.yml"}},
     })
-    assert v2host.crossover_v2_status_block()["can_undo"] is True
+    assert v2status.crossover_v2_status_block()["can_undo"] is True
 
     # Defensive: a stashed profile with nothing currently applied (should
     # not occur in practice — observe_restore clears both together — but
@@ -6778,7 +6779,7 @@ def test_status_block_reports_can_undo_only_with_a_real_pre_apply_profile():
         "applied": False,
         "pre_apply_profile": {"kind": "prior", "config": {"path": "/tmp/x.yml"}},
     })
-    assert v2host.crossover_v2_status_block()["can_undo"] is False
+    assert v2status.crossover_v2_status_block()["can_undo"] is False
 
 
 def test_can_undo_agrees_with_the_restore_resolvers_first_two_refusals():
@@ -6803,7 +6804,7 @@ def test_can_undo_agrees_with_the_restore_resolvers_first_two_refusals():
     ]
     for state, expected in matrix:
         v2host.save_v2_state(dict(state))
-        can_undo = v2host.crossover_v2_status_block()["can_undo"]
+        can_undo = v2status.crossover_v2_status_block()["can_undo"]
         assert can_undo is expected, state
 
         refusal = v2host.rollback_anchor_refusal(v2host.load_v2_state())
@@ -6837,7 +6838,7 @@ def test_first_ever_apply_end_to_end_offers_no_undo_but_a_valid_one_does(monkeyp
         status = {
             "active": True,
             "setup": {"active": True, "status": "ready"},
-            "crossover_v2": v2host.crossover_v2_status_block(),
+            "crossover_v2": v2status.crossover_v2_status_block(),
         }
         return build_crossover_envelope_v2(status)
 
@@ -7497,7 +7498,7 @@ def test_status_block_reports_needs_recovery_and_phase():
         "accepted_phases": [PHASE_CHECK],
         "applied": False,
     })
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["needs_recovery"] is True
     assert block["phase"] == PHASE_MEASURE
     # And the "applying" projection: measure accepted, not yet applied — the
@@ -7507,7 +7508,7 @@ def test_status_block_reports_needs_recovery_and_phase():
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_APPLYING
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_APPLYING
 
 
 def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
@@ -7829,7 +7830,7 @@ def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     # the durable state resolves to the review interlude, where the household
     # taps Apply — and where a REFUSED apply has to leave them.
     assert conductor.current_phase == PHASE_DONE
-    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert v2status.crossover_v2_status_block()["phase"] == "review"
 
     v2host._persist_apply_blocked({
         "id": "measured_candidate_preset_mismatch",
@@ -7840,7 +7841,7 @@ def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     state = v2host.load_v2_state()
     assert PHASE_CHECK in state["accepted_phases"]
     assert PHASE_MEASURE in state["accepted_phases"]
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     # RE-DERIVED for the split: a refused apply leaves the speaker UNAPPLIED,
     # so the honest phase is the review interlude the household tapped from —
     # not PHASE_APPLYING (nothing is applying; the apply is an HTTP request
@@ -7875,7 +7876,7 @@ def test_relay_timeout_still_resets_accepted_phases_through_the_real_persist_pat
 
     state = v2host.load_v2_state()
     assert state["accepted_phases"] == []
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
 def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
@@ -7925,7 +7926,7 @@ def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
 
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
     assert block["phase"] == PHASE_CHECK  # the corrupted derivation, on record
     env = build_crossover_envelope_v2({
         "active": True,
@@ -11102,7 +11103,7 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     # The envelope lands back on the pre-measurement screen — a clean
     # measure/review state, never a half-consistent review_apply pointing at
     # the now-undone candidate.
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
 # --- #2292: Undo owes the /sound DECLARATION the same reversal it owes the -----
@@ -11946,7 +11947,7 @@ def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
     assert state["accepted_phases"] == []
     assert state["candidate"] is None
     # The envelope serves the clean start screen…
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
     # …AND Undo still works, through the real restore seam.
     restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)

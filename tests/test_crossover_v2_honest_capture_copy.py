@@ -51,6 +51,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
 )
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_status as v2status
 from jasper.capture_relay.session import CaptureBeginRefused
 from tests.test_crossover_envelope_v2 import _status
 from tests.crossover_v2_fixtures import (
@@ -386,7 +387,7 @@ def _persisted_envelope_verdict():
     return build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2host.crossover_v2_status_block(),
+        "crossover_v2": v2status.crossover_v2_status_block(),
     })["verdict_text"]
 
 

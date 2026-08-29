@@ -116,7 +116,9 @@ missing, which is what makes §4's arithmetic checkable.
 `correction_crossover_backend.py` · `xflow` = `correction_crossover_flow.py` ·
 `relay` / `wired` / `republish` = `correction_crossover_v2_relay.py` /
 `_wired.py` / `_republish.py` · `doctor` = `jasper/cli/doctor/correction.py` ·
-`in-file` = no consumer outside this module · `tests` = test suite only.
+`v2-status` = `correction_crossover_v2_status.py` (rows Q/R/S, lifted by
+#3286) · `in-file` = no consumer outside this module · `tests` = test
+suite only.
 
 **Disposition codes.** `→W*` absorbed by that plan work item · `SUPERSEDED` the
 engine module named already owns it · `KEEP` survives the dissolution, with
@@ -133,19 +135,19 @@ unlike its twin.
 | **E** | — | — | `capture_dump_enabled` — was operator retention switched on right now. **Gone** as of #3250, with row D's marker it read. | — | **EXECUTED BY #3250** |
 | **F** | 230–236 | 7 | `_state_lock` (RLock), `_state_path_override`, `_volume_plan_lock`, `_volume_plan` — four of the file's seven module-level mutables. | in-file; **republish `:205`** holds `_state_lock` | **→W5** with the singletons they guard. **Move as one unit** — see §3. |
 | **G** | 237–447 | 211 | Refusal / error taxonomy: `CrossoverV2Refused`, `CrossoverV2LocalSeamError`, `refusal_next_action`, `classify_program_failure` (§5.10 reason codes), `refused_from_flow_error`, `profile_refusal_code`. | setup `:1010`, `:7394`, `:7536`; **relay `:574`, `:587`, `:978`; wired `:580`, `:609`, `:871`; republish `:60`** | **SUPERSEDED** → `crossover_v2/refusal_copy.py` (1,609 lines; 12 public functions/classes and 51 public constants, already the home of the `REASON_*` codes this row imports at `:118-122`). A clean leaf; no seam involved. |
-| **H** | 448–577 | 130 | Durable JSON state file I/O: path resolution, `load_v2_state`, `save_v2_state` (fsync decision), `_update_current_review`, `clear_v2_state`, `set_state_path_for_tests`. | xflow `:272`; **republish `:206`, `:269`** (and `_state_lock` at `:205`); tests | **→W1-a** (`RecordStore`). The *document* already lives in `crossover_v2/durable_state.py`; what is here is the **file** — path, envelope, atomic write, durability verdict (`:2550-2555` says exactly this). |
-| **I** | 578–1012 | 435 | Journey-state observers: `reset_v2_journey_state`, `observe_apply_success` (137 L), `observe_restore` (131 L), `observe_review_decline`, `review_declined`, model-error snapshot/record. 246 lines prose. | xflow `:219`, `:272`; setup | **→W5** + `crossover_v2/journey.py` (597 L). The transitions are journey facts; the persistence half rides W1-a. |
+| **H** | 448–577 | 130 | Durable JSON state file I/O: path resolution, `load_v2_state`, `save_v2_state` (fsync decision), `_update_current_review`, `clear_v2_state`, `set_state_path_for_tests`. | xflow `:272`; **republish `:206`, `:269`** (and `_state_lock` at `:205`); **`v2-status`** (`load_v2_state`, reached late-bound off this module — that module's own docstring says why); tests | **→W1-a** (`RecordStore`). The *document* already lives in `crossover_v2/durable_state.py`; what is here is the **file** — path, envelope, atomic write, durability verdict (`:2550-2555` says exactly this). |
+| **I** | 578–1012 | 435 | Journey-state observers: `reset_v2_journey_state`, `observe_apply_success` (137 L), `observe_restore` (131 L), `observe_review_decline`, `review_declined`, model-error snapshot/record. 246 lines prose. | xflow `:219`, `:272`; setup; **`v2-status`** (`review_declined`) | **→W5** + `crossover_v2/journey.py` (597 L). The transitions are journey facts; the persistence half rides W1-a. |
 | **J** | 1013–1071 | 59 | Three conductor seams reading the durable state: `_applied_gate`, `_applied_offset_gate`, `_apply_failure_gate`. | in-file (row AK binds them) | **→W1-a** — they are reads of the record store wearing a seam. |
-| **K** | 1072–1098 | 27 | `session_volume_plan()` — the one durable-state-backed `SessionVolumePlan` this process owns, double-checked under `_volume_plan_lock`; plus its test setter. | in-file, tests | **→W5-c** |
+| **K** | 1072–1098 | 27 | `session_volume_plan()` — the one durable-state-backed `SessionVolumePlan` this process owns, double-checked under `_volume_plan_lock`; plus its test setter. | **`v2-status`**, in-file, tests | **→W5-c** |
 | **L** | 1099–1181 | 83 | Session-scoped measurement pause: `acquire`/`release` (idempotent), `session_measurement_pause_held`, test reset. Holds ONE exclusive `measurement_window` for the whole session so jasper-voice's idle reconciler cannot revert the −20 dB session volume (`:1105-1113` records the hardware finding: reverted within ~200 ms). | in-file (rows AB, AH, O) | **→W5-b** — becomes `TuningSession.open()`/`close()`. |
 | **M** | — | — | `_play_under_session_pause` — the abort-target dance that keeps the coordinator's isolation-loss cancel effective under a held window. The registration pair beside it (`register_session_measurement_graph` / `release_session_measurement_graph`) is **gone** as of W5-c2. | in-file (rows AB, AH, O) | **→W5-b** done — the graph is `EngineSeams.graph` on the session (`crossover_v2/session_graph.py`). |
 | **N** | 1279–1307 | 29 | `_SESSION_VOLUME_DRAIN_TIMEOUT_S = 15.0` and `_session_volume_io` — the `(set, get)` fader-door factory, fail-closed on `CamillaUnavailable`. **5 call sites: `:1367`, `:1409`, `:1446`, `:4187` (discards `_set`), `:5397`.** | in-file | **→W5-c** — `_set` dies with its four consumers; `_get` survives for `:4187`'s read-only hold. |
 | **O** | — | — | `_release_pause_best_effort` — for the three drains that run outside the runner. Holds no graph since W5-c2; releases isolation only when no `SESSION_MEASUREMENT` claim is held, gated on the **owner's knowledge, never a restore outcome**. | in-file (rows P) | **→W5-b** done. The claim gate is a preserved invariant. See §3. |
 | **P** | 1347–1461 | 115 | Out-of-runner volume drains: `enforce_session_volume_ceiling_if_stale` (lazy 1800 s ceiling — W6.1 found it had zero callers so it never existed at runtime), `v2_volume_recovery_active`, `recover_session_volume`, `reconcile_session_volume_for_new_session`. | setup `:685`, `:7648`, `:7649`; in-file `:6039` | **→W5-c** |
-| **Q** | 1462–1792 | 331 | Status projection, part 1: `_phase_from_state` (102 L), `_provenance_note`, `_compact_cloud_status` (180 L). Pure read-side. 211 lines prose — 64%. | in-file (row S) | **LIFTS WHOLE** to its own module. §6 calls rows Q+R+S *"the cleanest large slice"*: no I/O beyond `load_v2_state`, no seam. |
-| **R** | 1793–1993 | 201 | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. | in-file (row S) | **LIFTS WHOLE**, same module as Q. |
-| **S** | 1994–2165 | 172 | `crossover_v2_status_block()` — **the file's one read entry point**, and `_household_findings_status`. Embedded as `payload["crossover_v2"]` at `backend:2097-2104`; that is what feeds the human's `/correction/crossover` page. | **backend `:2097`; doctor `:596`, `:717`** | **LIFTS WHOLE.** Deletion-order step 2 — the earliest large win, nothing depends on it landing first. |
-| **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | in-file (row S); **`jasper/cli/doctor/correction.py:703-713` imports all nine `GRADE_*`** | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
+| **Q** | — | — | Status projection, part 1: `_phase_from_state`, `_provenance_note`, `_compact_cloud_status`. Pure read-side. **Moved** as of #3286. | — | **EXECUTED BY #3286** — lifted whole into `jasper/web/correction_crossover_v2_status.py` with rows R and S. |
+| **R** | — | — | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. **Moved** as of #3286. | — | **EXECUTED BY #3286**, same module as Q. |
+| **S** | — | — | `crossover_v2_status_block()` — the file's one read entry point — and `_household_findings_status`. Still embedded as `payload["crossover_v2"]` by the backend; that is what feeds the human's `/correction/crossover` page. **Moved** as of #3286. | — | **EXECUTED BY #3286.** Both production importers (backend, doctor ×2) were repointed at the new module; no re-export barrel was left behind. |
+| **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | **`v2-status`** (`_post_apply_grade` — row S's own module since #3286, so this row's move now repoints a cross-module caller); **`jasper/cli/doctor/correction.py` imports all nine `GRADE_*`** | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
 | **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_session`'s verify-only stage reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); **republish `:182` reaches `_candidate_summary`**; tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**. **This row's stated unblock condition did NOT come true.** It read *"the rest the moment W5-a converges the preparers and the tests are repointed"*; W5-a landed (#3166) and the tests are repointed, and the converged preparer **still reaches 8 of the 16** as module globals. The reach was never the duplication — each stage used them itself, so folding the two changed nothing about it. The real condition is a preparer that imports from `durable_state` directly. Not in §6's table. |
 | **V** | 2583–2806 | 224 | Staged-prescription / angle-walk intake: `_take_staged_prescription`, `_take_staged_angle_walk`, `_fc_hz_label`. | in-file (rows AM, AN) | **→W3-b** (recommender binding). |
 | **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN); **relay `:589`, `:875`, `:954`, `:994`, `:1005`; wired `:611`, `:862`, `:883`, `:888`** | **→W1-a**. This is what `TuningSession.save()` replaces. |
@@ -161,7 +163,7 @@ unlike its twin.
 | **AG** | 5353–5388 | 36 | `V2PreparedSession` — what the dispatch needs to host one session. | **setup `:6356`** (`.capture_source`), `:6342` (the return) | **→W5-a** |
 | **AH** | 5389–5459 | 71 | `_volume_hooks` — the in-runner drains. `_open` acquires the pause **before** the volume and releases it in a `finally` if the open did not take; `_put_the_graph_back` restores the graph **before** the pause release in both `_close` and `_abandon`. **The two safety ordering sites** — the only places the graph goes back on a teardown. | in-file (rows AM, AN) | **→W5-c**, ordering preserved. See §3. |
 | **AI** | 5460–5475 | 16 | Stage-capabilities banner — 15 of 16 lines are the essay recording that the declarations moved to `journey` in #2291 Phase 4. | — | **SUPERSEDED** — pure pointer at a completed move. Delete with row B. |
-| **AJ** | 5476–5673 | 198 | Applied-graph / rollback-anchor introspection: `_active_graph_fingerprint`, `_rollback_anchor_available`, `_applied_graph_boosts`, `_applied_profile_now`. | in-file (rows S, AP, AS, AT) | **KEEP** — apply-adjacent; lives in the surviving host beside the apply transaction. |
+| **AJ** | 5476–5673 | 198 | Applied-graph / rollback-anchor introspection: `_active_graph_fingerprint`, `_rollback_anchor_available`, `_applied_graph_boosts`, `_applied_profile_now`. | in-file (rows AP, AS, AT) | **KEEP** — apply-adjacent; lives in the surviving host beside the apply transaction. |
 | **AK** | 5674–5784 | 111 | `bind_v2_stage_seams` — builds one stage's `V2FlowSeams` and journals what it opened with. **The convergence point**: rows J, Y, AA, AB, AQ all arrive here. | in-file (rows AM, AN) | **→W5-b** — `EngineSeams` replaces `V2FlowSeams`. This is the file's single most consequential line-range for the cutover. |
 | **AL** | 5785–5942 | 158 | Capture-source resolution and run building: `_resolve_prepare_capture_source`, `_hand_released_plan_shape`, `_mint_source_session`, `_build_source_run`. | in-file (rows AM, AN) | **→W5-a** — shared tail of both preparers; converges with them. |
 | **AM** | 5943–6518 | 576 | `prepare_v2_session` (534 L) + the three `VERIFY_STAGE_*` constants + `_verify_plan_shape`. Stage-1 preparer: gate, build the conductor, hand the walk to the capture source. Holds the conductor in a bare `holder: dict[str, Any]` at `:6258`, filled `:6432`, drained by `_run` at `:6448`. | **setup `:6341`** | **→W5-a**, then W5-b. |
@@ -170,7 +172,7 @@ unlike its twin.
 | **AP** | 6961–7361 | 401 | `handle_v2_apply` — the apply transaction. | **setup `:6390`** | **KEEP.** This is §6's *"NO ENGINE HOME"* ruling resolved in this file's favour: the apply transaction is *"not a target. Ever."*, and its two options were a publish/commit organ **or a thin surviving host module**. This file is that host. |
 | **AQ** | 7362–7462 | 101 | `bind_delta_probe_rollback` — the conductor's `rollback` seam; calls `handle_v2_restore` at `:7428`. | in-file (row AK) | **KEEP** — it is the apply transaction's inverse and reaches into row AT. |
 | **AR** | 7463–7620 | 158 | Sound-declaration Undo: the four `DECLARATION_*` codes, `_parse_sound_declaration_undo`, `_crossover_label`, `_restore_sound_declaration`. | in-file (row AT); **republish `:169`, `:171`** reach `_crossover_label` | **KEEP** |
-| **AS** | 7621–7831 | 211 | Rollback-anchor refusal vocabulary: five `ANCHOR_*` codes, `RollbackAnchorRefusal`, `restore_anchor_static_prefix_refusal`, `rollback_anchor_refusal` (146 L). | in-file (rows S, AT) | **KEEP** |
+| **AS** | 7621–7831 | 211 | Rollback-anchor refusal vocabulary: five `ANCHOR_*` codes, `RollbackAnchorRefusal`, `restore_anchor_static_prefix_refusal`, `rollback_anchor_refusal` (146 L). | **`v2-status`** (`restore_anchor_static_prefix_refusal`); in-file (row AT) | **KEEP** |
 | **AT** | 7832–7972 | 141 | `handle_v2_restore` — the v2-aware Undo. | **setup `:6421`**; in-file `:7428` | **KEEP** |
 | **AU** | 7973–8088 | 116 | Apply-blocked tail: `_restore_refusal_code`, `_blocking_apply_issue`, `_dsp_apply_is_known_inactive`, `_persist_apply_blocked`, `_reopen_candidate_artifact`. | in-file (rows AP, AT) | **KEEP** |
 
@@ -238,9 +240,12 @@ and over-counts. It returns **20** import sites.)*
 §6's global order interleaves both files. This is the web file's own thread
 through it, ordered so that each step shrinks the next one's diff.
 
-1. **Row S+R+Q — the status projection lifts whole (704 lines).**
-   §6's step 2. One importer (`backend:2097`), no seam, no I/O beyond
-   `load_v2_state`. Nothing must land first. Start here.
+1. **Row S+R+Q — the status projection lifts whole.** Executed by #3286 —
+   `jasper/web/correction_crossover_v2_status.py`; the host lost 692 lines net.
+   The map's "one importer" was two: `backend:2097` **and** the doctor's own
+   pair. Both repointed, along with 118 test reaches; nothing was re-exported
+   from the host. The host reaches back once, from inside
+   `persist_conductor_state`.
 2. **Rows U, B, AI — the barrels and the pointer essays (536 lines).**
    §6's step 1 applied to this file's own fifth barrel. Row U's 16 names go the
    moment W5-a converges the preparers and the test suite is repointed at
@@ -508,10 +513,19 @@ the count per wave with `scripts/right-size-report.sh` against the actual tree
 rather than by hand — the same instruction §7 attaches to its own rows.
 
 Two smaller adds are worth booking against the deletions, because they land in
-*new* files rather than removing lines: the status projection (~704 lines) and
+*new* files rather than removing lines: the status projection and
 `PositionGate` (~361 lines) **move**, they do not vanish. Net deletion from the
 tree is therefore ≈1,065 lines smaller than the file's own shrinkage — the file
 loses ≈6,660, the tree loses ≈5,600. §7's floor counts the tree.
+
+The status half of that is now measured rather than estimated. #3286 removed
+**703** lines from the host (the 698-line projection, its 3-line section
+banner, 2 blank separators) and added back 11 (a 6-line tombstone, a 5-line
+lazy import in `persist_conductor_state`), so the host lost **692** net; the
+new `correction_crossover_v2_status.py` is **730** lines. The row-Q/R/S
+estimate of 704 was 1% high, and the tree **grew by 38 lines** where this
+section booked the move as a wash — new-file header, tombstone and re-import
+are what a lift costs.
 
 ---
 

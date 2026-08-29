@@ -1123,7 +1123,7 @@ def _walk_to_envelope(result):
     """Pipeline result → durable ``cloud`` block → ``_compact_cloud_status``
     → the wizard envelope. The REAL functions, in the host's own order — the
     same walk ``tests/test_flat_spec_ssot.py`` uses for the flatness gauge."""
-    from jasper.web.correction_crossover_v2 import _compact_cloud_status
+    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
     compact = _compact_cloud_status(
         {PHASE_CLOUD_VERIFY: {"geometry": result["geometry"], "pipeline": result}}
@@ -1179,7 +1179,7 @@ def test_the_pre_apply_cloud_never_renders_as_the_post_apply_verdict():
     """
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
-    from jasper.web.correction_crossover_v2 import _compact_cloud_status
+    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
     compact = _compact_cloud_status(
         {PHASE_CLOUD_MEASURE: {"geometry": result["geometry"], "pipeline": result}}
@@ -1202,7 +1202,7 @@ def test_an_unavailable_pipeline_projects_no_carve_outs():
     """Same rule as ``excluded_interval_count``: a pipeline that never ran must
     not project anything a reader could take for "we looked and found
     nothing"."""
-    from jasper.web.correction_crossover_v2 import _compact_cloud_status
+    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
     compact = _compact_cloud_status({
         PHASE_CLOUD_VERIFY: {
@@ -1326,7 +1326,7 @@ def test_the_carve_out_payload_is_the_biggest_thing_on_a_state_entry():
     docstring rests on — four rows on this corpus, and this key outweighing
     every other on the entry combined — plus a generous kB band, so a change
     that made the payload an order of magnitude larger still fails here."""
-    from jasper.web.correction_crossover_v2 import _compact_cloud_status
+    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
     echo_band_hz = (5000.0, 19_000.0)
     combined = combine_positions(
