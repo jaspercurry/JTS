@@ -148,7 +148,7 @@ def _in_room_summed_db() -> np.ndarray:
 # room-independence claim is worthless if the fixture room never varied. Under
 # the pre-B1 gate these three scales spanned refuse / pass / pass; they must now
 # all reach the same verdict.
-_ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.011, 1.0: 2.691, 2.5: 8.566}
+_ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.626, 1.0: 4.331, 2.5: 12.787}
 
 
 #: The evaluation band a production gating block carries for these fixtures —
@@ -574,15 +574,18 @@ def _fixture_applied_profile(
 #: fixture's. Quoted from the shipped reducer rather than asserted by eye, for
 #: the reason ``_ROOM_SCALE_EXPECTED_RMS_DB`` above is quoted: a "the before was
 #: worse" fixture is worthless if nobody checked which way worse runs. Higher is
-#: worse (measured through ``spec_convergence_residual``), so 4.32 → 2.69 is a
-#: 1.63 dB win — over three times #2291's 0.5 dB claim margin.
+#: worse (measured through ``spec_convergence_residual``), so 6.88 → 4.33 is a
+#: 2.55 dB win — over five times #2291's 0.5 dB claim margin. The absolute
+#: figures moved with the low-mid reference frame (ADR-0194); the WIN grew,
+#: because the frame no longer averages the defect the round removed into the
+#: zero that defect is measured against.
 _ENTRY_BASELINE_SCALE = 1.5
 
 
-_ENTRY_BASELINE_RESIDUAL_DB = 4.321
+_ENTRY_BASELINE_RESIDUAL_DB = 6.877
 
 
-_POST_APPLY_RESIDUAL_DB = 2.691
+_POST_APPLY_RESIDUAL_DB = 4.331
 
 
 def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:

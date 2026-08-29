@@ -1418,12 +1418,14 @@ reconstructable. Read "partially" strictly.
 **When it runs.** Only after P2 freezes the crossover — not before, not
 alongside.
 
-**What it covers.** The **entire trusted band**, today an analysis convention of
-roughly **357 Hz to 16 kHz** — a shipped gate-derived floor
-(`gating.f_trusted_floor_hz`, `2.5 / window_s`, so 357.14 Hz at this rig's 7 ms
-gate) plus a hand-set analysis edge (`flat_spec.BEST_EFFORT_ABOVE_HZ`), which
-makes it a convention rather than one derived quantity with a banked
-derivation — and not merely the crossover window. The only **shared** EQ stage
+**What it covers.** The **entire trusted band**, roughly **357 Hz to 20 kHz** on
+this rig — a gate-derived floor (`gating.f_trusted_floor_hz`, `2.5 / window_s`,
+so 357.14 Hz at this rig's 7 ms gate) and a mic-derived ceiling
+(`linearization_envelope.mic_trust_limit`'s taper zero, 20 kHz on a `reference`
+mic), so both edges are now derived quantities rather than the hand-set
+analysis convention this paragraph used to describe (ADR-0194;
+`flat_spec.BEST_EFFORT_ABOVE_HZ` survives as the nominal value the ceiling
+moves) — and not merely the crossover window. The only **shared** EQ stage
 that exists today is the blend stage, safety-reviewed for the crossover
 neighbourhood alone, while the overnight campaign's remaining common-mode
 targets sat **outside** it. Layer 1a's *per-driver* linearization EQ is a

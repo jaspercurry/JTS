@@ -428,15 +428,20 @@ def test_geometry_guidance_softened_when_thin_evidence():
 # --------------------------------------------------------------------------- #
 
 
-def test_per_band_flatness_log_field_reproduces_the_1857_misattribution():
-    """The SAME mechanism ``test_crossover_envelope_v2.py``'s household-copy
-    test reproduces, read from the log-line helper instead: a uniformly dark
-    tweeter drags the shared reference down, so the woofer's own (much
-    smaller) narrow peak is what ``flatness_max_db`` names -- but the
-    tweeter's own honest number is right there in this field too, which is
-    the whole point (the #1857 corpus session's own forensics started from
-    THIS log line and had to re-derive the tweeter's number by hand from the
-    raw curve; this field is what would have shown it directly).
+def test_per_band_flatness_log_field_charges_each_band_its_own_deviation():
+    """#1857's shape, read from the log-line helper, against the low-mid frame.
+
+    A uniformly dark tweeter used to drag the shared reference down and
+    inflate every OTHER band's number with it. On this shape that drag was
+    2.03 dB: the woofer's lone +3 dB bin read +5.03, the tweeter's honest
+    -6 read -3.97, and the top band -- level with the woofer and flat --
+    read +2.03 out of nothing at all.
+
+    The reference is now pooled over the low-mid band alone
+    (``flat_spec.REFERENCE_BAND_HZ``), which no band above 2 kHz is inside,
+    so each band is charged its own deviation and nothing else's: +3.00,
+    -6.00, -0.00. This is the frame ruling landing, asserted where the
+    misattribution was reproduced.
     """
     n = 1000
     woofer_freqs = np.linspace(250.0, 1999.0, n)
@@ -453,11 +458,12 @@ def test_per_band_flatness_log_field_reproduces_the_1857_misattribution():
 
     field = _per_band_flatness_log_field(report.to_dict()["bands"])
     assert field == (
-        "250-2000Hz:+5.03dB:fail;2000-8000Hz:-3.97dB:fail;8000-16000Hz:+2.03dB:pass"
+        "250-2000Hz:+3.00dB:fail;2000-8000Hz:-6.00dB:fail;8000-16000Hz:-0.00dB:pass"
     )
-    # The pointer the rest of the log line names is only the woofer's +5.03
-    # -- this field is what surfaces the tweeter's -3.97 alongside it.
-    assert "2000-8000Hz:-3.97dB" in field
+    # The band that was never touched now reads as untouched, and the dark
+    # tweeter is charged its whole deficit instead of sharing it out.
+    assert "8000-16000Hz:-0.00dB" in field
+    assert "2000-8000Hz:-6.00dB" in field
 
 
 def test_per_band_flatness_log_field_uniformly_flat():
@@ -959,6 +965,43 @@ def test_a_carve_out_appears_under_every_spec_band_it_actually_carves():
     for band in bands:
         for record in band["intervals"]:
             assert (record["f_lo_hz"], record["f_hi_hz"]) == (7800.0, 8200.0)
+
+
+def test_a_carve_out_above_the_nominal_edge_is_disclosed_when_the_ceiling_grades_it():
+    """The top band's graded edge follows the microphone-trust ceiling, so the
+    overlap test has to follow it too.
+
+    A null at 17-18 kHz is INSIDE a 20 kHz-trusted session's top band and is
+    counted in that band's ``n_excluded``. Testing overlap against the nominal
+    16 kHz edge instead would list it under no band at all, leaving a
+    household told bins were removed with no reason attached — breaking the
+    "``n_excluded`` is exactly what these records cover" invariant
+    ``carve_outs_by_band``'s docstring claims. The mirror case is asserted
+    beside it: a null the ceiling put out of range is disclosed under nothing,
+    because it carved nothing.
+    """
+    from jasper.active_speaker.crossover_v2.spatial import carve_outs_by_band
+
+    freqs = np.geomspace(200.0, 24_000.0, 800)
+    report = evaluate_flat_spec(
+        freqs, np.zeros_like(freqs), trusted_ceiling_hz=20_000.0,
+    )
+    above_nominal = SimpleNamespace(nulls=[_fake_null(17_000.0, 18_000.0, 17_500.0)])
+
+    bands = carve_outs_by_band(report, above_nominal, ())
+    carved = [b["band_hz"] for b in bands if b["intervals"]]
+
+    assert carved == [[8000.0, 16000.0]], (
+        "a null the ceiling brought into range must be disclosed under the "
+        "band that graded it"
+    )
+    # ...and the same null against a ceiling that excludes it is disclosed
+    # nowhere, because it removed no graded bin.
+    narrow = evaluate_flat_spec(
+        freqs, np.zeros_like(freqs), trusted_ceiling_hz=12_000.0,
+    )
+    assert [b["band_hz"] for b in carve_outs_by_band(narrow, above_nominal, ())
+            if b["intervals"]] == []
 
 
 def test_the_screen_and_the_registry_stay_separately_attributed():

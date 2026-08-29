@@ -731,15 +731,25 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   solve — not either of these two estimates — places the pair.
 # * CEILING — the level error at which the flat spec must fail anyway. An
 #   inter-branch level error of D dB appears in the summed response as a step
-#   across Fc; the spec's reference is a power mean spanning BOTH sides
-#   (250 Hz-8 kHz), so each side lands roughly D/2 off it. At D = 3.0 that is
-#   1.5 dB per side — exactly ``flat_spec.SPEC_BANDS[0]``'s tolerance. Above
-#   3 dB the speaker is out of spec on tonal balance alone, whatever else the
-#   fit achieved.
+#   across Fc. When this constant was derived the spec's reference was pooled
+#   across BOTH sides of Fc (250 Hz-8 kHz), so each side landed roughly D/2 off
+#   it and D = 3.0 put 1.5 dB per side — exactly ``flat_spec.SPEC_BANDS[0]``'s
+#   tolerance.
+#
+#   **That derivation no longer holds** (ADR-0194). The reference is now the
+#   low-mid band alone, so the side BELOW Fc sits at ~0 by construction and the
+#   side above carries the whole D — which reaches ``SPEC_BANDS[1]``'s 2.0 dB
+#   tolerance at D ~ 2.0, not 3.0. The constant is deliberately left where it
+#   is rather than re-derived here: it is a DISCLOSURE threshold, not a gate
+#   (the raw per-branch trim solve places the pair), and moving a disclosure
+#   bar is a separate decision with its own evidence. The gap is stated so the
+#   next reader does not re-derive a conclusion this comment used to draw:
+#   inter-branch errors in roughly 2-3 dB are spec failures on tonal balance
+#   that this disclosure does not flag.
 #
 # So the band between "measurable" and "already out of spec" is narrow, and
-# 3.0 dB is the top of it: every level error the spec itself calls a failure is
-# caught, with 2.3x margin over the worst honest frame disagreement measured.
+# 3.0 dB sits just above the top of it, with 2.3x margin over the worst honest
+# frame disagreement measured.
 # The 2026-07-27 profile the owner heard as dark reads ~9 dB here — a round that
 # would have been refused when this was a gate, and that now ships with the
 # finding saying so.
@@ -1049,7 +1059,8 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 # `spatial_combine.combine_positions`' power-mean spec curve with the merged
 # honesty mask, wired by
 # `jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`. The
-# 16 kHz upper edge survives as `flat_spec.BEST_EFFORT_ABOVE_HZ`; the
+# 16 kHz upper edge survives as `flat_spec.BEST_EFFORT_ABOVE_HZ`'s NOMINAL
+# value, which a session's microphone-trust ceiling then moves; the
 # never-bench-derived 3.0 dB tolerance is replaced by the spec table's own
 # per-band tolerances (`flat_spec.SPEC_BANDS`).
 #
@@ -1063,8 +1074,9 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 # The two are deliberately NOT peers, and which owns what is fixed:
 #
 #   * "is the speaker flat?" -> the cloud gauge. Spatial power mean over the
-#     post-apply positions, self-referenced to its own 250 Hz-8 kHz mean,
-#     graded in `SPEC_BANDS`' three wide bands. Unchanged by R18.
+#     post-apply positions, self-referenced to its own low-mid mean
+#     (`flat_spec.REFERENCE_BAND_HZ`), graded in `SPEC_BANDS`' three wide
+#     bands. Unchanged by R18.
 #   * "did THIS crossover hand off as designed?" (plan §7 claim 3) -> this
 #     record, and only this one.
 #
@@ -1074,8 +1086,8 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 # path have no post-apply cloud at all, so it never exists there; and its
 # spatial mean partially fills a design-axis null in (#1868's forensics: the
 # 8-position mean was shallower than any single position). Its self-reference
-# is also the wrong zero — a crossover dip competes with every deviation in
-# 250 Hz-8 kHz for the worst-band pointer (#1857's failure mode), where the
+# is also the wrong zero — a crossover dip competes with every other graded
+# deviation for the worst-band pointer (#1857's failure mode), where the
 # candidate's own crossover transfer reads the region directly.
 #
 # Naming note kept from #1668 PR-D: do not name anything here bare "flatness"

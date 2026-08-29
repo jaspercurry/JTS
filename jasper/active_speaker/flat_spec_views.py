@@ -50,10 +50,12 @@ view removes exactly one of them:
    captures were actually taken to answer.
 
 Both are *views*, not fixes. Neither changes a graded verdict, and neither
-claims to be a better grader — which anchor and which weighting the spec
-*should* use is an open owner decision (issue #1857's Q-E,
+claims to be a better grader — which WEIGHTING the spec should use is still
+open (issue #1857's Q-E's other half,
 ``docs/historical/attribution-stage-plan.md`` section 9), and moving it here would move
-graded verdicts, which this module must never do.
+graded verdicts, which this module must never do. The anchor half of that
+question is decided and lives where it belongs, in
+:data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`.
 
 Purity
 ------
@@ -117,23 +119,26 @@ def _power_mean_scalar(values_db: np.ndarray) -> float:
 def _band_octaves(band: BandResult) -> float:
     """How many octaves of spectrum this band actually GRADED.
 
-    ``log2(f_hi_hz / graded_lo_hz)`` — the graded edge, not the nominal one,
-    because a trusted-floor clamp (issue #2551) can take most of a band away
-    and a weight computed from the nominal edge would then hand that band
-    influence over a span nothing was measured in.
-    :attr:`~jasper.active_speaker.flat_spec.BandResult.graded_lo_hz` is
-    ``None`` on a report predating the clamp; there the nominal edge IS the
-    graded edge, so it is the honest fallback rather than a guess.
+    ``log2(graded_hi_hz / graded_lo_hz)`` — the graded edges, not the nominal
+    ones, because a trusted-floor clamp (issue #2551) can take most of a band
+    away and the trusted-ceiling clamp moves the TOP band's upper edge in
+    either direction; a weight computed from the nominal edges would hand a
+    band influence over a span nothing was measured in, or withhold influence
+    over one that was.
+    :attr:`~jasper.active_speaker.flat_spec.BandResult.graded_lo_hz` and
+    ``graded_hi_hz`` are ``None`` on a report predating each clamp; there the
+    nominal edge IS the graded edge, so it is the honest fallback rather than
+    a guess.
 
     Returns ``0.0`` for any band whose span is empty, inverted, or
     non-finite — a weight of zero, which drops the band out of a weighted
     mean rather than letting a NaN swallow the whole pooled figure.
 
-    **The UPPER edge is taken as graded in full.** A report carries the edge
-    the floor raised but not the frequency axis it was evaluated on, so a
-    band whose axis stopped short of ``f_hi_hz`` — a capture that never
-    reached 16 kHz, say — is indistinguishable here from one that covered
-    it, and this weight would overstate its span. The band's own
+    **The upper edge is still taken as graded in full.** A report carries the
+    edges the clamps set but not the frequency axis it was evaluated on, so a
+    band whose axis stopped short of that edge — a capture that never reached
+    16 kHz, say — is indistinguishable here from one that covered it, and
+    this weight would overstate its span. The band's own
     :attr:`~jasper.active_speaker.flat_spec.BandResult.n_bins` is the
     quantity that notices, which is why
     :attr:`BandWeight.bins_per_octave` is published beside the weight rather
@@ -142,7 +147,7 @@ def _band_octaves(band: BandResult) -> float:
     the curve, which would make this a second evaluator.
     """
     lo = band.graded_lo_hz if band.graded_lo_hz is not None else band.f_lo_hz
-    hi = band.f_hi_hz
+    hi = band.graded_hi_hz if band.graded_hi_hz is not None else band.f_hi_hz
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
         return 0.0
     return math.log2(hi / lo)
@@ -615,10 +620,11 @@ def _evaluate_position(
     role pooling needs that span as a weight and re-deriving it at the call
     site would be a second owner of the same walk.
 
-    The evaluator is called with the report's OWN ``trusted_floor_hz`` and
-    the report's OWN published exclusion intervals, so a per-position number
-    and the pooled number are stated in the same frame over the same region
-    of spectrum. A :class:`ValueError` from the evaluator — an empty
+    The evaluator is called with the report's OWN
+    ``trusted_floor_hz``/``trusted_ceiling_hz`` and the report's OWN
+    published exclusion intervals, so a per-position number and the pooled
+    number are stated in the same frame over the same region of spectrum.
+    A :class:`ValueError` from the evaluator — an empty
     reference band, a non-ascending axis, a length mismatch — becomes a
     not-evaluated outcome carrying the evaluator's own message, never an
     exception that loses the other positions and never a silent zero.
@@ -632,6 +638,7 @@ def _evaluate_position(
             ),
             smoothing_fraction=position.smoothing_fraction,
             trusted_floor_hz=report.trusted_floor_hz,
+            trusted_ceiling_hz=report.trusted_ceiling_hz,
         )
     except ValueError as exc:
         return (
@@ -906,9 +913,9 @@ class DirectivityTable:
         those positions. Carried because every number in the table is
         stated against it and a table that named its frame without
         publishing it would be half a measurement.
-      reference_band_hz: the span each row's broadband ``level_offset_db``
-        is pooled over — the report's own reference band, so it matches the
-        frame the graded numbers use.
+      reference_band_hz: the span each row's ``level_offset_db`` is pooled
+        over — the report's own reference band, so it matches the frame the
+        graded numbers use.
       rows: one per input position, in the caller's order, including the
         reference's own members (flagged ``in_reference``) and including
         rows that could not be normalised.

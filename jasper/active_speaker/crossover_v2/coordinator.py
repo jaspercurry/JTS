@@ -955,6 +955,16 @@ def _round_identity(
         "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
         "objectives": evaluation.headroom.evidence.get("objectives"),
         "trusted_floor_hz": evaluation.headroom.evidence.get("trusted_floor_hz"),
+        # The spec verdict's OWN numbers, beside the two scalars above. The
+        # objectives reduce this round to a tilt and a ripple; a driver
+        # deciding whether to run another round needs to see WHICH bands
+        # disagree, by how much, and at what frequency — which is exactly the
+        # gauge the spec axis already read, discarded here until now. Read off
+        # that verdict's evidence rather than recomputed, so this and the
+        # decision cannot state different numbers.
+        #
+        # Disclosure. Nothing reads it back; the adoption table is unchanged.
+        "spec": dict(evaluation.spec.evidence) or None,
         # Decision 10's prescription for the NEXT round, carried on the same
         # durable record the objectives are — because it is the same kind of
         # fact (what this round learned that only the next one can use) and

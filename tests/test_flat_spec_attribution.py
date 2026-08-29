@@ -6,36 +6,33 @@
 that stops it being read as "here is the peak to EQ".
 
 **The mechanism, stated once.** ``FlatSpecReport.reference_db`` is a power
-mean pooled over ``REFERENCE_BAND_HZ`` (250 Hz–8 kHz), and every graded
-number is a distance from it. So a band that is uniformly off drags the
-shared zero toward itself and inflates *every other* band's deviation. On
-the 2026-07-29 corpus session that produced a verdict reading
-"+4.84 dB @ 1339.6 Hz" — the woofer band — against a woofer flat to
-±0.1 dB, because a ~5 dB dark tweeter had already pulled the frame ~3 dB
-down. The issue's own words for the cost: "A household reading this would EQ
-the wrong driver."
+mean pooled over ``REFERENCE_BAND_HZ``, and every graded number is a
+distance from it. So a band INSIDE that span that is uniformly off drags the
+shared zero toward itself and inflates *every other* band's deviation. With
+the frame at its original 250 Hz–8 kHz, the 2026-07-29 corpus session
+produced a verdict reading "+4.84 dB @ 1339.6 Hz" — the woofer band —
+against a woofer flat to ±0.1 dB, because a ~5 dB dark tweeter had already
+pulled the frame ~3 dB down. The issue's own words for the cost: "A
+household reading this would EQ the wrong driver."
 
-:func:`_dark_tweeter` reproduces it synthetically, on the linear rfft bin
-axis the evaluator is actually handed (bin DENSITY is half the mechanism:
-2–8 kHz carries ~3.4× the bins of 250 Hz–2 kHz on a linear axis, so a dark
-tweeter dominates the pooled mean by weight of numbers).
-:func:`test_the_pointer_names_the_flat_band_as_the_worst_one` is the red
-statement: it asserts the misattribution AS IT STILL SHIPS.
+:func:`_dark_tweeter` reproduces the shape synthetically, on the linear rfft
+bin axis the evaluator is actually handed (bin DENSITY was half the
+mechanism: 2–8 kHz carries ~3.4× the bins of 250 Hz–2 kHz on a linear axis,
+so a dark tweeter dominated the pooled mean by weight of numbers).
 
-**What this module's fix does and deliberately does not do.** WHICH anchor
-the spec's reference frame should use is an explicitly open owner decision —
-#1857's Q-E (``docs/historical/attribution-stage-plan.md`` §9), which
-``docs/historical/attribution-stage-plan.md``'s WO-5 says the implementer "does not
-pick". Re-anchoring would move graded verdicts. So nothing here touches the
-frame, and
-:func:`test_no_graded_number_moved_on_any_corpus_shape` pins that claim
-against numbers frozen from ``origin/main`` BEFORE the change: the verdicts
-are identical, shape for shape.
+**Q-E is decided, and these tests moved with it.** The frame is now
+``SPEC_BANDS[0]`` — the low-mid band alone — so no band above 2 kHz is
+pooled into the zero it is measured from.
+:func:`test_the_pointer_names_the_band_that_is_actually_dark` and
+:func:`test_darkening_only_the_tweeter_leaves_the_untouched_woofers_number_alone`
+were the red statements asserting the misattribution as it shipped; they now
+pin its absence. It is narrowed, not abolished: a defect inside 250 Hz–2 kHz
+still drags its own frame, which is why the attribution reading below is
+still the one to trust.
 
-What was added instead is an attribution reading that no frame choice can
-move — each band's own level, its own ripple measured from that level, and
-the step between two bands' levels (:func:`spec_band_tilt`). The reference
-cancels in that subtraction, which
+That reading is what no frame choice can move — each band's own level, its
+own ripple measured from that level, and the step between two bands' levels
+(:func:`spec_band_tilt`). The reference cancels in that subtraction, which
 :func:`test_the_tilt_is_the_same_number_under_every_candidate_frame` proves
 by evaluating the same curve under five candidate reference bands including
 the two Q-E names.
@@ -192,9 +189,21 @@ def _verdict_tuple(name: str) -> tuple:
     raise KeyError(name)
 
 
-# Every graded number this evaluator produced for the shapes above, captured
-# from ``origin/main`` at commit 0620206b2 — BEFORE the #1857 attribution
-# split was added. Layout per entry, matching :func:`_verdict_tuple`:
+# Every graded number this evaluator produced for the shapes above.
+#
+# Originally captured from ``origin/main`` at commit 0620206b2 — BEFORE the
+# #1857 attribution split was added — to prove the split itself moved no
+# graded number (the split only ADDS level_deviation_db / max_ripple_db /
+# spec_band_tilt beside the existing verdict fields; it does not touch how
+# any of those fields is computed).
+#
+# RE-FROZEN here at the low-mid-anchored reference (REFERENCE_BAND_HZ is now
+# 250-2000 Hz, the low-mid band alone) because the #1857 Q-E anchor ruling
+# deliberately moved reference_db and every deviation/gauge figure stated
+# against it. This corpus no longer proves "the split moved nothing" — that
+# claim is no longer even true, by design — it is the new post-anchor
+# baseline these figures must not silently drift from next. Layout per
+# entry, matching :func:`_verdict_tuple`:
 #
 #   (reference_db,
 #    ((f_lo, f_hi, tolerance, max_dev_db, max_dev_hz, rms_dev_db,
@@ -203,27 +212,27 @@ def _verdict_tuple(name: str) -> tuple:
 #    (gauge max_db, max_hz, max_band_hz, tolerance_db, rms_db,
 #     n_bins, n_excluded, evaluable, passed))
 #
-# Regenerating these is a deliberate act, not a refresh: a diff here means
-# the change under review MOVED A VERDICT, which #1857 explicitly forbids
-# (the anchor question is an owner decision, Q-E). See this module's
-# docstring.
+# Regenerating these is a deliberate act, not a refresh: a diff here now
+# means either the reference anchor moved again or some other graded number
+# changed outside that anchor move — both worth a second look before
+# re-freezing, not a routine refresh.
 VERDICT_GOLDEN = {
-    'flat': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.0, 8015.625, 0.0, 341, 0, True, True)), True, (0.0, 257.8125, (250.0, 2000.0), 1.5, 0.0, 672, 0, True, True)),
-    'dark_tweeter_2db': (-1.4464566685979507, ((250.0, 2000.0, 1.5, 1.546447998966855, 703.125, 1.4507268264144606, 75, 0, True, False), (2000.0, 8000.0, 2.0, -0.6535316695547118, 3398.4375, 0.5403129917379897, 256, 0, True, True), (8000.0, 16000.0, 2.5, -0.6535430947794936, 9656.25, 0.5698952631167461, 341, 0, True, True)), False, (1.546447998966855, 703.125, (250.0, 2000.0), 1.5, 0.7147801586404772, 672, 0, True, False)),
-    'dark_tweeter_5db': (-3.257635951403108, ((250.0, 2000.0, 1.5, 3.3576272817720123, 703.125, 3.2609447552005895, 75, 0, True, False), (2000.0, 8000.0, 2.0, -1.8423523867495541, 3398.4375, 1.7264236272449565, 256, 0, True, True), (8000.0, 16000.0, 2.5, -1.8423638119743364, 9656.25, 1.7556891477291627, 341, 0, True, True)), False, (3.3576272817720123, 703.125, (250.0, 2000.0), 1.5, 1.9713964463125693, 672, 0, True, False)),
-    'dark_tweeter_8db': (-4.561479470621921, ((250.0, 2000.0, 1.5, 4.661470800990825, 703.125, 4.564568397866856, 75, 0, True, False), (2000.0, 8000.0, 2.0, -3.5385088675307417, 3398.4375, 3.4219711717736154, 256, 0, True, False), (8000.0, 16000.0, 2.5, -3.538520292755522, 9656.25, 3.4511344616261757, 341, 0, True, False)), False, (4.661470800990825, 703.125, (250.0, 2000.0), 1.5, 3.581907154938261, 672, 0, True, False)),
-    'dark_tweeter_12db': (-5.594896923321704, ((250.0, 2000.0, 1.5, 5.694888253690608, 703.125, 5.597884335575984, 75, 0, True, False), (2000.0, 8000.0, 2.0, -6.505091414830959, 3398.4375, 6.388265952494163, 256, 0, True, False), (8000.0, 16000.0, 2.5, -6.50510284005574, 9656.25, 6.417376794557139, 341, 0, True, False)), False, (-6.50510284005574, 9656.25, (8000.0, 16000.0), 2.5, 6.319951106660187, 672, 0, True, False)),
-    'proud_woofer_5db': (1.7423640485968914, ((250.0, 2000.0, 1.5, 3.3576272817720128, 703.125, 3.260944755200591, 75, 0, True, False), (2000.0, 8000.0, 2.0, -1.842352386749554, 3398.4375, 1.7264236272449558, 256, 0, True, True), (8000.0, 16000.0, 2.5, -1.8423638119743355, 9656.25, 1.7556891477291623, 341, 0, True, True)), False, (3.3576272817720128, 703.125, (250.0, 2000.0), 1.5, 1.971396446312569, 672, 0, True, False)),
-    'dark_woofer_5db': (-0.7146645553721245, ((250.0, 2000.0, 1.5, -4.385293371780634, 1195.3125, 4.28338241692964, 75, 0, True, False), (2000.0, 8000.0, 2.0, 0.8146638658647442, 5718.75, 0.7347252460114149, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.8139486449069242, 15984.375, 0.7063911021814592, 341, 0, True, True)), False, (-4.385293371780634, 1195.3125, (250.0, 2000.0), 1.5, 1.5832087831778079, 672, 0, True, False)),
-    'ripple_only_3db': (0.7427371291370201, ((250.0, 2000.0, 1.5, -3.736913929442932, 1289.0625, 2.21783882302713, 75, 0, True, False), (2000.0, 8000.0, 2.0, -3.742583255665609, 5250.0, 2.2277006362948075, 256, 0, True, False), (8000.0, 16000.0, 2.5, -3.7426940861671647, 10546.875, 2.231066612521004, 341, 0, True, False)), False, (-3.7426940861671647, 10546.875, (8000.0, 16000.0), 2.5, 2.228311662894292, 672, 0, True, False)),
-    'notch_in_woofer': (-0.04611955113916253, ((250.0, 2000.0, 1.5, -8.953880448860838, 703.125, 2.0682969428744227, 75, 0, True, False), (2000.0, 8000.0, 2.0, 0.04611955113916253, 2015.625, 0.04611955113916253, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.04611955113916253, 8015.625, 0.04611955113916253, 341, 0, True, True)), False, (-8.953880448860838, 703.125, (250.0, 2000.0), 1.5, 0.6923355325714109, 672, 0, True, False)),
-    'tilt_droop': (-10.911640088355416, ((250.0, 2000.0, 1.5, 10.751272549659637, 257.8125, 4.70329329576914, 75, 0, True, False), (2000.0, 8000.0, 2.0, -7.145067776351635, 7992.1875, 4.784360383416945, 256, 0, True, False), (8000.0, 16000.0, 2.5, -10.75742772431941, 15984.375, 9.221183281797144, 341, 0, True, False)), False, (-10.75742772431941, 15984.375, (8000.0, 16000.0), 2.5, 7.371341372867073, 672, 0, True, False)),
-    'dark_tweeter_log_axis': (-1.3836333704650758, ((250.0, 2000.0, 1.5, 1.4836318165291584, 1897.3665961010286, 1.3851441801402933, 164, 0, True, True), (2000.0, 8000.0, 2.0, -3.7163549235321867, 3197.741083509517, 3.612694124570874, 109, 0, True, False), (8000.0, 16000.0, 2.5, -3.7163062445541604, 9082.959738844835, 3.628510803982266, 54, 0, True, False)), False, (-3.7163549235321867, 3197.741083509517, (2000.0, 8000.0), 2.0, 2.736235058298098, 327, 0, True, False)),
-    'dark_tweeter_masked_seam': (-3.449930011529045, ((250.0, 2000.0, 1.5, 3.5499213418979494, 703.125, 3.440433820352848, 75, 12, True, False), (2000.0, 8000.0, 2.0, -1.650058326623617, 3398.4375, 1.5342835608115575, 256, 0, True, True), (8000.0, 16000.0, 2.5, -1.6500697518483993, 9656.25, 1.5635730731102475, 341, 0, True, True)), False, (3.5499213418979494, 703.125, (250.0, 2000.0), 1.5, 1.8182571291579095, 660, 12, True, False)),
-    'top_band_unevaluable': (-3.257635951403108, ((250.0, 2000.0, 1.5, 3.3576272817720123, 703.125, 3.2609447552005895, 75, 0, True, False), (2000.0, 8000.0, 2.0, -1.8423523867495541, 3398.4375, 1.7264236272449565, 256, 0, True, True), (8000.0, 16000.0, 2.5, None, None, None, 341, 341, False, None)), False, (3.3576272817720123, 703.125, (250.0, 2000.0), 1.5, 2.1713250153365764, 331, 341, True, False)),
-    'axis_stops_short': (-2.7879764847214057, ((250.0, 2000.0, 1.5, 2.88796781509031, 703.125, 2.7914148071971066, 75, 0, True, False), (2000.0, 8000.0, 2.0, -2.3120118534312564, 3398.4375, 2.2040028052297718, 170, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 0, 0, False, None)), False, (2.88796781509031, 703.125, (250.0, 2000.0), 1.5, 2.3991465906725606, 245, 0, True, False)),
+    'axis_stops_short': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.994427827256799, 170, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 0, 0, False, None)), False, (-5.103105106528449, 3398.4375, (2000.0, 8000.0), 2.0, 4.1605087474364035, 245, 0, True, False)),
     'dark_top_octave_only': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, -6.0, 8015.625, 6.0, 341, 0, True, False)), False, (-6.0, 8015.625, (8000.0, 16000.0), 2.5, 4.274091382136927, 672, 0, True, False)),
-    'woofer_bump_at_tolerance': (0.021597300733122, ((250.0, 2000.0, 1.5, 1.478402699266878, 421.875, 0.34206852424866185, 75, 0, True, True), (2000.0, 8000.0, 2.0, -0.021597300733122, 2015.625, 0.021597300733122, 256, 0, True, True), (8000.0, 16000.0, 2.5, -0.021597300733122, 8015.625, 0.021597300733122, 341, 0, True, True)), True, (1.478402699266878, 421.875, (250.0, 2000.0), 1.5, 0.1160759857045979, 672, 0, True, True)),
+    'dark_tweeter_12db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -12.10310510652845, 3398.4375, 11.986124621825292, 256, 0, True, False), (8000.0, 16000.0, 2.5, -12.10311653175323, 9656.25, 12.015206096796618, 341, 0, True, False)), False, (-12.10311653175323, 9656.25, (8000.0, 16000.0), 2.5, 11.313162702025483, 672, 0, True, False)),
+    'dark_tweeter_2db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -2.1031051065284494, 3398.4375, 1.987015122554602, 256, 0, True, False), (8000.0, 16000.0, 2.5, -2.103116531753231, 9656.25, 2.0162547236713406, 341, 0, True, True)), False, (-2.103116531753231, 9656.25, (8000.0, 16000.0), 2.5, 1.888792406459498, 672, 0, True, False)),
+    'dark_tweeter_5db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.103116531753232, 9656.25, 5.015501115746909, 341, 0, True, False)), False, (-5.103116531753232, 9656.25, (8000.0, 16000.0), 2.5, 4.71564638464755, 672, 0, True, False)),
+    'dark_tweeter_8db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -8.10310510652845, 3398.4375, 7.98621322710959, 256, 0, True, False), (8000.0, 16000.0, 2.5, -8.10311653175323, 9656.25, 8.015311583050902, 341, 0, True, False)), False, (-8.10311653175323, 9656.25, (8000.0, 16000.0), 2.5, 7.54308798330971, 672, 0, True, False)),
+    'dark_tweeter_log_axis': (0.0002833196066221251, ((250.0, 2000.0, 1.5, -0.10028245787727585, 1125.7947113244718, 0.07062941361235431, 164, 0, True, True), (2000.0, 8000.0, 2.0, -5.100271613603885, 3197.741083509517, 4.9964385566508405, 109, 0, True, False), (8000.0, 16000.0, 2.5, -5.100222934625859, 9082.959738844835, 5.012209138855512, 54, 0, True, False)), False, (-5.100271613603885, 3197.741083509517, (2000.0, 8000.0), 2.0, 3.5316561032700684, 327, 0, True, False)),
+    'dark_tweeter_masked_seam': (-0.00964318900577819, ((250.0, 2000.0, 1.5, 0.10963451937468245, 703.125, 0.06994885070515466, 75, 12, True, True), (2000.0, 8000.0, 2.0, -5.090345149146884, 3398.4375, 4.973614104331515, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.0903565743716666, 9656.25, 5.002742449969888, 341, 0, True, False)), False, (-5.0903565743716666, 9656.25, (8000.0, 16000.0), 2.5, 4.746177553912168, 660, 12, True, False)),
+    'dark_woofer_5db': (-4.9968832316242136, ((250.0, 2000.0, 1.5, -0.10307469552854442, 1195.3125, 0.07085285231905393, 75, 0, True, True), (2000.0, 8000.0, 2.0, 5.096882542116833, 5718.75, 5.0144751520368125, 256, 0, True, False), (8000.0, 16000.0, 2.5, 5.0961673211590135, 15984.375, 4.985514718089483, 341, 0, True, False)), False, (5.096882542116833, 5718.75, (2000.0, 8000.0), 2.0, 4.7108605644020125, 672, 0, True, False)),
+    'flat': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.0, 8015.625, 0.0, 341, 0, True, True)), True, (0.0, 257.8125, (250.0, 2000.0), 1.5, 0.0, 672, 0, True, True)),
+    'notch_in_woofer': (-0.207335367776472, ((250.0, 2000.0, 1.5, -8.792664632223527, 703.125, 2.0405749193954117, 75, 0, True, False), (2000.0, 8000.0, 2.0, 0.207335367776472, 2015.625, 0.20733536777647202, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.207335367776472, 8015.625, 0.207335367776472, 341, 0, True, True)), False, (-8.792664632223527, 703.125, (250.0, 2000.0), 1.5, 0.7091659242966525, 672, 0, True, False)),
+    'proud_woofer_5db': (5.003116768375787, ((250.0, 2000.0, 1.5, -0.10307469552854531, 1195.3125, 0.07085285231905393, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.103116531753232, 9656.25, 5.015501115746909, 341, 0, True, False)), False, (-5.103116531753232, 9656.25, (8000.0, 16000.0), 2.5, 4.71564638464755, 672, 0, True, False)),
+    'ripple_only_3db': (0.7635972996861808, ((250.0, 2000.0, 1.5, -3.7577740999920923, 1289.0625, 2.2225226268002554, 75, 0, True, False), (2000.0, 8000.0, 2.0, -3.76344342621477, 5250.0, 2.2326506826706978, 256, 0, True, False), (8000.0, 16000.0, 2.5, -3.7635542567163256, 10546.875, 2.2361701296391443, 341, 0, True, False)), False, (-3.7635542567163256, 10546.875, (8000.0, 16000.0), 2.5, 2.233310103224225, 672, 0, True, False)),
+    'tilt_droop': (-6.1204960385236635, ((250.0, 2000.0, 1.5, 5.960128499827886, 257.8125, 3.0306464441113223, 75, 0, True, False), (2000.0, 8000.0, 2.0, -11.936211826183387, 7992.1875, 9.35645258607748, 256, 0, True, False), (8000.0, 16000.0, 2.5, -15.548571774151162, 15984.375, 13.992606849353518, 341, 0, True, False)), False, (-15.548571774151162, 15984.375, (8000.0, 16000.0), 2.5, 11.564090988049113, 672, 0, True, False)),
+    'top_band_unevaluable': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 341, 341, False, None)), False, (-5.103105106528449, 3398.4375, (2000.0, 8000.0), 2.0, 4.3853432253912805, 331, 341, True, False)),
+    'woofer_bump_at_tolerance': (0.0945174670053415, ((250.0, 2000.0, 1.5, 1.4054825329946585, 421.875, 0.3373584990010644, 75, 0, True, True), (2000.0, 8000.0, 2.0, -0.0945174670053415, 2015.625, 0.0945174670053415, 256, 0, True, True), (8000.0, 16000.0, 2.5, -0.0945174670053415, 8015.625, 0.0945174670053415, 341, 0, True, True)), True, (1.4054825329946585, 421.875, (250.0, 2000.0), 1.5, 0.14366139634972677, 672, 0, True, True)),
 }
 
 # The frozen dB figures are compared to this, not to bit equality: a numpy
@@ -235,7 +244,9 @@ _VERDICT_TOLERANCE_DB = 1e-12
 
 # The candidate reference frames #1857's Q-E weighs, plus three more, so the
 # frame-invariance claim is tested across a span rather than one alternative.
-# 250-2000 is the woofer-anchored candidate; 250-8000 is what ships today.
+# 250-2000 is what ships today (the Q-E ruling); 250-8000 was the
+# pre-ruling default and stays in the span as an alternative the
+# invariance proof must also hold under.
 _CANDIDATE_FRAMES_HZ = (
     (250.0, 2000.0),
     (250.0, 8000.0),
@@ -257,66 +268,72 @@ def _power_mean_db(values_db: np.ndarray) -> float:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_pointer_names_the_flat_band_as_the_worst_one():
-    """#1857 reproduced: the shipped pointer blames a band that is flat.
+def test_the_pointer_names_the_band_that_is_actually_dark():
+    """#1857's shape, against the low-mid anchor: the pointer blames the
+    driver that is down.
 
-    Asserted as it STILL SHIPS, deliberately. Fixing the pointer means
-    re-anchoring the reference frame, which moves graded verdicts, and WHICH
-    anchor to use is an open owner decision (Q-E). So this test does not
-    describe a bug that was fixed — it is the standing reproduction the
-    ruling will be applied against, and the reason the attribution reading
-    below exists.
+    This test used to assert the OPPOSITE — that the shipped pointer named
+    the flat woofer — because fixing it meant re-anchoring the reference,
+    which moves graded verdicts, and which anchor to use was an open owner
+    decision (Q-E). That is decided
+    (``flat_spec.REFERENCE_BAND_HZ``), so the standing reproduction becomes
+    the standing pin on the fix.
     """
     curve = _dark_tweeter(5.0)
     report = evaluate_flat_spec(_FREQS_HZ, curve)
     gauge = spec_flatness_gauge(report)
     woofer, mid, top = report.bands
 
-    # The pointer names the woofer band, at a frequency in it.
-    assert gauge.max_band_hz == (250.0, 2000.0)
-    assert gauge.max_db == pytest.approx(3.3576, abs=5e-4)
-    assert 250.0 <= gauge.max_hz < 2000.0
+    # The pointer names a band that is genuinely 5 dB down, not the woofer.
+    assert gauge.max_band_hz == (8000.0, 16000.0)
+    assert gauge.max_db == pytest.approx(-5.1031, abs=5e-4)
 
-    # ...and that band is the ONLY one that fails, while the two bands that
-    # are genuinely 5 dB down both pass.
-    assert woofer.passed is False
-    assert mid.passed is True and top.passed is True
+    # ...and the two dark bands are the ones that fail, while the flat
+    # woofer band passes.
+    assert woofer.passed is True
+    assert mid.passed is False and top.passed is False
 
-    # ...even though the woofer band is flat to a tenth of a dB: essentially
-    # all of its +3.36 dB is where the band SITS, not anything at 703 Hz.
-    assert abs(woofer.max_ripple_db) < 0.11
-    assert woofer.level_deviation_db == pytest.approx(3.26, abs=0.01)
-
-    # The frame drag that does it, measured against a woofer-anchored mean.
+    # The frame is the woofer band itself, so it can no longer be dragged
+    # away from it by a different driver's deficit.
     woofer_anchored_db = _power_mean_db(curve[(_FREQS_HZ >= 250.0) & (_FREQS_HZ < 2000.0)])
-    assert woofer_anchored_db - report.reference_db == pytest.approx(3.26, abs=0.01)
+    assert woofer_anchored_db == pytest.approx(report.reference_db, abs=1e-9)
+    # ...and the woofer's whole reported deviation is now its own ripple,
+    # because its level offset against that frame is zero by construction.
+    assert abs(woofer.max_ripple_db) < 0.11
+    assert woofer.level_deviation_db == pytest.approx(0.0, abs=1e-9)
 
 
-def test_darkening_only_the_tweeter_inflates_the_untouched_woofers_number():
-    """The contamination, isolated: the woofer's own bins never change, and
-    its reported deviation grows anyway — because the shared reference moved.
+def test_darkening_only_the_tweeter_leaves_the_untouched_woofers_number_alone():
+    """The contamination, gone: the woofer's own bins never change, and now
+    neither does its reported deviation.
 
-    This is what makes the pointer a frame artefact rather than a reading of
-    the woofer. The tilt, on the same shapes, tracks the tweeter's ACTUAL
-    deficit instead.
+    This is the #1857 mechanism inverted. It used to grow monotonically with
+    a deficit somewhere else entirely, because the shared reference moved;
+    the low-mid frame contains no band above 2 kHz, so nothing above 2 kHz
+    can move it. The tilt tracked the tweeter's ACTUAL deficit before and
+    still does — it was frame-free then and is frame-free now.
     """
     woofer_slice = _FREQS_HZ < 2000.0
     baseline = _dark_tweeter(0.0)
     reported = []
+    references = []
     for depth_db in (0.0, 2.0, 5.0, 8.0, 12.0):
         curve = _dark_tweeter(depth_db)
         # Control: the woofer half of the curve is byte-identical every time.
         assert np.array_equal(curve[woofer_slice], baseline[woofer_slice])
         report = evaluate_flat_spec(_FREQS_HZ, curve)
         reported.append(report.bands[0].max_deviation_db)
+        references.append(report.reference_db)
         # The frame-free reading tracks the real deficit, within the ripple.
         tilt = spec_band_tilt(report)
         assert tilt.step_db == pytest.approx(depth_db, abs=0.25)
+        # ...and the woofer band never fails for someone else's deficit.
+        assert report.bands[0].passed is True
 
-    # Strictly increasing: every dB the tweeter loses is partly charged to
-    # the woofer.
-    assert reported == sorted(reported)
-    assert reported[0] < 0.0 < 1.5 < reported[2]
+    # Byte-identical, not merely "close": the reference is pooled over bins
+    # none of which moved, so nothing charged to the woofer moved either.
+    assert len(set(references)) == 1
+    assert len(set(reported)) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -326,14 +343,18 @@ def test_darkening_only_the_tweeter_inflates_the_untouched_woofers_number():
 
 @pytest.mark.parametrize("shape", sorted(VERDICT_GOLDEN))
 def test_no_graded_number_moved_on_any_corpus_shape(shape):
-    """Every graded figure equals what ``origin/main`` produced before the
-    attribution split existed — shape for shape, band for band.
+    """Every graded figure equals :data:`VERDICT_GOLDEN`'s frozen baseline —
+    shape for shape, band for band.
 
-    This is #1857's load-bearing constraint made mechanical: the issue is
-    about the POINTER, and the reference normalization the pointer rides on
-    is what the verdicts are computed from, so a fix that quietly re-framed
-    anything would change what passes. The golden was captured from the
-    pre-change tree; a diff here is that change, not a flake.
+    Originally this pinned #1857's load-bearing constraint mechanically: the
+    attribution split must not itself move a verdict, checked against a
+    pre-split ``origin/main`` capture. The corpus is now re-frozen at the
+    low-mid-anchored reference (the #1857 Q-E ruling), which deliberately
+    moved every figure here — see the comment above :data:`VERDICT_GOLDEN`
+    for why a diff there is not this test moving the goalposts. What this
+    test still guards is that no OTHER, unrelated change moves these numbers
+    again: a diff here means some verdict moved, and the change under review
+    should say why.
     """
     expected_reference_db, expected_bands, expected_overall, expected_gauge = (
         VERDICT_GOLDEN[shape]
@@ -671,11 +692,14 @@ def test_the_household_lines_say_the_band_is_flat_and_names_the_real_step():
     lines = _flatness_lines_from_block(block)
     rendered = " | ".join(lines)
 
-    # The pointer still says what it says...
-    assert "flatness +3.36 dB from the 250–8000 Hz reference mean" in rendered
-    # ...but it is no longer the whole sentence.
-    assert "+3.26 dB is where the whole 250–2000 Hz band sits" in rendered
-    assert "its own worst excursion from that level is -0.10 dB" in rendered
+    # The low-mid anchor means the pointer itself now names a genuinely
+    # deviant band (the darkened tweeter octave), not the flat woofer
+    # #1857 was filed about...
+    assert "flatness -5.10 dB from the 250–2000 Hz reference mean" in rendered
+    # ...and the split still says exactly how much of that is the band's own
+    # level versus what the curve does inside it.
+    assert "-5.01 dB is where the whole 8000–16000 Hz band sits" in rendered
+    assert "its own worst excursion from that level is +0.11 dB" in rendered
     assert "band levels differ by 5.01 dB, a reading no reference choice moves" in rendered
     assert "250–2000 Hz sits above 8000–16000 Hz" in rendered
 
@@ -691,7 +715,7 @@ def test_a_block_from_an_older_build_renders_neither_attribution_line():
         if key not in ("tilt", "max_band_level_deviation_db", "max_band_ripple_db")
     }
     lines = _flatness_lines_from_block(legacy)
-    assert any("flatness +3.36 dB from" in line for line in lines)
+    assert any("flatness -5.10 dB from" in line for line in lines)
     assert not any("band levels differ by" in line for line in lines)
     assert not any("is where the whole" in line for line in lines)
 
@@ -743,10 +767,11 @@ def test_the_journal_field_is_empty_rather_than_fabricated(block):
 
 
 def test_module_constants_still_describe_the_shipped_frame():
-    """The frame this module reasons about is the one that ships. If Q-E is
-    ever ruled and these move, every claim above needs re-reading — which is
-    what this assertion is for."""
-    assert REFERENCE_BAND_HZ == (250.0, 8000.0)
+    """The frame this module reasons about is the one that ships. Q-E has
+    now been ruled once (the low-mid anchor) and this assertion moved with
+    it; if it is ever re-ruled, every claim in this file needs re-reading —
+    which is what this assertion is for."""
+    assert REFERENCE_BAND_HZ == (250.0, 2000.0)
     assert SPEC_BANDS == (
         (250.0, 2000.0, 1.5), (2000.0, 8000.0, 2.0), (8000.0, 16000.0, 2.5),
     )

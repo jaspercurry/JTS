@@ -304,8 +304,17 @@ def _compact_cloud_status(
                 {
                     "f_lo_hz": b.get("f_lo_hz"),
                     "f_hi_hz": b.get("f_hi_hz"),
+                    # The edges actually graded, beside the nominal ones. The
+                    # top band's now follows the session's microphone-trust
+                    # ceiling, so a row printing only the nominal pair states
+                    # a span this evaluation did not grade.
+                    "graded_lo_hz": b.get("graded_lo_hz"),
+                    "graded_hi_hz": b.get("graded_hi_hz"),
                     "passed": b.get("passed"),
                     "max_deviation_db": b.get("max_deviation_db"),
+                    # WHERE the worst bin sat. A dB with no frequency names
+                    # no defect to fix.
+                    "max_deviation_hz": b.get("max_deviation_hz"),
                     "tolerance_db": b.get("tolerance_db"),
                 }
                 for b in bands

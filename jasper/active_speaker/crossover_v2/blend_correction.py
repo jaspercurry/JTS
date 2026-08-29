@@ -290,11 +290,10 @@ class BlendRegionReading:
     #: included bins — with only its bin set narrowed to the region.
     #:
     #: A pinning test asserts the two agree when the region spans the graded
-    #: band, and it has to mask outside ``reference_band_hz`` as well to make
-    #: that comparison meaningful: ``spec_convergence_residual`` also pools
-    #: ``SPEC_BANDS[2]`` (8–16 kHz), which this reading never sees. Unmasked
-    #: the two grade different bin SETS and read 0.873 over 614 bins against
-    #: 0.903 over 736 — a difference in coverage, not in estimator.
+    #: band, and it has to mask outside the region as well to make that
+    #: comparison meaningful: ``spec_convergence_residual`` pools every spec
+    #: band, including bins this reading never sees. Unmasked the two grade
+    #: different bin SETS — a difference in coverage, not in estimator.
     residual_db: float
     #: How many bins that RMS was computed from. Part of the answer, not
     #: decoration: a residual that fell because the honesty mask grew is the
@@ -576,7 +575,7 @@ def solve_blend_correction(
       correction the next round applies, not a delta against ``incumbent``.
 
     **The reference is the speaker's, not the region's.** Deviation is measured
-    against ``report.reference_db`` — the flat spec's own broadband level over
+    against ``report.reference_db`` — the flat spec's own level over
     ``REFERENCE_BAND_HZ`` — never against the region's own mean. Re-centering on
     the region would make a region that is uniformly *below* the speaker's level
     look like it has hot shoulders around its dip, and cutting those shoulders
@@ -605,10 +604,10 @@ def solve_blend_correction(
     Measured on a 4 dB defect at 1500 Hz, six rounds, no stop — applied region
     rms::
 
-        defect Q=2.0  0.973 0.528 0.239 0.112 0.057 0.034   converges
-        defect Q=3.0  0.575 0.344 0.400 0.344 0.400 0.344   two-cycles
-        defect Q=4.0  0.496 0.639 0.493 0.733 0.814 0.814   ends worse
-        defect Q=6.0  0.642 1.034 0.767 1.120 0.767 1.120   two-cycles
+        defect Q=2.0  1.095 0.557 0.528 0.266 0.136 0.072   converges
+        defect Q=3.0  0.667 0.344 0.392 0.344 0.392 0.344   two-cycles
+        defect Q=4.0  0.532 0.493 0.732 0.493 0.732 0.493   two-cycles
+        defect Q=6.0  0.617 1.009 0.767 1.134 1.171 0.767   wanders
 
     Every cap held at every Q — never past the per-filter or composed ceiling,
     never a boost — so this is a quality defect, not a safety one. The stop:
@@ -616,11 +615,11 @@ def solve_blend_correction(
     re-prescribing** (:data:`BLEND_REGION_NOT_IMPROVING`).
 
     Applying that rule to the table above predicts the wrong round, which is
-    exactly why both quantities are named. Q=4's applied rms rises at round 2
-    (0.496 → 0.639), but the reading the stop actually compares falls until
-    round 5::
+    exactly why both quantities are named. Q=4's applied rms rises at round 3
+    (0.493 → 0.732), but the reading the stop actually compares is still
+    falling there and does not rise until round 4::
 
-        Q=4 residual_db  1.216 0.493 0.450 0.421 0.494 → stops at round 5
+        Q=4 residual_db  1.142 0.532 0.422 0.458 → stops at round 4
 
     The bar is "improved at all", not "improved provably", and that choice is
     deliberate. A provable-improvement bar needs a round-to-round noise
@@ -634,9 +633,9 @@ def solve_blend_correction(
     has already been applied. With the stop on, the applied region rms settles
     at::
 
-        defect Q=3.0  0.344     (unstopped: alternates 0.344 / 0.400)
-        defect Q=4.0  0.733     (unstopped: wanders on to 0.814)
-        defect Q=6.0  1.034     (unstopped: alternates 0.767 / 1.120)
+        defect Q=3.0  0.344     (unstopped: alternates 0.344 / 0.392)
+        defect Q=4.0  0.732     (unstopped: alternates 0.493 / 0.732)
+        defect Q=6.0  1.009     (unstopped: wanders 0.767 … 1.171)
 
     Q=6 is the honest worst case and is stated rather than buried: the stop
     settles ABOVE the low half of a cycle the loop cannot stay in anyway, so
@@ -687,11 +686,14 @@ def solve_blend_correction(
         )
 
     # Intersected with the span the flat spec actually grades
-    # (``reference_band_hz`` — SPEC_BANDS[0] ∪ SPEC_BANDS[1], already raised to
-    # this evaluation's trusted floor), so the region residual below is the
-    # pooled spec residual with only its bin set narrowed rather than a second
-    # estimator over bins the spec never graded.
-    graded_lo, graded_hi = graded.report.reference_band_hz
+    # (``graded_band_hz`` — the whole table, already clamped to this
+    # evaluation's trusted floor and ceiling), so the region residual below is
+    # the pooled spec residual with only its bin set narrowed rather than a
+    # second estimator over bins the spec never graded. NOT
+    # ``reference_band_hz``: that is the low-mid frame the deviations are
+    # stated FROM, and intersecting with it would stop this correction at
+    # 2 kHz.
+    graded_lo, graded_hi = graded.report.graded_band_hz
     region = (
         (freqs >= max(band[0], float(graded_lo)))
         & (freqs <= min(band[1], float(graded_hi)))

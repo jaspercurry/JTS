@@ -583,6 +583,12 @@ def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
     that the region is entirely ``flat_spec.BEST_EFFORT_ABOVE_HZ``, where the
     table itself declines): the caller records the claim not-evaluated rather
     than inventing a bar.
+
+    Reads the NOMINAL table, deliberately, so this gate does not move with a
+    session's microphone-trust ceiling. The consequence is stated rather than
+    left to be found: on a session trusted past 16 kHz the spec now grades a
+    region this claim still declines. Widening the claim is a separate ruling
+    about a separate mechanism, not a side effect of the spec's own span.
     """
     from jasper.active_speaker.flat_spec import SPEC_BANDS
 
@@ -1894,6 +1900,7 @@ def assemble_cloud_group_result(
     echo_band_hz: tuple[float, float],
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
+    trusted_ceiling_hz: float | None = None,
     tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
@@ -1914,6 +1921,7 @@ def assemble_cloud_group_result(
         echo_band_hz=echo_band_hz,
         echo_band_provenance=echo_band_provenance,
         validity_floor_hz=validity_floor_hz,
+        trusted_ceiling_hz=trusted_ceiling_hz,
         tier=tier,
         position_records=position_records,
         crossover_region_hz=crossover_region_hz,
@@ -1984,9 +1992,15 @@ def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
     hidden.** The measured curve is a spatial power mean over eight in-room
     positions; this one is a two-branch anechoic-ish model at the mark. Both
     are graded by the same evaluator against the same absolute tolerances and
-    both are normalized to their OWN 250 Hz-8 kHz reference, so what survives
-    the comparison is SHAPE — which is what the spec grades. It is a coarse
-    direction check, and the threshold its caller applies is sized to that.
+    both are normalized to their OWN low-mid reference
+    (``flat_spec.REFERENCE_BAND_HZ``), so what survives the comparison is
+    SHAPE — which is what the spec grades. It is a coarse direction check,
+    and the threshold its caller applies is sized to that.
+
+    Graded with neither clamp: this is a MODEL curve, so it has no gate to
+    derive a trusted floor from and no microphone to derive a ceiling from.
+    Both sides of the ledger comparison this feeds are graded the same way,
+    which is what keeps them comparable.
     """
     if predicted_sum is None:
         return None
@@ -6484,7 +6498,7 @@ class CrossoverV2Session:
         return worst_headroom_cost_db(linearization)
 
     def _position_residual_rows(
-        self, combined: Any, floor_hz: float | None,
+        self, combined: Any, floor_hz: float | None, ceiling_hz: float | None,
     ) -> tuple[Mapping[str, Any], ...]:
         """§4.2: how far each position sat from the combined curve, labelled.
 
@@ -6499,9 +6513,11 @@ class CrossoverV2Session:
         Graded over the same frame the group's spec bands were: this group's
         trusted floor below, and the mic tier's own ceiling above (#2649 — the
         probe may not grade where the fitter may not command, and neither may
-        this). An absent floor or ceiling widens the band rather than narrowing
-        it, which is the honest direction: no evidence of an edge is not an
-        edge at zero.
+        this). Both are TOLD to this method rather than read here, so the
+        frame these rows are stated in and the one the spec graded in are the
+        same two numbers rather than two derivations of them. An absent floor
+        or ceiling widens the band rather than narrowing it, which is the
+        honest direction: no evidence of an edge is not an edge at zero.
 
         **Never raises and never gates.** This is disclosure riding a close
         that already decided; losing the whole group's result to an arithmetic
@@ -6513,7 +6529,6 @@ class CrossoverV2Session:
             freqs = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
             if freqs.size == 0:
                 return ()
-            ceiling_hz = self._mic_trust_ceiling_hz(freqs)
             band_hz = (
                 float(floor_hz) if floor_hz is not None else float(freqs[0]),
                 float(ceiling_hz) if ceiling_hz is not None else float(freqs[-1]),
@@ -6855,6 +6870,14 @@ class CrossoverV2Session:
         Never raises and never affects the accepted verdict already decided
         above — this is diagnostic/disclosure machinery, not a capture gate.
         """
+        # One reading of the tier's trust ceiling for this group, spent twice
+        # below: the spec may not GRADE above where the fitter may not
+        # COMMAND (#2649), and the per-position residuals are already read
+        # over that same frame.
+        ceiling_hz = (
+            None if combined is None
+            else self._mic_trust_ceiling_hz(getattr(combined, "freqs_hz", ()))
+        )
         result = assemble_cloud_group_result(
             combined,
             echo_band_hz=self._cloud_echo_band.band_hz,
@@ -6863,6 +6886,7 @@ class CrossoverV2Session:
                 self._group_position_meta.get(phase, {}).values()
             ),
             validity_floor_hz=cloud_validity_floor_hz(positions),
+            trusted_ceiling_hz=ceiling_hz,
             tier=self._tier,
             # #1967: where the SHIPPED graph divides the spectrum, from the
             # preset's committed regions — the context that makes a
@@ -6889,7 +6913,7 @@ class CrossoverV2Session:
         floor_hz = cloud_trusted_floor_hz(cloud_validity_floor_hz(positions))
         self._group_trusted_floor_hz[phase] = floor_hz
         self._group_position_residuals[phase] = self._position_residual_rows(
-            combined, floor_hz,
+            combined, floor_hz, ceiling_hz,
         )
         # PR-5: the spec verdict a session's journal carries. It replaces the
         # per-VERIFY-capture ``flatness_*`` fields ``_log_verify_diag`` used

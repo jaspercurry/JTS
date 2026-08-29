@@ -2559,10 +2559,11 @@ def carve_outs_by_band(
     render "nothing carved here" without having to infer it from an absence.
 
     A record is included in a band when its interval OVERLAPS the band's
-    ``[graded_lo_hz, f_hi_hz)`` span — the span actually graded, not the
+    ``[graded_lo_hz, graded_hi_hz)`` span — the span actually graded, not the
     nominal row — so a null straddling a band edge appears under both bands it
-    actually carves, and one sitting entirely below the session's trusted floor
-    appears under none, because it removed no bin any verdict was taken from.
+    actually carves, and one sitting entirely outside the session's trusted
+    range appears under none, because it removed no bin any verdict was taken
+    from.
 
     **What this does NOT include: the gate's trusted-floor clamp.** Bins
     below the group's ``trusted_floor_hz`` also leave the spec evaluation,
@@ -2570,29 +2571,34 @@ def carve_outs_by_band(
     the honesty instruments' own accounting — the same separation
     ``_compact_cloud_status`` carries for exactly this reason. Since #2551
     that separation is structural rather than a convention the reader has to
-    hold: the clamp raises each band's lower EDGE, so a sub-floor bin is not
-    in the band to be excluded FROM. A band's ``n_excluded`` is therefore
-    exactly what these records cover, and the floor shows up as the spec
-    report's ``graded_lo_hz`` beside the nominal ``band_hz`` here rather than
-    hiding inside a count.
+    hold: the clamp moves each band's graded EDGE, so a bin outside the
+    trusted range is not in the band to be excluded FROM. A band's
+    ``n_excluded`` is therefore exactly what these records cover, and the
+    clamps show up as the spec report's ``graded_lo_hz``/``graded_hi_hz``
+    beside the nominal ``band_hz`` here rather than hiding inside a count.
     """
     records = _carve_out_records(null_report, screen_bands_hz)
     out: list[dict[str, Any]] = []
     for band in spec_report.bands:
         f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
-        # Overlap is tested against the edge this band was GRADED from, not
-        # its nominal row: a null below the trusted floor carved nothing out
-        # of this band's grading, because those bins were never in it. That
+        # Overlap is tested against the edges this band was GRADED between,
+        # not its nominal row: a null outside the trusted range carved nothing
+        # out of this band's grading, because those bins were never in it. The
+        # UPPER edge matters as much as the lower one now that the top band's
+        # follows the microphone-trust ceiling -- testing the nominal 16 kHz
+        # there would drop every carve-out a 20 kHz-trusted session found above
+        # it, leaving `n_excluded` counting bins with no reason attached. That
         # is what makes the equality claimed above ("n_excluded is exactly
         # what these records cover") true rather than approximate. `band_hz`
         # below stays the nominal pair, since it is the join key a consumer
         # uses against ``spec["bands"]`` — which carries `graded_lo_hz`
         # itself, so this payload does not copy it and cannot drift from it.
         graded_lo = f_lo if band.graded_lo_hz is None else float(band.graded_lo_hz)
+        graded_hi = f_hi if band.graded_hi_hz is None else float(band.graded_hi_hz)
         in_band = [
             record
             for record in records
-            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > graded_lo
+            if record["f_lo_hz"] < graded_hi and record["f_hi_hz"] > graded_lo
         ]
         out.append(
             {
@@ -2687,6 +2693,7 @@ def assemble_cloud_group_result(
     echo_band_hz: tuple[float, float],
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
+    trusted_ceiling_hz: float | None = None,
     tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
@@ -2755,22 +2762,25 @@ def assemble_cloud_group_result(
       is not in the band at all, so ``spec.n_excluded`` stays exactly the
       honesty instruments' own count (screen union identified nulls) and a
       gate artifact can never inflate it. Which edge each band was graded
-      from is disclosed per band as ``graded_lo_hz``, delta-probe style, and
-      the report echoes ``trusted_floor_hz`` and the clamped
-      ``reference_band_hz`` on its face. ``merged_excluded_bands_hz`` is
+      from is disclosed per band as ``graded_lo_hz``, delta-probe style,
+      its upper edge as ``graded_hi_hz``, and the report echoes
+      ``trusted_floor_hz``/``trusted_ceiling_hz``, the clamped
+      ``reference_band_hz`` and the whole ``graded_band_hz`` on its face.
+      ``merged_excluded_bands_hz`` is
       likewise untouched: ``excluded_interval_count`` on `/state` remains the
       "how much interference did we find" number.
-    * **A band left entirely below the floor is ``evaluable=False``, never
+    * **A band left entirely outside the trusted range is ``evaluable=False``, never
       ``passed=False``.** There is no evidence there, which is not a
-      failure; ``graded_lo_hz >= f_hi_hz`` is the tell that distinguishes it
-      from a band the axis never reached.
+      failure; ``graded_lo_hz >= graded_hi_hz`` is the tell that distinguishes
+      it from a band the axis never reached.
       :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.overall_passed`
       still treats unevaluable as not-passed, so nothing is flattered by the
       distinction.
-    * **A ``None`` floor clamps NOTHING and is reported as ``None``.** The
-      alternative -- withholding the whole gauge, which is what the retired
-      per-capture ``_flatness_tracking`` did when a capture had no floor --
-      would throw away the 2-16 kHz evidence over an unverified lower edge.
+    * **A ``None`` floor or ceiling clamps NOTHING and is reported as
+      ``None``.** The alternative -- withholding the whole gauge, which is
+      what the retired per-capture ``_flatness_tracking`` did when a capture
+      had no floor -- would throw away the evidence above an unverified lower
+      edge, or below an unverified upper one.
 
     Regime, measured on the S0 main leg 2026-07-27, re-derived 2026-08-02
     (#2045) and re-derived again for #2551: **all ten** of that session's
@@ -2792,19 +2802,26 @@ def assemble_cloud_group_result(
     ``test_the_trusted_floor_clamp_costs_the_low_band``), clamping:
 
     * moves **987 bins** out of the 250 Hz-2 kHz band;
-    * **re-centres the reference** -27.2386 -> -28.3062 dB (-1.0676 dB),
-      because the reference is a power mean over non-excluded 250 Hz-8 kHz
-      bins and the clamp removed the loud low end of it;
-    * moves the HEADLINE ``max_db`` -8.9389 -> -7.8713 dB, i.e. **+1.0676 dB
-      in the FLATTERING direction** -- exactly the reference shift, because
-      the worst bin (15999.7 Hz) survives the clamp, so its deviation moves
-      one-for-one with the reference. This is the first number the ledger
-      line prints and it moves FURTHER than the RMS does;
-    * takes the pooled RMS 3.8031 -> 3.1740 dB (-0.6291 dB);
-    * **flips the 250 Hz-2 kHz band verdict**, +4.2458 dB (fail) ->
-      -1.2146 dB (pass), since ``BandResult.passed`` is
+    * **re-centres the reference** -24.6035 -> -29.1532 dB (-4.5498 dB),
+      because the reference is a power mean over the non-excluded low-mid
+      band and the clamp removed the loud low end of it;
+    * moves the HEADLINE ``max_db`` -11.5741 -> -7.0243 dB, i.e.
+      **+4.5498 dB in the FLATTERING direction** -- exactly the reference
+      shift, because the worst bin survives the clamp, so its deviation
+      moves one-for-one with the reference. This is the first number the
+      ledger line prints and it moves FURTHER than the RMS does;
+    * takes the pooled RMS 5.7705 -> 2.7474 dB (-3.0231 dB);
+    * **flips the 250 Hz-2 kHz band verdict**, -4.9174 dB (fail) ->
+      -0.3677 dB (pass), since ``BandResult.passed`` is
       ``abs(max_deviation_db) <= tolerance_db``. Overall stays False here
       only because the other two bands still fail on their own.
+
+    **The cost grew ~4.3x with the low-mid frame** (ADR-0194), and the
+    mechanism is worth stating: the clamped 250-1777.8 Hz sliver is the same
+    sliver, but it is now a much larger share of a much smaller reference
+    pool (``SPEC_BANDS[0]`` alone rather than 250 Hz-8 kHz), so removing it
+    moves the pooled zero four times as far. Narrowing the frame bought
+    attribution and made this clamp's price higher, not lower.
 
     Direction is **response-shape dependent, not a property of the clamp**:
     on THIS corpus the removed region sat above the surviving reference, so
@@ -2890,9 +2907,14 @@ def assemble_cloud_group_result(
         # interference verdict with a short window — see this function's
         # docstring.
         trusted_floor_hz = cloud_trusted_floor_hz(validity_floor_hz)
+        # The ceiling rides beside the floor for the same reason and from the
+        # same caller: the spec may not grade above where the microphone is
+        # trusted, which is also where the fitter was allowed to command and
+        # the delta probe allowed to grade (#2649).
         spec_report = evaluate_flat_spec(
             combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
             trusted_floor_hz=trusted_floor_hz,
+            trusted_ceiling_hz=trusted_ceiling_hz,
         )
         # #2291/#2160: hand the LIVE report to a caller that needs the object
         # rather than the serialized copy below. ``evaluate_spec`` reads
@@ -2964,6 +2986,22 @@ def assemble_cloud_group_result(
             # than in place of it, so a reader can see both the window's
             # resolution limit and its trust limit.
             "trusted_floor_hz": trusted_floor_hz,
+            # The ceiling beside the floor, at the same level, because the two
+            # are not symmetric in how reliably they are KNOWN: the floor comes
+            # from this group's own gate and is always available, while the
+            # ceiling is read off the bound candidate's mic tier and is
+            # ``None`` on a pre-apply close that has no candidate yet. A
+            # session can therefore grade its MEASURE group to 16 kHz and its
+            # VERIFY group to 20 kHz, and a reader comparing the two `spec`
+            # blocks across phases is comparing different spans. Publishing it
+            # here makes that visible rather than leaving it to be inferred
+            # from inside `spec.trusted_ceiling_hz`.
+            "trusted_ceiling_hz": (
+                float(trusted_ceiling_hz)
+                if trusted_ceiling_hz is not None
+                and math.isfinite(trusted_ceiling_hz)
+                else None
+            ),
             "echo_band_hz": list(echo_band_hz),
             "echo_band_provenance": (
                 dict(echo_band_provenance)

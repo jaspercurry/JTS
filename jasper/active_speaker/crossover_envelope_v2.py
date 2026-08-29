@@ -905,15 +905,17 @@ def _attribution_lines(
     """The two lines that stop the worst-band pointer from being read as
     "here is the peak to EQ" (issue #1857).
 
-    The pointer is a distance from a reference pooled ACROSS bands, so a
-    band that is uniformly off drags the shared zero toward itself and
-    inflates every other band's number. The corpus session that filed the
-    issue read ``+4.84 dB @ 1339.6 Hz`` against a woofer that was flat to
-    +/-0.1 dB, because a ~5 dB dark tweeter had already pulled the frame
-    ~3 dB down; a household acting on that pointer would have EQ'd the wrong
-    driver. Reproduced synthetically on an rfft bin axis with a 5 dB dark
-    tweeter, where the shipped pointer reads ``+3.36 dB @ 703 Hz`` and the
-    250-2000 Hz band FAILS while both genuinely-dark bands PASS.
+    The pointer is a distance from a pooled reference, so a band INSIDE that
+    pool that is uniformly off drags the shared zero toward itself and
+    inflates every other band's number. With the frame at its original
+    250 Hz-8 kHz the corpus session that filed the issue read
+    ``+4.84 dB @ 1339.6 Hz`` against a woofer that was flat to +/-0.1 dB,
+    because a ~5 dB dark tweeter had already pulled the frame ~3 dB down; a
+    household acting on that pointer would have EQ'd the wrong driver. The
+    low-mid frame (See ADR-0194) took the two upper bands out of the pool,
+    so that shape now points at the dark band — but a defect inside
+    250 Hz-2 kHz still drags its own frame, which is what these two lines
+    are for.
 
     Line one splits the pointer's own number: how much of it is *where the
     whole band sits* versus *what the curve does inside the band*
@@ -988,11 +990,12 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
 
     **And it says how much of the number is the frame** (issue #1857, second
     half). Naming the reference band told a reader WHICH zero the pointer is
-    stated against; it still left them to guess whether "+3.36 dB at 703 Hz"
-    means there is a 3 dB peak at 703 Hz to EQ down. Usually there is not:
-    on the corpus shape that filed the issue the pointed-at band is flat to
-    a tenth of a dB and simply SITS 3.26 dB above a frame a dark tweeter
-    pulled down. :func:`_attribution_lines` renders that split, plus the
+    stated against; it still left them to guess whether a "+3.36 dB at
+    703 Hz" means there is a 3 dB peak at 703 Hz to EQ down. Often there is
+    not: on the corpus shape that filed the issue, under that era's frame,
+    the pointed-at band was flat to a tenth of a dB and simply SAT 3.26 dB
+    above a zero a dark tweeter had pulled down.
+    :func:`_attribution_lines` renders that split, plus the
     band-to-band step that no reference choice can move, immediately under
     the pointer — so the sentence a household acts on cannot be the pointer
     alone.
@@ -1041,11 +1044,14 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
 
     ``_flatness_lines_from_block`` already names ONE band -- whichever of
     the three read furthest from the reference. But that reference is a
-    power mean pooled across the two tight-tolerance bands
+    power mean pooled over the low-mid band
     (:data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`), so a band
-    that is uniformly off drags the shared zero toward itself, and can make
-    an unrelated band's ordinary ripple read as the LARGER deviation --
-    exactly the failure #1857 reports: a corpus session's shipped verdict
+    INSIDE it that is uniformly off drags the shared zero toward itself, and
+    can make an unrelated band's ordinary ripple read as the LARGER deviation.
+    Narrowing that frame to the low-mid band took the two upper bands out of
+    it and so out of this failure mode; it did not take the low-mid band out
+    of its own. That is the failure #1857 reports: under that era's frame a
+    corpus session's shipped verdict
     read "+4.84 dB @ 1339.6 Hz" (the woofer band) while the tweeter sat
     uniformly ~5 dB dark across its own passband, because the tweeter's
     darkness had already pulled the reference down before the woofer's

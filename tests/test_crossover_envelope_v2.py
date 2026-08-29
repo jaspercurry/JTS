@@ -2830,12 +2830,16 @@ def _dark_tweeter_compact_cloud(*, phase: str = PHASE_CLOUD_VERIFY):
 
     A narrow +3 dB peak sits in the woofer band; the tweeter band is
     uniformly ~6 dB dark across its ENTIRE passband (no peak, no texture,
-    just a whole-band offset); the top band is flat. Because the shared
-    reference is a power mean pooled across the woofer+tweeter bands, the
-    tweeter's own darkness drags that reference down, and the woofer's
-    narrow (and much smaller) peak ends up reading a LARGER deviation from
-    it than the tweeter's own uniform darkness does — the exact
-    misattribution class #1857 reports.
+    just a whole-band offset); the top band is flat.
+
+    This shape is #1857's misattribution class. While the reference was
+    pooled across the woofer+tweeter bands the tweeter's own darkness
+    dragged that reference down, and the woofer's narrow (and much smaller)
+    peak read a LARGER deviation from it than the tweeter's own uniform
+    darkness did. The frame is now the low-mid band alone (ADR-0194), which
+    no part of the tweeter band is inside, so the same shape charges each
+    band its own deviation — kept here because a shape that USED to
+    mis-point is the one worth still rendering the disclosure for.
     """
     n = 1000
     woofer_freqs = np.linspace(250.0, 1999.0, n)
@@ -2865,58 +2869,66 @@ def _dark_tweeter_compact_cloud(*, phase: str = PHASE_CLOUD_VERIFY):
     return compact[phase], report, gauge
 
 
-def test_the_shipped_pointer_blames_the_woofer_while_the_tweeter_stays_dark():
-    """Mechanism check, not the fix: confirms #1857 reproduces against the
-    REAL evaluator before testing that the disclosure now names it too.
+def test_the_shipped_pointer_names_the_dark_tweeter_not_the_woofer():
+    """Mechanism check against the REAL evaluator, and the anchor ruling
+    landing at the household surface.
 
-    The pointer picks the WOOFER band — the larger absolute deviation under
-    the dragged full-range reference — per the SAME "absolute dB, not
-    tolerance headroom" rule ``test_flat_spec_ssot.py`` already pins for
-    ``spec_flatness_gauge``. The tweeter's own reading, from the identical
-    reference, is smaller in magnitude despite being a whole-band defect —
-    which is exactly why the pointer alone misses it. This PR does not
-    change this selection (#1857's anchor choice, Q-E, is still an open
-    owner decision); it only stops the pointer from being the only thing a
-    reader sees.
+    This asserted the OPPOSITE while the reference was pooled across the
+    woofer and tweeter bands: the tweeter's own darkness dragged the shared
+    zero down, the woofer's small narrow peak read the larger absolute
+    deviation, and the pointer blamed the flat driver. #1857's anchor choice
+    (Q-E) is decided — the frame is the low-mid band alone (ADR-0194) — so
+    the same fixture, through the same "absolute dB, not tolerance headroom"
+    selection rule, now names the band that is genuinely 6 dB down.
     """
     _compact, report, gauge = _dark_tweeter_compact_cloud()
-    assert gauge.max_band_hz == (250.0, 2000.0)
-    assert gauge.max_db == pytest.approx(5.0336, abs=5e-4)
-    tweeter = next(
-        b for b in report.bands if (b.f_lo_hz, b.f_hi_hz) == (2000.0, 8000.0)
+    assert gauge.max_band_hz == (2000.0, 8000.0)
+    assert gauge.max_db == pytest.approx(-6.0043, abs=5e-4)
+    woofer = next(
+        b for b in report.bands if (b.f_lo_hz, b.f_hi_hz) == (250.0, 2000.0)
     )
-    assert tweeter.max_deviation_db == pytest.approx(-3.9664, abs=5e-4)
-    assert tweeter.passed is False  # a real defect, just not the FLAGGED one
-    assert abs(tweeter.max_deviation_db) < abs(gauge.max_db)
+    # The woofer is charged its own narrow peak and nothing else: all ripple,
+    # no level offset, where it used to read +5.03 dB.
+    assert woofer.max_deviation_db == pytest.approx(2.9957, abs=5e-4)
+    assert woofer.level_deviation_db == pytest.approx(0.0, abs=1e-9)
+    assert abs(woofer.max_deviation_db) < abs(gauge.max_db)
+    # ...and the band nothing touched reads as untouched, not +2.03 dB.
+    top = next(
+        b for b in report.bands if (b.f_lo_hz, b.f_hi_hz) == (8000.0, 16000.0)
+    )
+    assert top.max_deviation_db == pytest.approx(0.0, abs=5e-3)
+    assert top.passed is True
 
 
 def test_the_expert_disclosure_now_names_every_band_beside_the_pointer():
-    """The fix. The pointer line is untouched — still the woofer, per the
-    mechanism test above — but the tweeter's own -3.97 dB now sits right
-    beside it, so a reader can no longer see "+5.03 dB, woofer band" without
-    also seeing the tweeter's own number in the same disclosure."""
+    """The disclosure. The pointer names one band — per the mechanism test
+    above, now the tweeter — and every other band's own number sits right
+    beside it, so a reader is never handed the pointer alone. That claim is
+    what this test is for and it did not move with the anchor; only which
+    band the pointer picks, and the numbers, did."""
     compact, _report, _gauge = _dark_tweeter_compact_cloud()
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, cloud={PHASE_CLOUD_VERIFY: compact},
         candidate=_candidate_summary(),
     ))
     details = env["expert_details"]
-    # The pointer: unchanged shape and unchanged verdict — still the woofer.
+    # The pointer: unchanged shape, and it NAMES ITS FRAME — which is now
+    # the low-mid band, so the sentence a household reads says so.
     assert any(
         line.startswith(
-            "flatness +5.03 dB from the 250–8000 Hz reference mean at 1125 Hz"
+            "flatness -6.00 dB from the 250–2000 Hz reference mean at 2000 Hz"
         )
         for line in details
     )
-    # The new line: every band, from the SAME reference, including the
-    # tweeter's own honest number.
+    # The other line: every band, from the SAME reference, so the woofer's
+    # own honest number sits beside the pointed-at one.
     per_band = next(
         line for line in details
         if line.startswith("every band from the same reference:")
     )
-    assert "250–2000 Hz +5.03 dB (fail, tolerance ±1.5 dB)" in per_band
-    assert "2000–8000 Hz -3.97 dB (fail, tolerance ±2.0 dB)" in per_band
-    assert "8000–16000 Hz +2.03 dB (pass, tolerance ±2.5 dB)" in per_band
+    assert "250–2000 Hz +3.00 dB (fail, tolerance ±1.5 dB)" in per_band
+    assert "2000–8000 Hz -6.00 dB (fail, tolerance ±2.0 dB)" in per_band
+    assert "8000–16000 Hz -0.00 dB (pass, tolerance ±2.5 dB)" in per_band
 
 
 def test_the_pre_apply_reading_also_names_every_band():
@@ -2934,9 +2946,9 @@ def test_the_pre_apply_reading_also_names_every_band():
     ))
     details = env["expert_details"]
     lead = next(line for line in details if line.startswith("Measured before tuning: "))
-    assert "250–2000 Hz +5.03 dB (fail, tolerance ±1.5 dB)" in lead
-    assert "2000–8000 Hz -3.97 dB (fail, tolerance ±2.0 dB)" in lead
-    assert "8000–16000 Hz +2.03 dB (pass, tolerance ±2.5 dB)" in lead
+    assert "250–2000 Hz +3.00 dB (fail, tolerance ±1.5 dB)" in lead
+    assert "2000–8000 Hz -6.00 dB (fail, tolerance ±2.0 dB)" in lead
+    assert "8000–16000 Hz -0.00 dB (pass, tolerance ±2.5 dB)" in lead
 
 
 def test_per_band_lines_uniformly_flat_shows_no_alarm():
