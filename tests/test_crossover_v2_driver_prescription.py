@@ -892,13 +892,22 @@ def test_the_subaudible_count_is_a_measurement_and_not_a_default(tmp_path):
 
     Same shape as the crossover-knee counter's own control: a document whose
     filters all clear the floor reads 0, and the durable read-back — which
-    holds only the truncated text and no evidence — reads ``None``.
+    rebuilds no disclosure — reads ``None``.
     """
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
     document = _document([_cut(gain=-3.0), _boost(gain=3.0)], packet)
 
     prescription = _gate(packet, document)
     assert prescription.subaudible_filters == 0
+
+    # The boundary is the one the refusals drew, exactly: a filter AT the floor
+    # was admitted then and is not counted now, on either sign. A disclosure
+    # that counted more than the bar refused would rewrite the number's meaning
+    # while claiming to have only demoted it.
+    at_floor = _gate(packet, _document(
+        [_cut(gain=-DRIVER_MIN_CUT_DB), _boost(gain=DRIVER_MIN_BOOST_DB)], packet
+    ))
+    assert at_floor.subaudible_filters == 0
 
     mixed = _gate(packet, _document(
         [_cut(gain=-3.0), _cut(gain=-0.2), _boost(gain=0.1)], packet

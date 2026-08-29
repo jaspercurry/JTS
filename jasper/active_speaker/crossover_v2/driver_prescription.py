@@ -1269,6 +1269,11 @@ def _subaudible_filters(filters: Sequence[Mapping[str, Any]]) -> int:
     under two names — and a zero-gain filter is counted, which is the honest
     reading: it is inert whatever its Q, so it is the floor's clearest case
     rather than an exception to it.
+
+    **Strictly below**, which is the boundary the two refusals drew: a filter AT
+    the floor was admitted by them and is not counted by this. A disclosure that
+    counted more than the bar refused would rewrite the number's meaning while
+    claiming only to have demoted it.
     """
     return sum(
         1 for entry in filters if abs(float(entry["gain"])) < DRIVER_MIN_CUT_DB
