@@ -456,8 +456,7 @@ impl LaneResampler {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
             RenderPlan::Silence => {
-                self.render_silence(out);
-                return 0;
+                return self.render_silence(out);
             }
             RenderPlan::Emit { ratio } => ratio,
         };
@@ -475,9 +474,9 @@ impl LaneResampler {
                     sample
                 };
             }
-            self.remember_frame_narrow(out, frame);
             self.advance_cursor(ratio);
         }
+        self.remember_last_frame_narrow(out);
         self.finish_period()
     }
 
@@ -494,8 +493,7 @@ impl LaneResampler {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
             RenderPlan::Silence => {
-                self.render_silence_wide(out);
-                return 0;
+                return self.render_silence_wide(out);
             }
             RenderPlan::Emit { ratio } => ratio,
         };
@@ -513,9 +511,9 @@ impl LaneResampler {
                     sample
                 };
             }
-            self.remember_frame_wide(out, frame);
             self.advance_cursor(ratio);
         }
+        self.remember_last_frame_wide(out);
         self.finish_period()
     }
 
@@ -557,18 +555,21 @@ impl LaneResampler {
         }
     }
 
-    /// Record the frame just emitted so a later shutdown can decay from it.
-    fn remember_frame_narrow(&mut self, out: &[i16], frame: usize) {
+    /// Record the period's LAST emitted frame so a later shutdown can decay
+    /// from it. Once per period, not once per frame — this is the render
+    /// thread and only the final frame is ever read back.
+    fn remember_last_frame_narrow(&mut self, out: &[i16]) {
+        let base = (self.period_frames - 1) * self.channels;
         for channel in 0..self.channels {
-            self.last_frame[channel] = out[frame * self.channels + channel] as i32;
+            self.last_frame[channel] = out[base + channel] as i32;
         }
     }
 
-    /// Wide sibling of [`Self::remember_frame_narrow`].
-    fn remember_frame_wide(&mut self, out: &[i32], frame: usize) {
-        for channel in 0..self.channels {
-            self.last_frame[channel] = out[frame * self.channels + channel];
-        }
+    /// Wide sibling of [`Self::remember_last_frame_narrow`].
+    fn remember_last_frame_wide(&mut self, out: &[i32]) {
+        let base = (self.period_frames - 1) * self.channels;
+        self.last_frame
+            .copy_from_slice(&out[base..base + self.channels]);
     }
 
     /// Retire a spent tail so every later silent period is true digital zero.
@@ -853,7 +854,12 @@ impl LaneResampler {
         self.locked
     }
 
-    fn render_silence(&mut self, out: &mut [i16]) {
+    /// Render one period of silence — or, when a session has just ended, the
+    /// shutdown de-click tail. Returns what the caller must MIX: the tail is
+    /// real audio, so it reports `period_frames`; true silence reports 0. A
+    /// tail that reported 0 would be written here and then dropped by the
+    /// mixer's `sum_buf[..active]` slice, making the de-click a no-op.
+    fn render_silence(&mut self, out: &mut [i16]) -> usize {
         if self.shutdown_ramp_frames_remaining > 0 {
             for frame in 0..self.period_frames {
                 let gain = self.shutdown_gain(frame);
@@ -863,18 +869,20 @@ impl LaneResampler {
                 }
             }
             self.finish_shutdown_tail();
-            self.count_silence_period();
-            return;
+            self.output_frames
+                .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+            return self.period_frames;
         }
         out.fill(0);
         self.count_silence_period();
+        0
     }
 
     /// The wide sibling of [`Self::render_silence`]. Digital zero is the same
     /// value at either width, so this differs only in the slice type — and it
     /// shares the counter bump so a silent period is accounted identically no
     /// matter which width the lane renders.
-    fn render_silence_wide(&mut self, out: &mut [i32]) {
+    fn render_silence_wide(&mut self, out: &mut [i32]) -> usize {
         if self.shutdown_ramp_frames_remaining > 0 {
             for frame in 0..self.period_frames {
                 let gain = self.shutdown_gain(frame);
@@ -884,11 +892,13 @@ impl LaneResampler {
                 }
             }
             self.finish_shutdown_tail();
-            self.count_silence_period();
-            return;
+            self.output_frames
+                .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+            return self.period_frames;
         }
         out.fill(0);
         self.count_silence_period();
+        0
     }
 
     fn count_silence_period(&mut self) {
@@ -1979,8 +1989,15 @@ mod tests {
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         r.reset();
-        // After reset, silent until re-prefilled.
-        assert_eq!(r.render_period(&mut out), 0);
+        // Ending a session emits one de-click tail period (pinned by
+        // session_end_glides_the_last_frame_to_zero), THEN silence until
+        // re-prefilled.
+        assert_eq!(r.render_period(&mut out), PERIOD as usize, "de-click tail");
+        assert_eq!(
+            r.render_period(&mut out),
+            0,
+            "then silent until re-prefilled"
+        );
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(
             r.render_period(&mut out),
@@ -2157,8 +2174,8 @@ mod tests {
         r.reset();
         assert_eq!(
             r.render_period(&mut out),
-            0,
-            "a reset lane consumes no input"
+            period,
+            "the tail is real audio and must be reported so the mixer sums it"
         );
 
         let magnitudes: Vec<i32> = (0..period)
