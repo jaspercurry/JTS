@@ -60,7 +60,7 @@ from .program_admission import ProgramAdmission
 logger = logging.getLogger(__name__)
 
 # Injected seams, bound to the real CamillaController by
-# ``crossover_v2_flow.bind_program_playback_seams``.
+# ``crossover_v2.composition.bind_program_playback_seams``.
 PlayWav = Callable[[], Awaitable[PlaybackResult]]
 WriterLock = Callable[[], AbstractAsyncContextManager]
 Readmit = Callable[[], Awaitable[ProgramAdmission]]

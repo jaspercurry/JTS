@@ -95,6 +95,9 @@ call and neither extends:
   boundary INSIDE ``measure`` rather than a fifth verb.
 * :mod:`.program_transaction` — the play seam filled: one stimulus through
   ``play_program``, reporting the stage it WATCHED rather than one it assumed.
+* :mod:`.composition` — the engine stood up around a host: the seam binder,
+  the play-seam plumbing, and the graph-is-live proof, importable without
+  :mod:`jasper.web` so a second front end can construct the same engine.
 * :mod:`.measurement_phase` — which stimulus a measurement KIND plays, in the
   flow's phase words: the one place those two vocabularies meet.
 * :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for

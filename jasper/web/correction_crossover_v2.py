@@ -18,7 +18,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
 * the **production seam bindings** — real ``analyze_program_capture``, real
   evidence-store publication (publish → tamper-checked reopen, §5.6), the real
   CamillaController-backed program playback via
-  :func:`jasper.active_speaker.crossover_v2_flow.bind_program_playback_seams`,
+  :func:`jasper.active_speaker.crossover_v2.composition.bind_program_playback_seams`,
   and the apply gate reading the durable applied flag;
 * the **session assembly for the capture provider** (#2662): the preparers
   below gate, build the conductor, and hand the walk to the capture source
@@ -4061,7 +4061,7 @@ def bind_production_play(
     from jasper.active_speaker.crossover_v2.session_graph import (
         MeasurementSessionGraph,
     )
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.composition import (
         bind_program_playback_seams,
         confirm_graph_is_live,
     )
@@ -5937,130 +5937,65 @@ def _applied_profile_now() -> Mapping[str, Any] | None:
         return None
 
 
-class _NoRoutedPhasesGraph:
-    """The graph slot for a stage that measures nothing through one.
-
-    Stage 2 is verify-class on every tier: it plays its summed sweep through
-    the APPLIED production graph and takes no routed per-driver capture. A
-    session bound to the real measurement graph would therefore swap the whole
-    DSP chain, step aside on the first summed phase, and swap back — a full
-    graph load and restore for zero measurements, carrying every stranding
-    exposure an installed graph carries and buying nothing.
-
-    Reports ``""`` as its fingerprint, which is the seam's own spelling for
-    *"the host cannot name the graph"* — honest here, because there is no
-    measurement graph to name.
-    """
-
-    async def install(self) -> str:
-        return ""
-
-    async def patch(self, changes: Mapping[str, Any]) -> None:
-        return None
-
-    async def restore(self) -> None:
-        return None
-
-
 def bind_v2_engine_seams(
     *,
     session_graph: Any,
     evidence_store: Any,
     relay_session_id: str,
-    camilla_factory: Any,
     compose_stimulus: Any,
     capture_stimulus: Any = None,
     volume_claim: Any = None,
     routed_phases: bool = True,
 ) -> Any:
-    """The ENGINE's five seams, bound where the flow's seventeen are bound.
+    """This host's parts for the engine binder — web policy only.
 
-    The second binder, deliberately beside the first.
-    :func:`bind_v2_stage_seams` is already the single owner of *"which callable
-    implements each seam"*, and putting this anywhere else would re-create the
-    *"two call sites free to disagree"* problem that binder exists to have
-    solved. The two coexist for the whole cutover: ``V2FlowSeams``'s
-    apply/rollback half never moves.
+    The mechanics live in
+    :func:`jasper.active_speaker.crossover_v2.composition.bind_engine_seams`
+    (one binder, any front end); what stays here is exactly what only THIS
+    host can decide, which is why the wrapper survives the lift:
 
-    **The volume seam is the REAL claim, and this session is its first
-    production path.** ``SessionVolumePlan`` no longer writes this fader at
-    all: it keeps the durable half — the snapshot, the write-before-first-
-    mutation, the wall-clock ceiling and the unresolved latch — and reaches the
-    same :class:`~jasper.volume_owner.VolumeOwner` through
-    ``OwnerVolumeDoor``. One authority, one writer.
+    * **The claim, and its refusal copy.** ``SessionVolumePlan`` no longer
+      writes the fader at all — it keeps the durable half and reaches the same
+      :class:`~jasper.volume_owner.VolumeOwner` through ``OwnerVolumeDoor``,
+      and the engine's volume seam is the REAL ranked claim, this session its
+      first production path. A missing owner is a registration defect refused
+      as household copy, because the route's 500 arm renders an unmapped
+      exception's string on the wizard's status line.
+    * **The record store.** ``BankedRecordStore`` over this host's durable
+      state I/O. F9, answered by W1-c and left un-bridged on purpose: ``bank``
+      returns a store-relative PATH while the shipped flow publishers write
+      artifact FINGERPRINTS into ``refs`` — and they still do. W1-d's index is
+      the first reader that will want the path.
+    * **The recommender.** The bundle directory is read when the verb is
+      ASKED, not when the seam is bound.
 
-    The two restores that used to have no ordering between them now have one.
-    The owner's release lands the fader on the current next-ranked level; the
-    plan's drain lands on the snapshot it took before its first mutation; the
-    session releases first and the plan's ladder declares second, so the
-    durable snapshot is last and wins.
-
-    **The claim this binds is the session's ONE claim**, and the plan's door
-    holds the same object — both are handed the claim the caller minted, so
-    neither reaches into the other for it. ``EngineSeams`` is engine-internal;
-    a front end reading this seam back out would be doing engine work outside
-    the engine. Two claims of one kind is a ``VolumeClaimConflict`` by the
-    owner's own rule, and it is a rule worth keeping sharp for the holders it
-    is actually about.
+    ``capture_stimulus`` is bound for the WIRED source and ``None`` for the
+    relay, whose microphone is on a phone answering through its own
+    conversation — the transaction names which in the outcome's incident.
     """
-    from jasper.active_speaker.crossover_v2.program_transaction import (
-        ProgramPlaybackTransaction,
-    )
+    from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
     from jasper.cli.crossover_recommender import BankedRoundRecommender
 
-    plan = session_volume_plan()
     claim = volume_claim if volume_claim is not None else _session_volume_claim()
     if claim is None:
-        # A registration defect, not a supported shape. Refused as household
-        # copy rather than as a bare RuntimeError: the route's 500 arm renders
-        # an unmapped exception's own string on the wizard's status line, and
-        # "no volume owner is installed" is internals, not something a person
-        # can act on.
         raise _refuse_without_a_volume_owner("session")
-    return EngineSeams(
-        graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
-        volume=claim,
-        # F9, answered by W1-c and left un-bridged on purpose: ``bank``
-        # returns a store-relative PATH while the shipped flow publishers write
-        # artifact FINGERPRINTS into ``refs`` — and they still do.
-        # ``bank`` has a second caller now (``bind_position_retention`` banks
-        # every retained take through a ``BankedRecordStore`` of its own over
-        # this same bundle), and that caller kept
-        # ``refs["position_artifacts"][].artifact`` a fingerprint because no
-        # reader consumes the column yet. W1-d's index is the first thing that
-        # will want the path, and it can take ``bank``'s return when it lands.
+    return bind_engine_seams(
+        session_graph=session_graph,
         records=BankedRecordStore(
             evidence=evidence_store,
             relay_session_id=relay_session_id,
             load_state=load_v2_state,
             save_state=save_v2_state,
         ),
-        # The kind→phase mapping is bound (``measurement_phase``), so this seam
-        # composes a real stimulus by identity from what the conductor
-        # composed, and — where the box also RECORDS what it plays — hands back
-        # the capture's own path rather than an empty one. Production still
-        # does not DRIVE it: nothing calls ``measure`` until the capture walk
-        # is routed through it, so the map's proof is its table pin rather than
-        # a production run.
-        #
-        # ``capture_stimulus`` is bound for the WIRED source and ``None`` for
-        # the relay, whose microphone is on a phone answering through its own
-        # conversation. The transaction says which of the two it was in the
-        # outcome's incident, so an empty ``wav_path`` is never unattributed.
-        play=ProgramPlaybackTransaction(
-            compose=compose_stimulus,
-            session_volume_plan=plan,
-            capture=capture_stimulus,
-        ),
-        # The bundle directory is read when the verb is ASKED, not when the
-        # seam is bound: a recommendation needs a bundle on disk, and binding
-        # does not. Reading it here would make every caller that binds seams
-        # supply a fully-formed store to get an object it may never call.
+        volume_claim=claim,
+        session_volume_plan=session_volume_plan(),
+        compose_stimulus=compose_stimulus,
+        capture_stimulus=capture_stimulus,
         recommend=lambda record_ids: BankedRoundRecommender(
             evidence_store.bundle_dir,
         )(record_ids),
+        routed_phases=routed_phases,
     )
 
 
@@ -7440,7 +7375,6 @@ def prepare_v2_session(
                 session_graph=session_graph,
                 evidence_store=evidence_store,
                 relay_session_id=relay_session_id,
-                camilla_factory=camilla_factory,
                 # The session's own program door, so a stimulus is picked BY
                 # IDENTITY from what this conductor composed rather than
                 # recomposed at a guessed level.

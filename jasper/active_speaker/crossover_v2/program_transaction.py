@@ -186,7 +186,7 @@ class ProgramForStimulus:
 
     ``seams`` is the keyword mapping ``play_program`` consumes —
     ``readmit`` / ``play_wav`` / ``writer_lock`` — which is exactly what
-    ``crossover_v2_flow.bind_program_playback_seams`` already returns, so the
+    ``crossover_v2.composition.bind_program_playback_seams`` already returns, so the
     host binds the shipped builder rather than a shape invented here.
     """
 

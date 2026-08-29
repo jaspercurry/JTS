@@ -8672,7 +8672,7 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, A
     import contextlib
 
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import composition as composition_mod
     from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
     import jasper.audio_measurement.program as program_mod
     import jasper.dsp_apply as dsp_apply_mod
@@ -8707,7 +8707,7 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, A
         _install_taking_only_the_lock,
     )
     monkeypatch.setattr(
-        flow_mod, "bind_program_playback_seams", fake_bind_program_playback_seams
+        composition_mod, "bind_program_playback_seams", fake_bind_program_playback_seams
     )
     _patch_measurement_window(monkeypatch, [])
     protection = {"woofer": (), "tweeter": ()}
