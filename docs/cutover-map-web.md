@@ -117,7 +117,7 @@ missing, which is what makes §4's arithmetic checkable.
 `relay` / `wired` / `republish` = `correction_crossover_v2_relay.py` /
 `_wired.py` / `_republish.py` · `doctor` = `jasper/cli/doctor/correction.py` ·
 `v2-status` = `correction_crossover_v2_status.py` (rows Q/R/S, lifted by
-#3283) · `in-file` = no consumer outside this module · `tests` = test
+#3286) · `in-file` = no consumer outside this module · `tests` = test
 suite only.
 
 **Disposition codes.** `→W*` absorbed by that plan work item · `SUPERSEDED` the
@@ -144,10 +144,10 @@ unlike its twin.
 | **N** | 1279–1307 | 29 | `_SESSION_VOLUME_DRAIN_TIMEOUT_S = 15.0` and `_session_volume_io` — the `(set, get)` fader-door factory, fail-closed on `CamillaUnavailable`. **5 call sites: `:1367`, `:1409`, `:1446`, `:4187` (discards `_set`), `:5397`.** | in-file | **→W5-c** — `_set` dies with its four consumers; `_get` survives for `:4187`'s read-only hold. |
 | **O** | — | — | `_release_pause_best_effort` — for the three drains that run outside the runner. Holds no graph since W5-c2; releases isolation only when no `SESSION_MEASUREMENT` claim is held, gated on the **owner's knowledge, never a restore outcome**. | in-file (rows P) | **→W5-b** done. The claim gate is a preserved invariant. See §3. |
 | **P** | 1347–1461 | 115 | Out-of-runner volume drains: `enforce_session_volume_ceiling_if_stale` (lazy 1800 s ceiling — W6.1 found it had zero callers so it never existed at runtime), `v2_volume_recovery_active`, `recover_session_volume`, `reconcile_session_volume_for_new_session`. | setup `:685`, `:7648`, `:7649`; in-file `:6039` | **→W5-c** |
-| **Q** | — | — | Status projection, part 1: `_phase_from_state`, `_provenance_note`, `_compact_cloud_status`. Pure read-side. **Moved** as of #3283. | — | **EXECUTED BY #3283** — lifted whole into `jasper/web/correction_crossover_v2_status.py` with rows R and S. |
-| **R** | — | — | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. **Moved** as of #3283. | — | **EXECUTED BY #3283**, same module as Q. |
-| **S** | — | — | `crossover_v2_status_block()` — the file's one read entry point — and `_household_findings_status`. Still embedded as `payload["crossover_v2"]` by the backend; that is what feeds the human's `/correction/crossover` page. **Moved** as of #3283. | — | **EXECUTED BY #3283.** Both production importers (backend, doctor ×2) were repointed at the new module; no re-export barrel was left behind. |
-| **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | **`v2-status`** (`_post_apply_grade` — row S's own module since #3283, so this row's move now repoints a cross-module caller); **`jasper/cli/doctor/correction.py` imports all nine `GRADE_*`** | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
+| **Q** | — | — | Status projection, part 1: `_phase_from_state`, `_provenance_note`, `_compact_cloud_status`. Pure read-side. **Moved** as of #3286. | — | **EXECUTED BY #3286** — lifted whole into `jasper/web/correction_crossover_v2_status.py` with rows R and S. |
+| **R** | — | — | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. **Moved** as of #3286. | — | **EXECUTED BY #3286**, same module as Q. |
+| **S** | — | — | `crossover_v2_status_block()` — the file's one read entry point — and `_household_findings_status`. Still embedded as `payload["crossover_v2"]` by the backend; that is what feeds the human's `/correction/crossover` page. **Moved** as of #3286. | — | **EXECUTED BY #3286.** Both production importers (backend, doctor ×2) were repointed at the new module; no re-export barrel was left behind. |
+| **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | **`v2-status`** (`_post_apply_grade` — row S's own module since #3286, so this row's move now repoints a cross-module caller); **`jasper/cli/doctor/correction.py` imports all nine `GRADE_*`** | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
 | **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_session`'s verify-only stage reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); **republish `:182` reaches `_candidate_summary`**; tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**. **This row's stated unblock condition did NOT come true.** It read *"the rest the moment W5-a converges the preparers and the tests are repointed"*; W5-a landed (#3166) and the tests are repointed, and the converged preparer **still reaches 8 of the 16** as module globals. The reach was never the duplication — each stage used them itself, so folding the two changed nothing about it. The real condition is a preparer that imports from `durable_state` directly. Not in §6's table. |
 | **V** | 2583–2806 | 224 | Staged-prescription / angle-walk intake: `_take_staged_prescription`, `_take_staged_angle_walk`, `_fc_hz_label`. | in-file (rows AM, AN) | **→W3-b** (recommender binding). |
 | **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN); **relay `:589`, `:875`, `:954`, `:994`, `:1005`; wired `:611`, `:862`, `:883`, `:888`** | **→W1-a**. This is what `TuningSession.save()` replaces. |
@@ -240,7 +240,7 @@ and over-counts. It returns **20** import sites.)*
 §6's global order interleaves both files. This is the web file's own thread
 through it, ordered so that each step shrinks the next one's diff.
 
-1. **Row S+R+Q — the status projection lifts whole.** Executed by #3283 —
+1. **Row S+R+Q — the status projection lifts whole.** Executed by #3286 —
    `jasper/web/correction_crossover_v2_status.py`; the host lost 692 lines net.
    The map's "one importer" was two: `backend:2097` **and** the doctor's own
    pair. Both repointed, along with 118 test reaches; nothing was re-exported
@@ -518,7 +518,7 @@ Two smaller adds are worth booking against the deletions, because they land in
 tree is therefore ≈1,065 lines smaller than the file's own shrinkage — the file
 loses ≈6,660, the tree loses ≈5,600. §7's floor counts the tree.
 
-The status half of that is now measured rather than estimated. #3283 removed
+The status half of that is now measured rather than estimated. #3286 removed
 **703** lines from the host (the 698-line projection, its 3-line section
 banner, 2 blank separators) and added back 11 (a 6-line tombstone, a 5-line
 lazy import in `persist_conductor_state`), so the host lost **692** net; the
