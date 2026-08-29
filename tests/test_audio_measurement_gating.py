@@ -1007,12 +1007,18 @@ def test_disclosure_fields_are_present_on_every_bound_source(name):
         )
 
 
-def test_the_trusted_floor_is_disclosed_beside_the_nominal_one_and_gates_nothing():
-    """The load-bearing half of "disclosed, never enforced".
+def test_the_trusted_floor_does_not_reach_the_gate_window_or_validity_floor():
+    """2.5/T is disclosed beside the nominal floor, and this module never reads it.
 
-    2.5/T is roughly 2.5x stricter than the floor the product refuses on. If
-    it had leaked into the gate, the window or the reported validity floor
-    would move with it. Both must be exactly what 1/T alone produces.
+    2.5x stricter than the floor the product refuses on, so if it had leaked
+    into the gate, the window or the reported validity floor would move with
+    it. Both must be exactly what 1/T alone produces.
+
+    Scoped to THIS module on purpose. The trusted floor DOES bound a verdict,
+    through the flat spec's band clamps
+    (:func:`jasper.active_speaker.flat_spec.evaluate_flat_spec`), so a name
+    claiming it gates nothing anywhere would be false. It is disclosed here
+    and consumed there; only gating's own window is off limits to it.
     """
     ir, _ = _delta_ir_with_reflection(int(0.030 * SR), 500, 4.0, -6.0)
     _gated, fragment = gating.gate_impulse_response(ir, SR)
