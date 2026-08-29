@@ -3579,11 +3579,12 @@ def test_the_three_unprompted_phases_each_bank_a_take_of_their_own():
     could see a session's positions and its baseline and simply not its
     CHECK, its MEASURE or its VERIFY.
 
-    What is banked is the CAPTURE — the digest and the identity — because
-    that is what makes an offline replay of these phases possible at all.
-    Their analyses are not duplicated into the take: those live where each
-    phase already puts them, and are rewritten inside a round that a take
-    outlives.
+    What is banked is the CAPTURE — the digest, the identity, and the complex
+    responses it measured — because that is what makes an offline replay of
+    these phases possible at all. Their VERDICTS are not duplicated into the
+    take: those live where each phase already puts them, and are rewritten
+    inside a round that a take outlives. The curves are pinned separately, by
+    ``test_every_banked_kind_carries_the_phase_its_analysis_measured``.
     """
     retained: list = []
     fakes = FakeSeams()
@@ -3628,6 +3629,162 @@ def test_the_three_unprompted_phases_each_bank_a_take_of_their_own():
         assert take["attempt"] > 0
         assert take["wav_sha256"]
         assert take["captured_at"]
+
+
+def _phase_probe(analysis):
+    """The same analysis with a genuinely COMPLEX transfer function.
+
+    The shipped fixtures build ``complex_tf`` as ``10 ** (mag / 20)`` cast to
+    complex — real and positive, so every phase is exactly 0.0 and a banked
+    ``phase_deg`` of all zeros would pass a round-trip that never carried
+    phase at all. This winds a ramp onto the same magnitudes so the assertion
+    has something to be wrong about.
+    """
+    import numpy as np
+
+    def _wind(response):
+        size = np.asarray(response.freqs_hz).size
+        return replace(
+            response,
+            complex_tf=np.abs(response.complex_tf) * np.exp(
+                1j * np.linspace(-9.0, 9.0, size)
+            ),
+        )
+
+    return replace(
+        analysis,
+        driver_responses=tuple(_wind(r) for r in analysis.driver_responses),
+        summed_response=(
+            _wind(analysis.summed_response)
+            if analysis.summed_response is not None else None
+        ),
+    )
+
+
+def _walk_to_banked_take(phase: str) -> tuple[dict, object]:
+    """Walk a real session to ``phase`` and return its banked take + analysis.
+
+    The analysis comes back beside the take because the assertion is an
+    agreement between them: what the capture measured, and what the record
+    says it measured.
+    """
+    seen: dict = {}
+
+    def _probe(factory, key):
+        def make(program, **kw):
+            seen[key] = _phase_probe(factory(program, **kw))
+            return seen[key]
+        return make
+
+    fakes = FakeSeams()
+    fakes.measure = _probe(_measure_analysis, PHASE_MEASURE)
+    # Every cloud position and VERIFY play the same verify-shaped summed
+    # sweep, so one factory serves both and the last one analysed is the take
+    # this walk is about.
+    fakes.verify = _probe(_verify_analysis, "summed")
+    retained: list = []
+    if phase == PHASE_VERIFY:
+        c = _conductor(
+            fakes,
+            seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+            index_phase_map=STAGE2_MAP,
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=True,
+        )
+        _run_phase(c, VERIFY_INDEX, 1)
+    else:
+        c = CrossoverV2Session(
+            session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+            fc_hz=FC_HZ, driver_caps_dbfs=CAPS,
+            session_volume_db=SESSION_VOLUME_DB,
+            seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+            index_phase_map=CLOUD_MAP,
+        )
+        attempt = _walk(c, (1, 2), 1)
+        if phase == PHASE_CLOUD_MEASURE:
+            _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    take = next(meta for meta in retained if meta["phase"] == phase)
+    return take, seen[PHASE_MEASURE if phase == PHASE_MEASURE else "summed"]
+
+
+@pytest.mark.parametrize(
+    "phase,expected_roles",
+    [
+        (PHASE_MEASURE, ["woofer", "tweeter"]),
+        (PHASE_VERIFY, ["summed"]),
+        (PHASE_CLOUD_MEASURE, ["summed"]),
+    ],
+)
+def test_every_banked_kind_carries_the_phase_its_analysis_measured(
+    phase, expected_roles,
+):
+    """Ruling S3's other half — the acceptance row's *"``DriverResponse``
+    banked"*, for the kinds that were not a walk pose.
+
+    One kind banked phase and two did not: a pose carried ``curves``, the entry
+    baseline carried magnitude alone, and a cloud seat and an unprompted-phase
+    take carried no curve at all. Every one of those analyses computed the
+    complex response in-process and dropped it, so a re-analysis re-derived
+    phase from the WAVs and the forward model could never run from the bank.
+
+    Asserted as a RECONSTRUCTION, not as key presence: the banked pair IS the
+    transfer function, so the test rebuilds it and compares against the
+    analysis's own values at the bins the record names.
+
+    Parametrized by CARRY, deliberately: dropping one hop must red one row
+    rather than the file. Two of the three hops are here — ``PHASE_MEASURE``
+    and ``PHASE_VERIFY`` share ``_bank_phase_capture``'s single carry (one hop
+    under two programs, so both rows go red together, which is what one hop
+    breaking means), and ``PHASE_CLOUD_MEASURE`` is ``_retain_cloud_position``'s.
+    The third, ``_retain_entry_baseline``'s, is pinned beside that phase's own
+    retention tests in ``tests/test_crossover_v2_entry_baseline.py``.
+    """
+    import numpy as np
+
+    take, analysis = _walk_to_banked_take(phase)
+    sources = {
+        r.role: r for r in (
+            analysis.driver_responses
+            or ((analysis.summed_response,) if analysis.summed_response else ())
+        )
+    }
+
+    assert [curve["role"] for curve in take["curves"]] == expected_roles
+    for curve in take["curves"]:
+        source = sources[curve["role"]]
+        rebuilt = 10.0 ** (np.asarray(curve["magnitude_db"]) / 20.0) * np.exp(
+            1j * np.radians(np.asarray(curve["phase_deg"]))
+        )
+        # By the record's OWN account of which bins it sampled, not by
+        # re-deriving the sampler here — that is the claim ``freqs_hz`` makes.
+        at = {float(hz): i for i, hz in enumerate(source.freqs_hz)}
+        sampled = [at[hz] for hz in curve["freqs_hz"]]
+        assert np.allclose(rebuilt, np.asarray(source.complex_tf)[sampled])
+        # Not vacuous: the fixture's wound phase really is non-zero.
+        assert np.any(np.abs(np.asarray(curve["phase_deg"])) > 1.0)
+
+
+def test_a_check_take_banks_no_curve_because_check_measures_none():
+    """CHECK solves gains off pilots and computes no transfer function at all.
+
+    The honest empty list, not an omission and not a claimed clean curve —
+    ``_analyze_check`` returns a ``ProgramAnalysis`` with neither
+    ``driver_responses`` nor ``summed_response``, so there is nothing for the
+    carry to serialize and the record says exactly that.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    c = CrossoverV2Session(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+        index_phase_map=CLOUD_MAP,
+    )
+    _walk(c, (1, 2), 1)
+
+    banked = {meta["phase"]: meta for meta in retained}
+    assert banked[PHASE_CHECK]["curves"] == []
+    assert banked[PHASE_MEASURE]["curves"] != []
 
 
 def test_a_verify_take_banks_the_kind_its_own_round_can_derive():

@@ -65,7 +65,11 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
-from jasper.audio_measurement.program import KIND_SWEEP, RoleBand
+from jasper.audio_measurement.program import (
+    KIND_SUMMED_SWEEP,
+    KIND_SWEEP,
+    RoleBand,
+)
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
 from .contracts import (
@@ -149,6 +153,7 @@ __all__ = [
     "take_kind",
     "cloud_position_record",
     "pose_curve_record",
+    "analysis_curve_records",
     "lateral_pose_record",
     "entry_baseline_record",
     "phase_capture_record",
@@ -698,6 +703,26 @@ def _primary_sweep_bands(program: Any) -> dict[str, tuple[float, float]]:
     return bands
 
 
+def _summed_sweep_band_hz(program: Any) -> tuple[float, float] | None:
+    """The band a SUMMED sweep drove — the one segment the map above cannot key.
+
+    Sibling of :func:`_primary_sweep_bands`, separate because it answers a
+    different question: a summed sweep declares ``role=None`` (every driver is
+    sounding), so there is no key to file it under and a caller identifies it
+    by holding ``ProgramAnalysis.summed_response`` rather than by a role word.
+    ``None`` for a program that plays no summed sweep — a MEASURE program is
+    exactly that, and it is the reason this returns an option rather than
+    raising.
+    """
+    for segment in program.segments:
+        if segment.kind != KIND_SUMMED_SWEEP:
+            continue
+        if segment.f1_hz is None or segment.f2_hz is None:
+            continue
+        return (float(segment.f1_hz), float(segment.f2_hz))
+    return None
+
+
 def lateral_evidence_grid_hz() -> np.ndarray:
     """The shared log basis every retained pose curve is sampled onto."""
     lo, hi = LATERAL_EVIDENCE_BAND_HZ
@@ -1031,6 +1056,7 @@ def cloud_position_record(
     wav_sha256: str | None,
     graph_fingerprint: str = "",
     regime: str = "",
+    curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """One retained cloud position, as the record two consumers read.
@@ -1096,6 +1122,11 @@ def cloud_position_record(
     word :func:`lateral_pose_record` already does — one vocabulary for one
     question — and is ``None`` wherever no bearing was commanded.  See
     :class:`PositionGeometry` for the frame all three sit in.
+
+    ``curves`` is WHAT WAS MEASURED, in :func:`pose_curve_record`'s shape and
+    under the key :func:`lateral_pose_record` already spells — see
+    :func:`analysis_curve_records`.  Empty for a caller that supplied none, and
+    absent entirely from records banked before it existed.
     """
     return {
         "position_id": position_id,
@@ -1124,6 +1155,7 @@ def cloud_position_record(
         "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
+        "curves": [dict(curve) for curve in curves],
     }
 
 
@@ -1144,14 +1176,15 @@ _POSE_MAGNITUDE_FLOOR = 1e-12
 
 
 def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
-    """One driver's pose curve, banked as magnitude AND phase (ruling S3).
+    """One measured curve, banked as magnitude AND phase (ruling S3).
 
-    ``complex_tf`` has no serializer, so before this every offline re-analysis
-    re-derived phase from the WAVs and the forward model could not run from the
-    bank at all.  The pair banked here reconstructs it exactly --
+    The ONE serializer ``complex_tf`` has, for every banked kind that measures
+    one -- :func:`analysis_curve_records` is how the other three reach it.  The
+    pair banked here reconstructs the transfer function exactly --
     ``10 ** (magnitude_db / 20) * exp(1j * radians(phase_deg))`` -- which is
     what makes the ruling's *"just save the information"* true of phase and not
-    only of magnitude.
+    only of magnitude.  Without it every offline re-analysis re-derives phase
+    from the WAVs and the forward model cannot run from the bank at all.
 
     ``phase_deg`` is WRAPPED to (-180, 180], the value :func:`numpy.angle`
     produces.  An unwrapped phase is a derived VIEW with a choice of branch in
@@ -1172,6 +1205,57 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         "magnitude_db": [float(db) for db in 20.0 * np.log10(magnitude)],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
     }
+
+
+def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
+    """One analysis's PRIMARY complex responses, in the banked curve shape.
+
+    Ruling S3's *"just save the information"* for the three retained kinds that
+    are not a lateral pose.  The walk builds :class:`LateralPoseCurve` objects
+    of its own because its candidate fit consumes them in-process; the other
+    three kinds only ever needed the RECORD, so they take the same two steps
+    (:func:`lateral_pose_curve` then :func:`pose_curve_record`) straight
+    through and bank the identical shape under the identical key.  One SHAPE
+    for all four kinds, so the reader the cutover's reader-flip row builds has
+    one thing to parse rather than four.  Nothing in the tree reads ``curves``
+    yet -- see :func:`lateral_pose_record`, which says so and says why.
+
+    BOTH response fields are read, because
+    :mod:`~jasper.audio_measurement.program_analysis` fills them on different
+    paths: a per-driver analysis fills ``driver_responses`` (one curve per
+    role) and a summed-sweep analysis fills ``summed_response`` (one curve,
+    role ``"summed"``).  Written as a union rather than a branch so an analysis
+    that grows the other half starts banking it instead of silently dropping
+    it.  CHECK fills neither -- it solves gains off pilots and computes no
+    transfer function at all.
+
+    **PRIMARY responses only, which is fewer than the analysis computed.** A
+    MEASURE analysis additionally deconvolves each role's repeat occurrences
+    and hangs them off the primary as ``DriverResponse.repeat_responses``; they
+    are diagnostic evidence for the primary and feed no candidate/trim/
+    alignment math, so they are banked no more than the walk banks them.  The
+    ``repeat_index`` filter below is the walk's own, kept verbatim: inert on
+    today's ``driver_responses`` (a tuple of primaries) and correct if that
+    tuple ever carries a repeat directly.
+
+    A role whose band the program does not declare is SKIPPED rather than
+    banked on a guessed band -- outside the driven band the samples are noise,
+    and :func:`pose_curve_record`'s ``band_hz`` is what tells a consumer where
+    to stop reading.  An empty list therefore means NO CURVE WAS BANKED, never
+    "this capture was clean": CHECK reaches it by measuring none, and the
+    caller's guard reaches it by failing loudly at WARN.
+    """
+    bands = _primary_sweep_bands(program)
+    records = [
+        pose_curve_record(lateral_pose_curve(response, bands[response.role]))
+        for response in analysis.driver_responses
+        if response.repeat_index is None and response.role in bands
+    ]
+    summed = analysis.summed_response
+    summed_band = _summed_sweep_band_hz(program)
+    if summed is not None and summed_band is not None:
+        records.append(pose_curve_record(lateral_pose_curve(summed, summed_band)))
+    return records
 
 
 def lateral_pose_record(
@@ -1267,17 +1351,29 @@ def phase_capture_record(
     wav_sha256: str | None,
     prompt: str = "",
     regime: str = "",
+    curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """One banked take for a phase that prompts no spot: CHECK, MEASURE, VERIFY.
 
     These three play from wherever the microphone already is — there is no
     table row and no instruction — so what a take of one records is the
-    CAPTURE: its bytes' digest and the identity that finds it again. The
-    phase's own analysis is not duplicated here; it already lives where the
-    phase puts it (``_measure_analysis``, ``_verify_analysis``, the gain plan
-    CHECK publishes), and a take is what survives the round while those are
-    rewritten inside it.
+    CAPTURE: its bytes' digest, the identity that finds it again, and
+    ``curves`` — WHAT WAS MEASURED, in :func:`pose_curve_record`'s shape and
+    under the key :func:`lateral_pose_record` already spells (see
+    :func:`analysis_curve_records`).
+
+    **The curves are the only part of the analysis this record keeps**, and
+    ruling S3 is why: a round's VERDICTS live where the phase puts them
+    (``_measure_analysis``, ``_verify_analysis``, the gain plan CHECK
+    publishes) and are rewritten inside the round, but the complex responses
+    they were drawn from land in no file at all unless they land here. MEASURE
+    is the kind that matters most — its per-driver phase is what cross-driver
+    timing is measured from — and CHECK banks an empty list because it
+    computes no transfer function at all. An empty list is "no curve banked"
+    and never "this capture was clean"; :func:`analysis_curve_records` names
+    the two ways it is reached. Absent entirely from records banked before
+    this field existed.
 
     **The take id follows the entry baseline's convention rather than inventing
     a second one.** That phase had the same problem first — a retained capture
@@ -1317,6 +1413,7 @@ def phase_capture_record(
         "regime": regime,
         "position_deg": DESIGN_AXIS_DEG,
         "position_axis": POSITION_AXIS_HORIZONTAL,
+        "curves": [dict(curve) for curve in curves],
     }
 
 
@@ -1339,6 +1436,7 @@ def entry_baseline_record(
     wav_sha256: str | None,
     prompt: str = "",
     regime: str = "",
+    curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """The entry baseline's retained record — a cloud position's shape, minus
@@ -1368,6 +1466,15 @@ def entry_baseline_record(
     ``round_evidence.EntryBaseline.to_dict``, under the same names, so one
     reader covers both — see
     :func:`~.position_cycle.read_entry_baseline_take`.
+
+    **``curves`` is a SECOND curve on a second basis, not a copy of that one.**
+    The three arrays above are the GRADED side — decimated to the benefit
+    curve's bins, magnitude only, carrying the ``excluded`` mask the round's
+    before→after claim is drawn over.  ``curves`` is the MEASURED side, in
+    :func:`pose_curve_record`'s shape on the shared log basis and with the
+    phase that side has never carried (see :func:`analysis_curve_records`).
+    Neither is derivable from the other, which is why both ride.  Absent
+    entirely from records banked before it existed.
 
     **The pose is the design axis**, not a missing fact: this capture has no
     prompted spot, and a capture with no prompted move is
@@ -1402,6 +1509,7 @@ def entry_baseline_record(
         "gate_window_ms": gate_window_ms,
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
+        "curves": [dict(curve) for curve in curves],
     }
 
 

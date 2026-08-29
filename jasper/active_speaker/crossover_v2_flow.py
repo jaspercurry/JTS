@@ -4580,7 +4580,7 @@ class CrossoverV2Session:
         true in two places and false in the third.
         """
         if verdict.accepted:
-            self._bank_phase_capture(phase, index, attempt, result)
+            self._bank_phase_capture(phase, index, attempt, analysis, result)
         self._safe_log_diag(log_diag, analysis, verdict)
         return verdict
 
@@ -4648,14 +4648,21 @@ class CrossoverV2Session:
         )
 
     def _bank_phase_capture(
-        self, phase: str, index: int, attempt: int, result: Any,
+        self,
+        phase: str,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
     ) -> None:
         """Bank one take for a phase with no prompted spot.
 
         CHECK, MEASURE and VERIFY play from wherever the microphone already is,
-        so what is banked is the CAPTURE — its bytes and the identity that
-        finds them again. Each phase's own analysis stays where the phase puts
-        it: those are rewritten inside a round, and a take is what survives it.
+        so what is banked is the CAPTURE — its bytes, the identity that finds
+        them again, and the complex responses it measured
+        (:meth:`_banked_curves`). Each phase's own VERDICT stays where the
+        phase puts it: those are rewritten inside a round, and a take is what
+        survives it.
 
         On an ACCEPTED verdict only, which is the rule every other retained
         kind already follows. A refused capture is not evidence of the speaker,
@@ -4680,6 +4687,7 @@ class CrossoverV2Session:
                 phase=phase,
                 index=index,
                 attempt=attempt,
+                curves=self._banked_curves(phase, analysis),
                 claim=_spatial.TakeClaim(
                     baseline_fingerprint=(
                         baseline.graph_fingerprint if baseline is not None else ""
@@ -4704,6 +4712,48 @@ class CrossoverV2Session:
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "wav_sha256": _capture_wav_sha256(result),
         }
+
+    def _banked_curves(
+        self, phase: str, analysis: ProgramAnalysis,
+    ) -> list[dict[str, Any]]:
+        """WHAT THIS CAPTURE MEASURED, or nothing — never the take.
+
+        Ruling S3 for the three kinds that are not a walk pose: the complex
+        responses an analysis computed land in no file at all unless they land
+        on the take. See
+        :func:`~jasper.active_speaker.crossover_v2.spatial.analysis_curve_records`
+        for the shape and for which analysis produces which responses.
+
+        **Guarded, and not decoratively.** The walk reaches the resampler only
+        after a ladder that has already refused every degenerate response
+        (``test_the_resampler_really_does_raise_on_an_empty_axis`` pins the
+        ``IndexError``); the three sites that call this have their own screens,
+        which are not that one. A raise here would cost the CAPTURE — the sweep
+        played, the operator is standing at the mark, and a verdict already
+        decided above would be lost to a serialization failure. The caught
+        tuple is concrete: ``IndexError`` from the resampler on an empty axis,
+        ``AttributeError``/``TypeError`` from a foreign or half-populated
+        analysis, ``ValueError`` from a malformed band. ``program_for_phase``
+        is NOT in it — every caller of this reaches it through
+        :meth:`consume_capture`, which resolved the same phase's program before
+        any verdict existed, so a session that could not name it never got here.
+
+        **``[]`` from this method means the curves were LOST**, which reads the
+        same in the record as CHECK measuring none. The journal line is the
+        discriminator; the record does not carry one, and it should not grow a
+        sentinel unless this arm is ever seen to fire.
+        """
+        try:
+            return _spatial.analysis_curve_records(
+                analysis, self.program_for_phase(phase),
+            )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            log_event(
+                logger, "correction.crossover_v2_take_curves_failed",
+                level=logging.WARNING, session_id=self.session_id, phase=phase,
+                exc_info=True,
+            )
+            return []
 
     def _note_ripple_reservation(self, predicted_ripple_db: float) -> None:
         """Bank G1's reservation about the capture being accepted (#2087).
@@ -5212,9 +5262,11 @@ class CrossoverV2Session:
         for the two consumers that ordering serves, and for what each field of
         the record is.
 
-        The added cost when no seam is bound is one small dict plus one
-        SHA-256 of the capture's WAV bytes (:func:`_capture_wav_sha256`) — a
-        few milliseconds per accepted position, ~10 times per session.
+        The added cost when no seam is bound is one small dict, one SHA-256 of
+        the capture's WAV bytes (:func:`_capture_wav_sha256`), and one
+        resample-plus-serialize of the summed response (:meth:`_banked_curves`,
+        ~120 points × 3 arrays) — a few milliseconds per accepted position,
+        ~10 times per session.
 
         **That hash stays inside ``_close_lock`` on purpose.** ``_group_position_meta``
         is written here and read by :meth:`_run_cloud_pipeline` at the group
@@ -5253,6 +5305,7 @@ class CrossoverV2Session:
             summed_ripple_db=analysis.summed_ripple_db,
             glitch_detected=bool(analysis.glitch_detected),
             wav_sha256=_capture_wav_sha256(result),
+            curves=self._banked_curves(phase, analysis),
         )
         self._group_position_meta.setdefault(phase, {})[
             position.position_id
@@ -6993,6 +7046,7 @@ class CrossoverV2Session:
             gate_window_ms=_gate_window_ms(analysis.summed_response),
             summed_ripple_db=analysis.summed_ripple_db,
             glitch_detected=bool(analysis.glitch_detected),
+            curves=self._banked_curves(PHASE_ENTRY_BASELINE, analysis),
         )
         # The TAKE id and not the store's record id: ``artifact_ref`` is read
         # back out of the bundle by

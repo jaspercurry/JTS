@@ -382,6 +382,69 @@ def test_the_retained_take_rehydrates_into_the_record_the_round_holds():
     ) == conductor.measure_entry_baseline
 
 
+def test_the_retained_take_carries_the_phase_the_baseline_measured():
+    """Ruling S3 on the kind that banked magnitude and threw phase away.
+
+    This take already carried a curve — the reduced, magnitude-only benefit
+    curve the round grades its before→after claim over. What it never carried
+    was the complex response its own analysis computed, so an offline
+    re-analysis had to re-derive phase from the WAV and the forward model could
+    not run from the bank.
+
+    Two curves on two bases now ride, and neither is derivable from the other:
+    the graded arrays above, and ``curves`` on the shared log basis with
+    ``phase_deg``. Asserted as a RECONSTRUCTION against the analysis's own
+    values at the bins the record names, not as key presence.
+    """
+    import numpy as np
+
+    retained: list[dict[str, Any]] = []
+    fakes = FakeSeams()
+    measured: list = []
+
+    def _complex_verify(program, **kwargs):
+        analysis = _verify_analysis(program, **kwargs)
+        summed = analysis.summed_response
+        wound = dataclasses.replace(
+            summed,
+            # The fixture's TF is real and positive, so every phase is 0.0 and
+            # a record that carried none would round-trip. Wind a ramp on.
+            complex_tf=np.abs(summed.complex_tf) * np.exp(
+                1j * np.linspace(-9.0, 9.0, np.asarray(summed.freqs_hz).size)
+            ),
+        )
+        analysis = dataclasses.replace(analysis, summed_response=wound)
+        measured.append(wound)
+        return analysis
+
+    fakes.verify = _complex_verify
+    conductor = _baseline_only_conductor(
+        fakes,
+        seams=dataclasses.replace(
+            fakes.seams(), bank_take=bank_into(retained),
+        ),
+    )
+    conductor.authorize_begin(1, 1)
+    conductor.on_armed()
+    conductor.consume_capture(1, 1, _capture())
+
+    (metadata,) = retained
+    (curve,) = metadata["curves"]
+    source = measured[-1]
+    rebuilt = 10.0 ** (np.asarray(curve["magnitude_db"]) / 20.0) * np.exp(
+        1j * np.radians(np.asarray(curve["phase_deg"]))
+    )
+    at = {float(hz): i for i, hz in enumerate(source.freqs_hz)}
+    sampled = [at[hz] for hz in curve["freqs_hz"]]
+
+    assert curve["role"] == "summed"
+    assert np.allclose(rebuilt, np.asarray(source.complex_tf)[sampled])
+    # Not vacuous: the wound phase really is non-zero.
+    assert np.any(np.abs(np.asarray(curve["phase_deg"])) > 1.0)
+    # And the graded arrays are untouched — a second basis, not a replacement.
+    assert metadata["freqs_hz"] and metadata["magnitude_db"]
+
+
 def test_a_failing_retention_store_does_not_cost_the_household_a_retake():
     """Evidence retention is forensics, never a gate.
 

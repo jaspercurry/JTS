@@ -49,6 +49,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
+from jasper.audio_measurement import program
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_FAIL,
     CaptureIntegrity,
@@ -797,6 +798,191 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
 
     assert [c["role"] for c in record["curves"]] == ["woofer", "tweeter"]
     assert all("phase_deg" in c for c in record["curves"])
+
+
+def _sweep_program(*segments):
+    """A program that declares only the sweep bands under test."""
+    return SimpleNamespace(segments=list(segments))
+
+
+def _sweep_segment(kind: str, role: str | None, f1_hz: float, f2_hz: float):
+    return SimpleNamespace(kind=kind, role=role, f1_hz=f1_hz, f2_hz=f2_hz)
+
+
+def _response(role: str, freqs, tf):
+    import numpy as np
+
+    from jasper.audio_measurement.program_analysis import DriverResponse
+
+    return DriverResponse(
+        role=role, freqs_hz=np.asarray(freqs, dtype=float),
+        magnitude_db=np.zeros(len(freqs)),
+        complex_tf=np.asarray(tf, dtype=complex),
+        gating={}, snr=None, validity_floor_hz=None,
+    )
+
+
+def _analysis_of_shape(shape: str):
+    """One analysis of each shape ``program_analysis`` produces, plus its program.
+
+    Returns the analysis, the program that drove it, and the responses by role
+    so a caller can compare a record against the values it came from.
+    """
+    import numpy as np
+
+    freqs = np.geomspace(20.0, 20000.0, 512)
+    tf = (0.3 + np.linspace(0.0, 2.0, 512)) * np.exp(
+        1j * np.linspace(-9.0, 9.0, 512)
+    )
+    if shape == "per_driver":
+        bands = {"woofer": (100.0, 6000.0), "tweeter": (2000.0, 20000.0)}
+        sources = {
+            role: _response(role, freqs, tf * (n + 1))
+            for n, role in enumerate(bands)
+        }
+        analysis = SimpleNamespace(
+            driver_responses=tuple(sources.values()), summed_response=None,
+        )
+        segments = [
+            _sweep_segment(program.KIND_SWEEP, role, lo, hi)
+            for role, (lo, hi) in bands.items()
+        ]
+    else:
+        bands = {"summed": (30.0, 20000.0)}
+        sources = {"summed": _response("summed", freqs, tf)}
+        analysis = SimpleNamespace(
+            driver_responses=(), summed_response=sources["summed"],
+        )
+        segments = [
+            _sweep_segment(program.KIND_SUMMED_SWEEP, None, 30.0, 20000.0),
+        ]
+    return analysis, _sweep_program(*segments), sources, bands
+
+
+@pytest.mark.parametrize(
+    "shape,expected_roles",
+    [("per_driver", ["woofer", "tweeter"]), ("summed", ["summed"])],
+)
+def test_every_shape_of_analysis_banks_its_complex_response(
+    shape, expected_roles,
+):
+    """Ruling S3, at the seam three banked kinds reach it through.
+
+    ``program_analysis`` produces complex responses in exactly two shapes — a
+    per-driver tuple and one summed response — and before this only the walk's
+    per-driver one ever reached a file. Both must come back reconstructible:
+    the record is magnitude+phase, and the pair IS the transfer function.
+
+    Compared at the bins the record itself NAMES, because the curve is sampled
+    and never interpolated — an interpolated complex value is a number no
+    microphone produced, and a phase interpolated across a wrap is wrong.
+    """
+    import numpy as np
+
+    analysis, prog, sources, bands = _analysis_of_shape(shape)
+
+    records = spatial.analysis_curve_records(analysis, prog)
+
+    assert [record["role"] for record in records] == expected_roles
+    for record in records:
+        source = sources[record["role"]]
+        rebuilt = 10.0 ** (np.asarray(record["magnitude_db"]) / 20.0) * np.exp(
+            1j * np.radians(np.asarray(record["phase_deg"]))
+        )
+        at = {float(hz): i for i, hz in enumerate(source.freqs_hz)}
+        sampled = [at[hz] for hz in record["freqs_hz"]]
+        assert np.allclose(rebuilt, np.asarray(source.complex_tf)[sampled])
+        assert np.any(np.abs(np.asarray(record["phase_deg"])) > 1.0)
+        # The band the PROGRAM declared for that role, not a guessed one.
+        assert record["band_hz"] == list(bands[record["role"]])
+
+
+def test_an_analysis_that_measured_no_response_banks_an_empty_list():
+    """CHECK, honestly. It solves gains off pilots and computes no transfer
+    function at all, so there is nothing to bank and the record says so rather
+    than claiming a clean curve.
+
+    The same answer for a response whose band the program never declared: an
+    unbanked curve, not one banked on a guessed band.
+    """
+    import numpy as np
+
+    check = SimpleNamespace(driver_responses=(), summed_response=None)
+    unbanded = SimpleNamespace(
+        driver_responses=(
+            _response("woofer", np.array([1000.0]), np.array([1.0 + 0.0j])),
+        ),
+        summed_response=None,
+    )
+    program_with_bands = _sweep_program(
+        _sweep_segment(program.KIND_SWEEP, "tweeter", 300.0, 20000.0),
+    )
+
+    assert spatial.analysis_curve_records(check, program_with_bands) == []
+    assert spatial.analysis_curve_records(unbanded, program_with_bands) == []
+
+
+_A_BANKED_CURVE = {
+    "role": "summed", "band_hz": [30.0, 20000.0], "freqs_hz": [100.0, 200.0],
+    "magnitude_db": [-1.0, 0.5], "phase_deg": [12.5, -170.25],
+}
+
+
+@pytest.mark.parametrize("builder", ["cloud", "entry", "phase"])
+def test_the_carry_adds_curves_and_changes_nothing_else(builder):
+    """Additive at the builder: one key, and every other field untouched.
+
+    The three kinds that gained the carry spell the SAME key the walk pose
+    already did, so the reader the cutover's flip row builds parses one shape
+    rather than four. Driven THROUGH the ``curves=`` keyword — a test that
+    wrote the key onto a finished dict would pass with the carry reverted.
+    """
+    build = {
+        "cloud": _cloud_record, "entry": _entry_record, "phase": _phase_record,
+    }[builder]
+    without, carrying = build(), build(curves=[_A_BANKED_CURVE])
+
+    assert carrying["curves"] == [_A_BANKED_CURVE]
+    assert without["curves"] == []
+    assert {k: v for k, v in without.items() if k != "curves"} == {
+        k: v for k, v in carrying.items() if k != "curves"
+    }
+
+
+def test_a_record_banked_before_curves_existed_still_reads_clean(tmp_path):
+    """Additive at the reader: the field's ABSENCE changes nothing it sees.
+
+    A take banked before ``curves`` existed carries no such key. The reader
+    narrows to its own field list, so a legacy record and a carrying one read
+    identically — the whole claim behind widening the schema instead of
+    versioning it.
+
+    Asserted against a record with the key REMOVED, not one built empty: an
+    empty list is what a new take with nothing to bank writes, and it is a
+    different shape from the one already on disk.
+
+    The entry baseline is the subject because it is the one kind that BOTH
+    gained the carry and has a shipped reader; ``read_lateral_take`` narrows
+    through the same comprehension and the pose record is unchanged here. A
+    cloud seat and an unprompted-phase take are rejected on ``phase`` by both
+    readers, so asserting over them would be two ``None``s agreeing.
+    """
+    import json
+
+    from jasper.active_speaker.crossover_v2 import position_cycle
+
+    carrying = {
+        **_entry_record(curves=[_A_BANKED_CURVE]), "kind": POSITION_EVIDENCE_KIND,
+    }
+    legacy = {k: v for k, v in carrying.items() if k != "curves"}
+    old, new = tmp_path / "old.json", tmp_path / "new.json"
+    old.write_text(json.dumps(legacy))
+    new.write_text(json.dumps(carrying))
+
+    assert position_cycle.read_entry_baseline_take(new) is not None
+    assert position_cycle.read_entry_baseline_take(
+        old
+    ) == position_cycle.read_entry_baseline_take(new)
 
 
 def test_the_storage_seam_names_the_take_the_record_names():
