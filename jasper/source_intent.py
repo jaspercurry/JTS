@@ -1334,8 +1334,18 @@ def _reconcile_usbsink(
                         "USB audio remained advertised without a direct consumer"
                     )
             if not ops.usb_direct_present():
-                rc, detail = ops.run_unit(_USB_COUPLING_UNIT, "start")
-                _check_result(rc, detail, f"systemctl start {_USB_COUPLING_UNIT}")
+                # Deliberately NOT _check_result: this unit's exit code is the
+                # wrong gate. Besides arming the lane it runs an opportunistic
+                # CamillaDSP self-heal, and a self-heal that cannot run says
+                # nothing about USB transport — on jts3 a stale applied-baseline
+                # fingerprint made it exit 1 forever, failing this transition on
+                # a box that was playing fine (ADR-0191).
+                #
+                # The OUTCOME is what matters and is already verified: the
+                # direct-lane checks below, and the usb_direct_ready() settle
+                # loop, still fail this transition when the lane genuinely does
+                # not arm. Judge the lane, not the helper's exit status.
+                ops.run_unit(_USB_COUPLING_UNIT, "start")
             if not ops.usb_audio_present():
                 rc, detail = ops.run_unit(gadget, "restart")
                 _check_result(rc, detail, f"systemctl restart {gadget}")

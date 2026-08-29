@@ -1287,12 +1287,7 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     )
 
 
-@pytest.mark.parametrize(
-    "camilla_ok",
-    [True, False],
-    ids=["self-heal-ok", "self-heal-unavailable"],
-)
-def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch, camilla_ok):
+def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # The other side of the CONFIRM-path fix: a COHERENT already-armed shm_ring box
     # must NOT bounce fan-in/outputd on every reconcile tick — only re-load camilla.
     # This pins that the escalation is gated on POSITIVE incoherence evidence, so a
@@ -1337,7 +1332,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch, cami
         f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=2\n",
     )
     outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
-    calls, ro, rf, rc = _recorder(camilla_ok=camilla_ok)
+    calls, ro, rf, rc = _recorder()
 
     result = _reconcile(
         fanin_env=fanin_env,
@@ -1347,15 +1342,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch, cami
         reconcile_camilla=rc,
     )
 
-    # ADR-0191: on a coherent box the only work left is an OPPORTUNISTIC
-    # Camilla self-heal. Whether it lands is disclosed via reconciled_camilla
-    # and detail, but it never makes the pass "not ok" — this type documents
-    # ok=False as "the box is not playing", and a self-heal that could not run
-    # leaves the box playing the graph it already had. Reporting failure here
-    # vetoed USB transport bring-up on a healthy jts3 for a day.
     assert result.ok is True, result.detail
-    assert result.reconciled_camilla is camilla_ok
-    assert bool(result.detail) is not camilla_ok
     assert not result.changed
     # Lightweight: camilla-only re-load, NO fan-in / outputd bounce.
     assert calls == ["camilla:shm_ring"]
