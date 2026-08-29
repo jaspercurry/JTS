@@ -32,12 +32,15 @@ second implementation that drifts.
 reconciler rewrites ``outputd.env``, so a value captured at import would be
 permanently wrong.
 
-**Two signals that are not parks.** :func:`snapshot`'s ``unproven_endpoint``
+**Three signals that are not parks.** :func:`snapshot`'s ``unproven_endpoint``
 names the coverage seam ADR-0184 records — a box whose wide-ring width
 resolves with no armed endpoint and no class to name it. ``converge_refused``
 names the shape past it: the marker IS armed and the program still never
-reached the endpoint. Neither carries an issue or a remedy, which is exactly
-why ADR-0178 refuses them a class, and both stop at the operator surfaces.
+reached the endpoint. ``endpoint_armed_without_active_modes`` names the seam's
+mirror ([ADR-0189](../../docs/adr/0189-an-armed-endpoint-under-no-active-modes-discloses-on-non-composite-sinks.md)):
+the marker is armed under no active modes, on a sink that is not composite.
+None carries an issue or a remedy, which is exactly why ADR-0178 refuses them
+a class, and all stop at the operator surfaces.
 """
 from __future__ import annotations
 
@@ -138,6 +141,13 @@ class _Assessment:
     #: ones above: same width, same marker, marker ARMED. See
     #: :func:`_endpoint_graph_refusal`.
     converge_refused: str | None
+    #: A width resolves, the endpoint marker IS armed, and the layout declares
+    #: no active-crossover mode — the fourth combination of the same three
+    #: facts, and the one ADR-0184 did not model.
+    #: [ADR-0189](../../docs/adr/0189-an-armed-endpoint-under-no-active-modes-discloses-on-non-composite-sinks.md)
+    #: gives it its meaning and scopes it to NON-composite sinks. Operator-only:
+    #: NOT a park, NOT a household claim.
+    endpoint_armed_without_active_modes: bool
 
 
 def ring_only_transport() -> bool:
@@ -344,15 +354,28 @@ def _assess(
     # actually moved. Only then is the graph read at all, and a box with no
     # active ring pays nothing for this.
     #
-    # NOT full coverage of the combinations: a resolved width with NO active
-    # modes and the marker ARMED reports nothing, deliberately — ADR-0184
-    # defines its seam on an UNarmed marker, and widening it here would be this
-    # module re-deriving a model it does not own. Issue #3244 (ring-restoration
-    # lane) holds that shape.
     converge_refused = (
         _endpoint_graph_refusal()
         if active_ring is not None and contract.active_modes and endpoint_armed
         else None
+    )
+
+    # The fourth combination of the same three facts, and the last one with no
+    # answer: width resolved, marker ARMED, no active modes (ADR-0189).
+    #
+    # SCOPED TO NON-COMPOSITE SINKS, which is the whole of the decision. The
+    # marker's writers arm it for an accepted active-speaker graph, so on a
+    # roleful box that declares no active mode the pair means one of two things
+    # — reconfiguration lag, since the hardware reconciler disarms on its NEXT
+    # pass rather than instantly, or a genuine mismatch. Neither deserves the
+    # greenest verdict. A composite sink is the exception and must stay silent:
+    # it is served with the marker armed and no active modes of its own, so a
+    # class-blind read here would warn on every healthy composite.
+    endpoint_armed_without_active_modes = bool(
+        active_ring is not None
+        and not contract.active_modes
+        and endpoint_armed
+        and not topology_sink_is_composite(topology)
     )
 
     return _Assessment(
@@ -360,6 +383,7 @@ def _assess(
         ring_unresolved=ring_unresolved,
         unproven_endpoint=unproven_endpoint,
         converge_refused=converge_refused,
+        endpoint_armed_without_active_modes=endpoint_armed_without_active_modes,
     )
 
 
@@ -422,9 +446,9 @@ def snapshot(
         Topology or env could not be read. Reported distinctly rather than as
         a healthy box, the same posture the other park readers hold.
 
-    Two signals ride alongside ``status``, never inside it. Both are OPERATOR
-    facts: neither changes a status, adds a park, or reaches the household
-    card, and both are always present.
+    Three signals ride alongside ``status``, never inside it. All are OPERATOR
+    facts: none changes a status, adds a park, or reaches the household card,
+    and all are always present.
 
     ``unproven_endpoint``
         The ADR-0184 coverage seam — a box whose wide-ring width resolves with
@@ -436,6 +460,11 @@ def snapshot(
         or ``None`` — see :func:`_endpoint_graph_refusal`. A box in this shape
         is ring-eligible and reads ``parked: false`` everywhere while its
         program goes nowhere, which is why it needs a name of its own.
+
+    ``endpoint_armed_without_active_modes``
+        A width resolves, the marker IS armed, the layout declares no active
+        mode, and the sink is not composite — ADR-0189. ``False`` when it
+        cannot be assessed.
 
     Never raises.
     """
@@ -450,6 +479,7 @@ def snapshot(
             "parks": [],
             "unproven_endpoint": False,
             "converge_refused": None,
+            "endpoint_armed_without_active_modes": False,
             "error": str(exc),
         }
 
@@ -468,4 +498,7 @@ def snapshot(
         "parks": [park.to_dict() for park in parks],
         "unproven_endpoint": assessment.unproven_endpoint,
         "converge_refused": assessment.converge_refused,
+        "endpoint_armed_without_active_modes": (
+            assessment.endpoint_armed_without_active_modes
+        ),
     }

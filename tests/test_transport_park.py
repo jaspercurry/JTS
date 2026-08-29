@@ -157,6 +157,46 @@ def _composite_subwoofer_only() -> OutputTopology:
     )
 
 
+def _composite_stereo_plus_subwoofer() -> OutputTopology:
+    """The ADR-0189 exception: a COMPOSITE sink whose ACTIVE width resolves.
+
+    Same roleful-but-not-active-crossover shape as
+    :func:`_stereo_plus_subwoofer`, on a two-child composite sink. The
+    hardware reconciler arms the endpoint marker for this class, so (armed,
+    no active modes) is its normal serving state rather than a mismatch.
+    """
+    return _composite_topology(
+        [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 1}],
+            },
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [{"role": "subwoofer", "physical_output_index": 2}],
+            },
+        ],
+        routing={
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+            "subwoofer_group_ids": ["sub"],
+        },
+    )
+
+
 def _classes(parks) -> set[str]:
     return {park.park_class for park in parks}
 
@@ -512,6 +552,7 @@ def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):
     assert state["status"] == "unavailable"
     assert state["parked"] is False
     assert state["parks"] == []
+    assert state["endpoint_armed_without_active_modes"] is False
 
 
 def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
@@ -568,11 +609,11 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
     "topology,env,unproven,expected",
     [
         (_stereo_plus_subwoofer(), {}, True, "warn"),
-        (_stereo_plus_subwoofer(), _ARMED, False, "ok"),
+        (_stereo_plus_subwoofer(), _ARMED, False, "warn"),
         (_active_topology("stereo", "active_2_way"), _ARMED, False, "ok"),
         (_full_range_stereo(), {}, False, "ok"),
     ],
-    ids=["seam_unarmed", "seam_armed", "armed_active_crossover", "plain_stereo"],
+    ids=["seam_unarmed", "armed_no_modes", "armed_active_crossover", "plain_stereo"],
 )
 def test_an_unproven_endpoint_warns_without_naming_a_park(
     monkeypatch, topology, env, unproven, expected
@@ -584,6 +625,10 @@ def test_an_unproven_endpoint_warns_without_naming_a_park(
     the endpoint class is scoped out. The doctor's greenest verdict was the
     result. It warns instead — and only there: the status stays ``ok``, no park
     is invented, and the two boxes that were already proven are untouched.
+
+    ``armed_no_modes`` warns off a DIFFERENT boolean (ADR-0189), which is why
+    ``unproven`` is False on that row: ADR-0184's seam keeps its unarmed-marker
+    condition, so the two never describe one box.
     """
     from jasper.cli.doctor.audio_runtime import check_ring_transport_park
 
@@ -704,15 +749,81 @@ def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
 ):
     """A box outside the gate never pays for the graph read.
 
-    ``not_active_crossover`` is also the combination NO arm claims — a
-    resolved width, no active modes, marker ARMED. ADR-0184 defines its seam
-    on an UNarmed marker, so the silence here is deliberate rather than a gap
-    this module should close; issue #3244 holds that shape.
+    ``not_active_crossover`` — a resolved width, no active modes, marker
+    ARMED — is answered by ADR-0189's own boolean, not by this signal, and
+    that boolean reads no graph. So the refusal gate stays silent here and
+    pays nothing, which is what this test pins.
     """
     reads = _loaded_graph(monkeypatch, converged=False)
     state = transport_park.snapshot(topology, env, ring_only=True)
     assert state["converge_refused"] is None
     assert reads == []
+
+
+# --- ADR-0189: the seam's mirror, scoped by sink class ----------------------
+
+
+@pytest.mark.parametrize(
+    "topology,env,armed_without_modes,expected",
+    [
+        pytest.param(
+            _stereo_plus_subwoofer(), _ARMED, True, "warn", id="non_composite_armed"
+        ),
+        pytest.param(
+            _composite_stereo_plus_subwoofer(),
+            _ARMED,
+            False,
+            "ok",
+            id="composite_armed_is_served",
+        ),
+        pytest.param(
+            _stereo_plus_subwoofer(), {}, False, "warn", id="unarmed_is_the_0184_seam"
+        ),
+        pytest.param(
+            _active_topology("stereo", "active_2_way"),
+            _ARMED,
+            False,
+            "ok",
+            id="active_crossover_is_the_refusal_gate",
+        ),
+        pytest.param(_full_range_stereo(), _ARMED, False, "ok", id="no_active_ring"),
+    ],
+)
+def test_an_armed_endpoint_under_no_active_modes_discloses_off_composite(
+    monkeypatch, topology, env, armed_without_modes, expected
+):
+    """ADR-0189: the fourth combination stops reporting the greenest verdict.
+
+    The composite row is the load-bearing one. Its sink is served with the
+    marker armed and no active modes of its own, so a class-blind read would
+    warn on every healthy composite box; it must stay ``ok`` on the same env
+    that warns for the non-composite row directly above it.
+    """
+    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+
+    state = transport_park.snapshot(topology, env, ring_only=False)
+    assert state["endpoint_armed_without_active_modes"] is armed_without_modes
+    assert state["status"] == "ok"
+    assert state["parks"] == []
+
+    monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
+    assert check_ring_transport_park().status == expected
+
+
+def test_the_two_endpoint_signals_are_never_both_true():
+    """ADR-0184's seam needs the marker UNarmed; ADR-0189's needs it ARMED.
+
+    Mutually exclusive by construction, which is what keeps ADR-0178's
+    double-report objection from applying to the pair.
+    """
+    for env in ({}, _ARMED):
+        state = transport_park.snapshot(
+            _stereo_plus_subwoofer(), env, ring_only=False
+        )
+        assert not (
+            state["unproven_endpoint"]
+            and state["endpoint_armed_without_active_modes"]
+        )
 
 
 @pytest.mark.parametrize(
