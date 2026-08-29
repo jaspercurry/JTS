@@ -1087,22 +1087,35 @@ def _converge_ring(
     files_cleared = _delete_stale_ring_files(reason, fanin_snapshot.text)
 
     if not (changed or slots_healed or files_cleared):
-        # Already coherent: re-confirm camilla only (self-heal a drifted loaded
-        # config) — no fan-in bounce on a no-op tick.
-        ok, detail = do_reconcile(force=False)
+        # Already coherent: the COUPLING has nothing to do. The only work left
+        # is an OPPORTUNISTIC Camilla self-heal of a drifted loaded config.
+        #
+        # Its failure is disclosed — ERROR log, `detail`, `reconciled_camilla` —
+        # but does NOT make the pass "not ok". This type's contract is that
+        # `ok=False` means the box is not playing; a self-heal that could not
+        # run leaves the box playing exactly the graph it already was, so
+        # reporting failure here broke the contract rather than honouring it.
+        #
+        # Not hypothetical: on jts3 a stale applied-baseline fingerprint made
+        # this self-heal unavailable, `ok=False` propagated through
+        # jasper-fanin-coupling-auto into source-intent's USB On transition,
+        # and its rollback tore the composite gadget down — taking the NCM
+        # management network with it — on a box that was playing AirPlay the
+        # whole time. See ADR-0191.
+        cam_ok, cam_detail = do_reconcile(force=False)
         log_event(
             logger,
             "fanin.coupling_reconcile",
-            result="confirmed" if ok else "confirm_failed",
+            result="confirmed" if cam_ok else "confirm_failed",
             reason=reason,
-            detail=detail or None,
-            level=logging.INFO if ok else logging.ERROR,
+            detail=cam_detail or None,
+            level=logging.INFO if cam_ok else logging.ERROR,
         )
         return CouplingResult(
-            ok=ok,
+            ok=True,
             changed=False,
-            reconciled_camilla=ok,
-            detail="" if ok else detail,
+            reconciled_camilla=cam_ok,
+            detail="" if cam_ok else cam_detail,
         )
 
     kick_ok, kick_detail = do_converge_content_format()

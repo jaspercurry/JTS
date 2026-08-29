@@ -1314,7 +1314,6 @@ def _reconcile_usbsink(
     effective_on = desired and allowed
 
     if effective_on:
-        coupling_started = False
         try:
             # Enablement is written before composition because gadget-up uses
             # it as a derived readiness mirror in addition to canonical intent.
@@ -1337,7 +1336,6 @@ def _reconcile_usbsink(
             if not ops.usb_direct_present():
                 rc, detail = ops.run_unit(_USB_COUPLING_UNIT, "start")
                 _check_result(rc, detail, f"systemctl start {_USB_COUPLING_UNIT}")
-                coupling_started = True
             if not ops.usb_audio_present():
                 rc, detail = ops.run_unit(gadget, "restart")
                 _check_result(rc, detail, f"systemctl restart {gadget}")
@@ -1355,61 +1353,25 @@ def _reconcile_usbsink(
                 )
             return "on"
         except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            # A failed On transition must not strand a host-visible UAC2
-            # endpoint without its fan-in consumer. Preserve canonical desired
-            # On, temporarily withdraw the derived readiness mirror, recompose
-            # to NCM-only, and disarm coupling. The next pass retries cleanly.
-            cleanup_errors: list[str] = []
-            _attempt_teardown(
-                cleanup_errors,
-                f"stop {unit}",
-                lambda: _ensure_active(ops, unit, False, force=False),
-            )
-            _attempt_teardown(
-                cleanup_errors,
-                f"disable {unit} after failed On",
-                lambda: _ensure_enabled(ops, unit, False),
-            )
-            if ops.usb_audio_present():
-                _attempt_teardown(
-                    cleanup_errors,
-                    f"recompose {gadget} after failed On",
-                    lambda: _check_result(
-                        *ops.run_unit(gadget, "restart"),
-                        f"systemctl restart {gadget}",
-                    ),
-                )
-            if ops.usb_audio_present():
-                # A failed NCM-only recompose must never be followed by
-                # removing the still-advertised endpoint's consumer. Stop the
-                # composite owner as the final safe state before touching
-                # direct capture.
-                _attempt_teardown(
-                    cleanup_errors,
-                    f"stop {gadget} after failed rollback",
-                    lambda: _check_result(
-                        *ops.run_unit(gadget, "stop"),
-                        f"systemctl stop {gadget}",
-                    ),
-                )
-            if ops.usb_audio_present():
-                cleanup_errors.append(
-                    "USB audio function remained after failed-On rollback; "
-                    "direct capture left armed"
-                )
-            elif coupling_started or ops.usb_direct_present():
-                _attempt_teardown(
-                    cleanup_errors,
-                    f"disarm {_USB_COUPLING_UNIT} after failed On",
-                    lambda: _check_result(
-                        *ops.run_unit(_USB_COUPLING_UNIT, "start"),
-                        f"systemctl start {_USB_COUPLING_UNIT}",
-                    ),
-                )
-            detail = f"USB On transition failed: {exc}"
-            if cleanup_errors:
-                detail += "; fail-closed cleanup: " + "; ".join(cleanup_errors)
-            raise RuntimeError(detail) from exc
+            # A failed On transition no longer WITHDRAWS the transport
+            # (ADR-0191). The old rollback disabled the readiness mirror,
+            # recomposed to NCM-only, and — when audio survived that —
+            # `systemctl stop`ped the composite gadget, which takes the NCM
+            # management network down with the audio function.
+            #
+            # Observed on jts3: an unavailable DSP self-heal failed this
+            # transition and the rollback deleted usb0 from a box that was
+            # playing fine. The premise it was built on — "a host-visible UAC2
+            # without its fan-in consumer must not be stranded" — is exactly
+            # what ADR-0191 retired: an endpoint nobody is consuming is a
+            # disclosed state (`check_usbgadget_composition` reports
+            # `consumed=<bool>`), not a reason to delete hardware.
+            #
+            # Canonical intent still says On and the hardware still allows it,
+            # so the endpoint stays composed and the next pass retries. Off and
+            # follower parking keep their teardowns below: those ARE safety
+            # transitions, and the code is right to treat them that way.
+            raise RuntimeError(f"USB On transition failed: {exc}") from exc
 
     # Off and follower parking are safety transitions. Keep going through
     # stop, NCM-only recompose, and coupling disarm even if the derived
