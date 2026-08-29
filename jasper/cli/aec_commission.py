@@ -54,6 +54,14 @@ from jasper.route_latency.status_socket import read_status_socket
 
 logger = logging.getLogger("jasper.aec_commission")
 MARKER = Path("/run/jasper-chip-aec-commission/active")
+# Last-run outcome for status surfaces (/aec `commission`, the wake page).
+# Same shape family as jasper.cli.xvf_firmware_update's STATE_PATH record.
+STATE_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
+# Reason literal that routes deploy/bin/jasper-aec-reconcile into its
+# arm-only dispatch while this process's marker is live; every other reason
+# under a live marker is a mutate-nothing no-op there.
+ARM_RECONCILE_REASON = "chip-aec-commission-arm"
+_CLEANUP_RECONCILE_REASON = "chip-aec-commission"
 MEASUREMENT_VOLUME_DB = -28.282827
 INITIAL_SYS_DELAY = xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT
 ADAPTATION_REPEATS = 90
@@ -145,13 +153,12 @@ def _writer_counters(window: QueueWindow) -> tuple[int, ...]:
     )
 
 
-def _commission(io, artifact_path: Path) -> tuple[AlignmentArtifact, dict[str, Any]]:
-    hardware = io.detect()
+def _commission(
+    io, artifact_path: Path, hardware: Hardware, original_volume: float
+) -> tuple[AlignmentArtifact, dict[str, Any]]:
     stereo, reference, active = commissioning_stimulus()
-    original_volume = io.prepare_volume()
     dev = None
     try:
-        io.stop_services()
         dev = io.reset_once(hardware)
         io.start_outputd()
         initial_queue = io.queue(hardware)
@@ -265,11 +272,40 @@ def _commission(io, artifact_path: Path) -> tuple[AlignmentArtifact, dict[str, A
     return artifact, evidence
 
 
+def _write_outcome(state_path: Path, *, outcome: str, detail: str) -> None:
+    """Persist the last-run verdict for /aec's `commission` object.
+
+    Best-effort by design: a status-file write failure must never mask the
+    run's own verdict (the exception already propagating, or the artifact
+    already published)."""
+    try:
+        atomic_write_json(
+            state_path,
+            {
+                "schema_version": 1,
+                "state": outcome,
+                "detail": detail,
+                "updated_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+            },
+            mode=0o644,
+        )
+    except OSError as exc:
+        log_event(
+            logger,
+            "chip_aec_commission.outcome_write_failed",
+            error=str(exc),
+            level=logging.WARNING,
+        )
+
+
 def run_commissioning(
     io=None,
     *,
     marker_path: Path = MARKER,
     artifact_path: Path = ARTIFACT_PATH,
+    state_path: Path = STATE_PATH,
     effective_uid: int | None = None,
 ) -> AlignmentArtifact:
     if (os.geteuid() if effective_uid is None else effective_uid) != 0:
@@ -279,8 +315,34 @@ def run_commissioning(
     primary: BaseException | None = None
     try:
         runtime.wait_reconciler_idle()
-        artifact, evidence = _commission(runtime, artifact_path)
+        # Zero-hardware-cost refusals (unsupported XVF, uncodified output DAC)
+        # land here — before the volume move, the service stop, and the XVF
+        # reset buy the same dead end.
+        hardware = runtime.detect()
+        # Refuses while ordinary audio is playing, then sets the measurement
+        # volume — BEFORE the stop below can interrupt whatever is playing.
+        original_volume = runtime.prepare_volume()
+        try:
+            # Stop first so the arm pass hands outputd a plain start onto the
+            # reference vector instead of a bounce paid twice.
+            runtime.stop_services()
+            # The reason routes the reconciler into its arm-only dispatch
+            # (marker live): it publishes the final chip-reference vector and
+            # starts outputd on it. Without that vector the resting
+            # software-AEC3 env has no chip-ref writer and the
+            # reference-queue preflight cannot pass. The outermost finally
+            # re-runs it marker-free to restore the resting vector.
+            runtime.reconcile(reason=ARM_RECONCILE_REASON)
+            artifact, evidence = _commission(
+                runtime, artifact_path, hardware, original_volume
+            )
+        finally:
+            # _commission restores on every path it enters; this covers the
+            # stop/arm window before it. restore_volume no-ops when the
+            # fader already matches, so the second call is free.
+            runtime.restore_volume(original_volume)
         log_event(logger, "chip_aec_commission.passed", **evidence)
+        _write_outcome(state_path, outcome="passed", detail="")
         print(
             "XVF chip-AEC commissioning passed: "
             f"SYS_DELAY={evidence['sys_delay']}, K={artifact.k_samples}, "
@@ -297,6 +359,7 @@ def run_commissioning(
         log_event(
             logger, "chip_aec_commission.failed", reason=str(exc), level=logging.ERROR
         )
+        _write_outcome(state_path, outcome="failed", detail=str(exc))
         raise
     finally:
         marker_path.unlink(missing_ok=True)
@@ -542,8 +605,8 @@ class SystemIO:
     def close(self, dev) -> None:
         dev.close()
 
-    def reconcile(self) -> None:
-        _run(("/usr/local/sbin/jasper-aec-reconcile", "--reason", "chip-aec-commission"))
+    def reconcile(self, *, reason: str = _CLEANUP_RECONCILE_REASON) -> None:
+        _run(("/usr/local/sbin/jasper-aec-reconcile", "--reason", reason))
 
 
 def _signal(signum: int, _frame: FrameType | None) -> None:

@@ -5,6 +5,7 @@
 import pytest
 
 from jasper.audio_profile_state import (
+    ALIGNMENT_RECOMMISSION_ACTION,
     AecIntent,
     MicProbe,
     RuntimeAecEnv,
@@ -50,6 +51,7 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         "reason": "Chip-AEC runtime env is applied.",
         "validation_profile": "xvf_chip_aec",
         "action": "",
+        "commission_recommended": False,
     }
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["wake_legs"] == ["Primary chip beam"]
@@ -439,10 +441,44 @@ def test_an_alignment_record_classifies_only_the_selection_it_was_written_for(
     profile = status["audio_profile"]
     assert profile["state"] == state
     assert profile["action"] == action
+    assert profile["commission_recommended"] is (
+        action == ALIGNMENT_RECOMMISSION_ACTION
+    )
     assert profile["chip_aec_gate"]["status"] == "needs_calibration"
     assert profile["active"] == "xvf_chip_aec"
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["wake_legs"] == ["Primary chip beam", "Chip AEC 210"]
+
+
+def test_only_the_recommission_action_recommends_commissioning() -> None:
+    """A disclosed box whose remedy is something else (the outputd-stale
+    wait, a fault inspection) must not be offered the re-measure button."""
+
+    def profile_for(action: str) -> dict:
+        return build_audio_profile_status(
+            AecIntent(
+                mode="auto", chip_aec_enabled=True,
+                profile_selection="xvf_chip_aec",
+            ),
+            RuntimeAecEnv(
+                primary_device="udp:9876",
+                chip_enabled=True,
+                chip_aec_alignment_status="disclosed_stale",
+                chip_aec_alignment_reason="proof no longer describes this box",
+                chip_aec_alignment_action=action,
+            ),
+            MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+            bridge_active=True,
+            chip_available=True,
+            chip_gate={"status": "approved", "auto_allowed": True},
+        )["audio_profile"]
+
+    assert profile_for(ALIGNMENT_RECOMMISSION_ACTION)[
+        "commission_recommended"
+    ] is True
+    other = profile_for("Wait for jasper-outputd to restart, then run the reconciler")
+    assert other["action"] != ""
+    assert other["commission_recommended"] is False
 
 
 def test_a_leftover_alignment_key_cannot_classify_a_selection_it_never_described():

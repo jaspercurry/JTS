@@ -323,6 +323,7 @@ def _echo_view(
         "title": title,
         "detail": detail,
         "action": action,
+        "commission_recommended": bool(profile.get("commission_recommended")),
         "state": state,
         "bridge_active": bridge_active,
         "hardware": {

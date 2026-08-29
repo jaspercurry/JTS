@@ -39,8 +39,13 @@ let fusionToggles = {};
 let firmwareUpdateBusy = false;
 let usbMicBusy = false;
 let usbMicLegBusy = false;
+let commissionBusy = false;
 
 const el = (id) => document.getElementById(id);
+
+const commissionButtonEl = el("echo-commission-button");
+// The idle label is single-sourced from the server-rendered markup.
+const COMMISSION_LABEL = commissionButtonEl ? commissionButtonEl.textContent : "";
 
 function setText(id, value) {
   const node = el(id);
@@ -110,10 +115,32 @@ function applyProfileStatus(s) {
 
   setText("echo-status-title", echo.title || "Microphone input");
   setText("echo-status-detail", echo.detail || profile.reason || "—");
+  // A commission-recommending action (backend-decoded boolean, absent key =
+  // hidden) renders as the one-tap button instead of the SSH instruction it
+  // replaces; every other action stays a text line.
+  const actionText = echo.action || "";
+  const commissionable = !!echo.commission_recommended;
+  const commission = s.commission || {};
+  const running = !!commission.running;
   const action = el("echo-status-action");
   if (action) {
-    action.hidden = !echo.action;
-    action.textContent = echo.action || "";
+    action.hidden = !actionText || commissionable;
+    action.textContent = actionText;
+  }
+  if (commissionButtonEl && !commissionBusy) {
+    commissionButtonEl.hidden = !commissionable && !running;
+    commissionButtonEl.disabled = running;
+    commissionButtonEl.textContent = running
+      ? "Re-measuring chip AEC…"
+      : COMMISSION_LABEL;
+  }
+  const commissionDetail = el("echo-commission-detail");
+  if (commissionDetail) {
+    const failed = !running && commission.state === "failed";
+    commissionDetail.hidden = !failed;
+    commissionDetail.textContent = failed
+      ? "Last re-measurement failed: " + (commission.detail || "see the journal")
+      : "";
   }
 
   const warning = el("echo-status-warning");
@@ -327,6 +354,12 @@ async function pollDetection() {
       echoAction.hidden = true;
       echoAction.textContent = "";
     }
+    if (commissionButtonEl) {
+      commissionButtonEl.hidden = true;
+      commissionButtonEl.disabled = true;
+    }
+    const commissionDetail = el("echo-commission-detail");
+    if (commissionDetail) commissionDetail.hidden = true;
     const fwCard = el("firmware-update-card");
     const fwButton = el("firmware-update-button");
     if (fwCard) fwCard.hidden = true;
@@ -551,6 +584,31 @@ if (firmwareButton) {
       await jtsAlert("Firmware update failed to start: " + err.message);
     }
     firmwareUpdateBusy = false;
+    setTimeout(pollDetection, 500);
+  });
+}
+
+if (commissionButtonEl) {
+  commissionButtonEl.addEventListener("click", async () => {
+    commissionBusy = true;
+    commissionButtonEl.disabled = true;
+    commissionButtonEl.textContent = "Starting…";
+    let alertMessage = "";
+    try {
+      applyState(await postJSON("commission", {}));
+    } catch (err) {
+      if (err && err.status === 409 && err.body && err.body.commission) {
+        // Another client already started the run — reflect it calmly; the
+        // poll below re-renders from truth.
+        commissionButtonEl.textContent = "Re-measuring chip AEC…";
+      } else {
+        commissionButtonEl.textContent = COMMISSION_LABEL;
+        commissionButtonEl.disabled = false;
+        alertMessage = "Re-measurement failed to start: " + err.message;
+      }
+    }
+    commissionBusy = false;
+    if (alertMessage) await jtsAlert(alertMessage);
     setTimeout(pollDetection, 500);
   });
 }

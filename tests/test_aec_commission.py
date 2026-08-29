@@ -141,7 +141,7 @@ class _FakeIO:
     def close(self, _dev) -> None:
         self.events.append("device_closed")
 
-    def reconcile(self) -> None:
+    def reconcile(self, *, reason: str = "chip-aec-commission") -> None:
         self.events.append("reconciled")
 
 
@@ -163,6 +163,7 @@ def test_commissioning_resets_once_publishes_k_after_cleanup(
         io,
         marker_path=marker,
         artifact_path=artifact_path,
+        state_path=tmp_path / "commission-state.json",
         effective_uid=0,
     )
 
@@ -182,6 +183,9 @@ def test_commissioning_resets_once_publishes_k_after_cleanup(
     assert io.events[-1] == "reconciled"
     assert not marker.exists()
     assert artifact_from_dict(__import__("json").loads(artifact_path.read_text())) == artifact
+    outcome = json.loads((tmp_path / "commission-state.json").read_text())
+    assert outcome["state"] == "passed"
+    assert outcome["detail"] == ""
 
 
 def test_passed_evidence_records_the_queue_cross_check_margin(
@@ -235,6 +239,7 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
             io,
             marker_path=marker,
             artifact_path=artifact_path,
+            state_path=tmp_path / "commission-state.json",
             effective_uid=0,
         )
 
@@ -243,6 +248,11 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     assert "volume_restored" in io.events
     assert io.events[-1] == "reconciled"
     assert not marker.exists()
+    # The failure reason is persisted for /aec's `commission` object — a
+    # rejected run must be visible on the page, not only in the journal.
+    outcome = json.loads((tmp_path / "commission-state.json").read_text())
+    assert outcome["state"] == "failed"
+    assert outcome["detail"] == "suppression failed"
 
 
 def _supported_xvf() -> xvf3800.RuntimeProfile:
@@ -329,6 +339,47 @@ def test_an_unregistered_dac_is_refused_before_anything_is_disturbed(
 
     assert io.events == ["idle", "reconciled"]
     assert not artifact_path.exists()
+
+
+def test_commissioning_arms_reference_vector_between_stop_and_measurement(
+    tmp_path: Path,
+) -> None:
+    # The reconciler routes into its reference-vector arm only for the
+    # reason-keyed call while the marker is LIVE, so the arm reconcile must
+    # carry both — after the services stop (a plain outputd start, not a
+    # bounce) and before any measurement; the cleanup reconcile must run
+    # after the marker is removed so it restores the resting vector.
+    marker = tmp_path / "active"
+
+    class MarkerRecordingIO(_FakeIO):
+        def reconcile(self, *, reason: str = "chip-aec-commission") -> None:
+            self.events.append(
+                f"reconciled:marker={int(marker.exists())}:reason={reason}"
+            )
+
+    io = MarkerRecordingIO()
+
+    aec_commission.run_commissioning(
+        io,
+        marker_path=marker,
+        artifact_path=tmp_path / "alignment.json",
+        state_path=tmp_path / "commission-state.json",
+        effective_uid=0,
+    )
+
+    arm = f"reconciled:marker=1:reason={aec_commission.ARM_RECONCILE_REASON}"
+    assert arm in io.events
+    assert io.events.index("services_stopped") < io.events.index(arm)
+    assert io.events.index(arm) < io.events.index("reset_once")
+    assert io.events[-1] == "reconciled:marker=0:reason=chip-aec-commission"
+
+
+def test_commission_outcome_path_matches_control_reader() -> None:
+    # jasper-control duplicates the literal (importing this module would pull
+    # numpy into the long-lived daemon); the two must name one file.
+    from jasper.control import aec_endpoints
+
+    assert aec_endpoints._AEC_COMMISSION_STATE_FILE == str(aec_commission.STATE_PATH)
 
 
 def test_commissioning_requires_root_before_creating_marker(tmp_path: Path) -> None:

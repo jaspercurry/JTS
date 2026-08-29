@@ -31,6 +31,12 @@ PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
 PROFILE_DIRECT_MIC = "direct_mic"
 PROFILE_CUSTOM = "custom"
 
+# The reconciler's fixed re-commission remedy (ALIGNMENT_RECOMMISSION_ACTION
+# in deploy/bin/jasper-aec-reconcile — the two writers of this vocabulary).
+# `action` equal to this constant is what `commission_recommended` decodes, so
+# consumers gate on the boolean instead of scanning operator prose.
+ALIGNMENT_RECOMMISSION_ACTION = "Run sudo jasper-aec-commission"
+
 CONCRETE_PROFILES = (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -772,7 +778,7 @@ def build_audio_profile_status(
                 # the one the reconciler pairs with its own disclosure of that
                 # same condition; every other code is said by `reason` instead.
                 profile_action = (
-                    "Run sudo jasper-aec-commission"
+                    ALIGNMENT_RECOMMISSION_ACTION
                     if str(gate.get("recommended_action") or "")
                     == ACTION_USE_SOFTWARE_OR_TEST
                     else ""
@@ -839,6 +845,9 @@ def build_audio_profile_status(
         "reason": profile_reason,
         "validation_profile": validation_profile(requested_profile),
         "action": profile_action,
+        # Structured decode of `action` against the writers' shared constant,
+        # so UI surfaces gate on a boolean rather than matching prose.
+        "commission_recommended": profile_action == ALIGNMENT_RECOMMISSION_ACTION,
     }
     if gate:
         audio_profile["chip_aec_gate"] = gate

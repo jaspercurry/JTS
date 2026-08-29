@@ -5,13 +5,15 @@
 """AEC and wake-threshold helpers behind jasper-control endpoints."""
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
 from pathlib import Path
 import subprocess
+import threading
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from .. import enhanced_aec
 from ..audio_profile_state import (
@@ -55,6 +57,14 @@ _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
+_AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
+_AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
+# Duplicates jasper.cli.aec_commission.STATE_PATH (same pattern as the
+# firmware-update state file above): importing the writer would pull numpy
+# into the long-lived control daemon. Agreement pinned by
+# tests/test_aec_commission.py.
+_AEC_COMMISSION_STATE_FILE = "/var/lib/jasper/chip-aec-commission.json"
+_UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
 _AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 
@@ -275,11 +285,48 @@ def _write_wake_threshold(value: float) -> None:
     )
 
 
-def _aec_bridge_active() -> bool:
-    """True if jasper-aec-bridge.service is currently active."""
+_probe_memo = threading.local()
+
+
+@contextlib.contextmanager
+def _batched_unit_probes(*units: str) -> Iterator[None]:
+    """Answer several is-active probes with ONE systemctl invocation.
+
+    /aec is polled every 3 s and asks about three units; systemctl prints one
+    state per line in argument order, so one spawn answers all of them. The
+    per-unit probe functions below stay the patchable seams — they consult
+    this memo only when it holds their unit, and a unit missing from the memo
+    (or a failed batch) falls back to the per-unit spawn.
+    """
     try:
         result = subprocess.run(
-            ["systemctl", "is-active", "jasper-aec-bridge.service"],
+            ["systemctl", "is-active", *units],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        states = dict(
+            zip(units, (line.strip() for line in result.stdout.splitlines()))
+        )
+    except (OSError, subprocess.SubprocessError):
+        states = {}
+    _probe_memo.states = states
+    try:
+        yield
+    finally:
+        _probe_memo.states = {}
+
+
+def _memoized_unit_state(unit: str) -> str | None:
+    return getattr(_probe_memo, "states", {}).get(unit)
+
+
+def _aec_bridge_active() -> bool:
+    """True if jasper-aec-bridge.service is currently active."""
+    state = _memoized_unit_state(_AEC_BRIDGE_SERVICE)
+    if state is not None:
+        return state == "active"
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", _AEC_BRIDGE_SERVICE],
             capture_output=True, text=True, timeout=2.0,
         )
         return result.stdout.strip() == "active"
@@ -291,17 +338,20 @@ def _unit_active(unit: str) -> bool:
     """Whether a foreground maintenance unit is live or starting.
 
     ``systemctl is-active`` reports a long-running ``Type=oneshot`` as
-    ``activating`` until its foreground command exits. Both callers use this
-    as job-liveness truth, so treating only ``active`` as live would make a
-    real multi-minute install/update look interrupted.
+    ``activating`` until its foreground command exits. Callers use this as
+    job-liveness truth, so treating only ``active`` as live would make a
+    real multi-minute install/update/measurement look interrupted.
     """
 
+    state = _memoized_unit_state(unit)
+    if state is not None:
+        return state in _UNIT_LIVE_STATES
     try:
         result = subprocess.run(
             ["systemctl", "is-active", unit],
             capture_output=True, text=True, timeout=2.0,
         )
-        return result.stdout.strip() in {"active", "activating", "reloading"}
+        return result.stdout.strip() in _UNIT_LIVE_STATES
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -313,6 +363,29 @@ def _read_xvf_firmware_update_state() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_commission_state() -> dict[str, Any]:
+    try:
+        with open(_AEC_COMMISSION_STATE_FILE) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _commission_status() -> dict[str, Any]:
+    """The /aec `commission` object: live job truth + last-run verdict.
+
+    `state`/`detail` come from the commissioner's persisted outcome record
+    (empty strings before the first run), so a failed run's reason survives
+    for the wake page instead of dying in the journal."""
+    last = _read_commission_state()
+    return {
+        "running": _unit_active(_AEC_COMMISSION_SERVICE),
+        "state": str(last.get("state") or ""),
+        "detail": str(last.get("detail") or ""),
+    }
 
 
 def _xvf_firmware_update_status() -> dict[str, Any]:
@@ -559,6 +632,15 @@ def _enhanced_aec_status(
 
 
 def _aec_full_status() -> dict:
+    with _batched_unit_probes(
+        _AEC_BRIDGE_SERVICE,
+        _XVF_FIRMWARE_UPDATE_SERVICE,
+        _AEC_COMMISSION_SERVICE,
+    ):
+        return _build_aec_full_status()
+
+
+def _build_aec_full_status() -> dict:
     """JSON shape returned by GET /aec — the single source of truth
     for the /wake/ page's detection card. Includes both the configured
     state (from aec_mode.env) and the observed bridge service state.
@@ -725,6 +807,7 @@ def _aec_full_status() -> dict:
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
         "firmware_update": _xvf_firmware_update_status(),
+        "commission": _commission_status(),
     }
     usb_mic = build_usb_mic_status(payload)
     usb_mic["source_selection"] = _usb_mic_source_selection(

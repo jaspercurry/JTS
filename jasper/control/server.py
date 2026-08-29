@@ -144,6 +144,10 @@ _AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
 _USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
 _usb_mic_leg_apply_lock = threading.Lock()
 _usb_mic_leg_apply_pending: tuple[str, float] | None = None
+# Serializes POST /aec/commission's check-then-start across
+# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
+# probe before either start lands.
+_aec_commission_start_lock = threading.Lock()
 
 
 def _diagnostics_result_path() -> str:
@@ -391,7 +395,8 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # disrupt playback + the assistant; usb-forensics can restart the composite
 # gadget; aec/firmware/update downloads and flashes microphone firmware;
 # aec/usb-mic = starts or stops live room-audio export; aec/usb-mic-leg =
-# changes which live room-audio stream reaches the computer.
+# changes which live room-audio stream reaches the computer; aec/commission =
+# stops voice/AEC for minutes and plays audible measurement sweeps.
 # WS1 Phase 2 added the two restart routes and made the gate mandatory
 # (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
@@ -406,6 +411,7 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/grouping/set",
     "/aec/firmware/update",
     "/aec/enhanced-aec/install",
+    "/aec/commission",
     # measurement/hold|release own the cross-process measurement mutex: a hold
     # gates household volume observations and, once taken, refuses every other
     # measurement. A drive-by acquire would silently wedge the host slider for
@@ -659,7 +665,7 @@ def _enhanced_aec_status() -> dict:
     return _aec_endpoints._enhanced_aec_status()
 
 
-def _run_usbmic_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["systemctl", *args],
         check=False,
@@ -669,19 +675,19 @@ def _run_usbmic_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _reset_usb_mic_apply_unit() -> None:
+def _reset_oneshot_unit(unit: str, *, event: str) -> None:
     """Fail-soft and best-effort: a reset-failed failure must never block
-    the restart it precedes.  The unit is a bare oneshot with no
-    RemainAfterExit, so systemd normally GCs it between runs, and
+    the start/restart it precedes.  Both callers' units are bare oneshots
+    with no RemainAfterExit, so systemd normally GCs them between runs, and
     reset-failed against an already-unloaded unit routinely exits nonzero
     (#3237)."""
     try:
-        result = _run_usbmic_systemctl("reset-failed", _USB_MIC_APPLY_UNIT)
+        result = _run_unit_systemctl("reset-failed", unit)
     except (OSError, subprocess.SubprocessError) as exc:
         log_event(
             logger,
-            "usb_mic.reset_failed_skipped",
-            unit=_USB_MIC_APPLY_UNIT,
+            event,
+            unit=unit,
             error=str(exc),
             level=logging.WARNING,
         )
@@ -689,8 +695,8 @@ def _reset_usb_mic_apply_unit() -> None:
     if result.returncode != 0:
         log_event(
             logger,
-            "usb_mic.reset_failed_skipped",
-            unit=_USB_MIC_APPLY_UNIT,
+            event,
+            unit=unit,
             returncode=result.returncode,
             detail=(result.stderr or result.stdout).strip().replace(
                 "\n", " | ",
@@ -699,27 +705,31 @@ def _reset_usb_mic_apply_unit() -> None:
         )
 
 
-def _schedule_usb_gadget_recompose() -> bool:
-    """Hand delayed, debounced apply to systemd before returning to the client.
+def _run_oneshot_start(
+    unit: str,
+    verb: str,
+    *,
+    event_prefix: str,
+    extra_fields: dict[str, Any] | None = None,
+) -> bool:
+    """Reset then no-block start/restart one maintenance oneshot, observably.
 
-    Restarting an already-running oneshot cancels its 350 ms grace sleep and
-    begins it again, so rapid switch changes naturally debounce.  Unlike an
-    in-process Timer, the durable intent's apply job survives jasper-control
-    exiting after this request.  Reset the unit's failure/start-rate state so
-    each explicit user action gets a fresh, bounded retry budget.
+    ``event_prefix`` is ``<owner>.<action>``: the failure/scheduled events are
+    ``<event_prefix>_failed`` / ``<event_prefix>_scheduled`` and the
+    best-effort reset logs ``<owner>.reset_failed_skipped``. ``extra_fields``
+    ride on the scheduled event only. The reset clears systemd's
+    failure/start-rate state so each explicit user action gets a fresh,
+    bounded retry budget.
     """
-
-    _reset_usb_mic_apply_unit()
-
+    owner = event_prefix.rsplit(".", 1)[0]
+    _reset_oneshot_unit(unit, event=f"{owner}.reset_failed_skipped")
     try:
-        result = _run_usbmic_systemctl(
-            "restart", "--no-block", _USB_MIC_APPLY_UNIT,
-        )
+        result = _run_unit_systemctl(verb, "--no-block", unit)
     except (OSError, subprocess.SubprocessError) as exc:
         log_event(
             logger,
-            "usb_mic.recompose_failed",
-            unit=_USB_MIC_APPLY_UNIT,
+            f"{event_prefix}_failed",
+            unit=unit,
             phase="enqueue",
             error=str(exc),
             level=logging.ERROR,
@@ -728,8 +738,8 @@ def _schedule_usb_gadget_recompose() -> bool:
     if result.returncode != 0:
         log_event(
             logger,
-            "usb_mic.recompose_failed",
-            unit=_USB_MIC_APPLY_UNIT,
+            f"{event_prefix}_failed",
+            unit=unit,
             phase="enqueue",
             returncode=result.returncode,
             detail=(result.stderr or result.stdout).strip().replace(
@@ -740,12 +750,45 @@ def _schedule_usb_gadget_recompose() -> bool:
         return False
     log_event(
         logger,
-        "usb_mic.recompose_scheduled",
-        unit=_USB_MIC_APPLY_UNIT,
-        grace_ms=350,
-        max_attempts=4,
+        f"{event_prefix}_scheduled",
+        unit=unit,
+        **(extra_fields or {}),
     )
     return True
+
+
+def _schedule_usb_gadget_recompose() -> bool:
+    """Hand delayed, debounced apply to systemd before returning to the client.
+
+    Restarting an already-running oneshot cancels its 350 ms grace sleep and
+    begins it again, so rapid switch changes naturally debounce.  Unlike an
+    in-process Timer, the durable intent's apply job survives jasper-control
+    exiting after this request.
+    """
+
+    return _run_oneshot_start(
+        _USB_MIC_APPLY_UNIT,
+        "restart",
+        event_prefix="usb_mic.recompose",
+        extra_fields={"grace_ms": 350, "max_attempts": 4},
+    )
+
+
+def _aec_commission_running() -> bool:
+    return _aec_endpoints._unit_active(_aec_endpoints._AEC_COMMISSION_SERVICE)
+
+
+def _start_aec_commission() -> bool:
+    """Hand the audible re-commissioning run to systemd before returning.
+
+    ``--no-block``: the run takes minutes and the browser only needs the job
+    accepted — the /aec poll's ``commission.running`` probe tracks the rest.
+    """
+    return _run_oneshot_start(
+        _aec_endpoints._AEC_COMMISSION_SERVICE,
+        "start",
+        event_prefix="aec_commission.start",
+    )
 
 
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2024,6 +2067,7 @@ def _make_handler(
             "/aec/threshold": "_post_aec_threshold",
             "/aec/firmware/update": "_post_aec_firmware_update",
             "/aec/enhanced-aec/install": "_post_enhanced_aec_install",
+            "/aec/commission": "_post_aec_commission",
             "/debug": "_post_debug",
             "/usb-forensics": "_post_usb_forensics",
             "/system/audio-quality": "_post_system_audio_quality",

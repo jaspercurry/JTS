@@ -804,6 +804,121 @@ def test_usb_mic_recompose_fails_when_restart_raises(monkeypatch):
     assert [event for event, _fields in events] == ["usb_mic.recompose_failed"]
 
 
+def test_aec_commission_starts_oneshot_when_idle(
+    monkeypatch, server_with_coordinator,
+):
+    """POST /aec/commission on an idle box resets then no-block-starts the
+    root measurement oneshot and answers with the full /aec status body."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(
+        srv_mod.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {"commission": {"running": True}},
+    )
+
+    status, body = _post(f"{base}/aec/commission", None)
+
+    assert status == 200
+    assert body == {"commission": {"running": True}}
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-aec-commission.service"],
+        ["systemctl", "start", "--no-block", "jasper-aec-commission.service"],
+    ]
+
+
+def test_aec_commission_409_while_a_run_is_active(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: True)
+    monkeypatch.setattr(
+        srv_mod.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("an active run must not be started again"),
+    )
+
+    status, body = _post(f"{base}/aec/commission", None)
+
+    assert status == 409
+    assert body["commission"] == {"running": True}
+
+
+def test_aec_commission_concurrent_second_click_starts_nothing(
+    monkeypatch, server_with_coordinator,
+):
+    """Two interleaved POSTs race check-then-start: exactly one start, the
+    loser answers 409.
+
+    The first start blocks while a second POST is issued. Without the lock
+    the second request reaches the probe DURING the held start — the probe
+    snapshots `running` before releasing the first start, so it reads False
+    and a second start fires (starts == 2, both 200). With the lock the
+    second request cannot probe until the first completes, so it sees
+    running=True and answers 409 with nothing started."""
+    import threading
+
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"running": False, "starts": 0, "checks": 0}
+    first_start_entered = threading.Event()
+    release_first_start = threading.Event()
+
+    def fake_running():
+        value = state["running"]
+        state["checks"] += 1
+        if state["checks"] == 2:
+            # The second click has reached the probe — only now may the
+            # held first start finish. `value` was snapshotted first, so a
+            # lockless overlap deterministically reads stale False.
+            release_first_start.set()
+        return value
+
+    def fake_start():
+        state["starts"] += 1
+        first_start_entered.set()
+        # Short bound: on the locked (correct) path nothing sets the event
+        # while this start is held, and the expiry is what completes it.
+        release_first_start.wait(timeout=0.5)
+        state["running"] = True
+        return True
+
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", fake_running)
+    monkeypatch.setattr(srv_mod, "_start_aec_commission", fake_start)
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {"commission": {"running": True}},
+    )
+
+    results: list[tuple[int, dict]] = []
+    first = threading.Thread(
+        target=lambda: results.append(_post(f"{base}/aec/commission", None)),
+    )
+    first.start()
+    assert first_start_entered.wait(timeout=5)
+    second = threading.Thread(
+        target=lambda: results.append(_post(f"{base}/aec/commission", None)),
+    )
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert state["starts"] == 1
+    assert sorted(status for status, _body in results) == [200, 409]
+
+
 def test_aec_firmware_update_starts_when_required(
     monkeypatch, server_with_coordinator,
 ):

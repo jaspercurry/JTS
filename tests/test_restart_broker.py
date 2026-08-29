@@ -123,6 +123,7 @@ def test_start_only_units_are_not_general_managed_units():
         "jasper-wiim-remote-ce.service",
         "jasper-xvf-firmware-update.service",
         "jasper-enhanced-aec-install.service",
+        "jasper-aec-commission.service",
     })
     assert restart_broker.START_ONLY_UNITS.isdisjoint(restart_broker.MANAGED_UNITS)
 

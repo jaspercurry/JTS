@@ -379,6 +379,36 @@ def test_post_usb_mic_leg_proxies_choice_and_control_token(tmp_path, monkeypatch
     assert b'"requested":"primary"' in cap["body"]
 
 
+def test_post_commission_proxies_action_and_control_token(tmp_path, monkeypatch):
+    _make_request.state_path = str(tmp_path / "wake_model.env")
+    captured = {}
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a: True)
+
+    def fake_proxy_post(path, *, control_base, timeout, body=b"", headers=None):
+        captured["path"] = path
+        captured["headers"] = headers
+        return 200, b'{"commission":{"running":true}}'
+
+    monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
+    h, cap = _make_request(
+        "POST",
+        "/commission",
+        body=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-JTS-Token": "control-token",
+        },
+    )
+    h.do_POST()
+
+    assert captured == {
+        "path": "/aec/commission",
+        "headers": {"X-JTS-Token": "control-token"},
+    }
+    assert cap["status"] == 200
+    assert b'"running":true' in cap["body"]
+
+
 def test_wake_module_renders_server_choices_action_and_runtime_effective_label():
     module = (
         Path(wake_setup.__file__).parents[2]
@@ -389,7 +419,11 @@ def test_wake_module_renders_server_choices_action_and_runtime_effective_label()
     assert "applied.effective_label" in module
     assert 'await postJSON("usb-mic-leg", { leg })' in module
     assert 'const action = el("echo-status-action")' in module
-    assert 'action.textContent = echo.action || ""' in module
+    assert "action.textContent = actionText" in module
+    # The re-measure button gates on the backend-decoded boolean, never on
+    # matching the action prose.
+    assert "echo.commission_recommended" in module
+    assert 'includes("jasper-aec-commission")' not in module
 
 
 def test_get_unknown_path_404(tmp_path):
