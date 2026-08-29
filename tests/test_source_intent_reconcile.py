@@ -1320,6 +1320,30 @@ def test_usb_enable_arms_direct_lane_before_advertising_audio(tmp_path):
     assert host.active["jasper-usbsink.service"] is True
 
 
+def test_a_failed_usb_on_leaves_the_transport_composed(tmp_path):
+    """ADR-0191: a failed On no longer withdraws the transport.
+
+    The old rollback disabled the readiness mirror, recomposed to NCM-only and
+    — when audio survived that — stopped the composite gadget, which takes the
+    NCM management network down with the audio function. Observed on jts3: an
+    unavailable DSP self-heal failed this transition and usb0 vanished from a
+    box that was playing fine.
+    """
+    host = _FakeHost(fail={("start", source_intent._USB_COUPLING_UNIT)})
+    env = _write(tmp_path, f"{_key(Source.USBSINK)}=enabled\n")
+
+    # The transition still reports failure — this is about what it does NOT do.
+    assert source_intent.reconcile(env_path=env, ops=host.ops()) != 0
+
+    assert ("stop", "jasper-usbgadget.service") not in host.calls, (
+        "a failed On must not stop the composite gadget: that takes the NCM "
+        "management network down with the audio function"
+    )
+    assert ("disable", "jasper-usbsink.service") not in host.calls, (
+        "canonical intent still says On; the derived mirror is not withdrawn"
+    )
+
+
 def test_usb_desired_on_parks_and_restores_through_one_source_owner(tmp_path):
     """A follower role change preserves intent and the solo replay restores
     direct capture before UAC2 advertisement and standby liveness."""
