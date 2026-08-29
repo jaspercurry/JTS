@@ -66,8 +66,8 @@ and the runtime contract's re-proof are unchanged and are not this class's to
 weaken.
 
 The admission bars are therefore the only new safety logic, and since the
-2026-08-23 ruling every one of them is SHAPE.  A per-filter magnitude window,
-the shared Q envelope, the declared band, the emitter's own filter vocabulary,
+2026-08-23 ruling every one of them is SHAPE.  A per-filter magnitude ceiling,
+a BOOST's Q envelope, the declared band, the emitter's own filter vocabulary,
 and :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade.
 That last one is what sizes the class: it bounds the spend one document can
 command at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0 dB.  What a boost owes over a
@@ -85,15 +85,24 @@ same branch for months:
 ===============================  ==================================  =========
 bound                            restored from                       value
 ===============================  ==================================  =========
-:data:`DRIVER_MAX_CUT_Q`         ``linearization_fit._PEAKING_Q_MAX``  8.0
+:data:`DRIVER_MAX_BOOST_Q`       ``linearization_fit._PEAKING_Q_MAX``  8.0
 :data:`DRIVER_MAX_FILTER_CUT_DB` ``linearization_fit.PER_FILTER_CUT_CAP_DB``  12.0
 :data:`DRIVER_MAX_COMPOSED_CUT_DB` ``linearization_fit.MAX_NORMALIZATION_SPEND_DB``  18.0
-:data:`DRIVER_MIN_CUT_DB`        ``linearization_fit._MIN_FILTER_GAIN_DB``  0.5
 :data:`DRIVER_MAX_FILTERS_PER_ROLE` ``linearization_fit.MAX_FILTERS_PER_DRIVER``  8
 :data:`DRIVER_MIN_Q`             ``blend_prescription.PRESCRIPTION_MIN_Q``  0.5
 :data:`DRIVER_MAX_FILTER_BOOST_DB` ``linearization_fit.PER_FILTER_BOOST_CAP_DB``  12.0
 :data:`DRIVER_MAX_COMPOSED_BOOST_DB` owner policy, ruling R8                   12.0
 ===============================  ==================================  =========
+
+Two of that table's neighbours are no longer BOUNDS, and so are not in it:
+:data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB` (0.5, restored from
+``linearization_fit._MIN_FILTER_GAIN_DB`` like the rows above) and
+:data:`RATIONALE_MAX_CHARS` (1,200, the blend gate's).  Both refused until
+2026-08-29 and both DISCLOSE now, on the owner's ruling that a hard bound is
+for hearing or hardware and nothing else: a 0.3 dB probe filter is a reversible
+experiment a fit engine's audibility heuristic has no standing to veto, and a
+long rationale is text nothing parses.  See :func:`_subaudible_filters` and
+:func:`_rationale`.
 
 The per-filter BOOST ceiling is restored from the fit engine like the cut
 ceilings above it.  **It was not always**: until 2026-08-22 both boost ceilings
@@ -217,9 +226,9 @@ from .feature_classification import (
 DriverPassbands = Mapping[str, tuple[float, float]]
 
 __all__ = [
+    "DRIVER_MAX_BOOST_Q",
     "DRIVER_MAX_COMPOSED_BOOST_DB",
     "DRIVER_MAX_COMPOSED_CUT_DB",
-    "DRIVER_MAX_CUT_Q",
     "DRIVER_MAX_FILTERS_PER_ROLE",
     "DRIVER_MAX_FILTER_BOOST_DB",
     "DRIVER_MAX_FILTER_CUT_DB",
@@ -237,6 +246,7 @@ __all__ = [
     "check_driver_document_size",
     "DriverPassbands",
     "DriverPrescription",
+    "driver_max_q_for_gain",
     "driver_passbands_from_safety_profile",
     "driver_prescription_from_mapping",
     "driver_prescription_response_format",
@@ -292,9 +302,22 @@ DRIVER_PRESCRIPTION_KIND = "jts_crossover_driver_prescription"
 #: larger fails here instead of silently eating the margin.
 DRIVER_PRESCRIPTION_MAX_BYTES = 32 * 1024
 
-#: Ceiling on the free-text rationale, in characters. Same value and same
-#: reason as the blend gate's: the text is stored and never parsed for
-#: behaviour, so the cap bounds what gets banked rather than what is trusted.
+#: How much of the free-text rationale is BANKED, in characters. The blend
+#: gate's number, and the same reason for it: the text is stored and never
+#: parsed for behaviour, so this bounds what gets written down rather than what
+#: is trusted, and it is what
+#: :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s derivation budgets for.
+#:
+#: **It truncates and discloses; it stopped refusing on 2026-08-29.** A
+#: prescriber that wrote too much has said nothing unsafe — no branch here or
+#: downstream reads the text — so a refusal cost it the whole round to re-author
+#: prose no gate was going to consult, which is
+#: ``docs/measurement-loop-doctrine.md`` §5's nanny shape. What was dropped is
+#: counted onto :attr:`DriverPrescription.rationale_dropped_chars` so the
+#: receipt cannot silently claim the banked words are all of them. Truncating
+#: rather than raising this number keeps
+#: :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s measured 6,046-byte largest honest
+#: document — and the five-times margin over it — true unchanged.
 RATIONALE_MAX_CHARS = 1_200
 
 #: The candidate field a per-driver prescription lands in.
@@ -313,23 +336,37 @@ LINEARIZATION_CANDIDATE_FIELD = "linearization"
 # bounds — every one restored from the engine that already emits into this seam
 # --------------------------------------------------------------------------- #
 
-#: Widest Q one prescribed per-driver cut may use — ``linearization_fit.
+#: Widest Q one prescribed per-driver BOOST may use — ``linearization_fit.
 #: _PEAKING_Q_MAX``, the fit engine's PEAKING ceiling, which is also the number
-#: #2730 restored for the blend cut class on the 2026-08-19 ruling. The two
-#: seams therefore agree about how narrow a cut may be, which is the right
-#: relationship: a cut's width is a property of the feature it is aimed at, and
-#: the feature does not care which stage the filter is emitted from.
-#: **It bounds BOTH signs**, and this class deliberately does not call
-#: ``blend_prescription.max_q_for_gain`` — whose boost arm is 2.0 — on the
-#: owner's 2026-08-19 ruling that width is free ("filters can be whatever works
-#: best to get flat"). What bounds a sharp boost here is what a sharp boost
-#: costs: :data:`DRIVER_MAX_FILTER_BOOST_DB` per filter and
-#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated cascade, which together
-#: hold the maximum-SPL spend to :data:`MAX_SPL_SPEND_BOUND_DB` however narrow
-#: the filter is. The classifier's opinion about the feature under it rides the
-#: receipt as a disclosure (:func:`_check_classification`); since 2026-08-23 it
-#: refuses nothing.
-DRIVER_MAX_CUT_Q = 8.0
+#: #2730 restored for the blend cut class on the 2026-08-19 ruling.
+#:
+#: **The CUT arm has no ceiling at all**, on that same ruling — width is free,
+#: "filters can be whatever works best to get flat" — and it used to have this
+#: one, which was the ruling being restated as its own opposite: a cut only ever
+#: removes level, so a narrow one carries no headroom hazard however sharp it
+#: is, and #2730 already made exactly this argument for the sibling class. What
+#: bounds a cut is what a cut actually spends: :data:`DRIVER_MAX_FILTER_CUT_DB`,
+#: :data:`DRIVER_MAX_COMPOSED_CUT_DB`, and the eight slots
+#: :data:`DRIVER_MAX_FILTERS_PER_ROLE` allows. The emitter agrees — its own
+#: ``camilla_yaml._validated_biquad_entry`` asks a biquad's ``q`` only to be
+#: positive and finite — so an unbounded cut Q is emittable rather than accepted
+#: here and refused downstream.
+#:
+#: A BOOST keeps the ceiling because a boost is the sign that spends the
+#: household's maximum SPL, and the caps that bound that spend
+#: (:data:`DRIVER_MAX_FILTER_BOOST_DB`, :data:`DRIVER_MAX_COMPOSED_BOOST_DB`)
+#: are read on a SAMPLED grid: ``branch_chain._evaluation_grid``'s own docstring
+#: states its between-bin error at Q 8, and no fixed resolution can bound an
+#: arbitrary Q. So this is the width at which the composed reading stays the
+#: upper bound :data:`MAX_SPL_SPEND_BOUND_DB`'s proof needs it to be.
+#:
+#: The split is spelled by :func:`driver_max_q_for_gain` and nowhere else,
+#: mirroring ``blend_prescription.max_q_for_gain`` — the same shape with this
+#: class's own arms, since neither number is shared (that class's boost arm is
+#: 2.0 and its cut arm is 8.0). The classifier's opinion about the feature under
+#: a filter rides the receipt as a disclosure
+#: (:func:`_check_classification`); since 2026-08-23 it refuses nothing.
+DRIVER_MAX_BOOST_Q = 8.0
 
 #: Narrowest Q, taken from the family's owner. Below this a Peaking filter is a
 #: broadband tilt rather than a shape correction, and broadband per-driver level
@@ -342,6 +379,26 @@ DRIVER_MAX_CUT_Q = 8.0
 #: and its docstring says so in as many words. Adopting a boost bound as a cut
 #: bound would be borrowing a number for the one reason it was not chosen.
 DRIVER_MIN_Q = PRESCRIPTION_MIN_Q
+
+
+def driver_max_q_for_gain(gain_db: float) -> float:
+    """The widest Q one prescribed filter may use, by the SIGN of its gain.
+
+    The ONE place this class's split is decided, so the validator, the refusal
+    message it prints, and the response format a prescriber is handed cannot
+    disagree about which ceiling applies to which filter. Same shape as
+    ``blend_prescription.max_q_for_gain``, deliberately not a call to it: the
+    two classes' arms are different numbers (that one bounds a boost at 2.0 and
+    a cut at 8.0), so sharing the function would share the wrong answer.
+
+    ``gain_db > 0`` is a boost and gets :data:`DRIVER_MAX_BOOST_Q`; everything
+    else — including exactly ``0.0`` — is unbounded above. That is the same
+    predicate :func:`_check_bounds` derives
+    :attr:`DriverPrescription.prescription_class` from, so a filter can never be
+    a cut for the class receipt and a boost for its Q bound.
+    """
+    return DRIVER_MAX_BOOST_Q if gain_db > 0.0 else math.inf
+
 
 #: Deepest ONE prescribed cut may go, dB — ``linearization_fit.
 #: PER_FILTER_CUT_CAP_DB``, the ceiling the fit engine re-proves as a hard
@@ -366,11 +423,21 @@ DRIVER_MAX_FILTER_CUT_DB = 12.0
 #: two drivers do not share it.
 DRIVER_MAX_COMPOSED_CUT_DB = 18.0
 
-#: How shallow a cut may be before it is cosmetic —
-#: ``linearization_fit._MIN_FILTER_GAIN_DB``, whose comment is the argument:
+#: The depth below which the FIT ENGINE calls a cut cosmetic —
+#: ``linearization_fit._MIN_FILTER_GAIN_DB``, whose comment is its argument:
 #: "below this magnitude a filter is cosmetic (inaudible, wastes a filter
-#: slot)". A prescription is bounded to eight filters per role, so spending one
-#: on an inaudible correction is spending a scarce thing on nothing.
+#: slot)".
+#:
+#: **A DISCLOSURE here, not a bound; it stopped refusing on 2026-08-29.** That
+#: comment is a heuristic about audibility, not a measurement of this speaker,
+#: and a filter under it spends no maximum SPL and cannot clip — so §4's closed
+#: list has no mechanism to name for it and §5's nanny test fails a refusal:
+#: staging a deliberate 0.3 dB probe to see whether the round can resolve it is
+#: exactly the reversible experiment that doctrine protects. What the refusal
+#: was really guarding is the SLOT, and :data:`DRIVER_MAX_FILTERS_PER_ROLE`
+#: guards that directly — a prescriber that spends all eight on inaudible
+#: filters has spent its own budget, which is its call to make. The count rides
+#: the receipt as :attr:`DriverPrescription.subaudible_filters`.
 DRIVER_MIN_CUT_DB = 0.5
 
 #: Highest ONE prescribed boost may go, dB — ``camilla_yaml.
@@ -425,12 +492,13 @@ DRIVER_MAX_FILTER_BOOST_DB = 12.0
 #: bound and not a multiple of it.
 DRIVER_MAX_COMPOSED_BOOST_DB = 12.0
 
-#: How shallow a boost may be before it is cosmetic, dB. The same number as
-#: :data:`DRIVER_MIN_CUT_DB` because it is the same argument — ``linearization_
-#: fit._MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter slot", which does not
-#: depend on the sign — and it is DEFINED by that constant rather than restated
-#: beside it so the pair cannot drift. It carries its own name only so a boost's
-#: refusal speaks in a prescriber's own vocabulary.
+#: The magnitude below which the fit engine calls a boost cosmetic, dB. The same
+#: number as :data:`DRIVER_MIN_CUT_DB` because it is the same argument —
+#: ``linearization_fit._MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter
+#: slot", which does not depend on the sign — and it is DEFINED by that constant
+#: rather than restated beside it so the pair cannot drift. It carries its own
+#: name only so the contract a prescriber reads names a floor per sign, as the
+#: refusal it used to raise did.
 DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 
 #: The most maximum SPL one accepted document can cost the household, dB.
@@ -613,23 +681,23 @@ PASSBAND_UNAVAILABLE = "driver_passband_unavailable"
 FILTER_OUTSIDE_PASSBAND = "driver_filter_outside_passband"
 FILTER_Q_OUT_OF_RANGE = "driver_filter_q_out_of_range"
 FILTER_CUT_TOO_DEEP = "driver_filter_cut_too_deep"
-FILTER_CUT_TOO_SHALLOW = "driver_filter_cut_too_shallow"
 COMPOSED_CUT_EXCEEDED = "driver_composed_cut_exceeded"
 FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
-FILTER_BOOST_TOO_SHALLOW = "driver_filter_boost_too_shallow"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 
-# SEVEN slugs stood here and every one is now a DISCLOSURE. Six went on
+# NINE slugs stood here and every one is now a DISCLOSURE. Six went on
 # 2026-08-23, all the classification bar's: `driver_feature_not_classified`,
 # `driver_feature_not_cuttable`, `driver_feature_not_boostable`,
 # `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth`,
 # and `driver_boost_unvouched` (the same bar restated at the route) — see
 # `_check_classification`. The seventh, `driver_boost_in_crossover_overlap`,
 # went with the nanny burn-down: see `_boosts_in_crossover_overlap`, which
-# counts what it used to refuse. All seven are deleted rather than
-# registered-but-unreachable: no reader maps a refusal slug back, and a
-# vocabulary naming an answer this door can no longer give would mislead the
-# prescriber reading `refusal_reasons`.
+# counts what it used to refuse. The last two went on 2026-08-29 —
+# `driver_filter_cut_too_shallow` and `driver_filter_boost_too_shallow`, the
+# audibility floor, now counted by `_subaudible_filters`. All nine are deleted
+# rather than registered-but-unreachable: no reader maps a refusal slug back,
+# and a vocabulary naming an answer this door can no longer give would mislead
+# the prescriber reading `refusal_reasons`.
 
 DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     DRIVER_PRESCRIPTION_TOO_LARGE,
@@ -645,10 +713,8 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_OUTSIDE_PASSBAND,
     FILTER_Q_OUT_OF_RANGE,
     FILTER_CUT_TOO_DEEP,
-    FILTER_CUT_TOO_SHALLOW,
     COMPOSED_CUT_EXCEEDED,
     FILTER_BOOST_TOO_HIGH,
-    FILTER_BOOST_TOO_SHALLOW,
     COMPOSED_BOOST_EXCEEDED,
 })
 
@@ -671,6 +737,8 @@ _PRESCRIPTION_FIELDS = frozenset({
     "passbands_hz",
     "classification_basis",
     "unvouched_filters",
+    "subaudible_filters",
+    "rationale_dropped_chars",
     "boosts_in_crossover_overlap",
     "composed_boost_db",
     "composed_boost_role",
@@ -771,6 +839,18 @@ class DriverPrescription:
     #: cannot tell them apart — which is the whole reason this number is
     #: carried rather than derived.
     unvouched_filters: int | None = None
+    #: How many filters sit below the fit engine's own audibility floor
+    #: (:data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB`, magnitude, both
+    #: signs, a zero-gain filter included). ``None`` means nobody computed it
+    #: (the durable read-back, same convention as :attr:`unvouched_filters`);
+    #: ``0`` means it was computed and every filter clears the floor. A
+    #: DISCLOSURE, never a bound — see :func:`_subaudible_filters`.
+    subaudible_filters: int | None = None
+    #: How many characters of the submitted rationale were dropped to fit
+    #: :data:`RATIONALE_MAX_CHARS`. ``None`` means nobody computed it — which
+    #: the durable read-back genuinely cannot, since what it reads back is the
+    #: already-truncated text; ``0`` means the whole rationale was banked.
+    rationale_dropped_chars: int | None = None
     #: How many boosting filters sit inside a crossover overlap. ``None`` means
     #: nobody computed it (the durable read-back, same convention as
     #: :attr:`unvouched_filters`); ``0`` means it was computed and none does.
@@ -839,6 +919,8 @@ class DriverPrescription:
                 basis.to_dict() for basis in self.classification_basis
             ],
             "unvouched_filters": self.unvouched_filters,
+            "subaudible_filters": self.subaudible_filters,
+            "rationale_dropped_chars": self.rationale_dropped_chars,
             "boosts_in_crossover_overlap": self.boosts_in_crossover_overlap,
             "composed_boost_db": self.composed_boost_db,
             "composed_boost_role": self.composed_boost_role,
@@ -1166,6 +1248,33 @@ def _boosts_in_crossover_overlap(
     )
 
 
+def _subaudible_filters(filters: Sequence[Mapping[str, Any]]) -> int:
+    """How many filters sit under the fit engine's own cosmetic floor.
+
+    **It refuses nothing**, and that is the owner's 2026-08-29 ruling. Until
+    then both signs refused — ``driver_filter_cut_too_shallow`` and
+    ``driver_filter_boost_too_shallow`` — on ``linearization_fit.
+    _MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter slot". That is a
+    heuristic the FIT engine applies to its own output, and borrowing it as a
+    bar on an outside proposal fails every test this door is held to. A 0.3 dB
+    filter spends no maximum SPL and cannot clip, so
+    ``docs/measurement-loop-doctrine.md`` §4's closed list has no mechanism to
+    name; §3 rules that everything outside that list discloses; and §5's nanny
+    test fails it outright — staging a deliberate probe below the floor, to find
+    out whether the round can resolve it, is the reversible experiment the
+    doctrine protects. The scarce thing the refusal was standing in for is the
+    SLOT, and :data:`DRIVER_MAX_FILTERS_PER_ROLE` bounds that directly.
+
+    By MAGNITUDE, so one number answers for both signs — they are one constant
+    under two names — and a zero-gain filter is counted, which is the honest
+    reading: it is inert whatever its Q, so it is the floor's clearest case
+    rather than an exception to it.
+    """
+    return sum(
+        1 for entry in filters if abs(float(entry["gain"])) < DRIVER_MIN_CUT_DB
+    )
+
+
 def _check_bounds(
     filters: tuple[dict[str, Any], ...], passbands: DriverPassbands
 ) -> str:
@@ -1175,9 +1284,14 @@ def _check_bounds(
     producer of the receipt's class field, exactly as the blend gate's is.
 
     A document may mix signs; the class names what it is capable of, not what
-    every filter does. Each filter is bounded by its OWN sign here, and
-    :func:`_check_classification` reads the evidence per filter by the same
+    every filter does. Each filter is bounded by its OWN sign here — its
+    magnitude ceiling and, through :func:`driver_max_q_for_gain`, its width —
+    and :func:`_check_classification` reads the evidence per filter by the same
     sign.
+
+    **Neither sign has a magnitude FLOOR any more.** Both used to refuse under
+    :data:`DRIVER_MIN_CUT_DB`; since 2026-08-29 a filter under it is admitted
+    and counted by :func:`_subaudible_filters`, which is where the argument is.
     """
     for position, entry in enumerate(filters):
         role = str(entry["role"])
@@ -1204,28 +1318,18 @@ def _check_bounds(
                 freq_hz=freq,
                 passband_hz=[lo, hi],
             )
-        if not DRIVER_MIN_Q <= q <= DRIVER_MAX_CUT_Q:
+        q_max = driver_max_q_for_gain(gain)
+        if not DRIVER_MIN_Q <= q <= q_max:
             _refuse(
                 FILTER_Q_OUT_OF_RANGE,
                 f"filter {position} Q {q:g} is outside "
-                f"{DRIVER_MIN_Q:g}-{DRIVER_MAX_CUT_Q:g}",
+                f"{DRIVER_MIN_Q:g}-{q_max:g} for a "
+                f"{'boost' if gain > 0.0 else 'cut'}",
                 q=q,
                 q_min=DRIVER_MIN_Q,
-                q_max=DRIVER_MAX_CUT_Q,
+                q_max=q_max,
             )
         if gain > 0.0:
-            if gain < DRIVER_MIN_BOOST_DB:
-                _refuse(
-                    FILTER_BOOST_TOO_SHALLOW,
-                    f"filter {position} boosts {gain:.2f} dB at {freq:.1f} Hz, "
-                    f"under the {DRIVER_MIN_BOOST_DB:g} dB below which a filter "
-                    "is inaudible and spends one of this branch's eight slots "
-                    "on nothing",
-                    role=role,
-                    freq_hz=freq,
-                    gain_db=gain,
-                    min_boost_db=DRIVER_MIN_BOOST_DB,
-                )
             if gain > DRIVER_MAX_FILTER_BOOST_DB:
                 _refuse(
                     FILTER_BOOST_TOO_HIGH,
@@ -1239,16 +1343,6 @@ def _check_bounds(
                     max_boost_db=DRIVER_MAX_FILTER_BOOST_DB,
                 )
             continue
-        if gain > -DRIVER_MIN_CUT_DB:
-            _refuse(
-                FILTER_CUT_TOO_SHALLOW,
-                f"filter {position} cuts {-gain:.2f} dB, under the "
-                f"{DRIVER_MIN_CUT_DB:g} dB below which a filter is inaudible and "
-                "spends one of this branch's eight slots on nothing",
-                role=role,
-                gain_db=gain,
-                min_cut_db=DRIVER_MIN_CUT_DB,
-            )
         if gain < -DRIVER_MAX_FILTER_CUT_DB:
             _refuse(
                 FILTER_CUT_TOO_DEEP,
@@ -1601,28 +1695,33 @@ def _prescriber(raw: Any) -> tuple[str, str]:
     return values[0], values[1]
 
 
-def _rationale(raw: Any) -> str:
-    """The prescriber's own words, bounded and never parsed."""
+def _rationale(raw: Any) -> tuple[str, int]:
+    """The prescriber's own words, banked to the ceiling, and what was dropped.
+
+    Returns ``(the banked text, how many characters were dropped)``.
+
+    **It truncates rather than refusing**, since 2026-08-29 — see
+    :data:`RATIONALE_MAX_CHARS`. A prose ceiling cannot be a safety bound
+    because nothing reads the prose: a document whose only fault was saying too
+    much used to lose its whole round, and the prescriber's remedy was to
+    re-author words no gate consults. Still strictly TEXT, because a rationale
+    that is a mapping means the document was built by something that does not
+    speak this contract.
+    """
     if raw is None:
-        return ""
+        return "", 0
     if not isinstance(raw, str):
         _refuse(
             DRIVER_PRESCRIPTION_MALFORMED,
             f"rationale must be text, got {type(raw).__name__}",
         )
     text = " ".join(raw.split())
-    if len(text) > RATIONALE_MAX_CHARS:
-        _refuse(
-            DRIVER_PRESCRIPTION_MALFORMED,
-            f"rationale must be at most {RATIONALE_MAX_CHARS} characters, got "
-            f"{len(text)}",
-        )
-    return text
+    return text[:RATIONALE_MAX_CHARS], max(0, len(text) - RATIONALE_MAX_CHARS)
 
 
 def _parse_prescription(
     raw: Mapping[str, Any],
-) -> tuple[tuple[dict[str, Any], ...], str, str, str, str]:
+) -> tuple[tuple[dict[str, Any], ...], str, str, str, str, int]:
     """Shape, identity and provenance — and none of the bounds.
 
     Shared whole between the request gate and the durable read-back, so the only
@@ -1674,12 +1773,14 @@ def _parse_prescription(
             f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
         )
     model, operator = _prescriber(raw.get("prescriber"))
+    rationale, dropped = _rationale(raw.get("rationale"))
     return (
         _parse_filters(raw.get("filters")),
         fingerprint.strip(),
         model,
         operator,
-        _rationale(raw.get("rationale")),
+        rationale,
+        dropped,
     )
 
 
@@ -1721,7 +1822,7 @@ def read_driver_prescription(
     per-filter bounds, then the composed cascade — every refusal, in the order
     that sends a prescriber somewhere different, because reporting a later
     failure for an earlier cause would send it to re-derive a number that was
-    fine. The two DISCLOSURES run last, after the document is known to be
+    fine. The DISCLOSURES run last, after the document is known to be
     admissible, so one the gate was going to refuse anyway never pays for their
     evaluation.
 
@@ -1730,7 +1831,9 @@ def read_driver_prescription(
     """
     if raw is None:
         return None
-    filters, fingerprint, model, operator, rationale = _parse_prescription(raw)
+    (
+        filters, fingerprint, model, operator, rationale, rationale_dropped,
+    ) = _parse_prescription(raw)
 
     if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
         _refuse(
@@ -1759,7 +1862,7 @@ def read_driver_prescription(
 
     prescription_class = _check_bounds(filters, passbands)
     composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
-    # The last two refuse nothing, so they run after every bound: a document
+    # The disclosures refuse nothing, so they run after every bound: a document
     # the gate was going to reject anyway never pays for their evaluation.
     basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
@@ -1777,6 +1880,8 @@ def read_driver_prescription(
         ),
         classification_basis=basis,
         unvouched_filters=unvouched_filters,
+        subaudible_filters=_subaudible_filters(filters),
+        rationale_dropped_chars=rationale_dropped,
         boosts_in_crossover_overlap=_boosts_in_crossover_overlap(
             filters, passbands
         ),
@@ -1974,7 +2079,14 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
     if raw is None:
         return None
     try:
-        filters, fingerprint, model, operator, rationale = _parse_prescription(raw)
+        # The dropped-character count is discarded rather than carried: what
+        # this reader holds is the already-truncated text, so it cannot know
+        # what the prescriber originally wrote. `rationale_dropped_chars` takes
+        # its `None` default — "nobody computed this" — which is the honest
+        # answer and the same convention every other disclosure here follows.
+        filters, fingerprint, model, operator, rationale, _dropped = (
+            _parse_prescription(raw)
+        )
     except BlendPrescriptionRefused:
         return None
     bands = _passbands_from_mapping(raw.get("passbands_hz") if isinstance(raw, Mapping) else None)
@@ -2078,9 +2190,12 @@ def driver_prescription_response_format() -> dict[str, Any]:
         },
         "optional_top_level": {
             "rationale": (
-                f"free text, at most {RATIONALE_MAX_CHARS} characters. It is "
-                "stored for a human reader and is NEVER parsed for behaviour: "
-                "no argument made here can widen a bound below."
+                f"free text. The first {RATIONALE_MAX_CHARS} characters are "
+                "banked and anything past them is dropped — a long rationale is "
+                "truncated and disclosed as prescription."
+                "rationale_dropped_chars, never refused. It is stored for a "
+                "human reader and is NEVER parsed for behaviour: no argument "
+                "made here can widen a bound below."
             ),
         },
         "filters_are_a_total": (
@@ -2099,13 +2214,28 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "the filter and the document is refused. Peaking sits anywhere"
             ),
             "q_min": DRIVER_MIN_Q,
-            "q_max": DRIVER_MAX_CUT_Q,
-            "min_cut_db": DRIVER_MIN_CUT_DB,
+            "q_max_boost": DRIVER_MAX_BOOST_Q,
+            "q_max_cut": (
+                "none — a cut's width is free. It only removes level and cannot "
+                "clip at any width, so make it as narrow as the feature you are "
+                "aiming at; what a cut spends is max_filter_cut_db, "
+                "max_composed_cut_db and one of max_filters_per_role's slots"
+            ),
             "max_filter_cut_db": DRIVER_MAX_FILTER_CUT_DB,
             "max_composed_cut_db": DRIVER_MAX_COMPOSED_CUT_DB,
-            "min_boost_db": DRIVER_MIN_BOOST_DB,
             "max_filter_boost_db": DRIVER_MAX_FILTER_BOOST_DB,
             "max_composed_boost_db": DRIVER_MAX_COMPOSED_BOOST_DB,
+            "subaudible_below_db": DRIVER_MIN_CUT_DB,
+            "a_shallower_filter_discloses_and_is_admitted": (
+                "there is no magnitude FLOOR on either sign. A filter under "
+                "subaudible_below_db is ADMITTED and counted onto "
+                "prescription.subaudible_filters, never refused: that number is "
+                "the deterministic fit engine's own cosmetic floor, a heuristic "
+                "about audibility rather than a measurement of this speaker, so "
+                "prescribe a deliberate sub-floor probe if that is the "
+                "experiment you want. What it costs is one of "
+                "max_filters_per_role's slots, which is the scarce thing"
+            ),
             "freq_must_be_inside": (
                 "the named role's own band in the packet's drivers block — the "
                 "driver's published response range, floored by any protective "
@@ -2136,12 +2266,14 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
             "eligible_classification": DEFECT_BOOSTABLE,
             "a_boost_owes_nothing_a_cut_does_not": (
-                "both signs are bounded by the same caps and disclosed by the "
-                "same classification_bar. What differs is the COST: a cut "
+                "both signs are bounded by the same depth caps and disclosed by "
+                "the same classification_bar. What differs is the COST: a cut "
                 "spends a filter slot, a boost also spends maximum SPL, up to "
-                "max_spl_spend_bound_db. Boost no deeper than the dip the "
-                "verdict measured (its depth_db is in the packet) — nothing "
-                "refuses a deeper one, and nothing makes it work either"
+                "max_spl_spend_bound_db — which is also why a boost is the one "
+                "sign that keeps a WIDTH ceiling (q_max_boost). Boost no deeper "
+                "than the dip the verdict measured (its depth_db is in the "
+                "packet) — nothing refuses a deeper one, and nothing makes it "
+                "work either"
             ),
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
             "spend_is_a_step_function": (
@@ -2162,8 +2294,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
             "refusals": sorted({
                 FILTER_BOOST_TOO_HIGH,
-                FILTER_BOOST_TOO_SHALLOW,
                 COMPOSED_BOOST_EXCEEDED,
+                FILTER_Q_OUT_OF_RANGE,
             }),
         },
         "classification_bar": {

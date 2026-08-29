@@ -308,10 +308,11 @@ PRESCRIPTION_MAX_CUT_Q = 8.0
 #: ceiling binds nothing that ships; it is here so the bound is stated rather
 #: than inherited when that route opens.
 #:
-#: **The per-driver class deliberately does NOT share this ceiling.** It is a
-#: ruled divergence rather than drift, and the argument for it lives with the
-#: constant that diverges — see
-#: :data:`~.driver_prescription.DRIVER_MAX_CUT_Q`.
+#: **The per-driver class deliberately does NOT share this ceiling**, and since
+#: 2026-08-29 it does not share the CUT arm either — that class bounds a boost
+#: at 8.0 and leaves a cut unbounded. Both are ruled divergences rather than
+#: drift, and the argument for them lives with the constant that diverges — see
+#: :data:`~.driver_prescription.DRIVER_MAX_BOOST_Q`.
 PRESCRIPTION_MAX_BOOST_Q = BLEND_FILTER_Q
 
 #: Narrowest Q one prescribed filter may use, either class. Below this a

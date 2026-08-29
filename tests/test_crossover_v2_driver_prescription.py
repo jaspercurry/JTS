@@ -57,9 +57,9 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     BlendPrescriptionRefused,
 )
 from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DRIVER_MAX_BOOST_Q,
     DRIVER_MAX_COMPOSED_BOOST_DB,
     DRIVER_MAX_COMPOSED_CUT_DB,
-    DRIVER_MAX_CUT_Q,
     DRIVER_MAX_FILTER_BOOST_DB,
     DRIVER_MAX_FILTER_CUT_DB,
     DRIVER_MAX_FILTERS_PER_ROLE,
@@ -72,6 +72,7 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_PRESCRIPTION_SCHEMA_VERSION,
     LINEARIZATION_CANDIDATE_FIELD,
     DriverPrescription,
+    driver_max_q_for_gain,
     driver_passbands_from_safety_profile,
     driver_prescription_from_mapping,
     driver_prescription_response_format,
@@ -654,12 +655,24 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     bounds = driver_prescription_response_format()["bounds"]
 
     assert bounds["q_min"] == DRIVER_MIN_Q
-    assert bounds["q_max"] == DRIVER_MAX_CUT_Q
-    assert bounds["min_cut_db"] == DRIVER_MIN_CUT_DB
+    # Per SIGN, and named as a PAIR like the sibling class's: the cut arm has no
+    # ceiling, so its key says so in words rather than carrying a number a
+    # prescriber would then aim at. A single `q_max` would tell a cut it is
+    # bounded and a boost nothing about which bound it got.
+    assert bounds["q_max_boost"] == DRIVER_MAX_BOOST_Q
+    assert "q_max" not in bounds
+    assert "none" in bounds["q_max_cut"]
+    # The audibility floor is published as the DISCLOSURE threshold it now is —
+    # one key for both signs, because it is one constant under two names — and
+    # the two bound-shaped keys it used to wear are gone, so a prescriber cannot
+    # read a floor that refuses nothing as a bound it must satisfy.
+    assert bounds["subaudible_below_db"] == DRIVER_MIN_CUT_DB == DRIVER_MIN_BOOST_DB
+    assert "min_cut_db" not in bounds
+    assert "min_boost_db" not in bounds
+    assert "subaudible_filters" in bounds["a_shallower_filter_discloses_and_is_admitted"]
     assert bounds["max_filter_cut_db"] == DRIVER_MAX_FILTER_CUT_DB
     assert bounds["max_composed_cut_db"] == DRIVER_MAX_COMPOSED_CUT_DB
     assert bounds["max_filters_per_role"] == DRIVER_MAX_FILTERS_PER_ROLE
-    assert bounds["min_boost_db"] == DRIVER_MIN_BOOST_DB
     assert bounds["max_filter_boost_db"] == DRIVER_MAX_FILTER_BOOST_DB
     assert bounds["max_composed_boost_db"] == DRIVER_MAX_COMPOSED_BOOST_DB
     # The EMITTER's set, not a second literal: the contract a prescriber reads
@@ -689,21 +702,25 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     # Every boost refusal the gate can raise is named in the block a prescriber
     # reads, so a bar it can walk into is a bar it was told about.
     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
+    # `filter_q_out_of_range` joined this set on 2026-08-29: the Q CEILING is a
+    # boost-only bar now, so the block a boost's author reads is where it has to
+    # be named. The floor refusal left the same day and must not be here.
     assert set(fmt["boosts"]["refusals"]) == {
         dp.FILTER_BOOST_TOO_HIGH,
-        dp.FILTER_BOOST_TOO_SHALLOW,
         dp.COMPOSED_BOOST_EXCEEDED,
+        dp.FILTER_Q_OUT_OF_RANGE,
     }
-    # …and all SEVEN retired slugs are gone from the module entirely, not
+    # …and all NINE retired slugs are gone from the module entirely, not
     # merely from this block: a prescriber that could still read
     # `driver_feature_not_boostable` in `refusal_reasons` would satisfy a bar
     # nothing applies. Six went on 2026-08-23; the knee bar went with the nanny
-    # burn-down.
+    # burn-down; the two audibility-floor slugs went on 2026-08-29.
     for retired in (
         "driver_feature_not_classified", "driver_feature_not_cuttable",
         "driver_feature_not_boostable", "driver_feature_depth_unavailable",
         "driver_boost_exceeds_feature_depth", "driver_boost_unvouched",
         "driver_boost_in_crossover_overlap",
+        "driver_filter_cut_too_shallow", "driver_filter_boost_too_shallow",
     ):
         assert retired not in DRIVER_PRESCRIPTION_REFUSAL_REASONS
         assert not hasattr(dp, retired.upper().removeprefix("DRIVER_"))
@@ -775,11 +792,23 @@ def test_the_passband_edges_are_inclusive_and_refuse_by_name(packet, freq, ok):
 
 @pytest.mark.parametrize(("q", "ok"), [
     (DRIVER_MIN_Q, True),
-    (DRIVER_MAX_CUT_Q, True),
+    (DRIVER_MAX_BOOST_Q, True),
     (DRIVER_MIN_Q - 0.01, False),
-    (DRIVER_MAX_CUT_Q + 0.01, False),
+    # The row that used to refuse. A cut's width is FREE — the 2026-08-19
+    # ruling, which this gate spent months restating as its own opposite — so
+    # the boost ceiling no longer reaches this arm at all.
+    (DRIVER_MAX_BOOST_Q + 0.01, True),
+    (14.0, True),
+    (100.0, True),
 ])
-def test_the_q_bounds_are_inclusive_and_refuse_by_name(packet, q, ok):
+def test_a_cut_has_a_q_floor_and_no_q_ceiling(packet, q, ok):
+    """Only the FLOOR binds a cut: below it a Peaking is a broadband tilt.
+
+    Above it nothing does. A cut removes level and cannot clip at any width, so
+    there is no component-damage or hearing mechanism to name for a narrow one —
+    ``docs/measurement-loop-doctrine.md`` §4 — and the emitter agrees, asking a
+    biquad's ``q`` only to be positive and finite.
+    """
     document = _document([_cut(q=q)], packet)
     if ok:
         assert _gate(packet, document).filters[0]["q"] == q
@@ -787,24 +816,46 @@ def test_the_q_bounds_are_inclusive_and_refuse_by_name(packet, q, ok):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, document)
     assert excinfo.value.reason == dp.FILTER_Q_OUT_OF_RANGE
-    assert excinfo.value.evidence["q_max"] == DRIVER_MAX_CUT_Q
+    assert excinfo.value.evidence["q_min"] == DRIVER_MIN_Q
+
+
+@pytest.mark.parametrize("q", [DRIVER_MAX_BOOST_Q + 0.01, 14.0, 100.0])
+def test_the_same_q_a_cut_may_use_refuses_a_boost(tmp_path, q):
+    """THE sign split, at one width: Q-14 cuts, Q-14 boosts do not.
+
+    A boost is the sign that spends the household's maximum SPL, and the caps
+    that bound that spend are read on a SAMPLED grid whose between-bin error
+    ``branch_chain._evaluation_grid`` states at Q 8. So the ceiling survives on
+    the arm whose cost it protects and dies on the arm that has no cost — which
+    is the whole of what :func:`driver_max_q_for_gain` decides.
+    """
+    packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+
+    assert _gate(packet, _document([_cut(q=q)], packet)).filters[0]["q"] == q
+
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_boost(q=q)], packet))
+    assert excinfo.value.reason == dp.FILTER_Q_OUT_OF_RANGE
+    assert excinfo.value.evidence["q_max"] == DRIVER_MAX_BOOST_Q
+    # The split has ONE owner, so the validator, its message and the contract
+    # cannot disagree about which arm a filter got.
+    assert driver_max_q_for_gain(1.0) == DRIVER_MAX_BOOST_Q
+    assert driver_max_q_for_gain(-1.0) == driver_max_q_for_gain(0.0) == math.inf
 
 
 @pytest.mark.parametrize(("gain", "reason"), [
     (-DRIVER_MIN_CUT_DB, None),
     (-DRIVER_MAX_FILTER_CUT_DB, None),
-    (-DRIVER_MIN_CUT_DB + 0.01, dp.FILTER_CUT_TOO_SHALLOW),
-    (0.0, dp.FILTER_CUT_TOO_SHALLOW),
+    # The two rows that used to refuse `driver_filter_cut_too_shallow`. Only the
+    # CEILING is a bound now; a zero-gain filter is inert whatever its Q and is
+    # the floor's clearest case rather than an exception to it.
+    (-DRIVER_MIN_CUT_DB + 0.01, None),
+    (0.0, None),
     (-DRIVER_MAX_FILTER_CUT_DB - 0.01, dp.FILTER_CUT_TOO_DEEP),
 ])
-def test_the_depth_bounds_are_inclusive_and_refuse_by_name(packet, gain, reason):
-    """A zero-gain filter is TOO SHALLOW, not a boost and not a cut.
-
-    It is inert whatever its Q, and spending one of the branch's eight slots on
-    an inaudible filter is the thing the floor exists to stop. Sorting it into
-    the shallow arm rather than the boost arm keeps the boost refusal meaning
-    exactly one thing.
-    """
+def test_only_the_cut_ceiling_is_a_bound_and_it_refuses_by_name(
+    packet, gain, reason
+):
     document = _document([_cut(gain=gain)], packet)
     if reason is None:
         assert _gate(packet, document).filters[0]["gain"] == gain
@@ -812,6 +863,73 @@ def test_the_depth_bounds_are_inclusive_and_refuse_by_name(packet, gain, reason)
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, document)
     assert excinfo.value.reason == reason
+
+
+@pytest.mark.parametrize("gain", [-0.3, 0.3, 0.0, -0.49, 0.49])
+def test_a_subaudible_filter_is_admitted_and_counted_onto_the_receipt(
+    tmp_path, gain
+):
+    """THE floor demotion, both signs: admitted, and the count says so.
+
+    A 0.3 dB probe is a reversible experiment — it spends no maximum SPL and
+    cannot clip, so ``docs/measurement-loop-doctrine.md`` §4's closed list has
+    no mechanism to name and §5's nanny test fails a refusal on it. What the
+    old refusal really guarded is the SLOT, and ``max_filters_per_role``
+    guards that directly (pinned below).
+    """
+    packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+    filters = [{**_cut(gain=gain), "freq": TWEETER_DIP_HZ}]
+
+    prescription = _gate(packet, _document(filters, packet))
+
+    assert prescription.filters[0]["gain"] == gain
+    assert prescription.subaudible_filters == 1
+    assert prescription.to_dict()["subaudible_filters"] == 1
+
+
+def test_the_subaudible_count_is_a_measurement_and_not_a_default(tmp_path):
+    """Without this, ``subaudible_filters == 1`` above would pass on a stub.
+
+    Same shape as the crossover-knee counter's own control: a document whose
+    filters all clear the floor reads 0, and the durable read-back — which
+    holds only the truncated text and no evidence — reads ``None``.
+    """
+    packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+    document = _document([_cut(gain=-3.0), _boost(gain=3.0)], packet)
+
+    prescription = _gate(packet, document)
+    assert prescription.subaudible_filters == 0
+
+    mixed = _gate(packet, _document(
+        [_cut(gain=-3.0), _cut(gain=-0.2), _boost(gain=0.1)], packet
+    ))
+    assert mixed.subaudible_filters == 2
+
+    assert driver_prescription_from_mapping(
+        prescription.to_dict()
+    ).subaudible_filters is None
+
+
+def test_the_slot_cap_is_what_a_shallow_filter_actually_spends(tmp_path):
+    """The scarce resource the demoted floor was standing in for, still bound.
+
+    Eight sub-audible filters on one role are admitted and counted; the ninth
+    is refused — by the COUNT cap, in its own vocabulary. Demoting the floor
+    must not have widened the thing the floor was a proxy for.
+    """
+    packet = _speaker(tmp_path)
+    shallow = [
+        _cut(gain=-0.2, freq=TWEETER_BAND[0] + 100.0 * index)
+        for index in range(DRIVER_MAX_FILTERS_PER_ROLE)
+    ]
+
+    assert _gate(packet, _document(shallow, packet)).subaudible_filters == 8
+
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document(
+            [*shallow, _cut(gain=-0.2, freq=TWEETER_BAND[0] + 900.0)], packet
+        ))
+    assert excinfo.value.reason == dp.FILTER_COUNT_EXCEEDED
 
 
 def test_a_role_the_speaker_declares_no_band_for_is_refused_by_name(packet):
@@ -892,14 +1010,48 @@ def test_one_roles_composed_spend_is_not_charged_to_the_other(packet, tmp_path):
     ({"prescriber": {"model": "m", "operator": " "}},
      dp.DRIVER_PRESCRIPTION_PROVENANCE_MISSING),
     ({"typo": 1}, dp.DRIVER_PRESCRIPTION_MALFORMED),
+    # A rationale that is not TEXT still refuses: the document was built by
+    # something that does not speak this contract. Its LENGTH no longer does —
+    # see the truncation pin below.
     ({"rationale": 7}, dp.DRIVER_PRESCRIPTION_MALFORMED),
-    ({"rationale": "x" * 1_201}, dp.DRIVER_PRESCRIPTION_MALFORMED),
 ])
 def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reason):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut()], packet, **over))
 
     assert excinfo.value.reason == reason
+
+
+@pytest.mark.parametrize("over_by", [1, 800])
+def test_a_long_rationale_is_truncated_and_disclosed_never_refused(packet, over_by):
+    """THE prose demotion: the words are banked to the ceiling, and the receipt
+    says how many were dropped.
+
+    Nothing reads the text — no branch here or downstream — so a refusal cost a
+    prescriber its whole round to re-author prose no gate consults, which is
+    ``docs/measurement-loop-doctrine.md`` §5's nanny shape. Truncating rather
+    than raising the ceiling is what keeps
+    ``DRIVER_PRESCRIPTION_MAX_BYTES``'s measured largest-honest-document
+    derivation (and its five-times margin) true unchanged — the banked document
+    is exactly as big as it always was.
+    """
+    text = "z" * (dp.RATIONALE_MAX_CHARS + over_by)
+
+    prescription = _gate(packet, _document([_cut()], packet, rationale=text))
+
+    assert prescription.rationale == "z" * dp.RATIONALE_MAX_CHARS
+    assert prescription.rationale_dropped_chars == over_by
+    assert prescription.to_dict()["rationale_dropped_chars"] == over_by
+    # …and a rationale that fits is banked whole, with a measured 0 dropped, so
+    # the number above is a measurement rather than a stub. `None` is reserved
+    # for the durable read-back, which holds only the truncated text and so
+    # genuinely cannot know what was cut.
+    short = _gate(packet, _document([_cut()], packet, rationale="the 5 kHz mode"))
+    assert short.rationale == "the 5 kHz mode"
+    assert short.rationale_dropped_chars == 0
+    assert driver_prescription_from_mapping(
+        prescription.to_dict()
+    ).rationale_dropped_chars is None
 
 
 @pytest.mark.parametrize("filters", [
@@ -1637,14 +1789,15 @@ def test_a_nonsense_depth_is_still_capped_by_the_policy_ceilings(tmp_path):
 
 
 @pytest.mark.parametrize(("gain", "accepted"), [
-    (0.49, False), (0.5, True), (3.0, True), (12.0, True), (12.01, False),
+    (0.49, True), (0.5, True), (3.0, True), (12.0, True), (12.01, False),
 ])
-def test_the_per_filter_boost_bounds_are_inclusive(tmp_path, gain, accepted):
-    """0.5 dB is cosmetic-floor; 12.0 dB is this class's ceiling since R8.
+def test_the_per_filter_boost_ceiling_is_inclusive(tmp_path, gain, accepted):
+    """12.0 dB is this class's ceiling since R8, and the only bound left here.
 
     3.0 stays in the table as an ordinary mid-range case — it was the ceiling
     itself until 2026-08-22, and the row that used to assert 12.0 is REFUSED now
-    asserts it is admitted, which is the whole of what R8 changed here.
+    asserts it is admitted, which is the whole of what R8 changed here. 0.49
+    turned over the same way on 2026-08-29: the cosmetic floor discloses.
 
     12.0 being ACCEPTED is the load-bearing row: it is the rail the emitter
     re-validates against, so a document at the ceiling has to survive emission
@@ -1656,19 +1809,25 @@ def test_the_per_filter_boost_bounds_are_inclusive(tmp_path, gain, accepted):
     document = _document([_boost(gain=gain)], packet)
 
     if accepted:
-        assert _gate(packet, document).filters[0]["gain"] == gain
+        prescription = _gate(packet, document)
+        assert prescription.filters[0]["gain"] == gain
+        assert prescription.subaudible_filters == (
+            1 if gain < DRIVER_MIN_BOOST_DB else 0
+        )
         return
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, document)
-    assert excinfo.value.reason == (
-        dp.FILTER_BOOST_TOO_SHALLOW if gain < DRIVER_MIN_BOOST_DB
-        else dp.FILTER_BOOST_TOO_HIGH
-    )
+    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
 
 @pytest.mark.parametrize(("q", "accepted"), [(0.5, True), (8.0, True), (8.1, False)])
-def test_a_boost_uses_the_same_q_envelope_as_a_cut(tmp_path, q, accepted):
-    """A filter's width is a property of the feature, not of the filter's sign."""
+def test_a_boost_keeps_the_q_envelope_a_cut_no_longer_carries(
+    tmp_path, q, accepted
+):
+    """The width a boost may use is bounded by what a narrow boost COSTS.
+
+    The same widths on a cut are free — pinned beside the floor bounds above.
+    """
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
     document = _document([_boost(q=q)], packet)
 
@@ -2354,7 +2513,7 @@ def test_no_admissible_cascade_charges_more_than_the_published_bound():
             {
                 "type": "Peaking",
                 "freq": float(np.exp(rng.uniform(np.log(lo), np.log(hi)))),
-                "q": float(rng.uniform(dp.DRIVER_MIN_Q, dp.DRIVER_MAX_CUT_Q)),
+                "q": float(rng.uniform(dp.DRIVER_MIN_Q, dp.DRIVER_MAX_BOOST_Q)),
                 "gain": float(rng.uniform(
                     dp.DRIVER_MIN_BOOST_DB, DRIVER_MAX_FILTER_BOOST_DB
                 )),
@@ -2622,9 +2781,12 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
     from tests.test_active_speaker_profile import _two_way_preset
 
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    # At the cut's deepest and NARROWER than the boost arm's ceiling, which is
+    # the case the 2026-08-29 widening created: the emitter asks a biquad's `q`
+    # only to be positive and finite, so an unbounded cut Q is emittable rather
+    # than accepted here and refused downstream.
     prescription = _gate(
-        packet, _document([_cut(gain=-DRIVER_MAX_FILTER_CUT_DB, q=DRIVER_MAX_CUT_Q)],
-                          packet),
+        packet, _document([_cut(gain=-DRIVER_MAX_FILTER_CUT_DB, q=14.0)], packet),
     )
     reduced = linearization_filters_by_role(
         driver_prescription_to_candidate_fields(prescription, fitted=None)[
@@ -2636,7 +2798,7 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
 
     assert safe["tweeter"] == [{
         "biquad_type": "Peaking", "freq": TWEETER_FEATURE_HZ,
-        "q": DRIVER_MAX_CUT_Q, "gain": -DRIVER_MAX_FILTER_CUT_DB,
+        "q": 14.0, "gain": -DRIVER_MAX_FILTER_CUT_DB,
     }]
 
 
@@ -2832,9 +2994,15 @@ def test_the_prescribed_branch_names_its_author_without_claiming_to_be_a_fit(
 
 @pytest.mark.parametrize("freq_hz", [40.0, 60.0, 100.0, 1000.0, 5000.0, 20000.0])
 @pytest.mark.parametrize(("q", "gain_db"), [
-    (DRIVER_MAX_CUT_Q, -DRIVER_MAX_FILTER_CUT_DB),
-    (DRIVER_MAX_CUT_Q, -DRIVER_MIN_CUT_DB),
+    (DRIVER_MAX_BOOST_Q, -DRIVER_MAX_FILTER_CUT_DB),
+    (DRIVER_MAX_BOOST_Q, -DRIVER_MIN_CUT_DB),
     (DRIVER_MIN_Q, -DRIVER_MAX_FILTER_CUT_DB),
+    # Above the boost arm's ceiling, which a cut may now sit at. A SAMPLE and
+    # not a corner: since 2026-08-29 the cut arm has no upper Q bound, so
+    # nothing here is the widest admissible filter and this row must not be read
+    # as claiming otherwise. What holds at every Q is the direction — a cut's
+    # |H| never exceeds unity — and the margin's scaling is the test below.
+    (14.0, -DRIVER_MAX_FILTER_CUT_DB),
 ])
 def test_a_cut_at_every_corner_of_the_envelope_is_a_stable_biquad_at_48_khz(
     freq_hz, q, gain_db
@@ -2902,7 +3070,7 @@ def test_the_pole_radius_margin_scales_with_the_centre_frequency():
     def margin(freq_hz: float) -> float:
         amplitude = 10.0 ** (-DRIVER_MAX_FILTER_CUT_DB / 40.0)
         w0 = 2.0 * math.pi * freq_hz / 48_000.0
-        alpha = math.sin(w0) / (2.0 * DRIVER_MAX_CUT_Q)
+        alpha = math.sin(w0) / (2.0 * DRIVER_MAX_BOOST_Q)
         radius = math.sqrt(abs((1.0 - alpha / amplitude) / (1.0 + alpha / amplitude)))
         return 1.0 - radius
 
@@ -3006,7 +3174,7 @@ def test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to():
         _PEAKING_Q_MAX,
     )
 
-    assert DRIVER_MAX_CUT_Q == _PEAKING_Q_MAX
+    assert DRIVER_MAX_BOOST_Q == _PEAKING_Q_MAX
     assert DRIVER_MAX_FILTER_CUT_DB == PER_FILTER_CUT_CAP_DB
     assert DRIVER_MAX_COMPOSED_CUT_DB == MAX_NORMALIZATION_SPEND_DB
     assert DRIVER_MIN_CUT_DB == _MIN_FILTER_GAIN_DB
