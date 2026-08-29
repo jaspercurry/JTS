@@ -418,6 +418,10 @@ def _fast_lane_selected_tests(
             ),
         ),
         (
+            "capture-page/js/main.js",
+            ("tests/test_capture_page_js.py",),
+        ),
+        (
             # issue #3142: a module nested one directory deeper than the
             # package (jasper/cli/doctor/audio_runtime.py) selected only
             # the package/module arms (test_cli.py, test_audio_runtime.py)
@@ -435,7 +439,12 @@ def _fast_lane_selected_tests(
             ),
         ),
     ],
-    ids=("lane-resolver", "wake-feature-bank-fixtures", "doctor-nested-module"),
+    ids=(
+        "lane-resolver",
+        "wake-feature-bank-fixtures",
+        "capture-page",
+        "doctor-nested-module",
+    ),
 )
 def test_fast_lane_routes_internal_support_files_to_their_guards(
     tmp_path: Path,

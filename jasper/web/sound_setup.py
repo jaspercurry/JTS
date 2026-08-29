@@ -2842,6 +2842,7 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),
             created_at=draft.get("created_at"),
+            updated_at=draft.get("updated_at"),
         )
         draft["revision"] = saved_revision
     payload = save_crossover_preview(draft)

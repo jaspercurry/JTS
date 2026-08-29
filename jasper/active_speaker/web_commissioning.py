@@ -317,6 +317,7 @@ def regenerate_crossover_preview_from_current_draft(
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),
             created_at=draft.get("created_at"),
+            updated_at=draft.get("updated_at"),
         )
         draft["revision"] = saved_revision
     return save_crossover_preview(draft, durable=durable)

@@ -65,6 +65,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # Cluster 1 — wizard verdict lines (the §5.10 reason registry and the
     # screen envelopes that render its verdicts).
     "jasper/active_speaker/crossover_v2_flow.py",
+    "jasper/active_speaker/crossover_v2/refusal_copy.py",
     # Two homes for household copy wave 3 moved OUT of the flow above. Without
     # these rows the sweep would still pass and would cover neither: the group
     # close's geometry guidance, null-classification sentences and carve-out

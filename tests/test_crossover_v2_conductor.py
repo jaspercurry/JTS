@@ -1307,8 +1307,14 @@ def test_the_snapshot_wins_when_a_profile_carries_both_copies():
             }}},
             "a non-finite delay is not a delay",
         ),
+        (
+            {"recomposition_snapshot": {"corrections": {
+                "woofer": {"delay_ms": True}, "tweeter": {"delay_ms": 0.0},
+            }}},
+            "a JSON boolean is not a numeric delay",
+        ),
     ],
-    ids=["absent", "no_corrections", "missing_role", "non_finite"],
+    ids=["absent", "no_corrections", "missing_role", "non_finite", "boolean"],
 )
 def test_an_unreadable_applied_delay_is_none_and_never_a_guessed_zero(profile, why):
     """``None`` and ``0.0`` are different facts and must stay different.

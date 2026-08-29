@@ -44,6 +44,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import renderer_lanes, ring_assets
 from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
@@ -124,58 +125,60 @@ def _strip_conf_comments(text: str) -> str:
     return "".join(out)
 
 
-def test_the_grouping_confd_is_structurally_one_block_and_nothing_else():
-    """Catches MALFORMATION and the ALIAS form, which key names cannot.
+@pytest.mark.parametrize(
+    ("path", "expected", "expected_depth"),
+    [
+        (
+            _REPO / "deploy/alsa/conf.d/60-jts-ring.conf",
+            ring_assets.RING_CONF_PCMS,
+            1,
+        ),
+        (
+            _REPO / "deploy/alsa/conf.d/61-jts-renderer-lanes.conf",
+            tuple(
+                pcm
+                for lane in renderer_lanes.RENDERER_LANES
+                for pcm in (
+                    renderer_lanes.ring_conf_pcm_name(lane.label), lane.ring_device,
+                )
+            ),
+            2,
+        ),
+        (_GROUPING_CONF, (GROUPING_RING_PCM,), 1),
+    ],
+)
+def test_ring_confd_files_have_only_expected_top_level_blocks(
+    path, expected, expected_depth,
+):
+    """Every non-comment top-level token is one complete PCM declaration.
 
-    The key-name guard below reads the block's contents; it is blind to text
-    OUTSIDE the block and to a declaration with no braces at all. Both are
-    reachable and both are worse than a bad key:
-
-    * A stray brace or a stray top-level token makes the whole drop-in
-      unparseable, and alsa-lib reads this directory on EVERY PCM open on the
-      box — so the blast radius is every renderer on every box, including the
-      boxes that never group.
-    * `pcm.jts_ring_active_playback "jts_ring_grouping"` is a valid ALSA ALIAS.
-      It declares no block, so a block-shaped scan never sees it, and this file
-      sorts LAST in conf.d — after 60- and 61- — so it would hold override
-      authority over a PCM another file already defined.
-
-    Measured rather than argued — and the measurement corrects the direction it
-    came from. ``jasper.ring_assets``' value parsers scope to a block body by
-    brace MATCHING, so a brace OUTSIDE every block is invisible to all of them:
-    with one appended ``}``, every per-block value stays identical for
-    ``60-jts-ring.conf``, ``61-jts-renderer-lanes.conf`` AND this file. (A brace
-    INSIDE a block truncates the body, so ``n_slots`` goes ``None`` and the
-    existing value guards do catch it — again for all three.) The
-    outside-the-block form, which is also the alias's shape, was therefore
-    caught for NO ring conf.d in this repo. This guard closes it for the file it
-    owns; ``60-`` and ``61-`` still have no structural guard.
-
-    The one-block form is asserted exactly, so a nested block (an ALSA
-    ``hint { … }``, which the ioplug does skip) fails here rather than silently
-    widening the shape. If one is ever genuinely wanted, widen this deliberately.
+    Value parsers see only block bodies, so they cannot catch a stray brace,
+    token, or alias outside every block. Any such text can break every ALSA
+    open or override an earlier conf.d declaration.
     """
-    stripped = _strip_conf_comments(_read(_GROUPING_CONF))
-    assert stripped.count('"') % 2 == 0, (
-        f"{_GROUPING_CONF.name} has an odd number of double quotes — an "
-        "unterminated string makes the whole drop-in unparseable"
-    )
-    assert stripped.count("{") == stripped.count("}") == 1, (
-        f"{_GROUPING_CONF.name} must be exactly one unnested PCM block; found "
-        f"{stripped.count('{')} '{{' and {stripped.count('}')} '}}'. A stray "
-        "brace makes alsa-lib fail to parse the directory on every PCM open."
-    )
-    prefix = stripped[: stripped.index("{")].strip()
-    suffix = stripped[stripped.index("}") + 1 :].strip()
-    assert prefix == f"pcm.{GROUPING_RING_PCM}", (
-        f"the only thing before the block may be `pcm.{GROUPING_RING_PCM}`; "
-        f"found {prefix!r}"
-    )
-    assert suffix == "", (
-        f"nothing may follow the block; found {suffix!r}. An ALSA alias line "
-        "here declares no braces, so the block-shaped guards cannot see it — "
-        "and this file sorts after 60-/61-, so it would win."
-    )
+    stripped = _strip_conf_comments(_read(path))
+    assert stripped.count('"') % 2 == 0, f"unterminated string in {path.name}"
+    structural = re.sub(r'"[^"\n]*"', '""', stripped)
+    depth = 0
+    max_depth = 0
+    declared = []
+    for raw in structural.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        before = depth
+        if depth == 0:
+            match = re.fullmatch(r"pcm\.([A-Za-z0-9_]+)\s*\{", line)
+            assert match is not None, f"unexpected top-level text in {path.name}: {line!r}"
+            declared.append(match.group(1))
+        depth += line.count("{") - line.count("}")
+        max_depth = max(max_depth, depth)
+        assert depth >= 0, f"stray closing brace in {path.name}"
+        if before > 0 and depth == 0:
+            assert line == "}", f"text follows a block in {path.name}: {line!r}"
+    assert depth == 0, f"unclosed block in {path.name}"
+    assert max_depth == expected_depth, f"unexpected block nesting in {path.name}"
+    assert tuple(declared) == expected
 
 
 def test_the_grouping_confd_uses_only_keys_the_ioplug_accepts():

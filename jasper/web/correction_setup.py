@@ -7225,7 +7225,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_json_response(self, payload, status=status)
 
         def _serve_json_route(
-            self, label: str, handler_fn: Callable[[BaseHTTPRequestHandler], dict[str, Any]],
+            self, label: str,
+            handler_fn: Callable[
+                [BaseHTTPRequestHandler],
+                dict[str, Any] | tuple[dict[str, Any], int],
+            ],
         ) -> None:
             """Shared JSON GET-route wrapper: any handler failure surfaces
             as a 500 JSON error instead of a stack-trace page or a dead
@@ -7233,7 +7237,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             /sessions share (one wrapper so the blanket net isn't
             re-declared per route)."""
             try:
-                self._send_json(handler_fn(self))
+                result = handler_fn(self)
+                payload, status = result if isinstance(result, tuple) else (result, 200)
+                self._send_json(payload, status=int(status))
             except Exception as e:  # noqa: BLE001 — route-level 500 net
                 logger.exception("%s failed", label)
                 self._send_json({"error": str(e)}, status=500)
@@ -7882,41 +7888,35 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/crossover/status":
                 from . import correction_crossover_flow
                 from . import correction_crossover_v2 as v2host
-                try:
+
+                def _crossover_status(_handler):
                     # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
                     # a session volume that outlived its 1800 s ceiling is
                     # force-drained here (cheap in-memory stale check first).
                     _enforce_session_volume_ceiling(v2host)
-                    payload, status = correction_crossover_flow.handle_status(
+                    return correction_crossover_flow.handle_status(
                         relay=_get_relay_capture_for(
                             "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
                     )
-                    self._send_json(payload, status=int(status))
-                except (OSError, RuntimeError, TypeError, ValueError) as e:
-                    logger.exception("/crossover/status failed")
-                    self._send_json({"error": str(e)}, status=500)
+
+                self._serve_json_route(path, _crossover_status)
                 return
             if path == "/crossover/envelope":
                 from . import correction_crossover_flow
                 from . import correction_crossover_v2 as v2host
-                try:
-                    # W6.1 E3: lazy wall-clock-ceiling enforcement on read (see
-                    # /crossover/status) — the envelope is the wizard's poll, so
-                    # a walked-away session's volume is restored within a poll of
-                    # crossing the ceiling even if no other drain path fires. It
-                    # is also the REMOTE driver's own poll, which is what makes
-                    # it the reliable detector for a slow-driver ceiling death.
+
+                def _crossover_envelope(_handler):
+                    # W6.1 E3: the wizard and remote driver both poll this route,
+                    # so it promptly drains a walked-away or slow-driver session.
                     _enforce_session_volume_ceiling(v2host)
-                    payload, status = correction_crossover_flow.handle_envelope(
+                    return correction_crossover_flow.handle_envelope(
                         relay=_get_relay_capture_for(
                             "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
                     )
-                    self._send_json(payload, status=int(status))
-                except (OSError, RuntimeError, TypeError, ValueError) as e:
-                    logger.exception("/crossover/envelope failed")
-                    self._send_json({"error": str(e)}, status=500)
+
+                self._serve_json_route(path, _crossover_envelope)
                 return
             if path == "/bass":
                 from . import correction_bass_flow
@@ -7929,12 +7929,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/bass/status":
                 from . import correction_bass_flow
-                try:
-                    payload, status = correction_bass_flow.handle_status()
-                    self._send_json(payload, status=int(status))
-                except (OSError, RuntimeError, TypeError, ValueError) as e:
-                    logger.exception("/bass/status failed")
-                    self._send_json({"error": str(e)}, status=500)
+                self._serve_json_route(
+                    path, lambda _handler: correction_bass_flow.handle_status(),
+                )
                 return
             if path == "/balance":
                 from . import balance_flow
