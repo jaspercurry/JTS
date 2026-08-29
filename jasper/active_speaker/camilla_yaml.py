@@ -3109,13 +3109,45 @@ pipeline:
 PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
 
 
+def _validated_inverted_roles(
+    preset: ActiveSpeakerPreset, inverted_roles: Sequence[str],
+) -> frozenset[str]:
+    """The reverse-null's named branches, refused unless this cabinet has them.
+
+    Fail-closed for the same reason :func:`_validate_program_role_channels` is:
+    a role no output declares would flip nothing, the graph would emit
+    byte-identical to its non-inverted twin, and the banked record would claim
+    a reverse-null nobody measured.
+    """
+    flipped = frozenset(inverted_roles)
+    declared = {output.driver_role for output in preset.channel_map.outputs}
+    unknown = flipped - declared
+    if unknown:
+        raise ActiveSpeakerConfigError(
+            "cannot invert driver role(s) this preset declares no output for: "
+            + ", ".join(sorted(unknown))
+        )
+    return flipped
+
+
 def _emit_role_routed_mixer(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
     *,
     apply_region_polarity: bool = True,
+    inverted_roles: Sequence[str] = (),
 ) -> str:
     """Emit the program graph's role-routed split mixer.
+
+    ``inverted_roles`` is the MEASUREMENT's reverse-null flip (R-1): each named
+    role's branch has its sign reversed **relative to whatever polarity this
+    graph would otherwise carry**, which is why it XORs onto the region
+    polarity rather than replacing it. It is level-neutral by construction —
+    every ``dest`` of this mixer has exactly ONE source (a program channel is
+    copied to its role's outputs, never summed), so flipping ``inverted``
+    negates each sample and leaves its magnitude, and therefore every peak the
+    limiter and the volume ceiling answer for, bit-identical. No ``gain`` is
+    touched.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo program bus by output
     *side*), this routes by driver *role*: every physical output of role ``r``
@@ -3144,13 +3176,18 @@ def _emit_role_routed_mixer(
         if apply_region_polarity
         else {role: False for role in region_polarity}
     )
+    flipped = _validated_inverted_roles(preset, inverted_roles)
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     channels_in = 1 + max(role_channels.values())
     mapping: list[tuple[int, list[tuple[int, float, bool]]]] = [
         (
             output.index,
-            [(role_channels[output.driver_role], 0.0, polarity[output.driver_role])],
+            [(
+                role_channels[output.driver_role],
+                0.0,
+                polarity[output.driver_role] != (output.driver_role in flipped),
+            )],
         )
         for output in outputs
     ]
@@ -3423,6 +3460,7 @@ def emit_active_speaker_program_config(
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
     enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+    inverted_roles: Sequence[str] = (),
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -3441,6 +3479,13 @@ def emit_active_speaker_program_config(
       preference filters;
     * keeps the software volume ceiling non-positive and stays static (no reload
       mid-program).
+
+    ``inverted_roles`` is the reverse-null measurement's flip (R-1): the named
+    driver branches ride the mixer with their sign reversed. **This emitter
+    only** — the applied/baseline graphs a household plays through never take
+    it. Level-neutral: see :func:`_emit_role_routed_mixer` for why no peak
+    moves, and note that the tweeter protection high-pass, the per-driver
+    limiter and the ``volume_limit`` ceiling below are unreachable from it.
 
     Two fail-closed gates run before the graph can leave this function: a
     build-time proof that the selected tweeter HP satisfies the declared floor, and
@@ -3562,6 +3607,7 @@ def emit_active_speaker_program_config(
     mixer_yaml = _emit_role_routed_mixer(
         preset, role_channels,
         apply_region_polarity=protection_sections_by_role is None,
+        inverted_roles=inverted_roles,
     )
     pipeline_yaml = _emit_commissioning_pipeline(
         preset,
@@ -3574,6 +3620,12 @@ def emit_active_speaker_program_config(
         f"# program_channels={program_channels}",
         f"# filter_mode={filter_mode}",
     ]
+    if inverted_roles:
+        # Emitted only when a branch is actually flipped, so every non-inverted
+        # emit stays byte-identical to what it was. The graph then SAYS which
+        # branch carries the reverse-null, beside the fingerprint a record
+        # names it by.
+        metadata_comments.append(f"# inverted_roles={sorted(set(inverted_roles))}")
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")
         metadata_comments.append(f"# baseline_id={baseline_id}")

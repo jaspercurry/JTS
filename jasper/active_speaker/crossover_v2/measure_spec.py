@@ -31,7 +31,7 @@ spelling, so the cheap copy cannot drift off the real one.
 Parameter                    Instrument      What still happens today
 ===========================  ==============  ============================
 ``regime=near_field``        R-3             the capture is taken and banked
-``polarity=inverted``        R-1             nothing is captured
+``polarity=inverted``        R-1             the capture is taken and banked
 ``level_ladder_dbfs=(…)``    R-4             every rung plays and banks
 ``position_axis=vertical``   R-5a            nothing is captured
 ===========================  ==============  ============================
@@ -50,6 +50,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .contracts import (
+    DRIVER_ROLES,
     MEASURE_KINDS,
     MEASURE_REGIMES,
     POLARITIES,
@@ -63,12 +64,13 @@ from .contracts import (
 
 __all__ = [
     "DISTORTION_VS_LEVEL_NOT_IMPLEMENTED",
-    "INVERTED_POLARITY_NOT_IMPLEMENTED",
     "NEAR_FIELD_SPLICE_NOT_IMPLEMENTED",
+    "REVERSE_NULL_DEPTH_NOT_IMPLEMENTED",
     "STUB_CODES",
     "VERTICAL_AXIS_NOT_IMPLEMENTED",
     "CapabilityStub",
     "MeasureSpec",
+    "inverted_roles_for",
     "stub_for_code",
     "stubbed_capabilities",
 ]
@@ -76,9 +78,10 @@ __all__ = [
 #: R-3. The near-field capture ships; the splice onto the far-field trace is
 #: the ``analyze`` function that does not exist.
 NEAR_FIELD_SPLICE_NOT_IMPLEMENTED = "near_field_splice_not_implemented"
-#: R-1. The reverse-null is shipped in three parts with its executor deleted,
-#: so nothing plays an inverted-polarity stimulus today.
-INVERTED_POLARITY_NOT_IMPLEMENTED = "inverted_polarity_not_implemented"
+#: R-1. The inverted-polarity capture now plays and banks — the named driver
+#: branch rides the measurement graph sign-flipped. What does not exist is the
+#: ``analyze`` consumer that reads the null depth back out of the pair.
+REVERSE_NULL_DEPTH_NOT_IMPLEMENTED = "reverse_null_depth_not_implemented"
 #: R-4. Every rung of the ladder plays and banks its own record; what does not
 #: exist is the ``analyze`` consumer that turns the set into a measured floor.
 DISTORTION_VS_LEVEL_NOT_IMPLEMENTED = "distortion_vs_level_not_implemented"
@@ -160,8 +163,8 @@ _ROWS: dict[str, _StubRow] = {
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: _StubRow(
         "near-field splice", "splice", "R-3", captured=True,
     ),
-    INVERTED_POLARITY_NOT_IMPLEMENTED: _StubRow(
-        "inverted-polarity capture", "reverse-null", "R-1", captured=False,
+    REVERSE_NULL_DEPTH_NOT_IMPLEMENTED: _StubRow(
+        "reverse-null analysis", "null depth", "R-1", captured=True,
     ),
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: _StubRow(
         "distortion-vs-level sweep", "level ladder", "R-4", captured=True,
@@ -221,6 +224,23 @@ class MeasureSpec:
     about the fader, and a ladder that re-levelled the claim would break it.
     Empty means the single stimulus the program declares, which is what every
     capture uses today.
+
+    ``inverted_role`` is the SECOND half of ``polarity`` and never a capability
+    of its own (ruling S12): *inverted* is the regime, and the reverse-null's
+    whole content is WHICH branch was flipped. The two are therefore checked
+    together — a flipped branch with no regime and a regime with no branch are
+    both refused — because a record that said only *"inverted"* would not name
+    the measurement it took, and a reader would have to guess the sign
+    convention it is comparing against.
+
+    **The convention: the flip is RELATIVE to the design polarity the graph
+    would otherwise carry**, not an absolute *"this branch reads inverted"*. On
+    the production MEASURE shape the base polarity is all-false, so it reduces
+    to assignment; on the legacy applied-response shape a ``polarity=inverted``
+    record can name a graph whose source reads ``inverted: false`` by double
+    negation. The emitted ``# inverted_roles=[…]`` metadata comment is what
+    disambiguates the two, so a reader compares the pair by that and never by
+    the flag.
     """
 
     kind: str
@@ -229,6 +249,7 @@ class MeasureSpec:
     position_axis: str = POSITION_AXIS_HORIZONTAL
     regime: str = REGIME_REFERENCE_AXIS
     polarity: str = POLARITY_NORMAL
+    inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
     candidate_id: str = ""
 
@@ -246,6 +267,19 @@ class MeasureSpec:
             raise ValueError(
                 f"a capture polarity must be one of {POLARITIES}, "
                 f"got {self.polarity!r}"
+            )
+        if self.polarity == POLARITY_INVERTED:
+            if self.inverted_role not in DRIVER_ROLES:
+                raise ValueError(
+                    "an inverted-polarity capture must name the driver branch "
+                    f"it flips, one of {DRIVER_ROLES}, got "
+                    f"{self.inverted_role!r}"
+                )
+        elif self.inverted_role:
+            raise ValueError(
+                f"inverted_role={self.inverted_role!r} needs "
+                f"polarity={POLARITY_INVERTED!r}; a {self.polarity!r} capture "
+                "flips no branch"
             )
         for bearing in self.positions:
             # Whole degrees, for the reason `PositionGeometry` gives: the poses
@@ -288,6 +322,23 @@ class MeasureSpec:
             )
 
 
+def inverted_roles_for(spec: MeasureSpec) -> tuple[str, ...]:
+    """The driver branches this spec's graph must carry sign-flipped.
+
+    The ONE translation from the measurement's polarity words into the graph
+    seam's vocabulary, so the sign decision is made in exactly one place and a
+    reader can grep for it. Empty for every normal-polarity spec, which is what
+    keeps a non-inverted install byte-identical to what it always emitted.
+
+    Cheap on purpose — a plain tuple over one string. The graph seam takes it
+    and hands it to the emitter; nothing between them re-derives it from the
+    polarity word.
+    """
+    if spec.polarity != POLARITY_INVERTED:
+        return ()
+    return (spec.inverted_role,)
+
+
 def stub_for_code(code: str, *, captured: bool) -> CapabilityStub | None:
     """One stub named by its code, or ``None`` when this build has no such hole.
 
@@ -326,7 +377,7 @@ def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
     if spec.regime == REGIME_NEAR_FIELD:
         codes.append(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED)
     if spec.polarity == POLARITY_INVERTED:
-        codes.append(INVERTED_POLARITY_NOT_IMPLEMENTED)
+        codes.append(REVERSE_NULL_DEPTH_NOT_IMPLEMENTED)
     if spec.level_ladder_dbfs:
         codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)
     if spec.position_axis == POSITION_AXIS_VERTICAL:

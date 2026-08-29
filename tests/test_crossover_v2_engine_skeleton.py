@@ -24,6 +24,9 @@ from jasper.audio_measurement.program_analysis import polarity_label
 from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
+    DRIVER_ROLE_TWEETER,
+    DRIVER_ROLE_WOOFER,
+    DRIVER_ROLES,
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
@@ -46,11 +49,12 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
-    INVERTED_POLARITY_NOT_IMPLEMENTED,
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
+    REVERSE_NULL_DEPTH_NOT_IMPLEMENTED,
     STUB_CODES,
     VERTICAL_AXIS_NOT_IMPLEMENTED,
     MeasureSpec,
+    inverted_roles_for,
     stub_for_code,
     stubbed_capabilities,
 )
@@ -92,15 +96,22 @@ class _Graph:
     fingerprint: str = "graph-abc"
     installs: int = 0
     restores: int = 0
+    #: One entry per install: the polarity variant that stimulus asked for.
+    inverted_roles: list[tuple[str, ...]] = field(default_factory=list)
     patches: list[Mapping[str, Any]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
 
-    async def install(self) -> str:
+    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
         self.installs += 1
+        self.inverted_roles.append(tuple(inverted_roles))
         if self.install_raises:
             raise RuntimeError("install blew up after arming half a graph")
-        return self.fingerprint
+        if not inverted_roles:
+            return self.fingerprint
+        # A variant is a DIFFERENT graph, so it must not answer with the
+        # normal graph's fingerprint — the real one does not.
+        return f"{self.fingerprint}-{'+'.join(inverted_roles)}"
 
     async def patch(self, changes: Mapping[str, Any]) -> None:
         self.patches.append(changes)
@@ -245,8 +256,12 @@ def _session(
             NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "R-3", True,
         ),
         (
-            MeasureSpec(kind=MEASURE_KIND_BASELINE, polarity=POLARITY_INVERTED),
-            INVERTED_POLARITY_NOT_IMPLEMENTED, "R-1", False,
+            MeasureSpec(
+                kind=MEASURE_KIND_BASELINE,
+                polarity=POLARITY_INVERTED,
+                inverted_role=DRIVER_ROLE_TWEETER,
+            ),
+            REVERSE_NULL_DEPTH_NOT_IMPLEMENTED, "R-1", True,
         ),
         (
             MeasureSpec(
@@ -300,10 +315,11 @@ def test_a_spec_may_trip_more_than_one_stub_at_once():
         kind=MEASURE_KIND_BASELINE,
         regime=REGIME_NEAR_FIELD,
         polarity=POLARITY_INVERTED,
+        inverted_role=DRIVER_ROLE_TWEETER,
     ))
 
     assert {stub.code for stub in stubs} == {
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, INVERTED_POLARITY_NOT_IMPLEMENTED,
+        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, REVERSE_NULL_DEPTH_NOT_IMPLEMENTED,
     }
 
 
@@ -318,6 +334,7 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         kind=MEASURE_KIND_BASELINE,
         regime=REGIME_NEAR_FIELD,
         polarity=POLARITY_INVERTED,
+        inverted_role=DRIVER_ROLE_TWEETER,
         level_ladder_dbfs=(-12.0,),
         position_axis=POSITION_AXIS_VERTICAL,
     )
@@ -331,6 +348,15 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         {"kind": "measure"},
         {"kind": MEASURE_KIND_BASELINE, "regime": "far_field"},
         {"kind": MEASURE_KIND_BASELINE, "polarity": "flipped"},
+        # R-1: the regime and the branch it flips are one parameter in two
+        # halves, so neither half stands alone.
+        {"kind": MEASURE_KIND_BASELINE, "polarity": POLARITY_INVERTED},
+        {
+            "kind": MEASURE_KIND_BASELINE,
+            "polarity": POLARITY_INVERTED,
+            "inverted_role": "midrange",
+        },
+        {"kind": MEASURE_KIND_BASELINE, "inverted_role": DRIVER_ROLE_TWEETER},
         {"kind": MEASURE_KIND_BASELINE, "position_axis": "diagonal"},
         {
             "kind": MEASURE_KIND_BASELINE,
@@ -1083,22 +1109,22 @@ async def test_a_stub_that_captures_nothing_stops_the_stimulus():
 
     async with session:
         outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, polarity=POLARITY_INVERTED,
+            kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL,
         ))
 
     assert parts["play"].calls == []
     assert outcome.stimuli == ()
     assert outcome.record_ids == ()
     assert [stub.code for stub in outcome.disclosures] == [
-        INVERTED_POLARITY_NOT_IMPLEMENTED
+        VERTICAL_AXIS_NOT_IMPLEMENTED
     ]
 
 
 async def test_an_aborted_call_never_claims_a_capture_was_banked():
     """S12 honesty, turned on the disclosure itself.
 
-    A near-field spec that also asks for inverted polarity captures NOTHING —
-    the polarity stub stops the stimulus — so the near-field stub must stop
+    A near-field spec that also asks for a vertical pose captures NOTHING —
+    the vertical stub stops the stimulus — so the near-field stub must stop
     saying "capture banked" for evidence that does not exist.
     """
     session, parts = _session()
@@ -1107,12 +1133,12 @@ async def test_an_aborted_call_never_claims_a_capture_was_banked():
         outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
             regime=REGIME_NEAR_FIELD,
-            polarity=POLARITY_INVERTED,
+            position_axis=POSITION_AXIS_VERTICAL,
         ))
 
     assert parts["play"].calls == []
     assert {stub.code for stub in outcome.disclosures} == {
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, INVERTED_POLARITY_NOT_IMPLEMENTED,
+        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, VERTICAL_AXIS_NOT_IMPLEMENTED,
     }
     assert not any(stub.captured for stub in outcome.disclosures)
     assert all("nothing captured" in stub.message for stub in outcome.disclosures)
@@ -1198,7 +1224,7 @@ async def test_a_hole_that_later_banks_evidence_stops_saying_it_captured_nothing
         await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
             regime=REGIME_NEAR_FIELD,
-            polarity=POLARITY_INVERTED,
+            position_axis=POSITION_AXIS_VERTICAL,
         ))
         assert not (await session.analyze()).disclosures[0].captured
 
@@ -1225,7 +1251,7 @@ async def test_a_hole_that_already_banked_evidence_is_not_downgraded():
         await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
             regime=REGIME_NEAR_FIELD,
-            polarity=POLARITY_INVERTED,
+            position_axis=POSITION_AXIS_VERTICAL,
         ))
 
     near_field = [
@@ -1684,3 +1710,142 @@ def test_the_confirm_tolerance_prove_is_specified_against_is_the_repos_one():
     """``VolumeClaim.prove``'s contract names ``fader_matches``'s tolerance —
     the confirm tolerance wave 5 collapses the other writers onto."""
     assert READBACK_TOLERANCE_DB == 0.05
+
+
+# --------------------------------------------------------------------------- #
+# R-1 — the reverse-null, end to end at the engine's own altitude
+# --------------------------------------------------------------------------- #
+
+
+def test_the_driver_role_words_are_the_presets_own():
+    """The cheap copy, pinned to the module that owns the roles.
+
+    The program graph is scoped to a 2-way preset, so its role set is exactly
+    that preset's — a third role appearing there without appearing here would
+    be a branch no measurement could name.
+    """
+    from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
+
+    assert DRIVER_ROLES == DRIVER_ROLES_BY_WAY[2]
+    assert (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER) == DRIVER_ROLES
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        (MeasureSpec(kind=MEASURE_KIND_BASELINE), ()),
+        (
+            MeasureSpec(
+                kind=MEASURE_KIND_BASELINE,
+                polarity=POLARITY_INVERTED,
+                inverted_role=DRIVER_ROLE_TWEETER,
+            ),
+            (DRIVER_ROLE_TWEETER,),
+        ),
+        (
+            MeasureSpec(
+                kind=MEASURE_KIND_BASELINE,
+                polarity=POLARITY_INVERTED,
+                inverted_role=DRIVER_ROLE_WOOFER,
+            ),
+            (DRIVER_ROLE_WOOFER,),
+        ),
+    ],
+)
+def test_the_spec_translates_into_exactly_the_branches_the_graph_must_flip(
+    spec: MeasureSpec, expected: tuple[str, ...],
+):
+    """The one translation from polarity words into graph vocabulary."""
+    assert inverted_roles_for(spec) == expected
+
+
+async def test_an_inverted_capture_plays_and_banks_like_any_other():
+    """R-1's whole point: the verb stopped being a stub that captures nothing."""
+    session, parts = _session()
+
+    async with session:
+        outcome = await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+        ))
+
+    assert len(parts["play"].calls) == 1
+    assert len(outcome.record_ids) == 1
+    assert [stub.code for stub in outcome.disclosures] == [
+        REVERSE_NULL_DEPTH_NOT_IMPLEMENTED
+    ]
+    assert outcome.disclosures[0].captured is True
+
+
+async def test_the_named_branch_reaches_the_graph_that_stimulus_installs():
+    """The sign is applied by INSTALLING a different graph, so the flip has to
+    travel on the install — not on a patch afterwards, which would leave the
+    fingerprint naming the non-inverted twin."""
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_WOOFER,
+        ))
+
+    # One at open() and one per stimulus.
+    assert parts["graph"].inverted_roles == [(), (), (DRIVER_ROLE_WOOFER,)]
+
+
+async def test_a_banked_inverted_record_says_which_branch_was_flipped():
+    """A reverse-null pair is only readable by somebody who knows the sign
+    convention it was taken under, so the record carries both halves — and the
+    fingerprint distinguishes it from its non-inverted twin."""
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+        ))
+
+    normal, flipped = parts["records"].banked
+    assert (normal["polarity"], normal["inverted_role"]) == (POLARITY_NORMAL, "")
+    assert (flipped["polarity"], flipped["inverted_role"]) == (
+        POLARITY_INVERTED, DRIVER_ROLE_TWEETER,
+    )
+    assert normal["graph_fingerprint"] != flipped["graph_fingerprint"]
+    assert normal["kind"] == flipped["kind"], "same kind, different polarity"
+
+
+async def test_an_inverted_record_reads_back_like_any_other_take():
+    """R-1's analyze half is owed, not blocked: the bank is readable today."""
+    session, parts = _session()
+
+    async with session:
+        outcome = await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+        ))
+
+    read = await parts["records"].read(outcome.record_ids[0])
+
+    assert read is not None
+    assert read["polarity"] == POLARITY_INVERTED
+    assert read["inverted_role"] == DRIVER_ROLE_TWEETER
+    assert read["take_id"] and read["kind"] == MEASURE_KIND_BASELINE
+
+
+async def test_a_stage_with_no_measurement_graph_refuses_the_flip():
+    """``NoRoutedPhasesGraph`` measures through the APPLIED graph and has no
+    per-driver branch to invert. Dropping the request silently would bank a
+    normal capture under an inverted record — the lie S12 exists to refuse."""
+    from jasper.active_speaker.crossover_v2.composition import NoRoutedPhasesGraph
+
+    graph = NoRoutedPhasesGraph()
+
+    assert await graph.install() == ""
+    with pytest.raises(ValueError):
+        await graph.install((DRIVER_ROLE_TWEETER,))

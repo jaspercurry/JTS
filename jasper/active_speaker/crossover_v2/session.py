@@ -61,7 +61,12 @@ from ..volume_latch import fader_matches
 from .analysis_units import AnalysisSkip
 from .analysis_walk import AnalysisDeclaration, walk_bank
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
-from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
+from .measure_spec import (
+    CapabilityStub,
+    MeasureSpec,
+    inverted_roles_for,
+    stubbed_capabilities,
+)
 from .playback_transaction import PlaybackOutcome
 from .prior_bank import CapturePose, PriorBank
 from .session_seams import EngineSeams
@@ -863,8 +868,16 @@ class TuningSession:
         the one open() installed. A stage bound to
         ``composition.NoRoutedPhasesGraph`` answers ``""`` throughout, which
         is the same honest "no graph to name" it answered at open.
+
+        **The polarity variant is chosen HERE, at the same call** (R-1). The
+        flip lives in the graph's per-driver branch, so a spec asking for an
+        inverted capture installs a different graph — and the fingerprint this
+        prove answers with is that graph's, which is what keeps the record's
+        provenance true of the stimulus it actually played.
         """
-        self._graph_fingerprint = await self.seams.graph.install()
+        self._graph_fingerprint = await self.seams.graph.install(
+            inverted_roles_for(spec)
+        )
         proven_level_db = await self._proven_level()
         outcome: PlaybackOutcome = await self.seams.play.run(
             spec=spec,
@@ -988,6 +1001,11 @@ class TuningSession:
         which regime, which polarity, which ladder rung, which graph, at what
         proven level.
 
+        ``polarity`` and ``inverted_role`` travel together for the reason
+        :class:`~.measure_spec.MeasureSpec` checks them together: a reverse-null
+        pair is only comparable to a reader that knows WHICH branch was flipped,
+        and *"inverted"* alone does not say. ``""`` on every normal capture.
+
         Wave 4 adds the five blocks around these; nothing here re-derives a
         curve, and nothing here is a second store — the banked files stay the
         single source of truth and the index stays rebuildable by rescanning
@@ -1034,6 +1052,7 @@ class TuningSession:
             "candidate_id": spec.candidate_id,
             "regime": spec.regime,
             "polarity": spec.polarity,
+            "inverted_role": spec.inverted_role,
             "graph_fingerprint": self._graph_fingerprint,
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,

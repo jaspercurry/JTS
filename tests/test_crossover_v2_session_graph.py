@@ -26,6 +26,7 @@ from jasper.camilla import CamillaUnavailable
 
 ENTRY_PATH_NAME = "entry.yml"
 GRAPH = "program: graph\n"
+_LOGGER = "jasper.active_speaker.crossover_v2.session_graph"
 
 
 class FakeCam:
@@ -59,9 +60,12 @@ class FakeCam:
 def _graph(cam, *, tmp_path, emits=None):
     emitted = emits if emits is not None else []
 
-    def _emit() -> str:
-        emitted.append(GRAPH)
-        return GRAPH
+    def _emit(inverted_roles: tuple[str, ...] = ()) -> str:
+        # One distinct text per polarity variant, the way the real emitter
+        # produces one: the flipped mixer is different bytes.
+        text = GRAPH if not inverted_roles else f"{GRAPH}inverted: {inverted_roles}\n"
+        emitted.append(text)
+        return text
 
     async def _confirm(c, submitted):
         if c.live != submitted:
@@ -375,3 +379,113 @@ def test_patch_changes_one_candidate_without_reinstalling(tmp_path):
     after = len([op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"])
     assert after == before
     assert ("patch", {"filters": {"gain": {}}}) in cam.ops
+
+
+# --------------------------------------------------------------------------- #
+# R-1 — one graph per POLARITY VARIANT, and the entry graph survives the swap
+# --------------------------------------------------------------------------- #
+
+
+def test_a_polarity_variant_is_its_own_graph_with_its_own_fingerprint(tmp_path):
+    """The record's provenance must name the graph the stimulus played through.
+
+    A variant that reused the normal graph's fingerprint would point every
+    reverse-null record at its non-inverted twin.
+    """
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    normal = asyncio.run(graph.install())
+    flipped = asyncio.run(graph.install(("tweeter",)))
+
+    assert normal and flipped and normal != flipped
+    assert len(graph.emitted) == 2, "one emit per variant"
+
+
+def test_each_variant_is_emitted_at_most_once_however_many_stimuli(tmp_path):
+    """MS-13's structural fact survives R-1: still one emit per variant."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    for _ in range(3):
+        asyncio.run(graph.install())
+        asyncio.run(graph.install(("tweeter",)))
+
+    assert len(graph.emitted) == 2
+
+
+def test_a_variant_swap_restores_the_ORIGINAL_entry_graph(tmp_path):
+    """The trap the variant path could have opened.
+
+    The entry config is read once, before the first install. A second read
+    taken during a variant swap would capture the MEASUREMENT graph as the
+    thing to put back, and the session would leave the speaker in it.
+    """
+    entry = _entry(tmp_path)
+    cam = FakeCam(entry_path=entry)
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    asyncio.run(graph.install())
+    asyncio.run(graph.install(("tweeter",)))
+    asyncio.run(graph.install())
+    asyncio.run(graph.restore())
+
+    assert [op for op in cam.ops if op == "get_path"] == ["get_path"]
+    assert cam.live == "entry: graph\n"
+
+
+def test_a_variant_swap_is_not_logged_as_a_concurrent_writer(tmp_path, caplog):
+    """A walk alternating polarities must not cry "somebody stomped us" twice
+    per position. A stomp stays a WARNING; our own swap does not."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    asyncio.run(graph.install())
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        asyncio.run(graph.install(("tweeter",)))
+
+    swap = [r for r in caplog.records if r.name == _LOGGER]
+    assert len(swap) == 1, "the swap must be journalled exactly once"
+    assert swap[0].levelno == logging.INFO
+    assert "result=variant" in swap[0].getMessage()
+
+
+def test_a_variant_swap_over_a_STOMPED_graph_still_discloses_the_stomp(tmp_path, caplog):
+    """The disclosure a polarity walk would otherwise lose entirely.
+
+    On an alternating walk every install is a variant change, so a level
+    decided from "the text differs" alone would repair a concurrent writer's
+    stomp silently for the whole walk. The swap asks the liveness question
+    about the PREVIOUS variant, and answers WARNING when it is gone.
+    """
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    asyncio.run(graph.install())
+    cam.live = "somebody else's graph\n"
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        asyncio.run(graph.install(("tweeter",)))
+
+    swap = [r for r in caplog.records if r.name == _LOGGER]
+    assert len(swap) == 1
+    assert swap[0].levelno == logging.WARNING
+    assert "result=reinstall" in swap[0].getMessage()
+
+
+def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
+    """Anti-vacuity for the pin above: the WARNING arm must still be reachable,
+    and a variant that is stomped rather than swapped must still reach it."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    asyncio.run(graph.install(("tweeter",)))
+    cam.live = "somebody else's graph\n"
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        asyncio.run(graph.install(("tweeter",)))
+
+    stomp = [r for r in caplog.records if r.name == _LOGGER]
+    assert len(stomp) == 1
+    assert stomp[0].levelno == logging.WARNING
+    assert "result=reinstall" in stomp[0].getMessage()
+    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
+    assert len(loads) == 2, "the stomp is repaired"

@@ -118,12 +118,15 @@ class FakeGraph:
     fingerprint: str = GRAPH_FINGERPRINT
     installs: int = 0
     restores: int = 0
+    #: One entry per install: the polarity variant that stimulus asked for.
+    inverted_roles: list[tuple[str, ...]] = field(default_factory=list)
     patches: list[Mapping[str, Any]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
 
-    async def install(self) -> str:
+    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
         self.installs += 1
+        self.inverted_roles.append(tuple(inverted_roles))
         if self.install_raises:
             raise GraphInstallFailed("twin graph install failed")
         return self.fingerprint

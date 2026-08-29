@@ -63,9 +63,22 @@ class NoRoutedPhasesGraph:
     Reports ``""`` as its fingerprint, which is the seam's own spelling for
     *"the host cannot name the graph"* — honest here, because there is no
     measurement graph to name.
+
+    **It cannot take R-1's reverse-null, and says so instead of ignoring it.**
+    The flip lives in the measurement graph's per-driver branch, and this stage
+    measures through the APPLIED one; a silently dropped ``inverted_roles``
+    would play a normal capture and bank a record claiming an inverted one.
+    That is the exact lie ruling S12 exists to refuse, so an inverted spec
+    bound to this stage is a caller error and raises like one.
     """
 
-    async def install(self) -> str:
+    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
+        if inverted_roles:
+            raise ValueError(
+                "this stage measures through the applied graph and has no "
+                "per-driver branch to invert; cannot flip "
+                + ", ".join(sorted(inverted_roles))
+            )
         return ""
 
     async def patch(self, changes: Mapping[str, Any]) -> None:
