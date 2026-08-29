@@ -1793,10 +1793,14 @@ def _hf_confidence_ceiling_and_knee_hz(
     """``(ceiling_hz, knee_hz)`` from the mic-trust term's own taper.
 
     ``ceiling_hz`` is the first bin where mic-trust reaches ~0 (its taper-zero
-    — the frequency above which the calibrated mic resolves nothing, ~16.4 kHz
-    on the reference tier); ``grid_hz[-1]`` if the term never reaches 0 on this
-    grid. ``knee_hz`` is the first bin BELOW the ceiling sentinel (where the
-    taper begins) — the ``np.isclose(term, ENVELOPE_CEILING_SENTINEL_DB)``
+    — the frequency above which the calibrated mic resolves nothing); on the
+    reference tier that bin is now the grid's own last one, 20 kHz, since the
+    2026-08-29 horn-droop correction ruling widened the taper-zero to exactly
+    the grid's top edge (was ~16.4 kHz, well inside the grid). ``grid_hz[-1]``
+    is the separate fallback for a term that never reaches 0 at all — the two
+    happen to read the same number on today's reference tier, for different
+    reasons. ``knee_hz`` is the first bin BELOW the ceiling sentinel (where
+    the taper begins) — the ``np.isclose(term, ENVELOPE_CEILING_SENTINEL_DB)``
     test is deliberately the same one :func:`_core_or_fallback_mask` uses so
     "still fully trusted" means one identical thing across this module.
     """

@@ -2229,8 +2229,9 @@ def test_a_prescription_predicted_to_worsen_is_banked_and_measured_anyway(
 
 # --- #2649's ceiling, which the merge must not take away ------------------- #
 
-#: A grid that reaches past the reference tier's ~16.4 kHz taper zero, so a
-#: ceiling exists to be found at all.
+#: A grid that reaches the reference tier's taper zero (20 kHz since the
+#: 2026-08-29 horn-droop correction ruling, exactly this grid's own top edge;
+#: was ~16.4 kHz, comfortably past it), so a ceiling exists to be found at all.
 _TRUST_GRID_HZ = np.geomspace(20.0, 20000.0, 400)
 
 

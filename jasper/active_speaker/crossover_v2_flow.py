@@ -6477,8 +6477,9 @@ class CrossoverV2Session:
         from a table copied here: the first grid bin where the allowed depth is
         exactly 0 dB IS the ceiling, by that function's construction, so the
         probe's ceiling and the fit's cannot drift. On a ``reference`` mic that
-        lands at about 16.4 kHz — the first bin past the table's 16 kHz taper
-        zero.
+        lands at 20 kHz — the table's own taper zero, and the grid's own top
+        edge (2026-08-29 horn-droop correction ruling; was ~16.4 kHz, the
+        first bin past the table's then-16 kHz taper zero).
 
         **The fitter may not command there; the probe may not grade there**
         (#2649). Grading bins above it graded a microphone nobody trusts against

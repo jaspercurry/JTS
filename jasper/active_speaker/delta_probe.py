@@ -1747,9 +1747,11 @@ def classify_delta_probe(
     #
     # Why it matters: the grading band comes from the capture's own gate
     # disclosure, which is blind to the mic tier. On a `reference` mic the fit
-    # envelope is exactly zero from about 16.4 kHz, so every bin above that was
-    # commanded at zero and measured through a microphone nobody trusts —
-    # grading them manufactured 90% of the 2026-08-16 round's squared error.
+    # envelope is exactly zero from 20 kHz (2026-08-29 horn-droop correction
+    # ruling; was ~16.4 kHz), so every bin above that was commanded at zero
+    # and measured through a microphone nobody trusts — grading them
+    # manufactured 90% of the 2026-08-16 round's squared error (at the
+    # pre-ruling ceiling then in effect).
     lo_hz, hi_hz = requested_band_hz
     graded_hi_hz = hi_hz
     if trust_ceiling_hz is not None and float(trust_ceiling_hz) < graded_hi_hz:
