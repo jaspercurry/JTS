@@ -347,25 +347,23 @@ class AecRoutes(ControlHandlerMixin):
                 leg=leg,
                 client=self.address_string(),
             )
-            reset = _server.restart_broker.manage_units(
+            # Best-effort, like `server._reset_oneshot_unit`: a reset-failed
+            # that cannot run must never block the restart it precedes.
+            _server.restart_broker.manage_units(
                 _server._AEC_BRIDGE_UNIT,
                 verb="reset-failed",
                 reason="usb_mic_leg",
                 no_block=False,
                 timeout=5.0,
             )
-            restart = (
-                _server.restart_broker.manage_units(
-                    _server._AEC_BRIDGE_UNIT,
-                    verb="restart",
-                    reason="usb_mic_leg",
-                    no_block=True,
-                    timeout=5.0,
-                )
-                if reset.get("ok")
-                else {"ok": False}
+            restart = _server.restart_broker.manage_units(
+                _server._AEC_BRIDGE_UNIT,
+                verb="restart",
+                reason="usb_mic_leg",
+                no_block=True,
+                timeout=5.0,
             )
-            if not reset.get("ok") or not restart.get("ok"):
+            if not restart.get("ok"):
                 failed_status = _server._aec_full_status()
                 self._send_json(
                     {
