@@ -718,6 +718,8 @@ def _regrade_after_failed_restore(
         adoption=adoption,
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
+        blend=evaluation.blend,
+        region_benefit=evaluation.region_benefit,
     )
     _log_round(regraded, session_id=evidence.session_id)
     return regraded

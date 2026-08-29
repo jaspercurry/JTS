@@ -3620,9 +3620,12 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
         "manual_settings": _manual_settings(),
         "operator_inputs": _operator_inputs(),
     })
+    draft = json.loads(draft_path.read_text(encoding="utf-8"))
+    draft["updated_at"] = "2026-08-14T16:33:48Z"
+    draft_path.write_text(json.dumps(draft), encoding="utf-8")
     before = draft_path.read_bytes()
 
-    sound_setup._active_speaker_crossover_preview_save_payload()
+    preview = sound_setup._active_speaker_crossover_preview_save_payload()
 
     after = draft_path.read_bytes()
     loaded = sound_setup._active_speaker_design_draft_payload()
@@ -3633,6 +3636,7 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     assert loaded["driver_safety_profile"]["confirmation"] == (
         saved["driver_safety_profile"]["confirmation"]
     )
+    assert preview["source"]["design_draft_updated_at"] == draft["updated_at"]
 
 
 def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(

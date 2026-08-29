@@ -1490,7 +1490,15 @@ def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str
     )
     if not isinstance(corrections, Mapping):
         corrections = profile.get("corrections")
-    return corrections if isinstance(corrections, Mapping) else {}
+    if not isinstance(corrections, Mapping):
+        return {}
+    if any(
+        isinstance(values, Mapping)
+        and isinstance(values.get("delay_ms"), bool)
+        for values in corrections.values()
+    ):
+        return {}
+    return corrections
 
 
 def applied_program_level_delta_db(

@@ -2854,6 +2854,24 @@ def test_a_restored_round_banks_no_blend_instruction(monkeypatch):
     assert position.previous_blend_residual_db is None
 
 
+def test_a_failed_restore_keeps_its_measured_blend_record(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.verification.decide_adoption",
+        lambda **_k: AdoptionDecision(
+            outcome=AdoptionOutcome.RESTORE,
+            row="row4_untrusted_evidence",
+            reason="forced_for_this_test",
+        ),
+    )
+    decision = _direct_round(
+        analysis=_REGION_ANALYSIS,
+        rollback=lambda _reason: False,
+        rollback_available=lambda: True,
+    )
+    assert decision.evaluation.blend is not None
+    assert decision.evaluation.region_benefit is not None
+
+
 def test_no_instruction_and_an_empty_instruction_are_different_answers():
     """The distinction the apply path turns on.
 

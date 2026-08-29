@@ -2567,11 +2567,9 @@ def test_hard_stop_template():
     ))
     assert env["screen"] == "hard_stop"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_CHANNEL_MAP_MISMATCH].message
-    # Fix 3 (W6.4): name both honest causes -- wiring AND a noisy/quiet room --
-    # rather than blaming wiring unconditionally (§5.10 one-reason/one-action
-    # shape still holds: one screen, one pair of fix actions).
     assert "wiring" in env["verdict_text"]
-    assert "noisy" in env["verdict_text"]
+    assert "speaker setup" in env["verdict_text"]
+    assert "try again" not in env["verdict_text"]
     assert env["next_action"]["href"] == "/sound/setup/"
 
 

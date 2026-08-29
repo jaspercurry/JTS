@@ -2294,8 +2294,8 @@ def test_a_first_take_refusal_no_take_can_clear_never_offers_a_retry():
     ``channel_map_mismatch`` is the one non-retriable condition a stage-1
     capture screen produces, and it fires on the very first take — so there is
     no meter to be empty and the exhaustion ladder had nothing to say about it.
-    The household was told "check the speaker wiring, or if the room is noisy,
-    quiet it and try again" ON A RETRY BUTTON whose begin the gate refuses.
+    Its terminal copy must point back to setup, never promise a retry that the
+    gate refuses.
     """
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
@@ -2316,6 +2316,8 @@ def test_a_first_take_refusal_no_take_can_clear_never_offers_a_retry():
     assert terminal["terminal"] is True
     assert terminal["terminal_outcome"] == "condition_not_retriable"
     assert terminal["code"] == REASON_CHANNEL_MAP_MISMATCH
+    assert "try again" not in terminal["reason"].lower()
+    assert "return to speaker setup" in terminal["reason"].lower()
     assert terminal["attempts"]["used"] == 0
     assert conductor.current_phase == PHASE_CHECK
     assert _persisted_failure(v2host.load_v2_state()) == {

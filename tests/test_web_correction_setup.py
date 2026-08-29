@@ -403,6 +403,25 @@ def test_get_bass_status_returns_display_json():
     assert "configured" in body and "corner_hz" in body
 
 
+def test_crossover_status_contains_unexpected_failures(monkeypatch):
+    from jasper.web import correction_crossover_flow
+
+    def fail(**_kwargs):
+        raise LookupError("surprise")
+
+    monkeypatch.setattr(correction_crossover_flow, "handle_status", fail)
+    monkeypatch.setattr(
+        correction_setup,
+        "_enforce_session_volume_ceiling",
+        lambda _: None,
+    )
+
+    resp = _drive("/crossover/status")
+
+    assert b"500" in resp.split(b"\r\n", 1)[0]
+    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {"error": "surprise"}
+
+
 def test_get_healthz_ok():
     resp = _drive("/healthz")
     assert b"200" in resp.split(b"\r\n", 1)[0]

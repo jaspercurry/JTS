@@ -252,9 +252,9 @@ class _FakeUdpCapture:
 async def test_collect_for_returns_bytes_in_window() -> None:
     cap = _FakeUdpCapture(sample_value=42)
     pcm = await wake_enroll._collect_for(cap, duration_sec=0.2)
-    # Should have captured many frames; bytes are int16 = 2 bytes per sample
+    # One frame is the scheduler guarantee; bytes are int16 = 2 bytes per sample
     samples = np.frombuffer(pcm, dtype=np.int16)
-    assert len(samples) > wake_enroll.FRAME_SAMPLES  # multiple frames
+    assert len(samples) >= wake_enroll.FRAME_SAMPLES
     assert (samples == 42).all()
 
 

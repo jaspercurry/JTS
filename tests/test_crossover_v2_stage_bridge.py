@@ -268,16 +268,23 @@ def _production_host_seams(monkeypatch, tmp_path):
         "load_output_topology": output_topology_mod.load_output_topology,
         "resolve_capture_preset": commission_wiring.resolve_capture_preset,
         "load_design_draft": design_draft.load_design_draft,
+        "evaluate_driver_safety_profile": driver_safety_mod.evaluate_driver_safety_profile,
+        "resolve_driver_excitation_ceilings": (
+            excitation_safety_plan_mod.resolve_driver_excitation_ceilings
+        ),
     }
     _home = {
         "load_output_topology": output_topology_mod,
         "resolve_capture_preset": commission_wiring,
         "load_design_draft": design_draft,
+        "evaluate_driver_safety_profile": driver_safety_mod,
+        "resolve_driver_excitation_ceilings": excitation_safety_plan_mod,
     }
     # Modules that bind these names at MODULE scope and are imported lazily, so
     # they would otherwise first appear DURING the patched window. Imported here
     # so the sweep below can find them; see that sweep for why it matters.
     for _late_binder in (
+        "jasper.active_speaker.program_admission",
         "jasper.active_speaker.web_commissioning",
         "jasper.web.sound_setup",
     ):
@@ -303,6 +310,21 @@ def _production_host_seams(monkeypatch, tmp_path):
             ],
         }},
     )
+    monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "resolve_driver_excitation_ceilings",
+        lambda safety_profile, fingerprint, **kw: (
+            FrequencyBand(20.0, 20000.0),
+            90.0,
+        ),
+    )
+    monkeypatch.setattr(
+        driver_safety_mod,
+        "evaluate_driver_safety_profile",
+        lambda profile, topology: driver_safety_mod.DriverSafetyProfileEvaluation(
+            "confirmed", True, "f" * 64, (),
+        ),
+    )
     # Patch each name at EVERY binding, not only its home module (#2312).
     #
     # ``web_commissioning`` and ``sound_setup`` bind these at module scope via
@@ -327,18 +349,6 @@ def _production_host_seams(monkeypatch, tmp_path):
             if getattr(_module, _symbol, None) is _original:
                 monkeypatch.setattr(_module, _symbol, _fake)
     monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
-    monkeypatch.setattr(
-        driver_safety_mod,
-        "evaluate_driver_safety_profile",
-        lambda profile, topology: driver_safety_mod.DriverSafetyProfileEvaluation(
-            "confirmed", True, "f" * 64, (),
-        ),
-    )
-    monkeypatch.setattr(
-        excitation_safety_plan_mod,
-        "resolve_driver_excitation_ceilings",
-        lambda safety_profile, fingerprint, **kw: (FrequencyBand(20.0, 20000.0), 90.0),
-    )
     # The conductor context reads the per-role sweep-duration ceiling off the
     # same confirmed target as the caps above (#2921). These suites carry a
     # fixture profile with no ``level_duration_limits`` on it, so the real

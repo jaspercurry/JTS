@@ -575,6 +575,12 @@ def test_a_profile_that_names_no_graph_is_an_absence_not_a_unity_graph():
     ) is None
 
 
+def test_a_boolean_delay_is_unreadable_not_one_millisecond():
+    profile = _incident_profile()
+    profile["recomposition_snapshot"]["corrections"]["tweeter"]["delay_ms"] = True  # type: ignore[index]
+    assert _read(profile) is None
+
+
 def test_a_role_named_without_a_gain_is_an_absence_not_unity():
     """``gain_db`` missing is "this profile does not say", never 0 dB (#2614).
 
