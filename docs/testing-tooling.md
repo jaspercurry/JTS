@@ -2205,13 +2205,25 @@ re-parsed by hand — positions and the graded spec come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
 grading comes from
 [`flat_spec.evaluate_flat_spec`](../jasper/active_speaker/flat_spec.py) and
-the `flat_spec_views` per-position/per-role building blocks, and the one DSP
-chain this module runs itself (recovering the VERIFY pose, which a round's
-`positions` block never carries a row for) is
-`deconvolve` → `gate_impulse_response` (the reflection-detecting gate, not a
-fixed window) → `magnitude_response` → `smooth_fractional_octave` — the same
-seams the shipped measurement pipeline uses, imported rather than
-re-implemented.
+the `flat_spec_views` per-position/per-role building blocks, and **this
+module performs no DSP of its own.** The VERIFY pose (a round's `positions`
+block never carries a row for it) used to be recovered by deconvolving raw
+dump-ring bytes; ruling S3 banked the curve instead, so it is now READ —
+[`durable_state.verify_measured_curve_from_state`](../jasper/active_speaker/crossover_v2/durable_state.py)
+reads `verify_priors.verify_measured` out of the round's banked `state.json`,
+and the result is `np.interp`-ed onto the round's shared grid. The only
+transform left anywhere in the module is the `fraction=1` residual
+`smooth_fractional_octave` call `agreement_table`'s `_detrend` takes through
+the same product seam.
+
+**A round can bank no VERIFY curve at all** — no `state.json`, one that
+doesn't read back as a JSON object, or one banked with no
+`verify_priors.verify_measured` curve — and `verify_pose_curve` never raises
+for it: it returns a NAMED reason instead of a curve, which `per-seat`'s CLI
+summary prints as `verify pose ABSENT (<reason>)`. The curve it DOES return
+reports `smoothing_fraction = 0` — this module's own spelling for *not
+attested*, since the bank is block-averaged in dB rather than smoothed at a
+fractional-octave width.
 
 ```sh
 # grade a round shipped AND frozen to a baseline's own reference level —
@@ -2222,7 +2234,7 @@ jasper-round-views frozen <baseline-round-dir> <target-round-dir>
 # every banked position plus the VERIFY pose, normalised onto one
 # comparable basis (each curve expressed as its own deviation from its
 # own median level — no cross-calibration assumption between the banked
-# cloud curves and the freshly-deconvolved VERIFY capture)
+# cloud curves and the banked, read-not-re-derived VERIFY curve)
 jasper-round-views per-seat <round-dir>
 
 # session-to-session spread of the pooled honest figures — the stop
@@ -2286,16 +2298,17 @@ Each subcommand writes its JSON result into the round directory by default
 round's own dir; `repeatability.json` under the first round dir for `repeat`)
 — `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
 success, `1` when a round directory could not be read into a comparable view
-(an unreadable evidence document, a truncated dump-ring WAV, or any of the
+(an unreadable evidence document, a bundle with no graded spec, or any of the
 round's other documented failure shapes).
 
 Hardware-free coverage — including a golden fixture whose `spec` block is a
 REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite
-rather than going unnoticed), an end-to-end synthetic wired capture through
-the real `deconvolve`/`gate_impulse_response`/`magnitude_response` chain, and
-a verified mutation kill for each of the agreement thresholds, the
-sample-variance (`ddof=1`) spread, the median seat normalisation, and the
-gate/smoothing steps — lives in
+rather than going unnoticed), a `state.json` VERIFY-curve fixture built
+through the product's own persist-side reducer (`durable_state`'s
+`_decimate_verify_measured`) plus every named-absence shape
+`verify_pose_curve` can return, and a verified mutation kill for each of the
+agreement thresholds, the sample-variance (`ddof=1`) spread, the median seat
+normalisation, and `agreement_table`'s detrend smoothing — lives in
 [`tests/test_active_speaker_crossover_v2_round_views.py`](../tests/test_active_speaker_crossover_v2_round_views.py).
 `FlatSpecReport.from_dict`/`BandResult.from_dict` (the shared rehydration
 this module and `scripts/render-metric-views.py` both use) are pinned by a
