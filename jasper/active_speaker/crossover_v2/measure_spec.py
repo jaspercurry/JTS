@@ -33,7 +33,7 @@ Parameter                    Instrument      What still happens today
 ``regime=near_field``        R-3             the capture is taken and banked
 ``polarity=inverted``        R-1             the capture is taken and banked
 ``level_ladder_dbfs=(…)``    R-4             every rung plays and banks
-``position_axis=vertical``   R-5a            nothing is captured
+``position_axis=vertical``   R-5a            the capture is taken and banked
 ===========================  ==============  ============================
 
 Impedance (R-6) gets **no** stub: it needs hardware that may never exist, and a
@@ -85,9 +85,16 @@ REVERSE_NULL_DEPTH_NOT_IMPLEMENTED = "reverse_null_depth_not_implemented"
 #: R-4. Every rung of the ladder plays and banks its own record; what does not
 #: exist is the ``analyze`` consumer that turns the set into a measured floor.
 DISTORTION_VS_LEVEL_NOT_IMPLEMENTED = "distortion_vs_level_not_implemented"
-#: R-5a. Three sites refuse a vertical pose deliberately, and a fourth
-#: (``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE``) tells the household the
-#: axis is not covered. Undoing that is real work; it just needs no hardware.
+#: R-5a. A vertical pose now plays and banks, labelled with the elevation the
+#: operator was asked for (:attr:`~.spatial.PositionGeometry.vertical_deg`) —
+#: a person raises the microphone, and no automation is asked to. What does not
+#: exist is the ``analyze`` consumer that reads lobing back out of an elevation
+#: set; ``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE`` separately tells the
+#: household that an externally positioned walk covers the horizontal axis
+#: only, which stays true — a positioner cannot raise the microphone.
+#:
+#: The code string is unchanged so a bank written while this hole still
+#: captured nothing re-renders through :func:`stub_for_code` as what it was.
 VERTICAL_AXIS_NOT_IMPLEMENTED = "vertical_axis_not_implemented"
 
 
@@ -170,7 +177,7 @@ _ROWS: dict[str, _StubRow] = {
         "distortion-vs-level sweep", "level ladder", "R-4", captured=True,
     ),
     VERTICAL_AXIS_NOT_IMPLEMENTED: _StubRow(
-        "vertical-axis walk", "pose prompts", "R-5a", captured=False,
+        "vertical-axis analysis", "elevation read", "R-5a", captured=True,
     ),
 }
 
@@ -211,11 +218,19 @@ class MeasureSpec:
     carries and no parameter selects. That is why a third front end needs zero
     engine edits.
 
-    **The vertical axis carries no bearing on this rig.** A vertical walk's
-    poses are named by ``pose_prompts`` and not by degrees; R-5a lands those
-    prompts, and until it does ``position_axis=vertical`` is a stub. The
-    refusal that enforces it is :class:`~.spatial.PositionGeometry`'s own — see
-    :meth:`__post_init__`.
+    **The vertical axis carries no BEARING on this rig, and that is not the
+    same as carrying no value.** Nothing here swings in elevation, so a
+    vertical walk states no ``positions``; where the microphone was RAISED to
+    is ``vertical_deg``, one signed whole-degree elevation above mark height
+    for the whole spec, in :class:`~.spatial.PositionGeometry`'s frame. It
+    defaults to 0 because a spec nobody raised measured at mark height, and 0
+    says that truly. The walk is performed by a person, so nothing here refuses
+    a value on it; what R-5a still owes is the analysis that reads an elevation
+    set back out (:data:`VERTICAL_AXIS_NOT_IMPLEMENTED`).
+
+    ``vertical_deg`` is one number rather than a tuple beside ``positions``
+    deliberately: a spec measures one elevation across every bearing it walks,
+    and a per-position elevation would be a second pose table nothing asks for.
 
     ``level_ladder_dbfs`` is R-4's axis, and it moves the **stimulus**, never
     the claim: each rung is a stimulus level in dBFS played through the one
@@ -247,6 +262,7 @@ class MeasureSpec:
     positions: tuple[int, ...] = ()
     pose_prompts: tuple[str, ...] = ()
     position_axis: str = POSITION_AXIS_HORIZONTAL
+    vertical_deg: int = 0
     regime: str = REGIME_REFERENCE_AXIS
     polarity: str = POLARITY_NORMAL
     inverted_role: str = ""
@@ -300,7 +316,7 @@ class MeasureSpec:
         self._check_pose_axis()
 
     def _check_pose_axis(self) -> None:
-        """Axis and bearing, checked by the module that owns the frame.
+        """Axis, bearing and elevation, checked by the module that owns the frame.
 
         Deliberately not a second copy of the rule: building one
         :class:`~.spatial.PositionGeometry` re-uses that class's own refusals,
@@ -319,6 +335,7 @@ class MeasureSpec:
                 axis=self.position_axis,
                 degrees=bearing,
                 mark_distance_m=MARK_DISTANCE_M,
+                vertical_deg=self.vertical_deg,
             )
 
 

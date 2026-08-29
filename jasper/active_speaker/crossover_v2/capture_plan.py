@@ -330,6 +330,13 @@ class CloudPositionPrompt:
     #: drift this table's derived ``wide`` property exists to avoid. Set by
     #: :func:`_pose` from the row's own ``side`` bearing, never by hand.
     lateral_sign: int = 0
+    #: Which side of mark HEIGHT a VERTICAL row sits on: ``-1`` BELOW, ``+1``
+    #: ABOVE, ``0`` for a row that asks for no raise or lower. The elevation
+    #: twin of ``lateral_sign``, and machine-readable for the same reason: the
+    #: only other statement of the direction is the word "ABOVE"/"BELOW" inside
+    #: ``headline``. Set by :func:`_pose` from the row's own ``updown`` bearing,
+    #: never by hand.
+    vertical_sign: int = 0
 
     @property
     def wide(self) -> bool:
@@ -357,6 +364,11 @@ class CloudPositionPrompt:
 # the speaker — the same viewpoint the prompt copy is written from, so a row
 # that SAYS "LEFT" cannot be signed RIGHT.
 _LATERAL_SIGNS = {"LEFT": -1, "RIGHT": 1}
+
+# The same convention for ELEVATION, in the same one place: negative is BELOW
+# mark height, positive is ABOVE, so a row that SAYS "ABOVE" cannot be signed
+# down. The words are the ``updown`` slot ``_VERTICAL_POSE`` fills.
+_VERTICAL_SIGNS = {"BELOW": -1, "ABOVE": 1}
 
 
 def _pose(
@@ -403,9 +415,11 @@ def _pose(
         offset_cm=offset_cm,
         role=role,
         # Derived from the row's OWN bearing word, so the sign and the sentence
-        # cannot disagree. A vertical row supplies ``updown`` instead and keeps
-        # the neutral 0 — it has no horizontal bearing to sign.
+        # cannot disagree. A row supplies at most one of the two words, and the
+        # axis it says nothing about keeps the neutral 0: a lateral row moves
+        # at mark height, and a vertical row is back over the mark.
         lateral_sign=_LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0),
+        vertical_sign=_VERTICAL_SIGNS.get(str(bearing.get("updown") or ""), 0),
     )
 
 
@@ -680,14 +694,46 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
     return int(round(prompt.lateral_sign * math.degrees(radians)))
 
 
+def position_elevation_deg(prompt: CloudPositionPrompt) -> int:
+    """The signed ELEVATION of one pose above mark height, in WHOLE degrees.
+
+    :func:`position_angle_deg`'s twin, deriving the other angle from the same
+    ``offset_cm`` against the same :data:`MARK_DISTANCE_M` — a vertical row's
+    ``offset_cm`` is its RISE above (or drop below) the mark, exactly as a
+    lateral row's is its sideways displacement, so one arithmetic serves both.
+
+    **That sharing holds only because a row names at most one direction word.**
+    Every table row is either lateral or vertical, so its single ``offset_cm``
+    is unambiguously the one displacement it moved. A compound row — ``side``
+    AND ``updown`` — would need two, and would have to carry them before either
+    angle here could be read.
+
+    **Total, and it refuses nothing.** A row that asks for no raise or lower
+    signs ``0``, and 0 is TRUE of it: the pose is at mark height. That is why
+    this returns an ``int`` where the horizontal helper returns ``int`` only
+    after refusing two shapes — an unstated elevation has an honest zero, an
+    unstated bearing does not (see
+    :class:`~jasper.active_speaker.crossover_v2.spatial.PositionGeometry`).
+
+    The rig cannot swing in elevation and no automation is asked to: a vertical
+    pose is performed by a person raising the microphone by hand, and this
+    states where they were asked to raise it to.
+    """
+    if prompt.vertical_sign == 0:
+        return 0
+    radians = math.atan2(float(prompt.offset_cm) / 100.0, MARK_DISTANCE_M)
+    return int(round(prompt.vertical_sign * math.degrees(radians)))
+
+
 def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
-    """One pose's WHERE, as the three fields its retained record carries.
+    """One pose's WHERE, as the four fields its retained record carries.
 
     The single derivation behind
     :class:`~jasper.active_speaker.crossover_v2.spatial.PositionGeometry`, so
     the bearing a positioner is aimed at and the bearing a record states come
     from one place. Composes what already existed rather than adding a second
-    opinion: the angle is :func:`position_angle_deg`'s, the reference length is
+    opinion: the horizontal angle is :func:`position_angle_deg`'s, the
+    elevation is :func:`position_elevation_deg`'s, the reference length is
     :data:`MARK_DISTANCE_M`.
 
     **Total, and that is load-bearing.** :func:`position_angle_deg` REFUSES two
@@ -700,8 +746,9 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
     The two, and they are the two the angle helper names:
 
     * a :data:`POSITION_ROLE_XOVR` row — a vertical prompt asks for a raise or
-      a lower, and this rig does not swing in elevation, so no bearing was ever
-      commanded;
+      a lower, so no HORIZONTAL bearing was ever commanded. Where the row asked
+      the microphone to go is ``vertical_deg``, which this now states rather
+      than leaving to the prompt sentence;
     * a pose whose RECORD declares no side — ``lateral_sign == 0`` at a
       non-zero offset. Today that is exactly
       :data:`CLOUD_GEOMETRY_RETRY_PROMPTS`, BOTH rungs: they are built by
@@ -709,21 +756,24 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
       ``_pose`` is the only thing that signs a row from its bearing word. Their
       household COPY does name a side (rung 1 LEFT, rung 2 RIGHT) — the sign is
       missing from the record, not from the instruction, which is why this
-      reads ``lateral_sign`` rather than the prose. Rung 2 could not be signed
-      honestly even so: it is a COMPOUND pose (sideways *and* above mark
-      height), and a bearing would describe only half the move.
+      reads ``lateral_sign`` rather than the prose. Rung 2 is a COMPOUND pose
+      (sideways *and* above mark height) and states neither number: bypassing
+      :func:`_pose` costs it ``vertical_sign`` as well.
     """
+    elevation = position_elevation_deg(prompt)
     if prompt.role == POSITION_ROLE_XOVR:
         return _spatial.PositionGeometry(
             axis=_spatial.POSITION_AXIS_VERTICAL,
             degrees=None,
             mark_distance_m=MARK_DISTANCE_M,
+            vertical_deg=elevation,
         )
     unsigned = float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0
     return _spatial.PositionGeometry(
         axis=_spatial.POSITION_AXIS_HORIZONTAL,
         degrees=None if unsigned else position_angle_deg(prompt),
         mark_distance_m=MARK_DISTANCE_M,
+        vertical_deg=elevation,
     )
 
 

@@ -58,19 +58,27 @@ __all__ = ["CapturePose", "PriorBank", "pose_of"]
 class CapturePose:
     """WHERE a capture was taken and at WHAT stimulus level.
 
-    The three banked facts that decide whether two captures are of the same
-    thing, so a before and an after can be paired. Not a place on its own: a
-    level ladder measures one bearing at several stimulus levels, and pairing
-    across rungs would difference a quiet capture against a loud one.
+    The banked facts that decide whether two captures are of the same thing, so
+    a before and an after can be paired. Not a place on its own: a level ladder
+    measures one bearing at several stimulus levels, and pairing across rungs
+    would difference a quiet capture against a loud one.
 
-    A value rather than three arguments because the match IS an equality — a
-    pose either is this one or is not — and three hand-compared fields is where
-    a fourth one gets forgotten.
+    A value rather than four arguments because the match IS an equality — a
+    pose either is this one or is not — and four hand-compared fields is where
+    a fifth one gets forgotten.
+
+    ``vertical_deg`` is part of the equality for the same reason the bearing
+    is: a take from 22° above mark height is not a re-measure of the one taken
+    at mark height, and pairing them would hand a verdict a comparand measured
+    somewhere else. It defaults to 0 so a pose stated without one still names
+    mark height, which is where every capture banked before the field existed
+    was taken.
     """
 
     position_axis: str
     position_deg: int | None
     stimulus_dbfs: float | None
+    vertical_deg: int = 0
 
 
 @dataclass(frozen=True)
@@ -162,13 +170,26 @@ async def _baselines_by_pose(
 
 
 def pose_of(record: Mapping[str, Any]) -> CapturePose:
-    """One banked record's pose, read off the fields it already carries."""
+    """One banked record's pose, read off the fields it already carries.
+
+    ``vertical_deg`` reads 0 for a record banked before the field existed, and
+    that is a recovery rather than a guess: every capture this bank could hold
+    from before it was taken at mark height, because nothing could state any
+    other elevation. ``bool`` is rejected before ``int`` because it subclasses
+    it, so a hand-edited ``true`` cannot read back as 1° up.
+    """
     degrees = record.get("position_deg")
     level = record.get("stimulus_dbfs")
+    elevation = record.get("vertical_deg")
     return CapturePose(
         position_axis=str(record.get("position_axis") or ""),
         position_deg=None if degrees is None else int(degrees),
         stimulus_dbfs=None if level is None else float(level),
+        vertical_deg=(
+            0
+            if isinstance(elevation, bool) or not isinstance(elevation, (int, float))
+            else int(elevation)
+        ),
     )
 
 

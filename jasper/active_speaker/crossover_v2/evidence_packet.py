@@ -247,6 +247,10 @@ _POSITION_FIELDS = (
     # the rows actually carry (:func:`_angle_deg_block`).
     "position_deg",
     "position_axis",
+    # The elevation half of the same WHERE. Rides the allowlist beside the
+    # bearing rather than instead of it: the two are orthogonal, and a seat
+    # raised above mark height states both.
+    "vertical_deg",
     "mark_distance_m",
     "take_id",
     "wav_sha256",
@@ -2314,21 +2318,29 @@ def _not_evaluated(
         # The one place the PRESCRIPTION PATH states this geometry — the remote
         # tier's own disclosures (``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE``,
         # ``crossover_envelope_v2._REMOTE_VERTICAL_NUDGE``) carry theirs, about
-        # their own artifacts. It is a property of the CORPUS — every shape a
-        # round banks is horizontal, whoever wrote the artifact — so it belongs
-        # here rather than as a per-row flag two producers spell differently
-        # (#2783). It DISCLOSES; it refuses nothing: the owner's 2026-08-21
-        # ruling opened the boost door on exactly this risk, which is a
-        # correction that may not generalise off-axis vertically — reversible
+        # their own artifacts. It is a property of the CORPUS — nothing in the
+        # package ANALYSES an elevation, whoever wrote the artifact — so it
+        # belongs here rather than as a per-row flag two producers spell
+        # differently (#2783). It DISCLOSES; it refuses nothing: the owner's
+        # 2026-08-21 ruling opened the boost door on exactly this risk, which is
+        # a correction that may not generalise off-axis vertically — reversible
         # and measurable — and not a component-safety one.
+        #
+        # The claim is about what this packet READS, never about what a round
+        # banked: a pose records the elevation it was raised to, so a shape
+        # claim would go stale the first time one is. Every number here is a
+        # horizontal-plane number whether or not a seat was raised.
         {
             "field": "vertical_plane_response",
             "reason": (
-                "every capture shape a round banks is horizontal — a turntable "
-                "walk swings at fixed height and radius, a position cloud is a "
-                "floor-plan of seats — so no banked evidence sees a floor or "
+                "no claim in this packet reads an elevation — every aggregate "
+                "pools seats without regard to height, and nothing analyses a "
+                "raised pose on its own — so no banked verdict sees a floor or "
                 "ceiling bounce, and what a filter of either sign does off the "
-                "horizontal plane is unmeasured rather than shown to be safe"
+                "horizontal plane is unmeasured rather than shown to be safe. "
+                "positions[].vertical_deg says which seats, if any, were "
+                "raised; a round whose seats are all 0 sampled the horizontal "
+                "plane alone"
             ),
         },
     ]

@@ -58,7 +58,11 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     stub_for_code,
     stubbed_capabilities,
 )
-from jasper.active_speaker.crossover_v2.prior_bank import CapturePose, PriorBank
+from jasper.active_speaker.crossover_v2.prior_bank import (
+    CapturePose,
+    PriorBank,
+    pose_of,
+)
 from jasper.active_speaker.crossover_v2.playback_transaction import (
     PLAYBACK_STAGES,
     STAGE_ADMIT,
@@ -273,7 +277,7 @@ def _session(
             MeasureSpec(
                 kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL,
             ),
-            VERTICAL_AXIS_NOT_IMPLEMENTED, "R-5a", False,
+            VERTICAL_AXIS_NOT_IMPLEMENTED, "R-5a", True,
         ),
     ],
 )
@@ -358,11 +362,8 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         },
         {"kind": MEASURE_KIND_BASELINE, "inverted_role": DRIVER_ROLE_TWEETER},
         {"kind": MEASURE_KIND_BASELINE, "position_axis": "diagonal"},
-        {
-            "kind": MEASURE_KIND_BASELINE,
-            "position_axis": POSITION_AXIS_VERTICAL,
-            "positions": (15,),
-        },
+        {"kind": MEASURE_KIND_BASELINE, "vertical_deg": 7.5},
+        {"kind": MEASURE_KIND_BASELINE, "vertical_deg": True},
         {"kind": MEASURE_KIND_BASELINE, "positions": (22.5,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (True,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (0, 22), "pose_prompts": ("a",)},
@@ -371,7 +372,7 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
 def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
     """An out-of-vocabulary parameter fails at its own door.
 
-    The vertical-bearing case is refused by ``PositionGeometry`` itself rather
+    The whole-degree cases are refused by ``PositionGeometry`` itself rather
     than by a second copy of its rule here — the copy this replaces had already
     drifted off it by a word.
     """
@@ -379,18 +380,31 @@ def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
         MeasureSpec(**kwargs)
 
 
-def test_the_vertical_bearing_refusal_is_position_geometrys_own():
-    """Anti-drift: the spec must fail for the reason the frame's owner gives.
+@pytest.mark.parametrize("elevation", [0, 7, -22])
+def test_a_manually_raised_pose_is_accepted_and_carries_its_elevation(elevation):
+    """The rig cannot swing in elevation; a person can, and the frame records it.
 
-    If ``PositionGeometry`` stopped refusing a vertical bearing, this file
-    would go green on a spec that is no longer checked — so the pin is on the
-    owner, not on a message.
+    This replaces a refusal. ``PositionGeometry`` used to raise on any vertical
+    pose that named a number, on the reasoning that no bearing could have been
+    commanded — true of the ARM, and never true of the operator, who raises the
+    microphone by hand. The bearing stays ``None`` because none was commanded;
+    the elevation is the value that says where the pose actually was.
+
+    The automation seam keeps its own refusal, which is about a positioner
+    rather than about a pose — pinned by
+    ``test_crossover_v2_remote_tier`` over ``position_angle_deg``.
     """
-    with pytest.raises(ValueError):
-        spatial.PositionGeometry(
-            axis=POSITION_AXIS_VERTICAL, degrees=15,
-            mark_distance_m=spatial.MARK_DISTANCE_M,
-        )
+    geometry = spatial.PositionGeometry(
+        axis=POSITION_AXIS_VERTICAL, degrees=None,
+        mark_distance_m=spatial.MARK_DISTANCE_M, vertical_deg=elevation,
+    )
+
+    assert geometry.vertical_deg == elevation
+    assert geometry.degrees is None
+    assert spatial.PositionGeometry(
+        axis=POSITION_AXIS_HORIZONTAL, degrees=22,
+        mark_distance_m=spatial.MARK_DISTANCE_M,
+    ).vertical_deg == 0
 
 
 def test_the_measure_kinds_are_the_index_columns_and_no_more():
@@ -1104,45 +1118,54 @@ async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
     assert [row["position_deg"] for row in parts["records"].banked] == [-22, 22]
 
 
-async def test_a_stub_that_captures_nothing_stops_the_stimulus():
-    session, parts = _session()
+async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
+    """R-5a: a hand-raised pose is measured and recorded, not refused.
 
-    async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL,
-        ))
+    This axis used to capture NOTHING — the stub stopped the stimulus. The
+    owner ruled that class of refusal out: the operator raises the microphone
+    by hand, so the take is taken and labelled with where it was taken from.
 
-    assert parts["play"].calls == []
-    assert outcome.stimuli == ()
-    assert outcome.record_ids == ()
-    assert [stub.code for stub in outcome.disclosures] == [
-        VERTICAL_AXIS_NOT_IMPLEMENTED
-    ]
-
-
-async def test_an_aborted_call_never_claims_a_capture_was_banked():
-    """S12 honesty, turned on the disclosure itself.
-
-    A near-field spec that also asks for a vertical pose captures NOTHING —
-    the vertical stub stops the stimulus — so the near-field stub must stop
-    saying "capture banked" for evidence that does not exist.
+    ``position_deg`` stays ``None`` because no bearing was commanded, and that
+    is what keeps a raised take out of every pooled bearing set downstream.
+    The disclosure survives, saying the honest remaining thing: the capture is
+    banked and no analysis reads it yet.
     """
-    session, parts = _session()
+    records = _Records()
+    session, parts = _session(records=records)
 
     async with session:
         outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
-            regime=REGIME_NEAR_FIELD,
             position_axis=POSITION_AXIS_VERTICAL,
+            vertical_deg=22,
         ))
 
-    assert parts["play"].calls == []
-    assert {stub.code for stub in outcome.disclosures} == {
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, VERTICAL_AXIS_NOT_IMPLEMENTED,
-    }
-    assert not any(stub.captured for stub in outcome.disclosures)
-    assert all("nothing captured" in stub.message for stub in outcome.disclosures)
-    assert not any(stub.captured for stub in (await session.analyze()).disclosures)
+    assert parts["play"].calls != []
+    assert len(outcome.record_ids) == 1
+    banked = await records.read(outcome.record_ids[0])
+    assert banked["position_axis"] == POSITION_AXIS_VERTICAL
+    assert banked["vertical_deg"] == 22
+    assert banked["position_deg"] is None
+    assert [stub.code for stub in outcome.disclosures] == [
+        VERTICAL_AXIS_NOT_IMPLEMENTED
+    ]
+    assert outcome.disclosures[0].captured is True
+
+
+async def test_a_banked_hole_that_captured_nothing_re_renders_as_what_it_was():
+    """S12 honesty across builds: a bank says what its own session could do.
+
+    ``CapabilityStub.aborted`` used to be reachable at measure time, when a
+    stub could stop the stimulus. No shipped stub does any more — every hole
+    banks its capture — so the rendering survives for the one path that still
+    reaches it: re-reading a bank written when one of them did not.
+    """
+    assert stub_for_code(
+        VERTICAL_AXIS_NOT_IMPLEMENTED, captured=False,
+    ).captured is False
+    assert stub_for_code(
+        VERTICAL_AXIS_NOT_IMPLEMENTED, captured=True,
+    ).captured is True
 
 
 async def test_a_stub_whose_capture_still_happens_measures_and_discloses():
@@ -1209,35 +1232,6 @@ async def test_analyze_names_each_hole_once_however_many_specs_hit_it():
     assert [stub.code for stub in (await session.analyze()).disclosures] == [
         NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
     ]
-
-
-async def test_a_hole_that_later_banks_evidence_stops_saying_it_captured_nothing():
-    """Order must not decide what ``analyze`` believes is in the bank.
-
-    An aborted near-field call discloses "nothing captured"; a later near-field
-    call that banks a capture must upgrade that, or the session keeps reporting
-    there is nothing for R-3's splice to read.
-    """
-    session, _ = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            regime=REGIME_NEAR_FIELD,
-            position_axis=POSITION_AXIS_VERTICAL,
-        ))
-        assert not (await session.analyze()).disclosures[0].captured
-
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-
-    disclosures = (await session.analyze()).disclosures
-    near_field = [
-        s for s in disclosures if s.code == NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
-    ]
-    assert len(near_field) == 1, "still one entry per hole"
-    assert near_field[0].captured is True
 
 
 async def test_a_hole_that_already_banked_evidence_is_not_downgraded():
@@ -1391,7 +1385,35 @@ def _pose(record: Mapping[str, Any]) -> CapturePose:
         position_axis=record["position_axis"],
         position_deg=record["position_deg"],
         stimulus_dbfs=record["stimulus_dbfs"],
+        vertical_deg=record["vertical_deg"],
     )
+
+
+@pytest.mark.parametrize(
+    "banked", [{}, {"vertical_deg": None}, {"vertical_deg": True}],
+    ids=["absent", "null", "not-a-number"],
+)
+def test_a_record_that_states_no_elevation_reads_back_at_mark_height(banked):
+    """A bundle banked before the field existed pairs exactly as it always did.
+
+    0 is a recovery here rather than a guess: nothing could state any other
+    elevation when those bundles were written, so every capture in one was
+    taken at mark height. The pose must therefore compare EQUAL to a capture
+    banked today at the same bearing — otherwise reading an old bank would
+    orphan every baseline in it.
+
+    ``bool`` is rejected before ``int`` because it subclasses it: a hand-edited
+    ``true`` must not read back as 1° up.
+    """
+    old = pose_of({"position_axis": "horizontal", "position_deg": 22, **banked})
+
+    assert old.vertical_deg == 0
+    assert old == pose_of({
+        "position_axis": "horizontal", "position_deg": 22, "vertical_deg": 0,
+    })
+    assert old != pose_of({
+        "position_axis": "horizontal", "position_deg": 22, "vertical_deg": 7,
+    })
 
 
 async def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
@@ -1599,17 +1621,16 @@ async def test_analyze_reports_the_priors_holes_before_its_own_and_each_once():
 async def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does():
     """The merge keeps the best news, across banks as well as within one.
 
-    The prior's near-field spec was aborted by its vertical sibling and banked
-    nothing; this session's near-field spec ran and banked. Reporting the
-    aborted rendering would tell ``analyze`` there is no evidence waiting when
-    there is.
+    The prior banked nothing for its near-field spec — the shape a bank
+    written before every hole started capturing has on disk. This session's
+    near-field spec ran and banked. Reporting the aborted rendering would tell
+    ``analyze`` there is no evidence waiting when there is.
     """
     records = _Records()
-    prior_id, _wrote = await _banked(records, MeasureSpec(
-        kind=MEASURE_KIND_BASELINE,
-        regime=REGIME_NEAR_FIELD,
-        position_axis=POSITION_AXIS_VERTICAL,
-    ))
+    prior_id = await records.persist({"record_ids": (), "disclosures": [
+        {"code": NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "captured": False},
+        {"code": VERTICAL_AXIS_NOT_IMPLEMENTED, "captured": False},
+    ]})
     bank = await PriorBank.read(records, prior_id)
     assert [s.captured for s in bank.disclosures] == [False, False]
 

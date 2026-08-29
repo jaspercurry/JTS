@@ -4074,23 +4074,58 @@ def test_a_verify_pose_banks_its_angle_axis_and_distance_as_fields():
     assert all(m["prompt"] for m in retained)
 
 
-def test_a_vertical_seat_banks_no_bearing_rather_than_a_zero():
-    """A vertical pose commands NO bearing, and 0 would read as the design axis.
+def test_a_vertical_seat_states_its_elevation_and_still_banks_no_bearing():
+    """A raised pose commands NO bearing, and 0 would read as the design axis.
 
-    ``position_angle_deg`` refuses a vertical row outright, and this derivation
-    runs on the retention path, where a raise would fail a capture the
-    household already gave. So the axis is stated and the angle is ``None``.
+    Where it WAS raised to is ``vertical_deg``, derived from the row's own
+    ``offset_cm`` against the mark distance exactly as a lateral row's bearing
+    is, and signed by the row's own ABOVE/BELOW word — so the two 40 cm rows
+    stop being byte-identical records.
+
+    ``position_angle_deg`` still refuses a vertical row outright, and that
+    refusal is deliberately kept: it aims an external POSITIONER, and no
+    positioner can raise the microphone. This derivation runs on the retention
+    path instead, where a raise would fail a capture the household already
+    gave, so it states the axis and leaves the angle ``None``.
     """
-    vertical = next(
+    vertical = [
         p for p in CLOUD_POSITION_PROMPTS if p.role == flow.POSITION_ROLE_XOVR
-    )
-    geometry = flow.position_geometry(vertical)
+    ]
+    geometries = [flow.position_geometry(p) for p in vertical]
 
-    assert geometry.axis == "vertical"
-    assert geometry.degrees is None
-    assert geometry.mark_distance_m == flow.MARK_DISTANCE_M
-    with pytest.raises(CrossoverV2FlowError):
-        flow.position_angle_deg(vertical)
+    assert {g.axis for g in geometries} == {"vertical"}
+    assert {g.degrees for g in geometries} == {None}
+    assert {g.mark_distance_m for g in geometries} == {flow.MARK_DISTANCE_M}
+    assert [g.vertical_deg for g in geometries] == [7, -7, 22, -22]
+    for prompt in vertical:
+        with pytest.raises(CrossoverV2FlowError):
+            flow.position_angle_deg(prompt)
+
+
+def test_a_raised_seat_joins_no_bearing_set_the_walk_already_had():
+    """The mixed walk's horizontal aggregates do not notice the raised seats.
+
+    The shipped cloud table is already mixed — seven lateral rows and four
+    raised ones. Banking an elevation must not move what the horizontal-only
+    consumers see, and the mechanism that guarantees it is ``position_deg``
+    staying ``None`` on a raised seat: every pooled bearing set in the tree
+    (``evidence_packet._angle_deg_block`` is the one a reader sees) is built by
+    filtering for an ``int`` bearing, so a raised seat is excluded there and
+    included, AS LABELLED, everywhere a seat is listed.
+    """
+    geometries = [flow.position_geometry(p) for p in CLOUD_POSITION_PROMPTS]
+    bearings = [g.degrees for g in geometries if isinstance(g.degrees, int)]
+
+    assert bearings == [-7, 7, -22, 22, -14, 14, -31]
+    assert [
+        flow.position_angle_deg(p) for p in CLOUD_POSITION_PROMPTS
+        if p.role != flow.POSITION_ROLE_XOVR
+    ] == bearings
+    # Every lateral seat is at mark height, so the new field says nothing new
+    # about any of them — which is why an old bundle missing it reads as 0.
+    assert {
+        g.vertical_deg for g in geometries if g.axis == "horizontal"
+    } == {0}
 
 
 def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):

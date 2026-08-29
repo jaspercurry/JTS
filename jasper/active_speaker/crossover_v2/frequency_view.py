@@ -64,16 +64,35 @@ def _curve(
     }
 
 
+def _whole_degrees(value: Any) -> int | None:
+    """One banked angle as a whole number, or ``None`` for "not recorded".
+
+    ``bool`` is rejected before ``int`` because it subclasses it, so a
+    hand-edited ``true`` cannot be drawn on a legend as 1°.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _position_label(row: Mapping[str, Any]) -> str:
-    degrees = row.get("position_deg")
+    degrees = _whole_degrees(row.get("position_deg"))
+    # Absent on a row banked before the field existed, and 0 on every seat
+    # taken at mark height — neither draws a raise on the legend.
+    elevation = _whole_degrees(row.get("vertical_deg")) or 0
     raw_role = str(row.get("role") or "")
     role = {"onax": "On axis", "offax": "Off axis"}.get(
         raw_role, raw_role.replace("_", " ").title(),
     )
-    if isinstance(degrees, int) and not isinstance(degrees, bool):
-        angle = f"{degrees:+d}°" if degrees else "0°"
-        return f"{angle} · {role}" if role else angle
-    return role or str(row.get("position_id") or "Measurement")
+    parts: list[str] = []
+    if degrees is not None:
+        parts.append(f"{degrees:+d}°" if degrees else "0°")
+    if elevation:
+        # The word carries the sign, so the number does not repeat it.
+        parts.append(f"{abs(elevation)}° {'up' if elevation > 0 else 'down'}")
+    if role:
+        parts.append(role)
+    return " · ".join(parts) or str(row.get("position_id") or "Measurement")
 
 
 def _baseline_frame(entry: Mapping[str, Any]) -> tuple[float | None, list[list[float]]]:
@@ -166,6 +185,10 @@ def _run(packet: Mapping[str, Any], slot: str) -> dict[str, Any]:
             position={
                 "axis": row.get("position_axis"),
                 "deg": row.get("position_deg"),
+                # 0 for a seat at mark height AND for a row banked before the
+                # field existed — the same fact, and the view needs no third
+                # answer to draw a legend.
+                "vertical_deg": _whole_degrees(row.get("vertical_deg")) or 0,
                 "mark_distance_m": row.get("mark_distance_m"),
             },
             take_id=row.get("take_id"),
