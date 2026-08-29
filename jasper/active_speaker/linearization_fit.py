@@ -408,12 +408,16 @@ _HF_RESIDUAL_FLATNESS_TARGET_DB: float = 0.5
 # large unverified move.
 HF_TAPER_MAX_DB: float = 6.0
 
-# The taper's own corner (ceiling_hz * 1.25) must stay strictly below Nyquist
-# or CamillaDSP's own biquad check refuses the WHOLE config at load
-# (freq >= samplerate/2 is not a realizable digital filter corner).
-# Derived from the runtime contract's own sample rate -- never a fresh
-# literal -- so a future rate change cannot silently drift this from what
-# the emitter's independent validator enforces
+# Where the taper's corner sits above the confidence ceiling when there is
+# room for it: far enough up that the shelf's own transition stays in
+# unmeasured territory, close enough that it still bites inside the band.
+_HF_TAPER_CORNER_RATIO: float = 1.25
+
+# The taper's own corner must stay strictly below Nyquist or CamillaDSP's own
+# biquad check refuses the WHOLE config at load (freq >= samplerate/2 is not a
+# realizable digital filter corner). Derived from the runtime contract's own
+# sample rate -- never a fresh literal -- so a future rate change cannot
+# silently drift this from what the emitter's independent validator enforces
 # (``camilla_yaml._validated_biquad_entry``'s matching guard).
 _HF_TAPER_NYQUIST_HZ: float = DEFAULT_SAMPLE_RATE / 2.0
 
@@ -2072,30 +2076,34 @@ def _hf_continuation_stage(
     if (
         policy == "taper"
         and len(filters) + len(emitted) < MAX_FILTERS_PER_DRIVER
-        and ceiling_hz * 1.25 < _HF_TAPER_NYQUIST_HZ
+        and ceiling_hz < _HF_TAPER_NYQUIST_HZ
     ):
-        # One trailing Highshelf CUT above ceiling*1.25 walks the relative lift
+        # One trailing Highshelf CUT above the ceiling walks the relative lift
         # back DOWN across the band we cannot see — protecting an unknown /
         # breakup-prone top from a projected lift with no measurement behind
         # it. Appended LAST (the emitter's taper-last construction contract).
         #
-        # SKIPPED (not clamped) when ceiling*1.25 would reach or exceed
-        # Nyquist (the guard above): the multiplier's whole job is to give the
-        # shelf's own transition room to sit entirely in unmeasured territory
-        # above the ceiling, and a sample rate that squeezes that room to
-        # nothing has already removed the "band we cannot see" this filter
-        # exists to protect -- there is nothing left to walk back. Clamping
-        # the corner to an arbitrary point near Nyquist would keep emitting a
-        # filter whose frequency no longer means "ceiling*1.25" AND risk the
-        # numerically degenerate RBJ-cookbook coefficients a biquad gets as
-        # its corner approaches Nyquist (the bilinear transform's own
-        # frequency warping diverges there). An honest no-op is the smaller,
-        # safer move: the measured lowshelf + peaking correction above still
-        # fires; only this speculative, beyond-ceiling shelf does not.
+        # The corner is CLAMPED, never skipped, when ceiling*ratio would not
+        # fit below Nyquist. Two facts bound where it may legally go:
+        #   * strictly ABOVE ceiling_hz — below it the shelf starts cutting
+        #     inside the measured band whose realization was already graded;
+        #   * strictly BELOW Nyquist — ``_validated_biquad_entry`` refuses
+        #     freq >= samplerate/2, and an RBJ shelf degenerates to a literal
+        #     pass-through as its corner reaches it (at w0 = pi the numerator
+        #     equals the denominator coefficient-for-coefficient), so a corner
+        #     parked just under Nyquist emits a shelf that walks nothing down.
+        # The clamp is the geometric mean — the log-frequency midpoint of that
+        # interval, which is the domain this module's grid, bands and smoother
+        # all work in. It lies strictly inside whenever ceiling < Nyquist (the
+        # guard above), so it needs no tuned constant and no per-rate table.
+        taper_hz = min(
+            ceiling_hz * _HF_TAPER_CORNER_RATIO,
+            math.sqrt(ceiling_hz * _HF_TAPER_NYQUIST_HZ),
+        )
         taper_gain = -min(spend / 2.0, HF_TAPER_MAX_DB)
         if -taper_gain >= _MIN_FILTER_GAIN_DB:
             emitted.append(LinearizationFilter(
-                biquad_type="Highshelf", freq=ceiling_hz * 1.25,
+                biquad_type="Highshelf", freq=taper_hz,
                 q=_HIGHSHELF_Q, gain=taper_gain,
             ))
 
