@@ -2052,6 +2052,33 @@ def test_the_receipt_discloses_a_pinned_trim_beside_what_the_round_measured(
     assert summary["trims_db"]["tweeter"] == _PINNED_TWEETER_DB
 
 
+def test_a_reopened_candidate_still_discloses_its_pin(tmp_path, monkeypatch):
+    """Republish makes a banked candidate live again and re-renders its summary.
+
+    That is the path where a pin most misleads if it is lost: an old candidate
+    shown again, with a level nothing measured worded as one that was.
+    """
+    from jasper.active_speaker.crossover_v2.durable_state import _candidate_summary
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    candidate = _round_candidate(
+        tmp_path, monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
+    )
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(
+        json.loads(json.dumps(candidate.to_dict()))
+    )
+
+    disclosed = _candidate_summary(reopened)["trims_pinned"]
+    # Named, not merely equal to the original: two empty maps compare equal, so
+    # a comparison alone would pass with the disclosure gone from both sides.
+    assert set(disclosed) == {"tweeter"}
+    assert disclosed == _candidate_summary(candidate)["trims_pinned"]
+    assert reopened.role_attenuations_db["tweeter"] == _PINNED_TWEETER_DB
+
+
 def test_an_unpinned_round_discloses_no_pin_at_all(tmp_path, monkeypatch):
     from jasper.active_speaker.crossover_v2.durable_state import _candidate_summary
 
