@@ -107,10 +107,6 @@ Modules:
     ladder and corroborating it against a measured arrival, so an
     uncorrectable comb is excluded with its delay and reflection ratio
     recorded as the reason.
-  - :mod:`~jasper.audio_measurement.capture_integrity` — gates a banked
-    dump-ring capture against the wired capture chain's own definition of
-    clean (frame accounting, ALSA gaps, FIFO dropouts, the reconciled frame
-    ledger), for a laptop-side banking script to refuse a dirty round on.
   - :mod:`~jasper.audio_measurement.frame_ledger` — end-to-end frame
     accounting for the phone-mic capture chain, which the gate above reconciles.
   - :mod:`~jasper.audio_measurement.timeline_slip` — detection of one discrete
