@@ -26,7 +26,6 @@ from typing import Any, Callable
 
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.atomic_io import atomic_write_json
-from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -54,6 +53,7 @@ REFUSE_COMMISSION_LOAD_ACTIVE = "audition_commission_load_active"
 REFUSE_NO_DURABLE_ANCHOR = "audition_no_durable_anchor"
 REFUSE_EMIT = "audition_emit_refused"
 REFUSE_LOAD = "audition_load_refused"
+REFUSE_RESTORE = "audition_restore_failed"
 
 # Played THROUGH the graph that was just swapped in, so the announcement is also
 # a liveness proof. A silent wrong-graph state is the failure mode this door has.
@@ -91,13 +91,6 @@ class AuditionRefused(RuntimeError):
         self.detail = detail
         super().__init__(f"{reason}: {detail}")
 
-# Everything a put-back can fail with. Named rather than caught broadly, and
-# wider than it first looks on purpose: ``confirm_graph_is_live`` raises
-# ``ProgramPlaybackError`` (a bare ``RuntimeError``), ``set_active_config_raw``
-# raises ``CamillaUnavailable`` (a bare ``Exception``), and reading the anchor
-# raises ``OSError``. A restore that fails outside this set would escape the
-# CRITICAL line, which is the one an operator greps for.
-_RESTORE_FAILURES = (AuditionRefused, CamillaUnavailable, OSError, RuntimeError)
 
 
 def audition_state_path(path: str | Path | None = None) -> Path:
@@ -307,20 +300,44 @@ async def _put_back(cam: Any, anchor: str) -> None:
     )
 
 
+async def _restore_verdict(cam: Any, anchor: str) -> tuple[bool, str | None]:
+    """``(took_effect, message)`` for one put-back, through the shared verdict.
+
+    :func:`~jasper.active_speaker.web_commissioning.attempt_graph_restore` is
+    the repo's one verdict a swap transaction reaches, and it decides success
+    on ``is True`` — so the bridge from :func:`_put_back`, which returns
+    ``None`` and raises instead, lives HERE rather than at each site. Two sites
+    writing their own bridge is how one of them comes to read a restore that
+    worked as one that failed.
+
+    The put-back keeps its own duck (``set_active_config_raw``'s default) and
+    its own ``confirm_graph_is_live`` read-back; this wraps the verdict, not
+    the swap.
+    """
+
+    from jasper.active_speaker.web_commissioning import attempt_graph_restore
+
+    async def _restore() -> bool:
+        await _put_back(cam, anchor)
+        return True
+
+    return await attempt_graph_restore(_restore)
+
+
 async def _undo_failed_arm(cam: Any, anchor: str) -> None:
     """Put the durable graph back after an arm that could not be completed.
 
     Swallows its own failure so the caller's original exception is the one that
     escapes — but never SILENTLY: a swap that took, was never recorded, and
     could not be undone is the single state nothing else repairs, so it leaves
-    a CRITICAL line naming the anchor an operator has to reload by hand. Reads
-    and loads are both inside the guard, because either raising here would
-    replace the error the caller needs and abandon the rest of the undo.
+    a CRITICAL line naming the anchor an operator has to reload by hand. The
+    anchor read and the load are both inside the verdict, because either
+    raising here would replace the error the caller needs and abandon the rest
+    of the undo.
     """
 
-    try:
-        await _put_back(cam, anchor)
-    except _RESTORE_FAILURES as exc:
+    took_effect, message = await _restore_verdict(cam, anchor)
+    if not took_effect:
         log_event(
             logger,
             "active_speaker.audition",
@@ -328,7 +345,7 @@ async def _undo_failed_arm(cam: Any, anchor: str) -> None:
             action="undo_failed_arm",
             result="failed",
             entry_config_path=anchor,
-            error=type(exc).__name__,
+            error=message or "",
         )
 
 
@@ -514,9 +531,8 @@ async def stop_audition(
         baseline_config_path().parent, source="active_speaker_audition_stop"
     ):
         anchor = await _durable_anchor(cam)
-        try:
-            await _put_back(cam, anchor)
-        except _RESTORE_FAILURES as exc:
+        took_effect, message = await _restore_verdict(cam, anchor)
+        if not took_effect:
             # The record stays on disk on purpose: /state keeps disclosing that
             # the speaker is not on its applied graph, and the next `stop` has
             # something to retry against.
@@ -527,9 +543,18 @@ async def stop_audition(
                 action="stop",
                 result="failed",
                 entry_config_path=anchor,
-                error=type(exc).__name__,
+                error=message or "",
             )
-            raise
+            # Composed, never chosen: the operator needs the anchor to reload
+            # by hand, and the upstream sentence names what went wrong. Picking
+            # one drops whichever half the reader was missing.
+            detail = (
+                "the reduced graph is still playing and the applied graph "
+                f"could not be reloaded from {anchor}"
+            )
+            raise AuditionRefused(
+                REFUSE_RESTORE, f"{detail} ({message})" if message else detail,
+            )
         _clear_audition_state(state_path)
 
     log_event(

@@ -294,6 +294,7 @@ class _Cam:
         self.anchor = anchor
         self.running = anchor.read_text(encoding="utf-8")
         self.path_writes: list[str] = []
+        self.ducked: list[bool] = []
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
         return str(self.anchor)
@@ -302,6 +303,7 @@ class _Cam:
         self, config: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
         self.running = config
+        self.ducked.append(duck)
         return True
 
     async def set_config_file_path(
@@ -685,3 +687,52 @@ def test_state_path_is_runtime_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.delenv("JASPER_ACTIVE_SPEAKER_AUDITION_STATE", raising=False)
     assert audition_state_path().is_relative_to(Path("/run"))
+
+
+def test_every_audition_swap_ducks_the_fader(audition_box) -> None:
+    """An audition replaces the pipeline UNDER live household audio, both
+    directions, so both swaps take `set_active_config_raw`'s duck. The
+    measurement session passes `duck=False` because it already owns the fader;
+    copying that here would step the graph 40 dB under a household programme."""
+
+    cam, _anchor, _full_text, _state = audition_box
+
+    started = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
+    assert started["status"] == "auditioning"
+    asyncio.run(stop_audition(cam=cam))
+
+    assert cam.ducked, "the arm and the restore both load a graph"
+    assert all(cam.ducked)
+
+
+def test_a_restore_that_raises_outside_the_old_tuple_is_still_a_refusal(
+    audition_box, monkeypatch: pytest.MonkeyPatch, caplog,
+) -> None:
+    """A truncated durable anchor makes `set_active_config_raw` raise
+    `ValueError`, and a non-UTF-8 one makes `read_text` raise
+    `UnicodeDecodeError` — a `ValueError` too. Neither is an `OSError` or a
+    `RuntimeError`, so audition's own catch tuple let both past: the CRITICAL
+    line never fired and the CLI printed a traceback instead of a refusal."""
+
+    import logging as _logging
+
+    from jasper.active_speaker import audition as audition_module
+
+    cam, _anchor, _full_text, _state = audition_box
+
+    started = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
+    assert started["status"] == "auditioning"
+
+    async def _empty_anchor(*_a, **_k):
+        raise ValueError("config must be a non-empty YAML string")
+
+    monkeypatch.setattr(audition_module, "_put_back", _empty_anchor)
+
+    with caplog.at_level(_logging.CRITICAL):
+        with pytest.raises(AuditionRefused) as refusal:
+            asyncio.run(stop_audition(cam=cam))
+
+    assert refusal.value.reason == audition_module.REFUSE_RESTORE
+    assert [r for r in caplog.records if "action=stop" in r.getMessage()]
+    # The record stays: /state keeps disclosing, and the next stop can retry.
+    assert read_audition_state() is not None
