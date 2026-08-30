@@ -742,10 +742,10 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   tolerance at D ~ 2.0, not 3.0. The constant is deliberately left where it
 #   is rather than re-derived here: it is a DISCLOSURE threshold, not a gate
 #   (the raw per-branch trim solve places the pair), and moving a disclosure
-#   bar is a separate decision with its own evidence. The gap is stated so the
-#   next reader does not re-derive a conclusion this comment used to draw:
-#   inter-branch errors in roughly 2-3 dB are spec failures on tonal balance
-#   that this disclosure does not flag.
+#   bar is a separate decision with its own evidence. The consequence, which
+#   the constant no longer states on its own: inter-branch errors in roughly
+#   2-3 dB are spec failures on tonal balance that this disclosure does not
+#   flag.
 #
 # So the band between "measurable" and "already out of spec" is narrow, and
 # 3.0 dB sits just above the top of it, with 2.3x margin over the worst honest

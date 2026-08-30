@@ -2064,16 +2064,12 @@ def _incumbent_block(
     which owns WHICH copy of that field is authoritative.
 
     **The applied-profile SSOT answers both halves; the Undo stash does not.**
-    This block read the flow state's ``pre_apply_profile`` until 2026-08-29.
-    Only ``observe_apply_success`` writes that field, and it names the graph
-    Undo restores TO — the one live BEFORE the last v2 apply — so it is one
-    apply behind after any v2 apply and arbitrarily behind after an apply
+    Only ``observe_apply_success`` writes the flow state's
+    ``pre_apply_profile``, and what it names is the graph Undo restores TO —
+    the one live BEFORE the last v2 apply. Reading it here is therefore one
+    apply behind after any v2 apply, and arbitrarily behind after an apply
     through a door that never touches v2 state (``/sound/setup``'s is one).
-    Both directions were measured on jts3 that night: a 15-hour-old chain
-    reported over a freshly applied baseline, and an empty one reported over a
-    graph carrying a full per-driver correction and a blend cut. Issue #2859
-    named the staleness mechanism and was closed against the restore path
-    alone.
+    Issue #2859.
 
     ``identity`` says WHICH profile the answer describes, so a reader can catch
     the next drift of this kind. ``config.path`` is not among its fields — the
@@ -2082,9 +2078,8 @@ def _incumbent_block(
     Why it is load-bearing: a per-driver prescription is a total for every role
     it names (:class:`~.driver_prescription.DriverPrescription`), so a role's
     incumbent filters are DELETED by any document that names the role and does
-    not repeat them. On 2026-08-22 that deleted a −6.0744 dB Lowshelf at
-    5844.67 Hz the prescriber had never been shown, and the round measured a
-    6.065 dB tilt step for it (issue #2863).
+    not repeat them — a prescriber shown a stale incumbent silently deletes the
+    filters it was never shown (issue #2863).
     """
     from jasper.active_speaker.baseline_profile import (
         profile_blend_correction,

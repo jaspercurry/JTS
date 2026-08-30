@@ -21,19 +21,8 @@ recomputed (plan PR-5, the spec-curve SSOT). :func:`spec_band_tilt` is a
 fourth, and the only one whose answer no reference-frame choice can move:
 the largest level step between two graded bands, which is what a household
 reading a worst-band pointer was actually asking (issue #1857).
-This module shipped as a pure, uncalled evaluator, mirroring
-:mod:`jasper.active_speaker.linearization_envelope`'s shape (a pure module
-with zero production callers at the time it shipped -- and one now, which is
-the whole arc of the pattern: ships pure and uncalled, gets wired later, and
-its docstring says which of the two it is TODAY). `evaluate_flat_spec` is
-now called by the plan's PR-4
-(:func:`jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`,
-landed 2026-07-26) against the cloud's merged honesty mask, and
-`spec_flatness_gauge` by that same function (PR-5, 2026-07-27).
-`spec_convergence_residual` is no longer uncalled either -- not because S3's
-closed loop exists (it does not), but because `spec_flatness_gauge` pools the
-gauge's RMS through it rather than owning a second pooling rule. Check the
-current call graph rather than trusting this sentence.
+`spec_flatness_gauge` pools its RMS through `spec_convergence_residual` rather
+than owning a second pooling rule.
 
 See docs/historical/linearization-campaign-2026-07.md, section "The spec -- what 'flat' means
 here," for the definition this module implements: deviation = curve -

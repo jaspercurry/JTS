@@ -733,8 +733,8 @@ class CommissioningVerificationService:
 #: The last (reason, cause) this process disclosed. A denial is the STEADY
 #: state for most speakers and this reader is polled by the dashboard, the
 #: wizard and every LAN client, so an unconditional WARNING per read is a
-#: journal storm on a 1 GB Pi — one incident produced 27,548 identical lines in
-#: six hours. The transition is the event; the repeat is not. See ADR-0196.
+#: journal storm on a 1 GB Pi. The transition is the event; the repeat is not.
+#: See ADR-0196.
 _LAST_DISCLOSED: tuple[str, str] | None = None
 
 

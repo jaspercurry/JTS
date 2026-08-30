@@ -516,10 +516,10 @@ def live_measurement_session(
     """The reason an operator door may not act right now, or ``None``.
 
     ``action`` names what the caller was about to do and closes both refusal
-    sentences. Two doors ask this today -- ``jasper-angle-capture stage`` and
-    ``jasper-seat-level`` -- and they must get the SAME answer from the SAME
-    file, which is why the question lives here beside the plan rather than in
-    either door.
+    sentences. Three doors ask this today -- ``jasper-angle-capture stage``,
+    ``jasper-seat-level`` and ``jasper-audition`` -- and they must get the SAME
+    answer from the SAME file, which is why the question lives here beside the
+    plan rather than in either door.
 
     **Two different facts are being asked about, and each is asked of its own
     owner.** Answering both from one place is what makes this a door and not a
