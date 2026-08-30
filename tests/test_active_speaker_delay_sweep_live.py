@@ -10,6 +10,7 @@ import math
 
 import pytest
 import yaml
+from typing import Mapping
 
 from jasper.active_speaker.commissioning_evidence import (
     RegionEvidenceTarget,
@@ -28,8 +29,11 @@ from jasper.active_speaker.delay_sweep import (
 )
 from jasper.active_speaker.delay_sweep_live import (
     REFUSE_NO_LIVE_GRAPH,
+    REFUSE_POSES,
     LiveDelaySweepHost,
 )
+from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
+from jasper.control import measurement_hold
 
 FC_HZ = 1800.0
 ROLE_CHANNELS = {"tweeter": (1,), "woofer": (0,)}
@@ -169,12 +173,16 @@ class _Producer:
         self.evidence_store = _EvidenceStore(self)
         self.operations = []
         self.contexts = []
+        self.fresh = []
         self.analyses = {}
         self.true_offset_us = true_offset_us
 
     async def capture(self, operation, context):
         self.operations.append(operation)
         self.contexts.append(context)
+        # The real producer re-reads through this seam inside its own lock,
+        # while the coordinate's graph is still live.
+        self.fresh.append(await context.fresh_readback())
         graph = yaml.safe_load(context.active_raw)
         tweeter = graph["filters"]["as_tweeter_delay"]["parameters"]["delay"]
         woofer = graph["filters"]["as_woofer_delay"]["parameters"]["delay"]
@@ -200,7 +208,9 @@ class _Producer:
 class _Cam:
     def __init__(self, raw):
         self.raw = raw
+        self.entry_raw = raw
         self.loaded = []
+        self.ducked = []
         self.reloads = 0
 
     async def get_active_config_raw(self, *, best_effort=False):
@@ -215,8 +225,9 @@ class _Cam:
     async def get_volume_db(self):
         return -32.0
 
-    async def set_active_config_raw(self, text, *, best_effort=False):
+    async def set_active_config_raw(self, text, *, best_effort=False, duck=True):
         self.loaded.append(text)
+        self.ducked.append(duck)
         self.raw = text
         return True
 
@@ -241,16 +252,21 @@ def _host(tmp_path, *, cam=None, producer=None, store=None, plan=None):
         ),
         placement_fingerprint=_fp("placement"),
         driver_target_fingerprints=(_fp("woofer-driver"), _fp("tweeter-driver")),
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+        topology_id="topology-under-test",
         config_dir=tmp_path,
     )
 
 
 @pytest.fixture(autouse=True)
 def _no_live_session(monkeypatch):
+    measurement_hold.reset_for_tests()
     monkeypatch.setattr(
         "jasper.active_speaker.session_volume_plan.live_measurement_session",
         lambda *, action: None,
     )
+    yield
+    measurement_hold.reset_for_tests()
 
 
 # --------------------------------------------------------------------------- #
@@ -323,7 +339,7 @@ def test_one_durable_attempt_per_coordinate_not_per_capture(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_durable_config_path_is_never_repointed(tmp_path):
+def test_the_sweep_puts_back_the_exact_graph_it_displaced(tmp_path):
     cam = _Cam(_live_yaml())
     host = _host(tmp_path, cam=cam)
     asyncio.run(run_delay_sweep(host.plan, host.seams()))
@@ -331,8 +347,10 @@ def test_the_durable_config_path_is_never_repointed(tmp_path):
     # Every swap was set_active_config_raw; the persisted anchor is untouched,
     # which is what makes reload() a complete restore.
     assert cam.loaded, "no graph was ever applied"
-    assert host._entry_config_path == "/etc/camilladsp/applied.yml"
-    assert cam.reloads == 1
+    # The sweep puts back the exact bytes it displaced, not the persisted
+    # anchor: an audition that was live when it started is still live after.
+    assert cam.loaded[-1] == cam.entry_raw
+    assert cam.reloads == 0
 
 
 def test_the_graph_is_put_back_when_a_capture_fails(tmp_path):
@@ -344,7 +362,7 @@ def test_the_graph_is_put_back_when_a_capture_fails(tmp_path):
     host = _host(tmp_path, cam=cam, producer=_Boom())
     with pytest.raises(RuntimeError):
         asyncio.run(run_delay_sweep(host.plan, host.seams()))
-    assert cam.reloads == 1
+    assert cam.loaded[-1] == cam.entry_raw
 
 
 def test_the_graph_is_put_back_when_the_sweep_is_cancelled(tmp_path):
@@ -359,7 +377,7 @@ def test_the_graph_is_put_back_when_the_sweep_is_cancelled(tmp_path):
             await task
 
     asyncio.run(drive())
-    assert cam.reloads == 1
+    assert cam.loaded[-1] == cam.entry_raw
 
 
 def test_a_box_running_no_graph_refuses_before_anything_is_applied(tmp_path):
@@ -426,3 +444,135 @@ def test_a_live_walk_banks_the_graded_artifact_end_to_end(tmp_path):
     assert artifact["verdict"]["selected_relative_delay_us"] == pytest.approx(100.0)
     assert len(artifact["steps"]) == len(producer.operations)
     assert set(artifact["rows"])
+
+
+# --------------------------------------------------------------------------- #
+# what the real producer requires of a delay_null caller
+# --------------------------------------------------------------------------- #
+
+
+def test_every_capture_carries_a_real_delay_confirmation(tmp_path):
+    # The producer computes `delay_current = readback.delay_confirmation is not
+    # None` for delay_null, and admission refuses PROTECTION_EVIDENCE_STALE when
+    # it is None. A None here means the sweep cannot play a single tone.
+    producer = _Producer()
+    host = _host(tmp_path, producer=producer)
+    asyncio.run(run_delay_sweep(host.plan, host.seams()))
+
+    assert producer.contexts
+    for operation, context in zip(producer.operations, producer.contexts):
+        confirmation = context.delay_confirmation
+        assert confirmation is not None
+        # And it is the confirmation for THIS coordinate, proven against the
+        # zero-relative snapshot staged at sweep start.
+        assert confirmation.relative_delay_us == pytest.approx(
+            operation.relative_delay_us
+        )
+        # And what the DSP actually read back equals what was requested.
+        assert confirmation.readback_relative_delay_us == pytest.approx(
+            operation.relative_delay_us
+        )
+
+
+def test_every_capture_carries_host_proved_bass_authority(tmp_path):
+    # `_protection_evidence` refuses `graph_authority_unproven` without it.
+    producer = _Producer()
+    host = _host(tmp_path, producer=producer)
+    asyncio.run(run_delay_sweep(host.plan, host.seams()))
+
+    for context in producer.contexts:
+        assert isinstance(context.bass_profile_summary, Mapping)
+        assert context.bass_profile_summary == NO_BASS_EXTENSION_PROFILE_SUMMARY
+
+
+def test_the_fresh_readback_seam_also_carries_both(tmp_path):
+    # The producer re-reads through `fresh_readback` inside its own lock; a
+    # confirmation present only on the first observation would still refuse.
+    producer = _Producer()
+    host = _host(tmp_path, producer=producer)
+    asyncio.run(run_delay_sweep(host.plan, host.seams()))
+
+    assert producer.fresh
+    for readback in producer.fresh:
+        assert readback.delay_confirmation is not None
+        assert isinstance(readback.bass_profile_summary, Mapping)
+
+
+# --------------------------------------------------------------------------- #
+# the hold, the fader, and poses
+# --------------------------------------------------------------------------- #
+
+
+def test_the_sweep_holds_the_box_for_its_whole_duration_and_lets_go(tmp_path):
+    seen = []
+
+    class _Watching(_Producer):
+        async def capture(self, operation, context):
+            seen.append(measurement_hold.held())
+            return await super().capture(operation, context)
+
+    host = _host(tmp_path, producer=_Watching())
+    asyncio.run(run_delay_sweep(host.plan, host.seams()))
+
+    # Checking the door is not the same as standing in it: without taking the
+    # hold, a seat-level or angle-capture door could move the fader mid-sweep.
+    assert seen and all(seen), "the hold was not held while capturing"
+    assert measurement_hold.held() is False
+    assert measurement_hold.owner() is None
+
+
+def test_the_hold_is_released_even_when_the_sweep_fails(tmp_path):
+    class _Boom(_Producer):
+        async def capture(self, operation, context):
+            raise RuntimeError("capture exploded")
+
+    host = _host(tmp_path, producer=_Boom())
+    with pytest.raises(RuntimeError):
+        asyncio.run(run_delay_sweep(host.plan, host.seams()))
+    assert measurement_hold.held() is False
+
+
+def test_a_hold_another_owner_already_has_refuses_the_sweep(tmp_path):
+    measurement_hold.acquire("somebody-else")
+    cam = _Cam(_live_yaml())
+    producer = _Producer()
+    host = _host(tmp_path, cam=cam, producer=producer)
+    with pytest.raises(DelaySweepRefused):
+        asyncio.run(run_delay_sweep(host.plan, host.seams()))
+    assert cam.loaded == []
+    assert producer.operations == []
+
+
+def test_no_graph_swap_pays_the_fader_bracket(tmp_path):
+    cam = _Cam(_live_yaml())
+    host = _host(tmp_path, cam=cam)
+    asyncio.run(run_delay_sweep(host.plan, host.seams()))
+
+    # duck=True would pay ~0.94 s on every coordinate and, because its release
+    # is best-effort, could strand the box a step down for the rest of the run.
+    assert cam.ducked and not any(cam.ducked)
+
+
+def test_a_multi_pose_plan_is_refused_because_nothing_here_moves_the_mic(tmp_path):
+    spec = sweep_spec(
+        crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
+    )
+    plan = DelaySweepPlan(
+        spec=spec, inverted_role="tweeter", role_channels=ROLE_CHANNELS,
+        poses_deg=(0, 30),
+    )
+    with pytest.raises(DelaySweepRefused) as excinfo:
+        _host(tmp_path, plan=plan)
+    assert excinfo.value.reason == REFUSE_POSES
+
+
+def test_an_unreadable_listening_volume_refuses_rather_than_crashing(tmp_path):
+    class _Mute(_Cam):
+        async def get_volume_db(self):
+            return None
+
+    host = _host(tmp_path, cam=_Mute(_live_yaml()))
+    with pytest.raises(DelaySweepRefused):
+        asyncio.run(run_delay_sweep(host.plan, host.seams()))
+    assert measurement_hold.held() is False
