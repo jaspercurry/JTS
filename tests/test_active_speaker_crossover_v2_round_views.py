@@ -1129,3 +1129,75 @@ def test_the_cli_entry_verb_exits_0_when_there_is_nothing_to_grade(tmp_path):
     assert written["available"] is False
     assert written["report"] is None
     assert written["reason"]
+
+
+def _write_state(round_dir: Path, payload: dict[str, Any]) -> None:
+    (round_dir / "state.json").write_text(json.dumps(payload))
+
+
+def test_the_entry_grade_attributes_the_round_and_its_ordinal_epoch(tmp_path):
+    """An unattributed table is not a disclosure.
+
+    "The entry state was this flat" means one thing at round 1 of a fresh box
+    and another at round 1 after a republish reset the count — so the ordinal
+    and the epoch it counts in ride on the result and its payload.
+    """
+    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
+    _write_state(round_dir, {
+        "round_receipt": {"round_ordinal": 2}, "round_ordinal_epoch": 3,
+    })
+
+    grade = entry_state_grade(load_banked_round(round_dir))
+
+    assert grade.round_ordinal == 2
+    assert grade.round_ordinal_epoch == 3
+    payload = grade.to_dict()
+    assert payload["round_ordinal"] == 2
+    assert payload["round_ordinal_epoch"] == 3
+
+
+def test_an_unrecorded_ordinal_reads_as_not_recorded_never_zero(tmp_path):
+    """``None`` and ``0`` are different facts, and the epoch's whole meaning
+    turns on the difference: ``0`` is "never reset", which a round that simply
+    banked no state file has said nothing about.
+
+    ``bool`` is rejected too — a hand-edited ``true`` must not publish as
+    epoch 1.
+    """
+    no_state = _round_with_entry_baseline(tmp_path / "a", magnitude_db=_flat_curve())
+    grade = entry_state_grade(load_banked_round(no_state))
+    assert grade.round_ordinal is None
+    assert grade.round_ordinal_epoch is None
+
+    booly = _round_with_entry_baseline(tmp_path / "b", magnitude_db=_flat_curve())
+    _write_state(booly, {
+        "round_receipt": {"round_ordinal": True}, "round_ordinal_epoch": True,
+    })
+    boolean = entry_state_grade(load_banked_round(booly))
+    assert boolean.round_ordinal is None
+    assert boolean.round_ordinal_epoch is None
+
+
+def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, capsys):
+    """An UNEVALUABLE band is not a failing band.
+
+    A band whose every bin the take's own gate clamped away has no evidence —
+    ``passed is None``, never ``False`` — and a summary that counted it as
+    failing would report a band nobody could measure as one that measured
+    badly. Driven through the console script, on the same masked fixture the
+    product-level mask test uses.
+    """
+    from jasper.cli import round_views as cli
+
+    curve = _flat_curve()
+    spike = GRID >= 8000.0
+    curve[spike] += 6.0
+    round_dir = _round_with_entry_baseline(
+        tmp_path, magnitude_db=curve, excluded=spike,
+    )
+
+    assert cli.main(["entry", str(round_dir)]) == 0
+
+    summary = capsys.readouterr().err
+    assert "1 unevaluable" in summary
+    assert "0 failing" in summary

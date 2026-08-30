@@ -548,13 +548,61 @@ def reset_v2_journey_state() -> None:
     v2-aware Undo (:func:`handle_v2_restore`, W6.8) restores from. A full
     :func:`clear_v2_state` here would unlink the sole reference to the retained
     pre-candidate snapshot, leaving the applied graph playing with Undo
-    permanently unreachable. Not applied ⇒ full clear, as before.
+    permanently unreachable. Not applied ⇒ full clear, as before — except that
+    the clear carries the ordinal-sequence epoch when one has been set, because
+    ``applied`` is not the same question as "is a measured graph playing" and a
+    reset marker any later path can erase is not a disclosure. See the two
+    branches for the whole argument.
     """
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        ROUND_ORDINAL_EPOCH_STATE_KEY,
+        round_ordinal_epoch_from_state,
+    )
+
     state = load_v2_state()
     if state is None:
         return
+    epoch = round_ordinal_epoch_from_state(state)
     if not state.get("applied"):
-        clear_v2_state()
+        # **The clear CARRIES the epoch.** ``applied`` is not "is a measured
+        # graph playing" — the republish door sets it ``False`` while the graph
+        # it published keeps playing, and says so — so this branch is reachable
+        # on a speaker that has already been tuned AND already had its ordinal
+        # sequence reset. Unlinking the file there would destroy the marker and
+        # the next round would read "round 1, epoch 0": a fresh box, on a
+        # speaker that is anything but.
+        #
+        # A reset marker that any later path can erase is not a disclosure, so
+        # once set it survives every clear. ``epoch == 0`` still unlinks
+        # outright — there is nothing to carry, and a box that has never been
+        # reset must keep leaving no file at all.
+        #
+        # NOT routed through the receipt-dropping branch below instead: that
+        # branch writes ``applied: True``, which on this path would claim an
+        # apply this session never made — trading a lost disclosure for a false
+        # one. The clean-start shape is written here verbatim so every reader
+        # sees the same falsy journey fields a full clear leaves.
+        if not epoch:
+            clear_v2_state()
+            return
+        save_v2_state({
+            ROUND_ORDINAL_EPOCH_STATE_KEY: epoch,
+            "session_id": None,
+            "accepted_phases": [],
+            "applied": False,
+            "gain_plan_db": None,
+            "candidate": None,
+            "verify": None,
+            "failure": None,
+            "apply_blocked": None,
+            "verify_priors": None,
+            "evidence": None,
+        })
+        log_event(
+            logger,
+            "correction.crossover_v2_journey_reset_kept_epoch",
+            round_ordinal_epoch=epoch,
+        )
         return
     pre_apply_profile = state.get("pre_apply_profile")
     attempts_loop = state.get("attempts_loop")
@@ -567,16 +615,32 @@ def reset_v2_journey_state() -> None:
     # counted only one of the two doors would make "epoch 0" mean "never reset"
     # on one path and "reset by the other door" on the other.
     #
-    # The not-applied branch above is a full ``clear_v2_state`` and needs no
-    # marker: nothing measured is left on the speaker, so a count restarting at
-    # 1 there is not a reset, it is the truth.
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        ROUND_ORDINAL_EPOCH_STATE_KEY,
-        round_ordinal_epoch_from_state,
+    # **Incremented only when there was a receipt to drop.** ``applied`` can be
+    # ``True`` with no round ever graded (an apply whose VERIFY never landed),
+    # and repeated Start-Over taps there would inflate the epoch — disclosing
+    # resets that never happened, which is the same dishonesty as hiding one.
+    dropped_receipt = state.get("round_receipt")
+    reset_from = (
+        dropped_receipt.get("round_ordinal")
+        if isinstance(dropped_receipt, Mapping)
+        else None
     )
+    reset_round_ordinal_from = (
+        reset_from
+        if isinstance(reset_from, int) and not isinstance(reset_from, bool)
+        else None
+    )
+    if dropped_receipt is not None:
+        epoch += 1
+        log_event(
+            logger,
+            "correction.crossover_v2_journey_reset_advanced_epoch",
+            round_ordinal_epoch=epoch,
+            reset_round_ordinal_from=reset_round_ordinal_from,
+        )
 
     save_v2_state({
-        ROUND_ORDINAL_EPOCH_STATE_KEY: round_ordinal_epoch_from_state(state) + 1,
+        ROUND_ORDINAL_EPOCH_STATE_KEY: epoch,
         "session_id": None,
         "accepted_phases": [],
         "applied": True,

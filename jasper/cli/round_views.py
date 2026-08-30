@@ -132,10 +132,19 @@ def _cmd_entry(args: argparse.Namespace) -> int:
         # reserved for a round directory that could not be read at all.
         print(f"entry-state: NOT GRADED — {grade.reason}", file=sys.stderr)
         return EXIT_OK
-    n_failed = sum(1 for band in report.bands if band.passed is not True)
+    # `is False` / `is None`, never a bare truthiness test, for exactly the
+    # reason `_cmd_agreement` states below: an UNEVALUABLE band (no
+    # non-excluded bin survived) is not a failing one, and collapsing them
+    # would report a band nobody could measure as one that measured badly.
+    n_failed = sum(1 for band in report.bands if band.passed is False)
+    n_unevaluable = sum(1 for band in report.bands if band.passed is None)
+    ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal
+    epoch = "?" if grade.round_ordinal_epoch is None else grade.round_ordinal_epoch
     print(
-        f"entry-state: {len(report.bands)} band(s), {n_failed} not passing; "
+        f"entry-state: {len(report.bands)} band(s), {n_failed} failing, "
+        f"{n_unevaluable} unevaluable; "
         f"overall_passed={report.overall_passed} "
+        f"round={ordinal} epoch={epoch} "
         f"graph={grade.graph_fingerprint or '(not recorded)'}"
         f"{f' -> {written}' if written else ''}",
         file=sys.stderr,
@@ -319,9 +328,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-round-views",
         description=(
-            "The round-grading comparison views: frozen-reference grading, "
-            "per-seat curves, session-to-session repeatability, per-seat "
-            "agreement, and the shared frequency view — over banked rounds."
+            "The round-grading comparison views: entry-state grading, "
+            "frozen-reference grading, per-seat curves, session-to-session "
+            "repeatability, per-seat agreement, and the shared frequency "
+            "view — over banked rounds."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

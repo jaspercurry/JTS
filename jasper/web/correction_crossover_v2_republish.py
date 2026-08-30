@@ -313,6 +313,16 @@ def handle_v2_republish(
         bundle_session_id=banked.bundle_session_id,
         relay_session_id=banked.relay_session_id,
     )
+    # The ordinal reset gets its own line, on this module's own standard (see
+    # ``_refused``): an operator reaches this door when something has already
+    # gone wrong, and the journal is where they look next. A sequence reset
+    # that only ever reached the HTTP response is invisible there.
+    log_event(
+        logger,
+        "correction.crossover_v2_round_ordinal_epoch_advanced",
+        round_ordinal_epoch=epoch,
+        reset_round_ordinal_from=republished["reset_round_ordinal_from"],
+    )
     return {
         "status": "republished",
         "republished": republished,

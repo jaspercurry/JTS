@@ -720,3 +720,75 @@ def test_the_epoch_survives_the_next_rounds_persist(bank):
     after = v2host.load_v2_state()
     assert after["session_id"] == "s-after"
     assert coordinator.round_ordinal_epoch_from_state(after) == 1
+
+
+def test_start_over_after_a_republish_does_not_destroy_the_epoch(bank):
+    """The clear_v2_state hole, pinned at the sequence a household walks.
+
+    ``applied`` is not "is a measured graph playing": the republish door sets
+    it ``False`` while the graph it published keeps playing, and concedes as
+    much in its own comment. So Start-Over then takes the NOT-applied branch,
+    whose justification — nothing measured is left on the speaker — is false
+    here. Unlinking the state file there destroys the epoch, and the next round
+    reads "round 1, epoch 0": a fresh box, on a speaker that has already been
+    tuned AND already had its count reset.
+    """
+    candidate = _candidate()
+    _publish(bank, candidate)
+    _round_receipt_state(3)
+    republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+    assert coordinator.round_ordinal_epoch_from_state(v2host.load_v2_state()) == 1
+    # The precondition the hole depends on, asserted rather than assumed.
+    assert v2host.load_v2_state()["applied"] is False
+
+    v2host.reset_v2_journey_state()
+
+    position = coordinator.series_position_from_state(v2host.load_v2_state())
+    assert position.ordinal == 1
+    assert position.ordinal_epoch == 1, (
+        "the reset marker must survive Start-Over; a disclosure any later "
+        "path can erase is not a disclosure"
+    )
+
+
+def test_a_start_over_with_no_graded_round_does_not_invent_a_reset(bank):
+    """The other direction: over-disclosure is the same bug, mirrored.
+
+    ``applied`` can be ``True`` with no round ever graded — an apply whose
+    VERIFY never landed leaves no ``round_receipt``. There is nothing to drop,
+    so nothing was reset, and repeated Start-Over taps must not inflate the
+    count into resets that never happened.
+    """
+    v2host.save_v2_state({
+        "applied": True,
+        "pre_apply_profile": {"candidate_fingerprint": "fp-prev"},
+    })
+
+    v2host.reset_v2_journey_state()
+    after_one = coordinator.round_ordinal_epoch_from_state(v2host.load_v2_state())
+    v2host.reset_v2_journey_state()
+    v2host.reset_v2_journey_state()
+    after_three = coordinator.round_ordinal_epoch_from_state(v2host.load_v2_state())
+
+    assert after_one == 0
+    assert after_three == 0
+
+
+def test_start_over_banks_the_ordinal_it_reset_from(bank):
+    """Symmetric disclosure with the republish door: None-vs-count.
+
+    A dropped receipt names the ordinal that stops existing; the increment and
+    that number travel together, so a reader is never told the count moved
+    without being told what it moved from.
+    """
+    v2host.save_v2_state({
+        "applied": True,
+        "round_receipt": {"round_ordinal": 4},
+        "pre_apply_profile": {"candidate_fingerprint": "fp-prev"},
+    })
+
+    v2host.reset_v2_journey_state()
+
+    state = v2host.load_v2_state()
+    assert coordinator.round_ordinal_epoch_from_state(state) == 1
+    assert state.get("round_receipt") is None
