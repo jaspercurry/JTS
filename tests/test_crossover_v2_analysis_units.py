@@ -9,7 +9,7 @@ Four behaviours, and nothing about the table's prose:
   1. **The names are a vocabulary.** Unique, and the derived set is derived.
   2. **The fields partition the produced class.** Every unit field is a real
      ``ProgramAnalysis`` field, no field belongs to two units, and the union is
-     the twenty produced ones — which is what makes "fifteen units" a count of
+     the twenty-one produced ones — which is what makes "sixteen units" a count of
      something rather than an assertion.
   3. **Every gate is total.** Over a generated grid of programs and priors, no
      gate raises and every gate answers with a code or ``""``. A gate that
@@ -264,7 +264,7 @@ def test_every_unit_runs_on_some_bank():
     It takes TWO banks, not one, and that is the point rather than a weakness:
     the level-check units and the sweep units are mutually exclusive by content,
     because the only phase whose analyzer binds `ambient_report` and `gain_plan`
-    is the one that carries no sweep. A single bank running all fifteen would
+    is the one that carries no sweep. A single bank running all sixteen would
     mean the separator was not doing its job.
     """
     everything = tuple(
@@ -289,7 +289,7 @@ def test_every_unit_runs_on_some_bank():
         ran |= {unit.name for unit in ANALYSIS_UNITS if not unit.gate(inputs)}
     assert ran == ANALYSIS_NAMES
 
-    # And neither bank alone reaches all fifteen — the exclusion is real.
+    # And neither bank alone reaches all sixteen — the exclusion is real.
     for inputs in (sweeps, level_check):
         assert any(unit.gate(inputs) for unit in ANALYSIS_UNITS)
 

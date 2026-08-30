@@ -420,3 +420,34 @@ def test_a_document_spooled_before_the_coordinate_existed_still_reads(tmp_path):
 
     assert taken is not None
     assert (taken.delayed_role, taken.delay_us) == ("", 0.0)
+
+
+def test_a_curve_passed_as_the_wrong_branch_is_refused():
+    """The two curves reach the reader positionally. Swapped, the model would
+    delay and invert the wrong branches and say nothing about it — so the
+    banked ``role`` is checked against the slot it was passed in."""
+    with pytest.raises(DelayLandscapeError):
+        compute_landscape(
+            _curve("tweeter", arrival_us=0.0),   # tweeter in the lower slot
+            _curve("woofer", arrival_us=100.0),
+            spec=_spec(),
+            inverted_role="tweeter",
+        )
+
+
+def test_the_shared_band_comes_from_each_curve_s_declared_sweep_not_its_grid():
+    """Real banks resample every curve onto ONE evidence grid and keep the band
+    actually swept in ``band_hz``. Read from the grid, the overlap would be the
+    same for both drivers, the shoulder-span refusal could never fire, and the
+    sum would include bins neither driver was swept over."""
+    grid = np.linspace(200.0, 12000.0, 512)
+    woofer = _curve("woofer", arrival_us=100.0, freqs=grid)
+    tweeter = _curve("tweeter", arrival_us=0.0, freqs=grid)
+    # Both on one grid, but the tweeter was only swept from above Fc/2 upward —
+    # so this pair cannot decide a null at the lower shoulder.
+    tweeter["band_hz"] = [FC_HZ * 0.75, 12000.0]
+
+    with pytest.raises(DelayLandscapeError):
+        compute_landscape(
+            woofer, tweeter, spec=_spec(), inverted_role="tweeter",
+        )

@@ -69,7 +69,7 @@ walker's contract to apply, not this table's.
 
 **One forfeit, recorded rather than discovered later.** With no per-unit ``run``
 callable, per-unit failure isolation is bounded by the layer's single entry
-point: one ``analyze_program_capture`` raise fails all fifteen produce-halves at
+point: one ``analyze_program_capture`` raise fails all sixteen produce-halves at
 once. Only *gate* raises are isolated per unit, and gates are the half this
 module owns. A walker that wants finer isolation needs the layer to grow
 per-unit entry points first; nothing here forecloses that, since a ``run`` field
@@ -191,7 +191,7 @@ class AnalysisUnit:
     ``fields`` is the unit's identity, not decoration: the unit definition IS a
     set of ``ProgramAnalysis`` fields that travel together, and it is the wire
     shape a walker projects — ``results`` keyed by unit name must not hold
-    fifteen references to one whole analysis object.
+    sixteen references to one whole analysis object.
 
     ``gate`` returns ``""`` to run and a skip code otherwise. It must be total:
     a gate that raises turns an honest skip into a failure, and the two are
@@ -370,7 +370,7 @@ def _needs_crossover_target(inputs: AnalysisInputs) -> str:
     return ""
 
 
-#: The fifteen units, in walk order. Order is load-bearing — `candidate`
+#: The sixteen units, in walk order. Order is load-bearing — `candidate`
 #: consumes `alignment`'s output, and the verify trio narrows left to right —
 #: and it is pinned, the way ``TOOL_PACKS``'s is.
 ANALYSIS_UNITS: tuple[AnalysisUnit, ...] = (

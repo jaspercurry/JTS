@@ -163,7 +163,7 @@ def test_a_real_bank_produces_results_for_every_unit_it_can_feed(bank):
 
 
 def test_results_hold_only_the_fields_each_unit_owns(bank):
-    """Fifteen keys must not be fifteen references to one whole analysis."""
+    """Sixteen keys must not be sixteen references to one whole analysis."""
     root, records = bank
     walk = walk_bank(records, _state(), _declared(root))
     by_name = {unit.name: unit for unit in ANALYSIS_UNITS}
@@ -474,7 +474,7 @@ async def test_an_empty_bank_says_every_gate_said_no_rather_than_nothing(bank):
 
 @pytest.mark.asyncio
 async def test_a_session_with_no_records_skips_nothing_at_all():
-    """The other empty: no bank means no units to report on, not fifteen."""
+    """The other empty: no bank means no units to report on, not sixteen."""
     session, _fakes = tuning_session()
     outcome = await session.analyze()
     assert outcome.results == {}

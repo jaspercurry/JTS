@@ -12,9 +12,10 @@ The method of record is compute-then-confirm, and the split is the point:
   (:func:`~.spatial.pose_curve_record`), so the transfer functions reconstruct
   exactly and the landscape falls out of evidence that is already on disk.
   **No audio plays.** An existing MEASURE bank answers this today.
-* **DISPOSE** — play the acoustic null at the computed optimum and its two
+* **DISPOSE** — play the acoustic null at the computed optimum and its
   neighbours, inverted branch plus candidate delay, and measure what actually
-  cancels. Three takes rather than a blind sweep of nine to twenty-five.
+  cancels. Three takes (two at a grid edge) rather than a blind sweep of nine
+  to twenty-five.
 
 This is not the low-SNR alignment estimator wearing a new hat. That heuristic
 read a delay off one capture's arrival time and, when the branch SNR would not
@@ -63,13 +64,34 @@ class DelayLandscapeError(ValueError):
     """The banked curves cannot support a delay landscape."""
 
 
-def _curve(raw: Mapping[str, Any], *, field_name: str) -> tuple[Any, Any]:
-    """Reconstruct one banked curve's complex transfer, exactly as banked."""
+def _curve(
+    raw: Mapping[str, Any], *, field_name: str, expected_role: str
+) -> tuple[Any, Any, tuple[float, float]]:
+    """Reconstruct one banked curve's complex transfer, exactly as banked.
+
+    Returns the grid, the transfer, and the driver's own SWEPT band. The band is
+    not the grid: :func:`~.spatial.lateral_pose_curve` resamples every curve onto
+    one shared evidence grid and keeps the band it actually swept in
+    ``band_hz``. Deriving the overlap from grid endpoints would therefore find
+    the same extent for both drivers on real bank data — the shoulder-span
+    refusal could never fire, and the sum would include bins neither driver was
+    swept over.
+
+    ``expected_role`` is checked against the banked ``role`` because the two
+    curves reach the caller positionally: swapped, the model would delay and
+    invert the wrong branches and say nothing.
+    """
 
     import numpy as np
 
     if not isinstance(raw, Mapping):
         raise DelayLandscapeError(f"{field_name} must be a banked curve mapping")
+    role = raw.get("role")
+    if role is not None and str(role) != expected_role:
+        raise DelayLandscapeError(
+            f"{field_name} is the {role!r} curve, but was passed as "
+            f"{expected_role!r}"
+        )
     try:
         freqs = np.asarray([float(hz) for hz in raw["freqs_hz"]], dtype=float)
         magnitude_db = np.asarray(
@@ -85,8 +107,20 @@ def _curve(raw: Mapping[str, Any], *, field_name: str) -> tuple[Any, Any]:
     if not np.all(np.isfinite(freqs)):
         raise DelayLandscapeError(f"{field_name} carries a non-finite frequency")
     # The exact inverse of pose_curve_record's serialization (ruling S3).
+    band = raw.get("band_hz")
+    if (
+        isinstance(band, (list, tuple))
+        and len(band) == 2
+        and all(isinstance(edge, (int, float)) for edge in band)
+    ):
+        swept = (float(band[0]), float(band[1]))
+    else:
+        # A curve that does not declare its band is taken at its grid extent.
+        swept = (float(freqs[0]), float(freqs[-1]))
+    if not swept[0] < swept[1]:
+        raise DelayLandscapeError(f"{field_name} declares an empty band")
     tf = 10.0 ** (magnitude_db / 20.0) * np.exp(1j * np.radians(phase_deg))
-    return freqs, tf
+    return freqs, tf, swept
 
 
 def _resample(freqs_out, freqs_in, tf):
@@ -127,13 +161,18 @@ def predicted_null_depth_db(
     if inverted_role not in {lower_role, upper_role}:
         raise DelayLandscapeError("the inverted role must be one of the two branches")
 
-    lower_freqs, lower_tf = _curve(lower_curve, field_name="lower curve")
-    upper_freqs, upper_tf = _curve(upper_curve, field_name="upper curve")
+    lower_freqs, lower_tf, lower_band = _curve(
+        lower_curve, field_name="lower curve", expected_role=lower_role
+    )
+    upper_freqs, upper_tf, upper_band = _curve(
+        upper_curve, field_name="upper curve", expected_role=upper_role
+    )
 
-    # The two curves are measured on their own sweep bands, so the sum is taken
-    # on the overlap they share. A crossover null lives in exactly that overlap.
-    lo = max(float(lower_freqs[0]), float(upper_freqs[0]))
-    hi = min(float(lower_freqs[-1]), float(upper_freqs[-1]))
+    # The two drivers sweep their own bands, so the sum is taken on the overlap
+    # they SHARE — read from each curve's declared band, never from the grid it
+    # was resampled onto. A crossover null lives in exactly that overlap.
+    lo = max(lower_band[0], upper_band[0])
+    hi = min(lower_band[1], upper_band[1])
     if not lo < crossover_fc_hz / 2.0 or not crossover_fc_hz * 2.0 < hi:
         raise DelayLandscapeError(
             "the banked curves do not span both crossover shoulders"
@@ -237,9 +276,10 @@ def compute_landscape(
         range(len(coordinates)),
         key=lambda i: (depths[i], -abs(coordinates[i] - spec.geometry_seed_us)),
     )
-    # The optimum plus its immediate neighbours: three takes that show whether
-    # the measured null sits where the model put it AND falls away either side
-    # of it. A single take cannot tell a real null from a lucky level.
+    # The optimum plus its immediate neighbours -- three takes, or two when the
+    # optimum lands on a grid edge. They show whether the measured null sits
+    # where the model put it AND falls away either side of it; a single take
+    # cannot tell a real null from a lucky level.
     neighbours = tuple(
         coordinates[i]
         for i in (best_index - 1, best_index, best_index + 1)
@@ -317,6 +357,11 @@ def confirmation_verdict(
     # measured one floors on noise and room, so "measured shallower than
     # predicted" is the normal case and not evidence of anything. The delta is
     # banked as evidence; it does not decide agreement.
+    # Read against the coordinates that were CONFIRMED, which is the optimum and
+    # its neighbours — not the whole grid. So this says "no confirmed neighbour
+    # beat the optimum", a narrower claim than "the null is here"; a null living
+    # somewhere else entirely is caught by `promised_unkept` below, when the
+    # model predicted a usable one and the room did not produce it.
     located = at_optimum >= deepest_measured - MODEL_AGREEMENT_DB
     # The one depth claim that IS comparable: the model said this coordinate
     # would give a usable null, and the room did not.

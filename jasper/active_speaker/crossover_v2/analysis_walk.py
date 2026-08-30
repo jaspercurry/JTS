@@ -14,7 +14,7 @@ being a table.
 analysis layer has one entry point, ``analyze_program_capture``, and it computes
 every field in one pass. So a gate raising takes out its own unit and nothing
 else, while a raise inside the layer fails **all** the produce-halves together —
-that is a `failed` walk, not fifteen skips, and the two must not be confused. The
+that is a `failed` walk, not sixteen skips, and the two must not be confused. The
 forfeit is recorded at :mod:`.analysis_units`; this module is where it is
 enforced.
 
@@ -215,8 +215,8 @@ def capture_inputs(
 def _analysis(inputs: AnalysisInputs, samples: Any, rate: int) -> ProgramAnalysis:
     """The single analysis entry, called ONCE per capture.
 
-    Not once per unit: the layer has no per-unit entry point, and fifteen calls
-    would be fifteen full analyses of one capture for one dataclass each.
+    Not once per unit: the layer has no per-unit entry point, and sixteen calls
+    would be sixteen full analyses of one capture for one dataclass each.
     """
     return analyze_program_capture(
         inputs.program,
@@ -237,7 +237,7 @@ def walk_bank(
     Answered **per record**: a unit's outcome is a fact about one capture, and
     two captures in one bank routinely disagree about it. Within a record,
     ``results`` is keyed by unit name and holds only the fields that unit owns —
-    fifteen keys must not be fifteen references to one whole analysis.
+    sixteen keys must not be sixteen references to one whole analysis.
     """
     results: dict[str, dict[str, Any]] = {}
     skipped: dict[str, tuple[AnalysisSkip, ...]] = {}

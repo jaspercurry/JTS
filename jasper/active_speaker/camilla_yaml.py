@@ -50,7 +50,6 @@ from jasper.camilla_emit import (
     fmt,
     mono_sum_sources,
 )
-from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.log_event import log_event
 from jasper.sound.camilla_yaml import emit_sound_config
@@ -2840,10 +2839,14 @@ def _emit_commissioning_filter_definitions(
             )
         for role, delay_us in sorted(delays.items()):
             value = float(delay_us)
-            if not math.isfinite(value) or value < 0.0 or value > MAX_DSP_DELAY_US:
+            if not math.isfinite(value):
+                # Caught here because a non-finite value emits `delay: .nan`,
+                # which parses back as a float and would read as a bound
+                # question rather than a nonsense one. The RANGE is the shared
+                # proof's (`_assert_measurement_delays_bound`), not a second
+                # copy here.
                 raise ActiveSpeakerConfigError(
-                    f"measurement delay for {role!r} is outside the DSP bound: "
-                    f"{delay_us!r}"
+                    f"measurement delay for {role!r} is not finite: {delay_us!r}"
                 )
             lines.extend(_emit_delay_filter(
                 _driver_delay_name(role), delay_ms=value / 1000.0,
@@ -3445,6 +3448,54 @@ def _assert_pipeline_references_closed(
     )
 
 
+def _assert_measurement_delays_bound(
+    yaml_text: str,
+    measurement_delays_us: Mapping[str, float] | None,
+    *,
+    role_channels: Mapping[str, int],
+    preset: ActiveSpeakerPreset,
+) -> None:
+    """Prove each requested delay actually landed, through the shared proof.
+
+    :func:`~jasper.audio_measurement.delay_graph.prove_static_delay_binding` is
+    the tree's one answer to "does this graph carry that delay": it checks the
+    value through the same quantizer a later proof would, that the filter
+    occurs in EXACTLY ONE pipeline step wired to exactly the role's channels,
+    the 20 ms DSP bound, and ``devices.volume_limit``. Consuming it here rather
+    than re-checking those things by hand is what keeps one answer to the
+    question — and it is structural, so it catches an orphan filter or a
+    duplicate definition that a value check alone would miss.
+    """
+    if not measurement_delays_us:
+        return
+    import yaml as yaml_lib
+
+    from jasper.audio_measurement.delay_graph import prove_static_delay_binding
+    from jasper.audio_measurement.null_walk import NullWalkError
+
+    parsed = yaml_lib.safe_load(yaml_text)
+    if not isinstance(parsed, dict):
+        raise ActiveSpeakerConfigError("emitted program graph did not parse")
+    for role, delay_us in sorted(measurement_delays_us.items()):
+        channels = tuple(sorted(_channels_for_role(preset, role) or ()))
+        if not channels:
+            channels = (int(role_channels[role]),)
+        try:
+            prove_static_delay_binding(
+                parsed,
+                delay_filter_name=_driver_delay_name(role),
+                channels=channels,
+                delay_us=float(delay_us),
+            )
+        except NullWalkError as exc:
+            # The proof's whole error family: `DelayGraphProofError` carries the
+            # typed failure code and subclasses this.
+            raise ActiveSpeakerConfigError(
+                f"the emitted program graph does not carry the requested "
+                f"{role!r} measurement delay: {exc}"
+            ) from exc
+
+
 def _assert_program_graph_proven(
     yaml_text: str,
     preset: ActiveSpeakerPreset,
@@ -3804,6 +3855,9 @@ pipeline:
     _assert_program_graph_proven(
         yaml, preset, min_corner_hz=protective_hp_min_corner_hz,
         tweeter_hp_name=tweeter_hp_name,
+    )
+    _assert_measurement_delays_bound(
+        yaml, measurement_delays_us, role_channels=role_channels, preset=preset,
     )
 
     if out_path is not None:
