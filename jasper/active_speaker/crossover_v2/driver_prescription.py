@@ -892,15 +892,21 @@ class DriverPrescription:
     #: A named trim is CARRIED, not re-solved: :func:`~.planning.build_candidate`
     #: folds it over the round's own solved value. The solver still measures and
     #: banks its answer for the role — the pin decides only what the candidate
-    #: ships, so a transplanted filter chain keeps the level it was shaped
-    #: against instead of riding a level-match datum re-derived this round.
+    #: ships. It holds the ABSOLUTE per-driver level the chain was shaped
+    #: against, so a transplanted filter chain keeps that level instead of riding
+    #: a level-match datum re-derived this round.
+    #:
+    #: An absolute pin does NOT promise to preserve the inter-driver delta: it
+    #: overrides this role's trim while the round's own common-mode reference set
+    #: the others, and the two agree only when the pin was captured against that
+    #: same reference (true on a woofer-referenced 2-way, not in general). Where
+    #: they differ the pinned branch may leave the ceiling under-used — the safe
+    #: direction, and charged honestly as headroom by ``build_candidate`` against
+    #: the pinned value.
     #:
     #: Non-positive by the gate, on the same bound
     #: ``MeasuredCrossoverCandidate`` re-proves: the emitted graph refuses a
-    #: positive per-driver Gain and a pin is not a way past it. The common-mode
-    #: normalize that runs before this (``intervention.anchor_trims``) subtracts
-    #: one shift from every role, so it preserves the inter-driver delta — which
-    #: is the thing a pin protects.
+    #: positive per-driver Gain and a pin is not a way past it.
     pinned_trim_db: tuple[tuple[str, float], ...] = ()
     #: The prescriber's own words. **Never parsed for behaviour** — no branch in
     #: this module or any caller reads it, and it is excluded by construction
@@ -1787,6 +1793,15 @@ def _parse_pinned_trim(
         if not isinstance(key, str) or not key.strip():
             _refuse(TRIM_PIN_MALFORMED, "pinned_trim_db keys must name a driver role")
         role = key.strip()
+        if role in out:
+            # Two keys that differ only in surrounding whitespace strip to one
+            # role; a silent last-wins would let a document name two trims for a
+            # driver and ship whichever the dict happened to iterate last.
+            _refuse(
+                TRIM_PIN_MALFORMED,
+                f"pinned_trim_db names role {role!r} more than once",
+                role=role,
+            )
         if role not in named:
             _refuse(
                 TRIM_PIN_MALFORMED,

@@ -1254,6 +1254,9 @@ def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
     {"woofer": -3.0},
     {"": -3.0},
     {"   ": -3.0},
+    # Two keys that strip to one role: a silent last-wins would let a document
+    # name two trims for a driver and ship whichever iterated last.
+    {"tweeter": -3.0, " tweeter": -6.5},
 ])
 def test_the_pin_is_judged_once_and_refuses_under_one_name(packet, pin):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:

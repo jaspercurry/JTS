@@ -1949,14 +1949,21 @@ _PINNED_TWEETER_DB = -7.25
 
 def _round_candidate(
     tmp_path, monkeypatch, *, pin: Any = None, failed_fit: bool = False,
+    filters: Any = None, classification: dict[str, Any] | None = None,
 ) -> Any:
     """One taken document, built through the real ``build_candidate``.
 
     ``failed_fit`` takes the SF2 degrade instead of the fitted lane — the two
     assign ``role_attenuations_db`` at different points, which is the whole
-    reason the pin folds above both rather than inside either.
+    reason the pin folds above both rather than inside either. ``filters`` /
+    ``classification`` reach the staged document so a caller can prescribe a
+    boosting branch, whose headroom charge is what makes the pinned trim
+    magnitude observable at all.
     """
-    _stage_driver(tmp_path, ordinal=9, pinned_trim_db=pin)
+    _stage_driver(
+        tmp_path, ordinal=9, pinned_trim_db=pin,
+        filters=filters, classification=classification,
+    )
     taken = spool.take_staged_prescription(
         round_ordinal=9, accepts=spool.STAGEABLE_KINDS
     ).prescription
@@ -2025,29 +2032,80 @@ def test_a_pinned_trim_is_charged_headroom_at_the_value_that_ships(
     )
 
 
+def test_a_pinned_boost_branch_is_charged_headroom_at_the_pinned_trim(
+    tmp_path, monkeypatch,
+):
+    """The fold-before-charge ordering, made observable.
+
+    A cut-only branch charges 0.0 headroom at any non-positive trim, so it
+    cannot tell a charge computed at the pinned trim from one at the trim the
+    round solved. A BOOSTING branch peaks above unity, so its headroom carries
+    the trim magnitude — and the pinned and control rounds, which ship different
+    trims, are charged different numbers. If the pin folded BELOW the charge the
+    pinned branch would be charged at the control's trim and the two would
+    match; that they differ is the ordering holding.
+    """
+    from jasper.active_speaker.branch_chain import branch_headroom_db
+    from jasper.active_speaker.crossover_v2.planning import _sections_for_candidate
+
+    boost = [_driver_boost(gain=10.0)]
+    cls = _driver_boostable()
+    pinned = _round_candidate(
+        tmp_path / "pinned", monkeypatch,
+        pin={"tweeter": _PINNED_TWEETER_DB}, filters=boost, classification=cls,
+    )
+    control = _round_candidate(
+        tmp_path / "control", monkeypatch, filters=boost, classification=cls,
+    )
+    p_entry = pinned.linearization["tweeter"]
+    c_entry = control.linearization["tweeter"]
+    sections = _sections_for_candidate(None, pinned.source_preset).get("tweeter", ())
+
+    # The charge is computed at the PINNED trim, and the boost makes that a real
+    # number this fixture actually spends.
+    assert p_entry["headroom_cost_db"] == pytest.approx(
+        branch_headroom_db(p_entry["filters"], sections=sections,
+                           trim_db=_PINNED_TWEETER_DB),
+        abs=1e-9,
+    )
+    assert p_entry["headroom_cost_db"] > 0.0
+    assert c_entry["headroom_cost_db"] > 0.0
+    # The mutation catch: charged at the pinned trim, not the trim the round
+    # solved, so it does NOT equal the same branch's charge on the control round.
+    assert control.role_attenuations_db["tweeter"] != _PINNED_TWEETER_DB
+    assert p_entry["headroom_cost_db"] != pytest.approx(
+        c_entry["headroom_cost_db"], abs=1e-6
+    )
+
+
 def test_the_receipt_discloses_a_pinned_trim_beside_what_the_round_measured(
     tmp_path, monkeypatch,
 ):
-    """Disclose, never block — and never worded as a measurement.
+    """Disclose, never block — and against the value the pin actually DISPLACED.
 
-    The solver still ran, so the receipt carries its answer and the gap beside
-    the pinned value rather than quietly replacing one with the other.
+    The round still solved the role, so the receipt carries what it would have
+    shipped absent the pin and the gap beside the pinned value. That baseline is
+    the trim THIS lane committed — which a no-pin control round ships for the
+    same role — not the program-analysis trim, whose fitted-lane value is the
+    pre-commit number and would misstate what the pin moved.
     """
     from jasper.active_speaker.crossover_v2.durable_state import _candidate_summary
 
     candidate = _round_candidate(
-        tmp_path, monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
+        tmp_path / "pinned", monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
     )
+    control = _round_candidate(tmp_path / "control", monkeypatch)
+    displaced = control.role_attenuations_db["tweeter"]
+    assert displaced != _PINNED_TWEETER_DB, "the fixture must have a gap to disclose"
 
     summary = _candidate_summary(candidate)
     disclosed = summary["trims_pinned"]
     assert set(disclosed) == {"tweeter"}
     assert disclosed["tweeter"]["pinned_db"] == _PINNED_TWEETER_DB
-    measured = disclosed["tweeter"]["measured_db"]
-    assert isinstance(measured, float)
-    assert measured != _PINNED_TWEETER_DB, "the fixture must have a gap to disclose"
+    # The exact value the round displaced, not the analysis trim.
+    assert disclosed["tweeter"]["displaced_db"] == pytest.approx(displaced, abs=1e-12)
     assert disclosed["tweeter"]["delta_db"] == pytest.approx(
-        _PINNED_TWEETER_DB - measured, abs=1e-9
+        _PINNED_TWEETER_DB - displaced, abs=1e-9
     )
     assert summary["trims_db"]["tweeter"] == _PINNED_TWEETER_DB
 

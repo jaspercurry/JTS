@@ -2401,7 +2401,7 @@ def test_the_browser_and_python_agree_on_the_pinned_trim_key():
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
             trims_pinned={
                 "tweeter": {
-                    "pinned_db": -7.25, "measured_db": -2.0, "delta_db": -5.25,
+                    "pinned_db": -7.25, "displaced_db": -2.0, "delta_db": -5.25,
                 },
             },
             trims_db={"woofer": -3.1, "tweeter": -7.25},
