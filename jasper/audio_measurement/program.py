@@ -1638,6 +1638,56 @@ def null_confirm_band_hz(
 NULL_CONFIRM_GATE_FADE_S = 0.010
 
 
+def null_confirm_sweep_duration_s(
+    f1_hz: float,
+    f2_hz: float,
+    roles: Sequence[RoleBand],
+    sweep_duration_limits_s: Mapping[str, float] | None,
+    *,
+    nominal_s: float = DEFAULT_VERIFY_SWEEP_S,
+) -> float:
+    """How long the confirm's parent sweep may run.
+
+    ONE sweep serves both branches, so it has to fit the TIGHTEST of their
+    limits -- and it is judged against exactly that number: admission compares
+    each segment's realized duration against its own role's
+    ``effective_sweep_duration_limit_s``, which folds in the code-side per-role
+    protocol duration (a tweeter is clamped to
+    ``test_signal_plan.MAX_TWEETER_SWEEP_DURATION_S``). Composing at the nominal
+    6 s and hoping is the #2921 failure ``build_measure_program`` was already
+    fixed for: deterministic ``program_segment_outside_limits`` on every real
+    2-way, refused after the program was built.
+
+    The limits are HANDED IN (``SessionExcitation.sweep_duration_limits_s``,
+    resolved from ``excitation_safety_plan``), never re-derived here -- a
+    composer holding its own copy of that ``min`` drifts from the gate by one
+    edit and then refuses programs it just built.
+
+    Returns the longest phase-closing duration at or below the binding limit,
+    or the nominal when nothing binds.
+    """
+    limits = [
+        float(sweep_duration_limits_s[rb.role])
+        for rb in roles
+        if sweep_duration_limits_s and rb.role in sweep_duration_limits_s
+    ]
+    if not limits:
+        return nominal_s
+    binding = min(limits)
+    if nominal_s <= binding:
+        return nominal_s
+    try:
+        return phase_closing_duration_s(
+            f1_hz, f2_hz, at_or_below_s=binding,
+            sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"a null confirm over [{f1_hz:g},{f2_hz:g}] Hz cannot close its "
+            f"phase within the {binding:g} s limit its drivers allow"
+        ) from exc
+
+
 def null_confirm_channel_plan(
     fc_hz: float,
     roles: Sequence[RoleBand],
@@ -1663,8 +1713,10 @@ def null_confirm_channel_plan(
       has both drivers open there. **A single-branch shoulder is still a valid
       reference**: the depth metric reads the shoulders as the un-cancelled
       passband level either side of the notch, and a shoulder only one driver
-      reaches is un-cancelled by construction. It is reported so a reader can
-      tell which kind of reference a banked depth was measured against.
+      reaches is un-cancelled by construction. The confirm's consume verdict
+      carries it so a reader can tell which kind of reference a depth was
+      measured against; carrying it onto the durable take record rides the
+      record work.
 
     **Refuses when the two-channel overlap cannot bracket Fc.** The whole
     measurement is the cancellation AT Fc, so both drivers must be open there
@@ -1675,8 +1727,7 @@ def null_confirm_channel_plan(
     margin is DERIVED from the fade width mapped through the sweep law, never
     declared.
     """
-    if not roles:
-        raise ValueError("a null confirm needs the driver bands it plays through")
+    roles = _validate_roles(roles)
     f1_hz, f2_hz = null_confirm_band_hz(fc_hz)
     meta = _sweep_meta(f1_hz, f2_hz, sweep_s, BASE_STIMULUS_PEAK_DBFS)
     n = meta.n_samples
@@ -1736,10 +1787,10 @@ def build_null_confirm_program(
     fc_hz: float,
     roles: Sequence[RoleBand],
     *,
-    gains_db: Mapping[str, float] | None = None,
     gain_db: float = BASE_STIMULUS_PEAK_DBFS,
     guard_s: float = DEFAULT_VERIFY_GUARD_S,
-    sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
+    sweep_s: float | None = None,
+    sweep_duration_limits_s: Mapping[str, float] | None = None,
     tail_s: float = DEFAULT_VERIFY_TAIL_S,
     downstream_gain_db: float = 0.0,
     leading_pilot_gains_db: tuple[float, float] | None = None,
@@ -1775,18 +1826,36 @@ def build_null_confirm_program(
     :data:`PROGRAM_PHASE_NULL_CONFIRM`, which is what lets admission admit it
     where a verify-class program is refused.
 
-    ``gains_db`` is the per-role digital gain (each already clamped to that
-    driver's own cap by the caller); ``gain_db`` is the fallback for a role the
-    mapping omits. Level policy lives in
-    ``crossover_v2.programs.SessionExcitation``, not here.
+    **``gain_db`` is ONE level for both branches**, and that is not an
+    economy -- it is the same identity requirement. The gain is baked into each
+    waveform, so two branches at different gains are not the same waveform and
+    cannot cancel: on the shipped caps (0.0 / -65.0 dBFS) they land 33 dB apart
+    and the deepest available null is about -0.2 dB, which every confirmation
+    would read as "no null" no matter how right the delay was. Its caller
+    clamps it to the MOST RESTRICTIVE cap, so it satisfies every role's cap by
+    construction and admission still checks it per role.
+
+    **Branch LEVELING is the measurement graph's job**, never the stimulus's:
+    the level-match trims are attenuation-only per-driver gains inside the
+    graph, applied after this program is composed, and they are what brings two
+    branches of differing sensitivity to equal acoustic output so a null can
+    form.
+
+    ``sweep_s`` defaults to the longest phase-closing duration the roles'
+    own limits allow (:func:`null_confirm_sweep_duration_s`); pass it only to
+    override in a test.
     """
     role_bands = _validate_roles(roles)
+    if sweep_s is None:
+        probe_band = null_confirm_band_hz(fc_hz)
+        sweep_s = null_confirm_sweep_duration_s(
+            probe_band[0], probe_band[1], role_bands, sweep_duration_limits_s,
+        )
     band, gates, _shoulders = null_confirm_channel_plan(
         fc_hz, role_bands, sweep_s=sweep_s, fade_s=fade_s,
     )
     f1_hz, f2_hz = band
     fade_n = _seconds_to_samples(fade_s, PROGRAM_SAMPLE_RATE_HZ)
-    gains = dict(gains_db or {})
 
     segments: list[ProgramSegment] = []
     cursor = 0
@@ -1846,7 +1915,10 @@ def build_null_confirm_program(
             f1_hz=f1_hz,
             f2_hz=f2_hz,
             duration_s=sweep_s,
-            gain_db=float(gains.get(rb.role, gain_db)),
+            # ONE gain for every branch -- see this function's docstring. A
+            # per-role clamp here would bake different amplitudes into the two
+            # waveforms and destroy the identity the null is measured by.
+            gain_db=gain_db,
             downstream_gain_db=downstream_gain_db,
         )
         if gated:

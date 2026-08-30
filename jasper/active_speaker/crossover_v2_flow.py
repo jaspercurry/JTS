@@ -7122,6 +7122,24 @@ class CrossoverV2Session:
                 _screen_refusal_code(screen.kind),
                 payload=dict(screen.integrity_payload or {}),
             )
+        # WHICH shoulders the depth was referenced against. On a real 2-way the
+        # tweeter's permitted floor sits above `fc/2`, so the lower shoulder is
+        # the woofer alone -- a valid un-cancelled reference, but not the same
+        # kind of reference as a summed one, and a reader of a banked depth
+        # cannot tell which they have unless it is said. Derived through the
+        # composer's own plan rather than re-reasoned here.
+        shoulder_summed: dict[str, bool] | None = None
+        try:
+            from jasper.audio_measurement.program import null_confirm_channel_plan
+
+            _band, _gates, shoulder_summed = null_confirm_channel_plan(
+                self._fc_hz, self._excitation.roles,
+            )
+        except (ValueError, AttributeError):
+            # The plan already refused at compose time if it could not be built;
+            # a capture that played anyway is still worth its depth, so this
+            # discloses "unknown" rather than dropping the reading.
+            shoulder_summed = None
         if analysis.reverse_null_depth_db is None:
             # Imported at call scope: this name is one the flow deliberately
             # does not re-export, so its consumers reach the owner directly
@@ -7132,7 +7150,11 @@ class CrossoverV2Session:
 
             return PhaseVerdict(False, REASON_SNR_FLOOR)
         return PhaseVerdict(
-            True, payload={"null_depth_db": float(analysis.reverse_null_depth_db)},
+            True,
+            payload={
+                "null_depth_db": float(analysis.reverse_null_depth_db),
+                "shoulder_summed": shoulder_summed,
+            },
         )
 
     def _consume_entry_baseline(

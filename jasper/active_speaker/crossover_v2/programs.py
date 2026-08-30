@@ -425,27 +425,33 @@ class SessionExcitation:
         inversion and the candidate delay under test live there. It never plays
         the production graph.
         """
-        # PER ROLE, like MEASURE, because the confirm is a two-channel program
-        # whose segments each carry their real driver: each branch is clamped to
-        # its OWN cap rather than every branch to the most restrictive one. The
-        # acoustic sum happens in the air, not in a channel, so no driver ever
-        # receives more than its own channel carries.
-        gains = {
-            rb.role: back_off_gain(
-                BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
-                self.session_volume_db,
-                self.caps_dbfs.get(rb.role, 0.0),
-            )
-            for rb in self.roles
-        }
+        # ONE gain for BOTH branches, clamped to the MOST RESTRICTIVE cap --
+        # the same min-cap call every other summed sweep makes, and here it is
+        # load-bearing twice over. A summed signal reaches every driver, so the
+        # min is what keeps each inside its own limit; and the gain is baked
+        # into the waveform, so two branches clamped separately would not be
+        # the same waveform and could not cancel at all (on the shipped caps
+        # they land 33 dB apart, and the deepest available null is ~0.2 dB).
+        #
+        # Bringing branches of differing sensitivity to equal ACOUSTIC output
+        # is the measurement graph's job, through its attenuation-only
+        # level-match trims -- never the stimulus's.
+        binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
+        gain = back_off_gain(
+            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
+            self.session_volume_db,
+            binding_cap,
+        )
         return build_null_confirm_program(
             self.fc_hz,
             self.roles,
-            gains_db=gains,
+            gain_db=gain,
+            # The limits admission will judge each segment against, handed over
+            # rather than re-derived (#2921): ONE parent sweep serves both
+            # branches, so it must fit the tightest of them.
+            sweep_duration_limits_s=self.sweep_duration_limits_s,
             downstream_gain_db=self.session_volume_db,
-            leading_pilot_gains_db=self.pilot_gains(
-                gains[self.leading_pilot_role]
-            ),
+            leading_pilot_gains_db=self.pilot_gains(gain),
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_NULL_CONFIRM),
         )
 

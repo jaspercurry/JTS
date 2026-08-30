@@ -196,11 +196,23 @@ def _dbfs(amplitude: float) -> float:
 
 
 def _channel_roles(program: ExcitationProgram) -> dict[int, str]:
-    """Map each channel carrying a stimulus to its single role (fail-closed)."""
+    """Map each channel carrying a stimulus to its single role (fail-closed).
+
+    A stimulus segment naming NO role is refused rather than asserted against.
+    It is a legitimate shape elsewhere -- the VERIFY-class summed sweeps carry
+    ``role=None`` because they ride the applied production graph and are never
+    admitted at all -- but a program that reached admission with one resolves no
+    driver target for it, so none of that driver's permitted-band, cap or
+    duration checks would run on the very segment being admitted. A bare
+    ``assert`` turned that into an ``AssertionError`` escaping the readmit gate
+    as an untyped crash; it is a typed refusal now, on the same code as an
+    inconsistent channel.
+    """
 
     roles: dict[int, str] = {}
     for segment in program.stimulus_segments():
-        assert segment.channel is not None and segment.role is not None
+        if segment.channel is None or segment.role is None:
+            raise _ChannelRoleInconsistent(segment.channel or 0)
         existing = roles.setdefault(segment.channel, segment.role)
         if existing != segment.role:
             raise _ChannelRoleInconsistent(segment.channel)
@@ -340,7 +352,7 @@ def _evaluate_program(
                     segment_id=segment.segment_id,
                     role=role,
                     channel=int(segment.channel or 0),
-                    band=(float(segment.f1_hz or 0.0), float(segment.f2_hz or 0.0)),
+                    band=segment_emitted_band_hz(segment),
                     effective_peak_dbfs=float(segment.effective_peak_dbfs),
                     execution_allowed=False,
                     refusals=(ProgramAdmissionRefusal.TARGET_NOT_MAPPED.value,),
@@ -373,7 +385,7 @@ def _evaluate_program(
                     segment_id=segment.segment_id,
                     role=role,
                     channel=int(segment.channel or 0),
-                    band=(float(segment.f1_hz or 0.0), float(segment.f2_hz or 0.0)),
+                    band=segment_emitted_band_hz(segment),
                     effective_peak_dbfs=float(segment.effective_peak_dbfs),
                     execution_allowed=False,
                     refusals=(reason.value,),
