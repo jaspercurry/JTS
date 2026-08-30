@@ -23,14 +23,22 @@ tree reaches this suite too.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
+from jasper.active_speaker.crossover_v2.evidence_packet import (
+    packet_incumbent_linearization,
+)
 from jasper.cli.crossover_recommender import BankedRoundRecommender
 
 from tests.test_crossover_v2_blend_prescription import _bundle
+from tests.test_crossover_v2_driver_prescription import (
+    INCUMBENT_TWEETER,
+    applied_profile,
+)
 
 #: The round directory ``_bundle`` writes, and therefore the round every id a
 #: session banked into it carries as its second path segment.
@@ -85,6 +93,31 @@ async def test_the_adapter_answers_with_the_packet_and_the_spool_untouched(tmp_p
     assert spool.staged_prescription_pending() is True, (
         "the recommendation consumed the staged prescription"
     )
+
+
+async def test_the_speaker_side_seam_reads_its_own_applied_profile_by_default(
+    tmp_path: Path, monkeypatch
+):
+    """The production binding passes no profile path, and must still get one.
+
+    ``bind_engine_seams`` constructs this with the bundle directory alone, so a
+    seam that defaulted the applied profile to ``None`` would hand the model
+    "the graph carries nothing" over a corrected speaker — the exact reading
+    defect ``evidence_packet._incumbent_block`` exists to prevent. This seam
+    runs ON the speaker, where the SSOT resolves to a real file.
+    """
+    session, _ = _bundle(tmp_path)
+    profile = tmp_path / "applied-profile.json"
+    profile.write_text(json.dumps(applied_profile({"tweeter": INCUMBENT_TWEETER})))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(profile)
+    )
+
+    answer = await BankedRoundRecommender(session)(_ids("candidate.json"))
+
+    assert packet_incumbent_linearization(answer["packet"]) == {
+        "tweeter": tuple(INCUMBENT_TWEETER),
+    }
 
 
 async def test_a_second_ask_answers_the_same_because_nothing_was_consumed(tmp_path: Path):

@@ -1756,8 +1756,10 @@ whose targeting contract (stated in that file) makes an explicit
 bank jts3 even when `.env.local` points somewhere else.
 
 It then pulls the newest session bundle, the crossover-v2 flow state, the
-design draft, a bounded journal window (the four units a round speaks
-through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
+design draft, the applied baseline profile (`applied-profile.json` — what the
+speaker is PLAYING, which the flow state's Undo stash cannot say), a bounded
+journal window (the four units a round speaks through:
+`jasper-correction-web`, `jasper-control`, `jasper-camilla`,
 `jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
 under-voltage grep counts). Every pull is best-effort and independently
 reported to stderr, and a per-artifact status summary prints at the end
@@ -1833,20 +1835,22 @@ a paste into a browser.
 ```sh
 # where this speaker stands, before touching anything. Reads only.
 jasper-crossover-prescriber status <bundle-dir> --state <flow-state.json> \
-    --drivers <design-draft.json>
+    --drivers <design-draft.json> --applied-profile <applied-profile.json>
 
 # the read side: one round's banked evidence as one versioned JSON document.
 # Per-capture SNR comes out of the bundle's own take records, so there is no
 # ring path to pass.
 jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
-    --out round.json
+    --applied-profile <applied-profile.json> --out round.json
 
 # the write side: validate what came back, against the round it answers
 jasper-crossover-prescriber propose <bundle-dir> --state <flow-state.json> \
+    --applied-profile <applied-profile.json> \
     --prescription answer.json --json
 
 # the door: same gate, and the accepted answer is left for the next round
 jasper-crossover-prescriber stage <bundle-dir> --state <flow-state.json> \
+    --applied-profile <applied-profile.json> \
     --prescription answer.json
 ```
 
@@ -2044,9 +2048,15 @@ command runs under systemd; stdout stays the machine channel for `--json`. Owner
 `<bundle-dir>` is a commissioning bundle — the directory holding `info.json`
 beside `evidence/v1/artifacts/crossover_v2/<relay-session-id>/`. `--state` is
 the crossover-v2 flow state, which is banked **separately** from the bundle;
-without it the packet cannot carry the per-claim verify verdicts, the Fc
-selection, or the applied profile's incumbent, and it says so rather than
-going quiet.
+without it the packet cannot carry the per-claim verify verdicts or the Fc
+selection, and it says so rather than going quiet. `--applied-profile` is the
+applied baseline profile — this speaker's record of what it is PLAYING, banked
+separately for the same reason; without it the packet cannot name the
+correction the graph already carries, so a per-driver prescription's
+displacement is reported `unknown` rather than guessed. The flow state does
+**not** stand in for it: `pre_apply_profile` is the Undo stash, one apply
+behind after any v2 apply and arbitrarily behind after a graph applied through
+a door that never touches v2 state.
 
 **Exit codes are the contract**, because the caller is often a script: `0`
 accepted, `1` the evidence could not be read, `2` the prescription was refused,
@@ -2199,7 +2209,8 @@ Every subcommand reads a *banked round directory*, the tree
 `scripts/bank-crossover-round.sh <dest-dir>` produces (see
 ["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
 `bundle/<session>/` evidence bundle and optional `state.json` /
-`design-draft.json`. `jasper-round-views` reads no `dumps/` tree: the ring is
+`design-draft.json` / `applied-profile.json`. `jasper-round-views` reads no
+`dumps/` tree: the ring is
 gone and the packet it builds takes no path into one. No file is globbed or
 re-parsed by hand — positions and the graded spec come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),

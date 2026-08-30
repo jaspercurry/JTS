@@ -43,6 +43,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.baseline_profile import (
+    BASELINE_PROFILE_KIND,
+    SCHEMA_VERSION as BASELINE_SCHEMA_VERSION,
+)
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
@@ -183,6 +187,34 @@ def _classification(rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {"schema": 1, "thresholds": {"frac_of_nmp": 0.35}, "rows": rows}
 
 
+def applied_profile(
+    linearization: dict[str, Any] | None = None,
+    *,
+    blend: list[dict[str, Any]] | None = None,
+    baseline_id: str = "baseline-live",
+) -> dict[str, Any]:
+    """One applied-profile SSOT file, in the shape its own loader accepts.
+
+    The schema stamp and ``status`` are not decoration:
+    ``load_applied_baseline_profile_state`` returns ``None`` for a file missing
+    either, so a fixture that dropped them would exercise the absent path while
+    claiming to exercise the present one.
+    """
+    return {
+        "artifact_schema_version": BASELINE_SCHEMA_VERSION,
+        "kind": BASELINE_PROFILE_KIND,
+        "status": "applied",
+        "baseline_id": baseline_id,
+        "applied_at": "2026-08-29T09:41:15Z",
+        "source": {"fingerprint": f"source-{baseline_id}"},
+        "config": {"path": "/var/lib/jasper/x.yml", "sha256": "0" * 64},
+        "recomposition_snapshot": {
+            "linearization": dict(linearization or {}),
+            "blend_correction": list(blend or []),
+        },
+    }
+
+
 #: The tweeter linearization the 2026-08-22 round was already playing, banked
 #: verbatim from ``captures/tuning-hw-validation-2026-08/e-boost-measure/
 #: state.json`` -> ``pre_apply_profile.linearization.tweeter`` (#2863). The
@@ -205,8 +237,14 @@ def _speaker(
     draft: dict[str, Any] | None = _draft(),
     classification: dict[str, Any] | None = None,
     incumbent: dict[str, Any] | None = None,
+    stash: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """A bundle plus the two per-driver evidence sources, as a packet."""
+    """A bundle plus the two per-driver evidence sources, as a packet.
+
+    ``incumbent`` is what the speaker is PLAYING (the applied-profile SSOT);
+    ``stash`` is the flow state's ``pre_apply_profile``, the Undo record this
+    packet must never mistake for the first.
+    """
     session, _ = _bundle(tmp_path)
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     if classification is None:
@@ -219,15 +257,22 @@ def _speaker(
     if draft is not None:
         draft_path = tmp_path / "draft.json"
         draft_path.write_text(json.dumps(draft))
-    state_path = None
+    applied_path = None
     if incumbent is not None:
+        applied_path = tmp_path / "applied-profile.json"
+        applied_path.write_text(json.dumps(applied_profile(incumbent)))
+    state_path = None
+    if stash is not None:
         state_path = tmp_path / "state.json"
         state_path.write_text(json.dumps({
             "kind": "jts_crossover_v2_flow_state",
-            "pre_apply_profile": {"linearization": incumbent},
+            "pre_apply_profile": {"linearization": stash},
         }))
     return build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path, state_path=state_path
+        session,
+        driver_draft_path=draft_path,
+        state_path=state_path,
+        applied_profile_path=applied_path,
     )
 
 
@@ -3902,19 +3947,89 @@ def test_the_packet_enumerates_the_incumbent_linearization_a_document_replaces(
     block = packet["incumbent"]["linearization"]
     assert block["from_applied_profile"]["tweeter"] == INCUMBENT_TWEETER
     assert "DELETED" in block["note"]
-    assert "pre_apply_profile" in block["source"]
+    assert "applied_baseline_profile" in block["source"]
     # The reader the door is handed, over the block the packet published.
     assert packet_incumbent_linearization(packet) == {
         "tweeter": tuple(INCUMBENT_TWEETER),
     }
 
 
+#: A stash that is NOT what the speaker is playing: one filter where the live
+#: graph carries four, so a count alone says which record answered.
+STASH_TWEETER = [
+    {"biquad_type": "Peaking", "freq": 9000.0, "gain": -9.0, "q": 3.0},
+]
+
+
+@pytest.mark.parametrize("live_profile", (True, False))
+def test_the_incumbent_is_the_applied_profile_never_the_undo_stash(
+    tmp_path, live_profile
+):
+    """The packet describes the GRAPH, and the Undo stash is not the graph.
+
+    ``pre_apply_profile`` is written only by ``observe_apply_success`` and
+    names the profile Undo restores TO, so it is one apply behind after any v2
+    apply and arbitrarily behind after an apply through a door that never
+    touches v2 state. Both directions were measured on jts3 on 2026-08-29: a
+    15-hour-old chain reported over a freshly applied baseline, and an empty
+    one reported over a graph carrying a full per-driver correction.
+
+    Parametrized on the one axis that matters — is the SSOT there — because the
+    silent fallback is the defect: with no applied profile the block must say
+    so, never quietly answer from the stash sitting right beside it.
+    """
+    packet = _speaker(
+        tmp_path,
+        incumbent={"tweeter": INCUMBENT_TWEETER} if live_profile else None,
+        stash={"tweeter": STASH_TWEETER},
+    )
+
+    block = packet["incumbent"]
+    if live_profile:
+        assert packet_incumbent_linearization(packet) == {
+            "tweeter": tuple(INCUMBENT_TWEETER),
+        }
+        assert block["identity"]["baseline_id"] == "baseline-live"
+        assert block["identity"]["config_sha256"] == "0" * 64
+        assert isinstance(block["identity"]["candidate_fingerprint"], str)
+        assert block["identity"]["candidate_fingerprint"]
+    else:
+        assert packet_incumbent_linearization(packet) is None
+        assert block["identity"]["status"] == "not_evaluated"
+        assert block["linearization"]["from_applied_profile"]["status"] == (
+            "not_evaluated"
+        )
+        assert "incumbent" in {
+            entry["field"] for entry in packet["not_evaluated"]
+        }
+
+
+def test_a_document_displaces_the_filters_the_graph_is_actually_carrying(tmp_path):
+    """The door's number, over the same divergence — the #2863 consequence.
+
+    A per-driver document is a TOTAL for every role it names, so the count this
+    reports is how many filters staging deletes. Reading it off the stash would
+    have told the 2026-08-29 operator that a fully corrected tweeter carried
+    one filter, or none at all.
+    """
+    packet = _speaker(
+        tmp_path,
+        incumbent={"tweeter": INCUMBENT_TWEETER},
+        stash={"tweeter": STASH_TWEETER},
+    )
+
+    prescription = _gate(packet, _document([_cut()], packet))
+
+    assert prescription.displaced_filters == len(INCUMBENT_TWEETER)
+    assert prescription.displaced_boost_role == "tweeter"
+
+
 def test_the_incumbent_reader_keeps_unanswered_apart_from_empty(tmp_path):
     """``None`` is "nobody knows"; ``{}`` is "the branches carry nothing".
 
-    A round banked without its flow state cannot say what the graph holds, and
-    a document staged against it displaces an unknown. A profile that IS there
-    and linearizes nothing is a different, answered fact.
+    A round banked without its applied profile cannot say what the graph holds,
+    and a document staged against it displaces an unknown. A profile that IS
+    there and linearizes nothing is a different, answered fact.
     """
     assert packet_incumbent_linearization(_speaker(tmp_path / "none")) is None
     assert packet_incumbent_linearization(
@@ -4313,13 +4428,12 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
     )
     draft_path = tmp_path / "draft.json"
     draft_path.write_text(json.dumps(_draft()))
-    state_path = tmp_path / "state.json"
-    state_path.write_text(json.dumps({
-        "kind": "jts_crossover_v2_flow_state",
-        "pre_apply_profile": {"linearization": {"tweeter": INCUMBENT_TWEETER}},
-    }))
+    applied_path = tmp_path / "applied-profile.json"
+    applied_path.write_text(json.dumps(
+        applied_profile({"tweeter": INCUMBENT_TWEETER})
+    ))
     packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path, state_path=state_path
+        session, driver_draft_path=draft_path, applied_profile_path=applied_path
     )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(
@@ -4328,7 +4442,8 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
 
     code = cli.main([
         "propose", str(session), "--drivers", str(draft_path),
-        "--state", str(state_path), "--prescription", str(prescription_path),
+        "--applied-profile", str(applied_path),
+        "--prescription", str(prescription_path),
     ])
 
     err = capsys.readouterr().err

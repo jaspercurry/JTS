@@ -36,6 +36,9 @@
 #                           (/var/lib/jasper/active_speaker_crossover_v2_state.json)
 #   design-draft.json       the active-speaker design draft
 #                           (/var/lib/jasper/active_speaker_design_draft.json)
+#   applied-profile.json    the applied baseline profile — what the speaker is
+#                           PLAYING, which the flow state cannot say
+#                           (/var/lib/jasper/active_speaker_baseline_profile.json)
 #   journal/<unit>.log      journal window for the units that speak during a
 #                           round, plus journal/combined.log
 #   power.txt               vcgencmd get_throttled + under-voltage grep counts
@@ -161,6 +164,22 @@ else
 fi
 
 # --------------------------------------------------------------------- #
+# 3b. Applied baseline profile — what the speaker is PLAYING. The flow
+#     state above cannot answer that: its pre_apply_profile is the Undo
+#     stash, one apply behind. NOT part of the round's identity —
+#     reported, not gated.
+# --------------------------------------------------------------------- #
+applied_profile_status="FAILED or not present"
+if remote "sudo cat /var/lib/jasper/active_speaker_baseline_profile.json 2>/dev/null" \
+        > "$DEST/applied-profile.json" && [[ -s "$DEST/applied-profile.json" ]]; then
+    applied_profile_status="ok ($(wc -c < "$DEST/applied-profile.json") bytes)"
+    echo "applied-profile -> $DEST/applied-profile.json ($(wc -c < "$DEST/applied-profile.json") bytes)" >&2
+else
+    rm -f "$DEST/applied-profile.json"
+    echo "applied-profile: FAILED or not present" >&2
+fi
+
+# --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.
 #    Same per-unit + combined shape as fetch-pi-logs.sh, scoped to this
 #    round's units instead of the whole install.
@@ -209,10 +228,11 @@ remote 'vcgencmd get_throttled 2>&1; \
 # --------------------------------------------------------------------- #
 echo "" >&2
 echo "=== artifact pull summary ===" >&2
-echo "  bundle:       $bundle_status" >&2
-echo "  state:        $state_status" >&2
-echo "  design-draft: $design_draft_status" >&2
-echo "  journal:      $journal_status" >&2
+echo "  bundle:          $bundle_status" >&2
+echo "  state:           $state_status" >&2
+echo "  design-draft:    $design_draft_status" >&2
+echo "  applied-profile: $applied_profile_status" >&2
+echo "  journal:         $journal_status" >&2
 
 if (( bundle_ok == 0 )) || (( state_ok == 0 )); then
     echo "" >&2

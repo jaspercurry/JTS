@@ -1549,10 +1549,9 @@ def _check_displaced(
     and says nothing about what the cascade replaced. On 2026-08-22 a
     five-filter tweeter document displaced a −6.0744 dB Lowshelf at 5844.67 Hz,
     and the round measured a 6.065 dB tilt step for a change no gate had a
-    number for (#2863). The gain is the banked one, read from that round's
-    ``pre_apply_profile.linearization.tweeter``; earlier revisions of this
-    sentence and of ``evidence_packet``'s twin both said −6.037, which is one
-    measured number spelled two ways.
+    number for (#2863). The gain is that round's banked one; earlier revisions
+    of this sentence said −6.037, which is one measured number spelled two
+    ways.
 
     **It DISCLOSES and never refuses, and the mechanism test is why.** The
     composed caps guard one thing — maximum-SPL spend, charged by
