@@ -400,6 +400,28 @@ class ProgramSegment:
     ``None``. ``gain_db`` is the digital gain applied to the unit-peak
     stimulus; ``effective_peak_dbfs`` is ``gain_db + downstream_gain_db`` — the
     admission INPUT (session volume + graph gain fold in downstream, in Wave 2).
+
+    **The gate** (``gate_start_sample`` / ``gate_end_sample`` /
+    ``gate_fade_samples``) silences part of an otherwise ordinary sweep WITHOUT
+    changing the waveform that remains. It exists for one caller and one
+    physical reason: a null confirm needs two channels that cancel, and two
+    channels cancel only if they are sample-identical where they overlap. A
+    freshly generated sub-sweep is NOT that — even matched in rate it starts at
+    phase zero, and measured against its parent slice it differs by roughly
+    three times the signal RMS. So the second channel regenerates the SAME
+    ``(f1_hz, f2_hz, n_samples, gain_db)`` parent and silences the samples where
+    its driver may not be driven.
+
+    ``f1_hz``/``f2_hz`` therefore stay the PARENT sweep's band, which is what
+    keeps regeneration deterministic and the two channels identical. The band a
+    gated segment actually EMITS is narrower, derived by
+    :func:`segment_emitted_band_hz`, and that is what admission judges against a
+    driver's permitted band.
+
+    Defaults are "no gate", and :meth:`to_dict` omits the keys entirely then, so
+    every program composed before this existed keeps its exact bytes and its
+    exact ``program_id`` (which is a hash OF that dict, and #2291's before→after
+    comparison is ``program_id`` equality).
     """
 
     segment_id: str
@@ -412,6 +434,9 @@ class ProgramSegment:
     f2_hz: float | None
     gain_db: float
     effective_peak_dbfs: float
+    gate_start_sample: int = 0
+    gate_end_sample: int | None = None
+    gate_fade_samples: int = 0
 
     def __post_init__(self) -> None:
         if self.kind not in (KNOWN_AUDIBLE_KINDS | {KIND_SILENCE}):
@@ -425,9 +450,29 @@ class ProgramSegment:
             raise ValueError("a stimulus segment must carry f1_hz and f2_hz")
         if is_stimulus and self.channel is None:
             raise ValueError("a stimulus segment must carry a channel")
+        gate_end = self.n_samples if self.gate_end_sample is None else self.gate_end_sample
+        if type(self.gate_start_sample) is not int or self.gate_start_sample < 0:
+            raise ValueError("gate_start_sample must be a non-negative integer")
+        if type(gate_end) is not int or gate_end > self.n_samples:
+            raise ValueError("gate_end_sample must not exceed n_samples")
+        if gate_end <= self.gate_start_sample:
+            raise ValueError("a gate must leave at least one sample audible")
+        if type(self.gate_fade_samples) is not int or self.gate_fade_samples < 0:
+            raise ValueError("gate_fade_samples must be a non-negative integer")
+        if 2 * self.gate_fade_samples > gate_end - self.gate_start_sample:
+            raise ValueError("the gate's fades do not fit inside its open window")
+
+    @property
+    def is_gated(self) -> bool:
+        """Does this segment silence part of its own sweep?"""
+        return (
+            self.gate_start_sample != 0
+            or self.gate_end_sample is not None
+            or self.gate_fade_samples != 0
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "segment_id": self.segment_id,
             "kind": self.kind,
             "role": self.role,
@@ -439,6 +484,14 @@ class ProgramSegment:
             "gain_db": self.gain_db,
             "effective_peak_dbfs": self.effective_peak_dbfs,
         }
+        # Omitted when there is no gate, so an ungated segment's dict -- and so
+        # its program's `program_id`, which is a hash of exactly this -- is
+        # byte-identical to what it was before the gate existed.
+        if self.is_gated:
+            payload["gate_start_sample"] = self.gate_start_sample
+            payload["gate_end_sample"] = self.gate_end_sample
+            payload["gate_fade_samples"] = self.gate_fade_samples
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ProgramSegment":
@@ -446,7 +499,13 @@ class ProgramSegment:
             "segment_id", "kind", "role", "channel", "start_sample",
             "n_samples", "f1_hz", "f2_hz", "gain_db", "effective_peak_dbfs",
         }
-        if not isinstance(value, Mapping) or set(value) != required:
+        gate_keys = {"gate_start_sample", "gate_end_sample", "gate_fade_samples"}
+        if not isinstance(value, Mapping):
+            raise ValueError("program segment schema is invalid")
+        # The gate keys travel as a SET or not at all: a dict carrying some of
+        # them describes a gate nobody can reconstruct.
+        present = set(value)
+        if present != required and present != required | gate_keys:
             raise ValueError("program segment schema is invalid")
         channel = value["channel"]
         return cls(
@@ -460,6 +519,12 @@ class ProgramSegment:
             f2_hz=None if value["f2_hz"] is None else float(value["f2_hz"]),
             gain_db=float(value["gain_db"]),
             effective_peak_dbfs=float(value["effective_peak_dbfs"]),
+            gate_start_sample=int(value.get("gate_start_sample", 0)),
+            gate_end_sample=(
+                None if value.get("gate_end_sample") is None
+                else int(value["gate_end_sample"])
+            ),
+            gate_fade_samples=int(value.get("gate_fade_samples", 0)),
         )
 
 
@@ -1565,9 +1630,113 @@ def null_confirm_band_hz(
     return lo, hi
 
 
+#: The gate's fade, in seconds. Long enough that a gate edge inside a running
+#: sweep does not step the waveform (a step radiates a click across the WHOLE
+#: band, which on a tweeter is exactly the out-of-band energy the gate exists to
+#: withhold), short enough that the frequency span it costs stays small next to
+#: the octave either side of Fc the depth is read over.
+NULL_CONFIRM_GATE_FADE_S = 0.010
+
+
+def null_confirm_channel_plan(
+    fc_hz: float,
+    roles: Sequence[RoleBand],
+    *,
+    sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
+    fade_s: float = NULL_CONFIRM_GATE_FADE_S,
+) -> tuple[tuple[float, float], dict[str, tuple[int, int | None]], dict[str, bool]]:
+    """The shared sweep band, each role's gate, and which shoulders are summed.
+
+    Every driver plays the SAME parent sweep; each role's gate silences the part
+    of it that role may not be driven over. That is what lets two channels
+    cancel: they are sample-identical wherever both are open, so the crossover,
+    the inversion and the candidate delay are the only things standing between
+    them and a null.
+
+    Returns ``(band, gates_by_role, shoulder_is_summed)``:
+
+    * ``band`` — the parent sweep, from :func:`null_confirm_band_hz`.
+    * ``gates_by_role`` — ``(gate_start_sample, gate_end_sample)`` per role,
+      derived by inverting the sweep law at that role's DECLARED band edges. A
+      role whose declared band already covers the parent gets ``(0, None)``.
+    * ``shoulder_is_summed`` — whether each shoulder (``"lower"``/``"upper"``)
+      has both drivers open there. **A single-branch shoulder is still a valid
+      reference**: the depth metric reads the shoulders as the un-cancelled
+      passband level either side of the notch, and a shoulder only one driver
+      reaches is un-cancelled by construction. It is reported so a reader can
+      tell which kind of reference a banked depth was measured against.
+
+    **Refuses when the two-channel overlap cannot bracket Fc.** The whole
+    measurement is the cancellation AT Fc, so both drivers must be open there
+    with the fades clear of it —
+    :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`
+    interpolates exactly at ``Fc``, and a read taken inside a fade ramp, or
+    outside the overlap altogether, is not a cancellation measurement. The
+    margin is DERIVED from the fade width mapped through the sweep law, never
+    declared.
+    """
+    if not roles:
+        raise ValueError("a null confirm needs the driver bands it plays through")
+    f1_hz, f2_hz = null_confirm_band_hz(fc_hz)
+    meta = _sweep_meta(f1_hz, f2_hz, sweep_s, BASE_STIMULUS_PEAK_DBFS)
+    n = meta.n_samples
+    fade_n = _seconds_to_samples(fade_s, PROGRAM_SAMPLE_RATE_HZ)
+    span = math.log(f2_hz / f1_hz)
+
+    def _sample_at(freq: float) -> int:
+        return int(round(n * math.log(freq / f1_hz) / span))
+
+    gates: dict[str, tuple[int, int | None]] = {}
+    open_lo: dict[str, float] = {}
+    open_hi: dict[str, float] = {}
+    for rb in roles:
+        lo_edge = max(f1_hz, float(rb.band.lower_hz))
+        hi_edge = min(f2_hz, float(rb.band.upper_hz))
+        if not lo_edge < hi_edge:
+            raise ValueError(
+                f"the {rb.role}'s declared band "
+                f"[{rb.band.lower_hz:g},{rb.band.upper_hz:g}] Hz does not "
+                f"intersect the confirm sweep [{f1_hz:g},{f2_hz:g}] Hz"
+            )
+        start = _sample_at(lo_edge) if lo_edge > f1_hz else 0
+        end = _sample_at(hi_edge) if hi_edge < f2_hz else None
+        gates[rb.role] = (start, end)
+        # The FULL-AMPLITUDE window, fades excluded at both ends.
+        stop = n if end is None else end
+        # Fades only exist where the gate actually cuts, so only those edges
+        # cost frequency span.
+        open_lo[rb.role] = f1_hz * math.exp(
+            span * (start + (fade_n if start else 0)) / n
+        )
+        open_hi[rb.role] = f1_hz * math.exp(
+            span * (stop - (fade_n if end is not None else 0)) / n
+        )
+
+    overlap_lo = max(open_lo.values())
+    overlap_hi = min(open_hi.values())
+    if not overlap_lo < fc_hz < overlap_hi:
+        raise ValueError(
+            f"the declared driver bands leave every branch open only over "
+            f"[{overlap_lo:g},{overlap_hi:g}] Hz, which does not bracket "
+            f"fc={fc_hz:g} Hz with the gate fades clear of it; there is no "
+            "coordinate at which these branches can be measured cancelling"
+        )
+    shoulder_is_summed = {
+        "lower": all(
+            lo < fc_hz / 2.0 < hi for lo, hi in zip(open_lo.values(), open_hi.values())
+        ),
+        "upper": all(
+            lo < fc_hz * 2.0 < hi for lo, hi in zip(open_lo.values(), open_hi.values())
+        ),
+    }
+    return (f1_hz, f2_hz), gates, shoulder_is_summed
+
+
 def build_null_confirm_program(
     fc_hz: float,
+    roles: Sequence[RoleBand],
     *,
+    gains_db: Mapping[str, float] | None = None,
     gain_db: float = BASE_STIMULUS_PEAK_DBFS,
     guard_s: float = DEFAULT_VERIFY_GUARD_S,
     sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
@@ -1577,62 +1746,77 @@ def build_null_confirm_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     courtesy_prelude: bool = False,
+    fade_s: float = NULL_CONFIRM_GATE_FADE_S,
 ) -> ExcitationProgram:
-    """The acoustic null confirm's stimulus: a BAND-LIMITED mono summed sweep.
+    """The acoustic null confirm's stimulus: ONE sweep, played on BOTH branches.
 
-    Same shape as :func:`build_verify_program` — ambient window, optional pilot
-    pair, guard, one summed ESS, tail — and it keeps that composer's
-    ``"sweep_verify"`` SEGMENT ID so ``_analyze_verify`` reads
-    ``reverse_null_depth_db`` off it with no dispatch change. That reuse is the
-    point: a confirmed depth and a computed one must be the same subtraction
-    (:func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`), and a
-    second analyzer would be a second null depth.
+    **Two channels, one waveform.** Every role's segment regenerates the same
+    parent ``(f1, f2, n_samples)`` sweep and differs only in its GATE and its
+    gain, so the branches are sample-identical wherever both are open. That
+    identity is the measurement: the crossover, the inversion and the candidate
+    delay in the measurement graph are then the only things between the two
+    branches and a null, and the sum happens acoustically, in the air, which is
+    what a null test IS. It is not a mono program — the routed measurement graph
+    never sums (every dest has exactly one source), so a mono stimulus aimed at
+    it would either fail into the 2-channel substream or be plug-duplicated
+    unchecked.
 
-    It returns under its OWN :data:`PROGRAM_PHASE_NULL_CONFIRM`, not VERIFY's.
-    The phase is what ``program_admission`` keys on, and the two are opposites
-    there: VERIFY is refused because it rides the applied production graph with
-    no load and no admission, while a confirm is ROUTED — it loads the
-    measurement graph and is admitted per segment. Returning VERIFY's phase
-    would make the confirm unplayable.
+    **Each segment carries its REAL role**, so admission resolves that driver's
+    target and checks the segment against its permitted band, its ``cap_dbfs``
+    and its duration limit — the band by way of
+    :func:`segment_emitted_band_hz`, which accounts for the gate rather than
+    trusting the parent's ``f1_hz``/``f2_hz``. A ``role=None`` summed segment
+    resolved no target at all, so none of those checks ran.
 
-    The ONE difference from VERIFY is the band. VERIFY sweeps the whole audible
-    range because it is asking "what does the system do?"; a null confirm asks
-    only "how deep is the notch at Fc?", which is read from
-    ``[Fc/2, 2*Fc]``. Sweeping two decades of spectrum that the answer does not
-    depend on spends the energy budget away from the octaves that decide it, and
-    drives both drivers well outside the crossover region for no reading.
-    :func:`null_confirm_band_hz` derives that band from ``fc_hz`` alone and
-    clamps it inside VERIFY's own envelope — see its docstring for why the
-    per-driver declared bands are deliberately not intersected here.
+    It keeps VERIFY's ``"sweep_verify"`` segment id on the LOWER driver's
+    channel so ``_analyze_verify`` finds it and reads
+    ``reverse_null_depth_db`` with no dispatch change — one null-depth
+    definition, not two — and returns under its own
+    :data:`PROGRAM_PHASE_NULL_CONFIRM`, which is what lets admission admit it
+    where a verify-class program is refused.
 
-    Level is the caller's (``gain_db``); this composer applies no clamp of its
-    own, exactly as :func:`build_verify_program` applies none — the min-cap
-    clamp lives in ``crossover_v2.programs.SessionExcitation``, which is the one
-    level guard for every summed stimulus.
+    ``gains_db`` is the per-role digital gain (each already clamped to that
+    driver's own cap by the caller); ``gain_db`` is the fallback for a role the
+    mapping omits. Level policy lives in
+    ``crossover_v2.programs.SessionExcitation``, not here.
     """
-    f1_hz, f2_hz = null_confirm_band_hz(fc_hz)
+    role_bands = _validate_roles(roles)
+    band, gates, _shoulders = null_confirm_channel_plan(
+        fc_hz, role_bands, sweep_s=sweep_s, fade_s=fade_s,
+    )
+    f1_hz, f2_hz = band
+    fade_n = _seconds_to_samples(fade_s, PROGRAM_SAMPLE_RATE_HZ)
+    gains = dict(gains_db or {})
 
     segments: list[ProgramSegment] = []
     cursor = 0
     prelude_at: int | None = None
+    lower = role_bands[0]
     if leading_pilot_gains_db is not None:
         if len(leading_pilot_gains_db) != 2:
             raise ValueError("leading_pilot_gains_db must be exactly two levels")
-        # The VERIFY pilot band verbatim, including its low-Fc fallback: the
-        # pilot must stay clear of the crossover overlap for the same reason it
-        # does there (a pilot swept through the notch goes noise-dominated and
-        # misfires the linearity ratio), and that reason is unchanged by this
-        # program's narrower sweep.
+        # The VERIFY pilot band verbatim, including its low-Fc fallback: a pilot
+        # swept through the crossover notch goes noise-dominated and misfires
+        # the linearity ratio, and this program's narrower sweep does not change
+        # that. It rides the LOWER driver's own channel and role, so admission
+        # judges it against that driver like every other segment here.
         pilot_lo = VERIFY_PILOT_F_LO_HZ
         pilot_hi = min(VERIFY_PILOT_F_HI_HZ, fc_hz / VERIFY_PILOT_FC_CLEARANCE_RATIO)
         if not pilot_lo < pilot_hi:
             pilot_lo, pilot_hi = fc_hz / 8.0, fc_hz / 4.0
+        pilot_lo = max(pilot_lo, float(lower.band.lower_hz))
+        pilot_hi = min(pilot_hi, float(lower.band.upper_hz))
+        if not pilot_lo < pilot_hi:
+            raise ValueError(
+                f"the {lower.role}'s declared band leaves no room for the "
+                "confirm's leading pilot pair"
+            )
         prelude_at = cursor
         cursor = _append_pilot_ambient_window(segments, cursor)
         cursor = _append_leading_pilot_pair(
             segments, cursor,
-            role=VERIFY_PILOT_ROLE,
-            channel=0,
+            role=lower.role,
+            channel=lower.channel,
             f1_hz=pilot_lo,
             f2_hz=pilot_hi,
             gains_db=leading_pilot_gains_db,
@@ -1646,31 +1830,47 @@ def build_null_confirm_program(
     if prelude_at is None:
         prelude_at = cursor
 
-    sweep = _stimulus(
-        segment_id="sweep_verify",
-        kind=KIND_SUMMED_SWEEP,
-        role=None,
-        channel=0,
-        start=cursor,
-        f1_hz=f1_hz,
-        f2_hz=f2_hz,
-        duration_s=sweep_s,
-        gain_db=gain_db,
-        downstream_gain_db=downstream_gain_db,
-    )
-    segments.append(sweep)
-    cursor += sweep.n_samples
+    sweep_at = cursor
+    sweep_n = 0
+    for index, rb in enumerate(role_bands):
+        start, end = gates[rb.role]
+        gated = not (start == 0 and end is None)
+        seg = _stimulus(
+            # The lower driver keeps VERIFY's id so `_analyze_verify` finds the
+            # summed sweep unchanged; the others are named for their role.
+            segment_id="sweep_verify" if index == 0 else f"sweep_confirm_{rb.role}",
+            kind=KIND_SUMMED_SWEEP,
+            role=rb.role,
+            channel=rb.channel,
+            start=sweep_at,
+            f1_hz=f1_hz,
+            f2_hz=f2_hz,
+            duration_s=sweep_s,
+            gain_db=float(gains.get(rb.role, gain_db)),
+            downstream_gain_db=downstream_gain_db,
+        )
+        if gated:
+            seg = replace(
+                seg,
+                gate_start_sample=start,
+                gate_end_sample=end,
+                gate_fade_samples=fade_n,
+            )
+        segments.append(seg)
+        sweep_n = max(sweep_n, seg.n_samples)
+    cursor = sweep_at + sweep_n
 
     tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("tail", cursor, tail_n))
     cursor += tail_n
 
+    channels = 1 + max(rb.channel for rb in role_bands)
     if courtesy_prelude:
         segments, cursor = _insert_courtesy_prelude(
-            segments, cursor, at_sample=prelude_at, channels=1,
+            segments, cursor, at_sample=prelude_at, channels=channels,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PROGRAM_PHASE_NULL_CONFIRM, 1, segments, cursor)
+    return _finalize(PROGRAM_PHASE_NULL_CONFIRM, channels, segments, cursor)
 
 
 def segment_stimulus(segment: ProgramSegment):
@@ -1700,7 +1900,84 @@ def segment_stimulus(segment: ProgramSegment):
             f"segment {segment.segment_id!r} stimulus reconstruction produced "
             f"{meta.n_samples} samples, schedule says {segment.n_samples}"
         )
-    return np.asarray(sweep, dtype=np.float32)
+    out = np.asarray(sweep, dtype=np.float32)
+    if not segment.is_gated:
+        return out
+    # The gate silences samples; it never regenerates. What survives is the
+    # PARENT waveform sample-for-sample, which is the whole reason the gate
+    # exists -- see ProgramSegment's docstring.
+    out = out.copy()
+    start = segment.gate_start_sample
+    end = segment.n_samples if segment.gate_end_sample is None else segment.gate_end_sample
+    out[:start] = 0.0
+    out[end:] = 0.0
+    fade = segment.gate_fade_samples
+    if fade:
+        # Raised cosine, so a gate edge inside a running sweep does not step the
+        # waveform and radiate a click across the whole band -- which on a
+        # tweeter is exactly the out-of-band energy the gate exists to withhold.
+        #
+        # A fade is applied ONLY where the gate actually cuts. A segment whose
+        # window runs to the sweep's own end has no edge there, and fading it
+        # anyway would attenuate the last samples of one branch and not the
+        # other -- destroying the sample-identity the two channels cancel by,
+        # which is the one property this whole construction exists to hold.
+        ramp = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade, endpoint=False)))
+        if start > 0:
+            out[start:start + fade] *= ramp.astype(np.float32)
+        if segment.gate_end_sample is not None:
+            out[end - fade:end] *= ramp[::-1].astype(np.float32)
+    return out
+
+
+def segment_sweep_frequency_at(segment: ProgramSegment, sample: int) -> float:
+    """The parent sweep's instantaneous frequency at one sample offset.
+
+    The exponential sweep law ``f(t) = f1 * (f2/f1)**(t/T)`` inverted onto
+    sample indices, which is what makes a TIME gate expressible as a band claim:
+    silencing samples ``[0, g)`` withholds exactly the frequencies below
+    ``f(g)``.
+    """
+    if segment.f1_hz is None or segment.f2_hz is None:
+        raise ValueError("only a stimulus segment sweeps")
+    if segment.n_samples <= 0:
+        raise ValueError("a segment spans no samples")
+    frac = min(max(sample / segment.n_samples, 0.0), 1.0)
+    return float(segment.f1_hz) * (
+        float(segment.f2_hz) / float(segment.f1_hz)
+    ) ** frac
+
+
+def segment_emitted_band_hz(segment: ProgramSegment) -> tuple[float, float]:
+    """The band a segment ACTUALLY emits, gate included.
+
+    An ungated segment emits its whole ``[f1_hz, f2_hz]``. A gated one emits
+    only the frequencies its open window sweeps through, and the fades are
+    excluded from the claim: inside a fade the waveform is attenuated, so
+    counting it as emitted-at-full-level would overstate what reaches the
+    driver, while counting it as silent would understate it. Excluding the fade
+    ramps from the FULL-AMPLITUDE band and letting them sit outside is the
+    conservative reading for a permitted-band check.
+
+    This is what admission judges against a driver's permitted band, rather than
+    ``f1_hz``/``f2_hz``, which are the parent sweep's -- a gated channel
+    regenerates the parent so the two channels stay identical where they
+    overlap, and its declared band would otherwise claim frequencies the gate
+    silences.
+    """
+    if not segment.is_gated:
+        assert segment.f1_hz is not None and segment.f2_hz is not None
+        return float(segment.f1_hz), float(segment.f2_hz)
+    end = (
+        segment.n_samples if segment.gate_end_sample is None
+        else segment.gate_end_sample
+    )
+    fade = segment.gate_fade_samples
+    lo_sample = segment.gate_start_sample + (fade if segment.gate_start_sample else 0)
+    hi_sample = end - (fade if segment.gate_end_sample is not None else 0)
+    lo = segment_sweep_frequency_at(segment, lo_sample)
+    hi = segment_sweep_frequency_at(segment, hi_sample)
+    return lo, hi
 
 
 def render_program_pcm(program: ExcitationProgram):
