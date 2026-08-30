@@ -857,7 +857,7 @@ def test_wizard_python_strings_do_not_inline_dialog_helper_calls():
 # own local `.hidden` rule in its page CSS — every other page must use the
 # attribute, which is the only mechanism the shared stylesheet implements.
 _LEGACY_HIDDEN_CLASS_PAGES = {
-    "jasper/web/correction_setup.py": "deploy/assets/correction/correction.css",
+    "jasper/web/correction_room_flow.py": "deploy/assets/correction/correction.css",
     "deploy/assets/correction/js/main.js": "deploy/assets/correction/correction.css",
 }
 _HIDDEN_CLASSLIST_RE = re.compile(
