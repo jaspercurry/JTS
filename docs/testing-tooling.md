@@ -43,7 +43,7 @@
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
-| Grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {frozen,per-seat,repeat,agreement}` |
+| Grade the state a round STARTED from (a fresh box's declarations-derived config, which no round grades), grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {entry,frozen,per-seat,repeat,agreement}` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Ask the next session for R-1's reverse-null — the design-axis MEASURE capture with one named driver branch riding sign-flipped | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage --polarity inverted --inverted-role <role>` |
@@ -2211,6 +2211,15 @@ attested*, since the bank is block-averaged in dB rather than smoothed at a
 fractional-octave width.
 
 ```sh
+# grade the state the round ENTERED on, before it applied anything —
+# read from the write-once entry-baseline take, through the same
+# flat-spec evaluator a round grades its own result with. The FIRST
+# round's entry state is the declarations-derived config a fresh box
+# wears, which no round grades and which had to be evaluated by hand
+# until this verb. A round that banked no gradeable take says so with a
+# named reason and still exits 0.
+jasper-round-views entry <round-dir>
+
 # grade a round shipped AND frozen to a baseline's own reference level —
 # the freeze §8.9 needed to show a prescribed cut was lowering its own
 # grading frame rather than actually flattening the response
