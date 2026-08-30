@@ -4963,6 +4963,7 @@ async def _active_speaker_summed_test_payload(
     )
     from jasper.active_speaker.commissioning_coordinator import (
         build_commissioning_view,
+        read_applied_profile_verdict,
     )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
@@ -5040,6 +5041,7 @@ async def _active_speaker_summed_test_payload(
         measurements=measurements,
         baseline_profile=baseline_profile,
         calibration_level=calibration_level,
+        applied_profile_verdict=read_applied_profile_verdict(baseline_profile),
     )
     driver_target_proof = commissioning_view.get("driver_target_proof")
     driver_target_proof_complete = (

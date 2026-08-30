@@ -41,6 +41,9 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.dsp_apply import config_file_sha256
 from jasper.active_speaker import driver_base_trim as dbt
+from jasper.active_speaker.commissioning_coordinator import (
+    build_commissioning_view,
+)
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
     crossover_preview_fingerprint,
@@ -1093,6 +1096,139 @@ def test_superseded_applied_profile_reports_revalidation_path(
     assert ready_to_save["status"] == "ready_to_compile"
     assert ready_to_save["revalidation"]["required"] is True
     assert ready_to_save["revalidation"]["next_step"] == "save_profile"
+
+
+def test_a_write_free_rebuild_knowing_less_does_not_supersede_the_applied_profile(
+    tmp_path: Path,
+) -> None:
+    """Only the apply paths carry a measured candidate; the read side rebuilds.
+
+    So a rebuild's ``source`` is the applied profile's minus
+    ``measured_candidate_fingerprint``, and comparing composite fingerprints
+    reported a live measured tune as superseded with an empty ``changed``.
+    See ADR-0195.
+    """
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    baseline_state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    measured = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=_v2_candidate(preset),
+        created_at="2026-07-18T12:20:00Z",
+    )
+    applied = {**measured, "status": "applied", "applied_at": "2026-07-18T12:21:00Z"}
+    baseline_state_path.write_text(json.dumps(applied), encoding="utf-8")
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    # The blind set — keys the applied record carries and this rebuild cannot —
+    # is exactly one. Anything else appearing here is a source key whose change
+    # would stop being detected, which is what the derived `changed` guards.
+    assert set(applied["source"]) - set(payload["source"]) == {
+        "measured_candidate_fingerprint",
+    }
+    assert applied["source"]["fingerprint"] != payload["source"]["fingerprint"]
+    assert payload["revalidation"]["required"] is False
+    assert payload["applied_recomposition_profile"]["status"] == "applied"
+    assert payload["applied_profile_stands"] is True
+    # A phone-measured apply satisfies its own gate from the candidate's own
+    # evidence and records no driver checks in the measurement state. The
+    # standing profile carries that proof, so what remains outstanding is the
+    # wizard's combined check — and `summed_test_driver_target_proof_missing`,
+    # which gates the audible test and banking the check, is not raised.
+    assert payload["driver_target_proof_from_applied_profile"] is True
+    assert "baseline_driver_measurements_missing" not in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+    view = build_commissioning_view(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        baseline_profile=payload,
+        applied_profile_verdict="",
+    )
+
+    assert view["driver_target_proof"]["complete"] is True
+    assert view["driver_target_proof"]["source"] == "applied_profile"
+    assert next(
+        step for step in view["steps"] if step["id"] == "profile"
+    )["status"] == "done"
+    assert view["next_action"]["id"] == "start_combined_test"
+
+
+def test_a_provisional_applied_profile_never_stands_in_for_driver_evidence(
+    tmp_path: Path,
+) -> None:
+    """Sensitivity-derived trims are not measurement, whatever else holds."""
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    baseline_state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    ready = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=_v2_candidate(preset),
+        created_at="2026-07-18T12:20:00Z",
+    )
+    applied = {
+        **ready,
+        "status": "applied",
+        "applied_at": "2026-07-18T12:21:00Z",
+        "provisional": True,
+    }
+    baseline_state_path.write_text(json.dumps(applied), encoding="utf-8")
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["revalidation"]["required"] is False
+    assert payload["driver_target_proof_from_applied_profile"] is False
+    assert "baseline_driver_measurements_missing" in {
+        issue["code"] for issue in payload["issues"]
+    }
 
 
 def test_superseded_applied_profile_revalidates_without_raw_driver_measurements(

@@ -532,6 +532,38 @@ function commissioningViewPayload(overrides = {}) {
   return { ...payload, ...overrides, steps };
 }
 
+function confirmedActiveTwoWayTopology() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 2,
+    verified_channel_count: 2,
+    unverified_channel_count: 0,
+    targets: [
+      {
+        id: "main:woofer",
+        speaker_group_id: "main",
+        speaker_label: "Main speaker",
+        role: "woofer",
+        assigned: true,
+        identity_verified: true,
+        physical_output_index: 0,
+      },
+      {
+        id: "main:tweeter",
+        speaker_group_id: "main",
+        speaker_label: "Main speaker",
+        role: "tweeter",
+        assigned: true,
+        identity_verified: true,
+        physical_output_index: 1,
+      },
+    ],
+  };
+  return topology;
+}
+
 function profileCommissioningView(overrides = {}) {
   return commissioningViewPayload({
     current_step: "safety",
@@ -2162,34 +2194,7 @@ async function testActiveRouteLimitsRenderedTemplates() {
 }
 
 async function testMeasuredDriversOpenProfileStep() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 2,
-    verified_channel_count: 2,
-    unverified_channel_count: 0,
-    targets: [
-      {
-        id: "main:woofer",
-        speaker_group_id: "main",
-        speaker_label: "Main speaker",
-        role: "woofer",
-        assigned: true,
-        identity_verified: true,
-        physical_output_index: 0,
-      },
-      {
-        id: "main:tweeter",
-        speaker_group_id: "main",
-        speaker_label: "Main speaker",
-        role: "tweeter",
-        assigned: true,
-        identity_verified: true,
-        physical_output_index: 1,
-      },
-    ],
-  };
+  const confirmedTopology = confirmedActiveTwoWayTopology();
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response({
       output_topology: confirmedTopology,
@@ -3589,34 +3594,7 @@ async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
 }
 
 async function testCompiledProfileApplyBlockStaysUnderstandable() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 2,
-    verified_channel_count: 2,
-    unverified_channel_count: 0,
-    targets: [
-      {
-        id: "main:woofer",
-        speaker_group_id: "main",
-        speaker_label: "Main speaker",
-        role: "woofer",
-        assigned: true,
-        identity_verified: true,
-        physical_output_index: 0,
-      },
-      {
-        id: "main:tweeter",
-        speaker_group_id: "main",
-        speaker_label: "Main speaker",
-        role: "tweeter",
-        assigned: true,
-        identity_verified: true,
-        physical_output_index: 1,
-      },
-    ],
-  };
+  const confirmedTopology = confirmedActiveTwoWayTopology();
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response({
       output_topology: confirmedTopology,
@@ -3664,6 +3642,77 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
     }
   }
   return { compiledProfileApplyBlockStaysUnderstandable: true };
+}
+
+// A measured v2 profile is applied and standing, with the combined check
+// still outstanding — the state the coordinator actually emits for a
+// phone-measured apply. The card must render it as active, and may offer the
+// basic door only NAMED for what it replaces. See ADR-0195.
+async function testLiveMeasuredProfileNamesTheBasicDoorItOffers() {
+  const confirmedTopology = confirmedActiveTwoWayTopology();
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      profileCommissioningView({
+        status: "needs_combined_check",
+        current_step: "safety",
+        stepStatuses: {
+          layout: "done",
+          research: "done",
+          map: "done",
+          safety: "active",
+          profile: "done",
+        },
+      })
+    )),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "ready_for_baseline",
+      summary: summedSummary({}, {
+        validated_summed_group_count: 1,
+        summed_validation_complete: true,
+        latest_summed_validations: {
+          main: { validated: true, outcome: "blend_ok" },
+        },
+      }),
+      permissions: { may_compile_baseline: true },
+      issues: [],
+    })),
+    "./active-speaker/baseline-profile": () => Promise.resolve(response({
+      status: "ready_to_compile",
+      permissions: { may_compile: true, may_apply: false },
+      config: { basename: "active_speaker_baseline_candidate_55dee33aa48a.yml" },
+      revalidation: { required: false, status: "not_required" },
+      applied_profile_stands: true,
+      applied_recomposition_profile: {
+        status: "applied",
+        linearization: { tweeter: [{ type: "Peaking" }] },
+        blend_correction: [{ type: "Peaking" }],
+        config: { basename: "active_speaker_baseline_candidate_f7e91712ceff.yml" },
+      },
+      issues: [],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes(">Save and apply</button>")) {
+    fail("A live measured profile must not be offered an unnamed save-apply door", { html });
+  }
+  if (!html.includes("Replace with basic profile") ||
+    !html.includes("per-driver linearization")) {
+    fail("The basic door must stay offered and say what it replaces", { html });
+  }
+  if (!html.includes("active_speaker_baseline_candidate_f7e91712ceff.yml")) {
+    fail("The card must name the applied profile, not the rebuild candidate", { html });
+  }
+  if (html.includes("active_speaker_baseline_candidate_55dee33aa48a.yml")) {
+    fail("The card must not name a candidate the speaker never applied", { html });
+  }
+  return { liveMeasuredProfileNamesTheBasicDoorItOffers: true };
 }
 
 async function testVisibleCrossoverSettingsWinOverImportedJson() {
@@ -8528,6 +8577,7 @@ results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
+results.push(await testLiveMeasuredProfileNamesTheBasicDoorItOffers());
 results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop());
