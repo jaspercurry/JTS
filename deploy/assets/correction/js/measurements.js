@@ -4,7 +4,7 @@
 
 import { h, svg } from '/assets/shared/js/dom.js';
 import { getJSON } from '/assets/shared/js/http.js';
-import { cssColor, drawFrequencyChart } from './frequency-chart.js';
+import { cssColor, drawFrequencyChart } from './crossover/frequency-chart.js';
 
 const els = {
   runA: document.getElementById('measurement-run-a'),
@@ -73,9 +73,9 @@ function runColor(run) {
 function seriesDash(series, index, allSeries) {
   if (series.kind === 'average') return [];
   if (series.kind === 'entry_baseline') return [10, 4];
-  const positionIndex = allSeries.slice(0, index)
-    .filter((candidate) => candidate.kind === 'position').length;
-  return POSITION_DASHES[positionIndex % POSITION_DASHES.length];
+  const detailIndex = allSeries.slice(0, index)
+    .filter((candidate) => !['average', 'entry_baseline'].includes(candidate.kind)).length;
+  return POSITION_DASHES[detailIndex % POSITION_DASHES.length];
 }
 
 function seriesSwatch(run, series, index) {
@@ -164,7 +164,7 @@ function draw() {
   });
   els.status.textContent = !drew
     ? 'No plottable response curves are stored for this selection.'
-    : `${visibleCount} of ${chartSeries.length} curves shown · relative to each series’ reference level${
+    : `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
       exclusions.length ? ' · shaded areas are untrusted' : ''
     }`;
 }
@@ -209,13 +209,20 @@ function detailRows(run) {
     || run.state || 'Unknown';
   const storedFloor = metadata.trusted_floor_hz;
   const floor = Number(storedFloor);
-  const graph = metadata.applied_graph_fingerprint || metadata.entry_graph_fingerprint;
+  const graph = metadata.applied_graph_fingerprint || metadata.entry_graph_fingerprint
+    || (metadata.graph_fingerprints || [])[0];
+  const smoothingText = smoothing.average_fractional_octave
+    ? `Average 1/${smoothing.average_fractional_octave} · positions 1/${smoothing.positions_fractional_octave || '?'}`
+    : 'Stored with each curve';
+  const phases = (metadata.phases || []).map((phase) => String(phase).replaceAll('_', ' ')).join(', ');
   return [
     ['Captured', formatDate(run.started_at)],
     ['Result', String(result)],
+    ['Type', String(run.measurement_family || 'speaker response').replaceAll('_', ' ')],
     ['Positions', String(metadata.position_count || 0)],
     ['Angles', angles],
-    ['Smoothing', `Average 1/${smoothing.average_fractional_octave || '?'} · positions 1/${smoothing.positions_fractional_octave || '?'}`],
+    ['Phases', phases || 'Not recorded'],
+    ['Smoothing', smoothingText],
     ['Trusted range', storedFloor != null && Number.isFinite(floor) ? `${Math.round(floor)} Hz–20 kHz` : 'Not recorded'],
     ['Graph', graph ? String(graph).slice(0, 12) : 'Not recorded'],
     ['Mic calibration', metadata.mic_calibration_id || 'Not recorded'],
@@ -251,7 +258,7 @@ function render(payload) {
   currentView = payload.view;
   visibleSeries = new Set();
   if (!currentView) {
-    clearView('No saved crossover measurement runs are available yet.');
+    clearView('No saved speaker measurements are available yet.');
     return;
   }
   for (const run of currentView.runs) {

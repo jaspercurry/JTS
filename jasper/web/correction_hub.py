@@ -16,6 +16,7 @@ SECTIONS = (
     # layers-design.md decision 1, "the surface gets a more honest name").
     ("crossover", "Active speaker", "/sound/crossover/"),
     ("bass", "Bass", "/sound/bass/"),
+    ("measurements", "Measurements", "/sound/measurements/"),
 )
 
 
@@ -29,7 +30,7 @@ def section_tabs(active: str) -> str:
             f'{html.escape(label)}</a>'
         )
     return (
-        '<nav class="segmented" aria-label="Correction measurement type">'
+        '<nav class="segmented" aria-label="Speaker correction">'
         + "".join(buttons)
         + "</nav>"
     )

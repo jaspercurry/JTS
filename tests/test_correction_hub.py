@@ -9,7 +9,7 @@ def test_section_tabs_marks_only_the_active_section() -> None:
     rendered = correction_hub.section_tabs("crossover")
 
     assert rendered.startswith(
-        '<nav class="segmented" aria-label="Correction measurement type">'
+        '<nav class="segmented" aria-label="Speaker correction">'
     )
     assert 'role="tab"' not in rendered
     assert 'role="tablist"' not in rendered

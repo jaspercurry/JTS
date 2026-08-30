@@ -2,12 +2,14 @@
  *
  * SPDX-License-Identifier: Apache-2.0 */
 
-.crossover-measurements-page {
+/* Flow-neutral saved measurement viewer. */
+
+.measurements-page {
   --measurement-run-a: var(--foreground);
   --measurement-run-b: var(--primary);
 }
 
-.crossover-measurements-page > * + * { margin-top: 16px; }
+.measurements-page > * + * { margin-top: 16px; }
 
 .measurement-run-pickers {
   display: grid;

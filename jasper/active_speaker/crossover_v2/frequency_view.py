@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Renderer-neutral frequency-response views over banked round evidence."""
+"""Translate crossover round evidence into the neutral frequency view."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -16,14 +16,15 @@ from jasper.audio_measurement.spatial_combine import (
     DEFAULT_SPEC_FRACTION,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
+from jasper.active_speaker.frequency_view import (
+    FrequencyRun,
+    FrequencySeries,
+    FrequencyViewError,
+    build_frequency_view as _build_frequency_view,
+    frequency_series,
+)
 
-SCHEMA = "jts_frequency_view/1"
 MEASUREMENT_FAMILY = "summed_cloud"
-
-
-class FrequencyViewError(ValueError):
-    """An evidence packet cannot supply a frequency-response view."""
-
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
@@ -40,28 +41,18 @@ def _curve(
     smoothing_fraction: int | None,
     visible: bool,
     **metadata: Any,
-) -> dict[str, Any] | None:
-    if not isinstance(freqs_hz, Sequence) or isinstance(freqs_hz, (str, bytes)):
-        return None
-    if not isinstance(magnitude_db, Sequence) or isinstance(magnitude_db, (str, bytes)):
-        return None
-    if not freqs_hz or len(freqs_hz) != len(magnitude_db):
-        return None
-    return {
-        "id": series_id,
-        "label": label,
-        "kind": kind,
-        "freqs_hz": list(freqs_hz),
-        "magnitude_db": list(magnitude_db),
-        "reference_db": (
-            reference_db
-            if isinstance(reference_db, (int, float)) and not isinstance(reference_db, bool)
-            else None
-        ),
-        "smoothing_fractional_octave": smoothing_fraction,
-        "visible_by_default": visible,
+) -> FrequencySeries | None:
+    return frequency_series(
+        series_id=series_id,
+        label=label,
+        kind=kind,
+        freqs_hz=freqs_hz,
+        magnitude_db=magnitude_db,
+        reference_db=reference_db,
+        smoothing_fractional_octave=smoothing_fraction,
+        visible_by_default=visible,
         **metadata,
-    }
+    )
 
 
 def _whole_degrees(value: Any) -> int | None:
@@ -110,7 +101,9 @@ def _baseline_frame(entry: Mapping[str, Any]) -> tuple[float | None, list[list[f
     return report.reference_db, [list(interval) for interval in report.excluded_intervals]
 
 
-def _run(packet: Mapping[str, Any], slot: str) -> dict[str, Any]:
+def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
+    """Adapt one retained crossover evidence packet; perform no file I/O."""
+
     session = _mapping(packet.get("session"))
     run_id = str(session.get("bundle_session_id") or "").strip()
     if not run_id:
@@ -125,7 +118,7 @@ def _run(packet: Mapping[str, Any], slot: str) -> dict[str, Any]:
     honesty = _mapping(packet.get("honesty_mask"))
     identity = _mapping(packet.get("identity"))
 
-    series: list[dict[str, Any]] = []
+    series: list[FrequencySeries] = []
     average = _curve(
         series_id="average",
         label="Run average",
@@ -199,15 +192,13 @@ def _run(packet: Mapping[str, Any], slot: str) -> dict[str, Any]:
 
     angles = _mapping(positions.get("angle_deg"))
     mic = _mapping(identity.get("mic"))
-    return {
-        "slot": slot,
-        "id": run_id,
-        "label": f"Run {slot.upper()}",
-        "measurement_family": MEASUREMENT_FAMILY,
-        "started_at": session.get("started_at"),
-        "round_id": session.get("round_id"),
-        "state": session.get("state"),
-        "metadata": {
+    return FrequencyRun(
+        id=run_id,
+        measurement_family=MEASUREMENT_FAMILY,
+        started_at=session.get("started_at"),
+        round_id=session.get("round_id"),
+        state=session.get("state"),
+        metadata={
             "position_count": positions.get("n_positions") or 0,
             "angles_deg": angles.get("angles_deg") or [],
             "reference_db": reference_db,
@@ -227,29 +218,17 @@ def _run(packet: Mapping[str, Any], slot: str) -> dict[str, Any]:
             "build_sha": identity.get("build_sha"),
             "mic_calibration_id": mic.get("calibration_id"),
         },
-        "series": series,
-    }
+        series=tuple(series),
+    )
 
 
 def build_frequency_view(
     run_a: Mapping[str, Any],
     run_b: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Project one or two evidence packets into the shared graph contract."""
+    """Backward-compatible evidence-packet door over the neutral projector."""
 
-    runs = [_run(run_a, "a")]
-    if run_b is not None:
-        runs.append(_run(run_b, "b"))
-    return {
-        "schema": SCHEMA,
-        "normalization": {
-            "kind": "series_reference",
-            "note": (
-                "Every series declares its display reference_db. Run averages and "
-                "positions use the stored run reference; the retained before-"
-                "correction curve uses its own reference from the shipped flat-spec "
-                "evaluator."
-            ),
-        },
-        "runs": runs,
-    }
+    return _build_frequency_view(
+        frequency_run(run_a),
+        frequency_run(run_b) if run_b is not None else None,
+    )

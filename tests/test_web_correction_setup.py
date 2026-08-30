@@ -150,7 +150,7 @@ def test_render_links_page_css_and_module():
 
 def test_render_has_correction_measurement_tabs():
     html = _render()
-    assert 'aria-label="Correction measurement type"' in html
+    assert 'aria-label="Speaker correction"' in html
     assert 'href="/sound/room/"' in html
     assert 'href="/sound/crossover/"' in html
     assert 'href="/sound/bass/"' in html
@@ -369,25 +369,25 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b'id="mic-support"' not in resp
 
 
-def test_get_crossover_measurements_renders_history_page():
-    resp = _drive("/crossover/measurements/")
+def test_get_measurements_renders_independent_history_page():
+    resp = _drive("/measurements/")
     assert b"200" in resp.split(b"\r\n", 1)[0]
-    assert b"/assets/correction/js/crossover/measurements.js" in resp
+    assert b"/assets/correction/js/measurements.js" in resp
     assert b'id="measurement-run-a"' in resp
 
 
-def test_get_crossover_measurement_data_dispatches_a_and_b(monkeypatch):
-    from jasper.web import correction_crossover_measurements
+def test_get_measurement_data_dispatches_a_and_b(monkeypatch):
+    from jasper.web import correction_measurements
 
     monkeypatch.setattr(
-        correction_crossover_measurements,
+        correction_measurements,
         "build_data",
         lambda **kwargs: {
             "a": kwargs["run_a_id"],
             "b": kwargs["run_b_id"],
         },
     )
-    resp = _drive("/crossover/measurements/data?a=aaa&b=bbb")
+    resp = _drive("/measurements/data?a=aaa&b=bbb")
 
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {
