@@ -352,10 +352,16 @@ def _isolate_commissioning_disclosure(monkeypatch):
 
     Cleared before each test so nothing is inherited; ``monkeypatch`` puts the
     process back at teardown so nothing is handed forward.
-    """
-    from jasper.active_speaker import commissioning_verification
 
-    monkeypatch.setattr(commissioning_verification, "_LAST_DISCLOSED", None)
+    Looked up in ``sys.modules`` rather than imported: the memo lives in the
+    module object, so a process that never imported it has nothing seated.
+    Importing here would pull ``commissioning_verification`` (and numpy
+    behind it) into every test process, including the python-policy CI job's
+    thin, numpy-less environment.
+    """
+    mod = sys.modules.get("jasper.active_speaker.commissioning_verification")
+    if mod is not None:
+        monkeypatch.setattr(mod, "_LAST_DISCLOSED", None)
 
 
 def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
