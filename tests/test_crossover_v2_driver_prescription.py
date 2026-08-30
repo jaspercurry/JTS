@@ -3972,7 +3972,7 @@ def test_the_incumbent_is_the_applied_profile_never_the_undo_stash(
     apply and arbitrarily behind after an apply through a door that never
     touches v2 state. Both directions were measured on jts3 on 2026-08-29: a
     15-hour-old chain reported over a freshly applied baseline, and an empty
-    one reported over a graph carrying nine linearization filters.
+    one reported over a graph carrying a full per-driver correction.
 
     Parametrized on the one axis that matters — is the SSOT there — because the
     silent fallback is the defect: with no applied profile the block must say

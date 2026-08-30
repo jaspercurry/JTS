@@ -2070,8 +2070,9 @@ def _incumbent_block(
     through a door that never touches v2 state (``/sound/setup``'s is one).
     Both directions were measured on jts3 that night: a 15-hour-old chain
     reported over a freshly applied baseline, and an empty one reported over a
-    graph carrying nine linearization filters. Issue #2859 named the staleness
-    mechanism and was closed against the restore path alone.
+    graph carrying a full per-driver correction and a blend cut. Issue #2859
+    named the staleness mechanism and was closed against the restore path
+    alone.
 
     ``identity`` says WHICH profile the answer describes, so a reader can catch
     the next drift of this kind. ``config.path`` is not among its fields — the
