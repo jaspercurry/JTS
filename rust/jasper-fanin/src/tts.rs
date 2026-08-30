@@ -78,6 +78,7 @@ pub struct TtsMetrics {
     pending_frames: Arc<AtomicU64>,
     max_pending_frames: Arc<AtomicU64>,
     budget_frames: Arc<AtomicU64>,
+    protocol_errors: Arc<AtomicU64>,
     dropped_commands: Arc<AtomicU64>,
     dropped_audio_frames: Arc<AtomicU64>,
     stale_commands_dropped: Arc<AtomicU64>,
@@ -120,6 +121,7 @@ impl Default for TtsMetrics {
             pending_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames: Arc::new(AtomicU64::new(0)),
             budget_frames: Arc::new(AtomicU64::new(0)),
+            protocol_errors: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
             stale_commands_dropped: Arc::new(AtomicU64::new(0)),
@@ -182,6 +184,10 @@ impl TtsMetrics {
 
     pub fn budget_frames(&self) -> u64 {
         self.budget_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn protocol_errors(&self) -> u64 {
+        self.protocol_errors.load(Ordering::Relaxed)
     }
 
     pub fn dropped_commands(&self) -> u64 {
@@ -336,6 +342,10 @@ impl TtsMetrics {
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
         self.dropped_audio_frames
             .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    fn mark_protocol_error(&self) {
+        self.protocol_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     fn mark_stale_command_dropped(&self) {
@@ -1356,6 +1366,7 @@ fn handle_tts_client(
                 }
             }
             Err(e) => {
+                metrics.mark_protocol_error();
                 warn!("event=fanin.tts_socket.protocol_error detail={}", e);
                 return;
             }
@@ -1760,6 +1771,15 @@ mod tests {
         let mut reader = Cursor::new(b"AUDIO 2\n\x01\0".to_vec());
         let err = read_command(&mut reader).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn tts_client_protocol_errors_advance_the_delivery_counter() {
+        let (tx, _rx, flush_tx, _flush_rx, metrics, epoch) = tts_channels(48_000);
+
+        run_tts_client_payload(b"UNKNOWN\n", &tx, &flush_tx, &epoch, &metrics);
+
+        assert_eq!(metrics.protocol_errors(), 1);
     }
 
     #[test]

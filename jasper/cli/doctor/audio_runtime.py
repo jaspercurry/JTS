@@ -833,9 +833,11 @@ def check_fanin_host_clock() -> CheckResult:
 
 @doctor_check(order=51.5, group="audio")
 def check_fanin_tts_drops() -> CheckResult:
-    """Dropped TTS audio at fan-in's pending budget means garbled replies.
+    """Report fan-in TTS protocol errors and pending-budget drops.
 
-    fan-in's TTS lane drops whole audio commands that arrive while its
+    A protocol error closes the client socket, which can mute the assistant
+    and its failure cue when voice and fan-in disagree on the wire. fan-in's
+    TTS lane also drops whole audio commands that arrive while its
     bounded pending queue is full (it cannot block the socket reader
     without stalling barge-in FLUSH behind queued audio). The Python
     writer paces itself to stay under that budget
@@ -848,9 +850,9 @@ def check_fanin_tts_drops() -> CheckResult:
     Returns:
       - ok when counters are zero, the TTS lane is disabled, or STATUS
         is unreachable (reachability is owned by 'jasper-fanin service').
-      - warn when dropped audio commands/frames > 0 since fan-in start.
+      - warn when protocol errors or dropped audio > 0 since fan-in start.
     """
-    name = "fan-in TTS drops"
+    name = "fan-in TTS delivery"
     socket_path = "/run/jasper-fanin/control.sock"
     try:
         payload = _read_status_socket_bytes(socket_path, timeout=2.0)
@@ -873,6 +875,16 @@ def check_fanin_tts_drops() -> CheckResult:
 
     dropped_frames = int(tts.get("dropped_audio_frames") or 0)
     dropped_commands = int(tts.get("dropped_commands") or 0)
+    protocol_errors = int(tts.get("protocol_errors") or 0)
+    if protocol_errors:
+        return CheckResult(
+            name,
+            "warn",
+            f"{protocol_errors} TTS socket protocol error(s) since fan-in "
+            "start — assistant and cue audio may be mute. Check "
+            "`journalctl -u jasper-fanin | grep tts_socket.protocol_error` "
+            "for a voice/fan-in wire mismatch or malformed client.",
+        )
     if dropped_frames == 0 and dropped_commands == 0:
         return CheckResult(
             name,
