@@ -37,6 +37,8 @@ from jasper.audio_measurement.null_walk import (
 FC_HZ = 1800.0
 TWEETER_CHANNELS = (1,)
 WOOFER_CHANNELS = (0,)
+BRANCH_ROLES = ("tweeter", "woofer")
+ROLE_CHANNELS = {"tweeter": TWEETER_CHANNELS, "woofer": WOOFER_CHANNELS}
 
 
 def _live_graph():
@@ -95,9 +97,10 @@ def test_emitted_graph_carries_inversion_and_delay_and_nothing_else():
     patched = reverse_null_graph(
         live,
         inverted_role="tweeter",
+        branch_roles=BRANCH_ROLES,
         delay_role="tweeter",
         delay_us=250.0,
-        delay_channels=TWEETER_CHANNELS,
+        role_channels=ROLE_CHANNELS,
     )
 
     tweeter_gain = patched["filters"]["as_tweeter_baseline_gain"]["parameters"]
@@ -120,16 +123,16 @@ def test_emitted_graph_leaves_the_live_mapping_untouched():
     live = _live_graph()
     before = copy.deepcopy(live)
     reverse_null_graph(
-        live, inverted_role="tweeter", delay_role="tweeter",
-        delay_us=100.0, delay_channels=TWEETER_CHANNELS,
+        live, inverted_role="tweeter", branch_roles=BRANCH_ROLES,
+        delay_role="tweeter", delay_us=100.0, role_channels=ROLE_CHANNELS,
     )
     assert live == before
 
 
 def test_zero_coordinate_inverts_without_delaying_either_branch():
     patched = reverse_null_graph(
-        _live_graph(), inverted_role="tweeter", delay_role=None,
-        delay_us=0.0, delay_channels=(),
+        _live_graph(), inverted_role="tweeter", branch_roles=BRANCH_ROLES,
+        delay_role=None, delay_us=0.0, role_channels=ROLE_CHANNELS,
     )
     assert patched["filters"]["as_tweeter_baseline_gain"]["parameters"]["inverted"]
     assert patched["filters"]["as_tweeter_delay"]["parameters"]["delay"] == 0.0
@@ -148,24 +151,25 @@ def test_graph_proof_refuses_rather_than_emitting(mutation):
     live.update(copy.deepcopy(mutation))
     with pytest.raises(DelayGraphProofError):
         reverse_null_graph(
-            live, inverted_role="tweeter", delay_role="tweeter",
-            delay_us=250.0, delay_channels=TWEETER_CHANNELS,
+            live, inverted_role="tweeter", branch_roles=BRANCH_ROLES,
+            delay_role="tweeter", delay_us=250.0, role_channels=ROLE_CHANNELS,
         )
 
 
 def test_graph_refuses_a_branch_the_live_graph_does_not_carry():
     with pytest.raises(DelaySweepRefused):
         reverse_null_graph(
-            _live_graph(), inverted_role="midrange", delay_role="tweeter",
-            delay_us=100.0, delay_channels=TWEETER_CHANNELS,
+            _live_graph(), inverted_role="midrange", branch_roles=BRANCH_ROLES,
+            delay_role="tweeter", delay_us=100.0, role_channels=ROLE_CHANNELS,
         )
 
 
 def test_delay_lane_bound_to_the_wrong_channels_is_refused():
     with pytest.raises(DelayGraphProofError):
         reverse_null_graph(
-            _live_graph(), inverted_role="tweeter", delay_role="tweeter",
-            delay_us=250.0, delay_channels=WOOFER_CHANNELS,
+            _live_graph(), inverted_role="tweeter", branch_roles=BRANCH_ROLES,
+            delay_role="tweeter", delay_us=250.0,
+            role_channels={"tweeter": WOOFER_CHANNELS, "woofer": TWEETER_CHANNELS},
         )
 
 
@@ -242,7 +246,7 @@ def test_known_offset_is_recovered_within_one_step(true_offset_us):
     assert selection["status"] == "selected"
     assert abs(selection["selected_relative_delay_us"] - true_offset_us) <= spec.step_us
 
-    verdict = sweep_verdict(selection, rows_by_delay=rows)
+    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
     assert verdict["verdict"] == VERDICT_ROBUST
     assert verdict["meets_robustness_bar"] is True
     assert verdict["best_measured_null_depth_db"] >= ROBUST_NULL_DEPTH_DB
@@ -266,7 +270,7 @@ def test_no_coordinate_reaching_the_floor_reads_as_axis_limited_not_an_error():
     # Every depth scaled under the usable floor: a real null never forms, so the
     # residual at Fc is not something a delay can move.
     _, rows, selection = _graded(0.0, scale=0.2)
-    verdict = sweep_verdict(selection, rows_by_delay=rows)
+    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
     assert verdict["verdict"] == VERDICT_AXIS_LIMITED
     assert verdict["best_measured_null_depth_db"] < USABLE_NULL_DEPTH_DB
     assert verdict["meets_robustness_bar"] is False
@@ -276,7 +280,7 @@ def test_no_coordinate_reaching_the_floor_reads_as_axis_limited_not_an_error():
 
 def test_a_shallow_but_usable_null_grades_weak():
     _, rows, selection = _graded(0.0, scale=0.45)
-    verdict = sweep_verdict(selection, rows_by_delay=rows)
+    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
     assert USABLE_NULL_DEPTH_DB <= verdict["best_measured_null_depth_db"]
     assert verdict["best_measured_null_depth_db"] < ROBUST_NULL_DEPTH_DB
     assert verdict["verdict"] == VERDICT_WEAK
@@ -302,7 +306,7 @@ def test_poses_disagreeing_about_the_null_downgrades_a_deep_result():
             + _rows(_synthetic_depth(coordinate, -200.0), pose_deg=15)
         )
     selection = select_scheduled_delay(spec, schedule, rows_at_pose(rows, 0))
-    verdict = sweep_verdict(selection, rows_by_delay=rows, poses_deg=(0, 15))
+    verdict = sweep_verdict(selection, spec=spec, rows_by_delay=rows, poses_deg=(0, 15))
     assert verdict["poses_agree"] is False
     assert verdict["verdict"] == VERDICT_WEAK
 
@@ -313,7 +317,7 @@ def test_incomplete_evidence_is_refused_with_the_selectors_own_reason():
     # One coordinate short of MIN_CAPTURE_COUNT is enough to refuse the walk.
     rows[spec.candidate_delays_us()[0]] = _rows(30.0, count=2)
     selection = select_delay(spec, rows)
-    verdict = sweep_verdict(selection, rows_by_delay=rows)
+    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
     assert verdict["verdict"] == "evidence_incomplete"
     assert verdict["reason"] == selection["reason"]
     assert verdict["selected_delay_us"] is None
@@ -376,7 +380,7 @@ def _plan(**kwargs):
     return DelaySweepPlan(
         spec=_spec(),
         inverted_role="tweeter",
-        role_channels={"tweeter": TWEETER_CHANNELS, "woofer": WOOFER_CHANNELS},
+        role_channels=ROLE_CHANNELS,
         **kwargs,
     )
 
@@ -498,3 +502,173 @@ def test_grade_refuses_unreadable_captures_without_a_traceback(tmp_path, capsys)
     broken.write_text("not json", encoding="utf-8")
     assert main(["grade", "--fc-hz", "1800", "--captures", str(broken)]) == 2
     assert "unreadable captures" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# review findings, pinned
+# --------------------------------------------------------------------------- #
+
+
+def test_the_zero_coordinate_is_ceiling_checked_like_every_other():
+    # The zero coordinate delays neither branch, so it once skipped the proof
+    # that carries the 0 dB volume_limit check -- the one coordinate on which a
+    # graph above the ceiling would have played.
+    live = _live_graph()
+    live["devices"]["volume_limit"] = 3.0
+    with pytest.raises(DelayGraphProofError):
+        reverse_null_graph(
+            live, inverted_role="tweeter", branch_roles=BRANCH_ROLES,
+            delay_role=None, delay_us=0.0, role_channels=ROLE_CHANNELS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("delay_role", "delay_us"),
+    [("tweeter", 250.0), ("woofer", 250.0), (None, 0.0)],
+)
+def test_the_undelayed_branch_is_zeroed_so_the_coordinate_is_the_real_delay(
+    delay_role, delay_us
+):
+    # A speaker that already carries an applied alignment has non-zero driver
+    # delays. A walk coordinate is a RELATIVE delay against a zero-relative
+    # predecessor, so leaving the other lane alone would bias the whole grid.
+    live = _live_graph()
+    live["filters"]["as_tweeter_delay"]["parameters"]["delay"] = 0.4
+    live["filters"]["as_woofer_delay"]["parameters"]["delay"] = 0.15
+
+    patched = reverse_null_graph(
+        live, inverted_role="tweeter", branch_roles=BRANCH_ROLES,
+        delay_role=delay_role, delay_us=delay_us, role_channels=ROLE_CHANNELS,
+    )
+    tweeter = patched["filters"]["as_tweeter_delay"]["parameters"]["delay"]
+    woofer = patched["filters"]["as_woofer_delay"]["parameters"]["delay"]
+    realized_us = (tweeter - woofer) * 1000.0
+    expected = 0.0 if delay_role is None else (
+        delay_us if delay_role == "tweeter" else -delay_us
+    )
+    assert realized_us == pytest.approx(expected)
+
+
+def test_unrepeatable_evidence_is_reported_not_thrown_away():
+    # A sweep that already played its whole audible grid must not lose it to an
+    # exception when the shared schedule refuses the evidence.
+    class _Noisy(_Recorder):
+        def __init__(self):
+            super().__init__()
+            self._n = 0
+
+        async def _measure(self, *, pose_deg, delay_us):
+            self._n += 1
+            acoustic = await super()._measure(pose_deg=pose_deg, delay_us=delay_us)
+            # A spread far past MAX_REPEAT_SPREAD_DB at every coordinate.
+            acoustic["null_depth_db"] = 5.0 if self._n % 2 else 30.0
+            return acoustic
+
+    host = _Noisy()
+    artifact = asyncio.run(run_delay_sweep(_plan(), host.seams()))
+    assert artifact["verdict"]["verdict"] == "evidence_incomplete"
+    assert artifact["verdict"]["reason"]
+    assert artifact["steps"], "the receipts survive the refusal"
+    assert artifact["rows"], "so does the evidence itself"
+    assert host.restores == 1
+
+
+def test_a_refusal_verdict_still_carries_every_key_a_consumer_reads():
+    spec = _spec()
+    rows = {coordinate: _rows(30.0) for coordinate in spec.candidate_delays_us()}
+    rows[spec.candidate_delays_us()[0]] = _rows(30.0, count=2)
+    verdict = sweep_verdict(select_delay(spec, rows), spec=spec, rows_by_delay=rows)
+    assert verdict["selected_relative_delay_us"] is None
+    assert set(verdict) == set(
+        sweep_verdict(_graded(100.0)[2], spec=spec, rows_by_delay=_graded(100.0)[1])
+    )
+
+
+def test_an_ungradeable_off_axis_pose_cannot_agree_by_silence():
+    spec = _spec()
+    coarse = spec.coarse_candidate_delays_us()
+    rows = {
+        coordinate: (
+            _rows(_synthetic_depth(coordinate, 100.0), pose_deg=0)
+            # The off-axis pose clipped: gradeable rows, zero of them valid.
+            + _rows(30.0, pose_deg=15, count=5)
+        )
+        for coordinate in coarse
+    }
+    for coordinate in coarse:
+        for row in rows[coordinate]:
+            if row["pose_deg"] == 15:
+                row["acoustic"]["mic_clipping"] = True
+    schedule = BoundedNullWalkSchedule.from_coarse_evidence(
+        spec, dict(rows_at_pose(rows, 0))
+    )
+    selection = select_scheduled_delay(spec, schedule, rows_at_pose(rows, 0))
+    verdict = sweep_verdict(
+        selection, spec=spec, rows_by_delay=rows, poses_deg=(0, 15)
+    )
+    assert verdict["pose_best_delays_us"]["15"] is None
+    assert verdict["unmeasured_poses_deg"] == ["15"]
+    assert verdict["poses_agree"] is False
+    assert verdict["verdict"] == VERDICT_WEAK
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"repeats": 3}, id="too_few_repeats"),
+        pytest.param({"poses_deg": ()}, id="no_poses"),
+        pytest.param({"poses_deg": (0, 0)}, id="duplicate_poses"),
+    ],
+)
+def test_an_unrunnable_plan_refuses_before_any_sound(kwargs):
+    with pytest.raises(DelaySweepRefused):
+        _plan(**kwargs)
+
+
+def test_the_trail_does_not_accumulate_across_two_sweeps():
+    plan = _plan()
+    first = asyncio.run(run_delay_sweep(plan, _Recorder().seams()))
+    second = asyncio.run(run_delay_sweep(plan, _Recorder().seams()))
+    assert len(second["steps"]) == len(first["steps"])
+
+
+def test_a_banked_artifact_regrades_through_the_cli(tmp_path, capsys):
+    from jasper.cli.delay_sweep import main
+
+    artifact = asyncio.run(run_delay_sweep(_plan(), _Recorder().seams()))
+    banked = tmp_path / "sweep.json"
+    banked.write_text(json.dumps(artifact["rows"]), encoding="utf-8")
+
+    assert main(["grade", "--fc-hz", "1800", "--captures", str(banked)]) == 0
+    regraded = json.loads(capsys.readouterr().out)
+    assert (
+        regraded["verdict"]["selected_relative_delay_us"]
+        == artifact["verdict"]["selected_relative_delay_us"]
+    )
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        pytest.param({"volume_limit": 6.0}, id="ceiling_exceeded"),
+        pytest.param({"samplerate": 48000}, id="ceiling_absent"),
+    ],
+)
+def test_a_graph_that_cannot_prove_the_ceiling_never_reaches_the_dsp(devices):
+    # Reachable at fc above ~5 kHz, where half_period_us < step_us collapses the
+    # coarse grid to the single zero coordinate.
+    high_fc = sweep_spec(
+        crossover_fc_hz=6000.0, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
+    )
+    assert high_fc.coarse_candidate_delays_us() == (0.0,)
+
+    host = _Recorder()
+    host.live["devices"] = dict(devices)
+    plan = DelaySweepPlan(
+        spec=high_fc, inverted_role="tweeter", role_channels=ROLE_CHANNELS
+    )
+    with pytest.raises(DelayGraphProofError):
+        asyncio.run(run_delay_sweep(plan, host.seams()))
+    assert host.applied == []
+    assert host.restores == 1

@@ -43,6 +43,7 @@ from jasper.active_speaker.delay_sweep import (
     sweep_verdict,
 )
 from jasper.audio_measurement.null_walk import (
+    MIN_CAPTURE_COUNT,
     BoundedNullWalkSchedule,
     NullWalkError,
     select_scheduled_delay,
@@ -130,7 +131,10 @@ def _cmd_grade(args: argparse.Namespace) -> int:
         return EXIT_REFUSED
 
     verdict = sweep_verdict(
-        selection, rows_by_delay=rows, poses_deg=tuple(args.poses) or (None,)
+        selection,
+        spec=spec,
+        rows_by_delay=rows,
+        poses_deg=tuple(args.poses) or (None,),
     )
     print(
         json.dumps(
@@ -139,6 +143,15 @@ def _cmd_grade(args: argparse.Namespace) -> int:
         )
     )
     return EXIT_OK
+
+
+def _repeats(raw: str) -> int:
+    value = int(raw)
+    if value < MIN_CAPTURE_COUNT:
+        raise argparse.ArgumentTypeError(
+            f"repeats must be at least {MIN_CAPTURE_COUNT}"
+        )
+    return value
 
 
 def _poses(raw: str) -> tuple[int | None, ...]:
@@ -171,7 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
             help="grid step in microseconds (50-100); the shared walk's own "
                  "default is used when omitted",
         )
-        child.add_argument("--repeats", type=int, default=5)
+        child.add_argument(
+            "--repeats", type=_repeats, default=MIN_CAPTURE_COUNT,
+            help=f"captures per coordinate; at least {MIN_CAPTURE_COUNT}, below "
+                 "which the shared walk cannot call a coordinate repeatable",
+        )
         child.add_argument("--poses", type=_poses, default=(None,),
                            help="comma-separated pose angles, e.g. 0,-7,7")
         if name == "grade":

@@ -214,9 +214,13 @@ ratified rulings. Constants land in code as the named program definitions;
   implementation this program reuses rather than re-inventing.
   `null_walk` is the bounded delay stepping's decision content — spec,
   schedule, scoring, selection — and `active_speaker.delay_sweep` is the
-  host that executes it: it walks the grid against the applied crossover
-  with one branch inverted, and grades the result. `jasper-delay-sweep`
-  is the operator door onto that walk's plan and its grading.
+  host that executes it, grading the walk and disclosing when no delay
+  explains the residual. `jasper-delay-sweep` is the operator door onto
+  that walk's plan and its grading. Note the two reverse-null sites are
+  deliberately different graphs, not a fork: `measure_spec.inverted_roles_for`
+  flips the protected-neutral MEASURE program at the routed mixer, while
+  the delay sweep flips the driver's own baseline gain in the APPLIED
+  graph, because what it measures is the applied crossover and its trims.
 - **Boost probe:** +6 dB is the standard probe (+3 dB when headroom is
   tight). A dip is correctable when measured gain-back ≥ ~0.8× commanded AND
   excess group delay is flat there; non-correctable when ≤ ~0.5× or excess-GD
