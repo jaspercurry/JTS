@@ -126,17 +126,21 @@ class BankedCandidate:
 
 
 def candidate_artifact_paths(root: Path) -> list[Path]:
-    """Every published candidate.json under the bundle root, newest last.
+    """Every published candidate.json under the bundle root, in a stable order.
 
-    Sorted so the scan is deterministic; the fingerprint decides the match, not
-    the ordering.
+    Sorted for determinism only. **Not chronological**, and deliberately not
+    claimed to be: the glob's first wildcard is a bundle directory named
+    ``uuid4().hex[:12]`` (:func:`~jasper.active_speaker.bundles.open_bundle`),
+    so path order carries no time information. Only ``started_at`` in each
+    bundle's ``info.json`` does — :mod:`~jasper.active_speaker.bundles` already
+    orders by it — and this scan needs none of it: the fingerprint decides the
+    match.
 
-    When there are more than :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` artifacts
-    the scan keeps the **newest** ones (``[-MAX:]``, not ``[:MAX]``). Which end
-    is dropped is load-bearing, not a detail: a candidate an operator is
-    reaching for is overwhelmingly likely to be among the most recent, so
-    truncating from the front would discard exactly the artifact being looked
-    for and report it missing — on the boxes with the most measurement history.
+    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` therefore BOUNDS work rather than
+    selecting recent history, and which end it truncates is arbitrary because
+    the order is. A root that overran the cap could drop an artifact that is on
+    disk and report it missing; the bundle root's own retention cap (12) is
+    what keeps a healthy box far under it.
     """
     try:
         found = sorted(Path(root).glob(CANDIDATE_ARTIFACT_GLOB))
