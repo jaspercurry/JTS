@@ -269,6 +269,7 @@ code = [
   "rust/jasper-env/**",
   "rust/jasper-fanin/**",
   "rust/jasper-outputd/**",
+  "rust/jasper-tts-protocol/**",
   "jasper/fanin/**",
   "c/jts-ring-ioplug/**",
   "jasper/bluetooth/**",
