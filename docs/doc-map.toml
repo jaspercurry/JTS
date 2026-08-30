@@ -892,6 +892,12 @@ docs = [
   # when the session, a capture provider, a door's refusal vocabulary, or an
   # exit-code contract changes.
   "docs/tuning-operator-runbook.md",
+  # The speaker-agnostic methodology a driving LLM follows: the order of
+  # operations (declare, plumbing, raw drivers, corner, alignment, level,
+  # linearize, verify, voice, iterate), the decision rule at each step, the
+  # failure catalog and the honesty rules. Scan it when a declared input, a
+  # verdict vocabulary, or a correction-envelope term changes.
+  "docs/tuning-methodology.md",
   # The engine's architecture and contracts: the four verbs, TuningSession and
   # its five seams, the session-scoped measurement graph, the volume owner's
   # ranked claims, the playback transaction, the invariants a refactor must
