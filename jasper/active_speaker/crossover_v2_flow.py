@@ -3168,6 +3168,9 @@ class CrossoverV2Session:
                 ) from exc
         return self._null_confirm_program
 
+    def _null_confirm_priors(self) -> MeasurementPriors:
+        return _priors.null_confirm_priors(fc_hz=self._fc_hz)
+
     # --- journey delegation --------------------------------------------------
 
     @property
@@ -4190,6 +4193,12 @@ class CrossoverV2Session:
             else self._lateral_priors() if phase == PHASE_LATERAL
             else self._cloud_priors() if phase in GROUP_PHASES
             else self._entry_baseline_priors() if phase == PHASE_ENTRY_BASELINE
+            # Ahead of the bare fallback and not folded into it: a confirm
+            # falling through to `MeasurementPriors()` would carry no
+            # `crossover_fc_hz`, and without the corner `_analyze_verify` never
+            # reads a null depth at all -- the capture would play, bank, and
+            # measure nothing, silently.
+            else self._null_confirm_priors() if phase == PHASE_NULL_CONFIRM
             else self._check_priors() if phase == PHASE_CHECK
             else MeasurementPriors()
         )

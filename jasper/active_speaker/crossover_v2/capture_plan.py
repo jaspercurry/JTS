@@ -1773,6 +1773,7 @@ def build_v2_cloud_index_phase_map(
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+    measure_phase: str = PHASE_MEASURE,
 ) -> dict[int, str]:
     """Capture-plan index → session phase for a STAGE-1 (measure) session.
 
@@ -1813,6 +1814,16 @@ def build_v2_cloud_index_phase_map(
 
     ``lateral_prompts`` is the walk's own table (L is its length); ``None`` is
     the ratified one.
+
+    ``measure_phase`` is what index 2 is called, and it exists for exactly one
+    caller: a walk staged ``--regime null_confirm`` runs its measurement as
+    :data:`~.journey.PHASE_NULL_CONFIRM` rather than
+    :data:`~.journey.PHASE_MEASURE`. It is a PARAMETER rather than a second map
+    because everything else about the plan is identical -- same slot, same
+    index, same prompt -- and because ``consume_capture`` resolves its phase
+    from THIS map: a confirm session that left index 2 saying ``measure`` would
+    play the confirm stimulus and then analyse it against MEASURE's program.
+    Defaulting to ``PHASE_MEASURE`` keeps every existing caller byte-identical.
     """
     shape = _shape_from_kwargs(
         plan_shape,
@@ -1822,7 +1833,7 @@ def build_v2_cloud_index_phase_map(
     )
     n = shape.cloud_measure_positions
     lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
-    mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
+    mapping = {1: PHASE_CHECK, 2: measure_phase}
     nxt = 3
     if include_lateral:
         for offset in range(len(lateral_table)):

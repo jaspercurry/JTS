@@ -140,6 +140,7 @@ __all__ = [
     "WALK_POLARITY_NEEDS_WIRED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_LEVEL_MATCH_NEEDS_WIRED",
+    "WALK_NULL_CONFIRM_NEEDS_WIRED",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -753,6 +754,21 @@ WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 #: raised by the CALLER, since this module reads no session facts.
 WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 
+#: The walk is a delay CONFIRMATION and this session's capture source cannot
+#: play one. The third member of the same family as the two above, refused for
+#: the same mechanism: a confirm is measured through the measurement graph
+#: carrying its candidate delay, and only a WIRED session binds the engine
+#: MEASURE leg that installs one -- every other source runs the measurement on
+#: the flow leg, which calls ``session_graph.install()`` with no arguments and
+#: plays the ordinary graph. The alternative is the sharpest form of the S12
+#: lie this family exists to refuse: a null depth banked against a coordinate
+#: the graph never carried reads as a MEASUREMENT of that coordinate, and
+#: `confirmation_verdict` would then grade the model against a number from a
+#: different experiment. Its own slug so an operator learns WHICH capability
+#: the source cannot play. Declared here so the vocabulary has one home; raised
+#: by the CALLER, since this module reads no session facts.
+WALK_NULL_CONFIRM_NEEDS_WIRED = "walk_null_confirm_needs_wired"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -765,6 +781,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_POLARITY_NEEDS_WIRED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_LEVEL_MATCH_NEEDS_WIRED,
+    WALK_NULL_CONFIRM_NEEDS_WIRED,
 })
 
 

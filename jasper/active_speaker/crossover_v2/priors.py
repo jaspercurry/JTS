@@ -62,6 +62,7 @@ __all__ = [
     "verify_priors",
     "cloud_priors",
     "entry_baseline_priors",
+    "null_confirm_priors",
 ]
 
 
@@ -453,5 +454,31 @@ def entry_baseline_priors(*, fc_hz: float) -> MeasurementPriors:
     :func:`~jasper.active_speaker.crossover_v2.round_evidence.measured_response_from_analysis`
     reduces. Do not thread the withheld priors back in: this capture cannot
     support the claims they license.
+    """
+    return MeasurementPriors(crossover_fc_hz=fc_hz)
+
+
+def null_confirm_priors(*, fc_hz: float) -> MeasurementPriors:
+    """Priors for a delay confirmation — the same two withholdings again.
+
+    Named for its own consumer rather than folded into :func:`cloud_priors`,
+    the way :func:`entry_baseline_priors` is, because the REASON differs and
+    the reason is what a reader needs:
+
+    * ``crossover_fc_hz`` — **kept, and load-bearing here in a way it is
+      nowhere else.** Without the corner ``_analyze_verify`` never reaches its
+      ``crossover_null_depth_db`` call and ``reverse_null_depth_db`` stays
+      ``None`` — a confirm with no ``fc_hz`` measures nothing at all. Every
+      other consumer uses it to place bands; this one uses it to have an answer.
+    * ``predicted_sum`` — **dropped**. A confirm is not tracking a model. It
+      plays one coordinate and reads how deep the notch went; the comparison
+      against what was PREDICTED happens offline in
+      :func:`~jasper.active_speaker.crossover_v2.delay_landscape.confirmation_verdict`,
+      against the landscape rather than a per-capture prediction. Passing it
+      would make ``_analyze_verify`` grade a deliberate deep null as a
+      realization error.
+    * the ``measure_*_sweep_*`` bounds and the ``configured_*`` maps —
+      **dropped**, for :func:`entry_baseline_priors`' reasons unchanged: they
+      license tracking and absolute claims this capture does not make.
     """
     return MeasurementPriors(crossover_fc_hz=fc_hz)

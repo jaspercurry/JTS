@@ -2142,6 +2142,7 @@ def _take_staged_angle_walk(
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NEEDS_WIRED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
+        WALK_NULL_CONFIRM_NEEDS_WIRED,
         WALK_POLARITY_NEEDS_WIRED,
         WALK_DELAY_NOT_ACCEPTED,
         WALK_POLARITY_NOT_ACCEPTED,
@@ -2149,6 +2150,7 @@ def _take_staged_angle_walk(
         LateralWalkRefused,
         session_lateral_walk,
     )
+    from jasper.active_speaker.angle_capture import REGIME_NULL_CONFIRM
     from jasper.active_speaker.angle_capture_spool import (
         AngleRequestRefused,
         staged_angle_request_pending,
@@ -2157,6 +2159,7 @@ def _take_staged_angle_walk(
     from jasper.active_speaker.crossover_v2.capture_plan import position_angle_deg
     from jasper.active_speaker.crossover_v2.contracts import (
         MEASURE_KIND_CANDIDATE,
+        MEASURE_KIND_NULL_CONFIRM,
         CrossoverV2FlowError,
     )
     from jasper.active_speaker.crossover_v2.journey import (
@@ -2207,12 +2210,25 @@ def _take_staged_angle_walk(
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
         raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
+    # The walk's REGIME chooses the measurement KIND, and the kind is what
+    # every downstream translation asks about: `_compose_stimulus` resolves the
+    # stimulus through `phase_for_measurement`, and the caller rebuilds the
+    # index map from the same answer so `consume_capture` agrees with what was
+    # played. Read off the STOPS rather than a flag, because the regime is
+    # stated per stop; a walk is a confirmation only if EVERY stop is one, and a
+    # mixed request stays an ordinary candidate rather than silently confirming
+    # half of itself.
+    staged_kind = (
+        MEASURE_KIND_NULL_CONFIRM
+        if {stop.regime for stop in request.stops} == {REGIME_NULL_CONFIRM}
+        else MEASURE_KIND_CANDIDATE
+    )
     try:
         # Its own arm rather than a fourth clause on the block above: only THIS
         # construction may be read as a polarity refusal, and a ``ValueError``
         # from anything else up there must not be relabelled as one.
         measure_spec = MeasureSpec(
-            kind=MEASURE_KIND_CANDIDATE,
+            kind=staged_kind,
             polarity=request.polarity,
             inverted_role=request.inverted_role,
             delayed_role=request.delayed_role,
@@ -2251,6 +2267,22 @@ def _take_staged_angle_walk(
         raise refused(
             WALK_LEVEL_MATCH_NEEDS_WIRED,
             "a level-matched capture plays through the engine MEASURE leg, "
+            f"which only a {SOURCE_WIRED} session binds; this session's "
+            f"capture source is {capture_source!r}",
+        )
+    if measure_spec.kind == MEASURE_KIND_NULL_CONFIRM and capture_source != SOURCE_WIRED:
+        # The third member of the polarity/level-match family above, refused for
+        # their mechanism: a confirm is measured through the measurement graph
+        # carrying its candidate delay, and only a wired session binds the
+        # engine MEASURE leg that installs one -- the flow leg calls
+        # ``session_graph.install()`` with no arguments and plays the ordinary
+        # graph. Banking a null depth against a coordinate the graph never
+        # carried is the sharpest form of the S12 lie: it reads as a
+        # MEASUREMENT of that coordinate, and the offline grader would then
+        # weigh the model against a number from a different experiment.
+        raise refused(
+            WALK_NULL_CONFIRM_NEEDS_WIRED,
+            "a delay confirmation plays through the engine MEASURE leg, "
             f"which only a {SOURCE_WIRED} session binds; this session's "
             f"capture source is {capture_source!r}",
         )
@@ -5960,14 +5992,19 @@ def _bind_engine_measure_leg(
     capture half — the relay). The closure answers ``None`` for every index it
     does NOT claim, and the walk's own path is unchanged for those.
 
-    **It claims exactly the MEASURE indices.** That is the one phase the
-    engine can drive end-to-end today: its kind exists
-    (``MEASURE_KIND_CANDIDATE``), its program is routed (a verify-class summed
-    sweep is structurally not re-admittable — ``admit_excitation_program``
-    raises for it — so the transaction's readmit gate cannot pass one), and
-    its graph discipline matches the session's prove-per-stimulus model. CHECK
-    and the prompted walks stay on the flow callbacks until their kinds and
-    verdicts move engine-side.
+    **It claims the two MEASUREMENT indices**, which are one slot wearing two
+    names: index 2 is ``PHASE_MEASURE`` for an ordinary walk and
+    ``PHASE_NULL_CONFIRM`` for one staged ``--regime null_confirm``. Both
+    qualify for one shared reason — their programs are ROUTED, so the
+    transaction's readmit gate can pass them
+    (``admit_excitation_program`` raises for the verify-class summed sweeps,
+    which ride the applied production graph with no load and no admission). A
+    confirm additionally NEEDS this leg: only ``session.install`` puts its
+    candidate delay in the graph, which is why the staged walk refuses a
+    non-wired source with ``WALK_NULL_CONFIRM_NEEDS_WIRED``.
+
+    CHECK and the prompted walks stay on the flow callbacks until their kinds
+    and verdicts move engine-side.
 
     **The whole ``measure()`` runs under the session's measurement isolation**
     — the same :func:`_under_measurement_isolation` selector the flow leg's
@@ -6023,7 +6060,10 @@ def _bind_engine_measure_leg(
     from jasper.active_speaker.crossover_v2.contracts import (
         MEASURE_KIND_CANDIDATE,
     )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import (
+        PHASE_MEASURE,
+        PHASE_NULL_CONFIRM,
+    )
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.program_transaction import (
         STIMULUS_ADMISSION_REFUSED,
@@ -6038,9 +6078,14 @@ def _bind_engine_measure_leg(
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
+    # Both measurement phases the engine can drive. They are one slot wearing
+    # two names -- the map calls index 2 whichever phase the staged walk's kind
+    # resolved to -- so claiming only PHASE_MEASURE would hand a confirm back to
+    # the flow leg, which installs the ordinary graph and would measure a
+    # coordinate it never carried.
     measure_indices = {
         index for index, phase in index_phase_map.items()
-        if phase == PHASE_MEASURE
+        if phase in (PHASE_MEASURE, PHASE_NULL_CONFIRM)
     }
     if not measure_indices:
         return None
@@ -6602,12 +6647,22 @@ def prepare_v2_session(
                 engine_level_trims,
             ) = staged_walk
             include_lateral = True
+            from jasper.active_speaker.crossover_v2.measurement_phase import (
+                phase_for_measurement,
+            )
+
             stage1_index_phase = build_v2_cloud_index_phase_map(
                 plan_shape=plan_shape,
                 include_cloud_measure=include_cloud_measure,
                 include_lateral=include_lateral,
                 include_entry_baseline=include_entry_baseline,
                 lateral_prompts=lateral_prompts,
+                # Asked through the ONE translation the engine's own
+                # ``_compose_stimulus`` uses, never re-derived from the regime:
+                # the map and the stimulus then answer "what does index 2 play"
+                # with one voice. A confirm walk names index 2
+                # ``null_confirm``; every other walk is unchanged.
+                measure_phase=phase_for_measurement(engine_measure_spec.kind),
             )
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     if verify_only:
