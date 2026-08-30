@@ -41,8 +41,10 @@ def mono_output_topology(
     tweeter_verified: bool | None = None,
     tweeter_output: int | None = None,
     protection_status: str = "software_guard_requested",
+    topology_id: str = "bench_mono",
     topology_name: str = "Bench mono cabinet",
     group_label: str = "Mono cabinet",
+    sub_label: str = "Subwoofer",
     device_id: str = "hifiberry_dac8x",
     device_label: str = "HiFiBerry DAC8x",
     physical_output_count: int = 8,
@@ -119,7 +121,7 @@ def mono_output_topology(
         speaker_groups.append(
             {
                 "id": "sub",
-                "label": "Subwoofer",
+                "label": sub_label,
                 "kind": "subwoofer",
                 "mode": "subwoofer",
                 "channels": [
@@ -146,7 +148,7 @@ def mono_output_topology(
         {
             "artifact_schema_version": 1,
             "kind": OUTPUT_TOPOLOGY_KIND,
-            "topology_id": "bench_mono",
+            "topology_id": topology_id,
             "name": topology_name,
             "status": "draft",
             "hardware": hardware,

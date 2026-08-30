@@ -387,33 +387,26 @@ async def _noop_confirm(_cam: Any, _yaml: str) -> None:
     return None
 
 
-def test_stop_restores_the_durable_graph_and_never_moves_the_pointer(
-    audition_box,
-) -> None:
-    """(b) + (c) for the explicit stop."""
+async def _never_sleeps(_seconds: float) -> None:
+    raise AssertionError("the displaced owner should stand down before waiting")
 
-    cam, anchor, full_text, state = audition_box
-    before = anchor.read_bytes()
 
-    started = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
+def _arm(cam: _Cam, full_text: str, **kwargs: Any) -> dict[str, Any]:
+    started = asyncio.run(
+        start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE, **kwargs)
+    )
     assert started["status"] == "auditioning"
     assert cam.running != full_text
-    assert read_audition_state(state) is not None
-
-    restored = asyncio.run(stop_audition(cam=cam))
-
-    assert restored["layer"] == AUDITION_LAYER_FULL
-    assert cam.running == full_text
-    assert read_audition_state(state) is None
-    assert anchor.read_bytes() == before
-    assert cam.path_writes == []
+    return started
 
 
-def test_the_deadline_restores_a_walked_away_audition(audition_box) -> None:
-    """(b) for the watchdog: the owner puts the graph back at the deadline
-    without anybody typing stop."""
+def _exit_by_stop(cam, full_text, monkeypatch):
+    _arm(cam, full_text)
+    assert asyncio.run(stop_audition(cam=cam))["layer"] == AUDITION_LAYER_FULL
+    return None
 
-    cam, anchor, full_text, state = audition_box
+
+def _exit_by_deadline(cam, full_text, monkeypatch):
     now = [1000.0]
     slept: list[float] = []
 
@@ -421,33 +414,50 @@ def test_the_deadline_restores_a_walked_away_audition(audition_box) -> None:
         slept.append(seconds)
         now[0] += seconds
 
-    started = asyncio.run(
-        start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE, clock=lambda: now[0])
-    )
-    assert cam.running != full_text
-
+    started = _arm(cam, full_text, clock=lambda: now[0])
     reason = asyncio.run(
         hold_audition(started, cam=cam, clock=lambda: now[0], sleep=_sleep)
     )
-
     assert reason == "deadline"
     assert slept, "the hold returned without ever waiting"
     assert now[0] >= started["deadline_at"]
-    assert cam.running == full_text
-    assert read_audition_state(state) is None
-    assert cam.path_writes == []
+    return None
 
 
-def test_an_interrupted_hold_still_restores(audition_box) -> None:
-    """Ctrl-C, an SSH drop, or any raise inside the wait ends the audition the
-    same way the deadline does. The restore completes BEFORE the cancellation
-    propagates — stranding a speaker on a graph nobody chose is the failure
-    this door exists to make impossible."""
+def _exit_by_expired_deadline(cam, full_text, monkeypatch):
+    # `stop_audition` re-reads the record, so a `start` landing between the
+    # hold's "is this record mine" check and that re-read would be un-swapped
+    # and un-recorded unless the hold's OWN token travels with the call. The
+    # stale-token-stop row pins what stop does with it; this pins it is given.
+    from jasper.active_speaker import audition as audition_module
 
-    cam, _anchor, full_text, state = audition_box
-    started = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
-    assert cam.running != full_text
+    started = _arm(cam, full_text)
+    seen: dict[str, object] = {}
+    real_stop = audition_module.stop_audition
 
+    async def _spy(**kwargs):
+        seen.update(kwargs)
+        return await real_stop(**kwargs)
+
+    async def _expire(_seconds: float) -> None:
+        raise AssertionError("the deadline should already have passed")
+
+    monkeypatch.setattr(audition_module, "stop_audition", _spy)
+    asyncio.run(
+        hold_audition(
+            started, cam=cam, clock=lambda: started["deadline_at"] + 1.0,
+            sleep=_expire,
+        )
+    )
+    assert seen["expect_token"] == started["token"]
+    return None
+
+
+def _exit_by_cancellation(cam, full_text, monkeypatch):
+    # Ctrl-C, an SSH drop, or any raise inside the wait: the restore must
+    # complete BEFORE the cancellation propagates, or the speaker is stranded
+    # on a graph nobody chose — the failure this door exists to make impossible.
+    started = _arm(cam, full_text)
     reached = asyncio.Event()
 
     async def _waits_forever(_seconds: float) -> None:
@@ -464,32 +474,87 @@ def test_an_interrupted_hold_still_restores(audition_box) -> None:
             await task
 
     asyncio.run(_cancel_mid_wait())
-
-    assert cam.running == full_text
-    assert read_audition_state(state) is None
-    assert cam.path_writes == []
+    return None
 
 
-def test_a_departing_owner_will_not_un_swap_its_replacement(
-    audition_box,
-) -> None:
-    """Closes the check-then-act window between "is this record mine" and the
-    restore. A ``start`` landing in that gap must survive the previous owner
-    walking out, or the speaker plays the applied graph while the record and
-    the live owner both still say it is reduced."""
+def _exit_by_unrecordable_arm(cam, full_text, monkeypatch):
+    # Swapped-but-unrecorded is the one state nothing else would ever repair:
+    # no owner, no deadline, no /state disclosure. `start` must put the applied
+    # graph back before the error escapes.
+    from jasper.active_speaker import audition as audition_module
 
-    cam, _anchor, full_text, state = audition_box
-    leaving = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
-    replacement = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
+    def _cannot_write(*_args, **_kwargs):
+        raise OSError("read-only /run")
 
-    outcome = asyncio.run(
-        stop_audition(cam=cam, expect_token=leaving["token"])
-    )
+    monkeypatch.setattr(audition_module, "atomic_write_json", _cannot_write)
+    with pytest.raises(OSError):
+        asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
+    return None
 
+
+def _exit_by_stale_token_stop(cam, full_text, monkeypatch):
+    # The check-then-act window between "is this record mine" and the restore:
+    # a `start` landing in that gap must survive the previous owner walking
+    # out, or the speaker plays the applied graph while the record and the live
+    # owner both still say it is reduced.
+    leaving = _arm(cam, full_text)
+    replacement = _arm(cam, full_text)
+    outcome = asyncio.run(stop_audition(cam=cam, expect_token=leaving["token"]))
     assert outcome["status"] == "superseded"
-    assert cam.running != full_text
-    live = read_audition_state(state)
-    assert live is not None and live["token"] == replacement["token"]
+    return replacement
+
+
+def _exit_by_displacement(cam, full_text, monkeypatch):
+    # The displaced owner stands down rather than restoring somebody else's
+    # swap out from under them.
+    first = _arm(cam, full_text)
+    second = _arm(cam, full_text)
+    assert first["token"] != second["token"]
+    reason = asyncio.run(hold_audition(first, cam=cam, sleep=_never_sleeps))
+    assert reason == "superseded"
+    return second
+
+
+@pytest.mark.parametrize(
+    "exit_path",
+    [
+        pytest.param(_exit_by_stop, id="explicit-stop"),
+        pytest.param(_exit_by_deadline, id="deadline"),
+        pytest.param(_exit_by_expired_deadline, id="deadline-already-passed"),
+        pytest.param(_exit_by_cancellation, id="cancelled-hold"),
+        pytest.param(_exit_by_unrecordable_arm, id="unrecordable-arm"),
+        pytest.param(_exit_by_stale_token_stop, id="stale-token-stop"),
+        pytest.param(_exit_by_displacement, id="displaced-owner"),
+    ],
+)
+def test_every_exit_path_leaves_the_graph_where_the_record_says(
+    audition_box, exit_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b) + (c): however an audition ends, the live graph and the record agree
+    and the durable anchor never moved.
+
+    An exit that hands the graph on returns the record that now owns it; every
+    other exit returns ``None`` and owes the applied graph back. ``path_writes``
+    is the crash-safety half — an audition may only ever load a graph with
+    ``set_active_config_raw`` and never repoint the persisted config path, so a
+    check that asked only "is the right YAML running" would pass on the unsafe
+    loader.
+    """
+
+    cam, anchor, full_text, state = audition_box
+    before = anchor.read_bytes()
+
+    successor = exit_path(cam, full_text, monkeypatch)
+
+    if successor is None:
+        assert cam.running == full_text
+        assert read_audition_state(state) is None
+    else:
+        assert cam.running != full_text
+        live = read_audition_state(state)
+        assert live is not None and live["token"] == successor["token"]
+    assert anchor.read_bytes() == before
+    assert cam.path_writes == []
 
 
 def test_an_undo_that_also_fails_is_loud_and_keeps_the_real_error(
@@ -520,93 +585,6 @@ def test_an_undo_that_also_fails_is_loud_and_keeps_the_real_error(
             asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
 
     assert [r for r in caplog.records if "undo_failed_arm" in r.getMessage()]
-
-
-def test_a_second_start_takes_over_without_the_first_un_swapping_it(
-    audition_box,
-) -> None:
-    """A replacement audition owns the graph; the displaced owner stands down
-    rather than restoring somebody else's swap out from under them."""
-
-    cam, _anchor, full_text, state = audition_box
-    first = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
-    second = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
-    assert first["token"] != second["token"]
-
-    reason = asyncio.run(hold_audition(first, cam=cam, sleep=_never_sleeps))
-
-    assert reason == "superseded"
-    assert cam.running != full_text
-    live = read_audition_state(state)
-    assert live is not None and live["token"] == second["token"]
-
-
-def test_the_hold_hands_its_token_to_the_restore(audition_box) -> None:
-    """The hold verifies the record is its own, then calls ``stop_audition``,
-    which re-reads. A ``start`` landing between those two reads would be
-    un-swapped and un-recorded by the departing owner unless the token travels
-    with the call — so the token travelling is the thing to pin.
-
-    ``test_a_departing_owner_will_not_un_swap_its_replacement`` pins what
-    ``stop_audition`` does with it; this pins that it is given one at all.
-    """
-
-    from jasper.active_speaker import audition as audition_module
-
-    cam, _anchor, _full_text, _state = audition_box
-    started = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
-    seen: dict[str, object] = {}
-    real_stop = audition_module.stop_audition
-
-    async def _spy(**kwargs):
-        seen.update(kwargs)
-        return await real_stop(**kwargs)
-
-    async def _expire(_seconds: float) -> None:
-        raise AssertionError("the deadline should already have passed")
-
-    audition_module.stop_audition = _spy
-    try:
-        asyncio.run(
-            hold_audition(
-                started,
-                cam=cam,
-                clock=lambda: started["deadline_at"] + 1.0,
-                sleep=_expire,
-            )
-        )
-    finally:
-        audition_module.stop_audition = real_stop
-
-    assert seen["expect_token"] == started["token"]
-
-
-async def _never_sleeps(_seconds: float) -> None:
-    raise AssertionError("the displaced owner should stand down before waiting")
-
-
-def test_a_swap_that_cannot_be_recorded_is_undone(
-    audition_box, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The one state nothing else would ever repair: the graph swapped, but no
-    record exists, so there is no owner, no deadline and no /state disclosure.
-    ``start`` must put the applied graph back before the error escapes."""
-
-    from jasper.active_speaker import audition as audition_module
-
-    cam, _anchor, full_text, state = audition_box
-
-    def _cannot_write(*_args, **_kwargs):
-        raise OSError("read-only /run")
-
-    monkeypatch.setattr(audition_module, "atomic_write_json", _cannot_write)
-
-    with pytest.raises(OSError):
-        asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
-
-    assert cam.running == full_text
-    assert read_audition_state(state) is None
-    assert cam.path_writes == []
 
 
 # --------------------------------------------------------------------------- #

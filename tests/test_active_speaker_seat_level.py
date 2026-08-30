@@ -219,6 +219,25 @@ def _power_sum_db(*levels: float) -> float:
     return 10.0 * math.log10(sum(10.0 ** (level / 10.0) for level in levels))
 
 
+def _poll(seq: int, rms_dbfs: float, *, clip: bool = False) -> list[LevelSample]:
+    """One poll's worth of samples, the shape every mic double answers with.
+
+    Peak sits 3 dB over RMS and the AGC is frozen: neither is a subject here, so
+    every double reports the same benign pair and no test can pass or fail on a
+    difference between the doubles rather than on the feed it is modelling.
+    """
+    return [
+        LevelSample(
+            seq=seq,
+            t_client_ms=seq * 10,
+            rms_dbfs=rms_dbfs,
+            peak_dbfs=rms_dbfs + 3.0,
+            clip=clip,
+            agc_frozen=True,
+        )
+    ]
+
+
 class Mic:
     """A modelled mic feed: the room's ambient floor plus whatever plays.
 
@@ -236,6 +255,16 @@ class Mic:
     a mic on the wrong card hears a room that wanders and is not modelled here;
     ``WrongCardMic`` below is that one, and it is the shape a premise about
     constants got wrong.
+
+    ``stuck_once_playing=True`` is the harder pin: the room before the tone and
+    a fixed level after it, so the reading can sit INSIDE the target window and
+    still never rise clear of the room. A band check alone passes it; only the
+    rise test catches it.
+
+    ``slope`` is how many dB of level a commanded dB actually buys. Below 1.0
+    the chain lags — not a fault, but what a real compressor, a protection
+    limiter, or an amp near its rail does — and the ramp must answer with the
+    measured slope rather than chase it forever.
     """
 
     def __init__(
@@ -247,7 +276,9 @@ class Mic:
         ambient_dbfs: float | None = None,
         deaf: bool = False,
         stuck_dbfs: float = -75.0,
+        stuck_once_playing: bool = False,
         nan_once_playing: bool = False,
+        slope: float = 1.0,
     ) -> None:
         self._volume = volume
         self._tone = tone
@@ -259,7 +290,9 @@ class Mic:
         )
         self.deaf = deaf
         self.stuck_dbfs = stuck_dbfs
+        self.stuck_once_playing = stuck_once_playing
         self.nan_once_playing = nan_once_playing
+        self.slope = slope
         self._seq = 0
 
     def _rms_dbfs(self) -> float:
@@ -267,23 +300,16 @@ class Mic:
             return self.stuck_dbfs
         if not self._tone.started:
             return self.ambient_dbfs
+        if self.stuck_once_playing:
+            return self.stuck_dbfs
         if self.nan_once_playing:
             return float("nan")
-        return _power_sum_db(self.ambient_dbfs, self._volume.value + self.gain_db)
+        speaker = (self._volume.value * self.slope) + self.gain_db
+        return _power_sum_db(self.ambient_dbfs, speaker)
 
     async def next_samples(self) -> list[LevelSample]:
         self._seq += 1
-        rms = self._rms_dbfs()
-        return [
-            LevelSample(
-                seq=self._seq,
-                t_client_ms=self._seq * 10,
-                rms_dbfs=rms,
-                peak_dbfs=rms + 3.0,
-                clip=False,
-                agc_frozen=True,
-            )
-        ]
+        return _poll(self._seq, self._rms_dbfs())
 
 
 def gain_for_seat_spl(db_spl: float, *, at_volume_db: float) -> float:
@@ -1100,26 +1126,6 @@ def test_removing_the_cap_lets_one_step_lunge_the_whole_gap(tmp_path, monkeypatc
 # --- the two-miss refusal, and the slope it discloses ------------------------
 
 
-class LaggingMic(Mic):
-    """A chain that answers a commanded dB with only a fraction of a dB.
-
-    Not a fault — a real compressor, a protection limiter, or an amp near its
-    rail behaves like this. The ramp must not chase it forever: two steps that
-    commanded the whole measured gap and still missed is the point at which the
-    honest answer is the measured slope.
-    """
-
-    def __init__(self, *args, slope: float = 0.15, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.slope = slope
-
-    def _rms_dbfs(self) -> float:
-        if not self._tone.started:
-            return self.ambient_dbfs
-        speaker = (self._volume.value * self.slope) + self.gain_db
-        return _power_sum_db(self.ambient_dbfs, speaker)
-
-
 def test_two_full_gap_steps_that_miss_refuse_with_the_measured_slope(tmp_path):
     volume = Volume()
     tone = BlockingTone()
@@ -1128,7 +1134,7 @@ def test_two_full_gap_steps_that_miss_refuse_with_the_measured_slope(tmp_path):
     # chain answers each dB with 0.15 dB. Two such steps miss, and that is the
     # point at which the honest answer is the measured slope.
     slope = 0.15
-    mic = LaggingMic(
+    mic = Mic(
         volume,
         tone,
         gain_db=UMIK2.dbfs_from_db_spl(72.0) - slr.SEAT_LEVEL_START_DB * slope,
@@ -1400,28 +1406,18 @@ def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
 # --- convergence needs a real rise, not just an in-band number --------------
 
 
-class StuckOncePlaying(Mic):
-    """Reads the room before the tone and a fixed in-band level after it.
-
-    The failure the rise test exists for, in the only shape that can defeat a
-    band check: a mic pinned at a value that happens to sit inside the target
-    window.
-    """
-
-    def _rms_dbfs(self) -> float:
-        if not self._tone.started:
-            return self.ambient_dbfs
-        return self.stuck_dbfs
-
-
 def test_a_stuck_constant_in_band_mic_refuses_instead_of_banking(tmp_path):
     in_band_dbfs = UMIK2.dbfs_from_db_spl(TARGET.target_db_spl)
     volume = Volume()
     tone = BlockingTone()
     # Ambient only 2 dB under the stuck level: the reading sits inside the
     # band, but it never rises clear of the room.
-    mic = StuckOncePlaying(
-        volume, tone, ambient_dbfs=in_band_dbfs - 2.0, stuck_dbfs=in_band_dbfs
+    mic = Mic(
+        volume,
+        tone,
+        ambient_dbfs=in_band_dbfs - 2.0,
+        stuck_dbfs=in_band_dbfs,
+        stuck_once_playing=True,
     )
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
@@ -1443,8 +1439,12 @@ def test_without_the_rise_test_the_stuck_mic_banks_its_own_start(
     in_band_dbfs = UMIK2.dbfs_from_db_spl(TARGET.target_db_spl)
     volume = Volume()
     tone = BlockingTone()
-    mic = StuckOncePlaying(
-        volume, tone, ambient_dbfs=in_band_dbfs - 2.0, stuck_dbfs=in_band_dbfs
+    mic = Mic(
+        volume,
+        tone,
+        ambient_dbfs=in_band_dbfs - 2.0,
+        stuck_dbfs=in_band_dbfs,
+        stuck_once_playing=True,
     )
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
@@ -2229,17 +2229,9 @@ class ScriptedMic:
             )
             self._last_volume = commanded
         self._seq += 1
-        rms = self._sensitivity.dbfs_from_db_spl(self._db_spl(commanded))
-        return [
-            LevelSample(
-                seq=self._seq,
-                t_client_ms=self._seq * 10,
-                rms_dbfs=rms,
-                peak_dbfs=rms + 3.0,
-                clip=False,
-                agc_frozen=True,
-            )
-        ]
+        return _poll(
+            self._seq, self._sensitivity.dbfs_from_db_spl(self._db_spl(commanded))
+        )
 
 
 def _bench_run(
@@ -2657,16 +2649,9 @@ def test_a_failed_silent_window_refuses_without_restarting_the_stimulus(tmp_path
         async def next_samples(self):
             if getattr(self._tone, "plays", 0) and not self._tone.playing:
                 self._seq += 1
-                return [
-                    LevelSample(
-                        seq=self._seq,
-                        t_client_ms=self._seq * 10,
-                        rms_dbfs=float("nan"),
-                        peak_dbfs=float("nan"),
-                        clip=False,
-                        agc_frozen=True,
-                    )
-                ]
+                # NaN peak too: `_poll` derives it as rms + 3.0, and nan + 3.0
+                # is nan, so this stays "nothing finite" in both fields.
+                return _poll(self._seq, float("nan"))
             return await super().next_samples()
 
     mic = DeafOnceSilent(
@@ -2826,17 +2811,11 @@ class SettlingRoomMic:
         db_spl = self._db_spl(commanded)
         self.emitted.append((commanded, db_spl, playing))
         self._seq += 1
-        rms = UMIK2.dbfs_from_db_spl(db_spl)
-        return [
-            LevelSample(
-                seq=self._seq,
-                t_client_ms=self._seq * 10,
-                rms_dbfs=rms,
-                peak_dbfs=rms + 3.0,
-                clip=self._clipping(commanded),
-                agc_frozen=True,
-            )
-        ]
+        return _poll(
+            self._seq,
+            UMIK2.dbfs_from_db_spl(db_spl),
+            clip=self._clipping(commanded),
+        )
 
 
 class WitnessedVolume(Volume):
@@ -2874,6 +2853,21 @@ def _teardown_fade_from(stopped_at: float) -> list[float]:
     )
 
 
+def _assert_teardown_fade_from(volume: WitnessedVolume, stopped_at: float) -> None:
+    """The teardown's WRITES are the fade down from ``stopped_at``, then home.
+
+    The writes half of ``_assert_teardown_left_from`` on its own, for the one
+    caller whose ``stopped_at`` is a level the fader was never actually written
+    to -- a failed downward write publishes the level it ASKED for, so there is
+    no such entry in ``commanded`` for a position check to find.
+    """
+    teardown = _teardown_fade_from(stopped_at)
+    assert volume.commanded[-(len(teardown) + 1) :] == [
+        *teardown,
+        pytest.approx(HOUSEHOLD_VOLUME_DB),
+    ], volume.commanded
+
+
 def _assert_teardown_left_from(volume: WitnessedVolume, stopped_at: float) -> None:
     """The pass's teardown fade leaves ``stopped_at``, and does it in silence.
 
@@ -2895,11 +2889,8 @@ def _assert_teardown_left_from(volume: WitnessedVolume, stopped_at: float) -> No
     which is what makes "the teardown left from `stopped_at`" a statement about
     a position rather than about a value the 2 dB grid repeats.
     """
+    _assert_teardown_fade_from(volume, stopped_at)
     teardown = _teardown_fade_from(stopped_at)
-    assert volume.commanded[-(len(teardown) + 1) :] == [
-        *teardown,
-        pytest.approx(HOUSEHOLD_VOLUME_DB),
-    ], volume.commanded
     assert volume.commanded[-(len(teardown) + 2)] == pytest.approx(stopped_at), (
         volume.commanded
     )
@@ -3224,8 +3215,32 @@ def _cancel_mid_fade(tmp_path, *, arm_on):
     return exc, heard, written, volume, tone
 
 
-def test_cancelling_on_the_fade_out_leg_cuts_the_room_and_still_restores(tmp_path):
-    """The operator's own stop, delivered while the fade-out leg is walking.
+# Both legs, because DIFFERENT guards cancel them: the down leg is wrapped in a
+# plain `finally`, while the up leg's success path deliberately hands the caller
+# a playing stimulus to carry on climbing with, so it guards with a `returning`
+# flag (`finally: if not returning:`) instead. A row that passed for one says
+# nothing about the other.
+FADE_LEG_CANCELS = [
+    pytest.param(
+        lambda h: _descents(h) >= 2,
+        False,
+        lambda written: written[-1] > slr.fade_quiet_db(max(written)),
+        id="fade_out",
+    ),
+    pytest.param(
+        lambda h: _descents(h) >= 1 and len(h) >= 2 and h[-1] > h[-2],
+        True,
+        lambda written: written[-1] < max(written),
+        id="fade_in",
+    ),
+]
+
+
+@pytest.mark.parametrize("arm_on,restarts,mid_leg", FADE_LEG_CANCELS)
+def test_cancelling_on_a_fade_leg_cuts_the_room_and_still_restores(
+    tmp_path, arm_on, restarts, mid_leg
+):
+    """The operator's own stop, delivered while a fade leg is walking.
 
     The gap this closes: the legs had no exit wrapping at all, so a cancellation
     mid-leg skipped `cancel_tone()` entirely and left the stimulus commanded ON
@@ -3233,19 +3248,17 @@ def test_cancelling_on_the_fade_out_leg_cuts_the_room_and_still_restores(tmp_pat
     invariant this whole change enforces. The existing cancellation test cancels
     mid-CLIMB, which never touches a leg.
     """
-    exc, heard, written, volume, tone = _cancel_mid_fade(
-        tmp_path,
-        # The second descending write: the leg is walking, with steps left.
-        arm_on=lambda h: _descents(h) >= 2,
-    )
+    exc, heard, written, volume, tone = _cancel_mid_fade(tmp_path, arm_on=arm_on)
 
+    if restarts:
+        assert tone.plays == 2, "the stimulus never restarted, so this is not the up leg"
     assert slr.interrupted_restore_outcome(exc) is True
     assert not tone.playing, "the cancelled leg left the stimulus running"
     assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
     assert not (tmp_path / "seat_level_reference.json").exists()
 
-    # It really was mid-LEG: the leg had further to walk when the cancel landed.
-    assert written[-1] > slr.fade_quiet_db(max(written)), written
+    # It really was mid-LEG, in whichever direction this row's leg walks.
+    assert mid_leg(written), written
 
     # THE ROOM HEARD NOTHING AFTER THE STOP. Not "no upward write" -- the
     # teardown's own fade descends either way, so that would pass with the
@@ -3256,43 +3269,9 @@ def test_cancelling_on_the_fade_out_leg_cuts_the_room_and_still_restores(tmp_pat
     assert volume.audible == heard
 
     # ...and the teardown left from where the fader actually was, not from the
-    # volume the climb believes it is at.
-    _assert_teardown_left_from(volume, written[-1])
-
-
-def test_cancelling_on_the_fade_in_leg_cuts_the_room_and_still_restores(tmp_path):
-    """The same stop on the OTHER leg, which needs a different guard.
-
-    The fade-in leg cannot use the down leg's PLAIN `finally`: its success path
-    deliberately hands the caller a playing stimulus to carry on climbing with,
-    so cancelling unconditionally would end every pass at the re-measure. It
-    guards with a `returning` flag instead -- `finally: if not returning:` --
-    which fires on every exit that is not a normal return, `CancelledError`
-    included. That is the exit this test drives, and it is what proves the guard
-    runs on it.
-    """
-    exc, heard, written, volume, tone = _cancel_mid_fade(
-        tmp_path,
-        # An ascent AFTER the fade-out leg has walked: the way back up.
-        arm_on=lambda h: (
-            _descents(h) >= 1 and len(h) >= 2 and h[-1] > h[-2]
-        ),
-    )
-
-    assert tone.plays == 2, "the stimulus never restarted, so this is not the up leg"
-    assert slr.interrupted_restore_outcome(exc) is True
-    assert not tone.playing, "the cancelled leg left the stimulus running"
-    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
-    assert not (tmp_path / "seat_level_reference.json").exists()
-
-    # It really was mid-LEG: the way back up had not reached the climb's volume.
-    assert written[-1] < max(written), written
-
-    assert heard, "the cancel landed before the leg was audible"
-    assert volume.audible == heard
-    # `written[-1]` and NOT `heard[-1]`: this leg's first write beats the
-    # restarted tone player to the loop, so the room did not hear the very move
-    # whose level the teardown has to leave from.
+    # volume the climb believes it is at. `written[-1]` and NOT `heard[-1]`: the
+    # fade-in leg's first write beats the restarted tone player to the loop, so
+    # the room did not hear the very move the teardown has to leave from.
     _assert_teardown_left_from(volume, written[-1])
 
 
@@ -3301,28 +3280,52 @@ def _seam_failure_pass(tmp_path, *, volume, tone, mic):
     return asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
 
-def test_a_failed_write_on_the_fade_out_leg_refuses_and_never_reads_high(tmp_path):
-    """A seam failure mid-leg is an honest refusal, and its number errs LOW.
+# The asymmetry IS the subject, so the directions are two rows and never one.
+# `write_fader` records a DOWNWARD write before attempting it and an UPWARD write
+# after, so the tracked value can never sit above the true fader; each row pins
+# the bound its own direction publishes. Record both "before" and the up leg
+# would publish a level ABOVE the fader, whose teardown commands the room UP as
+# its first act, with a stimulus a failing seam may well have left playing.
+FADE_LEG_SEAM_FAILURES = [
+    # Errs LOW: the refusal publishes what the failed write ASKED for, below
+    # where the fader was really left. That level never landed, so it is absent
+    # from `commanded` and only the WRITES half of the teardown check applies.
+    pytest.param(
+        lambda h, db: _descents(h) >= 1 and bool(h) and db < h[-1],
+        False,
+        "asked_for",
+        _assert_teardown_fade_from,
+        id="fade_out_publishes_the_low_bound",
+    ),
+    # An upward write that raises leaves the fader where it was, so the bound is
+    # a level `commanded` really holds and the position check applies too.
+    pytest.param(
+        lambda h, db: (
+            _descents(h) >= 1 and len(h) >= 2 and h[-1] > h[-2] and db > h[-1]
+        ),
+        True,
+        "left_at",
+        _assert_teardown_left_from,
+        id="fade_in_does_not_follow_the_write_up",
+    ),
+]
 
-    Two claims in one pass, because they are one mechanism. A volume write that
-    raises used to escape `_watched_fade` as a traceback at the operator's
-    terminal, with the correctly-stamped restore never read; it is now
-    `ramp_error`. And the level the refusal publishes is the one the failed write
-    ASKED for, which is BELOW where the fader was really left -- `write_fader`
-    records a downward write BEFORE attempting it, precisely so the tracked value
-    can never sit above the true fader.
 
-    That is the documented residual of the asymmetry, asserted rather than
-    described: the teardown then fades from too low and `cancel_tone` cuts a
-    stimulus that is still a step higher than it thinks. Degraded, never upward,
-    which is the direction that matters.
+@pytest.mark.parametrize(
+    "fail_on,restarts,published,assert_teardown", FADE_LEG_SEAM_FAILURES
+)
+def test_a_failed_write_on_a_fade_leg_refuses_and_never_reads_high(
+    tmp_path, fail_on, restarts, published, assert_teardown
+):
+    """A seam failure mid-leg is an honest refusal, and its number never errs HIGH.
+
+    A volume write that raises used to escape `_watched_fade` as a traceback at
+    the operator's terminal, with the correctly-stamped restore never read; it is
+    now `ramp_error`.
     """
     tone = ReplayableTone()
     volume = FlakySeamVolume(
-        tone,
-        # The second descending write of the fade-out leg.
-        fail_on=lambda h, db: _descents(h) >= 1 and bool(h) and db < h[-1],
-        error=OSError("the volume seam went away"),
+        tone, fail_on=fail_on, error=OSError("the volume seam went away")
     )
     mic = SettlingRoomMic(volume, tone)
     result = _seam_failure_pass(tmp_path, volume=volume, tone=tone, mic=mic)
@@ -3331,65 +3334,29 @@ def test_a_failed_write_on_the_fade_out_leg_refuses_and_never_reads_high(tmp_pat
     assert result.reason == slr.REFUSE_RAMP_ERROR
     assert result.detail is not None
     assert "the volume seam went away" in result.detail
+    if restarts:
+        assert tone.plays == 2, "the stimulus never restarted, so this is not the up leg"
     assert not tone.playing
     assert result.restored is True
     assert not (tmp_path / "seat_level_reference.json").exists()
 
-    # The write really did fail on the way DOWN, and really did not land.
+    # The write really did fail on this row's leg, and really did not land.
     assert volume.asked_for is not None and volume.left_at is not None
-    assert volume.asked_for < volume.left_at
+    if restarts:
+        assert volume.asked_for > volume.left_at
+    else:
+        assert volume.asked_for < volume.left_at
     assert volume.asked_for not in volume.commanded
 
-    # THE BOUND IS LOW, NEVER HIGH. Record the downward write AFTER the seam call
-    # instead and this reads `left_at` -- a level ABOVE the fader, which is what
-    # would let a teardown computed from it command the room up.
-    assert result.ramp["final_volume_db"] == pytest.approx(volume.asked_for)
-    assert f"stopped at {volume.asked_for:.2f} dB" in result.detail
-    # ...and the teardown fades from that same low bound, downward.
-    teardown = _teardown_fade_from(volume.asked_for)
-    assert volume.commanded[-(len(teardown) + 1) :] == [
-        *teardown,
-        pytest.approx(HOUSEHOLD_VOLUME_DB),
-    ], volume.commanded
-
-
-def test_a_failed_write_on_the_fade_in_leg_never_raises_the_tracked_level(tmp_path):
-    """The mirror case, which is why the record point cannot simply be "before".
-
-    An UPWARD write that raises leaves the fader where it was, so the tracked
-    level has to stay there too. Recording before the call -- the rule the
-    downward branch uses -- would publish a level ABOVE the fader here, and a
-    teardown fading from it would command the room UP as its first act, with a
-    stimulus that a failing seam may well have left playing.
-    """
-    tone = ReplayableTone()
-    volume = FlakySeamVolume(
-        tone,
-        # The second write of the way back UP.
-        fail_on=lambda h, db: (
-            _descents(h) >= 1 and len(h) >= 2 and h[-1] > h[-2] and db > h[-1]
-        ),
-        error=OSError("the volume seam went away"),
-    )
-    mic = SettlingRoomMic(volume, tone)
-    result = _seam_failure_pass(tmp_path, volume=volume, tone=tone, mic=mic)
-
-    assert result.status == "refused"
-    assert result.reason == slr.REFUSE_RAMP_ERROR
-    assert tone.plays == 2, "the stimulus never restarted, so this is not the up leg"
-    assert not tone.playing
-    assert result.restored is True
-
-    # The write really did fail on the way UP, and really did not land.
-    assert volume.asked_for is not None and volume.left_at is not None
-    assert volume.asked_for > volume.left_at
-    assert volume.asked_for not in volume.commanded
-
-    # THE BOUND DID NOT FOLLOW THE WRITE UP.
-    assert result.ramp["final_volume_db"] == pytest.approx(volume.left_at)
-    assert result.detail is not None
-    assert f"stopped at {volume.left_at:.2f} dB" in result.detail
-    _assert_teardown_left_from(volume, volume.left_at)
+    # THE BOUND NEVER FOLLOWED THE WRITE UP. Record the downward write AFTER the
+    # seam call instead and the down row reads `left_at` -- a level ABOVE the
+    # fader, which is what would let a teardown computed from it command the
+    # room up.
+    bound = getattr(volume, published)
+    assert result.ramp["final_volume_db"] == pytest.approx(bound)
+    assert f"stopped at {bound:.2f} dB" in result.detail
+    # ...and the teardown fades from that same bound, downward.
+    assert_teardown(volume, bound)
 
 
 def test_a_failing_sample_source_on_a_leg_refuses_instead_of_raising(tmp_path):
@@ -3723,17 +3690,7 @@ class WrongCardMic:
             self._window += 1
             self._in_window = 0
         self._seq += 1
-        rms = self._sensitivity.dbfs_from_db_spl(self._level())
-        return [
-            LevelSample(
-                seq=self._seq,
-                t_client_ms=self._seq * 10,
-                rms_dbfs=rms,
-                peak_dbfs=rms + 3.0,
-                clip=False,
-                agc_frozen=True,
-            )
-        ]
+        return _poll(self._seq, self._sensitivity.dbfs_from_db_spl(self._level()))
 
 
 def _wrong_card_run(tmp_path, *, wander, target, ambient_db_spl=66.0):
@@ -4429,19 +4386,41 @@ def test_the_bank_confirm_costs_a_still_chain_exactly_one_reading(tmp_path):
     ) == 1 + math.ceil(1 / slr.BITE_FRACTION) + slr.MAX_MISSED_FULL_STEPS + 1
 
 
-class SequenceMic:
-    """Replays one scripted dB SPL level per READING, ignoring the volume.
+def per_reading(levels: list[float]):
+    """One scripted dB SPL level per settled READING, holding on the last.
 
-    Volume-independent on purpose: it lets a test state the exact in-band /
-    out-of-band pattern the miss accounting has to survive, without also having
-    to solve for a chain that produces it. Each settle window sees a constant,
-    so every reading settles in the minimum two and consumes exactly one entry.
+    Two windows to a reading at ~11 polls each, so the script advances once per
+    22 polls. Each settle window therefore sees a constant, which is what makes
+    every reading settle in the minimum two windows and consume exactly one
+    entry -- a test can state the exact in-band / out-of-band pattern the miss
+    accounting must survive without also solving for a chain that produces it.
+    """
+    return lambda poll: levels[min(poll // 22, len(levels) - 1)]
+
+
+def sawtooth():
+    """A level that keeps MOVING and never agrees with itself.
+
+    Every window's median sits a long way from the one before it, forever, and
+    every sample stays well under the commissioning stop -- so the only thing
+    that can end one of these readings is the settle timeout.
+    """
+    return lambda poll: 55.0 + ((poll + 1) % 20)
+
+
+class FeedMic:
+    """A volume-independent feed: the room before the tone, a script after it.
+
+    The room is quiet and still BEFORE the tone, so the ambient reading always
+    settles normally and whatever the script does lands mid-climb, where the
+    tone has to be stopped and the household volume handed back. What the script
+    itself models is the ``feed`` argument's business, not this class's.
     """
 
-    def __init__(self, tone, *, ambient_db_spl: float, levels: list[float]) -> None:
+    def __init__(self, tone, *, ambient_db_spl: float = 45.0, feed) -> None:
         self._tone = tone
         self._ambient_db_spl = ambient_db_spl
-        self._levels = list(levels)
+        self._feed = feed
         self._seq = 0
         self._polls = 0
 
@@ -4450,22 +4429,9 @@ class SequenceMic:
         if not self._tone.started:
             db_spl = self._ambient_db_spl
         else:
-            # Two windows to a reading, ~11 polls each: advance the script once
-            # per settled reading.
-            index = min(self._polls // 22, len(self._levels) - 1)
+            db_spl = self._feed(self._polls)
             self._polls += 1
-            db_spl = self._levels[index]
-        rms = UMIK2.dbfs_from_db_spl(db_spl)
-        return [
-            LevelSample(
-                seq=self._seq,
-                t_client_ms=self._seq * 10,
-                rms_dbfs=rms,
-                peak_dbfs=rms + 3.0,
-                clip=False,
-                agc_frozen=True,
-            )
-        ]
+        return _poll(self._seq, UMIK2.dbfs_from_db_spl(db_spl))
 
 
 def test_a_step_that_reached_the_band_is_not_charged_a_miss(tmp_path):
@@ -4487,18 +4453,18 @@ def test_a_step_that_reached_the_band_is_not_charged_a_miss(tmp_path):
     above = JTS3_TARGET.high_db_spl + 3.0
     tone = ReplayableTone()
     volume = Volume()
-    mic = SequenceMic(
+    mic = FeedMic(
         tone,
         ambient_db_spl=45.0,
         # Climb to within one bite of the band -- so the step that ENTERS it
         # commands the whole measured gap and is the kind that can be charged a
         # miss -- then wobble out of the band twice before holding and agreeing.
-        levels=[
+        feed=per_reading([
             50.0, 58.0, 70.0,
             in_band, above,
             in_band, above,
             in_band, in_band,
-        ],
+        ]),
     )
     result = asyncio.run(
         _level(
@@ -4536,13 +4502,13 @@ def test_reaching_the_band_with_no_reading_left_says_so(tmp_path):
     # ceiling -- and the final budgeted reading is a fresh landing with nothing
     # left to confirm it.
     below = 66.0
-    mic = SequenceMic(
+    mic = FeedMic(
         tone,
         ambient_db_spl=45.0,
-        levels=[
+        feed=per_reading([
             below, in_band, below, in_band, below,
             in_band, below, in_band, below, below, in_band,
-        ],
+        ]),
     )
     assert budget == 11
     result = asyncio.run(
@@ -4659,43 +4625,6 @@ def test_a_still_level_settles_in_the_minimum_two_windows(tmp_path):
     assert clock.now() == pytest.approx(2 * slr.MIC_WINDOW_S, abs=0.06)
 
 
-class NeverSettlingMic:
-    """A feed that keeps MOVING and never agrees with itself.
-
-    A sawtooth once the tone plays: every window's median sits a long way from
-    the one before it, forever, and every sample stays well under the
-    commissioning stop -- so the only thing that can end one of these readings
-    is the settle timeout. The room is quiet and still BEFORE the tone, so the
-    ambient reading settles normally and the refusal lands mid-climb, where the
-    tone has to be stopped and the household volume handed back.
-    """
-
-    def __init__(self, tone, *, ambient_db_spl: float = 45.0) -> None:
-        self._tone = tone
-        self._ambient_db_spl = ambient_db_spl
-        self._seq = 0
-        self._poll = 0
-
-    async def next_samples(self) -> list[LevelSample]:
-        self._seq += 1
-        if self._tone.started:
-            self._poll += 1
-            db_spl = 55.0 + (self._poll % 20)
-        else:
-            db_spl = self._ambient_db_spl
-        rms = UMIK2.dbfs_from_db_spl(db_spl)
-        return [
-            LevelSample(
-                seq=self._seq,
-                t_client_ms=self._seq * 10,
-                rms_dbfs=rms,
-                peak_dbfs=rms + 3.0,
-                clip=False,
-                agc_frozen=True,
-            )
-        ]
-
-
 def test_a_feed_that_never_settles_refuses_instead_of_banking(tmp_path):
     """The honest end of an unbounded wait: a refusal, not the last number seen.
 
@@ -4706,7 +4635,7 @@ def test_a_feed_that_never_settles_refuses_instead_of_banking(tmp_path):
     """
     tone = BlockingTone()
     volume = Volume()
-    mic = NeverSettlingMic(tone)
+    mic = FeedMic(tone, feed=sawtooth())
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.reason == slr.REFUSE_LEVEL_UNSETTLED
@@ -4734,7 +4663,7 @@ def test_an_unsettled_reading_beats_the_whole_operation_watchdog_to_it(tmp_path)
     """
     tone = BlockingTone()
     volume = Volume()
-    mic = NeverSettlingMic(tone)
+    mic = FeedMic(tone, feed=sawtooth())
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.reason == slr.REFUSE_LEVEL_UNSETTLED

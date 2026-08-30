@@ -781,70 +781,85 @@ def test_the_simple_verify_priors_reach_the_stage_2_conductor(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 2. the commanded delta — CROSSES (was a defect until #2291 Phase 3a)
+# 2. per-key round trips — a value crosses intact, an absence stays an absence
 # --------------------------------------------------------------------------- #
 
 
-def test_a_commanded_delta_is_persisted_by_the_bridge(monkeypatch):
-    """The commanded delta reaches a durable state key, values intact.
+def _install_declared_transfer(conductor: Any, declared: Any) -> None:
+    """The state-axis twin of ``_install_commanded_delta``, for its reason."""
+    conductor._measure_declared_transfer = declared
 
-    The delta probe's commanded axis — ``_commanded_delta``'s
-    ``(freqs_hz, delta_db)``, the shape the applied filters ask the speaker for
-    — is produced in stage 1 and consumed in stage 2. Before #2291 Phase 3a the
-    durable state had no key for it, so it died with the measuring session's
-    process; this is the write half of the repair.
 
-    The VALUES are asserted, not the key's presence: a persist that wrote the
-    right key with someone else's numbers in it would be exactly as broken as
-    one that wrote nothing, and the whole point of a bridge pin is that what
-    arrives is what left. The key is named ``delta_db`` rather than
-    ``magnitude_db`` because the curve is a difference of two dB predictions,
-    not a magnitude.
+# One row = one ``verify_priors`` key in one direction. ``persisted`` is both
+# the expected write and the record seeded back for the read; ``None`` marks the
+# absence control, whose read half is seeded with the key MISSING — the era
+# case, a state file written before that key shipped.
+_BRIDGE_KEY_ROUND_TRIPS = [
+    pytest.param(
+        "commanded_delta",
+        lambda c: _install_commanded_delta(c, ([500.0, 4000.0], [0.25, -1.75])),
+        {"freqs_hz": [500.0, 4000.0], "delta_db": [0.25, -1.75]},
+        lambda c: c.measure_commanded_delta, id="commanded-delta-present",
+    ),
+    pytest.param("commanded_delta", None, None,
+                 lambda c: c.measure_commanded_delta, id="commanded-delta-absent"),
+    pytest.param(
+        "declared_transfer",
+        lambda c: _install_declared_transfer(c, ([500.0, 4000.0], [3.5, -0.25])),
+        {"freqs_hz": [500.0, 4000.0], "delta_db": [3.5, -0.25]},
+        lambda c: c.measure_declared_transfer, id="declared-transfer-present",
+    ),
+    pytest.param("declared_transfer", None, None,
+                 lambda c: c.measure_declared_transfer, id="declared-transfer-absent"),
+    pytest.param("alignment_prescription", None, None,
+                 lambda c: c.alignment_prescription_record,
+                 id="alignment-prescription-absent"),
+]
+
+
+@pytest.mark.parametrize(
+    ("key", "install", "persisted", "read"), _BRIDGE_KEY_ROUND_TRIPS
+)
+def test_a_bridge_key_crosses_with_its_values_and_never_invents_them(
+    monkeypatch, key, install, persisted, read,
+):
+    """Both directions of one ``verify_priors`` key, through the REAL preparers.
+
+    VALUES, never key presence: a persist that wrote the right key with someone
+    else's numbers in it would be as broken as one that wrote nothing. And
+    absence stays absence, because a manufactured empty curve hands stage 2 an
+    axis the fit never produced — the probe reads ``None`` as
+    ``VERDICT_UNAVAILABLE``, no evidence to refuse on and no permission granted
+    either, and a trims-only candidate legitimately commands nothing.
+
+    ``read`` names the conductor property that answers for ``key``. Curve keys
+    are ``delta_db`` rather than ``magnitude_db``: a difference of two dB
+    predictions, not a magnitude.
     """
     conductor, _state = _stage_1(monkeypatch)
-    _install_commanded_delta(conductor, ([500.0, 4000.0], [0.25, -1.75]))
-    assert conductor.measure_commanded_delta is not None
+    if install is not None:
+        install(conductor)
+    # The install took, or there was nothing to drop: an absence pin against a
+    # conductor silently never given the fact passes for the wrong reason.
+    assert (read(conductor) is None) is (persisted is None)
 
     v2host.persist_conductor_state(conductor, failure_code=None)
-    state = v2host.load_v2_state() or {}
+    assert (v2host.load_v2_state() or {})["verify_priors"][key] == persisted
 
-    assert state["verify_priors"]["commanded_delta"] == {
-        "freqs_hz": [500.0, 4000.0],
-        "delta_db": [0.25, -1.75],
-    }
-
-
-def test_the_state_axis_crosses_the_bridge_beside_the_commanded_one(monkeypatch):
-    """#2614: ``declared_transfer`` makes the same round trip, values and all.
-
-    The delta probe's two directional safety rules mask on this curve, and the
-    stage that grades is not the stage that fit — so without a durable channel
-    a stage-2 probe stops watching every band a repeat round left alone, which
-    is the hole this key closes. Absent stays absent for
-    ``commanded_delta``'s reason: a manufactured empty curve would claim the fit
-    produced a state axis it never did.
-    """
-    conductor, _state = _stage_1(monkeypatch)
-    conductor._measure_declared_transfer = ([500.0, 4000.0], [3.5, -0.25])
-    assert conductor.measure_declared_transfer is not None
-
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (v2host.load_v2_state() or {})["verify_priors"]["declared_transfer"] == {
-        "freqs_hz": [500.0, 4000.0],
-        "delta_db": [3.5, -0.25],
-    }
-
-    # ...and the read half, on a fresh stage-2 conductor.
     state = _seed_applied_stage_1_state()
-    state["verify_priors"]["declared_transfer"] = {
-        "freqs_hz": list(_COMMANDED_FREQS_HZ),
-        "delta_db": [v * 2.0 for v in _COMMANDED_DELTA_DB],
-    }
+    if persisted is None:
+        state["verify_priors"].pop(key, None)
+    else:
+        state["verify_priors"][key] = persisted
     v2host.save_v2_state(state)
-    stage_2, _ = _stage_2(monkeypatch)
-    freqs, declared = stage_2.measure_declared_transfer
-    assert list(freqs) == _COMMANDED_FREQS_HZ
-    assert list(declared) == [v * 2.0 for v in _COMMANDED_DELTA_DB]
+    stage_2, _state2 = _stage_2(monkeypatch)
+
+    if persisted is None:
+        assert read(stage_2) is None
+        return
+    freqs, values = read(stage_2)
+    assert list(freqs) == persisted["freqs_hz"]
+    assert list(values) == persisted["delta_db"]
 
 
 # --------------------------------------------------------------------------- #
@@ -924,7 +939,18 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     assert stage_2.measure_alignment_objective == "explicit_prescription_committed"
 
 
-def test_a_pinned_basin_crosses_the_same_boundary_and_reaches_the_priors(monkeypatch):
+@pytest.mark.parametrize(
+    ("polarity", "sign"),
+    [
+        pytest.param("invert", -1, id="pinned-basin-reaches-the-fit"),
+        # Today's shipped callers, which must keep reaching the automatic path:
+        # ``None`` is what leaves every delay-only candidate byte-identical.
+        pytest.param(None, None, id="unpinned-leaves-the-basin-to-the-fit"),
+    ],
+)
+def test_a_prescribed_basin_reaches_the_fit_only_when_it_was_pinned(
+    monkeypatch, polarity, sign,
+):
     """The basin half of the same crossing, through the REAL gate.
 
     The pin is useless unless it arrives at the fit, and the hop that could
@@ -933,31 +959,19 @@ def test_a_pinned_basin_crosses_the_same_boundary_and_reaches_the_priors(monkeyp
     "invert" while the round re-rolled the basin anyway. So this asserts the
     PRIOR, which is one hop from the selection that reads it.
     """
+    body = dict(_PRESCRIPTION_BODY)
+    if polarity is not None:
+        body["polarity"] = polarity
     prepared = v2host.prepare_v2_session(
-        {"alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": "invert"}},
+        {"alignment_prescription": body},
         status=_status(), run_async=None, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
 
-    assert conductor.alignment_prescription_record["polarity"] == "invert"
+    assert conductor.alignment_prescription_record["polarity"] == polarity
     priors = conductor._measure_priors()
-    assert priors.explicit_alignment_polarity_sign == -1
+    assert priors.explicit_alignment_polarity_sign == sign
     assert priors.explicit_alignment_delay_us == -450.0
-
-
-def test_an_unpinned_prescription_hands_down_no_basin(monkeypatch):
-    """The control: today's shipped callers must reach the automatic path.
-
-    ``None`` here is what keeps every delay-only candidate byte-identical, so it is
-    asserted rather than assumed.
-    """
-    prepared = v2host.prepare_v2_session(
-        {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
-        status=_status(), run_async=None, camilla_factory=None,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-
-    assert conductor._measure_priors().explicit_alignment_polarity_sign is None
 
 
 @pytest.mark.parametrize("value", ("inverted", "review", "flip", -1))
@@ -1090,56 +1104,6 @@ def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
     assert (v2host.load_v2_state() or {})["verify_priors"]["alignment_objective"] == (
         "explicit_prescription_committed"
     )
-
-
-def test_a_session_that_prescribed_nothing_persists_nothing(monkeypatch):
-    """The control: absence stays absence, and is never invented.
-
-    Every ordinary round takes this path, so an empty provenance block on a
-    receipt has to mean exactly one thing — no prescription was made — rather
-    than "one was made and something dropped it".
-    """
-    conductor, _state = _stage_1(monkeypatch)
-    assert conductor.alignment_prescription_record is None
-
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (
-        (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
-        is None
-    )
-
-
-def test_a_conductor_with_no_state_axis_rehydrates_none(monkeypatch):
-    """The control: a state written before #2614 has no key, and none is invented.
-
-    ``None`` narrows the two directional safety rules to the change axis — the
-    pre-#2614 behaviour — and the probe's caller names that on the journal
-    rather than a fabricated flat curve silently standing in for the answer.
-    """
-    _seed_applied_stage_1_state()
-    conductor, _state = _stage_2(monkeypatch)
-    assert conductor.measure_declared_transfer is None
-
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (
-        (v2host.load_v2_state() or {})["verify_priors"]["declared_transfer"] is None
-    )
-
-
-def test_a_conductor_with_no_commanded_delta_persists_none(monkeypatch):
-    """The control for the pin above: absent stays absent, never invented.
-
-    ``None`` is the probe's ``VERDICT_UNAVAILABLE`` — no evidence to refuse on,
-    and no permission granted either — and a trims-only candidate legitimately
-    commands nothing. A persist that manufactured an empty curve here would
-    hand stage 2 a commanded axis the fit never produced.
-    """
-    conductor, _state = _stage_1(monkeypatch)
-    assert conductor.measure_commanded_delta is None
-
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    assert (v2host.load_v2_state() or {})["verify_priors"]["commanded_delta"] is None
 
 
 def test_stage_2_rehydrates_the_commanded_delta_and_the_delta_probe_runs(monkeypatch):
