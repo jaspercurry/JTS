@@ -7,8 +7,7 @@
 The realtime LLMs have no internal clock — the timestamp injected
 into their system prompt is baked at session-open time and goes
 stale over the session's lifetime (potentially many hours, with
-idle context-reset disabled by default per
-docs/HANDOFF-voice-providers.md). Without a tool to read
+idle context-reset disabled by default). Without a tool to read
 fresh wall-clock time, the model speaks the baked stale timestamp
 on every "what time is it?" / "what day is it?" question.
 

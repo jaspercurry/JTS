@@ -227,7 +227,7 @@ class Pricing:
 # the /voice pricing prompt flow) rather than a code change. Keyed by exact
 # model ID — there is no provider-level price (a single rate for a whole
 # provider isn't a real thing). User overrides in /var/lib/jasper/pricing.json
-# overlay these per model. See docs/HANDOFF-pricing-editor.md.
+# overlay these per model.
 BUNDLED_PRICING_FILE = str(
     Path(__file__).resolve().parent / "data" / "model_pricing.json"
 )

@@ -167,8 +167,7 @@ runpy.run_path(script, run_name="__main__")
 # this reason: argparse exits before the guard call, so usage text stays
 # available on an interpreter that has numpy/openwakeword but not the project.
 #   _offline_wake_count.py    — wake-rate-test.sh scp's it to a Pi's /tmp.
-#   score-baseline-wakeword.py — invocation documented in
-#                                docs/HANDOFF-mic-quality-v2.md.
+#   score-baseline-wakeword.py
 # scripts/_waveform_fusion_experiment.py is deliberately NOT here: it already
 # imported `jasper` at module top before the guard existed, so requiring it is
 # not a regression.

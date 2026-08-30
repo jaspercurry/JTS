@@ -2,10 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin the loud-output safety literals documented in HANDOFF-volume.md.
+"""Pin the loud-output safety literals.
 
-Two hardware-safety claims (docs/HANDOFF-volume.md,
-"Hearing-safety belt") had no test asserting the actual literals:
+Two hardware-safety claims had no test asserting the actual literals:
 
 1. There is intentionally no fixed max-gain ceiling in the TTS path.
    Assistant loudness should follow the measured content target and the

@@ -62,8 +62,6 @@ def check_fanin_binary_installed() -> CheckResult:
     deploy; this check verifies the build actually produced the
     binary. A missing binary means cargo build silently failed and
     renderer audio cannot run.
-
-    See docs/HANDOFF-fan-in-daemon.md for the design.
     """
     path = Path("/opt/jasper/bin/jasper-fanin")
     if not path.exists():

@@ -72,9 +72,10 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   breaks: upstream changes demote it to disclosed-stale, never to a park —
   parking on unproven-ness is reserved for the non-negotiables (ADR-0101).
 - **Docs:** decisions go to `docs/adr/` (append-only, dated, one decision per
-  file; supersede, never edit). Do not create or grow HANDOFF docs unless
-  the owner asks. Do not restate here, in README, or in code what another
-  file owns.
+  file; supersede, never edit). The HANDOFF doc corpus was deleted for good
+  (ruling 13, ADR-0199) — do not recreate that tier; a subsystem fact gets
+  re-derived at HEAD, not parked in a new handoff. Do not restate here, in
+  README, or in code what another file owns.
 - **Duplication:** before writing a helper, constant vocabulary, or module,
   grep for the existing one and extend or consume it. Two implementations of
   one concern in reach: converge them or open an issue — never add a third.
@@ -115,9 +116,7 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 - Laptop state: `.env.local` (`PI_HOST`, `PI_USER`, `JASPER_HOSTNAME`) +
   `CLAUDE.local.md`, written by `scripts/onboard.sh` / `scripts/use`. One
   checkout per Pi.
-- Deep dives, only when touching that subsystem: `docs/HANDOFF-aec.md`,
-  `docs/HANDOFF-voice-providers.md`, `docs/HANDOFF-identity.md`,
-  `docs/HANDOFF-resilience.md`, `docs/HANDOFF-usb-gadget.md`,
+- Deep dives, only when touching that subsystem:
   [docs/extensibility.md](docs/extensibility.md).
 
 ## Build, test, deploy
@@ -166,8 +165,10 @@ Its spirit is folded into the Defaults above — do not restate it here.
 
 What agents must remember lives in, in order: this file (operational),
 `docs/adr/` (decisions and their why), git history and PR descriptions
-(what changed and when), HANDOFF docs (deep subsystem references, legacy —
-being trimmed, do not grow). Inline code prose is not a memory store.
+(what changed and when). The HANDOFF doc corpus that used to sit at the end
+of that list is gone (ruling 13, ADR-0199) — a subsystem fact not covered by
+the three sources above gets re-derived at HEAD, never trusted from a
+handoff. Inline code prose is not a memory store.
 
 ---
 

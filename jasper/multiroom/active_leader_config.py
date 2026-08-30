@@ -4,8 +4,7 @@
 
 """Active *leader* CamillaDSP apply/restore arm — the grouping reconciler's
 two-instance arm for an ACTIVE speaker that LEADS a bond (distributed-active
-Stage B / Slice 5, docs/HANDOFF-distributed-active.md "The active leader
-(gap 3)" + "Stage B — the ratified active-leader realization").
+Stage B / Slice 5).
 
 An active leader is **brains + an endpoint**: it bakes the program domain to the
 wire AND runs its own per-driver crossover on the round-tripped stream, so it

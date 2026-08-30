@@ -55,7 +55,7 @@ MULTICAST_TTL = 1
 # message before applying the ranking function. The window absorbs
 # detection-time jitter across the fleet (typically 30-150 ms on Pi 5).
 # 150 ms is the canonical default from the commercial multi-speaker
-# literature summarized in docs/HANDOFF-peering.md. Tunable per install
+# literature. Tunable per install
 # via JASPER_PEER_ARB_WINDOW_MS but most users should leave it alone.
 DEFAULT_ARB_WINDOW_MS = 150
 

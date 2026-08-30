@@ -32,8 +32,7 @@ MUSIC chain (gets CamillaDSP processing)
                a per-renderer SHM slot ring — /dev/shm/jts-ring/lane-<label>.ring,
                written by the renderer's own jts_ring ioplug and read by fan-in.
                Arming is per box and operator-explicit; the fleet default is
-               unarmed, and an unarmed box runs the aloop path above.
-               See HANDOFF-fan-in-daemon.md "Lane sources".)
+               unarmed, and an unarmed box runs the aloop path above.)
               → jasper-fanin → Ring A (/dev/shm/jts-ring/program.ring)
               → jasper-camilla (jts_ring_capture; main_volume + filters)
               → Ring B (/dev/shm/jts-ring/content.ring), or the ACTIVE ring
@@ -59,10 +58,7 @@ grouping reconciler points voice at `/run/jasper-outputd/tts.sock`, and
 outputd mixes that speaker's own assistant audio into its local
 post-round-trip content lane so replies do not ride the shared sync
 buffer. Active endpoints stay on fan-in, and wireless sub followers park
-voice while keeping outputd TTS unarmed. See
-[HANDOFF-multiroom.md](HANDOFF-multiroom.md) Increment 5 PR-2 and
-[HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
-active-endpoint route.
+voice while keeping outputd TTS unarmed.
 
 The SHM slot ring is the only transport between fan-in, CamillaDSP, and
 outputd. `jasper-outputd` reads Ring B: CamillaDSP writes the post-DSP
@@ -106,9 +102,7 @@ packets.
 
 The landing page's Source selector chooses which enabled renderer lane
 the speaker passes; it does not turn renderers on or off. The on/off
-surface remains `/sources/`. Persisted on/off intent, runtime convergence,
-Bluetooth radio policy, USB transition ordering, and follower parking are
-owned by [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
+surface remains `/sources/`.
 
 Control path:
 
@@ -171,12 +165,7 @@ system cues, wake sounds, or other assistant-owned audio; those stay on
 the TTS/test-tone path unless the design explicitly wants CamillaDSP
 processing.
 
-For the planned provider/source capability boundary, read
-[`HANDOFF-source-capabilities.md`](HANDOFF-source-capabilities.md)
-alongside this checklist. This file owns the physical audio path and
-required integration points; the source-capabilities doc owns the
-future extraction plan for volume, transport, metadata, and health
-adapters.
+This file owns the physical audio path and required integration points.
 
 Keep the change boring. A new source should look like the existing
 AirPlay, Spotify, Bluetooth, or USB sink lanes, not introduce a second
@@ -239,8 +228,7 @@ mixer, a second output device, or a new volume model.
    subresources explicit here, as USB does with its process-free readiness marker and
    host-visible gadget owner. Then extend the fixed intent allowlist and add
    one concrete applier only if ordinary systemd enable/start/stop is not
-   sufficient. Follow
-   [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md); do not create a
+   sufficient. Do not create a
    second persistence path or infer intent from process state.
 7. **Define preemption.** Add the source-specific stop/pause/silence
    path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
@@ -263,8 +251,7 @@ mixer, a second output device, or a new volume model.
    the source has a reliable user-facing volume surface.
 10. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
    `previous`, or `now playing` can control the source, wire
-   `jasper/tools/transport.py` and document the backend in
-   `HANDOFF-voice-music-control.md`. If not, return a concrete "not
+   `jasper/tools/transport.py`. If not, return a concrete "not
    supported for this source" response.
 11. **Add operator surfaces and observability.** Update `/sources/` if
    the source can be enabled/disabled, `/state` if it has useful live
@@ -277,9 +264,7 @@ mixer, a second output device, or a new volume model.
    fail-soft behavior, mux preemption, source-handoff safety, volume
    dispatch, and any source wizard toggles.
 13. **Update docs in one place, then link.** This section covers the
-    cross-cutting checklist. Source-specific quirks belong in a
-    focused HANDOFF only when they are non-obvious, as USB sink does in
-    `HANDOFF-usbsink.md`. README's documentation map should link the
+    cross-cutting checklist. README's documentation map should link the
     current operational truth; historical design notes should be marked
     historical.
 
@@ -307,10 +292,9 @@ Two notes:
   `main_volume`, not `master_gain`. Old comments/docs that called
   master_gain "the ducking knob" are wrong.
 - `listening_level` is the canonical user-facing volume in the
-  VolumeCoordinator (see [HANDOFF-volume.md](HANDOFF-volume.md)). It
-  maps to `main_volume` for IDLE, AirPlay, and USB sink; for Spotify
-  and BT, `main_volume` stays pinned at 0 dB and the source slider
-  carries `listening_level`. `listening_level=0` is special on every
+  VolumeCoordinator. It maps to `main_volume` for IDLE, AirPlay, and
+  USB sink; for Spotify and BT, `main_volume` stays pinned at 0 dB and
+  the source slider carries `listening_level`. `listening_level=0` is special on every
   music source: Camilla also asserts `main_mute` and the calibrated
   volume floor (default −50 dB) so content mute means silent content
   rather than "very quiet."
@@ -681,9 +665,7 @@ active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
 physical DAC lanes, speaker groups, passive/active modes, subwoofers, and
 safety evidence without playback authority of its own. The web save route
 separately coordinates park, commit, and safe runtime convergence; reset writes
-zero speaker groups and remains parked. How this saved record selects the
-runtime graph is owned by the
-[speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
+zero speaker groups and remains parked.
 `/sound/active-speaker/channel-identity` records operator-confirmed physical
 channel identity on that saved topology, but still grants no playback
 authority. Product active-driver playback uses the protected active graph via
@@ -768,8 +750,7 @@ tap reads.
   ducking/gain, CamillaDSP filters/crossover/protection, and outputd sink
   selection. It is the final software/electrical reference; no software
   reference can include DAC, amp, driver, or room acoustics except through
-  microphone observation — see
-  [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+  microphone observation.
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. The old remedy — move the tap downstream of
   CamillaDSP — is already in place: every AEC reference now comes from
@@ -783,16 +764,6 @@ tap reads.
   `JASPER_WAKE_LEG_CHIP_AEC=1` / `JASPER_AEC_CHIP_AEC_ENABLED=1`;
   the recorder owns the same overlay during corpus chip-AEC comparison
   sessions and removes its test env when corpus mode exits.
-
-## Related
-
-- [HANDOFF-barge-in.md](HANDOFF-barge-in.md) — open architectural
-  decision for upgrading barge-in beyond VAD-only filtering.
-- [HANDOFF-volume.md](HANDOFF-volume.md) — VolumeCoordinator and
-  source-aware dispatch.
-- [HANDOFF-voice-music-control.md](HANDOFF-voice-music-control.md) —
-  voice tool transport routing.
-- [HANDOFF-aec.md](HANDOFF-aec.md) — the AEC bridge's reference contract.
 
 ---
 

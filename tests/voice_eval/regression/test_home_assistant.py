@@ -12,7 +12,7 @@ documented failure mode is the model answering smart-home requests
 conversationally ("I can't control your lights") instead of calling
 the tool, or mis-routing to spotify/transport. The tool's docstring
 uses conditional WHEN/WHEN-NOT framing precisely to keep this routing
-sticky (per docs/HANDOFF-prompting.md); this scenario is its guard.
+sticky; this scenario is its guard.
 
 ============================================================
 SIDE-EFFECT + COST NOTICE — read carefully before running

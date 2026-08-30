@@ -1280,9 +1280,9 @@ def test_no_combined_test_failure_copy_leaks_a_raw_code():
         assert "_" not in message, message
 
 
-# Backend vocabulary that docs/HANDOFF-sound-preferences.md promises never
-# reaches this surface, plus the shapes that carry it: absolute filesystem
-# paths, exception class names, raw snake_case identifiers.
+# Backend vocabulary that must never reach this surface, plus the shapes
+# that carry it: absolute filesystem paths, exception class names, raw
+# snake_case identifiers.
 _BANNED_COPY_TOKENS = (
     "camilladsp",
     "yaml",

@@ -4,10 +4,7 @@
 
 """Wake-event telemetry store — SQLite + audio capture + retention.
 
-PR 3 of the wake-telemetry series. The architectural spec and the
-operator-facing decisions live in `docs/HANDOFF-wake-telemetry.md` —
-read that first for the schema rationale, retention policy, and the
-funnel-stage semantics.
+PR 3 of the wake-telemetry series.
 
 Per-wake-event flow:
 
@@ -200,9 +197,7 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     ("mic_rms_dbfs_on", "REAL"),
     ("mic_rms_dbfs_off", "REAL"),
     # Triple-stream extension (2026-05-23): DTLN-aec leg added
-    # alongside AEC ON / AEC OFF. See docs/HANDOFF-mic-quality-v2.md
-    # "Triple-stream architecture plan" + HANDOFF-wake-telemetry.md
-    # "Planned schema extensions for triple-stream".
+    # alongside AEC ON / AEC OFF.
     ("peak_score_dtln_aec", "REAL"),
     ("peak_offset_ms_dtln", "INTEGER"),
     ("mic_rms_dbfs_dtln", "REAL"),

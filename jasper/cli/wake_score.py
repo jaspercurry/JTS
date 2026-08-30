@@ -10,7 +10,7 @@ Walks a directory laid out as `aec_{leg}_{condition}/{split}/*.wav`
 compatible ONNX model, and reports per-clip peak scores + aggregate
 metrics by (leg, condition, split).
 
-Use cases (per `docs/HANDOFF-wake-training-experiment.md`):
+Use cases:
 - Phase 0c: establish baseline metrics with `jarvis_v2` against the
   gold corpus
 - Phase 1e: A/B trained per-leg models vs the baseline against the

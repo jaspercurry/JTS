@@ -294,9 +294,8 @@ install_jasper() {
     #   - _aec3_v2   → optional enhanced engine installed later by
     #                  jasper-enhanced-aec-install. A normal deploy never
     #                  downloads or compiles it.
-    # See docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture
-    # plan" and experiments/aec3-v2-deep-tune-spike/README.md for
-    # the BEST_A canonical config + per-knob rationale.
+    # See experiments/aec3-v2-deep-tune-spike/README.md for the BEST_A
+    # canonical config + per-knob rationale.
     if [[ -d "${INSTALL_DIR}/jasper_aec3" ]]; then
         local marker="${INSTALL_DIR}/.cache/jasper_aec3.installed.fingerprint"
         local fingerprint

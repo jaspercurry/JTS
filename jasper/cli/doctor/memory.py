@@ -580,8 +580,8 @@ def check_wake_events_storage() -> CheckResult:
 #
 # deploy/journald/50-jts-persistent-storage.conf flips RPi OS's volatile
 # default to Storage=persistent with a SystemMaxUse retention cap, so a
-# watchdog reset's *previous-boot* logs survive (the whole point of Tier 5;
-# see docs/HANDOFF-resilience.md). This check catches the two silent
+# watchdog reset's *previous-boot* logs survive (the whole point of Tier 5).
+# This check catches the two silent
 # regressions that would gut those forensics: persistence getting turned off,
 # or the retention cap shrinking below what JTS installs (e.g. a stale/lower
 # drop-in winning the precedence merge). Read-only — no journald mutation.
@@ -695,8 +695,7 @@ def check_journald_persistence() -> CheckResult:
     drop-in precedence), the installed cap from the JTS drop-in, and current
     usage from ``journalctl --disk-usage``. Skips cleanly off a systemd host.
 
-    Canonical config: deploy/journald/50-jts-persistent-storage.conf; rationale
-    in docs/HANDOFF-resilience.md + docs/HANDOFF-observability.md."""
+    Canonical config: deploy/journald/50-jts-persistent-storage.conf."""
     if not _systemd_booted():
         return CheckResult(
             "journald persistence", "ok", "no systemd — skipped (not a Pi?)",

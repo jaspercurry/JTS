@@ -577,8 +577,7 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
     """Slice 1 inv 1 + inv 7 (config layer): threading the default capture device
     reproduces today's baseline byte-for-byte, and a follower capture changes
     EXACTLY the capture device line — relocating where Layer A reads its program
-    never touches the crossover / per-driver limiters / tweeter HP / 0 dB ceiling
-    (docs/HANDOFF-distributed-active.md gap 1).
+    never touches the crossover / per-driver limiters / tweeter HP / 0 dB ceiling.
 
     #2285 P2: the DEFAULT is now the ring capture lane, not the snd-aloop
     fan-in tap. An active-capable topology resolves its playback to the ACTIVE

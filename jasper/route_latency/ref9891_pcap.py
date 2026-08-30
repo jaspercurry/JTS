@@ -13,8 +13,7 @@ host re-anchors them. Packet-granular peaks add a bounded 0-2.67 ms bias (one
 period).
 
 Exposed as the harness's ``convert-pcap`` subcommand
-(:mod:`jasper.cli.route_latency_harness`) — see
-``docs/HANDOFF-usb-latency-measurement.md`` §3 for the end-to-end procedure.
+(:mod:`jasper.cli.route_latency_harness`).
 """
 from __future__ import annotations
 

@@ -814,7 +814,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
 # Fresh-install low-latency reproduction — pins the measurement doc's claim
 # --------------------------------------------------------------------------
 #
-# docs/HANDOFF-usb-latency-measurement.md §2 ("this is what a fresh install
+# The measurement doc §2 ("this is what a fresh install
 # ships") asserts that EVERY low-latency USB value is either a shipped code
 # default or armed automatically by the coupling auto-pass on an eligible gadget
 # box. That is a load-bearing promise (the ~55.5 ms measured number only holds if

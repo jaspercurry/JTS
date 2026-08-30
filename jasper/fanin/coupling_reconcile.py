@@ -796,8 +796,7 @@ def _restart_fanin_coordinated(
     crash / OOM-kill / an external ``systemctl restart jasper-fanin``) degrades
     to <=2 s of paced silence while camilla blocks on the reader's timerfd —
     no spin, no SIGKILL. The coordination is kept for the gap-free UX (a clean
-    camilla stop/start beats a silence window plus resync). See
-    ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT combo section).
+    camilla stop/start beats a silence window plus resync).
     """
     stop_ok, stop_detail = do_stop_camilla()
     if not stop_ok:

@@ -27,9 +27,8 @@
 > summary is in the banner above. Motivated by the end-to-end
 > hardware-validation run
 > ([crossover-room-e2e-validation-log.md](crossover-room-e2e-validation-log.md)).
-> This doc does **not** restate the canonical measurement/correction references
-> ([docs/HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md),
-> [docs/HANDOFF-correction.md](HANDOFF-correction.md)); it defines how the
+> This doc does **not** restate the canonical measurement/correction references;
+> it defines how the
 > `/correction/crossover/` measurement flow is being rebuilt.
 
 ## 1. Context & problem

@@ -5,8 +5,7 @@
 """The offline EMIT LOOP: grade what the DSP emits against what the fit claims.
 
 **Stage: VERIFY (offline).** This subpackage closes R10b's "emit loop … (the
-shelf-Q class)" deliverable of
-[`docs/historical/HANDOFF-correction-revision-plan.md`](../../../docs/historical/HANDOFF-correction-revision-plan.md).
+shelf-Q class)" deliverable.
 
 **Why it exists.** On 2026-07-27 a linearization shipped whose emitted shelves
 realized at Q 0.476 while every gate in the fit engine evaluated them at Q

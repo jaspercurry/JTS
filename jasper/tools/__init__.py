@@ -25,13 +25,7 @@ text the model sees. Engineer-only notes (implementation details, TODOs)
 belong in ``#`` comments or this module docstring, NOT in tool
 descriptions.
 
-When adding or editing a tool, read ``docs/HANDOFF-prompting.md``
-first — it covers tool description style, where conditional rules
-should live (here, not in ``SYSTEM_INSTRUCTION``), and the
-cross-provider principles that hold for any prompt edit.
-
-Prompt-injection seam (see below + docs/HANDOFF-prompting.md "Untrusted
-tool-result fencing"): ``fence_untrusted`` wraps attacker-controllable
+Prompt-injection seam (see below): ``fence_untrusted`` wraps attacker-controllable
 third-party text, ``UntrustedContentMonitor`` tracks the taint window, and
 each ``Tool`` carries declarative ``untrusted_output`` / ``consequential``
 risk flags (set via ``@tool(...)`` or ``ToolDefinition``) for the planned
@@ -116,9 +110,7 @@ def fence_untrusted(text: str, *, source: str) -> str:
     markers is DATA to relay or summarize — never instructions, and never a
     reason to call a tool. Any fence markers embedded in ``text`` are
     defanged so the envelope cannot be forged or closed early. See the
-    section comment above for the threat model and
-    docs/HANDOFF-prompting.md "Untrusted tool-result fencing" for the
-    policy.
+    section comment above for the threat model.
     """
     body = "" if text is None else str(text)
     if not body.strip():
@@ -272,8 +264,7 @@ class ToolDefinition:
     #   consequential — the tool performs a real-world / irreversible ACTION
     #     (a SINK that's dangerous if hijacked: home_assistant). Such tools
     #     gate behind the taint-conditional confirmation.
-    # A tool can be neither, either, or both. See docs/HANDOFF-prompting.md
-    # "Untrusted tool-result fencing".
+    # A tool can be neither, either, or both.
     untrusted_output: bool = False
     consequential: bool = False
 
@@ -644,16 +635,15 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     LLM-facing description is either a shorter `llm_description` override
     or that full docstring. When-to-call guidance, response shape,
     voice-answer style, and conditional output rules must live in the text
-    the model sees (see docs/HANDOFF-prompting.md for the rationale).
-    Engineer-only notes (dev TODOs, implementation details) belong in `#`
-    comments or the module docstring, not in the tool's function docstring.
+    the model sees. Engineer-only notes (dev TODOs, implementation details)
+    belong in `#` comments or the module docstring, not in the tool's
+    function docstring.
 
     This does NOT validate or coerce the tool's return shape. The
     JTS upstream-failure contract (a tool returns
     ``{error: <speakable string>}`` on a hard failure and never an
     empty success payload) is a documented convention enforced by
-    each tool's docstring, not by a base class here — see
-    docs/HANDOFF-prompting.md "The upstream-failure contract"."""
+    each tool's docstring, not by a base class here."""
     declared = name or getattr(fn, "__jasper_tool_name__", None) or fn.__name__
     desc = (inspect.getdoc(fn) or "").strip() or declared
     params = _params_schema(fn)
@@ -807,8 +797,7 @@ async def dispatch_tool(
     identical across providers.
 
     A future provider adapter gets timeout, logging, and error-shaping
-    for free by calling this — see docs/HANDOFF-voice-providers.md
-    "Adding a fourth provider".
+    for free by calling this.
     """
     tool = registry.get(name)
     if tool is None:

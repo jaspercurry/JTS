@@ -32,8 +32,8 @@ means mains-HP is applied exactly once, in that box's CamillaDSP graph. KNOWN
 GAP — the fourth quadrant: an active main bonded to a wireless-only sub (no
 local sub) gets mains-HP applied ZERO times — its dac_content lane is cleared
 AND its Layer-A graph only folds a mains HP for a local sub. That wiring gap is
-the documented "Remaining" active-endpoint sub path in
-HANDOFF-distributed-active.md; this resolver REPORTS it honestly
+the documented "Remaining" active-endpoint sub path; this resolver REPORTS it
+honestly
 (``mains_highpass_enabled=False`` with
 ``mains_highpass_unwired_reason=MAINS_HP_UNWIRED_ACTIVE_ENDPOINT``) so displays
 never claim a high-pass the box does not run. In every quadrant the resolver
@@ -64,7 +64,7 @@ OWNER_WIRELESS_SUB = "wireless_sub"
 # gap — an active-speaker box bonded to a wireless-only sub. Its dac_content
 # lane is cleared (the §6 defer) and its Layer-A graph only folds a mains HP
 # for a LOCAL sub, so the mains run full-range (the documented "Remaining"
-# active-endpoint sub path in HANDOFF-distributed-active.md). Displays use this
+# active-endpoint sub path). Displays use this
 # to distinguish "deliberately off" from "not applied on this speaker yet."
 MAINS_HP_UNWIRED_ACTIVE_ENDPOINT = "active_endpoint_wireless_sub"
 

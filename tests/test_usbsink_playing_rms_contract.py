@@ -18,8 +18,7 @@ lost-alert fallback.
 on the `/state` dashboard (via `usbsink_direct_audible`, read by
 `jasper.control.state_aggregate`). This test pins that it is (a) still a single
 shared definition and (b) NO LONGER referenced by the arbiter `jasper.mux`, so a
-future edit can't silently re-gate arbitration on audio level. See AGENTS.md and
-docs/HANDOFF-usbsink.md.
+future edit can't silently re-gate arbitration on audio level. See AGENTS.md.
 """
 from __future__ import annotations
 

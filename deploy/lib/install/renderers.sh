@@ -187,8 +187,7 @@ install_renderers() {
     rm -f /usr/local/sbin/jasper-audio-topology
     rm -rf /etc/jasper/audio-topology
     rm -f /usr/local/sbin/jasper-derive-device-name
-    # Default to synced. The shipped template owns the sync values;
-    # docs/HANDOFF-airplay.md owns their ring evidence and remaining gaps.
+    # Default to synced. The shipped template owns the sync values.
     # Synced preserves video A/V and multi-room AirPlay timing. Users can
     # still flip to free-running via /airplay/. Existing env files are
     # preserved across reinstalls.
@@ -235,8 +234,7 @@ reconcile_usb_data_role() {
 # gadget box boots when powered through a USB-C power/data splitter (which
 # doesn't pass PD negotiation). No-op with a normal PD supply; safe with a
 # capable supply — undervoltage protection still guards a marginal one.
-# Reboot required to take effect. See reconcile_usb_data_role() +
-# docs/HANDOFF-usbsink.md.
+# Reboot required to take effect. See reconcile_usb_data_role().
 [all]
 usb_max_current_enable=1
 EOF

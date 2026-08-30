@@ -6,9 +6,9 @@
 
 ROBUST-BARGE-IN PR-5 (Gemini pack). This scenario is intentionally SKIPPED
 and must NOT run as part of any automated suite. It is the named placeholder
-from docs/HANDOFF-barge-in.md PR-5 ("interrupt mid-TTS" + on-device: speak
-over Gemini TTS -> quiet < ~400 ms), recorded here so the paid / on-device
-gap is VISIBLE and owned rather than silently missing.
+from PR-5 ("interrupt mid-TTS" + on-device: speak over Gemini TTS -> quiet
+< ~400 ms), recorded here so the paid / on-device gap is VISIBLE and owned
+rather than silently missing.
 
 Why it is skipped, not implemented
 -----------------------------------
@@ -22,8 +22,8 @@ Why it is skipped, not implemented
     is expressible through the single-turn text-ask harness, which has no
     "speak while the model is speaking" surface.
 
-  * The real proof is ON-DEVICE and is owned by HANDOFF-barge-in.md blocker
-    #4 / PR-7: on a Pi with an AEC-clean reference leg, enable
+  * The real proof is ON-DEVICE and is owned by blocker #4 / PR-7: on a Pi
+    with an AEC-clean reference leg, enable
     ``JASPER_BARGE_IN_GEMINI=1``, speak over Gemini TTS, and confirm the
     speaker goes quiet in < ~400 ms AND does not self-interrupt on its own
     TTS bleed. That needs a microphone, the AEC bridge, and a human talker —
@@ -54,7 +54,7 @@ pytestmark = pytest.mark.skip(
     reason=(
         "barge-in is audio-overlap behaviour the single-turn voice-eval "
         "harness cannot drive; the real proof is on-device + PAID "
-        "(HANDOFF-barge-in.md PR-5/PR-7). The hardware-free Gemini-pack "
+        "(PR-5/PR-7). The hardware-free Gemini-pack "
         "contract is pinned in tests/test_gemini_barge_in.py."
     ),
 )

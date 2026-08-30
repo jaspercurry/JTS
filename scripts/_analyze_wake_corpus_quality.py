@@ -4,9 +4,8 @@
 
 """Programmatic audio-quality analyzer for browser-recorded wake corpus WAVs.
 
-This is the repeatable implementation of
-`docs/HANDOFF-wake-corpus-quality.md`: a laptop-side, deterministic
-quality pass over clips copied from `/var/lib/jasper/enrollment_positives/`.
+A laptop-side, deterministic quality pass over clips copied from
+`/var/lib/jasper/enrollment_positives/`.
 
 It is intentionally separate from `scripts/_audit_wake_corpus.py`.
 The audit answers "did recording structurally work?" This analyzer

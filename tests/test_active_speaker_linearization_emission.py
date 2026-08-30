@@ -266,8 +266,8 @@ def test_baseline_write_logs_the_shelf_realization(tmp_path, caplog):
     Re-emitting an ALREADY-APPLIED profile changes what the speaker plays (the
     same stored design is finally realized at the Q it was designed at), so the
     transition has to be legible after the fact — ``grep
-    event=active_speaker_baseline_config_written``. Pinned because
-    docs/HANDOFF-sound-preferences.md tells operators to look for these fields.
+    event=active_speaker_baseline_config_written``. Pinned because operators
+    look for these fields.
     """
     preset = _preset()
     out = tmp_path / "baseline.yml"

@@ -5,9 +5,8 @@
 """Synthetic spatial scenarios for the boost-permission decision, graded
 against injected ground truth.
 
-**What these are for.** The validation ladder
-(``docs/HANDOFF-audio-measurement-core.md``, "Validation ladder — what each
-instrument can prove") names three instruments and says what each can prove.
+**What these are for.** The validation ladder names three instruments and
+says what each can prove.
 Corpus replay is a regression instrument: it shows the code still computes
 what it computed, never that the prescription was right. Hardware proves the
 chain but cannot produce a defect on demand. These are the third rung — a

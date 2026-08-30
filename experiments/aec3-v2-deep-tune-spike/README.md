@@ -4,16 +4,13 @@
 `BEST_A` is the production-target AEC3 config; it crosses the wake
 threshold on the previously-silent `whisper-music` cell and beats
 AEC3-stock on every other failing music cell. Triple-stream plan
-(raw + BEST_A + DTLN-256 OR-fused) is the next sprint — see
-[`docs/HANDOFF-mic-quality-v2.md`](../../docs/HANDOFF-mic-quality-v2.md)
-"Triple-stream architecture plan."
+(raw + BEST_A + DTLN-256 OR-fused) is the next sprint.
 
 ## What this is
 
-Per `docs/HANDOFF-aec.md` section E ("Vendor newer libwebrtc as a
-Meson subproject") + `docs/HANDOFF-mic-quality-v2.md`'s reference
-to AEC3's deep `EchoCanceller3Config` knobs, this spike validated
-the access path AND ran a proper tuning campaign:
+Vendoring newer libwebrtc as a Meson subproject to reach AEC3's deep
+`EchoCanceller3Config` knobs, this spike validated the access path AND
+ran a proper tuning campaign:
 
 1. Vendor `webrtc-audio-processing` v2.1 from PipeWire's upstream
    fork; build statically with `-fPIC`.

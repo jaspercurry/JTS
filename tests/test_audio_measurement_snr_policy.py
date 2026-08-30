@@ -23,10 +23,9 @@ docs/active-crossover-information-design.md:
     SNR to be provable; a deeper measured null reports capped at what the
     SNR can prove.
   - :func:`excitation_covered_bands` / :func:`apply_noise_band_fallback` —
-    the phantom-noise-floor fix (docs/HANDOFF-audio-measurement-core.md
-    "SNR"). A band the reference sweep never excited reads a Tikhonov
-    regularization artifact from the deconvolved domain, not a real
-    ambient-noise measurement; these two functions detect that case and
+    the phantom-noise-floor fix. A band the reference sweep never excited
+    reads a Tikhonov regularization artifact from the deconvolved domain, not
+    a real ambient-noise measurement; these two functions detect that case and
     substitute the raw (non-deconvolved) ambient reading instead. The
     ground-truth fixture rows are distilled from three real jts3 hardware
     captures (sessions 293cc36331f7, 70819cab996b, f44ecc33d071,

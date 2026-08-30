@@ -168,7 +168,7 @@ Feature.
   `deploy/nginx-jasper.conf` + a `console_scripts` entry + a landing-page link.
 
 **Route decision:** `/chat` is currently unclaimed in code. The calibration
-agent ([HANDOFF-calibration-agent.md](HANDOFF-calibration-agent.md)) *designs*
+agent *designs*
 interactive `/chat*` routes, but they live on the `jasper-correction-web`
 server under the `/correction/` prefix, so there is no collision as long as
 this history/control surface owns the top-level `/chat` and the calibration

@@ -4,11 +4,11 @@
 
 """Tests for deploy/bin/jasper-camilla-pipe-guard.
 
-The ExecStartPre chain-breaker for the bonded recovery loop
-(docs/HANDOFF-multiroom.md §2): camilladsp 4.1.3 exits CLEAN on a dead
-File sink (measured on jts3, 2026-06-11), which jasper-camilla's
-Restart=always would otherwise drive into its bounded start-limit recovery
-path. The guard repairs the statefile to the base config BEFORE camilla
+The ExecStartPre chain-breaker for the bonded recovery loop: camilladsp
+4.1.3 exits CLEAN on a dead File sink (measured on jts3, 2026-06-11),
+which jasper-camilla's Restart=always would otherwise drive into its
+bounded start-limit recovery path. The guard repairs the statefile to
+the base config BEFORE camilla
 launches when the bonded pipe is dead.
 
 Pure-bash policy script, tested via subprocess.run with env-overridden

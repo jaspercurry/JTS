@@ -20,7 +20,7 @@ _COMMAND_NAME_RE = re.compile(
 )
 
 _FORBIDDEN_COMMANDS = {
-    # AGENTS.md / HANDOFF-xvf3800 brick-hazard guard: do not re-enable
+    # AGENTS.md brick-hazard guard: do not re-enable
     # persistent or destructive upstream demo commands in the JTS subset.
     "SAVE_CONFIGURATION",
     "TEST_CORE_BURN",

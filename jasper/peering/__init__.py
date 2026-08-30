@@ -18,7 +18,7 @@ no multicast socket is opened, no thread is spawned. The user
 explicitly turns peering on via the `/rooms/` Speakers page, which
 writes `/var/lib/jasper/peering.env` and restarts `jasper-control`.
 
-Architecture (see `docs/HANDOFF-peering.md` for the design rationale):
+Architecture:
 
   jasper-control hosts the peering daemon. It listens on multicast
   239.192.0.1:5354 (TTL=1, RFC 2365 admin-local scope) and serves a

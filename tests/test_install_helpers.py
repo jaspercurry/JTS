@@ -1565,7 +1565,7 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
 # levers that generalize the PR #899 point-fix: RAM-aware `-j`
 # (_ram_bounded_jobs) and cgroup containment (run_contained_build), and
 # the inverse-of-audio-daemon policy that makes a build the OOM victim
-# instead of a daemon. Canonical doc: docs/HANDOFF-build-sandbox.md.
+# instead of a daemon.
 
 _BUILD_SANDBOX_LIB = _INSTALL_LIB_DIR / "build-sandbox.sh"
 _RUST_DAEMONS_LIB = _INSTALL_LIB_DIR / "rust-daemons.sh"

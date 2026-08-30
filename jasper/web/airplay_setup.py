@@ -18,8 +18,7 @@ as the default. Later we found the proper fix: raise
 `resync_threshold_in_seconds` to 0.2 so shairport stays in its
 continuous ±1-sample stuffing path (smooth, inaudible) and never
 fires the discrete path. With that change in place, synced mode is
-glitch-free on this hardware. See
-docs/HANDOFF-airplay.md for the full diagnosis.
+glitch-free on this hardware.
 
 This toggle remains as a safety net: if a future DAC swap or
 firmware change produces sync issues we don't currently see, the
@@ -173,8 +172,7 @@ def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
       happily without trying to sync.</p>
       <p>Setting persists across reboots in
       <code>/var/lib/jasper/airplay_mode.env</code>. CLI:
-      <code>jasper-airplay-mode set [synced|free-running]</code>. Full
-      history in <code>docs/HANDOFF-airplay.md</code>.</p>
+      <code>jasper-airplay-mode set [synced|free-running]</code>.</p>
     </div>
   </details>
 </main>

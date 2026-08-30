@@ -1460,7 +1460,7 @@ def _write_grouping(
     the single READER->action. The endpoint that calls this (/grouping/set) is
     token-gated (WS1 Phase 2); the cross-device bond-forming flow — one speaker
     POSTing to another's :PORT/grouping/set — authenticates with the household
-    credential (docs/HANDOFF-control-plane-auth.md).
+    credential.
     """
     updates = {
         "JASPER_GROUPING": "on" if enabled else "off",
@@ -1839,7 +1839,7 @@ def _make_handler(
             ACTIVE bonded follower,
             its local volume knobs are INERT — bonded content bypasses the local
             CamillaDSP entirely (the leader's one Camilla bakes the
-            program; HANDOFF-multiroom.md §2). Without this, the landing
+            program). Without this, the landing
             page slider, a paired remote, and curl all "work" silently
             with no audible effect — the worst UX shape. So the four
             /volume endpoints forward verbatim to the leader's control
@@ -2001,8 +2001,7 @@ def _make_handler(
             # update) are browser->own-speaker and stay control-token-only.
             # household_credential is fail-safe (absent => accept) so the first
             # bond, which DISTRIBUTES the secret over this very route, isn't
-            # rejected by the gate it installs. See
-            # docs/HANDOFF-control-plane-auth.md §6.
+            # rejected by the gate it installs.
             if self.path == "/grouping/set" and household_credential.verify(
                 self.headers.get("X-JTS-Household")
             ):
@@ -2352,15 +2351,14 @@ def main(argv: list[str] | None = None) -> int:
     start_peering_daemon_if_enabled()
     # Tier 3 resilience: protocol-level liveness probe for shairport-sync
     # so a wedged AP2 control plane recovers without manual intervention.
-    # docs/HANDOFF-resilience.md (Tier 3). Off via
-    # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
+    # Off via JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
     shairport_supervisor.start_supervisor()
     # T5.2 — userspace-liveness supervisor closing the gap exposed
     # by the 2026-05-23 incident (PID 1 alive enough to pat the
     # kernel watchdog but sshd / userspace effectively dead). Probes
     # sshd banner + our own HTTP /healthz + /proc/loadavg; clean
     # `systemctl reboot` after 3 consecutive failures, rate-limited
-    # to 1 reboot per 24 hours. docs/HANDOFF-tier5-watchdog-liveness.md.
+    # to 1 reboot per 24 hours.
     # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
     system_supervisor.start_supervisor()
     # Bonded-member runtime liveness: closes the gap between grouping

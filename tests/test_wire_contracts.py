@@ -286,7 +286,7 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # JASPER_OUTPUTD_DAC_CONTENT_FIFO exception was dropped the same day
     # in the opposite direction: Increment 3 landed the outputd reader,
     # so the name is now LIVE Rust-read config, exactly as this guard's
-    # bidirectional contract demands. See HANDOFF-multiroom.md §2.)
+    # bidirectional contract demands.)
     # Python-consumer-side override of where mux CONNECTS; fanin's own
     # bind path is a hardcoded Rust constant (see
     # test_control_socket_paths_agree_across_processes). Setting this

@@ -140,8 +140,7 @@ is the authoritative route list; it covers setup (`/voice/`, `/tools/`,
 `/sources/`, `/wake/`, `/wifi/`, `/transit/`, `/ha/`, `/weather/`,
 `/speaker/`, `/rooms/`, `/spotify/`, `/bluetooth/`), sound (`/eq/`,
 `/sound/setup/`, `/sound/room/`, `/sound/crossover/`, `/sound/bass/`),
-and read-only dashboards (`/system/`, `/chat/`). Reference:
-[`docs/HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md).
+and read-only dashboards (`/system/`, `/chat/`).
 
 ---
 
@@ -174,7 +173,7 @@ deploy/            install.sh + lib/install/, systemd units, nginx confs,
                      ALSA/CamillaDSP templates, web assets (app.css)
 scripts/           Laptop-side operator tools (deploy, logs, diagnostics)
 tests/             Hardware-free pytest suite; voice_eval/ makes paid calls
-docs/              ADRs, subsystem HANDOFF spines, designs, research archive
+docs/              ADRs, designs, research archive
 capture-page/      Static phone-mic capture page (separate trust boundary)
 relay/             Cloudflare Worker dead-drop relay for that page
 release/           first-party-arm64 artifact contract + BUILD-INFO schema
@@ -220,7 +219,7 @@ pointer, not a second copy.
 - [`docs/adr/`](docs/adr/) — append-only decision records, one decision per
   file. Start with
   [ADR-0001](docs/adr/0001-operating-model-reset.md) (the operating model)
-  and read the family for a subsystem's *why* before its HANDOFF.
+  and read the family for a subsystem's *why*.
 - [`docs/extensibility.md`](docs/extensibility.md) — **read before adding a
   modular subsystem:** host-mediated indirection, the five extension
   contracts, and the what-kind → which-pattern decision tree.
@@ -231,109 +230,15 @@ pointer, not a second copy.
 
 ### Subsystem spines
 
-One line each; the doc is the canonical "read this before modifying".
+One line each; the doc is the canonical "read this before modifying". (The
+per-subsystem HANDOFF docs this section used to index were deleted — ruling
+13, [ADR-0199](docs/adr/0199-the-handoff-doc-corpus-is-deleted.md); a
+subsystem fact gets re-derived at HEAD, not parked in a handoff.)
 
-- [`HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md) — the
-  `LiveConnection`/`LiveTurn` abstraction over Gemini/OpenAI/Grok
-- [`HANDOFF-prompting.md`](docs/HANDOFF-prompting.md) — voice prompting
-  playbook; start here for `jasper/voice/prompt.py` or tool descriptions
-- [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) — where
-  per-model rate data comes from and the `/voice/` rates editor
-- [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — assistant-speech
-  barge-in plan and current-code gap analysis
-- [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture and operations
-  (chip-AEC commissioning, the disclosed AEC3 fallback, bridge lifecycle)
-- [`HANDOFF-enhanced-aec.md`](docs/HANDOFF-enhanced-aec.md) — optional
-  vendored AEC3 v2: verified marker, background build, licensing boundary
-- [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — canonical XVF3800
-  reference: identity, firmware variants, parameters, DFU, failure modes
-- [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) — mic-quality
-  workstream: sweeps, lever inventory, decision history
-- [`HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
-  — pluggable-mic boundary and the leg-count-agnostic wake-fusion layer
-- [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) — what
-  endpoints a turn, why server VAD stays off, and the open raw-stream question
-- [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md)
-  — custom per-leg wake-model training plan
-- [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md)
-  — off-Pi custom wake-model training and deploy workflow
-- [`HANDOFF-wake-corpus-quality.md`](docs/HANDOFF-wake-corpus-quality.md) —
-  wake-corpus audio quality review
-- [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) — wake
-  detection telemetry and funnel
-- [`HANDOFF-usb-mic-wake.md`](docs/HANDOFF-usb-mic-wake.md) — cheap-USB-mic
-  wake follow-up
-- [`HANDOFF-audio-capability-platform.md`](docs/HANDOFF-audio-capability-platform.md)
-  — who owns which mic/AEC/DAC fact, the profile vocabulary, validation
-  artifacts
-- [`HANDOFF-fan-in-daemon.md`](docs/HANDOFF-fan-in-daemon.md) — per-renderer
-  snd-aloop lanes, the Rust summing daemon, buffer sizing
-- [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md)
-  — the output owner, true speaker reference, and TTS playout ledger
-- [`HANDOFF-usb-low-latency.md`](docs/HANDOFF-usb-low-latency.md) — the
-  shipped `usb_low_latency_48k` route and its doctor artifact gate
-- [`HANDOFF-usb-latency-measurement.md`](docs/HANDOFF-usb-latency-measurement.md)
-  — measurement reference and bench reproduction for USB-input latency
-- [`HANDOFF-audio-latency-foundation.md`](docs/HANDOFF-audio-latency-foundation.md)
-  — latency levers and the hard rules against re-architecting the topology
-- [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — source-aware volume
-  coordinator, one canonical `listening_level`
-- [`HANDOFF-source-lifecycle.md`](docs/HANDOFF-source-lifecycle.md) —
-  persisted source intent vs effective state, boot/deploy convergence
-- [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md) —
-  the Sources contract: vocabulary, capability map, new-source checklist
-- [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md) —
-  source-aware voice volume, transport, and Spotify play routing
-- [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay glitch
-  troubleshooting; start here for audio artifacts on AirPlay
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — per-household-member
   Spotify account routing
-- [`HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — **canonical** for the
-  composite USB gadget: management network plus optional audio functions
-- [`HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) — the USB audio-input source
-  and how its lane feeds fan-in
-- [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — grouped playback:
-  stereo pair, wireless sub, multi-room over Snapcast
-- [`HANDOFF-peering.md`](docs/HANDOFF-peering.md) — multi-Pi wake arbitration,
-  hubless P2P over mDNS-SD, off by default
-- [`HANDOFF-identity.md`](docs/HANDOFF-identity.md) — the three speaker names,
-  the identity reconciler, and the supported rename flow
-- [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — the resilience
-  ladder: watchdogs, memory pressure, reboot escalation, forensics
-- [`HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md) —
-  runtime mic/DAC/accessory attach-detach convergence with no redeploy
-- [`HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md)
-  — why the kernel watchdog cannot see userspace, and the deferred dials
-- [`HANDOFF-runtime-memory.md`](docs/HANDOFF-runtime-memory.md) — **the RAM
-  budget:** always-on footprint decisions and the remaining levers
-- [`HANDOFF-observability.md`](docs/HANDOFF-observability.md) — the `event=`
-  spine, journald retention, the debug card, and the flight recorder
-- [`HANDOFF-privilege-separation.md`](docs/HANDOFF-privilege-separation.md) —
-  threat model and the de-rooting ladder
-- [`HANDOFF-control-plane-auth.md`](docs/HANDOFF-control-plane-auth.md) —
-  device-to-device / household control-plane auth
-- [`HANDOFF-supply-chain.md`](docs/HANDOFF-supply-chain.md) — provenance,
-  checksum policy, and accepted gaps for build-time inputs
-- [`HANDOFF-build-sandbox.md`](docs/HANDOFF-build-sandbox.md) — RAM-bounded,
-  cgroup-contained builds so an OOM kills only the build
-- [`HANDOFF-install-update-transaction.md`](docs/HANDOFF-install-update-transaction.md)
-  — an update as a transaction: build manifest, deploy verification, rollback
-- [`HANDOFF-pi-image-delivery.md`](docs/HANDOFF-pi-image-delivery.md) —
-  stock-OS → bootstrap → hybrid-image gradient and promotion gates
-- [`HANDOFF-first-party-arm64-artifacts.md`](docs/HANDOFF-first-party-arm64-artifacts.md)
-  — the ARM64 build lane, bundle format, and reproducibility boundary
-- [`HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md) — smart-home
-  delegation through Home Assistant's conversation API; `/ha/` wizard
-- [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) — subway,
-  Citi Bike, and Routes: config ownership, caching, and fallback contracts
-- [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
-  pre-rendered cues; start here when a failure path must not fall silent
-- [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) — management-
-  surface IA, anti-patterns, and remaining roadmap
 - [`design-language.md`](docs/design-language.md) — the craft layer under the
   UI: type ladder, depth, radii, touch targets, motion, interface writing
-- [`HANDOFF-dlna.md`](docs/HANDOFF-dlna.md) — DLNA/UPnP media input (design
-  only, no code yet)
 - [`adr/0145-remote-updates-stay-a-laptop-deploy.md`](docs/adr/0145-remote-updates-stay-a-laptop-deploy.md)
   — why there is no OTA update button, and the shape if that changes
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) — Zero 2 W
@@ -359,25 +264,10 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
 - [`crossover-v2-engine-design.md`](docs/crossover-v2-engine-design.md) — the
   engine's architecture: the session, its seams, the file map, and the contracts
   a refactor must preserve
-- [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md) —
-  active-speaker DSP commissioning, baseline lifecycle, safety invariants
-- [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
+- [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md) —
   commissioned, volume-scheduled low-frequency alignment. Waves 1–3 are merged
   plus the Wave 4 `ladder.py` slice; commissioning backend and runtime
-  scheduling have not shipped. Per-wave prompts:
-  [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md)
-- [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — the HTTPS
-  measurement service behind `/sound/room/`, `/sound/crossover/`, `/sound/bass/`
-- [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md) — the
-  `/eq/` preference layer and `/sound/setup/` global-output surface
-- [`HANDOFF-dsp-graph-carrier.md`](docs/HANDOFF-dsp-graph-carrier.md) —
-  composing preference EQ + correction on any output topology
-- [`HANDOFF-audio-measurement-core.md`](docs/HANDOFF-audio-measurement-core.md)
-  — the shared measurement/calibration core the flows build on
-- [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
-  running an active speaker's driver-domain crossover as a wireless follower
-- [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
-  calibrated-mic ingest and the eventual LLM "audio engineer"
+  scheduling have not shipped. Per-wave prompts live in that directory
 - [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
   — the adopted five-layer tuning model and its decision register
 - [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
@@ -443,7 +333,7 @@ Preserved for archaeology; **not** current operational truth.
 - [`docs/research/`](docs/research/) — verbatim external and model-generated
   research inputs, one directory per study
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) — 2026-05/06 lab
-  evidence that proved external-DAC chip AEC; use `HANDOFF-aec.md` instead
+  evidence that proved external-DAC chip AEC
 - [`historical/chip-aec-dac-portability-2026-06.md`](docs/historical/chip-aec-dac-portability-2026-06.md)
   — clock-domain measurements and the rejected rate-matcher design
 - [`historical/volume-control-redesign-2026-05.md`](docs/historical/volume-control-redesign-2026-05.md)
@@ -514,9 +404,6 @@ It deliberately does not expose filter-coefficient dumps, and runtime
 profile writes belong to the commissioner rather than this surface. Never
 call `SAVE_CONFIGURATION` — a known brick hazard.
 
-Full operations: [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md). RAM cost of
-the always-on daemons: [`docs/HANDOFF-runtime-memory.md`](docs/HANDOFF-runtime-memory.md).
-
 ---
 
 ## Getting started
@@ -546,7 +433,7 @@ Zero 2 W with no persisted marker resolves to `streambox`; everything else
 resolves to `full`. Both use the same repo and the same deploy path. The
 older `endpoint`/`satellite` tokens still parse and migrate to `streambox`
 on the next deploy. "Endpoint behaviour" is now purely the runtime multiroom
-**follower** role — see [`docs/HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md).
+**follower** role.
 
 ---
 

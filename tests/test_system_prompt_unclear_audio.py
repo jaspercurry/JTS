@@ -14,8 +14,7 @@ interpreting "unclear" too narrowly. The fix enumerates specific triggers
 (fragments, empty-string arguments) per the prompting playbook's
 "enumerate triggers; conditional rules over absolutes" guidance.
 
-See docs/HANDOFF-vad-experiments.md "Known product bug" + the rationale
-block above the Unclear Audio section in voice_daemon.py.
+See the rationale block above the Unclear Audio section in voice_daemon.py.
 """
 
 

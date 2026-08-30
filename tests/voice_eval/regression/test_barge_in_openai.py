@@ -4,11 +4,11 @@
 
 """Barge-in regression scenario — interrupt mid-TTS (OpenAI reference pack).
 
-Pins the OpenAI barge-in pack (PR-4 of docs/HANDOFF-barge-in.md) end-to-end
-against a live session: the user barges in while the assistant is speaking,
-JTS cancels the in-progress response and truncates the conversation item to
-the *heard* boundary, and the NEXT turn's context reflects only what was
-actually said — not the unspoken tail the server still generated.
+Pins the OpenAI barge-in pack (PR-4) end-to-end against a live session: the
+user barges in while the assistant is speaking, JTS cancels the in-progress
+response and truncates the conversation item to the *heard* boundary, and
+the NEXT turn's context reflects only what was actually said — not the
+unspoken tail the server still generated.
 
 Two things are checked:
 

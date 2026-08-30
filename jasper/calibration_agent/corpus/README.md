@@ -62,8 +62,6 @@ Every concept file should have:
 - [`concepts/active-speaker-dsp.md`](concepts/active-speaker-dsp.md)
   — 2-way/3-way active crossover, driver alignment, speaker-baseline
   tuning, and the near-field/null-depth/gated measurement triad.
-  Current operational truth and implementation planning live in
-  [`../HANDOFF-active-speaker-dsp.md`](../../../docs/HANDOFF-active-speaker-dsp.md).
 - [`filter-design/fir-room-correction.md`](filter-design/fir-room-correction.md)
   — FIR fundamentals and implementation constraints.
 - [`filter-design/preference-eq.md`](filter-design/preference-eq.md)
@@ -91,9 +89,8 @@ Every concept file should have:
   advisory and parameter-bounded. Raw archive:
   [`docs/research/2026-05-25-calibration-agent/`](../../../docs/research/2026-05-25-calibration-agent/README.md).
 - 2026-05-25: distilled three user-provided active speaker DSP /
-  crossover commissioning reports into
-  [`HANDOFF-active-speaker-dsp.md`](../../../docs/HANDOFF-active-speaker-dsp.md)
-  and the active-speaker concept note. Consensus: treat active
+  crossover commissioning reports into the active-speaker concept note.
+  Consensus: treat active
   crossover tuning as a speaker-baseline commissioning module with
   separate safety gates, not as a room-correction extension. Same raw
   archive as above.
@@ -189,9 +186,5 @@ Every concept file should have:
   advisor key), `jasper.calibration_agent.correction_advisor`
   (redacted correction-flow context + interpret/propose calls), and a
   v2 action-type vocabulary in `jasper.calibration_agent.response`.
-  This entry is a pointer, not the record — see "The P6 tuning
-  surface" in
-  [HANDOFF-calibration-agent.md](../../../docs/HANDOFF-calibration-agent.md) for
-  the full design and safety-vocabulary detail.
 
 Last verified: 2026-07-11

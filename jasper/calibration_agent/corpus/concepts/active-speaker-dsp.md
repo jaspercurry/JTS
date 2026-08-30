@@ -1,8 +1,6 @@
 # Active Speaker DSP
 
-> **Status: current concept note.** Operational planning lives in
-> [`../../HANDOFF-active-speaker-dsp.md`](../../../../docs/HANDOFF-active-speaker-dsp.md).
-> This page is the calibration-agent corpus summary.
+> **Status: current concept note.** This page is the calibration-agent corpus summary.
 
 ## Core Model
 

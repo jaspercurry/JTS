@@ -105,10 +105,10 @@ keeps its own detailed contract doc; this table is the map.
 | Contract | The unit | Why it's its own contract | Canonical doc |
 |---|---|---|---|
 | **Tools** | a tool (grouped into a pack) | an LLM-callable action; declared to the provider at connect time; spends the model's token budget; dispatched uniformly | [`tool-platform-plan.md`](tool-platform-plan.md) |
-| **Sources** | a music/audio source | enters the real-time fan-in topology; touches the hot Rust path, mux arbitration, and the loud-output safety chain | [`HANDOFF-source-capabilities.md`](HANDOFF-source-capabilities.md), [`audio-paths.md`](audio-paths.md) |
-| **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (realtime `LiveConnection` for voice; a simpler request→text layer for background work) | [`HANDOFF-voice-providers.md`](HANDOFF-voice-providers.md), [`research-tool-plan.md`](research-tool-plan.md) |
-| **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | [`HANDOFF-audio-capability-platform.md`](HANDOFF-audio-capability-platform.md), the pattern-selector table (Step 2, below) |
-| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md), [`research-tool-plan.md`](research-tool-plan.md), [`HANDOFF-calibration-agent.md`](HANDOFF-calibration-agent.md) *(its instances)* |
+| **Sources** | a music/audio source | enters the real-time fan-in topology; touches the hot Rust path, mux arbitration, and the loud-output safety chain | [`audio-paths.md`](audio-paths.md) |
+| **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (realtime `LiveConnection` for voice; a simpler request→text layer for background work) | [`research-tool-plan.md`](research-tool-plan.md) |
+| **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | the pattern-selector table (Step 2, below) |
+| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md), [`research-tool-plan.md`](research-tool-plan.md) |
 
 The first four are mature and shipped to varying degrees. The fifth — the
 **Feature** — is the one with no agreed contract yet, and it is the gap this

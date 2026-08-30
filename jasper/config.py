@@ -395,7 +395,7 @@ class Config:
     # install (e.g. "http://homeassistant.local:8123"); token is a
     # Long-Lived Access Token from HA's profile page; agent_id is an
     # optional override to route JTS to a specific conversation agent
-    # (empty = use HA's default). See docs/HANDOFF-homeassistant.md.
+    # (empty = use HA's default).
     ha_url: str
     ha_token: str
     ha_agent_id: str
@@ -602,9 +602,6 @@ class Config:
             # same forms as JASPER_MIC_DEVICE (`udp:PORT`,
             # `udp://HOST:PORT`, or a PortAudio device string for
             # hypothetical hardware-second-mic configurations).
-            #
-            # See docs/HANDOFF-wake-telemetry.md for the architecture
-            # and the empirical case for OR-gating.
             mic_device_raw=_env("JASPER_MIC_DEVICE_RAW", ""),
             # JASPER_MIC_DEVICE_DTLN: optional third mic source for
             # triple-stream wake detection (raw + AEC3-BEST_A + DTLN).
@@ -612,8 +609,6 @@ class Config:
             # DTLN-aec parallel output added in Phase 1.2 of the
             # triple-stream rollout), the WakeLoop spawns a third
             # WakeWordDetector and OR-gates fires across all three legs.
-            # See docs/HANDOFF-mic-quality-v2.md "Triple-stream
-            # architecture plan" for context.
             mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
             # JASPER_MIC_DEVICE_CHIP_AEC_150 / _210: optional extra wake
             # detector legs carrying the XVF3800's hardware-AEC ASR beams
@@ -633,7 +628,7 @@ class Config:
             # MicCapture polyphase-downsamples to 16 kHz mono internally.
             mic_capture_rate=_env_int("JASPER_MIC_CAPTURE_RATE", 16000),
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
-            # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3).
+            # Wake-event telemetry.
             # Directory holds wake-events.sqlite3 + per-event WAV
             # files (one per leg, 6 s window). DB rows kept forever;
             # audio ring rolls oldest-first when the byte cap is hit.
@@ -730,9 +725,7 @@ class Config:
             # sits comfortably above the worst observed OpenAI
             # Realtime first-chunk latency (~7.7 s in 2026-05-21
             # production logs) while keeping recovery from a genuine
-            # API hang under half a minute. See
-            # docs/HANDOFF-voice-providers.md "Idle anchor + tool
-            # rounds" for the full rationale.
+            # API hang under half a minute.
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
             # Last-resort output-side cap after a provider has begun
             # speaking but never sends turn_complete. Normal speech
@@ -862,8 +855,7 @@ class Config:
             # WS1 Phase 4a — the Google OAuth token tree (per-member refresh
             # tokens + Gmail/Calendar identities) moved out of the shared
             # /var/lib/jasper StateDirectory into the group-`jasper-secrets`
-            # dir, readable only by jasper-voice + jasper-web. See
-            # docs/HANDOFF-privilege-separation.md "Phase 4".
+            # dir, readable only by jasper-voice + jasper-web.
             google_accounts_path=_env(
                 "JASPER_GOOGLE_ACCOUNTS_PATH",
                 "/var/lib/jasper-secrets/google/accounts.json",

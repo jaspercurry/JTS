@@ -1080,8 +1080,8 @@ def test_grouping_set_stays_in_token_gated_routes():
     multiroom-vs-privilege-separation contradiction (WS1 Phase 2 made the gate
     mandatory; someone "fixing" the cross-device grouping fan-out by removing
     the gate is exactly the regression this pins). The household-credential
-    work (HANDOFF-control-plane-auth.md) accepts that credential *in addition*
-    to the control token on this route — it never un-gates it.
+    work accepts that credential *in addition* to the control token on this
+    route — it never un-gates it.
     """
     assert "/grouping/set" in _srv_mod._TOKEN_GATED_ROUTES
     # The full expected gated set, so adding/removing any route is a
@@ -1139,7 +1139,7 @@ def _pair_household(monkeypatch, tmp_path, secret="hh-secret-value"):
     """Point household_credential at a tmp file containing `secret` (PAIRED).
 
     A paired speaker is the steady state: its /grouping/set requires EITHER the
-    control token OR this household credential (HANDOFF-control-plane-auth.md §6).
+    control token OR this household credential.
     """
     import jasper.control.household_credential as hc
 
@@ -1263,7 +1263,7 @@ def test_enabled_gate_does_not_affect_ungated_routes(
 # gate accepts EITHER on /grouping/set ONLY; every other gated route stays
 # control-token-only. Fail-safe (absent ⇒ accept) so the first bond, which
 # distributes the secret over this very route, isn't rejected by the gate it
-# installs. Full design: docs/HANDOFF-control-plane-auth.md §6.
+# installs.
 # --------------------------------------------------------------------------
 
 

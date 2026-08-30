@@ -781,7 +781,7 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
     mentioned precipitation_probability + will_rain. The model
     followed the system instruction and skipped the end time.
 
-    Post-Path-B (2026-05-23 / HANDOFF-prompting.md): the system
+    Post-Path-B (2026-05-23): the system
     instruction holds only cross-tool meta-rules. Per-tool conditional
     rules (including the rain-timing routing for get_weather) live in
     the tool's model-facing description. This test pins the guidance so

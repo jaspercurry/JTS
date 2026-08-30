@@ -5,8 +5,8 @@
 """jasper-doctor checks — usbsink domain.
 
 Originally re-homed verbatim from the monolithic ``jasper/cli/doctor.py``;
-reworked for the composite-gadget model (docs/HANDOFF-usb-gadget.md). The
-gadget is now ``jasper-usbgadget.service`` — a single ConfigFS owner that
+reworked for the composite-gadget model. The gadget is now
+``jasper-usbgadget.service`` — a single ConfigFS owner that
 composes up to two functions onto one UDC: ``ncm.usb0`` (the USB
 management network) and ``uac2.usb0`` (the wizard-toggled USB Audio Input,
 whose readiness marker is ``jasper-usbsink.service``). The old invariant
@@ -882,7 +882,7 @@ def check_usbgadget_composition() -> CheckResult:
     deploy/usbsink/jasper-usbgadget-compose.sh holds the one function truth
     table; jasper-usbgadget-up computes it from there at start, and
     jasper-usbgadget-converge computes it again to decide whether a rebind is
-    needed at all (see docs/HANDOFF-usb-gadget.md):
+    needed at all:
 
       network intent   audio authorized+ready    composed functions
       --------------   ------------------------  --------------------

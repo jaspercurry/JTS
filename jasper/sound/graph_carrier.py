@@ -14,8 +14,6 @@ at the call site, resolve the loaded graph to a *carrier* that knows how to
 re-emit itself — or fail CLOSED with a typed, honest reason. Graph kinds that
 can safely host EQ do so; the rest raise :class:`CarrierCannotHostEq`.
 
-Design-of-record: ``docs/HANDOFF-dsp-graph-carrier.md``.
-
 Layering: this module is the one place allowed to bridge the sound and
 active-speaker subsystems. It depends on :mod:`jasper.sound.camilla_yaml` and
 (lazily) :mod:`jasper.active_speaker.environment` (the safety classifier);
@@ -115,7 +113,7 @@ class _StereoHostCarrier:
     ) -> None:
         self.kind = kind
         self._current_path = current_path
-        # L0 safety (docs/HANDOFF-audio-measurement-core.md): a stereo-host graph
+        # L0 safety: a stereo-host graph
         # is a 2-channel passthrough with no per-driver crossover/protection, so
         # it cannot host EQ for a topology that assigns a protected tweeter role —
         # full-range program would reach a compression driver. The runtime
@@ -374,8 +372,8 @@ class _ActiveGraphCarrier:
     the preference
     filters fold in PRE-SPLIT, with their worst-case boost rolled into the
     single ``active_baseline_headroom`` gain (see
-    :func:`jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml` and
-    ``docs/HANDOFF-dsp-graph-carrier.md``). It NEVER re-emits through the stereo
+    :func:`jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml`).
+    It NEVER re-emits through the stereo
     ``emit_sound_config`` template, so the crossover, per-driver limiters, and
     protective high-pass are preserved by construction (invariant 3). The
     transient startup/commissioning graphs keep refusing

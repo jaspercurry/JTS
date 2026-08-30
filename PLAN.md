@@ -5,8 +5,7 @@ This document tracks what comes next, in a sequence chosen to
 maximize feature-per-week and minimize cross-phase rework.
 
 For the operator-facing "how do I bring this up from scratch" guide,
-see [BRINGUP.md](BRINGUP.md). For deep-dives on existing subsystems,
-see [docs/HANDOFF-*.md](docs/).
+see [BRINGUP.md](BRINGUP.md).
 
 ---
 
@@ -15,10 +14,9 @@ see [docs/HANDOFF-*.md](docs/).
 ### AEC bridge stalls under normal music playback (2026-05-11)
 
 **Status 2026-06-12: mitigated-by 2026-05-19 bridge fixes +
-current restart policy.** `docs/HANDOFF-aec.md` records the
-resampler / ref carry-forward / consume-one-per-iteration fixes, and
-current `jasper-aec-bridge` exits via `BridgeStalled` so
-`jasper-aec-bridge.service`'s `Restart=on-failure` revives the stream.
+current restart policy.** Current `jasper-aec-bridge` exits via
+`BridgeStalled` so `jasper-aec-bridge.service`'s `Restart=on-failure`
+revives the stream.
 Keep this section as incident history and reopen only if current logs
 show recurring `ref queue full`, `mic queue empty`, or slow-drip
 starvation after those fixes.
@@ -77,10 +75,10 @@ Starting points:
 | **v5** | **Wireless stereo pair** via Snapcast (Pi Zero 2W slave) | Architecturally clean addition once v1–v3 stable |
 | **v6** | **Wireless subwoofer** node + crossover in master CamillaDSP | Strict superset of v5; biggest video story |
 | **v7** | Direct device-to-device **mesh** (master AP+STA, slave priority fallback) | Networking polish; only matters at v5+ scale |
-| ~~**v8**~~ | ~~**USB gadget** (UAC2) inline DSP mode~~ | **Shipped 2026-05-23** as a fourth music source: host plugs into Pi USB-C, JTS exposes itself as a USB audio output via the 8086 splitter. ~22 MB RAM on, 0 off, disabled by default. Adapts the PiCorrect ConfigFS gadget stack into a fourth source under `jasper-mux`. The original "inline DSP mode" interpretation (Pi replacing PiCorrect's role entirely) is a deeper follow-up; same gadget descriptor, would require CamillaDSP topology changes. See [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md). |
-| ~~**v9**~~ | ~~Home Assistant bridge tool (single proxy function)~~ | **Shipped in v1** (May 2026) via `home_assistant` voice tool wrapping HA's `/api/conversation/process`. JTS is first-of-kind for xAI Grok Voice + HA. Wizard at `http://jts.local/ha/`. Full architecture in [docs/HANDOFF-homeassistant.md](docs/HANDOFF-homeassistant.md). |
+| ~~**v8**~~ | ~~**USB gadget** (UAC2) inline DSP mode~~ | **Shipped 2026-05-23** as a fourth music source: host plugs into Pi USB-C, JTS exposes itself as a USB audio output via the 8086 splitter. ~22 MB RAM on, 0 off, disabled by default. Adapts the PiCorrect ConfigFS gadget stack into a fourth source under `jasper-mux`. The original "inline DSP mode" interpretation (Pi replacing PiCorrect's role entirely) is a deeper follow-up; same gadget descriptor, would require CamillaDSP topology changes. |
+| ~~**v9**~~ | ~~Home Assistant bridge tool (single proxy function)~~ | **Shipped in v1** (May 2026) via `home_assistant` voice tool wrapping HA's `/api/conversation/process`. JTS is first-of-kind for xAI Grok Voice + HA. Wizard at `http://jts.local/ha/`. |
 | **v10** | **Apple Music** voice-controlled source (fifth mux source) | Vendors [Music Assistant](https://github.com/music-assistant/server)'s streaming pipeline (Apache-2.0): MusicKit JS auth → Apple's private `webPlayback` API → Widevine L3 key exchange via `pywidevine` → ffmpeg `-decryption_key` CENC decryption → `hw:Loopback,0,0` (same ALSA path as librespot). 256 kbps AAC ceiling, 180-day token re-auth, user-supplied CDM credentials. Wizard at `http://jts.local/apple-music/`. Opt-in — requires Apple Developer account ($99/yr) + CDM blobs. Pre-implementation gate: MA spike on Pi 5 to validate the full chain. Research record: [docs/historical/apple-music-integration-research-2026-05.md](docs/historical/apple-music-integration-research-2026-05.md). |
-| **DLNA/UPnP** *(new-sources cluster, alongside Apple Music — no fixed ordinal)* | **DLNA/UPnP media input** — an additional **network-only** music source via gmrender-resurrect | Fills the Android "cast audio to speaker" gap (Google Cast needs hardware-fused auth no OSS project has solved). Network-only, no hardware dependency; ~13–20 MB on, 0 off. Adds **one private snd-aloop fan-in lane** (the per-source lane pattern), so it touches no other source. Phase 1: gmrender C binary + Python state/preempt sidecar. Phase 2: A/B upmpdcli for OpenHome + gapless. Sidecar-owns-preemption keeps a future renderer swap cheap. **Substream allocation is full — DLNA must reuse a lane (design decision first).** Sits in the post-USB-sink new-sources cluster, peer to Apple Music; not sequenced before Snapcast (v5). See [docs/HANDOFF-dlna.md](docs/HANDOFF-dlna.md) (design-only). |
+| **DLNA/UPnP** *(new-sources cluster, alongside Apple Music — no fixed ordinal)* | **DLNA/UPnP media input** — an additional **network-only** music source via gmrender-resurrect | Fills the Android "cast audio to speaker" gap (Google Cast needs hardware-fused auth no OSS project has solved). Network-only, no hardware dependency; ~13–20 MB on, 0 off. Adds **one private snd-aloop fan-in lane** (the per-source lane pattern), so it touches no other source. Phase 1: gmrender C binary + Python state/preempt sidecar. Phase 2: A/B upmpdcli for OpenHome + gapless. Sidecar-owns-preemption keeps a future renderer swap cheap. **Substream allocation is full — DLNA must reuse a lane (design decision first).** Sits in the post-USB-sink new-sources cluster, peer to Apple Music; not sequenced before Snapcast (v5). |
 
 The v1 architecture decisions that protect this sequence:
 - **Always-on CamillaDSP** is the pre-req for ducking *and* room
@@ -121,9 +119,7 @@ Settings the dashboard should expose — without SSHing in:
   on the account, and the spotify_play tool fuzzy-matches against it.
   Motivated by the 2026 Spotify Web API hiding algorithmic personalised
   playlists (Discover Weekly, Daily Mix, Release Radar, Daylist) from
-  both `current_user_playlists` and catalog search owner-filter. If a
-  dedicated `docs/HANDOFF-spotify-personal-playlists.md` ever gets
-  written, it should capture that provider behavior and this workaround.
+  both `current_user_playlists` and catalog search owner-filter.
   First piece of this web-view work to ship.
 - **Location + subway + bus + Citi Bike** ✅ landed via the
   [Transit wizard](http://jts.local/transit/) at
@@ -208,28 +204,21 @@ The current production config (`JASPER_AEC_REF_GAIN_DB` retuned to
 `0` on 2026-05-16 after the bridge switched to the chip's ASR beam
 — the old `25` value now hard-clips the reference; see
 `.env.example`'s `JASPER_AEC_REF_GAIN_DB` comment): `JASPER_AEC_AGC2=0`,
-`JASPER_AEC_REF_GAIN_DB=0`, `JASPER_AEC_MIC_GAIN_DB=6`. See
-[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Software-AEC tuning
-(2026-05-16)" for the full sweep matrix and reasoning.
+`JASPER_AEC_REF_GAIN_DB=0`, `JASPER_AEC_MIC_GAIN_DB=6`.
 
 **Related (but distinct): robust barge-in.** Cleanly interrupting
 the assistant mid-utterance during loud music is a separate
-concern from wake-word reliability. Today's barge-in is VAD-only;
-the design space (including why the obvious "put TTS in the AEC
-reference" fix is structurally wrong) is documented in
-[`docs/HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md). Per the
-[docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) "architecture is fixed; swap
-the engine, not the topology" rule, barge-in improvements must come through
-engine-internal tuning + measurement — the architectural options
-in that HANDOFF are explicitly a costing record, not a roadmap.
+concern from wake-word reliability. Today's barge-in is VAD-only.
+Per the "architecture is fixed; swap the engine, not the topology"
+rule, barge-in improvements must come through engine-internal tuning
++ measurement.
 
 ### Tier 1 — cheap experiments (≤30 min each)
 
 - **Chip's beamformed ASR channel as bridge input — shipped
   2026-05-15.** `MIC_CHANNEL_INDEX` now defaults to channel 1 (the
   ASR beam, post-BF + NS + AGC) instead of channel 2 (raw mic 0,
-  BYPASS); see [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Why we
-  switched to channel 1 (ASR beam) on 2026-05-15". `REF_GAIN_DB` was
+  BYPASS). `REF_GAIN_DB` was
   retuned to `0` alongside it (see above) since the two knobs are
   coupled.
 - **Soft-clip the REF_GAIN path.** Currently `np.clip` hard-clips at
@@ -381,9 +370,8 @@ they don't get lost in the working tree.
   prefer it for `toggle` even when its current state is "paused".
 
   Lives in `jasper/tools/transport.py` and is intertwined with
-  `RendererClient.active_renderers` semantics. See also
-  `docs/HANDOFF-voice-music-control.md` for the source-routing
-  context. Single-session fix; needs a bench test against AirPlay
+  `RendererClient.active_renderers` semantics. Single-session fix;
+  needs a bench test against AirPlay
   + Spotify Connect to confirm none of the other paths regress.
 
 - **install.sh: merge new `.env.example` keys into existing
@@ -426,8 +414,7 @@ they don't get lost in the working tree.
 
 ## Resilience ladder — current state
 
-`docs/HANDOFF-resilience.md` is the canonical reference. Status as
-of 2026-05-24 after the May-2026 resilience sprint (10 PRs,
+Status as of 2026-05-24 after the May-2026 resilience sprint (10 PRs,
 #276–#290):
 
 | Layer | Status | Catches |
@@ -448,9 +435,7 @@ The May-2026 sprint addressed the 2026-05-23 incident (PIO compile
 on 1 GB Pi 5 OOM-stalled userspace for >2 minutes; PID 1 stayed
 alive enough to pat `/dev/watchdog0` so Tier 5 never fired) end-to-
 end with Stage 1 (prevention) + T5.1 (per-daemon restart escalation)
-+ T5.2 (userspace probe + clean reboot). See
-[docs/HANDOFF-tier5-watchdog-liveness.md](docs/HANDOFF-tier5-watchdog-liveness.md)
-for the option matrix and T5.3–T5.5 revisit triggers.
++ T5.2 (userspace probe + clean reboot).
 
 ### Stage 1 — memory-pressure prevention (shipped 2026-05-24)
 
@@ -560,7 +545,7 @@ operator is in the loop.
   one or two breaking changes per upgrade. The `VoiceSession`
   interface limits the blast radius of any churn to a single
   adapter file. Fall back to `gemini-2.5-flash-native-audio-preview-12-2025`
-  if 3.1 silently breaks (see [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md)).
+  if 3.1 silently breaks.
 - **Gemini tool calling is sequential** (no parallel/non-blocking).
   A slow tool (e.g. Spotify search) will gate the next thing the
   model says. Keep tool implementations fast (5 s timeout, return

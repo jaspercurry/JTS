@@ -51,9 +51,8 @@ Tier 6: peer_id (lowest UUID wins, lex compare)
   Final deterministic tiebreaker. Guarantees that even if every
   other signal is identical, every peer picks the same winner.
 
-These priorities are deliberately self-contained here and in
-docs/HANDOFF-peering.md so the peering contract does not depend on an
-unrelated hardware design.
+These priorities are deliberately self-contained here so the peering
+contract does not depend on an unrelated hardware design.
 """
 from __future__ import annotations
 

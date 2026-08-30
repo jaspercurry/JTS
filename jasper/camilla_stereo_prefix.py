@@ -15,9 +15,6 @@ implementation instead of a copy:
   - the bonded-leader bake (via ``emit_sound_config``), and
   - the solo-active pre-split section (PR-3, ``jasper.active_speaker``).
 
-Design-of-record: ``docs/HANDOFF-dsp-graph-carrier.md`` ("Sharing — one
-stereo-domain prefix builder").
-
 **Layering.** This is a neutral leaf module (alongside
 ``jasper.camilla_emit`` and ``jasper.camilla_config_contract``). It takes
 DATA — already-built preference :class:`FilterSpec` objects and room

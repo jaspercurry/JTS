@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 # /var/lib/jasper StateDirectory. Overridable via JASPER_GOOGLE_ACCOUNTS_PATH
 # (config.google_accounts_path). The install-time migration moves an
 # existing tree here and rewrites the absolute token_path entries baked
-# into accounts.json. See docs/HANDOFF-privilege-separation.md "Phase 4".
+# into accounts.json.
 DEFAULT_REGISTRY_PATH = "/var/lib/jasper-secrets/google/accounts.json"
 DEFAULT_TOKEN_DIR = "/var/lib/jasper-secrets/google/tokens"
 

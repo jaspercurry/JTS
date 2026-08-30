@@ -1011,8 +1011,8 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
 
     Mirrors ``test_openai_session.py``'s equivalent contract test.
     Pin: at minimum the per-tool reset inside ``_handle_tool_call``
-    advances the anchor — proves the cross-provider contract from
-    docs/HANDOFF-voice-providers.md is enforced for Gemini."""
+    advances the anchor — proves the cross-provider contract
+    is enforced for Gemini."""
     from jasper.tools import tool as tool_decorator
     conn, factory = _make_conn()
     registry = ToolRegistry()

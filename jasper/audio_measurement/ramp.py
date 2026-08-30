@@ -4,9 +4,9 @@
 
 """Settle-based level-match ramp controller (shared measurement kernel).
 
-This is the P2 generalization of ``jasper.correction.autolevel`` per
-``docs/historical/HANDOFF-correction-revision-plan.md`` §3.1. The analog amplifier's gain
-is unknown; JTS controls only the digital ``main_volume``. The controller drives
+This is the P2 generalization of ``jasper.correction.autolevel``. The analog
+amplifier's gain is unknown; JTS controls only the digital ``main_volume``. The
+controller drives
 ``main_volume`` up from a quiet start until a phone-reported mic level settles
 inside the safe measurement window, then locks — never blasting up to find it.
 
@@ -247,8 +247,7 @@ class LevelSample:
     reference. Encoding it this way (never bare ``agc_frozen=True`` for an
     unattested chain) means an older Pi that has not learned about
     ``agc_unattested`` still falls back to the pre-existing "never trust"
-    behavior instead of silently trusting an unproven chain — see
-    ``docs/HANDOFF-correction.md`` "Level-match ramp".
+    behavior instead of silently trusting an unproven chain.
     """
 
     seq: int
@@ -731,8 +730,7 @@ class RampData:
         (``agc_unattested`` True) it is the *empirical* verdict instead:
         ``agc_verified is True`` once the slope check passed, never the raw
         ``agc_frozen`` (which stays False for an unattested run at the wire
-        level, by design — see :class:`LevelSample`, and the mixed
-        old-Pi/new-page safety note in ``docs/HANDOFF-correction.md``). Every
+        level, by design — see :class:`LevelSample`). Every
         downstream consumer that used to gate on ``agc_frozen`` as "is this
         reference trustworthy" (:meth:`RampController._bounded_low_level_is_usable`,
         :meth:`jasper.correction.level_match.MeasurementLevelLock.from_ramp`)

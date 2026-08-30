@@ -1164,7 +1164,7 @@ def analyze_summed_crossover(
     octave-away shoulders, which cancels the unknown absolute reference.
 
     Two capture kinds, selected by ``expect_null`` (the canonical reverse-polarity
-    method in docs/HANDOFF-active-speaker-dsp.md). Both use the same
+    method). Both use the same
     ``null_threshold_db`` to decide whether a null is *present*; the per-capture
     verdict is a "did a null form?" signal, and the cap-independent polarity call
     (reverse-vs-in-phase margin) lives in ``crossover_alignment``:

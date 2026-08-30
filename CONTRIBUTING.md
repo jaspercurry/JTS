@@ -203,7 +203,7 @@ Two operational notes:
 - **Supply-chain provenance** (`python3 scripts/check-provenance.py`) —
   required when touching install/build fetches, wake/DTLN model
   registries, or Python direct URL
-  dependencies. See [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md).
+  dependencies.
 - **Voice-eval suite** (`pytest tests/voice_eval/regression/`) —
   opens **paid** real-time LLM sessions; see
   [`tests/voice_eval/README.md`](tests/voice_eval/README.md) for the
@@ -248,8 +248,6 @@ The repo has a large Markdown corpus in a layered structure:
   [CLAUDE.md](CLAUDE.md) is the same content via @-import.
 - **[BRINGUP.md](BRINGUP.md)** — flash a fresh Pi to working speaker.
 - **[PLAN.md](PLAN.md)** — roadmap.
-- **[docs/HANDOFF-*.md](docs/)** — one deep-dive per subsystem (AEC,
-  AirPlay, mic, voice providers, transit, etc.).
 
 **If you touch a subsystem, scan its HANDOFF first.** Those docs
 capture hardware-specific footguns that aren't obvious from the code.
@@ -266,19 +264,14 @@ already been made and what's NOT a reviewable trade-off.
   reviewable; architectural changes (PipeWire fanout, hardware
   AEC retry, custom XVF firmware) are not. Mic capture is
   consumed by ML (openWakeWord + speech LLMs), never humans —
-  optimize for ASR accuracy, not naturalness. See
-  [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md).
+  optimize for ASR accuracy, not naturalness.
 - **Voice provider abstraction.** New providers go through the
   `LiveConnection` / `LiveTurn` protocol; don't add
-  provider-specific branches outside `jasper/voice/`. See
-  [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md).
+  provider-specific branches outside `jasper/voice/`.
 - **The XVF3800 mic chip.** **Never call `SAVE_CONFIGURATION`**
-  — documented brick hazard on certain firmware versions. See
-  [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md).
+  — documented brick hazard on certain firmware versions.
 - **Voice prompting.** `SYSTEM_INSTRUCTION` and tool docstrings
-  are sensitive to model-specific RLHF biases. Read
-  [docs/HANDOFF-prompting.md](docs/HANDOFF-prompting.md) before
-  rewording.
+  are sensitive to model-specific RLHF biases.
 
 ## Reporting bugs / suggesting features
 

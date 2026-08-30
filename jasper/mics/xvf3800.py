@@ -4,9 +4,6 @@
 
 """Seeed ReSpeaker XVF3800 (USB UA variant) — mic profile.
 
-Canonical reference: docs/HANDOFF-xvf3800.md (hardware identity,
-parameter space, firmware variants, failure modes).
-
 Chip control library: jasper/xvf/xvf_host.py (JTS-owned USB
 vendor-control helper used for chip-side parameter reads/writes).
 
@@ -434,8 +431,7 @@ VARIANTS_BY_ID = {variant.variant_id: variant for variant in FIRMWARE_VARIANTS}
 # routine firmware upgrades. Confirmed empirically via `lsusb -v`
 # on both jts and jts2 chips (2026-05-15). The button-combo
 # procedure on the Seeed wiki is for Safe Mode recovery only —
-# used when the DataPartition is corrupted (see HANDOFF-xvf3800.md
-# §5.1 for the recovery flow).
+# used when the DataPartition is corrupted.
 #
 # When the chip enters DFU during a flash it briefly enumerates as
 # the XMOS bootloader at 20b1:0008, then resets back to its runtime
@@ -446,7 +442,6 @@ DFU_VID_PID = "20b1:0008"
 # Alt 0 is the read-only Factory partition; alt 1 is the Upgrade
 # partition where firmware actually gets written. Writes to alt 0
 # silently no-op (the chip stays on whatever firmware it had).
-# See HANDOFF-xvf3800.md §2.4 for the alt-setting table.
 DFU_ALT_SETTING = 1
 
 # ---------------------------------------------------------------------
@@ -606,7 +601,6 @@ MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
 # NOT channel 2 (raw mic 0): that channel has literally no chip
 # processing — toggling chip NS/AGC moves it 0.4 dB against 8+ dB on
 # ch 0/1, so reading it pays for the chip's DSP without using it.
-# See HANDOFF-xvf3800.md §3.
 MIC_CHANNEL_INDEX = 1
 
 

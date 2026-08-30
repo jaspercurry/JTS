@@ -304,8 +304,8 @@ def ensure_volume_limit_db(value: float) -> float:
     ceiling and return it as a float.
 
     0 dB is the project-wide hard software ceiling (see AGENTS.md
-    "Renderer architecture" / docs/HANDOFF-volume.md): generated configs
-    must never let the main fader boost above full scale. Mirrors the
+    "Renderer architecture"): generated configs must never let the main
+    fader boost above full scale. Mirrors the
     guard in ``jasper.active_speaker.camilla_yaml`` so every JTS config
     emitter rejects a positive limit at build time instead of shipping a
     loud-output hazard to CamillaDSP. Raises ``ValueError`` — config

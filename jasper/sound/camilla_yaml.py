@@ -366,8 +366,7 @@ def emit_sound_config(
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
-    ``room_peqs_right`` is the multi-room leader-bake axis
-    (docs/HANDOFF-multiroom.md §2 "Canonical signal flow"): a DIFFERENT
+    ``room_peqs_right`` is the multi-room leader-bake axis: a DIFFERENT
     room correction per channel in ONE config — channel 0 gets
     ``room_peqs`` (the leader's seat), channel 1 gets ``room_peqs_right``
     (the follower's seat); preference EQ stays shared (taste, not seat).
@@ -376,8 +375,7 @@ def emit_sound_config(
     contract). ``[]`` bakes a FLAT right room segment (an uncalibrated
     follower ships flat, never the wrong-room curve). Deliberately a
     2-channel axis — 2.1's 3-channel stream generalises it together with
-    the stereo-pinned config contract (HANDOFF-multiroom.md §2); do not
-    pre-generalise it alone.
+    the stereo-pinned config contract; do not pre-generalise it alone.
 
     ``channel_delays_ms`` is the room/pair time-of-arrival axis that
     belongs with measured correction, not Snapcast transport sync. It is
@@ -387,9 +385,8 @@ def emit_sound_config(
     solo byte contract. Delays are for static acoustic alignment at the
     listening seat; Snapcast still owns distributed clock/transport sync.
 
-    ``playback_pipe_path`` is the BONDED-LEADER playback axis
-    (docs/HANDOFF-multiroom.md §2, Increment 5): when set, the playback
-    device becomes a CamillaDSP ``File`` sink writing the corrected
+    ``playback_pipe_path`` is the BONDED-LEADER playback axis: when set,
+    the playback device becomes a CamillaDSP ``File`` sink writing the corrected
     stereo program to that FIFO (snapserver's pipe source) instead of
     the ALSA loopback. ``None`` (default — solo) is **byte-identical**
     to before this parameter existed (the solo-impact contract). The
@@ -512,8 +509,7 @@ def emit_sound_config(
             raise ValueError(
                 "playback_pipe_path (bonded-leader pipe sink) requires "
                 "enable_rate_adjust=False — snapclient is the sole "
-                "rate-tracker on the synced chain; see "
-                "HANDOFF-multiroom.md §2 invariant 5"
+                "rate-tracker on the synced chain"
             )
         if width != FLAT_PROGRAM_WIDTH:
             # `sampleformat=48000:16:2` (jasper.multiroom.reconcile.
@@ -1047,8 +1043,7 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
     right-channel leader-bake filters (``peq_r*`` / ``room_peq_r*``) are
     deliberately NOT matched — this extractor serves the solo re-emit
     path. The multi-room leader apply path must compose from STORED
-    per-speaker profiles, never by re-extracting a woven config (see
-    docs/HANDOFF-multiroom.md §2, Increment 5).
+    per-speaker profiles, never by re-extracting a woven config.
     """
 
     try:
@@ -1076,7 +1071,7 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
     # right-channel filters, extraction alone CANNOT reproduce it — a
     # re-emit from just this result would silently DROP the follower's
     # correction. Warn loudly; the leader apply path must compose from
-    # stored profiles (HANDOFF-multiroom.md §2, Increment 5).
+    # stored profiles.
     if any(
         re.fullmatch(r"(?:room_)?peq_r\d+", name) for name, _ in blocks
     ):
@@ -1084,8 +1079,7 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
             "event=sound.extract_room_peqs result=right_channel_ignored "
             "detail=leader-bake right-channel (*_r*) filters present and "
             "NOT extracted; re-emitting from this extraction alone would "
-            "drop the follower's correction — compose from stored "
-            "profiles (HANDOFF-multiroom.md §2, Increment 5)"
+            "drop the follower's correction — compose from stored profiles"
         )
 
     peqs: list[PeqFilter] = []

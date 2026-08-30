@@ -4,8 +4,8 @@
 
 """Unit tests for state_aggregate._usb_network_snapshot — the /state
 `usb_network` block (live interface state plus its desired address plan) that
-surfaces the USB management network (docs/HANDOFF-usb-gadget.md)
-alongside the composite gadget's audio side. jasper-doctor's
+surfaces the USB management network alongside the composite gadget's audio
+side. jasper-doctor's
 check_usbnet_* (tests/test_doctor_network.py) own the actionable
 composed-vs-intent mismatch story; this block is the always-visible
 dashboard mirror, read fresh from /sys/class/net/usb0 and the

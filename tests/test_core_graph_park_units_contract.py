@@ -7,8 +7,8 @@
 Before restarting the core DSP graph (CamillaDSP / outputd / fan-in), the
 units that can hold a DAC / Camilla / renderer ALSA endpoint must be
 stopped, or the graph start fails with "Device or resource busy" (EBUSY) —
-the exact failure class the camilla EBUSY recovery handler exists to fix
-(docs/HANDOFF-resilience.md). That list of "audio clients to park" was
+the exact failure class the camilla EBUSY recovery handler exists to fix.
+That list of "audio clients to park" was
 duplicated BYTE-FOR-BYTE across two bash files with no shared source and
 no test pinning them equal:
 

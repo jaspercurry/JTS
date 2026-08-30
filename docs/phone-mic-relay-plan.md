@@ -152,10 +152,7 @@
 > `JASPER_CAPTURE_ALIGNMENT_THRESHOLD` against on-device sweeps; (c) an audible failure cue
 > (jasper-web → jasper-voice bridge; failures currently surface on the capture page
 > + `/status.relay` + `event=capture_relay.*` logs). **Validate on jts3/jts5, never
-> the production jts.local.** The current operational truth for the on-Pi
-> `/correction/`, `/balance/`, `/sync/` flows remains
-> [HANDOFF-correction.md](HANDOFF-correction.md) (same-origin self-signed-cert
-> capture). **Once fully validated, convert this doc to the HANDOFF shape with a
+> the production jts.local.** **Once fully validated, convert this doc to the HANDOFF shape with a
 > `Last verified:` footer.**
 
 ---
@@ -218,8 +215,7 @@ Every line here is a conclusion we earned the hard way. Treat it as settled:
 
 ## 3. What we are changing (the baseline)
 
-This is a **transport change**, not a new pipeline. Today (see
-[HANDOFF-correction.md](HANDOFF-correction.md)):
+This is a **transport change**, not a new pipeline. Today:
 
 - The page is served **from the Pi** — nginx 443 (self-signed) →
   `127.0.0.1:8770` (`jasper-web` correction backend).
@@ -602,10 +598,7 @@ since the earlier PR in this series.
 > `record_driver_capture` / `driver_acoustics`. That deletion is why
 > `record_driver_capture` has no production caller today (see §9). Left in place
 > rather than rewritten because deriving the replacement narrative is a larger
-> scan than this doc-truth pass. The sibling docs that carried the same claim
-> have since been trued up: `HANDOFF-audio-measurement-core.md` by #2065,
-> and `HANDOFF-correction.md` / `HANDOFF-active-speaker-dsp.md` alongside this
-> doc's own orientation section. The flow is owned by
+> scan than this doc-truth pass. The flow is owned by
 > [tuning-operator-runbook.md](tuning-operator-runbook.md);
 > remaining alignment work stays tracked in #1882.
 
@@ -1057,7 +1050,7 @@ speaker page, plus `event=capture_relay.*` logs. (A weak-correlation failure
 joins that list only on the flows that gate for it — crossover and `/sync`
 today; Room records observation evidence instead — §9/§11.) Audible cues remain a required
 follow-up for failures where the household must act (`CueDef.play(...)` from the
-cue registry; see [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md)),
+cue registry),
 but the current jasper-web relay adapter has no cue bridge. The relay is a shared
 dependency **only at commissioning**; an outage breaks **new** measurements only
 (existing applied corrections are unaffected) — say so in the UI when the relay

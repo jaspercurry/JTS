@@ -10,7 +10,7 @@ the same page. This page is canonical. The page title is "Speakers".
 
 Two parts:
 
-1. DIRECTORY + bond-forming (per docs/HANDOFF-multiroom.md §8): see every
+1. DIRECTORY + bond-forming: see every
    JTS speaker on the LAN, click through to configure each on its own web
    UI, see this speaker's grouping status (incl. the runtime-degraded health
    from §0), and **create a stereo pair in one flow** — pick one speaker to
@@ -30,7 +30,7 @@ Two parts:
 Room is NOT edited here. Room lives in the speaker-identity home
 (/speaker/); the self card shows it (read via identity.read_identity)
 and links there to change name + room. Adding a room editor here would
-reopen the two-homes drift docs/HANDOFF-multiroom.md §8 just closed.
+reopen the two-homes drift just closed.
 
 Discovery uses the ALWAYS-ON `_jasper-control._tcp` mDNS service
 (advertised unconditionally by deploy/avahi/jasper-control.service,
@@ -732,8 +732,8 @@ def request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     credential — a DISTINCT bearer (``X-JTS-Household``) that
     ``post_grouping_to_member`` injects from disk. That disk read is the
     intentional, scoped break of this relay-only rule for a DIFFERENT credential
-    and trust domain (docs/HANDOFF-control-plane-auth.md §6); the control-token
-    relay-only invariant here is unchanged."""
+    and trust domain; the control-token relay-only invariant here is
+    unchanged."""
     token = handler.headers.get("X-JTS-Token")
     return token or None
 
@@ -763,9 +763,9 @@ def post_grouping_to_member(
     POSTs can't race the secret out from under each other), else a fresh
     ``household_credential.current()`` read. Reading the secret from disk here is
     the intentional, documented break of ``request_control_token``'s relay-only
-    invariant — a DIFFERENT credential, so injecting IT from disk is correct
-    (docs/HANDOFF-control-plane-auth.md §6). A member with no secret yet (unpaired
-    or lost) fail-safe-accepts and adopts it. Attaches nothing on a lone speaker
+    invariant — a DIFFERENT credential, so injecting IT from disk is correct.
+    A member with no secret yet (unpaired or lost) fail-safe-accepts and
+    adopts it. Attaches nothing on a lone speaker
     (no secret). Returns (ok, detail); never raises.
     """
     target = lan_target(addr, known)

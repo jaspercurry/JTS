@@ -11,8 +11,7 @@ OpenAI-Realtime-compatible); only Gemini gets an augmentation today.
 These pin the *contract* — base verbatim for OpenAI/Grok (so tuning the
 Gemini delta can never silently regress the live OpenAI/Grok prompt) and
 additive-only for Gemini — not the Gemini delta's exact wording, which is
-iterated via voice-eval. See docs/HANDOFF-prompting.md "Provider deltas"
-and the rationale block in jasper/voice/prompt.py.
+iterated via voice-eval. See the rationale block in jasper/voice/prompt.py.
 """
 
 

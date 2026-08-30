@@ -1871,7 +1871,7 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
 # Replaces the prior dB-comparison heuristic that conflated "user spinning
 # fast" with "duck active" (a fast 3-detent remote spin = +6 dB request,
 # above the old 5 dB threshold, used to defer spuriously and poison
-# listening_level — see docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal").
+# listening_level).
 
 
 async def test_set_camilla_deferred_when_probe_returns_true(tmp_path):

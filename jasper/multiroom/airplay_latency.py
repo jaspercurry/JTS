@@ -11,10 +11,7 @@ any audio path. It only answers a question for ``/state`` and
 AirPlay, does its hidden downstream delay fit inside the budget the
 AirPlay sender negotiated?*
 
-Why this can fail to fit (the "Stage D" gap deferred in
-``docs/HANDOFF-airplay.md`` "AirPlay 2 latency is sender-authored — the
-bonded-leader consequence" and ``docs/HANDOFF-multiroom.md`` open
-question #2):
+Why this can fail to fit (the "Stage D" gap deferred):
 
   - AP2 latency is **sender-authored**: the sender ships a PTP anchor and
     delays its own on-screen video to match. The receiver compensates its
@@ -61,7 +58,7 @@ from .config import GroupingConfig
 
 # --- shairport / AP2 contract constants ---
 # All cross-checked against the live shairport-sync binary's format strings
-# and scripts/airplay-latency-probe.sh / docs/HANDOFF-airplay.md.
+# and scripts/airplay-latency-probe.sh.
 
 # shairport's default notified latency; the ABSENCE of a "Notified latency"
 # line in the journal means the sender used exactly this value.

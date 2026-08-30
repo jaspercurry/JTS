@@ -537,8 +537,7 @@ async def test_default_is_session_active_fails_safe_when_busctl_missing(
 ):
     """Contract: gate returns True (fail-safe to active) when the
     probe itself errors, so we never restart shairport on an unknown
-    DBus state. Pins the documented behaviour in HANDOFF-resilience
-    Tier 3 against a future refactor."""
+    DBus state. Pins the documented behaviour against a future refactor."""
     async def boom(*args, **kwargs):
         raise FileNotFoundError("no such file: busctl")
 

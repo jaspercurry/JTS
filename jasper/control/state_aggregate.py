@@ -225,7 +225,6 @@ def _audio_graph_state(
             # ladder/DLL/probe telemetry solo boxes get from usbsink. `None` when
             # the fan-in STATUS is unavailable or has no host_clock key (pre-combo
             # build) — a definite "no evidence" rather than a guessed default.
-            # See docs/HANDOFF-usb-low-latency.md "USB DIRECT (combo mode)".
             "host_clock": (
                 fanin_status.get("host_clock")
                 if isinstance(fanin_status, dict)
@@ -967,7 +966,6 @@ async def _get_state(
 
         Fan-in is mandatory for renderer audio, but /state is fail-soft
         like _voice_status. jasper-doctor owns the actionable failure.
-        See docs/HANDOFF-fan-in-daemon.md for the daemon design.
         """
         return await local_status_json("/run/jasper-fanin/control.sock")
 
@@ -1315,8 +1313,7 @@ async def _get_state(
             # parked voice for a missing microphone (its ConditionPathExists
             # marker is present) — i.e. "intentionally idle, no mic", NOT
             # "crashed". Read fresh from the marker each call (jasper-control
-            # isn't restarted on a mic plug/unplug). See
-            # docs/HANDOFF-hotplug-resilience.md "Layer 3".
+            # isn't restarted on a mic plug/unplug).
             # Derived from the same read as the top-level `microphone` block
             # below, so the boolean and the rich record can never disagree.
             "parked_no_mic": mic_presence.parked,
@@ -1360,8 +1357,7 @@ async def _get_state(
         # Fan-in daemon. null only when the daemon/socket is unavailable.
         # When running, the UDS STATUS endpoint emits a JSON snapshot
         # with per-input frame counts, output xrun counts, and watchdog
-        # metrics — surfaced verbatim here. See
-        # docs/HANDOFF-fan-in-daemon.md.
+        # metrics — surfaced verbatim here.
         "fanin": fanin_st,
         # Final-output owner on current main. null when the daemon/socket
         # is unavailable; jasper-doctor owns the actionable failure.
@@ -1448,8 +1444,7 @@ async def _get_state(
         # leader_addr / buffer_ms / codec / error), PLUS airplay_latency_fit:
         # the bonded-leader AirPlay tight-regime observability ({applicable:
         # false} unless this speaker is an active bonded leader). See
-        # jasper/multiroom/state.py + jasper/multiroom/airplay_latency.py +
-        # docs/HANDOFF-multiroom.md / docs/HANDOFF-airplay.md.
+        # jasper/multiroom/state.py + jasper/multiroom/airplay_latency.py.
         "grouping": grouping_state,
         # Transit city packs (which cities' transit is enabled). null only
         # if the fresh read itself errored; otherwise {packs: [{id, label,
@@ -1486,8 +1481,8 @@ async def _get_state(
         # check_measurement_hold reads, since `expires_in_s` resets on every
         # renewal and so can never reveal a stuck hold.
         "measurement": measurement_hold.snapshot(),
-        # USB management network (docs/HANDOFF-usb-gadget.md): the default-on,
-        # hardware-gated NCM link on usb0 that lets http://<JASPER_HOSTNAME>/
+        # USB management network: the default-on, hardware-gated NCM link
+        # on usb0 that lets http://<JASPER_HOSTNAME>/
         # work with WiFi off when the resolved USB role permits gadget mode.
         # Observed link/address plus the validated desired plan — read fresh from
         # /sys/class/net/usb0 and the kill-switch env every call, never

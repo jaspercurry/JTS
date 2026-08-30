@@ -620,7 +620,7 @@ async def run() -> None:
     # Log flight recorder + runtime debug toggle (/system Debug card).
     # install() holds the jasper logger at DEBUG for the in-RAM ring,
     # keeps the journal at INFO, and applies the debug toggle. See
-    # jasper/flight_recorder.py / docs/HANDOFF-observability.md.
+    # jasper/flight_recorder.py.
     flight_recorder.install("voice")
 
     active_model = _active_model(cfg)
@@ -865,7 +865,7 @@ async def run() -> None:
     # the playout is up. Pre-render and regen don't need playback.
     cues_manager = _build_cues_manager(cfg, tts=None)
 
-    # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
+    # Wake-event telemetry store.
     # Opens the SQLite DB synchronously at startup so the daemon
     # is "ready" only after the schema migration is applied —
     # avoids racy "begin_event before CREATE TABLE" failures on
@@ -1040,8 +1040,7 @@ async def run() -> None:
         # the mic is absent; this exit is the backstop for the cases the
         # marker can't pre-empt (custom mic, present-but-unopenable, first
         # boot before any reconcile). Plug-in recovery: udev →
-        # jasper-aec-reconcile → restart_voice. See
-        # docs/HANDOFF-hotplug-resilience.md. Optional "off"/"dtln" legs
+        # jasper-aec-reconcile → restart_voice. Optional "off"/"dtln" legs
         # are best-effort: a mic-open failure is logged and that leg is
         # skipped so the speaker keeps waking on the healthy legs.
         async with contextlib.AsyncExitStack() as stack:

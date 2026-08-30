@@ -10,8 +10,7 @@
 # advertisement, JASPER_HOSTNAME (management allowlist, spoken URLs,
 # OAuth bounce), and the /correction/ TLS cert SAN. Renaming by hand
 # (`hostnamectl` alone) converges only the first two and leaves the
-# rest drifted — the exact fragile state docs/HANDOFF-identity.md
-# describes. This script converges all of them in one deliberate
+# rest drifted. This script converges all of them in one deliberate
 # operation:
 #
 #   1. preflight: target reachable; new name not already claimed on

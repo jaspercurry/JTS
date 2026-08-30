@@ -17,7 +17,6 @@ They can't share code (one Python, two bash standalone root scripts), so this
 test pins the key+value set across all three. If a future change adds a key or
 changes a value in one writer and not the others, this fails — keeping the
 contract single-source-of-truth in spirit even though it lives in three files.
-See docs/HANDOFF-resilience.md for the profile-hardening set.
 """
 from __future__ import annotations
 

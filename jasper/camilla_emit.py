@@ -390,8 +390,8 @@ def emit_master_gain_pipeline(
     ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
     reproduces the sound emitter's solo pipeline byte-for-byte (the
     solo-impact contract). A distinct ``right_names`` is the
-    multi-room leader-bake (per-seat correction per channel,
-    docs/HANDOFF-multiroom.md §2). Deliberately a 2-channel shape: the
+    multi-room leader-bake (per-seat correction per channel). Deliberately a
+    2-channel shape: the
     config contract is stereo-pinned today; 2.1's 3-channel stream
     generalises this WITH that contract, not alone. Returns a joined
     block (callers splice it under a top-level ``pipeline:`` map).

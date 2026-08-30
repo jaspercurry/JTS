@@ -9,7 +9,7 @@
 # =============================================================================
 #
 # This is a *throwaway measurement deliverable*, not product. It exists to
-# answer ONE question from docs/HANDOFF-multiroom.md §8:
+# answer ONE question:
 #
 #     "What Snapcast buffer depth + codec holds L/R sync on THIS household's
 #      WiFi (working target p99 < 5 ms), within the 1 GB Pi's RAM/CPU budget?"
@@ -28,7 +28,7 @@
 # daemons stopped (or on bring-up hardware), not on a speaker in active use.
 #
 # -----------------------------------------------------------------------------
-# WHAT IT BUILDS (per docs/HANDOFF-multiroom.md §8 P0)
+# WHAT IT BUILDS
 # -----------------------------------------------------------------------------
 #   LEADER  (brainy Pi):  snapserver reading a hand-fed FIFO (/run/jts-spike/
 #                         snapfifo) carrying a KNOWN test source — a periodic
@@ -138,7 +138,7 @@ UNIT_CLIENT_LEADER="jts-spike-client-leader"
 UNIT_CLIENT_FOLLOWER="jts-spike-client-follower"
 UNIT_CLIENT_SUB="jts-spike-client-sub"
 
-# The sweep matrix (docs/HANDOFF-multiroom.md §8).
+# The sweep matrix.
 BUFFERS_MS=(150 300 500 800 1200)
 CODECS=(pcm flac opus)
 

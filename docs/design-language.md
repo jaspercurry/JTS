@@ -22,7 +22,6 @@ later — opportunistically, and the owner's call.
 | Question | Read |
 |---|---|
 | Which shared helper / primitive do I use? | [AGENTS.md](../AGENTS.md) "Web wizard conventions" |
-| How should this screen be organised? What shouldn't I build? | [docs/HANDOFF-management-ui.md](HANDOFF-management-ui.md) — IA principles, anti-patterns, archetype recipes, the typographic grammar |
 | How big, how far apart, what colour, how fast? | **this file** |
 
 ## 2. Already decided — do not re-derive
@@ -56,8 +55,8 @@ sizing inside a prose element (`.form-hint code` at `0.95em`) is exempt: it
 tracks its parent rather than naming a step, so it can't drift off the ladder.
 The guard's self-test pins both halves of that rule. The steps are tight —
 this is a dense settings surface, and a wider ratio would push every card taller
-for no gain. So **hierarchy comes from case, weight and colour, not size**, the
-grammar HANDOFF-management-ui.md already describes: region headers and field
+for no gain. So **hierarchy comes from case, weight and colour, not size**:
+region headers and field
 labels are uppercase display (`.eyebrow`, `.deflist dt`), card titles cased
 display (`.section__title`), values plain body text. Reach for those three
 before reaching for a bigger number.

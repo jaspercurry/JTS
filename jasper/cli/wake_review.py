@@ -12,15 +12,13 @@ produces a `review/` directory with:
                      hunting for WAV files in a Finder/Explorer window
   README.md          What to listen for; deliberately omits metric
                      claims to avoid biasing perception
-  YOUR_VERDICT.md    Template for the listener to fill in (per the
-                     methodology in docs/HANDOFF-wake-training-experiment.md)
+  YOUR_VERDICT.md    Template for the listener to fill in
   scores.csv         Copy of the input for reference
   clips/             Copies (or symlinks) of the WAVs the HTML references
                      via relative paths — keeps the package self-contained
                      when zipped or moved
 
-The principle from `docs/HANDOFF-wake-training-experiment.md` §6
-methodology principle #4: "metrics rank, ears select." The CSV
+Methodology principle #4: "metrics rank, ears select." The CSV
 narrows 50 candidates to 5; the review package is what turns those
 5 into a decision the operator's ear has signed off on.
 
@@ -295,8 +293,7 @@ focus on what matters:
 
 ## Methodology reminder
 
-Per `docs/HANDOFF-wake-training-experiment.md` §6: **metrics rank,
-ears select.** Don't merge or ship anything based on numbers alone.
+**Metrics rank, ears select.** Don't merge or ship anything based on numbers alone.
 If the numbers say one thing but listening tells you the opposite,
 your ears win. The reason the verdict template exists is to make
 that judgment explicit + recorded.

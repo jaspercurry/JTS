@@ -313,9 +313,7 @@ you actually observed.
    (e.g. `http://jts.local/`) resolves over the speaker-derived private
    `/30` even if the Pi has no Wi-Fi at all. Installed JTS deliberately has no
    fleet-wide fixed IP fallback: `10.12.194.1` above belongs to the separate
-   Pi Imager rescue gadget (or a preserved legacy JTS migration). See
-   [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
-   hardware-role policy and how the two mechanisms avoid controller contention.
+   Pi Imager rescue gadget (or a preserved legacy JTS migration).
 
 ### "Onboarding says no SSH key was found"
 
@@ -487,9 +485,7 @@ onboarding script tell you if the image needs anything unusual.
 
 Not shipped yet. The supported path is still stock Raspberry Pi OS
 Lite + `install.sh`, while the release-artifact and optional-feature
-foundations are being built for a future fast-start image. The staged
-plan, redistribution boundary, and release gates live in
-[docs/HANDOFF-pi-image-delivery.md](docs/HANDOFF-pi-image-delivery.md).
+foundations are being built for a future fast-start image.
 
 **Does this work without Claude Code?**
 
@@ -502,8 +498,7 @@ script does the actual work.
 
 `/etc/jasper/jasper.env` (operator-set), `/var/lib/jasper/*.env`
 (wizard-owned). The Pi-side single source of truth for "what
-hostname am I" is `JASPER_HOSTNAME`. See
-[docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
+hostname am I" is `JASPER_HOSTNAME`.
 
 **Where does laptop-side state live?**
 
@@ -516,6 +511,6 @@ hostname/cert identity, which may differ when you connect by IP. See
 ---
 
 When something breaks that isn't in the failure ladder, the
-[docs/](docs/) directory has subsystem deep-dives (look for files
-named `HANDOFF-*.md`). The full bringup walkthrough — including
-the XVF firmware DFU flash — is in [BRINGUP.md](BRINGUP.md).
+[docs/](docs/) directory has subsystem deep-dives. The full bringup
+walkthrough — including the XVF firmware DFU flash — is in
+[BRINGUP.md](BRINGUP.md).

@@ -7,8 +7,7 @@
 ``POST /crossover/reset`` — scoped "start over". Pins the KEEP/CLEAR split for
 the in-flow reset that restarts the guided measurement journey without losing
 driver research or disturbing whatever audio graph is currently applied/loaded
-— see ``jasper.active_speaker.reset.clear_active_speaker_measurement_journey``
-and docs/HANDOFF-correction.md "Scoped crossover reset".
+— see ``jasper.active_speaker.reset.clear_active_speaker_measurement_journey``.
 
 ``POST /crossover/v2/decline`` — the review screen's "Keep current sound"
 (#2641). It shares this file rather than getting its own because it is the

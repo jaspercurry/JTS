@@ -64,8 +64,7 @@ _TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
 # voice). The high-value API keys live separately in KEYS_FILE below, in
 # the group-`jasper-secrets` dir that only jasper-voice + jasper-web can
 # read. So jasper-control keeps reading the active provider/model here for
-# /system/ (this module) without gaining access to the LLM keys. See
-# docs/HANDOFF-privilege-separation.md "Phase 4".
+# /system/ (this module) without gaining access to the LLM keys.
 PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
 
 # WS1 Phase 4a — the three provider API keys (GEMINI/OPENAI/XAI) split out

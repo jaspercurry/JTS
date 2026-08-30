@@ -60,7 +60,7 @@ secret as "not paired" and accepts any caller). That degraded posture is
 invisible to the existing ``grouping.check_grouping_household_credential``,
 which keys on ``is_paired()`` — and ``is_paired()`` collapses *absent* and
 *unreadable* into the same ``""``. This check is pure observability of the
-ratified fail-safe-open behaviour (docs/HANDOFF-control-plane-auth.md); it does
+ratified fail-safe-open behaviour; it does
 not change ``household_credential.py``.
 """
 from __future__ import annotations

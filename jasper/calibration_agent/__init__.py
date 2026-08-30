@@ -11,6 +11,5 @@ eventual agent a small, testable, auditable surface to call. It now also
 ships that agent's P6 tuning surface (`model_client.call_advisor`,
 `correction_advisor.interpret`/`propose`) — a live, opt-in OpenAI adapter
 wired into the `/correction/` web flow's `POST /interpret`, `POST /propose`,
-and `POST /propose/apply` endpoints. See `docs/HANDOFF-calibration-agent.md`
-"The P6 tuning surface" for the shipped design.
+and `POST /propose/apply` endpoints.
 """

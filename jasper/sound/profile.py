@@ -948,7 +948,7 @@ def estimate_headroom_db(profile: SoundProfile) -> float:
     boosts to avoid clipping. Advisory only — surfaced by doctor / `/state`
     / the calibration advisor; nothing applies it. The actual applied
     attenuation is the user-set ``headroom_trim_db`` in
-    jasper/sound/settings.py. See docs/HANDOFF-sound-preferences.md.
+    jasper/sound/settings.py.
     """
 
     filters = build_sound_filters(profile)

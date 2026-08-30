@@ -6,10 +6,9 @@
 route-latency capture.
 
 A cold session starts at the resampler's acquisition ceiling and descends to
-the 576-frame floor over several minutes (see
-``docs/HANDOFF-usb-latency-measurement.md`` §5); measuring before it reaches
+the 576-frame floor over several minutes; measuring before it reaches
 the floor records the descent, not the certified steady state. This module
-reads the same fan-in ``STATUS`` shape the HANDOFF doc's manual checklist
+reads the same fan-in ``STATUS`` shape the manual checklist
 already names (``held_target_frames``, ``decay.frozen_reason``) and reduces
 it to one warm/cold verdict.
 

@@ -200,8 +200,7 @@ async def _with_coordinator(
     `duck_active_probe` is forwarded into the coordinator. When set
     (callers that write camilla via the accessory/web path), the
     coordinator defers its camilla write iff the probe returns True.
-    See `_make_duck_active_probe` for the wire details and
-    docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal" for the why."""
+    See `_make_duck_active_probe` for the wire details."""
     from ..camilla import CamillaController
     from ..assistant_volume import volume_context_publisher_for_runtime
     from ..renderer import RendererClient
@@ -267,8 +266,7 @@ def _make_duck_active_probe(
 
     Tight 1 s timeout: STATUS is a synchronous attribute read in
     voice_daemon (no I/O). If it doesn't return in 1 s the daemon
-    is wedged and we'd rather fail-open than block accessory input. See
-    docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal"."""
+    is wedged and we'd rather fail-open than block accessory input."""
     async def probe() -> Optional[bool]:
         try:
             response = await voice_socket_command(

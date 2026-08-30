@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the jasper-doctor memory domain (docs/HANDOFF-resilience.md).
+"""Unit tests for the jasper-doctor memory domain.
 
 These checks verify that the configs installed by
 deploy/lib/install/memory-resilience.sh are actually applied at runtime. Every

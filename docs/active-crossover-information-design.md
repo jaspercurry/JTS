@@ -2,16 +2,10 @@
 
 > **Status: design of record.** This document owns the intended user experience,
 > product states, parameter-ownership rules, and implementation boundaries for
-> manually or automatically commissioning an active crossover in JTS. Low-level
-> DSP and hardware-safety contracts remain canonical in
-> [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md); shared capture
-> and analysis primitives remain canonical in
-> [`HANDOFF-audio-measurement-core.md`](HANDOFF-audio-measurement-core.md); room
-> correction's shipped operational behavior remains canonical in
-> [`HANDOFF-correction.md`](HANDOFF-correction.md), while its intended product
-> behavior is canonical in
+> manually or automatically commissioning an active crossover in JTS. Room
+> correction's intended product behavior is canonical in
 > [`room-correction-information-design.md`](room-correction-information-design.md).
-> Those documents should link here for crossover-builder product behavior rather
+> That document should link here for crossover-builder product behavior rather
 > than restating it.
 
 > **Wave 1 implementation boundary (2026-07-13): contract-only.** JTS now has
@@ -896,8 +890,7 @@ physics), or a true full reset (`invalidate_comparison_context` without
 the between-set-restart flag). As of 2026-07-17 this IS called by a
 production surface — the in-flow "Start over" control
 (`POST /crossover/reset` →
-`correction_crossover_backend.reset_measurement_journey`, see
-docs/HANDOFF-correction.md "Scoped crossover reset") — the whole-flow reset
+`correction_crossover_backend.reset_measurement_journey`) — the whole-flow reset
 this contract anticipated. It never clears on a
 terminal refusal (insufficient accepted repeats), since that failure
 mode's physical cause is very likely still present on the next attempt.
@@ -2028,9 +2021,7 @@ CI-provable:
   verdict. Never emit a delay value from per-capture impulse arrival times —
   browser capture jitter makes those physically meaningless.
 - The walk is shared infrastructure: subwoofer↔mains delay/polarity in bass
-  management rides the same implementation (see
-  [`HANDOFF-correction-revision-plan.md`](historical/HANDOFF-correction-revision-plan.md)
-  §3.3), not a parallel one.
+  management rides the same implementation, not a parallel one.
 - Support every crossover region in a three-way system, not only the lowest.
 - Verify the resulting sum before offering room correction.
 
@@ -2406,10 +2397,7 @@ crossover untouched. Multiroom is not protected by that: the
 active-leader/follower builders REBUILD the driver-domain graph from the
 CLEARED measurement evidence, so a bonded speaker fails safe to
 solo-active on its next re-prove until re-measured — the "Start over"
-confirm copy is grouping-aware for exactly this reason. See
-docs/HANDOFF-correction.md "Scoped crossover reset" for the full
-KEEP/CLEAR rationale, the multiroom fail-safe path, and the
-JTS3-hardware-verified reason `startup_load` state is excluded. Checked
+confirm copy is grouping-aware for exactly this reason. Checked
 against the current implementation and pinned by
 `tests/test_active_speaker_reset.py` +
 `tests/test_correction_crossover_reset.py`; not yet hardware-validated.

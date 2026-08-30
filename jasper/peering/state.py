@@ -367,7 +367,7 @@ class PeeringStateMachine:
             return []  # our own multicast loopback — already in WINNER
 
         # A live local session owns the conversation until it ends on
-        # its own terms (session stickiness — docs/HANDOFF-peering.md §1).
+        # its own terms (session stickiness).
         # A foreign CLAIM while we're ACTIVE is out of band: it belongs
         # to a *different* wake elsewhere in the house (the multicast
         # group is shared household-wide regardless of which wake a

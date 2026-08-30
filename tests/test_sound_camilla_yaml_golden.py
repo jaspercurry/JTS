@@ -4,8 +4,7 @@
 
 """Byte-identity golden for ``emit_sound_config``.
 
-PR-2 (docs/HANDOFF-dsp-graph-carrier.md "Sharing — one stereo-domain
-prefix builder") extracts the program-domain room-PEQ → preference →
+PR-2 extracts the program-domain room-PEQ → preference →
 headroom assembly out of ``jasper.sound.camilla_yaml`` into the neutral
 ``jasper.camilla_stereo_prefix.build_stereo_prefix``. The refactor must be
 **behavior-neutral**: every existing case must emit the SAME BYTES.

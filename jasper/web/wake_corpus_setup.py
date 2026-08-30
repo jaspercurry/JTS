@@ -5,8 +5,7 @@
 """jasper-wake-corpus-web — Browser-based corpus recording UI.
 
 Open-ended recording (click to start, click to stop) for building the
-gold corpus described in `docs/HANDOFF-wake-training-experiment.md`
-Phase 0b. Much better operator UX than running `jasper-wake-enroll`
+gold corpus. Much better operator UX than running `jasper-wake-enroll`
 30 times across 6 conditions with terminal countdowns.
 
 Mechanics:

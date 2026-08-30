@@ -143,7 +143,7 @@ PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 # Type alias for the cross-daemon Camilla-ownership probe. The constructor
 # parameter retains its older ``duck_active_probe`` spelling for call-site
 # compatibility. None fails open, so a wedged jasper-voice cannot freeze the
-# remote. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
+# remote.
 CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
@@ -356,7 +356,6 @@ class VolumeCoordinator:
         # that asks jasper-voice's `session_status` whether the
         # selected Ducker owns Camilla. jasper-voice's own coordinator
         # leaves it None and uses `_camilla_volume_locked` in-process.
-        # See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
         self._duck_active_probe: CamillaLockProbe | None = duck_active_probe
         self._volume_context_publisher = volume_context_publisher
         # CamillaDSP's default main-volume ramp is 400 ms. Mux source

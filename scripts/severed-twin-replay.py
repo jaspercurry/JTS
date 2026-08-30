@@ -8,10 +8,8 @@ with exactly one input severed — ``excluded_bands_hz=None``, the production
 :func:`jasper.active_speaker.crossover_v2.intervention.plan_linearization`
 — shows whether the cloud's null evidence actually *bound* the fit, and what
 the fit does without it. It cannot show that the wired answer was *right*:
-the corpus carries no ground truth. That boundary is the validation ladder's
-("Validation ladder — what each instrument can prove" in
-``docs/HANDOFF-audio-measurement-core.md``), and this tool is the corpus-replay
-rung of it, not the synthetic-scenario rung.
+the corpus carries no ground truth. That boundary is the validation ladder's,
+and this tool is the corpus-replay rung of it, not the synthetic-scenario rung.
 
 **Why a capture is bound to a session by its diagnostics, not its filename.**
 A raw-ring sidecar carries no session id — only ``phase``, ``device_label``,

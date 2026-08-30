@@ -86,8 +86,7 @@ traffic today; a device on the same LAN can spoof those messages. The
 cross-device multiroom **grouping** control path (`POST /grouping/set`)
 is separately authenticated by a shared **household credential** minted
 at the bond — a static bearer in an `X-JTS-Household` header (HMAC
-request-signing was considered and rejected for that HTTP path; see
-[HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md)). A
+request-signing was considered and rejected for that HTTP path). A
 future HMAC over the peering gossip could reuse that same household
 secret.
 
@@ -120,8 +119,7 @@ automatically (embedded in each page behind the read guard, read by
   **additionally** accepts a distinct **household credential**
   (`X-JTS-Household`) for the cross-device bond fan-out — a paired peer
   or the autonomous re-group path authenticates with that instead of the
-  per-device token; see
-  [HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md).
+  per-device token.
 
 A gated request without a matching `X-JTS-Token` header gets a `403
 {"error":"control_token_required"}` (compared in constant time via
@@ -137,8 +135,7 @@ page can read it too. So the token is **defense-in-depth against drive-by, CSRF,
 and casual curl** of the destructive (annoyance-class) routes — not a hard
 boundary against a compromised LAN device, and not a substitute for network
 isolation or HTTPS. The serious threats (secret theft, persistence, pivot) are
-contained by the daemon hardening / privilege separation
-([docs/HANDOFF-privilege-separation.md](docs/HANDOFF-privilege-separation.md)),
+contained by the daemon hardening / privilege separation,
 not by this token.
 
 Operators can inspect or rotate the value with `sudo jasper-control-token

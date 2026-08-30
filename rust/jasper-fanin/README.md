@@ -8,10 +8,6 @@ shared-memory ring that is the only fan-in → CamillaDSP transport
 playback device is opened. A box the ring cannot serve parks; there is
 no fallback.
 
-See [`docs/HANDOFF-fan-in-daemon.md`](../../docs/HANDOFF-fan-in-daemon.md)
-for the architecture, the resilience + observability contract, and the
-historical migration plan.
-
 ## Build
 
 ```sh

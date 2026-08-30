@@ -98,8 +98,8 @@ def test_voice_file_routes_to_voice_docs():
     )
 
     assert [item["id"] for item in report] == ["voice-runtime-and-providers"]
-    assert "docs/HANDOFF-voice-providers.md" in report[0]["docs"]
-    assert "docs/HANDOFF-prompting.md" in report[0]["docs"]
+    assert "docs/extensibility.md" in report[0]["docs"]
+    assert "docs/tool-platform-plan.md" in report[0]["docs"]
 
 
 def test_vad_file_routes_to_voice_and_vad_docs():
@@ -109,16 +109,16 @@ def test_vad_file_routes_to_voice_and_vad_docs():
     report = docs_impact.impact_report(subsystems, ("jasper/vad.py",))
 
     assert [item["id"] for item in report] == ["voice-runtime-and-providers"]
-    assert "docs/HANDOFF-vad-experiments.md" in report[0]["docs"]
+    assert "docs/research-tool-plan.md" in report[0]["docs"]
 
 
 def test_state_aggregate_routes_to_state_surface_docs():
-    """The /state.resilience producer must route to HANDOFF-resilience.md (the
-    doc that describes the /state.resilience.* keys). /state.chat also lives
-    in this file, and /state.audio (volume_policy, sound profile) lives here
-    too, so the path intentionally maps to conversation-history and volume as
-    well. Pins the routing intent: the stale-glob guard only catches a rename,
-    not a re-route of this path to the wrong subsystem."""
+    """The /state.resilience producer must route to the resilience subsystem's
+    mapped docs. /state.chat also lives in this file, and /state.audio
+    (volume_policy, sound profile) lives here too, so the path intentionally
+    maps to conversation-history and volume as well. Pins the routing intent:
+    the stale-glob guard only catches a rename, not a re-route of this path
+    to the wrong subsystem."""
 
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
@@ -133,8 +133,8 @@ def test_state_aggregate_routes_to_state_surface_docs():
         "resilience-and-system-dashboard",
     ]
     assert "docs/conversation-history-plan.md" in report[0]["docs"]
-    assert "docs/HANDOFF-volume.md" in report[1]["docs"]
-    assert "docs/HANDOFF-resilience.md" in report[2]["docs"]
+    assert "docs/audio-paths.md" in report[1]["docs"]
+    assert "AGENTS.md" in report[2]["docs"]
 
 
 def test_landing_page_routes_to_web_design_system_not_conversation_history():
@@ -146,7 +146,7 @@ def test_landing_page_routes_to_web_design_system_not_conversation_history():
     report = docs_impact.impact_report(subsystems, ("deploy/index.html",))
 
     assert [item["id"] for item in report] == ["web-design-system"]
-    assert "docs/HANDOFF-management-ui.md" in report[0]["docs"]
+    assert "docs/design-language.md" in report[0]["docs"]
     assert "docs/conversation-history-plan.md" not in report[0]["docs"]
 
 
@@ -178,7 +178,7 @@ def test_s0_sync_tools_route_to_distributed_active_docs():
         report = docs_impact.impact_report(subsystems, (path,))
 
         assert [item["id"] for item in report] == ["multiroom-grouping"], path
-        assert "docs/HANDOFF-distributed-active.md" in report[0]["docs"], path
+        assert "docs/dumb-endpoint-bringup.md" in report[0]["docs"], path
 
 
 def test_doc_map_code_globs_match_at_least_one_tracked_file():

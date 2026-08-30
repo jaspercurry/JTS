@@ -4,16 +4,15 @@
 > *open questions* for hardening the JTS install/update flow. It is **not**
 > current operational truth and deliberately prescribes no single solution.
 > It will go stale as the workstreams below land — once a workstream ships,
-> the code plus the operational docs it updates (`HANDOFF-aec.md`,
-> `HANDOFF-resilience.md`, …) are the truth, not this file. Origin: a
+> the code plus the operational docs it updates are the truth, not this
+> file. Origin: a
 > 2026-06-21 update of `jts2.local` (a 1 GB Pi 5, **748 commits behind**
 > `main`) that failed mid-install and left the speaker degraded.
 >
 > **2026-07-27 follow-up:** the slow vendored WebRTC AEC3 v2 build is no
 > longer inside the core install transaction. Full installs retain the small
 > mandatory v1 fallback; v2/BEST_A is explicit, contained, and retried after a
-> successful deploy without gating its manifest. Current truth:
-> [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md). Incident-era references
+> successful deploy without gating its manifest. Incident-era references
 > to `_webrtc_compile_jobs` below are preserved as the evidence that motivated
 > the shared build policy.
 
@@ -153,7 +152,7 @@ below are confirmed data points, not the whole space.
   when a contained build can't fit?
 - Should we **build off-box / ship prebuilt per-arch artifacts** instead of
   source-building on a 1 GB (or 512 MB) Pi at all? Maintenance/signing/
-  provenance cost? (`HANDOFF-supply-chain.md` owns the provenance policy.)
+  provenance cost?
 - Should an update **quiesce or shield production** during risky phases
   (maintenance window), provision **temporary swap**, and/or **tier the build
   strategy** by detected RAM/CPU up front?
@@ -204,11 +203,10 @@ and #C can land before #A, and #D informs all of them.
 > **First slice shipped (2026-06-21):** the unified RAM-aware +
 > cgroup-contained build policy
 > ([`deploy/lib/install/build-sandbox.sh`](../deploy/lib/install/build-sandbox.sh))
-> now wraps every heavy installer build. Canonical doc:
-> [HANDOFF-build-sandbox.md](HANDOFF-build-sandbox.md). Remaining/follow-up:
+> now wraps every heavy installer build. Remaining/follow-up:
 > prebuilt per-arch artifacts for the Zero 2 W (a CPU-time problem
 > containment can't solve), the Rust low-memory threshold bump, and the
-> on-hardware OOM confirmation listed in that doc.
+> on-hardware OOM confirmation.
 > The vendored WebRTC build now runs only as the optional enhanced-AEC
 > oneshot through that same installed containment helper.
 
@@ -221,14 +219,14 @@ Mission: make every heavy build step in deploy/install.sh safe on a 1 GB Pi 5
 an in-service update. The WebRTC AEC3 build was point-fixed (_webrtc_compile_jobs,
 RAM-budgeted -j); generalize the lesson. In scope: the Rust daemon builds, the
 source-built shairport-sync/nqptp, and any other compile/build the installer
-runs. Out of scope: re-architecting AEC (see [docs/HANDOFF-aec.md](HANDOFF-aec.md)).
+runs. Out of scope: re-architecting AEC.
 
 Investigate and propose (with trade-offs) before implementing:
 - Should heavy builds run memory-contained (systemd-run with MemoryMax/Swap,
   like scripts/pi-run-diagnostic.sh) so an OOM kills only the build, never nginx
   or jasper-voice? What happens when a contained build won't fit?
 - Should we ship prebuilt per-arch artifacts (the webrtc tarball already comes
-  from a GitHub release; HANDOFF-supply-chain.md owns provenance) instead of
+  from a GitHub release) instead of
   source-building on tiny Pis at all?
 - A unified, RAM/CPU-aware build-parallelism + opt-level policy rather than the
   current per-builder ad hoc (rust-daemons.sh's ~1.2 GB on/off vs the webrtc
@@ -246,9 +244,8 @@ real-hardware confirmation.
 > verified-install marker (written last, gated by `set -e`); deploy
 > verification surfaces OOM collateral + post-restart voice/AEC/renderer
 > health and gates on the manifest advancing. Full A-B generations were
-> analysed and deferred. Operational truth + the rollback decision:
-> [HANDOFF-install-update-transaction.md](HANDOFF-install-update-transaction.md).
-> The prompt below is preserved as the originating brief.
+> analysed and deferred. The prompt below is preserved as the originating
+> brief.
 
 ```text
 Read docs/install-update-resilience-plan.md for full context (problems #3, #4,

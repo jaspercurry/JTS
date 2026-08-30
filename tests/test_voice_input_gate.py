@@ -4,8 +4,8 @@
 
 """Voice-input gate for jasper-voice.
 
-Pins the pieces of docs/HANDOFF-hotplug-resilience.md that keep a
-no-input box from crash-looping into StartLimitAction=reboot:
+Pins the pieces that keep a no-input box from crash-looping into
+StartLimitAction=reboot:
 
 1. jasper-voice.service gates ExecStart on the reconciler-written marker
    (ConditionPathExists), and parks (not crash-loops) on the

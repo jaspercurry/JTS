@@ -391,8 +391,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
             "probe — ref signal observed", "fail",
             f"max ref={max_ref} (need ≥{_PROBE_REF_PASS_THRESHOLD}) but max "
             f"mic={max_mic} — speaker is reproducing the test tone (mic hears "
-            "it) yet ref path is silent. Reference chain is broken. "
-            "See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
+            "it) yet ref path is silent. Reference chain is broken.",
         ))
     else:
         results.append(CheckResult(

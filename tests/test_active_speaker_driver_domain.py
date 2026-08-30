@@ -4,11 +4,10 @@
 
 """Driver-domain-only active emit variant — the follower's relocated Layer A.
 
-Covers the emitter half of distributed-active Slice 2 and pins **invariant 4**
-(``docs/HANDOFF-distributed-active.md``): the driver-domain-only graph has no
-program-prefix filter, no positive gains, ``volume_limit == 0.0``, and the
-inter-speaker channel-select precedes the intra-speaker split. The
-classifier-side keystone (invariant 3) lives in
+Covers the emitter half of distributed-active Slice 2 and pins **invariant 4**:
+the driver-domain-only graph has no program-prefix filter, no positive gains,
+``volume_limit == 0.0``, and the inter-speaker channel-select precedes the
+intra-speaker split. The classifier-side keystone (invariant 3) lives in
 ``test_active_speaker_runtime_contract.py``.
 """
 from __future__ import annotations

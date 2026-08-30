@@ -21,9 +21,7 @@ Builds two parallel pybind11 modules:
 The v1 binding is the mandatory, deploy-time engine. The v2 binding is
 an optional enhancement and can only be selected after its installed
 marker, source fingerprint, and extension digest are verified. See
-docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan"
-for context, and experiments/aec3-v2-deep-tune-spike/README.md
-for per-knob rationale.
+experiments/aec3-v2-deep-tune-spike/README.md for per-knob rationale.
 
 System prereqs (apt-installed by deploy/install.sh):
 - v1: libwebrtc-audio-processing-dev, pkg-config, build-essential

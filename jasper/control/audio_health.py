@@ -731,7 +731,7 @@ def _stopped_dsp_signal(
     :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
     and outputd, and both are built to keep looping when the stage between
     them disappears: fan-in's default `loopback` coupling is timer-paced
-    (`docs/HANDOFF-fan-in-daemon.md` — "structurally immune"), `shm_ring`
+    ("structurally immune"), `shm_ring`
     free-run-drops on an absent reader rather than blocking, outputd reads its
     content lane nonblocking and zero-fills ("absent content becomes silence.
     This keeps the final output loop alive"), and BOTH `last_progress_age_ms`

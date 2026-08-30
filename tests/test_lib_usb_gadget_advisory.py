@@ -5,7 +5,7 @@
 """Test scripts/_lib.sh's USB-gadget-network deploy-advisory helpers.
 
 Issue #2340 (2026-08-11 U2 deploy): PI_HOST resolved to 10.12.194.1, the
-USB gadget's management subnet (usb0 — docs/HANDOFF-usb-gadget.md).
+USB gadget's management subnet (usb0).
 install.sh rebuilds the composite USB gadget mid-install, which tore down
 that link out from under the deploy's own ssh session: the transport died
 with no FIN, the local ssh hung, and the transcript froze around the

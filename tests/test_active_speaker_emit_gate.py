@@ -4,8 +4,7 @@
 
 """L0 graph-safety emit gate: no active-speaker graph ships an unprotected tweeter.
 
-Pins the load-bearing L0 hearing-safety invariant
-(docs/HANDOFF-audio-measurement-core.md): an output carrying a tweeter /
+Pins the load-bearing L0 hearing-safety invariant: an output carrying a tweeter /
 compression-driver role MUST have a protective high-pass (its crossover
 high-pass and/or a dedicated protective high-pass) whose corner is high enough
 to keep the low-frequency excursion hazard band off the driver. A compression

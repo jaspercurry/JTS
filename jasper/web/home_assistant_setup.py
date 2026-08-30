@@ -38,7 +38,7 @@ reachable URL with a `<link rel="redirect_uri">` tag. RFC 8628 device
 flow was accepted (architecture #1299, Jan 2026) but the prerequisite
 PR core#161715 was still open as of May 2026. LLAT paste is the
 documented industry-standard path for headless HA integrations until
-device-flow ships. See docs/HANDOFF-homeassistant.md.
+device-flow ships.
 
 URL surface (after nginx strips /ha/):
   GET  /              page render (one of three states)

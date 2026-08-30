@@ -106,8 +106,7 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
 #   no loud output; self-recovers when the household re-measures and
 #   re-groups). The scoped reset therefore keeps the SOLO applied audio, but
 #   a grouped speaker needs re-measurement before it can re-group — see the
-#   grouping-aware "Start over" copy and docs/HANDOFF-correction.md
-#   "Scoped crossover reset".
+#   grouping-aware "Start over" copy.
 # * ``startup_load`` — the load/rollback bookkeeping for whichever protected
 #   candidate CamillaDSP is CURRENTLY running. Hardware-verified on 2026-07-17
 #   (JTS3): this file's ``previous_config_path`` is, at that moment, the ONLY
@@ -115,8 +114,7 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
 #   speaker flow's muted candidate was loaded. Deleting it while
 #   ``loaded=True`` would not stop any audio by itself, but it would strand
 #   the rollback pointer, leaving no automated way back to the prior config.
-#   A scoped "start over" must never risk that — see
-#   docs/HANDOFF-correction.md "Scoped crossover reset".
+#   A scoped "start over" must never risk that.
 _MEASUREMENT_JOURNEY_ARTIFACT_IDS = (
     "crossover_preview",
     "staged_config",

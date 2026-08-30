@@ -345,9 +345,7 @@ bash scripts/switch-voice-provider.sh openai    # switch
 ```
 
 The script refuses if the destination provider's key isn't
-already in `jasper.env` or the wizard's env file. See
-[`docs/HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md)
-for the full per-provider trade-off table.
+already in `jasper.env` or the wizard's env file.
 
 ---
 
@@ -450,10 +448,6 @@ EOF
 sudo systemctl restart jasper-voice
 ```
 
-See [docs/HANDOFF-homeassistant.md](docs/HANDOFF-homeassistant.md)
-for the architecture (why HA's conversation API rather than its MCP
-server), the failure-mode taxonomy, and the v1.1+ upgrade path.
-
 ---
 
 ## Phase 3.8 — Enable USB audio input (one-time, 10 min, optional)
@@ -469,9 +463,6 @@ Skip this phase if you only ever stream from phones (AirPlay/Spotify
 Connect/Bluetooth cover that). Come back when you want to use JTS as
 the audio output for a laptop.
 
-Full design + RAM analysis + failure-mode matrix:
-[docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md).
-
 **Same USB-C port, hardware-conditional management network.** On a Pi 5,
 the USB-C port carries an NCM network link (`ncm.usb0`) after install — plugging
 a laptop in gets you `http://<JASPER_HOSTNAME>/` over a speaker-derived private
@@ -481,8 +472,7 @@ Imager rescue gadget or a legacy address preserved until migration reboot. On a
 Zero-class speaker with a USB output DAC, its one OTG data port is
 reserved for that DAC, so both the management link and USB Audio Input are
 unavailable. A registered I²S DAC leaves the Zero port free. The Sources page
-shows the resolved availability; see
-[docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the policy.
+shows the resolved availability.
 
 ### Hardware prerequisite
 
@@ -632,8 +622,7 @@ Flip the toggle off in `/sources/`. The daemon stops, and
 `uac2.usb0` — the host loses JTS from its audio device list within
 ~3 s, but the `ncm.usb0` management network function stays
 up (plugging a laptop in still gets you `http://<JASPER_HOSTNAME>/`).
-See [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
-full function truth table. The hardware-resolved role stays in place either way
+The hardware-resolved role stays in place either way
 (harmless on its own — DWC2 in peripheral mode with no gadget
 descriptor at all is a no-op from the host's perspective).
 
@@ -669,8 +658,7 @@ quiet, double-check the amp is on and speakers are connected.
 
 AirPlay something to the current display name shown at
 `http://jts.local/speaker/`; it should appear in your phone / laptop's
-AirPlay picker after a few seconds. See [speaker identity](docs/HANDOFF-identity.md)
-for how that name is initialized and managed. At main_volume = −30 dB you
+AirPlay picker after a few seconds. At main_volume = −30 dB you
 should hear barely-audible audio. Now adjust the
 **amp's physical gain knob** until that level is your
 "barely-audible" comfort floor. After that, raising main_volume
@@ -805,9 +793,8 @@ fine, surface the exact fix when not):
   only when AEC should be on and the bridge isn't (a real bug — the row
   names the commands).
 
-If you want to go deeper on any mic issue, the canonical reference
-is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) and the
-deep-diagnostic tool is `bash scripts/xvf-interrogate.sh --host
+If you want to go deeper on any mic issue, the deep-diagnostic tool
+is `bash scripts/xvf-interrogate.sh --host
 <pi>` (run from your laptop, captures everything to `logs/`).
 
 ---
@@ -879,8 +866,7 @@ the detected hardware can carry it and falls back to software AEC3 with a
 disclosure when it cannot. `JASPER_AUDIO_INPUT_PROFILE=custom` is the one
 way to pin legs by hand.
 
-The bridge→voice transport is UDP localhost; the resilience reasons
-are in [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md).
+The bridge→voice transport is UDP localhost.
 
 **Rollback key only — `JASPER_AEC_MODE`.** Every managed profile branch
 overrides the key on each reconcile pass, so it is respected only under
@@ -896,8 +882,6 @@ sudo systemctl start jasper-aec-reconcile
 ```
 
 Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.
-See [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) for the full
-trade-off analysis.
 
 ### XVF firmware: switch to 6-channel variant via DFU
 
@@ -910,9 +894,7 @@ trade-off analysis.
 > DFU below won't see it. You must first enter **Safe Mode via the
 > BOOT button** — hold BOOT while powering on the **XMOS USB-C port**
 > (the one next to the 3.5 mm jack, *not* the XIAO/Seeed port; *not*
-> the Mute-button procedure). Full variant identification + the
-> validated recovery steps are in
-> [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §2.6. Once it
+> the Mute-button procedure). Once it
 > enumerates as `2886:001a` / card `Array`, return here.
 
 #### Why this step exists
@@ -968,8 +950,7 @@ If those channels survive the upgrade, the new version should drop
 into JTS by bumping three constants in
 [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py):
 `FIRMWARE_BLOB_6CH` / Flex equivalents, build hash constants, and
-`*_KNOWN_GOOD_AS_OF`. The fuller variant table is in
-[`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) §2.
+`*_KNOWN_GOOD_AS_OF`.
 
 #### How DFU works on this chip (no button combo needed)
 
@@ -991,7 +972,7 @@ routine 2-ch → 6-ch firmware upgrade, no button combo is
 needed. **One exception:** a Flex / XIAO board that shipped in I2S
 mode was never a USB device, so its *first* USB flash does require
 Safe Mode entry (the BOOT button on those boards) — see the callout
-at the top of this section and HANDOFF-xvf3800.md §2.6.
+at the top of this section.
 
 #### Step 1 — fetch the firmware
 
@@ -1147,8 +1128,7 @@ healthy, `/proc/asound/<card>/stream0` shows 6 channels, but
 The reconciler's `ensure_capture_mixer_open` resets the relevant
 controls to all-on / max-volume and runs `alsactl store` so the
 state survives reboot. `jasper-doctor`'s "XVF mixer state" check
-flags drift if anything sets them back; `docs/HANDOFF-xvf3800.md`
-§7 has the investigation this came out of.
+flags drift if anything sets them back.
 
 If the reconciler is unavailable for any reason and you need to
 fix the mixer state manually:
@@ -1167,9 +1147,9 @@ sudo alsactl store
 | Symptom | What it means | Where to go |
 |---|---|---|
 | `dfu-util -l` doesn't see alt=1 | Chip isn't in normal runtime — likely a USB enumeration issue | Re-plug, check `dmesg -T \| grep -i usb` |
-| Flash fails mid-write, chip won't boot | Brick — `SAVE_CONFIGURATION` corruption is the documented cause | Safe Mode recovery via `4mb_all_ff.bin`, [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §5.1 |
+| Flash fails mid-write, chip won't boot | Brick — `SAVE_CONFIGURATION` corruption is the documented cause | Safe Mode recovery via `4mb_all_ff.bin` |
 | Doctor shows XVF firmware 6-ch ✓ but mixer state ✗ | Kernel mixer drifted; reconciler hasn't run | Re-run `sudo systemctl start jasper-aec-reconcile` |
-| Doctor shows everything ✓ but wake word still fails | Probably unrelated to firmware; check `journalctl -u jasper-voice -f` and `scripts/xvf-interrogate.sh` | [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) diagnostic cookbook |
+| Doctor shows everything ✓ but wake word still fails | Probably unrelated to firmware; check `journalctl -u jasper-voice -f` and `scripts/xvf-interrogate.sh` | |
 
 #### Sources for this section
 
@@ -1196,8 +1176,7 @@ persist them to flash via that command.
 - For deeper mic debugging (chip identity, USB descriptors,
   ALSA state, XVF firmware, per-channel activity), run
   `bash scripts/xvf-interrogate.sh --host jts.local` from your
-  laptop. Output lands in `logs/` tagged by chip iSerial. The
-  canonical reference is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md).
+  laptop. Output lands in `logs/` tagged by chip iSerial.
 
 **Wake fires but no voice response.**
 - The active provider's API key might be missing/invalid. Keys
@@ -1241,6 +1220,3 @@ For deeper debugging:
 bash scripts/fetch-pi-logs.sh         # pulls journals + configs to ./logs/
 bash scripts/tail-pi-logs.sh           # live tail all units
 ```
-
-Subsystem-specific issues are documented in the relevant
-`docs/HANDOFF-*.md` file.

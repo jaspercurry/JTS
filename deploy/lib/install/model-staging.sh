@@ -27,7 +27,7 @@ print(pathlib.Path(spec.origin).resolve().parent / "resources" / "models")'
 stage_wake_models() {
     ensure_state_dir
     install -d -m 0755 -o root -g root /var/lib/jasper/wake
-    # Wake-event telemetry directory (HANDOFF-wake-telemetry.md PR 3).
+    # Wake-event telemetry directory.
     # Holds wake-events.sqlite3 + per-event WAVs. jasper-voice (running
     # as root via the service unit) creates files mode 0644; future
     # /wake-review/ web UI reads via the standard nginx proxy.

@@ -2,8 +2,6 @@ version = 1
 last_reviewed = "2026-06-12"
 
 # Machine-readable provenance for install/build-time network inputs.
-# See docs/HANDOFF-supply-chain.md for policy, update workflow, and
-# explicitly accepted gaps.
 #
 # Install-time source archive fetches use byte-exact JTS release asset
 # mirrors. The upstream GitHub/GitLab auto-generated commit archive URLs

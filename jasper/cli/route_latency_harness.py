@@ -26,8 +26,7 @@ Four steps, run separately or via `run`:
               samples file below the match-rate floor.
   run       — capture then analyze in one shot.
 
-Two standalone box-side utilities, independent of the four-step flow (see
-docs/HANDOFF-usb-latency-measurement.md §3 and §5):
+Two standalone box-side utilities, independent of the four-step flow:
 
   warm-check   — query fan-in STATUS and report whether the USB resampler is
                  at its churn-safe floor (warm) or still descending from a
@@ -132,8 +131,7 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 # anywhere is worth an operator's eyes, but these are the ones this CLI
 # explicitly calls out as "this alone means unhealthy."
 #
-# The set encodes the same "clean window" contract the HANDOFF names (see
-# docs/HANDOFF-usb-low-latency.md "Watching the route"): no fan-in USB
+# The set encodes the same "clean window" contract: no fan-in USB
 # resampler unlock/silence/overrun and no outputd/fan-in xruns. The names are
 # cross-checked against the Rust status serializers by
 # `test_known_health_counter_names_exist_in_rust_status_json`, so a Rust-side

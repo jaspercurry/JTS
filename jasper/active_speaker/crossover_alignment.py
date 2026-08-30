@@ -27,10 +27,9 @@ measurement's dynamic-range cap cancels — far more robust than an absolute
 threshold). A delay *value* is deliberately NOT proposed here: JTS's near-field
 captures are browser-recorded with no sample-sync to the Pi's playback (see
 ``recordDriverCapture`` / ``captureMicWavBase64``), so a per-driver IR arrival
-delta is capture jitter, not acoustic time-of-flight — and the canonical method
-agrees that "impulse response … [is] not [a] substitute for phase-aware
-summation" (``docs/HANDOFF-active-speaker-dsp.md`` "Delay, Phase, and Null
-Verification"). The delay *value* therefore comes from the timing-locked
+delta is capture jitter, not acoustic time-of-flight — and impulse response
+is not a substitute for phase-aware summation. The delay *value* therefore
+comes from the timing-locked
 reverse-polarity null **walk** (the deferred follow-up); here we surface a delay
 *status* (aligned vs needs-alignment) from the in-phase null so the maintainer
 knows whether to run it.

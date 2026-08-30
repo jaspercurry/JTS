@@ -22,14 +22,9 @@
 > **Status: active implementation plan and investigation record (v2).** This
 > document explains the intent, evidence, branch work, review findings, and
 > the prescriptive delivery plan for reliable paired-speaker playback. It is
-> not the authority for what a deployed speaker currently does. Current
-> shipped behavior and operator guidance remain in
-> [HANDOFF-multiroom.md](HANDOFF-multiroom.md); active-speaker realization
-> remains in [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md);
-> source parking remains in
-> [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md). Once this
-> campaign is complete, those canonical handoffs must describe the landed
-> behavior and this file becomes the durable design and investigation record.
+> not the authority for what a deployed speaker currently does. Once this
+> campaign is complete, this file becomes the durable design and
+> investigation record.
 >
 > **v2 provenance:** v1 of this plan was written alongside the branch work and
 > reviewed by one independent SEVA agent. v2 (2026-07-28) is the result of a
@@ -316,8 +311,7 @@ of a missing fixed-endpoint compensation mechanism — but the v2 review found
 the 53 ms figure is a **lower bound from an incomplete method**, not the
 offset: differencing only the final DAC queues omits the CamillaDSP pipeline
 that only the active endpoint pays (chunk 1024 ≈ 21.3 ms + target level
-2048 ≈ 42.7 ms + content-bridge handoff, per
-`HANDOFF-distributed-active.md`'s own path anchors), and the content-bridge
+2048 ≈ 42.7 ms + content-bridge handoff), and the content-bridge
 fill is a live DLL-steered value, not a constant. The true active-vs-passive
 fixed offset is plausibly ~115–130 ms. The receipt value must therefore come
 from an **end-to-end measurement** (the correlation primitive in
@@ -522,7 +516,7 @@ including lab boxes used for the acceptance matrix.
 | F-5 | Blocker (plan) | — | v1's rollback-on-deadline policy was wrong twice: it would auto-tear-down every first-ever pair (the first bond runs the Snapcast apt install, which exceeds any HTTP deadline), contradicting the grouping supervisor's ratified "no auto-unwind from a poll" rule; and follower-first rollback is undone within 30 s by the leader's `_reassert_peer_tick`. | WO-4 (three-outcome design, leader-first rollback) |
 | F-6 | Should-fix | yes | `ReadWritePaths=/var/lib/camilladsp/configs/.dsp_apply.lock` has no `-` prefix: a missing lock file fails jasper-control's namespace setup and the management surface never starts. install.sh's deliberate `touch` runs **after** the jasper-control restart; today only an incidental, explicitly fail-open path (`reconcile_sound_dsp_state` → `dsp_writer_lock` `O_CREAT`) creates it first. No doctor check exists. | WO-1 |
 | F-7 | Should-fix | yes | `check_grouping_tts_lane` returns **ok** for the hardware-observed active-leader TTS leak (`expected_grouping_tts_route` routes an unparked active leader to the fan-in socket feeding the shared bake). A doctor check certifying a known defect blocks honest acceptance. | WO-1 |
-| F-8 | Should-fix | yes | The branch's own `HANDOFF-multiroom.md` §6 edit claims roster-identity proof ("the authoritative roster's Snapcast clients … connected, on the right stream, unmuted, audible") that the code does not perform — new doc-vs-code drift introduced while fixing old drift. | WO-1 |
+| F-8 | Should-fix | yes | The branch's own edit claims roster-identity proof ("the authoritative roster's Snapcast clients … connected, on the right stream, unmuted, audible") that the code does not perform — new doc-vs-code drift introduced while fixing old drift. | WO-1 |
 | F-9 | Should-fix | no | A present-but-malformed applied linearization entry is silently dropped: `_applied_recomposition_inputs` discards non-Mapping maps and non-Sequence role values before `_validated_linearization` (which is fail-closed) ever sees them. Pre-existing, but this decoder now also feeds grouped driver graphs; failure direction is hardware-benign yet ships a tonally different graph with no issue emitted. | WO-1 |
 | F-10 | Should-fix | no | Upgrade window on a bonded active box: `outputd_active_lane_decision` (via `jasper-audio-hardware-reconcile`) classifies the **stale pre-PR grouped graph** during the same install run that ships the stricter classifier, silently degrading outputd to the ordinary stereo lane until the grouping reconciler re-emits and the hardware reconcile re-runs (next boot at latest). No teardown, no cue. | WO-7 |
 | F-11 | Should-fix | no | `_rooms_view` is a third verdict: `state: "paired"` from `enabled and bond_id` alone (requested intent), gating `can_balance_pair`. Three verdicts exist (pair_lock, groupingStatusView, _rooms_view). | WO-6 |
@@ -561,9 +555,8 @@ Shared rules for every work order:
 - Structured `event=` logs for every new failure path; no journal spam
   (coalesce or rate-limit anything that can flap).
 - New wire-contract keys are additive; absent keys read as `unknown`.
-- Scan the mapped canonical docs (`HANDOFF-multiroom.md`,
-  `HANDOFF-distributed-active.md`, `HANDOFF-source-lifecycle.md`) per the
-  touched-subsystem rule and update them in the same PR when behavior lands.
+- Scan the mapped canonical docs per the touched-subsystem rule and update
+  them in the same PR when behavior lands.
 - Rebase onto current `origin/main` before push
   (`git merge-base --is-ancestor origin/main HEAD` exits 0);
   `scripts/test-fast` before push, `scripts/test-merge` before merge.
@@ -577,10 +570,10 @@ Shared rules for every work order:
    `Status unknown`. In `tests/js/rooms_grouping_view_test.mjs`, replace the
    test pinning green-from-counts (lines ~111–138) with its inverse:
    `leader with audible count but no identity proof stays "unknown"`.
-2. **Revert the overstated doc sentence (F-8).** `docs/HANDOFF-multiroom.md`
-   §6's new "Green Grouped requires … authoritative roster's Snapcast
-   clients" sentence must describe what the code proves after item 1
-   (explicit healthy pair lock only), until WO-6 lands identity proof.
+2. **Revert the overstated doc sentence (F-8).** The new "Green Grouped
+   requires … authoritative roster's Snapcast clients" sentence must
+   describe what the code proves after item 1 (explicit healthy pair lock
+   only), until WO-6 lands identity proof.
 3. **Make the lock grant missing-tolerant (F-6).** In
    `deploy/systemd/jasper-control.service`, change the entry to
    `-/var/lib/camilladsp/configs/.dsp_apply.lock`. Extend
@@ -726,8 +719,7 @@ Prerequisite for WO-4. Files: `jasper/multiroom/reconcile.py`,
    `cfg.enabled` (rollback proof requires reading a solo landing); preserve
    the never-bonded zero-cost promise by gating the read on
    `cfg.enabled or os.path.exists(FOLLOWER_STATUS_FILE)`, and update the two
-   docstrings that state the byte-for-byte promise plus
-   `HANDOFF-multiroom.md`'s visible-failure section in the same PR.
+   docstrings that state the byte-for-byte promise in the same PR.
 4. Tests:
    `tests/test_multiroom_reconcile.py::test_reconcile_publishes_terminal_receipt_on_success`,
    `…::test_reconcile_publishes_refused_receipt_when_rc_nonzero`,
@@ -982,12 +974,6 @@ client's share of the group buffer, so compensation and buffer are coupled
    deliverable (WO-9) using the `sync_measure.py` correlation primitive
    end-to-end — never queue-depth differencing. The plumbing lands first so
    a hand-written receipt can be validated on the bench.
-7. **Companion rule (SSOT rule 5):** document in `HANDOFF-multiroom.md`'s
-   calibration section that `/sync/` seat calibration must be run **after**
-   endpoint compensation is in place, and that its 0–100 ms channel delay
-   must not be used to absorb endpoint offset (it cannot fully — the active
-   offset is plausibly >100 ms — and a partial silent absorption is the
-   failure mode).
 
 Tests:
 `tests/test_multiroom_reconcile.py::test_snapclient_latency_prefers_operator_override_then_receipt`,
@@ -1227,9 +1213,6 @@ This campaign is complete when:
 | TTS route truth | [`jasper/multiroom/tts_route.py`](../jasper/multiroom/tts_route.py) |
 | Acoustic sync measurement | [`jasper/multiroom/sync_measure.py`](../jasper/multiroom/sync_measure.py) |
 | Endpoint-latency receipt (WO-8) | `/var/lib/jasper-grouping/endpoint-latency.json`, consumed by `reconcile.py::snapclient_argv` |
-| Canonical operational multiroom truth | [`docs/HANDOFF-multiroom.md`](HANDOFF-multiroom.md) |
-| Active endpoint realization | [`docs/HANDOFF-distributed-active.md`](HANDOFF-distributed-active.md) |
-| Source lifecycle truth | [`docs/HANDOFF-source-lifecycle.md`](HANDOFF-source-lifecycle.md) |
 
 ## Review sequence from here
 

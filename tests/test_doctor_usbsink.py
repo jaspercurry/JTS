@@ -599,7 +599,7 @@ def test_check_usbsink_name_verdicts(
 # *intent* (network kill switch x audio enablement x follower-park gate).
 # The composite-era replacement for the old "libcomposite loaded <=>
 # usbsink active" invariant; the table below walks every cell of the truth
-# table in docs/HANDOFF-usb-gadget.md / jasper-usbgadget-up.
+# table in jasper-usbgadget-up.
 # ----------------------------------------------------------------------
 
 

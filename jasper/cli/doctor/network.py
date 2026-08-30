@@ -583,7 +583,7 @@ def check_identity_coherence() -> CheckResult:
 
 
 # ----------------------------------------------------------------------
-# USB management network (docs/HANDOFF-usb-gadget.md) — the NCM link on
+# USB management network — the NCM link on
 # usb0 when the resolved hardware role supports a gadget. jasper/cli/doctor/usbsink.py owns whether the composite
 # gadget's *functions* match intent (ncm.usb0 / uac2.usb0 presence); the
 # checks below own the *network* side of that same intent — the usb0

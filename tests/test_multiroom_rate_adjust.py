@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""inv-5 (docs/HANDOFF-multiroom.md §2) — no CamillaDSP runs rate_adjust.
+"""inv-5 — no CamillaDSP runs rate_adjust.
 snapclient's sample-stuffing is the single rate-tracker for the synced chain
 (two rate-adjusters oscillate); and, since ADR-0100, every sink
 `member_camilla_kwargs` can hand out — the leader's pipe, or Ring B for
@@ -981,9 +981,8 @@ def test_camilla_block_field_shared_scanner():
 
 # NOTE: the former check_grouping_tts_separation tests were REMOVED
 # 2026-06-11 with the check itself (the retired outputd-as-producer
-# machinery — see HANDOFF-multiroom.md §2, timing invariant 1). The
-# operator story it carried now lives in check_grouping's runtime detail,
-# covered by test_doctor_grouping.py::
+# machinery). The operator story it carried now lives in check_grouping's
+# runtime detail, covered by test_doctor_grouping.py::
 # test_check_grouping_leader_reads_degraded_until_producer_built.
 
 

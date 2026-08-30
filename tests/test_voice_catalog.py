@@ -4,8 +4,7 @@ Each ``ProviderCatalogEntry`` declares an ``interrupt_reconcile`` kind — the
 "pack" metadata the robust-barge-in packs branch on instead of testing
 provider name. These tests pin that every registry entry carries a valid,
 resolvable declaration and that the three known providers map to the kinds
-documented in the "Provider Interruption Contract"
-(docs/HANDOFF-voice-providers.md).
+documented in the "Provider Interruption Contract".
 """
 from __future__ import annotations
 

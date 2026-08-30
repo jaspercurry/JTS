@@ -17,8 +17,7 @@ voice/AEC stack), a kernel that does not expose a knob, and a host with
 no systemd all skip.
 
 Rationale for the values lives with their owners: ``jasper/_oom_adj.py``
-(the OOM ladder, shared with install.sh) and docs/HANDOFF-resilience.md
-(restart policy, vm.* tunings, MGLRU).
+(the OOM ladder, shared with install.sh).
 """
 from __future__ import annotations
 
@@ -53,13 +52,12 @@ class DriftItem:
 
 # systemd directives install.sh writes into the unit files, keyed by the
 # property name `systemctl show` reports. Without the reboot ladder a box is
-# back to Tier 5's "PID 1 alive but userspace dead" gap
-# (docs/HANDOFF-tier5-watchdog-liveness.md).
+# back to Tier 5's "PID 1 alive but userspace dead" gap.
 #
 # jasper-camilla is the one unit off that ladder: restart-limit exhaustion
 # runs a forensics/recovery oneshot instead, because its observed failure
 # class is ALSA ownership churn where holder evidence matters and the Pi
-# should stay reachable (docs/HANDOFF-resilience.md).
+# should stay reachable.
 _UNIT_DIRECTIVES: dict[str, dict[str, str]] = {
     "OOMScoreAdjust": {u: str(v) for u, v in _EXPECTED_OOM_ADJ.items()},
     "StartLimitAction": {

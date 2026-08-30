@@ -9,8 +9,7 @@ authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 rust-version = "1.75"
 
 # Why these dependencies — pinned to current stable versions on Trixie's
-# rustc (1.75+). See docs/HANDOFF-fan-in-daemon.md "Why Rust" for the
-# language-choice rationale.
+# rustc (1.75+).
 [dependencies]
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # Shared policy-light scalar environment parsing. Fan-in keeps its own
@@ -19,8 +18,7 @@ jasper-env = { path = "../jasper-env" }
 # The ONE shared windowed-sinc resampler + DLL rate controller (same crate
 # jasper-outputd's content_bridge consumes). Pure, no ALSA — used here for the
 # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane,
-# DLL-steered to the DAC clock. See src/lane_resampler.rs and
-# docs/HANDOFF-usb-low-latency.md.
+# DLL-steered to the DAC clock. See src/lane_resampler.rs.
 jasper-resampler = { path = "../jasper-resampler" }
 # The SPSC ping-pong SHM ring — the same crate jasper-outputd's Ring B reader
 # consumes. Pure (mmap via libc, no ALSA). Ring A is this daemon's only output
@@ -32,7 +30,7 @@ jasper-ring = { path = "../jasper-ring" }
 # `fanin-host-clock` thread drives this to steer the host's Capture Pitch ctl
 # toward the DAC clock. The `alsa` feature enables the real `AlsaPitchCtl`;
 # fan-in always links libasound so it is enabled unconditionally here. Default
-# OFF via JASPER_FANIN_HOST_CLOCK. See docs/HANDOFF-usb-low-latency.md.
+# OFF via JASPER_FANIN_HOST_CLOCK.
 jasper-host-clock = { path = "../jasper-host-clock", features = ["alsa"] }
 # Idiomatic Rust wrapper around libasound — the daemon's primary I/O
 # surface. Mature crate, used by most Rust ALSA projects (paplay,

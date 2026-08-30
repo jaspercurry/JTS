@@ -13,7 +13,7 @@ operator-confirmation tri-state is owned by :mod:`safe_playback`; the actual
 graph change rides the same guarded inline load as the arm. This module is the
 orchestration + the Stage-5 gate that ties them together.
 
-The model (the design-of-record, HANDOFF-active-speaker-dsp.md "Stage 5"):
+The model (the design-of-record):
 
   armed (-120 dB, silent)
     -> first audible step == the audible floor (MIN_TEST_LEVEL_DBFS, -80 dB)

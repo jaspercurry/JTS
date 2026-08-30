@@ -865,8 +865,7 @@ def _resolve_key_mgmt(profile_name: str) -> str:
     Used to populate the guardian stash's ``key_mgmt`` field after a
     successful connect so the boot-time recreate knows whether to pass
     ``password ARG`` to nmcli. ``wpa-eap`` triggers the wizard to
-    skip the stash entirely (enterprise is out of scope per
-    ``docs/HANDOFF-resilience.md``)."""
+    skip the stash entirely (enterprise is out of scope)."""
     proc = _run_nmcli(
         ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt",
          "connection", "show", profile_name],
