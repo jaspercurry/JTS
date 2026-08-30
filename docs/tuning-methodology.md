@@ -349,7 +349,9 @@ bounded history of realized − predicted per verify — how wrong the PREDICTIO
 was, pooled. For how much of what was COMMANDED actually arrived, **per band
 and across rounds**, read the controllability ledger
 (`jasper.active_speaker.controllability_ledger`, published on `/state` and
-printed by the round CLI). Two different questions, and neither answers the
+printed by the round CLI). It hands over the rows each round banked and pools
+nothing — a mean or a spread is yours to take, across the rounds you judge
+comparable (ADR-0198). Two different questions, and neither answers the
 other: a speaker whose grade is predicted perfectly can still be a speaker
 whose commands land at 60% in one band. The classification bar DISCLOSES rather
 than refuses — filters no verdict backs are counted
