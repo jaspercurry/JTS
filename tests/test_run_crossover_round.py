@@ -425,6 +425,7 @@ def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
     # command it always did.
     assert "--polarity" not in stage_cmd and "--inverted-role" not in stage_cmd
     assert "--delayed-role" not in stage_cmd and "--delay-us" not in stage_cmd
+    assert "--level-matched" not in stage_cmd
 
 
 def test_the_reverse_null_pair_is_forwarded_to_the_staging_seam(
@@ -462,6 +463,24 @@ def test_the_confirmation_coordinate_is_forwarded_to_the_staging_seam(
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
     assert "--delayed-role tweeter" in stage_cmd
     assert "--delay-us 250.0" in stage_cmd
+
+
+def test_the_level_match_is_forwarded_to_the_staging_seam(
+    checkout, wizard, tmp_path
+):
+    """Without it the one command that drives a round could stage a
+    reverse-null walk on a cabinet whose branches are 10 dB apart and grade
+    the shallow null that follows as a failure of the alignment."""
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS,
+         "--polarity", "inverted", "--inverted-role", "tweeter",
+         "--level-matched"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--level-matched" in stage_cmd
 
 
 def test_without_an_attestation_no_walk_is_launched(checkout, wizard, tmp_path):

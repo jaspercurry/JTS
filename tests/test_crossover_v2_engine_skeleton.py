@@ -105,15 +105,26 @@ class _Graph:
     install_raises: bool = False
     restore_raises: bool = False
     measurement_delays: list = field(default_factory=list)
+    #: One entry per install: the level match that stimulus asked for.
+    level_trims: list = field(default_factory=list)
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
+        level_trims_db=None,
     ) -> str:
         self.installs += 1
         self.inverted_roles.append(tuple(inverted_roles))
         self.measurement_delays.append(dict(measurement_delays_us or {}))
+        self.level_trims.append(dict(level_trims_db or {}))
         if self.install_raises:
             raise RuntimeError("install blew up after arming half a graph")
+        if level_trims_db:
+            # A level match is a DIFFERENT graph, for the delay's reason: the
+            # real emitter moves the mixer gains and so the fingerprint.
+            matched = "+".join(
+                f"{role}@{db:g}" for role, db in sorted(level_trims_db.items())
+            )
+            return f"{self.fingerprint}-lm-{matched}"
         if measurement_delays_us:
             # A delay coordinate is a DIFFERENT graph, exactly as a polarity
             # variant is, so it cannot answer with another one's fingerprint.
@@ -236,6 +247,7 @@ def _session(
     *,
     gain_plan_db: Mapping[str, float] | None = None,
     candidate_program_id: str = "",
+    level_match_trims_db: Mapping[str, float] | None = None,
     **overrides: Any,
 ) -> tuple[TuningSession, dict[str, Any]]:
     parts: dict[str, Any] = {
@@ -253,6 +265,7 @@ def _session(
         prior=prior,
         gain_plan_db=gain_plan_db or {},
         candidate_program_id=candidate_program_id,
+        level_match_trims_db=level_match_trims_db or {},
     )
     return session, parts
 
@@ -1889,6 +1902,117 @@ async def test_two_coordinates_are_two_graphs_not_one_reused():
     assert installed == [
         {DRIVER_ROLE_TWEETER: 100.0}, {DRIVER_ROLE_TWEETER: 200.0},
     ]
+
+
+async def test_the_level_match_reaches_the_graph_that_stimulus_installs():
+    """The session was opened with the box's own trims; the SPEC decides which
+    stimuli carry them. Applying them any other way would leave the fingerprint
+    naming a graph whose branches were not levelled."""
+    session, parts = _session(level_match_trims_db={DRIVER_ROLE_TWEETER: -9.5})
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+            level_matched=True,
+        ))
+
+    # One at open() and one per stimulus, and the un-matched spec carries none
+    # even though the session was holding trims all along.
+    assert parts["graph"].level_trims == [
+        {}, {}, {DRIVER_ROLE_TWEETER: -9.5},
+    ]
+
+
+async def test_a_session_holding_no_trims_installs_none():
+    """The refusal for that pairing is the host's, at open. The engine's own
+    answer is empty rather than a raise mid-walk, so a spec cannot invent a
+    level match out of a session that was given none."""
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, level_matched=True,
+        ))
+
+    assert parts["graph"].level_trims == [{}, {}]
+
+
+async def test_a_record_states_the_level_match_that_installed_not_the_one_asked():
+    """Defense in depth: the record's ``level_matched`` is derived from what
+    the graph actually CARRIED, never from what the spec asked.
+
+    A spec can ask for a level match a session was opened with no trims to
+    supply — the host refuses that pairing before open, but the engine is a
+    separate unit and must be self-consistent however it is reached. Here the
+    session holds no trims and the spec asks for a match, so nothing installs;
+    the record must say ``level_matched=False`` and carry no numbers rather
+    than claim a match its own graph never played. Reading the boolean off the
+    installed trims is what keeps it from ever disagreeing with the trims key.
+    """
+    session, parts = _session()  # holds NO trims
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, level_matched=True,
+        ))
+
+    record, = parts["records"].banked
+    assert record["level_matched"] is False
+    assert "level_match_trims_db" not in record
+
+
+async def test_a_banked_level_matched_record_says_what_levelled_it():
+    """A reverse-null depth is only readable by somebody who knows whether the
+    branches were levelled before they were summed, and by how much — so the
+    record carries both, and the fingerprint separates it from its unmatched
+    twin."""
+    session, parts = _session(level_match_trims_db={DRIVER_ROLE_TWEETER: -9.5})
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, level_matched=True,
+        ))
+
+    plain, matched = parts["records"].banked
+    assert plain["level_matched"] is False
+    # Absent, not empty: a record banked before this existed reads the same way.
+    assert "level_match_trims_db" not in plain
+    assert matched["level_matched"] is True
+    assert matched["level_match_trims_db"] == {DRIVER_ROLE_TWEETER: -9.5}
+    assert plain["graph_fingerprint"] != matched["graph_fingerprint"]
+    assert plain["kind"] == matched["kind"], "same kind, different level match"
+
+
+async def test_a_level_matched_record_reads_back_like_any_other_take():
+    session, parts = _session(level_match_trims_db={DRIVER_ROLE_TWEETER: -9.5})
+
+    async with session:
+        outcome = await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, level_matched=True,
+        ))
+
+    read = await parts["records"].read(outcome.record_ids[0])
+
+    assert read is not None
+    assert read["level_matched"] is True
+    assert read["level_match_trims_db"] == {DRIVER_ROLE_TWEETER: -9.5}
+    assert read["take_id"] and read["kind"] == MEASURE_KIND_BASELINE
+
+
+async def test_a_stage_with_no_measurement_graph_refuses_the_level_match():
+    """``NoRoutedPhasesGraph`` measures through the APPLIED graph and has no
+    per-driver branch to trim. Dropping the request silently would bank an
+    unmatched capture under a record claiming a level match."""
+    from jasper.active_speaker.crossover_v2.composition import NoRoutedPhasesGraph
+
+    with pytest.raises(ValueError):
+        await NoRoutedPhasesGraph().install(
+            (), None, {DRIVER_ROLE_TWEETER: -9.5},
+        )
 
 
 async def test_a_banked_inverted_record_says_which_branch_was_flipped():

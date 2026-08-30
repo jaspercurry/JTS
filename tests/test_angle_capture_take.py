@@ -91,6 +91,7 @@ def _arm_shape():
 def _take(
     shape=None, *, base_entries=3, lateral_group_present=False,
     plans_cloud_group=False, capture_source=SOURCE_WIRED,
+    preset=None, topology=None,
 ):
     return v2host._take_staged_angle_walk(
         shape if shape is not None else _hand_shape(),
@@ -98,6 +99,10 @@ def _take(
         lateral_group_present=lateral_group_present,
         plans_cloud_group=plans_cloud_group,
         capture_source=capture_source,
+        # Read ONLY by the level-match resolution, which an unmatched walk
+        # never reaches — the ordinary walk pays no statefile read.
+        preset=preset,
+        topology=topology,
     )
 
 
@@ -163,7 +168,7 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
         taken = _take()
 
     assert taken is not None
-    prompts, consumer, _spec = taken
+    prompts, consumer, _spec, _trims = taken
     assert consumer == LATERAL_CONSUMER_FORWARD_MODEL
     assert [flow.position_angle_deg(p) for p in prompts] == CAMPAIGN_ANGLES
 
@@ -283,7 +288,7 @@ def test_the_taken_walk_becomes_the_sessions_map_and_its_prompted_entries(slot):
     six spots while the conductor measured five.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
-    prompts, _consumer, _spec = _take()
+    prompts, _consumer, _spec, _trims = _take()
     shape = _hand_shape()
 
     mapping = flow.build_v2_cloud_index_phase_map(
@@ -322,7 +327,7 @@ def test_an_arm_driven_walk_declares_the_angle_its_gate_waits_for(slot):
     spool.stage_angle_request(
         ac.per_driver_at(CAMPAIGN_ANGLES, mover=ac.MOVER_ARM)
     )
-    prompts, _consumer, _spec = _take(_arm_shape())
+    prompts, _consumer, _spec, _trims = _take(_arm_shape())
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_arm_shape(),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
@@ -345,7 +350,7 @@ def test_the_consent_copy_quotes_the_walk_the_household_will_actually_take(slot)
     reach at a household about to be walked past it is the dishonesty the
     orientation sentence exists to prevent."""
     spool.stage_angle_request(ac.per_driver_at([0, 45, -45]))
-    prompts, _consumer, _spec = _take()
+    prompts, _consumer, _spec, _trims = _take()
     wide = flow.walk_shape_for(
         cloud_positions=0, lateral=True, lateral_prompts=prompts,
     )
@@ -405,7 +410,7 @@ def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatc
     the validated pair and the played pair get to differ.
     """
     spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
-    _prompts, _consumer, spec = _take()
+    _prompts, _consumer, spec, _trims = _take()
 
     played = _played_measure_spec(spec, monkeypatch)
     assert (played.kind, played.polarity, played.inverted_role) == (
@@ -429,13 +434,284 @@ def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
         delayed_role=DRIVER_ROLE_TWEETER,
         delay_us=250.0,
     ))
-    _prompts, _consumer, spec = _take()
+    _prompts, _consumer, spec, _trims = _take()
 
     played = _played_measure_spec(spec, monkeypatch)
     assert (played.delayed_role, played.delay_us) == (DRIVER_ROLE_TWEETER, 250.0)
 
     ordinary = _played_measure_spec(None, monkeypatch)
     assert (ordinary.delayed_role, ordinary.delay_us) == ("", 0.0)
+
+
+def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):
+    """Answer the level-match evidence question with a stated verdict.
+
+    Patched at the HOST's own door rather than at ``baseline_profile``, so this
+    pins that adoption asks the question and carries the answer; whether the
+    precedence behind it is right is that module's own subject and has its own
+    tests. ``{}`` is the box with no measured evidence at all.
+    """
+    monkeypatch.setattr(
+        v2host, "_resolve_measurement_level_trims",
+        lambda spec, *, preset, topology: (
+            (dict(trims), source) if spec.level_matched else ({}, "")
+        ),
+    )
+
+
+def test_a_level_matched_walk_carries_the_boxs_own_trims_to_the_session(
+    slot, monkeypatch, caplog,
+):
+    """The values are resolved at ADOPTION and travel from there: the spec says
+    only WHETHER, and the numbers reach the session that installs the graph.
+    Resolving them a second time downstream would be a second answer to one
+    question."""
+    _with_measured_trims(monkeypatch, {DRIVER_ROLE_TWEETER: -9.5})
+    spool.stage_angle_request(_inverted_walk(
+        inverted_role=DRIVER_ROLE_TWEETER, level_matched=True,
+    ))
+    with caplog.at_level(logging.INFO):
+        _prompts, _consumer, spec, trims = _take()
+
+    assert spec.level_matched is True
+    assert trims == {DRIVER_ROLE_TWEETER: -9.5}
+    # WHICH evidence answered rides the journal, so a take's receipts name the
+    # source of the gains its graph carries.
+    line, = _events(caplog)
+    assert "level_match_source=banked_base_trim" in line
+
+
+def test_an_ordinary_walk_resolves_no_trims_and_reads_no_evidence(
+    slot, monkeypatch,
+):
+    """The ordinary session pays nothing: no statefile read, no preview load."""
+    asked: list[object] = []
+
+    def _spy(spec, *, preset, topology):
+        asked.append(spec)
+        return {}, ""
+
+    monkeypatch.setattr(v2host, "_resolve_measurement_level_trims", _spy)
+    spool.stage_angle_request(ac.per_driver_at([0]))
+    _prompts, _consumer, spec, trims = _take()
+
+    assert spec.level_matched is False and trims == {}
+    # Called once and answered empty — the real resolver short-circuits on the
+    # flag before it opens anything.
+    assert len(asked) == 1
+
+
+def test_a_level_match_with_no_evidence_refuses_the_open_under_its_own_slug(
+    slot, monkeypatch,
+):
+    """The two honest arms are refusing and measuring unmatched under a record
+    that says matched. The second is the S12 lie, so this refuses — with its
+    OWN slug, so an operator reading ``reason=`` learns the box needs a driver
+    trim rather than being told something about polarity."""
+    _with_measured_trims(monkeypatch, {})
+    spool.stage_angle_request(_inverted_walk(
+        inverted_role=DRIVER_ROLE_TWEETER, level_matched=True,
+    ))
+    sentence = _refused()
+
+    assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE in sentence
+    assert ac.WALK_POLARITY_NOT_ACCEPTED not in sentence
+    assert ac.WALK_DELAY_NOT_ACCEPTED not in sentence
+    assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE in ac.WALK_REFUSAL_REASONS
+
+
+def test_a_walk_asking_for_no_level_match_never_refuses_on_evidence(
+    slot, monkeypatch,
+):
+    """A box with no measured trims is an ordinary box. Only a walk that ASKED
+    for the level match may be refused for the absence of one."""
+    _with_measured_trims(monkeypatch, {})
+    spool.stage_angle_request(ac.per_driver_at([0]))
+
+    assert _take() is not None
+
+
+def _level_matched_walk():
+    """A normal-polarity walk that only asks for the level match.
+
+    Not ``_inverted_walk``: an inverted walk is already wired-gated by polarity,
+    so a walk that isolates the level-match source gate must NOT also ride a
+    flip, or the polarity gate would answer first and this pin would test the
+    wrong door.
+    """
+    return ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), level_matched=True,
+    )
+
+
+def test_a_level_matched_walk_refuses_a_source_that_cannot_play_the_match(
+    slot, monkeypatch, caplog,
+):
+    """The twin of the polarity gate. The trims ride the engine MEASURE leg's
+    ``graph.install``, which only a wired session binds; every other source
+    runs MEASURE on the flow leg, which installs the ordinary graph and knows
+    nothing about them. So adopting a level-matched walk on a relay source
+    would journal ``level_matched=true`` over an unmatched capture — the S12
+    lie through a seam the graph does not cover.
+
+    It refuses on the SOURCE, and BEFORE any evidence is read: the box below
+    HAS trims, and the walk still refuses ``needs_wired`` rather than being
+    taken, and the evidence resolver is never called.
+    """
+    asked: list = []
+
+    def _resolver(spec, *, preset, topology):
+        asked.append(spec)
+        return {DRIVER_ROLE_TWEETER: -9.5}, "banked_base_trim"
+
+    monkeypatch.setattr(v2host, "_resolve_measurement_level_trims", _resolver)
+    spool.stage_angle_request(_level_matched_walk())
+    with caplog.at_level(logging.WARNING):
+        sentence = _refused(capture_source=SOURCE_RELAY)
+
+    assert ac.WALK_LEVEL_MATCH_NEEDS_WIRED in sentence
+    # A SOURCE refusal, not a no-evidence one — the box HAS trims.
+    assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE not in sentence
+    # And the gate short-circuits the resolver: a doomed walk reads no statefile.
+    assert asked == []
+    line, = _events(caplog)
+    assert f"reason={ac.WALK_LEVEL_MATCH_NEEDS_WIRED}" in line
+    assert "crossover_v2_angle_walk_taken" not in line
+    assert ac.WALK_LEVEL_MATCH_NEEDS_WIRED in ac.WALK_REFUSAL_REASONS
+    assert spool.staged_angle_request_pending() is False
+
+    # The refusal is the SOURCE's and only the source's: the same walk on a
+    # wired session, with the same evidence, is taken…
+    spool.stage_angle_request(_level_matched_walk())
+    assert _take(capture_source=SOURCE_WIRED) is not None
+
+    # …and a walk that asks for no level match is untouched on the relay.
+    spool.stage_angle_request(ac.per_driver_at([0]))
+    assert _take(capture_source=SOURCE_RELAY) is not None
+
+
+def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
+    slot, monkeypatch,
+):
+    """End to end through the REAL wiring, no seam mock: the real
+    :func:`~jasper.web.correction_crossover_v2._resolve_measurement_level_trims`
+    calling the real
+    :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` over a
+    genuinely empty box (loaders stubbed to empty documents, no banked base
+    trim, no guided captures).
+
+    This is the wall a virgin blind-run box hits when it stages a level-matched
+    reverse-null before it has measured its per-driver trims — the refusal that
+    teaches it to run the driver-trim step first. Pinning it through the real
+    path, not a resolver mock, is what makes that lesson real: a regression that
+    let an empty box resolve non-empty trims would sail past every test that
+    stubs the resolver.
+    """
+    _stub_evidence_loaders(monkeypatch)  # loaders empty; resolver + owner REAL
+    preset = SimpleNamespace(
+        way_count=2,
+        crossover_regions=(
+            SimpleNamespace(
+                lower_driver="woofer", upper_driver="tweeter", fc_hz=2000.0,
+            ),
+        ),
+    )
+    spool.stage_angle_request(_inverted_walk(
+        inverted_role=DRIVER_ROLE_TWEETER, level_matched=True,
+    ))
+    sentence = _refused(preset=preset)
+
+    assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE in sentence
+    # The real owner ran and answered empty, so the refusal is the evidence's,
+    # not the source's (this walk is wired) and not a masqueraded fault.
+    assert ac.WALK_LEVEL_MATCH_NEEDS_WIRED not in sentence
+
+
+def _stub_evidence_loaders(monkeypatch):
+    """The two banked documents the owner is handed, stubbed to empty.
+
+    Their CONTENT is the owner's subject, not this seam's; what these tests pin
+    is that this resolver asks that owner and carries its verdict.
+    """
+    from jasper.active_speaker import crossover_preview, measurement
+
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
+    monkeypatch.setattr(
+        crossover_preview, "load_crossover_preview", lambda *a, **k: {}
+    )
+
+
+def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
+    monkeypatch,
+):
+    """Precedence has one owner. This resolver hands that owner the same two
+    inputs the applied profile's own build hands it and reports its verdict —
+    it does not re-rank banked against guided, and it does not substitute a
+    datasheet estimate for a measurement of this cabinet."""
+    from jasper.active_speaker import baseline_profile
+
+    seen: list[object] = []
+
+    def _owner(preset, measurements, crossover_preview=None):
+        seen.append((preset, measurements, crossover_preview))
+        return {DRIVER_ROLE_TWEETER: -9.5}, {"source": "guided_captures"}
+
+    monkeypatch.setattr(baseline_profile, "measured_level_trims", _owner)
+    _stub_evidence_loaders(monkeypatch)
+    trims, source = v2host._resolve_measurement_level_trims(
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
+        preset=object(), topology=None,
+    )
+
+    assert trims == {DRIVER_ROLE_TWEETER: -9.5}
+    assert source == "guided_captures"
+    assert len(seen) == 1
+
+
+def test_the_resolver_answers_empty_for_a_walk_that_asked_for_no_level_match(
+    monkeypatch,
+):
+    """The short circuit is the flag, before any read: an ordinary session must
+    not pay a statefile read or a preview load for a feature it did not use."""
+    from jasper.active_speaker import baseline_profile
+
+    def _never(*_args, **_kwargs):
+        raise AssertionError("an unmatched walk must ask no evidence question")
+
+    monkeypatch.setattr(baseline_profile, "measured_level_trims", _never)
+
+    assert v2host._resolve_measurement_level_trims(
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE), preset=None, topology=None,
+    ) == ({}, "")
+
+
+def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
+    monkeypatch,
+):
+    """There is no catch here, and that is the point. The loaders fail soft — an
+    absent, unreadable or corrupt-but-readable document returns a status dict,
+    never a raise — and the estimator is fail-closed, so a box with nothing to
+    level by reaches the caller as EMPTY trims (the e2e test above pins that
+    whole path). No exception is expected at all, so an exception that DOES
+    arise is a real fault in the derivation; swallowing it to answer empty would
+    misdirect the operator to "run the driver trim step" over a bug. With no
+    catch it PROPAGATES, its traceback pointing straight at this function."""
+    from jasper.active_speaker import baseline_profile
+
+    class _Boom(RuntimeError):
+        pass
+
+    def _blows_up(*_args, **_kwargs):
+        raise _Boom("a real defect in the derivation")
+
+    monkeypatch.setattr(baseline_profile, "measured_level_trims", _blows_up)
+    _stub_evidence_loaders(monkeypatch)
+
+    with pytest.raises(_Boom):
+        v2host._resolve_measurement_level_trims(
+            MeasureSpec(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
+            preset=object(), topology=None,
+        )
 
 
 def test_a_coordinate_the_spec_refuses_is_named_as_a_DELAY_refusal(slot):

@@ -2056,8 +2056,11 @@ def _take_staged_angle_walk(
     lateral_group_present: bool,
     plans_cloud_group: bool,
     capture_source: str,
-) -> tuple[tuple[Any, ...], str, Any] | None:
-    """This session's staged angle walk as ``(poses, consumer, spec)``, or ``None``.
+    preset: Any,
+    topology: Any,
+) -> tuple[tuple[Any, ...], str, Any, dict[str, float]] | None:
+    """This session's staged angle walk as ``(poses, consumer, spec, trims)``,
+    or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
     ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
@@ -2091,13 +2094,35 @@ def _take_staged_angle_walk(
     refuses the open here, in the spec's own sentence, rather than reaching a
     capture callback as a 500.
 
-    ``capture_source`` is read for ONE question: only a wired session binds the
-    engine MEASURE leg (:func:`_bind_engine_measure_leg` returns ``None`` with
-    no local capture half), and every other source runs MEASURE on the flow
-    leg, which has no ``spec`` and would play the ordinary graph. So a walk
-    asking for a sign-flipped branch on a non-wired source is one this session
-    cannot honour — it refuses, rather than banking a normal capture under a
-    record that says ``inverted`` and a journal line that says so too.
+    ``trims`` is the per-role attenuation a ``--level-matched`` walk's graph
+    will carry, RESOLVED HERE and empty for every walk that asked for none.
+    Adoption is the one place that can both ask the evidence question and still
+    refuse, so it is asked exactly once: the answer travels to the session that
+    installs the graph and to the record that states what played, and no later
+    hop re-derives it. A ``level_matched`` walk faces TWO refusals here, both
+    the same S12 lie caught at different seams. FIRST, the source: the trims
+    ride the engine MEASURE leg exactly as a sign-flip does, so a non-wired
+    source refuses with
+    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NEEDS_WIRED`
+    before any statefile is read. THEN, on a wired source, the evidence: it has
+    ONE owner
+    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`,
+    banked base trim before guided captures), and a box neither of those
+    answers for refuses with
+    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`
+    rather than measuring unmatched branches under a record that says matched.
+    A datasheet estimate is deliberately not a fallback: it is physics about
+    the driver model, not a measurement of this cabinet.
+
+    ``capture_source`` is read for TWO questions, both the same one asked of a
+    different capability: only a wired session binds the engine MEASURE leg
+    (:func:`_bind_engine_measure_leg` returns ``None`` with no local capture
+    half), and every other source runs MEASURE on the flow leg, which has no
+    ``spec``, installs the ordinary graph, and knows nothing about a sign-flip
+    or a level match. So a walk asking for a sign-flipped branch OR a level
+    match on a non-wired source is one this session cannot honour — it refuses,
+    rather than banking an ordinary capture under a record, and a journal line,
+    that say otherwise.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
@@ -2115,6 +2140,8 @@ def _take_staged_angle_walk(
     """
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
+        WALK_LEVEL_MATCH_NEEDS_WIRED,
+        WALK_LEVEL_MATCH_NO_EVIDENCE,
         WALK_POLARITY_NEEDS_WIRED,
         WALK_DELAY_NOT_ACCEPTED,
         WALK_POLARITY_NOT_ACCEPTED,
@@ -2190,6 +2217,7 @@ def _take_staged_angle_walk(
             inverted_role=request.inverted_role,
             delayed_role=request.delayed_role,
             delay_us=request.delay_us,
+            level_matched=request.level_matched,
         )
     except ValueError as exc:
         # Attributed by which half the request STATED, never by re-judging
@@ -2210,6 +2238,33 @@ def _take_staged_angle_walk(
             f"which only a {SOURCE_WIRED} session binds; this session's "
             f"capture source is {capture_source!r}",
         )
+    if measure_spec.level_matched and capture_source != SOURCE_WIRED:
+        # The twin of the polarity gate above, and BEFORE the evidence
+        # resolution below: the trims ride the engine MEASURE leg's
+        # ``graph.install``, which only a wired session binds — the flow leg
+        # calls ``session_graph.install()`` with none and plays the ordinary
+        # graph. A non-wired box that HAS evidence still cannot play the match,
+        # so this is a source refusal and not a no-evidence one, and asked
+        # first so a doomed walk never reads a statefile. Without it a
+        # ``level_matched`` walk on a relay source would journal
+        # ``level_matched=true`` over an unmatched capture — the S12 lie.
+        raise refused(
+            WALK_LEVEL_MATCH_NEEDS_WIRED,
+            "a level-matched capture plays through the engine MEASURE leg, "
+            f"which only a {SOURCE_WIRED} session binds; this session's "
+            f"capture source is {capture_source!r}",
+        )
+    level_trims, trim_source = _resolve_measurement_level_trims(
+        measure_spec, preset=preset, topology=topology,
+    )
+    if measure_spec.level_matched and not level_trims:
+        raise refused(
+            WALK_LEVEL_MATCH_NO_EVIDENCE,
+            "this walk asks the measurement graph to level-match the driver "
+            "branches, and this speaker has no measured per-driver level "
+            "evidence to match them by; run the driver trim step, or stage "
+            "the walk without --level-matched",
+        )
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
@@ -2220,9 +2275,62 @@ def _take_staged_angle_walk(
         inverted_role=request.inverted_role,
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
+        level_matched=request.level_matched,
+        # WHICH evidence answered, so a take's receipts name the source of the
+        # gains its graph carries instead of leaving a reader to guess between
+        # the banked trim and the guided captures. Empty on an unmatched walk.
+        level_match_source=trim_source,
+        level_match_trims_db=",".join(
+            f"{role}:{db:g}" for role, db in sorted(level_trims.items())
+        ),
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
     )
-    return prompts, LATERAL_CONSUMER_FORWARD_MODEL, measure_spec
+    return prompts, LATERAL_CONSUMER_FORWARD_MODEL, measure_spec, level_trims
+
+
+def _resolve_measurement_level_trims(
+    spec: Any, *, preset: Any, topology: Any,
+) -> tuple[dict[str, float], str]:
+    """This box's own per-driver level match, and which evidence answered.
+
+    ``({}, "")`` for a spec that asks for none — the ordinary walk, which pays
+    nothing: no statefile is read and no preview is loaded.
+
+    The precedence is NOT decided here.
+    :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` is the
+    one owner of *banked base trim before guided captures*, and this function
+    hands it the same two inputs the applied profile's own build hands it, so
+    the graph a measurement plays through is levelled by the same evidence the
+    speaker would be levelled by.
+
+    **No/unreadable evidence answers empty WITHOUT raising, and there is no
+    catch to dress a genuine fault up as no-evidence.** Both loaders fail soft
+    — an absent, unreadable or corrupt-but-readable document returns a status
+    dict, never a raise (``measurement._normalise_state`` and the preview
+    loader both narrow a non-mapping back to a base document) — and the
+    estimator is fail-closed, answering empty trims for every unusable-evidence
+    case. So a box with nothing to level by reaches the caller's
+    ``WALK_LEVEL_MATCH_NO_EVIDENCE`` refusal through the empty return, and NO
+    exception is expected here at all. There is therefore nothing to catch: an
+    exception that does arise is a real fault in the derivation, and it
+    propagates with its traceback pointing straight at this function rather
+    than being swallowed and misread as "this box has not measured its trims".
+    """
+    if not spec.level_matched:
+        return {}, ""
+    from jasper.active_speaker.baseline_profile import measured_level_trims
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    trims, meta = measured_level_trims(
+        preset,
+        load_measurement_state(topology) or {},
+        load_crossover_preview() or {},
+    )
+    return (
+        {str(role): float(db) for role, db in trims.items()},
+        str(meta.get("source") or ""),
+    )
 
 
 
@@ -3640,16 +3748,23 @@ def bind_production_play(
     def _emit_program_graph(
         inverted_roles: tuple[str, ...] = (),
         measurement_delays_us: Mapping[str, float] | None = None,
+        level_trims_db: Mapping[str, float] | None = None,
     ) -> str:
         """The session's ONE measurement-graph emit, per measurement variant.
 
-        Every argument here but ``inverted_roles`` and ``measurement_delays_us``
-        is a bind-time closure
-        variable, which is the fact that makes the graph session-scoped rather
-        than per-stimulus: the old per-capture site emitted these same bytes
-        for every stimulus. ``inverted_roles`` is R-1's reverse-null flip and
-        is the one thing a measurement chooses — empty on every normal capture,
-        which keeps that emit byte-identical to what it was.
+        Every argument here but the three VARIANT axes — ``inverted_roles``,
+        ``measurement_delays_us`` and ``level_trims_db`` — is a bind-time
+        closure variable, which is the fact that makes the graph session-scoped
+        rather than per-stimulus: the old per-capture site emitted these same
+        bytes for every stimulus. The three are what a measurement chooses —
+        empty on every normal capture, which keeps that emit byte-identical to
+        what it was.
+
+        ``level_trims_db`` arrives RESOLVED. This closure applies the numbers
+        it is handed and never asks the evidence question itself: that question
+        has one owner (``baseline_profile.measured_level_trims``) and is asked
+        once, at session open, where a box with no evidence can still refuse
+        the walk instead of silently measuring unmatched branches.
 
         BOTH HALVES OF THE DEVICE BLOCK, DERIVED TOGETHER (issue #2450).
         ``playback_device`` is already marker-aware — on an armed box
@@ -3691,6 +3806,7 @@ def bind_production_play(
             enable_rate_adjust=devices.enable_rate_adjust,
             inverted_roles=inverted_roles,
             measurement_delays_us=measurement_delays_us,
+            measurement_level_trims_db=level_trims_db,
         )
 
     session_graph = MeasurementSessionGraph(
@@ -6444,6 +6560,10 @@ def prepare_v2_session(
     # both stages, and stage 2 takes no MEASURE capture at all: ``None`` is the
     # engine leg's own default spec, which is every ordinary session.
     engine_measure_spec: Any = None
+    # The per-role attenuation that spec's graph carries, resolved once at
+    # adoption beside it. Empty on every session that stages no level-matched
+    # walk, which is every ordinary one.
+    engine_level_trims: dict[str, float] = {}
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
         # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
@@ -6475,11 +6595,18 @@ def prepare_v2_session(
             lateral_group_present=include_lateral,
             plans_cloud_group=include_cloud_measure,
             capture_source=capture_source,
+            preset=context.preset,
+            topology=context.topology,
         )
         lateral_prompts: tuple[Any, ...] | None = None
         lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
         if staged_walk is not None:
-            lateral_prompts, lateral_consumer, engine_measure_spec = staged_walk
+            (
+                lateral_prompts,
+                lateral_consumer,
+                engine_measure_spec,
+                engine_level_trims,
+            ) = staged_walk
             include_lateral = True
             stage1_index_phase = build_v2_cloud_index_phase_map(
                 plan_shape=plan_shape,
@@ -6982,6 +7109,10 @@ def prepare_v2_session(
                 routed_phases=not verify_only,
             ),
             measurement_level_db=context.session_volume_db,
+            # Resolved at adoption, applied here: the session installs the
+            # trims a ``level_matched`` spec asks for and derives none of its
+            # own. Empty on every session whose walk asked for no level match.
+            level_match_trims_db=engine_level_trims,
         )
         nonlocal held
         source_run = _build_source_run(

@@ -320,6 +320,26 @@ def test_a_spec_states_both_halves_of_its_delay_or_neither():
             MeasureSpec(kind="baseline", **half)
 
 
+def test_the_spec_states_WHETHER_to_level_match_and_the_session_states_by_how_much():
+    """The values never travel on the spec. ``level_trims_for`` is the one
+    translation from the boolean into the graph's vocabulary, and it applies
+    what the SESSION resolved on the box — so a spec cannot carry one
+    cabinet's level match onto another's measurement."""
+    from jasper.active_speaker.crossover_v2.measure_spec import (
+        MeasureSpec,
+        level_trims_for,
+    )
+
+    resolved = {"tweeter": -9.5}
+    matched = MeasureSpec(kind="baseline", level_matched=True)
+    assert level_trims_for(matched, resolved) == resolved
+    # Asking for none applies none, however much the session is holding.
+    assert level_trims_for(MeasureSpec(kind="baseline"), resolved) == {}
+    # And asking for one the session has nothing for is empty here, not a
+    # raise: that pairing is refused at open, where an operator can act on it.
+    assert level_trims_for(matched, None) == {}
+
+
 def test_a_delay_beyond_the_dsp_ceiling_is_refused_at_the_spec():
     from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
@@ -395,6 +415,11 @@ def test_a_staged_walk_carries_the_confirmation_coordinate():
     assert (_walk().delayed_role, _walk().delay_us) == ("", 0.0)
 
 
+def test_a_staged_walk_carries_whether_to_level_match():
+    assert _walk(level_matched=True).level_matched is True
+    assert _walk().level_matched is False
+
+
 def test_the_coordinate_survives_the_spool_round_trip(tmp_path):
     from jasper.active_speaker import angle_capture_spool as spool
 
@@ -407,6 +432,19 @@ def test_the_coordinate_survives_the_spool_round_trip(tmp_path):
 
     assert taken is not None
     assert (taken.delayed_role, taken.delay_us) == ("tweeter", 250.0)
+
+
+def test_the_level_match_survives_the_spool_round_trip(tmp_path):
+    from jasper.active_speaker import angle_capture_spool as spool
+
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "walk.json")
+    try:
+        spool.stage_angle_request(_walk(level_matched=True))
+        taken = spool.take_staged_angle_request()
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+    assert taken is not None and taken.level_matched is True
 
 
 def test_a_document_spooled_before_the_coordinate_existed_still_reads(tmp_path):

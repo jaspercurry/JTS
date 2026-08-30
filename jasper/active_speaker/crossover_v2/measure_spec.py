@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Mapping
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 
@@ -76,6 +77,7 @@ __all__ = [
     "CapabilityStub",
     "MeasureSpec",
     "inverted_roles_for",
+    "level_trims_for",
     "measurement_delays_for",
     "stub_for_code",
     "stubbed_capabilities",
@@ -273,6 +275,13 @@ class MeasureSpec:
     #: is what keeps their graphs byte-identical.
     delayed_role: str = ""
     delay_us: float = 0.0
+    #: Whether this capture's graph carries the box's own per-driver
+    #: level-match trims. A BOOLEAN and never the numbers: the trims are a
+    #: property of the speaker, resolved on-box from banked evidence at the one
+    #: precedence owner, so an operator who hand-carried values would be
+    #: measuring through a level match some other box was measured for. False
+    #: on every other capture, which is what keeps their graphs byte-identical.
+    level_matched: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in MEASURE_KINDS:
@@ -393,6 +402,29 @@ def measurement_delays_for(spec: MeasureSpec) -> dict[str, float]:
     if not spec.delayed_role:
         return {}
     return {spec.delayed_role: spec.delay_us}
+
+
+def level_trims_for(
+    spec: MeasureSpec, resolved_db: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """The per-role attenuation this spec's graph must carry.
+
+    The third translation beside :func:`measurement_delays_for` and
+    :func:`inverted_roles_for`, and the only place the spec's BOOLEAN meets the
+    numbers. ``resolved_db`` is what the session was opened with — resolved
+    once, on-box, from the banked evidence the box owns — so this function
+    chooses between applying it and applying nothing, and never derives a
+    value. Empty for every spec that asks for no level match, which is what
+    keeps an ordinary capture's graph byte-identical.
+
+    A spec that asks for one when the session holds no trims answers empty
+    rather than raising: the refusal for that belongs at session open, where
+    the evidence question is asked once and an operator can still act on the
+    answer.
+    """
+    if not spec.level_matched:
+        return {}
+    return {str(role): float(db) for role, db in (resolved_db or {}).items()}
 
 
 def inverted_roles_for(spec: MeasureSpec) -> tuple[str, ...]:

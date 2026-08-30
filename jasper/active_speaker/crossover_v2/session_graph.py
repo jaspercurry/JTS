@@ -68,10 +68,18 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["MeasurementSessionGraph", "SessionGraphError"]
 
-#: ``(inverted_roles, measurement_delays_us) -> yaml``. Both halves of the
-#: measurement VARIANT: a sign-flipped branch and a candidate delay each make
-#: a different graph with a different fingerprint.
-EmitYaml = Callable[[tuple[str, ...], Mapping[str, float]], str]
+#: ``(inverted_roles, measurement_delays_us, level_trims_db) -> yaml``. The
+#: three axes of the measurement VARIANT: a sign-flipped branch, a candidate
+#: delay and a per-driver level match each make a different graph with a
+#: different fingerprint.
+EmitYaml = Callable[
+    [tuple[str, ...], Mapping[str, float], Mapping[str, float]], str
+]
+#: ``(inverted_roles, delays, level trims)`` — what makes one graph variant
+#: distinct from another, and therefore what the emit cache is keyed by.
+_VariantKey = tuple[
+    tuple[str, ...], tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]
+]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
 ConfirmLive = Callable[[Any, str], Awaitable[None]]
@@ -112,7 +120,7 @@ class MeasurementSessionGraph:
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
-        self._yaml: dict[tuple[tuple[str, ...], tuple[tuple[str, float], ...]], str] = {}
+        self._yaml: dict[_VariantKey, str] = {}
         self._installed_yaml: str | None = None
         self._entry_config_path: str | None = None
 
@@ -125,8 +133,9 @@ class MeasurementSessionGraph:
         self,
         inverted_roles: tuple[str, ...] = (),
         measurement_delays_us: Mapping[str, float] | None = None,
+        level_trims_db: Mapping[str, float] | None = None,
     ) -> str:
-        """The emitted graph, emitted at most once per POLARITY VARIANT.
+        """The emitted graph, emitted at most once per MEASUREMENT VARIANT.
 
         The emitter runs its fail-closed proofs on every call
         (``_assert_program_graph_proven``), so caching the text is what turns
@@ -136,18 +145,29 @@ class MeasurementSessionGraph:
         R-1 makes that *once per variant* rather than once outright: a
         reverse-null walk asks for a graph whose named driver branch is
         sign-flipped, and that is a different graph with a different
-        fingerprint. It is still one emit per variant, and every variant pays
-        the same proofs — a flipped branch is not a way past them.
+        fingerprint. A candidate delay and a per-driver level match are the
+        other two axes of the same thing. It is still one emit per variant,
+        and every variant pays the same proofs — a flipped, delayed or
+        levelled branch is not a way past them.
         """
         delays = dict(measurement_delays_us or {})
+        trims = dict(level_trims_db or {})
         # The delay is part of the variant KEY, not just the payload: a walk
         # stepping coordinates asks for a different graph at every step, and a
         # cache keyed on polarity alone would hand back the previous
-        # coordinate's graph and measure the wrong delay.
-        key = (inverted_roles, tuple(sorted(delays.items())))
+        # coordinate's graph and measure the wrong delay. The level match joins
+        # it for the same reason and one sharper: a level-matched capture and
+        # its unmatched twin differ ONLY in these gains, so a cache that did
+        # not key on them would serve the untrimmed graph and bank a record
+        # claiming a level match that never played.
+        key = (
+            inverted_roles,
+            tuple(sorted(delays.items())),
+            tuple(sorted(trims.items())),
+        )
         cached = self._yaml.get(key)
         if cached is None:
-            cached = self._emit(inverted_roles, delays)
+            cached = self._emit(inverted_roles, delays, trims)
             self._yaml[key] = cached
         return cached
 
@@ -155,6 +175,7 @@ class MeasurementSessionGraph:
         self,
         inverted_roles: tuple[str, ...] = (),
         measurement_delays_us: Mapping[str, float] | None = None,
+        level_trims_db: Mapping[str, float] | None = None,
     ) -> str:
         """Install the measurement graph, or prove the installed one is still it.
 
@@ -180,7 +201,9 @@ class MeasurementSessionGraph:
         "nothing new was installed" — :meth:`restore` stays able to put back
         whatever an earlier install displaced.
         """
-        yaml_text = self.graph_yaml(inverted_roles, measurement_delays_us)
+        yaml_text = self.graph_yaml(
+            inverted_roles, measurement_delays_us, level_trims_db,
+        )
         cam = self._cam_factory()
 
         if self._installed_yaml == yaml_text and await self._is_live(cam, yaml_text):
@@ -215,6 +238,14 @@ class MeasurementSessionGraph:
                 measurement_delays_us=",".join(
                     f"{role}:{us:g}"
                     for role, us in sorted((measurement_delays_us or {}).items())
+                ),
+                # Named on the line that says which graph went in, because a
+                # level match is otherwise invisible in a fingerprint: two
+                # takes of one walk differing only in these numbers would
+                # read as the same install to anyone reading the journal.
+                measurement_level_trims_db=",".join(
+                    f"{role}:{db:g}"
+                    for role, db in sorted((level_trims_db or {}).items())
                 ),
             )
             await self._load(cam, yaml_text)

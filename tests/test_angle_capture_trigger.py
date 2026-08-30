@@ -384,6 +384,49 @@ def test_the_polarity_pair_rides_the_document_and_an_older_one_reads_as_normal(s
     assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
 
 
+def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slot):
+    """The whole operator hop for the level match: flag, request, document,
+    read-back — and a document staged before the key existed reading as an
+    unmatched walk rather than as a refusal to re-stage past.
+
+    A BOOLEAN travels, never numbers: the trims belong to the speaker and are
+    resolved on the box when the host adopts the walk, so an operator cannot
+    carry one cabinet's level match to another.
+    """
+    path, _ = slot
+    args = cli.build_parser().parse_args([
+        "stage", "--angles", "0", "--level-matched",
+    ])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["level_matched"] is True
+    # The document states WHETHER, never the dB.
+    assert not [key for key in doc if key.endswith("_db")]
+    assert spool.take_staged_angle_request() == AngleCaptureRequest(
+        stops=(AngleStop(0, REGIME_PER_DRIVER),),
+        level_matched=True,
+    )
+
+    older = {k: v for k, v in doc.items() if k != "level_matched"}
+    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
+    path.write_text(json.dumps(older), encoding="utf-8")
+    taken = spool.take_staged_angle_request()
+    assert taken.level_matched is False
+    assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
+
+
+def test_an_ordinary_walk_asks_for_no_level_match(slot):
+    """The flag is opt-in: without it the staged document is what it was."""
+    path, _ = slot
+    args = cli.build_parser().parse_args(["stage", "--angles", "0"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["level_matched"] is False
+    assert spool.take_staged_angle_request().level_matched is False
+
+
 def test_the_staged_order_is_the_walk_order_not_a_sorted_rewrite(slot):
     """Order is the measurement's: a sorted or de-duplicated bank re-plans it."""
     request = per_driver_at([0, 22, -7, 7, -22])

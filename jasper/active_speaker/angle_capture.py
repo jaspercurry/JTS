@@ -132,6 +132,8 @@ __all__ = [
     "WALK_DELAY_NOT_ACCEPTED",
     "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_POLARITY_NEEDS_WIRED",
+    "WALK_LEVEL_MATCH_NO_EVIDENCE",
+    "WALK_LEVEL_MATCH_NEEDS_WIRED",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -313,6 +315,12 @@ class AngleCaptureRequest:
     coordinate the DISPOSE step plays. Walk-level for the same reason the
     polarity pair is, and carried the same way: never judged here.
 
+    ``level_matched`` asks the measurement graph to carry the box's own
+    per-driver level match, and it is a BOOLEAN on purpose: the trims belong
+    to the speaker, not to the request, so they resolve on-box when the host
+    adopts this walk. An operator who could state numbers here could measure
+    one speaker through another's level match.
+
     ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
     because the reverse-null is **one act at one place**
     (``docs/REFACTOR-TUNING-2026-08.md`` §1: design-axis-only, where the
@@ -334,6 +342,7 @@ class AngleCaptureRequest:
     inverted_role: str = ""
     delayed_role: str = ""
     delay_us: float = 0.0
+    level_matched: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -686,6 +695,32 @@ WALK_POLARITY_NEEDS_WIRED = "walk_polarity_needs_wired"
 #: never by re-judging validity here.
 WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 
+#: The walk asks its graph to level-match the driver branches and this box has
+#: no measured evidence to level them BY. The trims are the speaker's own —
+#: resolved on-box from the banked per-driver base trim, or from the guided
+#: captures — so a box that has measured neither has nothing to apply, and the
+#: two honest arms are refusing or playing an unmatched graph under a record
+#: that says ``level_matched``. That second arm is the lie ruling S12 refuses,
+#: and a datasheet estimate is not the box's measurement however plausible it
+#: looks. Declared here so the vocabulary has one home; raised by the CALLER,
+#: since this module reads no box state — the same split
+#: :data:`WALK_POLARITY_NEEDS_WIRED` already uses.
+WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
+
+#: The walk asks its graph to level-match the driver branches and this
+#: session's capture source cannot deliver one. The level match lives in the
+#: measurement graph's per-driver gain, and only a WIRED session binds the
+#: engine's MEASURE leg that installs it; every other source runs MEASURE on
+#: the flow leg, which installs the ordinary graph and knows nothing about the
+#: trims. The exact twin of :data:`WALK_POLARITY_NEEDS_WIRED`, and refused for
+#: its reason: the alternative banks an unmatched capture — and journals
+#: ``level_matched=true`` — under a walk that says it was levelled, the S12 lie
+#: through a seam the graph does not cover. Its own slug rather than the
+#: polarity one so an operator reading ``reason=`` learns WHICH capability the
+#: non-wired source cannot play. Declared here so the vocabulary has one home;
+#: raised by the CALLER, since this module reads no session facts.
+WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -696,6 +731,8 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_POLARITY_NOT_ACCEPTED,
     WALK_DELAY_NOT_ACCEPTED,
     WALK_POLARITY_NEEDS_WIRED,
+    WALK_LEVEL_MATCH_NO_EVIDENCE,
+    WALK_LEVEL_MATCH_NEEDS_WIRED,
 })
 
 

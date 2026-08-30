@@ -60,15 +60,20 @@ class FakeCam:
 def _graph(cam, *, tmp_path, emits=None):
     emitted = emits if emits is not None else []
 
-    def _emit(inverted_roles=(), measurement_delays_us=None) -> str:
+    def _emit(
+        inverted_roles=(), measurement_delays_us=None, level_trims_db=None,
+    ) -> str:
         # One distinct text per measurement variant, the way the real emitter
-        # produces one: a flipped mixer is different bytes, and so is a Delay
-        # filter carrying a different coordinate.
+        # produces one: a flipped mixer is different bytes, so is a Delay
+        # filter carrying a different coordinate, and so is a mixer source
+        # carrying a different gain.
         text = GRAPH
         if inverted_roles:
             text += f"inverted: {inverted_roles}\n"
         if measurement_delays_us:
             text += f"delays: {sorted(measurement_delays_us.items())}\n"
+        if level_trims_db:
+            text += f"trims: {sorted(level_trims_db.items())}\n"
         emitted.append(text)
         return text
 
@@ -421,6 +426,35 @@ def test_a_delay_coordinate_is_its_own_graph_with_its_own_fingerprint(tmp_path):
 
     assert len({first, second, flipped_only}) == 3
     assert len(graph.emitted) == 3, "one emit per delay variant"
+
+
+def test_a_level_match_is_its_own_graph_with_its_own_fingerprint(tmp_path):
+    """The third variant axis. A level-matched capture and its unmatched twin
+    differ ONLY in the mixer gains, so a cache that did not key on them would
+    serve the untrimmed graph and bank a record claiming a level match that
+    never played."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    unmatched = asyncio.run(graph.install(("tweeter",)))
+    matched = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -9.5}))
+    deeper = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -10.5}))
+
+    assert len({unmatched, matched, deeper}) == 3
+    assert len(graph.emitted) == 3, "one emit per level-match variant"
+
+
+def test_the_same_level_match_twice_is_emitted_once(tmp_path):
+    """The variant cache still does its job on the new axis: every stimulus of
+    one walk asks for the same trims and pays one emit between them."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    first = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -9.5}))
+    again = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -9.5}))
+
+    assert first == again
+    assert len(graph.emitted) == 1
 
 
 def test_the_same_coordinate_twice_is_emitted_once(tmp_path):
