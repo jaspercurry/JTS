@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import candidate_bank
+from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.round_anchor import ROUND_ANCHOR_STATE_KEY
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
@@ -565,3 +566,159 @@ def test_the_bank_is_the_one_owner_of_where_banked_candidates_live(bank):
         neighbour.MAX_CANDIDATE_ARTIFACTS_SCANNED
         is candidate_bank.MAX_CANDIDATE_ARTIFACTS_SCANNED
     )
+
+
+# --- the ordinal reset, disclosed rather than silent ------------------------
+
+
+def _round_receipt_state(ordinal: int | None, *, epoch: int | None = None) -> None:
+    """Put a banked round's series memory on disk, as a graded round leaves it.
+
+    ``round_receipt`` is the ONE key the whole disclosure turns on: it is where
+    ``coordinator.series_position_from_state`` reads the previous ordinal from,
+    and it is what both reset doors drop.
+    """
+    state = dict(v2host.load_v2_state() or {})
+    state["round_receipt"] = None if ordinal is None else {"round_ordinal": ordinal}
+    if epoch is not None:
+        state[coordinator.ROUND_ORDINAL_EPOCH_STATE_KEY] = epoch
+    v2host.save_v2_state(state)
+
+
+def test_a_republish_restarts_the_ordinal_sequence_and_says_so(bank):
+    """The mechanism, and the disclosure that makes it readable.
+
+    A republish replaces durable state wholesale and never re-includes
+    ``round_receipt``, so the very next round resolves to ordinal 1 — on a
+    speaker that has already been through three. Both halves are asserted: the
+    reset is REAL (the reader still says 1), and it is no longer silent (the
+    epoch moved, and the ordinal that stopped existing is named).
+    """
+    candidate = _candidate()
+    _publish(bank, candidate)
+    _round_receipt_state(3)
+
+    result = republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+
+    assert result["republished"]["round_ordinal_epoch"] == 1
+    assert result["republished"]["reset_round_ordinal_from"] == 3
+
+    state = v2host.load_v2_state()
+    position = coordinator.series_position_from_state(state)
+    # The reset itself is unchanged — this PR discloses, it does not block.
+    assert position.ordinal == 1
+    # ...and the epoch is what tells this apart from a fresh box's round 1.
+    assert position.ordinal_epoch == 1
+
+
+def test_a_fresh_boxs_first_round_and_a_republished_ones_are_told_apart(bank):
+    """The whole point, stated as the comparison an operator actually makes.
+
+    Both series positions say ordinal 1. Before the epoch they were equal
+    records; a reader could not tell a box that had never measured from one
+    whose count was reset out from under it.
+    """
+    candidate = _candidate()
+    _publish(bank, candidate)
+    _round_receipt_state(2)
+    republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+
+    after_republish = coordinator.series_position_from_state(v2host.load_v2_state())
+    fresh_box = coordinator.series_position_from_state({})
+
+    assert after_republish.ordinal == fresh_box.ordinal == 1
+    assert after_republish.ordinal_epoch != fresh_box.ordinal_epoch
+    assert fresh_box.ordinal_epoch == 0
+
+
+def test_each_republish_advances_the_epoch(bank):
+    """A counter, not a flag: two resets are a different history from one."""
+    candidate = _candidate()
+    _publish(bank, candidate)
+
+    first = republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+    second = republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+
+    assert first["republished"]["round_ordinal_epoch"] == 1
+    assert second["republished"]["round_ordinal_epoch"] == 2
+    assert coordinator.round_ordinal_epoch_from_state(v2host.load_v2_state()) == 2
+
+
+def test_a_republish_with_no_count_to_lose_says_that_rather_than_zero(bank):
+    """"There was no ordinal" and "the ordinal was 0" are different facts.
+
+    A box that banked no round has nothing to reset. The epoch still moves —
+    the door ran — but ``reset_round_ordinal_from`` must not fabricate a number
+    for a count that never existed.
+    """
+    candidate = _candidate()
+    _publish(bank, candidate)
+
+    result = republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+
+    assert result["republished"]["reset_round_ordinal_from"] is None
+    assert result["republished"]["round_ordinal_epoch"] == 1
+
+
+def test_start_over_resets_the_same_sequence_and_takes_the_same_epoch(bank):
+    """The second door with the identical omission (#B5).
+
+    ``reset_v2_journey_state``'s applied branch drops ``round_receipt`` while
+    the applied graph keeps playing — the same reset, on a speaker that has
+    already been tuned. An epoch that counted only the republish would make
+    ``0`` mean "never reset" on one path and "reset by the other door" on the
+    other, which is the ambiguity the field exists to remove.
+    """
+    v2host.save_v2_state({
+        "applied": True,
+        "round_receipt": {"round_ordinal": 2},
+        "pre_apply_profile": {"path": "/tmp/x"},
+    })
+
+    v2host.reset_v2_journey_state()
+
+    position = coordinator.series_position_from_state(v2host.load_v2_state())
+    assert position.ordinal == 1
+    assert position.ordinal_epoch == 1
+
+
+def test_an_unmeasured_start_over_is_a_fresh_box_not_a_reset(bank):
+    """The not-applied branch is a full clear, and 0 is the honest answer.
+
+    Nothing measured is left on the speaker, so a count restarting at 1 there
+    is not a reset to disclose — it is what the box actually is. Pinned so the
+    epoch cannot drift into "how many times has anything been cleared".
+    """
+    v2host.save_v2_state({"applied": False, "round_receipt": {"round_ordinal": 2}})
+
+    v2host.reset_v2_journey_state()
+
+    position = coordinator.series_position_from_state(v2host.load_v2_state())
+    assert position.ordinal == 1
+    assert position.ordinal_epoch == 0
+
+
+def test_the_epoch_survives_the_next_rounds_persist(bank):
+    """The disclosure has to outlive the session the reset door minted.
+
+    ``persist_conductor_state`` rebuilds the state dict from scratch on every
+    persist. A key it does not carry forward by name is gone on the first
+    persist after the republish — which is exactly the round the epoch exists
+    to label, so a session-scoped marker would be worse than none.
+    """
+    candidate = _candidate()
+    _publish(bank, candidate)
+    republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+
+    assert coordinator.round_ordinal_epoch_from_state(v2host.load_v2_state()) == 1
+
+    # The REAL persist, through the host, under a brand-new session id — the
+    # rebind that erased three host-owned keys before carry-forward lines
+    # existed for them.
+    from tests.test_correction_crossover_v2_endpoints import _StubConductor
+
+    v2host.persist_conductor_state(_StubConductor("s-after"), failure_code=None)
+
+    after = v2host.load_v2_state()
+    assert after["session_id"] == "s-after"
+    assert coordinator.round_ordinal_epoch_from_state(after) == 1

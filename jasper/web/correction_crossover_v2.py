@@ -560,7 +560,23 @@ def reset_v2_journey_state() -> None:
     attempts_loop = state.get("attempts_loop")
     sound_declaration_undo = state.get("sound_declaration_undo")
     round_anchor = state.get(ROUND_ANCHOR_STATE_KEY)
+    # This branch drops ``round_receipt`` — the ordinal sequence's only memory
+    # — while the applied graph keeps playing, so the next round is round 1
+    # again on a speaker that has already been tuned. That is the SAME reset
+    # the republish door performs, so it takes the same epoch marker: one that
+    # counted only one of the two doors would make "epoch 0" mean "never reset"
+    # on one path and "reset by the other door" on the other.
+    #
+    # The not-applied branch above is a full ``clear_v2_state`` and needs no
+    # marker: nothing measured is left on the speaker, so a count restarting at
+    # 1 there is not a reset, it is the truth.
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        ROUND_ORDINAL_EPOCH_STATE_KEY,
+        round_ordinal_epoch_from_state,
+    )
+
     save_v2_state({
+        ROUND_ORDINAL_EPOCH_STATE_KEY: round_ordinal_epoch_from_state(state) + 1,
         "session_id": None,
         "accepted_phases": [],
         "applied": True,

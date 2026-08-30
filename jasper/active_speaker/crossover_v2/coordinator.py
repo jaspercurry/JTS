@@ -1207,13 +1207,15 @@ class SeriesPosition:
     #: pasts, which is precisely the artefact SF5 exists to refuse.
     previous_trusted_floor_hz: float | None = None
     #: Which EPOCH of the ordinal sequence this round's ``ordinal`` counts in.
-    #: ``0`` is a box whose sequence has never been reset; each republish
-    #: (:func:`~jasper.web.correction_crossover_v2_republish.handle_v2_republish`)
-    #: increments it, because that door replaces durable state wholesale and
-    #: the receipt it drops is the sequence's only memory — so the next round
-    #: is ordinal 1 again. Without this the two are indistinguishable: an
-    #: operator reading "round 1" cannot tell a fresh box from a series whose
-    #: count was reset out from under it.
+    #: ``0`` is a box whose sequence has never been reset. Both doors that
+    #: replace durable state wholesale while leaving a measured graph on the
+    #: speaker increment it —
+    #: :func:`~jasper.web.correction_crossover_v2_republish.handle_v2_republish`
+    #: and :func:`~jasper.web.correction_crossover_v2.reset_v2_journey_state`'s
+    #: applied branch — because the ``round_receipt`` they drop is the
+    #: sequence's only memory, so the next round is ordinal 1 again. Without
+    #: this the two are indistinguishable: an operator reading "round 1" cannot
+    #: tell a fresh box from a series whose count was reset out from under it.
     #:
     #: Defaulted rather than required, on ``previous_trusted_floor_hz``'s
     #: stated line: a forgotten epoch is merely ABSENT, and ``0`` — "no reset
