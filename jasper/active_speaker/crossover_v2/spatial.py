@@ -789,8 +789,9 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 class PositionGeometry:
     """WHERE a prompted capture was taken, as numbers instead of a sentence.
 
-    The facts an owner ruling (2026-08-24) named as the minimum a pose record
-    owes a reader: **angle, axis, and distance**.  Before it, a cloud
+    The facts a pose record owes a reader: **bearing, elevation, axis, and
+    distance** — an owner ruling named the first, third and fourth as the
+    minimum and a later one added elevation beside them.  Before it, a cloud
     position's only statement of place was the household ``prompt`` string, and
     the 2026-08 new-horn campaign read that prose as a mic being carried
     sideways when the rig had rotated — a misreading prose cannot rule out,

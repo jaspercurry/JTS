@@ -924,9 +924,8 @@ def _attribution_lines(
     band-to-band step
     (:func:`~jasper.active_speaker.flat_spec.spec_band_tilt`), the one
     reading here that **no reference-frame choice can move** — which is what
-    makes it safe to render while WHICH anchor the spec should use is still
-    an open owner decision (#1857's Q-E, ``docs/historical/attribution-stage-plan.md``
-    section 9).
+    let it ship while the anchor was still an open owner question, and what
+    keeps it the reading to trust when the two disagree (See ADR-0194).
 
     **Disclosure only — decides nothing.** Every figure is copied from the
     same :class:`~jasper.active_speaker.flat_spec.FlatSpecReport` the pointer
@@ -1067,10 +1066,10 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
     projection of the SAME :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
     the pointer line reads); nothing is recomputed, no band's ``passed`` or
     the overall verdict moves, and the reference frame itself is untouched.
-    WHICH frame the spec SHOULD anchor to is #1857's still-open Q-E (an
-    owner decision — see ``docs/historical/attribution-stage-plan.md``); this function
-    does not pick a side, it only stops the current frame's single pointer
-    from being read alone.
+    WHICH frame the spec anchors to is
+    :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`'s to state
+    (See ADR-0194); this function only stops the current frame's single
+    pointer from being read alone.
 
     Unevaluable bands (``passed`` not a bool, or either dB figure missing/
     non-finite) are silently skipped — the same "unevaluable is not a
