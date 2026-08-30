@@ -686,53 +686,6 @@ def test_session_status_reports_the_endpointer():
     assert wl.session_status()["endpointer"] == "push_to_talk"
 
 
-def test_state_voice_section_pulls_the_endpointer_through():
-    """jasper-control curates `/state.voice` field by field, so a new
-    session_status key is invisible to every client until it is pulled
-    through — the convention state_aggregate.py states three times in
-    comments and nothing enforces.
-
-    Source-level only: this asserts the `.get("endpointer")` call exists,
-    which survives the published KEY being renamed. The claim that a
-    client can actually read the field belongs to the runtime pin beside
-    its curated siblings in
-    `test_control_server.py::test_state_returns_snapshot_with_fail_soft_sections`.
-    Both are kept — this one fails with a message naming the convention,
-    that one fails when the wire contract breaks.
-    """
-    import ast
-    import inspect
-
-    from jasper.control import state_aggregate
-
-    tree = ast.parse(inspect.getsource(state_aggregate))
-    voice_dicts = [
-        value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Dict)
-        for key, value in zip(node.keys, node.values)
-        if isinstance(key, ast.Constant) and key.value == "voice"
-        and isinstance(value, ast.Dict)
-    ]
-    assert voice_dicts, "no `\"voice\": {...}` literal in state_aggregate"
-
-    pulled = {
-        call.args[0].value
-        for voice in voice_dicts
-        for call in ast.walk(voice)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "get"
-        and len(call.args) == 1
-        and isinstance(call.args[0], ast.Constant)
-        and isinstance(call.args[0].value, str)
-    }
-    assert "endpointer" in pulled, (
-        "/state.voice does not pull `endpointer` through from "
-        f"session_status; it pulls {sorted(pulled)}"
-    )
-
-
 @pytest.mark.parametrize("manual", [True, False])
 async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     manual,

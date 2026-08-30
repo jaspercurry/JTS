@@ -1168,6 +1168,18 @@ def test_state_voice_wake_legs_flows_from_session_status(
     assert body["voice"]["wake_legs"] == ["on", "off", "dtln"]
 
 
+def test_state_voice_classifies_every_session_status_field():
+    from jasper.control import state_aggregate
+    from jasper.voice_daemon import WakeLoop
+
+    status_keys = frozenset(WakeLoop.for_tests().session_status())
+    published = state_aggregate._VOICE_STATUS_PUBLISHED_KEYS
+    withheld = state_aggregate._VOICE_STATUS_WITHHELD_KEYS
+
+    assert published.isdisjoint(withheld)
+    assert status_keys == published | withheld
+
+
 def test_state_audio_projects_temporary_mute_as_zero(
     server_with_coordinator,
     monkeypatch,
