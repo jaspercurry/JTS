@@ -3055,10 +3055,10 @@ async function testRetakeRepeatsTheJustAcceptedSlotWithTheMarker() {
 // ============================================================================
 // 30 (§2.6, review finding N4). THE RETAKE WINDOW. The runner shuts its own
 // window the moment work moves on — the next entry's begin, or (work order D1)
-// the household's set-completion signal — and refuses a later retake as
-// `begin_out_of_order`, killing the session. So the page must never offer (or
-// honour) a retake past that point: the control disappears with the screen,
-// and a tap on a node captured beforehand is inert.
+// the household's set-completion signal — and refuses a later marked retake as
+// `retake_too_late`. So the page must never honour a retake past that point:
+// the control disappears with the screen, and a tap on a node captured
+// beforehand is inert.
 //
 // Driven on a plan that HAS an entry past the group, so this is also the
 // legacy-conductor half of the release-ordering contract: the confirmation
@@ -3595,9 +3595,7 @@ async function testPreArmFailureOnTheCountdownScreenNamesARealControl() {
 // shut. This used to assert the control was DISABLED there. That is what made
 // the press SILENT: a disabled button fires no click, so the owner's retake
 // press during the 2026-08-03 verify produced no retake AND no explanation.
-// The control must now ANSWER — it may not act (posting past the window is
-// refused by the runner as `begin_out_of_order`, which ends the session), and
-// it may not swallow the press either.
+// The control must now ANSWER without posting past the runner's window.
 // ============================================================================
 async function testAShutRetakeWindowAnswersThePressInsteadOfSwallowingIt() {
   statusHistory.length = 0;
@@ -4472,12 +4470,42 @@ async function testContinueSignalsThenWaitsForTheSetToClose() {
     resultFor: (index) =>
       index === 3 ? { accepted: true, awaiting_confirm: true } : { accepted: true },
   });
+  let staleRetake = null;
+  let retakeAnswerAt = -1;
+  const realPost = client.postEvent.bind(client);
+  client.postEvent = async (event) => {
+    const out = await realPost(event);
+    if (event.complete_capture_set === true) {
+      const beginsBefore = posted.filter((postedEvent) => postedEvent.begin_capture).length;
+      await fire(staleRetake);
+      assert.equal(
+        posted.filter((postedEvent) => postedEvent.begin_capture).length,
+        beginsBefore,
+        "a stale Retake cannot post after Continue",
+      );
+      assert.equal(
+        posted.at(-1).complete_capture_set,
+        true,
+        "the stale Retake cannot overwrite Continue in the relay slot",
+      );
+      retakeAnswerAt = statusHistory.length - 1;
+    }
+    return out;
+  };
   const ctx = makeCtx(spec, client);
 
   await onPlanStart(ctx);
   await fire(primaryButton(ctx));
   await fire(primaryButton(ctx));
+  staleRetake = actionButtons(ctx.screenEl)[1];
   await fire(primaryButton(ctx)); // Continue
+  assert.match(statusHistory[retakeAnswerAt], /Too late to redo that spot/);
+  assert.ok(
+    !statusHistory
+      .slice(retakeAnswerAt + 1)
+      .some((message) => String(message).startsWith("Speaker is working out")),
+    "the completion progress tick must not erase the retake answer",
+  );
 
   await waitFor(
     () => headingText(ctx.screenEl) === "All measurements done",

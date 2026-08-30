@@ -217,14 +217,14 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260828.1",
+        "capture_page_build": "20260830.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
     # holding the previous bundle would be accepted silently. Bumping
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch.
-    assert "main.js?v=20260828-1" in index_html
+    assert "main.js?v=20260830-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     # Every import stamp below must move whenever that module's content moves,
     # and the move must CASCADE to each module that imports it — otherwise a
@@ -375,9 +375,9 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
 # there is nothing to invalidate. A change that alters behaviour still owes the
 # stamp bumps capture-page/README.md's publish step 1 describes.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "58de860474ed3f9ae214adffb6bf54cfdcd16fef8a66636cb03ebaa96701d5b2"
+    "ba79c733416fcae806a2964dd3749f185b34824c343bbf262fb30feb966c5a0b"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260828.1"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260830.1"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
