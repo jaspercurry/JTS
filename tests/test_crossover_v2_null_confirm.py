@@ -61,9 +61,7 @@ WIDE_ROLES = (
 
 
 def _confirm(fc_hz: float = FC_HZ, roles=JTS3_ROLES):
-    return build_null_confirm_program(
-        fc_hz, roles, gains_db={rb.role: GAIN_DB for rb in roles},
-    )
+    return build_null_confirm_program(fc_hz, roles, gain_db=GAIN_DB)
 
 
 def _verify(fc_hz: float = FC_HZ):
@@ -301,15 +299,24 @@ def test_a_confirm_that_read_no_depth_is_refused_not_accepted_empty(monkeypatch)
     monkeypatch.setattr(flow, "_stimulus_locate_ok", lambda analysis: True)
 
     consume = flow.CrossoverV2Session._consume_null_confirm
+    # `self` is reached only for the shoulder derivation, so a stub carrying the
+    # session's corner and roles is the whole dependency.
+    session = SimpleNamespace(
+        _fc_hz=FC_HZ, _excitation=SimpleNamespace(roles=JTS3_ROLES),
+    )
 
-    missing = consume(None, 1, 1, SimpleNamespace(reverse_null_depth_db=None), None)
+    missing = consume(session, 1, 1, SimpleNamespace(reverse_null_depth_db=None), None)
     assert missing.accepted is False
     assert missing.code == REASON_SNR_FLOOR
 
     # A shallow null is a RESULT and stays accepted.
-    shallow = consume(None, 1, 1, SimpleNamespace(reverse_null_depth_db=3.2), None)
+    shallow = consume(session, 1, 1, SimpleNamespace(reverse_null_depth_db=3.2), None)
     assert shallow.accepted is True
     assert shallow.payload["null_depth_db"] == 3.2
+    # ...and the verdict says WHICH shoulders the depth was referenced against.
+    # On this JTS3-shaped fixture the lower one is the woofer alone, and a
+    # reader of the depth cannot tell that unless it is carried.
+    assert shallow.payload["shoulder_summed"] == {"lower": False, "upper": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -426,3 +433,100 @@ def test_the_gate_keeps_every_ungated_program_byte_identical():
     from jasper.audio_measurement.program import ProgramSegment
 
     assert ProgramSegment.from_dict(seg.to_dict()) == seg
+
+
+def test_the_production_composer_gives_both_branches_ONE_gain():
+    """Through ``SessionExcitation``, on the SHIPPED unequal caps.
+
+    This is the test the first cut of option B did not have, and its absence hid
+    a real defect: the fixtures forced equal gains, so "the branches are
+    identical" passed while the production composer clamped each branch to its
+    own cap. On these caps (0.0 / -65.0) that puts the two waveforms 33 dB
+    apart, and the deepest null available to ANY delay coordinate is about
+    0.2 dB — every confirmation would have read "no null" however right the
+    coordinate was.
+
+    The gain is baked into the waveform, so one shared gain is not an economy;
+    it is the identity requirement. Bringing branches of differing sensitivity
+    to equal ACOUSTIC output is the measurement graph's job, through its
+    attenuation-only level-match trims.
+    """
+    import numpy as np
+
+    from jasper.active_speaker.crossover_v2.programs import (
+        SessionExcitation,
+        back_off_gain,
+    )
+    from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+
+    caps = {"woofer": 0.0, "tweeter": -65.0}
+    session_volume_db = -20.0
+    excitation = SessionExcitation(
+        roles=JTS3_ROLES,
+        caps_dbfs=caps,
+        session_volume_db=session_volume_db,
+        fc_hz=FC_HZ,
+        sweep_duration_limits_s={"woofer": 6.0, "tweeter": 4.0},
+    )
+    program = excitation.null_confirm_program()
+    sweeps = {
+        s.role: s for s in program.stimulus_segments() if s.kind == "summed_sweep"
+    }
+
+    # ONE gain, and it is the MIN-cap result.
+    expected = back_off_gain(
+        BASE_STIMULUS_PEAK_DBFS, session_volume_db, min(caps.values()),
+    )
+    assert {round(s.gain_db, 9) for s in sweeps.values()} == {round(expected, 9)}
+
+    # ...which is what makes the waveforms identical where both branches play.
+    woofer = segment_stimulus(sweeps["woofer"])
+    tweeter_seg = sweeps["tweeter"]
+    tweeter = segment_stimulus(tweeter_seg)
+    open_from = tweeter_seg.gate_start_sample + tweeter_seg.gate_fade_samples
+    assert open_from > 0
+    assert np.array_equal(woofer[open_from:], tweeter[open_from:])
+
+
+def test_the_production_composer_fits_the_tightest_duration_limit():
+    """ONE parent sweep serves both branches, so it must fit the TIGHTEST of
+    their limits — the same number admission judges each segment against. The
+    nominal 6 s against a tweeter clamped to 4 s is #2921's deterministic
+    ``program_segment_outside_limits``, on every real 2-way."""
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+
+    excitation = SessionExcitation(
+        roles=JTS3_ROLES,
+        caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
+        session_volume_db=-20.0,
+        fc_hz=FC_HZ,
+        sweep_duration_limits_s={"woofer": 6.0, "tweeter": 4.0},
+    )
+    sweep = excitation.null_confirm_program().segment("sweep_verify")
+    assert sweep.n_samples / 48000 <= 4.0
+
+
+def test_a_channel_gating_at_its_upper_edge_stays_identical_below_it():
+    """The end-fade branch. A woofer whose declared ceiling falls inside the
+    confirm band closes early, and the branches must still be identical over the
+    window where both are open — the fade at that edge is the one place a
+    mistake attenuates one branch and not the other."""
+    import numpy as np
+
+    roles = (
+        RoleBand("woofer", 0, FrequencyBand(150.0, 3000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(500.0, 20000.0)),
+    )
+    program = build_null_confirm_program(1600.0, roles, gain_db=GAIN_DB)
+    sweeps = {
+        s.role: s for s in program.stimulus_segments() if s.kind == "summed_sweep"
+    }
+    woofer_seg = sweeps["woofer"]
+    assert woofer_seg.gate_end_sample is not None, "this fixture needs an upper gate"
+
+    woofer = segment_stimulus(woofer_seg)
+    tweeter = segment_stimulus(sweeps["tweeter"])
+    open_to = woofer_seg.gate_end_sample - woofer_seg.gate_fade_samples
+    open_from = sweeps["tweeter"].gate_start_sample + sweeps["tweeter"].gate_fade_samples
+    assert np.array_equal(woofer[open_from:open_to], tweeter[open_from:open_to])
+    assert not np.any(woofer[woofer_seg.gate_end_sample:])

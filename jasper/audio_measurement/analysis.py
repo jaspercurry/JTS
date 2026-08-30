@@ -48,8 +48,10 @@ def crossover_null_depth_db(freqs, mag_db, crossover_fc_hz: float) -> float:
     wants is the UN-CANCELLED passband level either side of the notch, and a
     branch that is not playing at a shoulder cannot cancel anything there — so a
     single-branch shoulder measures exactly what the metric asks of it. What it
-    is NOT is a level comparable across speakers, which is why the confirm banks
-    which shoulders were summed rather than leaving a reader to assume both.
+    is NOT is a level comparable across speakers, which is why the confirm
+    REPORTS which shoulders were summed (on the consume verdict today; durably
+    on the banked take with the rest of the record work) rather than leaving a
+    reader to assume both.
     """
     at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
     lower_shoulder = float(np.interp(crossover_fc_hz / 2.0, freqs, mag_db))

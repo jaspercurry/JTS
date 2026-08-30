@@ -610,3 +610,93 @@ def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_meas
     assert woofer.effective_peak_dbfs < facts["woofer"].cap_dbfs
     assert facts["woofer"].peak_within_cap
     assert prog.segment("sweep_w").n_samples / prog.sample_rate_hz > 4.0
+
+
+# --------------------------------------------------------------------------- #
+# the delay confirm: a two-channel routed program, admitted per role
+# --------------------------------------------------------------------------- #
+
+
+def _confirm_limits(profile, targets):
+    """The SAME per-role duration limits admission will judge against."""
+    from jasper.active_speaker.excitation_safety_plan import (
+        effective_sweep_duration_limit_s,
+    )
+
+    return {
+        role: effective_sweep_duration_limit_s(profile, fp)
+        for role, fp in targets.items()
+    }
+
+
+def _confirm_roles(profile, targets):
+    """Role bands read from the PROFILE, which is what production does.
+
+    ``correction_crossover_v2`` builds every ``RoleBand`` from
+    ``resolve_driver_excitation_ceilings`` — the same resolver admission judges
+    against — so the band the composer gates by and the band the gate is
+    checked against are one number. A test that invented its own would be
+    testing a speaker that does not exist.
+    """
+    from jasper.active_speaker.excitation_safety_plan import (
+        resolve_driver_excitation_ceilings,
+    )
+
+    bands = {}
+    for index, (role, fp) in enumerate(sorted(targets.items(), reverse=True)):
+        band, _cap = resolve_driver_excitation_ceilings(
+            profile, fp, program_admission=True,
+        )
+        bands[role] = RoleBand(role, 0 if role == "woofer" else 1, band)
+    return (bands["woofer"], bands["tweeter"])
+
+
+def test_the_null_confirm_is_admitted_through_the_full_evaluation():
+    """The confirm is ROUTED, so the whole admission runs on it — not just the
+    phase check. This is the test that would have caught a parent sweep composed
+    at the nominal 6 s while the tweeter's own clamp is 4 s: admission judges
+    the realized duration per role and refuses
+    ``SEGMENT_OUTSIDE_LIMITS`` deterministically on every real 2-way (#2921's
+    failure, which ``build_measure_program`` was already fixed for).
+    """
+    from jasper.audio_measurement.program import build_null_confirm_program
+
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    roles = _confirm_roles(profile, targets)
+    prog = build_null_confirm_program(
+        1600.0,
+        roles,
+        gain_db=-46.0,
+        downstream_gain_db=sv,
+        sweep_duration_limits_s=_confirm_limits(profile, targets),
+    )
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert adm.allowed, adm.refusals
+    assert all(s.execution_allowed for s in adm.segments)
+    # Both branches resolved a driver target — a role=None summed segment
+    # resolved none, so none of these checks ran on it at all.
+    assert {s.role for s in adm.segments} == {"woofer", "tweeter"}
+
+
+def test_a_confirm_composed_past_the_duration_limit_is_refused():
+    """Anti-vacuity for the row above: the limit is real, and the composer
+    fitting to it is what makes the confirm admissible."""
+    from jasper.audio_measurement.program import build_null_confirm_program
+
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    roles = _confirm_roles(profile, targets)
+    prog = build_null_confirm_program(
+        1600.0, roles, gain_db=-46.0, downstream_gain_db=sv,
+        sweep_s=6.0,  # the nominal, ignoring what the drivers allow
+    )
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
