@@ -157,6 +157,8 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
         mover=args.mover,
         polarity=args.polarity,
         inverted_role=args.inverted_role,
+        delayed_role=args.delayed_role,
+        delay_us=args.delay_us,
     )
 
 
@@ -396,6 +398,25 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "which driver branch --polarity inverted flips, one of "
             f"{', '.join(DRIVER_ROLES)}. Left unchecked here on purpose: the "
             "measurement spec judges the pair when the session adopts the walk"
+        ),
+    )
+    parser.add_argument(
+        "--delayed-role",
+        default="",
+        help=(
+            "which driver branch carries the confirmation delay, one of "
+            f"{', '.join(DRIVER_ROLES)}. Pair with --delay-us. Unchecked here "
+            "for the reason --inverted-role is: the spec judges the pair"
+        ),
+    )
+    parser.add_argument(
+        "--delay-us",
+        type=float,
+        default=0.0,
+        help=(
+            "the confirmation coordinate in microseconds, non-negative. Pair "
+            "with --delayed-role; the sign frame lives in the walk coordinate, "
+            "which names the branch"
         ),
     )
     parser.add_argument(

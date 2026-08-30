@@ -50,6 +50,7 @@ from jasper.camilla_emit import (
     fmt,
     mono_sum_sources,
 )
+from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.log_event import log_event
 from jasper.sound.camilla_yaml import emit_sound_config
@@ -2772,9 +2773,13 @@ def _commissioning_driver_filter_chain(
     only that extra filter so it measures the applied crossover shoulder.
 
     ``measurement_delay_roles`` is the reverse-null delay sweep's lane (R-1):
-    the named roles carry a ``Delay`` filter at the head of the chain, matching
-    the applied graph's own [delay, …] ordering. Empty for every other caller,
-    which keeps their chains byte-identical.
+    the named roles carry a ``Delay`` filter at the head of the chain. Position
+    is free — a pure delay is LTI and commutes with every other stage here, so
+    it changes no magnitude wherever it sits — and the head is chosen because
+    this chain has nothing upstream of the protection worth preceding. (The
+    applied chains place their own delay AFTER the crossover; the two orderings
+    are equivalent, not a match.) Empty for every other caller, which keeps
+    their chains byte-identical.
     """
     if protection_sections_by_role is not None:
         return [
@@ -2812,10 +2817,37 @@ def _emit_commissioning_filter_definitions(
     # which IS `delay_graph.quantized_delay_ms`'s implementation, so the value
     # a proof recomputes from the same `delay_us` matches by construction.
     # Pre-quantizing here would be the second pass that module forbids.
-    for role, delay_us in sorted((measurement_delays_us or {}).items()):
-        lines.extend(_emit_delay_filter(
-            _driver_delay_name(role), delay_ms=delay_us / 1000.0,
-        ))
+    delays = dict(measurement_delays_us or {})
+    if delays:
+        if protection_sections_by_role is None:
+            # The unprotected shape already defines a zero Delay filter for
+            # every role below, so a named delay would emit a duplicate mapping
+            # key whose later zero wins on parse -- a capture that plays with no
+            # delay and banks as a delayed take. Refuse rather than emit a
+            # graph whose YAML disagrees with the request.
+            raise ActiveSpeakerConfigError(
+                "a measurement delay needs the protected-neutral program shape; "
+                "the unprotected shape carries its own zeroed delay lane"
+            )
+        known = set(required_driver_roles(preset.way_count))
+        unknown = sorted(set(delays) - known)
+        if unknown:
+            # An unreferenced Delay filter would leave the capture undelayed
+            # while its graph fingerprint claimed otherwise.
+            raise ActiveSpeakerConfigError(
+                f"measurement delays name roles this preset has no branch for: "
+                f"{unknown}"
+            )
+        for role, delay_us in sorted(delays.items()):
+            value = float(delay_us)
+            if not math.isfinite(value) or value < 0.0 or value > MAX_DSP_DELAY_US:
+                raise ActiveSpeakerConfigError(
+                    f"measurement delay for {role!r} is outside the DSP bound: "
+                    f"{delay_us!r}"
+                )
+            lines.extend(_emit_delay_filter(
+                _driver_delay_name(role), delay_ms=value / 1000.0,
+            ))
     for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
         lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),
@@ -3543,8 +3575,10 @@ def emit_active_speaker_program_config(
     is implemented as — so a proof that recomputes the expected value from the
     same ``delay_us`` agrees exactly, with no intermediate rounding to disagree
     about.
-    Delays ride ahead of the protection sections, matching the applied chain's
-    own [delay, …] ordering.
+    Delays ride ahead of the protection sections. A pure delay commutes with
+    every stage in this chain, so the position changes no magnitude; it is a
+    readability choice, not an equivalence claim about the applied chain, which
+    places its own delay after the crossover.
 
     Two fail-closed gates run before the graph can leave this function: a
     build-time proof that the selected tweeter HP satisfies the declared floor, and
@@ -3680,6 +3714,38 @@ def emit_active_speaker_program_config(
         f"# role_channels={dict(sorted(role_channels.items()))}",
         f"# program_channels={program_channels}",
         f"# filter_mode={filter_mode}",
+        # Beside `inverted_roles` below and for its reason: the graph SAYS which
+        # coordinate it carries, so a record naming it by fingerprint can be
+        # read without reconstructing the Delay filter body.
+        #
+        # Emitted ONLY when there is a coordinate. An unconditional line would
+        # change the bytes -- and so the fingerprint -- of every CHECK and
+        # MEASURE graph in the tree, which is exactly the byte-identity this
+        # parameter is scoped to protect. Its absence is unambiguous.
+        *(
+            [
+                "# measurement_delays_us="
+                + repr(dict(sorted(measurement_delays_us.items())))
+            ]
+            if measurement_delays_us
+            else []
+        ),
+        # Beside `inverted_roles` below and for its reason: the graph SAYS which
+        # coordinate it carries, so a record naming it by fingerprint can be
+        # read without reconstructing the Delay filter body.
+        #
+        # Emitted ONLY when there is a coordinate. An unconditional line would
+        # change the bytes -- and so the fingerprint -- of every CHECK and
+        # MEASURE graph in the tree, which is exactly the byte-identity this
+        # parameter is scoped to protect. Its absence is unambiguous.
+        *(
+            [
+                "# measurement_delays_us="
+                + repr(dict(sorted(measurement_delays_us.items())))
+            ]
+            if measurement_delays_us
+            else []
+        ),
     ]
     if inverted_roles:
         # Emitted only when a branch is actually flipped, so every non-inverted

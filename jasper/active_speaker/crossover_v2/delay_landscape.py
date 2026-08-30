@@ -89,6 +89,16 @@ def _curve(raw: Mapping[str, Any], *, field_name: str) -> tuple[Any, Any]:
     return freqs, tf
 
 
+def _resample(freqs_out, freqs_in, tf):
+    """One complex transfer onto another grid, magnitude and unwrapped phase."""
+
+    import numpy as np
+
+    magnitude = np.interp(freqs_out, freqs_in, np.abs(tf))
+    phase = np.interp(freqs_out, freqs_in, np.unwrap(np.angle(tf)))
+    return magnitude * np.exp(1j * phase)
+
+
 def predicted_null_depth_db(
     lower_curve: Mapping[str, Any],
     upper_curve: Mapping[str, Any],
@@ -132,12 +142,18 @@ def predicted_null_depth_db(
     if freqs.size < 2:
         raise DelayLandscapeError("the shared band carries too few points")
 
-    lower = np.interp(freqs, lower_freqs, lower_tf.real) + 1j * np.interp(
-        freqs, lower_freqs, lower_tf.imag
-    )
-    upper = np.interp(freqs, upper_freqs, upper_tf.real) + 1j * np.interp(
-        freqs, upper_freqs, upper_tf.imag
-    )
+    # Resampled in POLAR form. A driver transfer at ~1 m carries milliseconds
+    # of acoustic delay, so its phasor turns a full circle every few hundred
+    # hertz; interpolating real and imaginary parts separately cuts the chord
+    # instead of following the arc and shrinks the magnitude between grid
+    # points. On a realistic null — one floored by level or driver mismatch —
+    # the two forms agree to a fraction of a dB, and they diverge only as the
+    # sum approaches a perfect cancellation, where the depth is numerically
+    # ill-conditioned in either form. Polar is kept because it is what the
+    # physics says and it costs nothing, not because a measured result hangs
+    # on it.
+    lower = _resample(freqs, lower_freqs, lower_tf)
+    upper = _resample(freqs, upper_freqs, upper_tf)
 
     delay_s = float(relative_delay_us) * 1e-6
     if delay_s >= 0.0:

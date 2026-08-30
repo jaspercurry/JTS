@@ -418,6 +418,51 @@ def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatc
     assert (ordinary.polarity, ordinary.inverted_role) == (POLARITY_NORMAL, "")
 
 
+def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
+    slot, monkeypatch
+):
+    """R-1's DISPOSE half, carried the same road its polarity is: document ->
+    take -> engine spec. Dropped anywhere along it, the leg plays an undelayed
+    capture and banks it as the coordinate that was asked for."""
+    spool.stage_angle_request(_inverted_walk(
+        inverted_role=DRIVER_ROLE_TWEETER,
+        delayed_role=DRIVER_ROLE_TWEETER,
+        delay_us=250.0,
+    ))
+    _prompts, _consumer, spec = _take()
+
+    played = _played_measure_spec(spec, monkeypatch)
+    assert (played.delayed_role, played.delay_us) == (DRIVER_ROLE_TWEETER, 250.0)
+
+    ordinary = _played_measure_spec(None, monkeypatch)
+    assert (ordinary.delayed_role, ordinary.delay_us) == ("", 0.0)
+
+
+def test_a_coordinate_the_spec_refuses_is_named_as_a_DELAY_refusal(slot):
+    """Its own slug, so an operator reading ``reason=`` learns which half of
+    R-1 was refused rather than being told 'polarity' about a delay."""
+    spool.stage_angle_request(_inverted_walk(
+        inverted_role=DRIVER_ROLE_TWEETER,
+        delayed_role="tweater",          # not a driver branch
+        delay_us=250.0,
+    ))
+    sentence = _refused()
+
+    assert ac.WALK_DELAY_NOT_ACCEPTED in sentence
+    assert ac.WALK_POLARITY_NOT_ACCEPTED not in sentence
+    # The detail is the spec's own refusal, compared against what the spec
+    # actually raises rather than a copy of its wording.
+    with pytest.raises(ValueError) as spec_refusal:
+        MeasureSpec(
+            kind=MEASURE_KIND_CANDIDATE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+            delayed_role="tweater",
+            delay_us=250.0,
+        )
+    assert str(spec_refusal.value) in sentence
+
+
 def test_a_one_sided_polarity_refuses_the_open_in_the_specs_own_words(slot, caplog):
     """The pair is judged by the SPEC, at adoption, and nowhere upstream.
 

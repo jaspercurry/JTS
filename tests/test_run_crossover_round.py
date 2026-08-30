@@ -424,6 +424,7 @@ def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
     # R-1's pair is absent unless asked for, so an ordinary round stages the
     # command it always did.
     assert "--polarity" not in stage_cmd and "--inverted-role" not in stage_cmd
+    assert "--delayed-role" not in stage_cmd and "--delay-us" not in stage_cmd
 
 
 def test_the_reverse_null_pair_is_forwarded_to_the_staging_seam(
@@ -442,6 +443,25 @@ def test_the_reverse_null_pair_is_forwarded_to_the_staging_seam(
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
     assert "--polarity inverted" in stage_cmd
     assert "--inverted-role tweeter" in stage_cmd
+
+
+def test_the_confirmation_coordinate_is_forwarded_to_the_staging_seam(
+    checkout, wizard, tmp_path
+):
+    """R-1's DISPOSE half over SSH. Without it the one command that drives a
+    round could propose a delay and never confirm it acoustically — the
+    compute-only shape compute-then-confirm exists to prevent."""
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS,
+         "--polarity", "inverted", "--inverted-role", "tweeter",
+         "--delayed-role", "tweeter", "--delay-us", "250.0"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--delayed-role tweeter" in stage_cmd
+    assert "--delay-us 250.0" in stage_cmd
 
 
 def test_without_an_attestation_no_walk_is_launched(checkout, wizard, tmp_path):

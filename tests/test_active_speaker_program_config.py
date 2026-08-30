@@ -511,7 +511,9 @@ def test_a_named_role_carries_a_delay_filter_at_the_head_of_its_chain():
         step["names"] for step in parsed["pipeline"]
         if step.get("type") == "Filter" and name in (step.get("names") or ())
     )
-    assert chain[0] == name, "the delay rides ahead of protection, as applied does"
+    # Head of the chain. A pure delay commutes with every stage here, so this
+    # pins the emitter's choice rather than an acoustic requirement.
+    assert chain[0] == name
 
 
 def test_only_the_named_role_is_touched():
@@ -575,3 +577,56 @@ def test_a_delay_on_an_unprotected_low_crossover_is_still_refused():
             playback_device=ACTIVE_PCM,
             measurement_delays_us={"tweeter": 250.0},
         )
+
+
+def test_the_emitter_fails_closed_on_a_delay_it_cannot_honour():
+    # The emitter proves its tweeter guard and bounds its ceilings; the delay
+    # lane fails closed the same way rather than emitting a graph whose YAML
+    # disagrees with what was asked for.
+    protection = _confirmed_protection()
+    for bad in (
+        {"midrange": 250.0},              # no such branch on a 2-way preset
+        {"tweeter": -1.0},                # negative delay
+        {"tweeter": float("inf")},        # non-finite
+        {"tweeter": 10_000_000.0},        # past the DSP ceiling
+    ):
+        with pytest.raises(ActiveSpeakerConfigError):
+            emit_active_speaker_program_config(
+                _preset("mono"), role_channels=ROLE_CHANNELS,
+                playback_device=ACTIVE_PCM,
+                protection_sections_by_role=protection,
+                measurement_delays_us=bad,
+            )
+
+
+def test_a_delay_on_the_unprotected_shape_is_refused_not_silently_zeroed():
+    # That shape defines its own zeroed delay lane for every role, so a named
+    # delay would emit a duplicate mapping key whose later zero wins on parse:
+    # a capture that plays undelayed and banks as a delayed take.
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_program_config(
+            _preset("mono"), role_channels=ROLE_CHANNELS,
+            playback_device=ACTIVE_PCM,
+            protection_sections_by_role=None,
+            measurement_delays_us={"tweeter": 250.0},
+        )
+
+
+def test_the_graph_says_which_delay_coordinate_it_carries():
+    # Beside `# inverted_roles=`, and for its reason: a record names the graph
+    # by fingerprint, and a reader must be able to see which coordinate that
+    # fingerprint stands for without reconstructing the Delay filter body.
+    text = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_delays_us={"tweeter": 250.0},
+    )
+    assert "# measurement_delays_us={'tweeter': 250.0}" in text
+
+    # And absent entirely when there is no coordinate: an unconditional line
+    # would change the fingerprint of every CHECK and MEASURE graph in the tree.
+    plain = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+    )
+    assert "measurement_delays_us" not in plain

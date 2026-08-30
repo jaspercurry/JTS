@@ -317,3 +317,106 @@ def test_a_delay_beyond_the_dsp_ceiling_is_refused_at_the_spec():
     for bad in (-1.0, MAX_DSP_DELAY_US + 1.0):
         with pytest.raises(ValueError):
             MeasureSpec(kind="baseline", delayed_role="tweeter", delay_us=bad)
+
+
+def test_the_verify_stage_graph_refuses_a_delay_instead_of_dropping_it():
+    """Stage 2 measures through the APPLIED graph and has no per-driver branch
+    to delay. Silently ignoring the coordinate would bank a record naming a
+    delay it never played — the S12 lie this slot already refuses for polarity.
+    """
+    import asyncio
+
+    from jasper.active_speaker.crossover_v2.composition import NoRoutedPhasesGraph
+
+    graph = NoRoutedPhasesGraph()
+    assert asyncio.run(graph.install()) == ""
+    with pytest.raises(ValueError):
+        asyncio.run(graph.install((), {"tweeter": 250.0}))
+    with pytest.raises(ValueError):
+        asyncio.run(graph.install(("tweeter",)))
+
+
+def test_the_grid_a_curve_was_banked_on_does_not_change_the_answer():
+    """The two drivers sweep their own bands, so the sum is taken after a
+    resample — and a real capture carries the whole flight time to the
+    microphone (~3 ms at 1 m), so its phasor turns once every ~330 Hz.
+
+    On a realistic null — one floored by a level mismatch rather than a perfect
+    analytic cancellation — neither the coordinate nor the depth may depend on
+    how densely the curve happened to be sampled.
+    """
+    flight_us = 2900.0
+    coarse = np.linspace(200.0, 12000.0, 97)   # ~122 Hz apart: a third of a turn
+    fine = np.linspace(200.0, 12000.0, 1024)
+
+    def _landscape(woofer_grid):
+        return compute_landscape(
+            _curve("woofer", arrival_us=flight_us + 100.0, freqs=woofer_grid,
+                   gain_db=-4.0),
+            _curve("tweeter", arrival_us=flight_us, freqs=fine),
+            spec=_spec(),
+            inverted_role="tweeter",
+        )
+
+    sparse, dense = _landscape(coarse), _landscape(fine)
+    assert sparse.best_coordinate_us == dense.best_coordinate_us == pytest.approx(100.0)
+    assert sparse.best_predicted_null_depth_db == pytest.approx(
+        dense.best_predicted_null_depth_db, abs=1.0
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the staging thread — R-1's DISPOSE half, operator to graph
+# --------------------------------------------------------------------------- #
+
+
+def _walk(**kwargs):
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
+
+    return AngleCaptureRequest(
+        stops=(AngleStop(angle_deg=0, regime="summed"),), **kwargs
+    )
+
+
+def test_a_staged_walk_carries_the_confirmation_coordinate():
+    request = _walk(delayed_role="tweeter", delay_us=250.0)
+    assert (request.delayed_role, request.delay_us) == ("tweeter", 250.0)
+    # Absent by default, so an ordinary walk stages exactly what it always did.
+    assert (_walk().delayed_role, _walk().delay_us) == ("", 0.0)
+
+
+def test_the_coordinate_survives_the_spool_round_trip(tmp_path):
+    from jasper.active_speaker import angle_capture_spool as spool
+
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "walk.json")
+    try:
+        spool.stage_angle_request(_walk(delayed_role="tweeter", delay_us=250.0))
+        taken = spool.take_staged_angle_request()
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+    assert taken is not None
+    assert (taken.delayed_role, taken.delay_us) == ("tweeter", 250.0)
+
+
+def test_a_document_spooled_before_the_coordinate_existed_still_reads(tmp_path):
+    """The pair is ADDITIVE: a walk spooled by an older build reads back as an
+    undelayed one rather than refusing."""
+    import json
+
+    from jasper.active_speaker import angle_capture_spool as spool
+
+    path = tmp_path / "walk.json"
+    spool.set_angle_request_spool_path_for_tests(path)
+    try:
+        spool.stage_angle_request(_walk())
+        doc = json.loads(path.read_text())
+        doc.pop("delayed_role", None)
+        doc.pop("delay_us", None)
+        path.write_text(json.dumps(doc))
+        taken = spool.take_staged_angle_request()
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+    assert taken is not None
+    assert (taken.delayed_role, taken.delay_us) == ("", 0.0)

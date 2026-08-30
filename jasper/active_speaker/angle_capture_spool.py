@@ -261,6 +261,8 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         # the schema version does not move.
         "polarity": request.polarity,
         "inverted_role": request.inverted_role,
+        "delayed_role": request.delayed_role,
+        "delay_us": request.delay_us,
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a
@@ -285,6 +287,8 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
         polarity=request.polarity,
         inverted_role=request.inverted_role,
+        delayed_role=request.delayed_role,
+        delay_us=request.delay_us,
         replaced=replaced,
     )
     return path
@@ -455,6 +459,10 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     (see ``_validated_angle``). A document whose angles are not whole numbers is
     refused by the constructor, in the constructor's own words.
 
+    **R-1's two pairs are ADDITIVE and defaulted** — the delay coordinate reads
+    back exactly as the polarity pair does, so a document spooled before either
+    existed still reads as a normal, undelayed walk. Neither is judged here.
+
     **The polarity pair is ADDITIVE and defaulted**, which is what keeps a
     document staged before it existed valid at the same schema version: an
     absent (or null) ``polarity`` is a normal-polarity walk, and an absent
@@ -501,6 +509,8 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         mover=str(doc.get("mover")),
         polarity=str(doc.get("polarity") or POLARITY_NORMAL),
         inverted_role=str(doc.get("inverted_role") or ""),
+        delayed_role=str(doc.get("delayed_role") or ""),
+        delay_us=float(doc.get("delay_us") or 0.0),
     )
 
 

@@ -7105,11 +7105,26 @@ def _analyze_verify(
         # The one null-depth definition in the tree, shared with the acoustic
         # capture analyzer so a computed depth and a measured one are the same
         # quantity (jasper.active_speaker.driver_acoustics).
+        #
+        # Guarded the way `analyze_summed_crossover` guards it, and for the same
+        # reason: the depth is read at Fc/2 and 2*Fc, `np.interp` CLAMPS outside
+        # the data, and a curve that does not reach both shoulders — or reaches
+        # them below the gate's validity floor — would return a number built
+        # from edge values with nothing saying so. No number is the honest
+        # answer there.
         from jasper.active_speaker.driver_acoustics import crossover_null_depth_db
 
-        reverse_null_depth = crossover_null_depth_db(
-            summed.freqs_hz, summed.magnitude_db, fc_hz,
+        lower_shoulder_hz = fc_hz / 2.0
+        floor_hz = summed.validity_floor_hz
+        spans_shoulders = (
+            float(summed.freqs_hz[0]) <= lower_shoulder_hz
+            and float(summed.freqs_hz[-1]) >= fc_hz * 2.0
         )
+        above_floor = floor_hz is None or lower_shoulder_hz >= floor_hz
+        if spans_shoulders and above_floor:
+            reverse_null_depth = crossover_null_depth_db(
+                summed.freqs_hz, summed.magnitude_db, fc_hz,
+            )
         if priors.predicted_sum is not None:
             pred_freqs, pred_db = priors.predicted_sum
             measured_db = analysis_mod.smooth_fractional_octave(

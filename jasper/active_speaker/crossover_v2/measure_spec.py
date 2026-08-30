@@ -47,6 +47,7 @@ do is what it keeps.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
@@ -304,6 +305,18 @@ class MeasureSpec:
                 f"got delayed_role={self.delayed_role!r} with "
                 f"delay_us={self.delay_us!r}"
             )
+        if self.delayed_role and self.delayed_role not in DRIVER_ROLES:
+            # Checked exactly as `inverted_role` is, and for a sharper reason:
+            # an unknown role emits a Delay filter the pipeline never
+            # references, so the capture plays with NO delay and banks as a
+            # delayed take. A silent wrong measurement, which is what ruling
+            # S12 refuses.
+            raise ValueError(
+                "a delayed capture must name a real driver branch, one of "
+                f"{DRIVER_ROLES}, got {self.delayed_role!r}"
+            )
+        if not math.isfinite(self.delay_us):
+            raise ValueError(f"delay_us must be finite, got {self.delay_us!r}")
         if self.delay_us < 0.0 or self.delay_us > MAX_DSP_DELAY_US:
             # The sign frame lives in the walk coordinate, which names the
             # branch; what reaches a Delay filter is always non-negative.
