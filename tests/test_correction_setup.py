@@ -313,9 +313,6 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
         assert cleanup_started.wait(timeout=2)
         assert correction_setup._get_relay_capture()["status"] == "stopping"
         assert not correction_setup._begin_relay_capture("crossover_sweep:summed")
-        assert correction_setup._active_relay_phase() == (
-            "relay:crossover_sweep:driver"
-        )
         release_cleanup.set()
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:

@@ -67,7 +67,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
 )
-from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 from jasper.audio_measurement import room_boundary
 
 from ..log_event import log_event
@@ -115,7 +114,6 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # setup latency while still avoiding unbounded reads in the Pi web
 # process.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
-MAX_CROSSOVER_WAV_BODY_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
@@ -343,7 +341,6 @@ def _household_level_door() -> Any:
 
 
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
-_SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavailable"
 # Require a short rolling ambient window before the Pi starts the level tone.
 # A single USB-mic startup block is too noisy to become the trust-floor SSOT;
 # ten 200 ms samples gives a stable two-second median while keeping setup
@@ -701,15 +698,6 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
         gate.note_session_ceiling_expired()
     except (OSError, RuntimeError, ValueError):
         logger.warning("could not mark the position gate's ceiling", exc_info=True)
-
-
-def _active_relay_phase() -> str | None:
-    """Return the in-flight global relay phase that excludes DSP apply."""
-
-    relay = _get_relay_capture()
-    if relay is None or relay.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
-        return None
-    return f"relay:{str(relay.get('kind') or 'measurement')}"
 
 
 def _begin_relay_capture(
