@@ -836,12 +836,17 @@ def summarise_controllability(block: Mapping[str, Any], trail: Trail) -> None:
         depth = "" if mean is None else f"  ratio={_render(mean)}"
         if depth and sigma is not None:
             depth += f" +/-{_render(sigma)}"
-        # Printed only when the measurement did NOT span the whole band. A
-        # partial span is the thing a reader must not miss; a full one is the
-        # expectation and needs no column.
+        # Printed only when the measurement did NOT span the whole band, and
+        # the FITTED span goes with it: "36% of band" alone reads as "measured
+        # over the lower third", when the number is really one slope taken
+        # mostly above this band. A full-coverage row needs neither column.
         coverage = realization.get("coverage")
+        band_hz = realization.get("fitted_band_hz")
         if depth and isinstance(coverage, (int, float)) and coverage < 0.995:
-            depth += f" over {round(coverage * 100)}% of band"
+            depth += f" ({round(coverage * 100)}% of band"
+            if isinstance(band_hz, (list, tuple)) and len(band_hz) == 2:
+                depth += f", fit over {_render(band_hz[0])}-{_render(band_hz[1])} Hz"
+            depth += ")"
         print(
             f"  {_render(band.get('f_lo_hz'))}-{_render(band.get('f_hi_hz'))} Hz"
             f"  {band.get('confidence')}{depth}"

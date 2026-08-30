@@ -117,6 +117,10 @@ def test_the_ledger_pools_realized_depth_and_spec_outcomes_across_rounds():
     # different standing, and the ledger says which is which.
     assert low_mid["realization"]["coverage"] == 0.356
     assert presence["realization"]["coverage"] == 1.0
+    # …and the span the slope was actually fitted over, which is WIDER than
+    # the low-mid row itself. Coverage alone reads as "measured over the lower
+    # third"; the fitted span says the number is mostly from above the band.
+    assert low_mid["realization"]["fitted_band_hz"] == [953.5, 9999.98]
 
 
 def test_a_band_two_probe_bands_split_takes_no_ratio_from_either():
@@ -130,10 +134,31 @@ def test_a_band_two_probe_bands_split_takes_no_ratio_from_either():
     top = _band(ledger, TOP)
     assert top["realization"] == {
         "n_rounds": 0, "ratio_mean": None, "ratio_sigma": None,
-        "coverage": None,
+        "coverage": None, "fitted_band_hz": None,
     }
     assert top["confidence"] == CONFIDENCE_UNOBSERVED
     assert top["spec"]["passed"] == 4
+
+
+def test_a_probe_band_that_fitted_no_slope_still_splits_the_span():
+    """A graded band with no ratio is still a band covering the span.
+
+    ``trusted_hf`` reports ``ratio=None`` whenever it had too few bins to fit
+    through — routine on a round that commanded little above 10 kHz. Counting
+    the overlap only over bands that DID fit would leave the 8-16 kHz row
+    taking the crossover band's 953-10000 Hz slope as its own: a
+    confidently-labelled number produced almost entirely outside the band it
+    is filed under.
+    """
+    thin_hf = _receipt(ratio=0.60, hf_ratio=None)
+    thin_hf["round_measurements"]["realization"]["bands"]["trusted_hf"] = {
+        "band_hz": [10200.0, 15800.0], "n_bins": 4,
+        "ratio": None, "graded": True,
+    }
+    top = _band(ledger_from_receipts([thin_hf] * 3), TOP)
+    assert top["confidence"] == CONFIDENCE_UNOBSERVED
+    assert top["realization"]["n_rounds"] == 0
+    assert top["realization"]["ratio_mean"] is None
 
 
 @pytest.mark.parametrize(
@@ -196,7 +221,7 @@ def test_a_receipt_missing_the_newer_blocks_reads_as_absent_not_as_zero(receipt)
         assert row["confidence"] == CONFIDENCE_UNOBSERVED
         assert row["realization"] == {
             "n_rounds": 0, "ratio_mean": None, "ratio_sigma": None,
-            "coverage": None,
+            "coverage": None, "fitted_band_hz": None,
         }
         # The round is still counted, and its outcome is still undisclosed
         # rather than absorbed into a pass.

@@ -181,6 +181,11 @@ class BandControllability:
     #: Octave fraction of the band the ratio was measured over — see
     #: :func:`_realization_ratio`. ``None`` exactly when ``ratio_mean`` is.
     coverage: float | None
+    #: The span the pooled fits actually ran over, as the envelope across the
+    #: contributing rounds. Routinely WIDER than the band it is filed under,
+    #: which is the fact ``coverage`` alone cannot state. ``None`` exactly when
+    #: ``ratio_mean`` is.
+    fitted_band_hz: tuple[float, float] | None
     spec_passed: int
     spec_failed: int
     spec_undisclosed: int
@@ -203,6 +208,10 @@ class BandControllability:
                 "ratio_mean": self.ratio_mean,
                 "ratio_sigma": self.ratio_sigma,
                 "coverage": self.coverage,
+                "fitted_band_hz": (
+                    None if self.fitted_band_hz is None
+                    else list(self.fitted_band_hz)
+                ),
             },
             # Three counters rather than a pass fraction, which would hide its
             # denominator — the honest half.
@@ -236,8 +245,8 @@ class ControllabilityLedger:
 
 def _realization_ratio(
     realization: Mapping[str, Any], span: tuple[float, float],
-) -> tuple[float, float] | None:
-    """The one probe band that speaks for ``span``, as ``(ratio, coverage)``.
+) -> tuple[float, float, tuple[float, float]] | None:
+    """The one probe band that speaks for ``span``: ratio, coverage, fitted span.
 
     The probe cuts its bands at
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_HF_SPLIT_HZ` (10 kHz)
@@ -251,38 +260,49 @@ def _realization_ratio(
     there is no single measured ratio, and this returns ``None``. Picking one
     or averaging them would publish a number no instrument produced.
 
-    ``coverage`` is the OCTAVE fraction of the spec band the overlap actually
-    spanned, and it rides beside the ratio because it is routinely well under
-    1.0: the probe's graded floor sits at 953 Hz on the series-1 rig against
-    this table's 250 Hz, so the low-mid row's slope is measured over about a
-    third of the band it is filed under. Disclosed for the reason
+    **The overlap count is taken over every graded band that reaches the span,
+    including one whose own fit failed.** A probe band with too few bins to fit
+    a slope reports ``ratio=None`` (``DELTA_PROBE_MIN_BINS``), which is routine
+    for ``trusted_hf`` on a round that commanded little above 10 kHz — and it
+    still means the span is split. Skipping it before the count would leave the
+    8-16 kHz row taking the crossover band's 953-10000 Hz slope as its own:
+    a confidently-labelled number produced almost entirely outside the band it
+    is filed under, which is the exact failure this refusal exists to prevent.
+
+    ``coverage`` is the OCTAVE fraction of the spec band the overlap spanned,
+    and ``fitted`` is the span the slope was actually fitted over. BOTH travel,
+    because coverage alone is misreadable in the direction that matters: the
+    low-mid row's 0.36 says the overlap covers a third of that row, and says
+    nothing about the two thirds of the FIT that sit above it. Disclosed for
+    the reason
     :attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.quiet_probe_coverage`
-    is — a number stated over a band needs how much of that band answered for
-    it — and never used to weight or correct the ratio, which is the probe's.
+    is, and never used to weight or correct the ratio, which is the probe's.
 
     ``above_ceiling`` never counts: the probe marks it ``graded=False`` by
     construction and it enters no verdict.
     """
 
-    found: tuple[float, float] | None = None
     # Positive by construction: ``_band_key`` drops any row whose upper edge
     # does not exceed its lower one, so no degenerate span reaches the axis.
     width = math.log2(span[1] / span[0])
+    overlapping: list[tuple[float | None, float, tuple[float, float]]] = []
     for entry in _mapping(realization.get("bands")).values():
         row = _mapping(entry)
         if row.get("graded") is not True:
             continue
         band = _span(row.get("band_hz"))
-        ratio = _finite(row.get("ratio"))
-        if band is None or ratio is None:
+        if band is None:
             continue
         lo, hi = max(band[0], span[0]), min(band[1], span[1])
         if hi <= lo:
             continue
-        if found is not None:
-            return None
-        found = (ratio, math.log2(hi / lo) / width)
-    return found
+        overlapping.append(
+            (_finite(row.get("ratio")), math.log2(hi / lo) / width, band)
+        )
+    if len(overlapping) != 1:
+        return None
+    ratio, coverage, fitted = overlapping[0]
+    return None if ratio is None else (ratio, coverage, fitted)
 
 
 def _spec_outcome(
@@ -355,6 +375,9 @@ def ledger_from_receipts(
 
     ratios: dict[tuple[float, float], list[float]] = {key: [] for key, _ in axis}
     coverages: dict[tuple[float, float], list[float]] = {key: [] for key, _ in axis}
+    fitted: dict[tuple[float, float], list[tuple[float, float]]] = {
+        key: [] for key, _ in axis
+    }
     outcomes: dict[tuple[float, float], dict[str, int]] = {
         key: {OUTCOME_PASSED: 0, OUTCOME_FAILED: 0, OUTCOME_UNDISCLOSED: 0}
         for key, _ in axis
@@ -375,6 +398,7 @@ def ledger_from_receipts(
             if observed is not None:
                 ratios[key].append(observed[0])
                 coverages[key].append(observed[1])
+                fitted[key].append(observed[2])
 
     bands: list[BandControllability] = []
     for key, tolerance in axis:
@@ -391,6 +415,13 @@ def ledger_from_receipts(
         confidence = _confidence(seen, sigma)
         spanned = coverages[key]
         coverage = sum(spanned) / len(spanned) if spanned else None
+        # The envelope across contributing rounds, not one round's span: the
+        # trusted floor can move mid-series, and a single round's edges would
+        # under-state what the pooled mean was actually taken over.
+        runs = fitted[key]
+        envelope = (
+            (min(lo for lo, _ in runs), max(hi for _, hi in runs)) if runs else None
+        )
         counts = outcomes[key]
         bands.append(BandControllability(
             f_lo_hz=key[0],
@@ -400,6 +431,7 @@ def ledger_from_receipts(
             ratio_mean=None if mean is None else round(mean, RATIO_DECIMALS),
             ratio_sigma=None if sigma is None else round(sigma, RATIO_DECIMALS),
             coverage=None if coverage is None else round(coverage, RATIO_DECIMALS),
+            fitted_band_hz=envelope,
             spec_passed=counts[OUTCOME_PASSED],
             spec_failed=counts[OUTCOME_FAILED],
             spec_undisclosed=counts[OUTCOME_UNDISCLOSED],

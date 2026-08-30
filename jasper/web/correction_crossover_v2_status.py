@@ -707,15 +707,21 @@ def _controllability_status() -> dict[str, Any] | None:
     bundle store. The caller's own handler turns any raise into a dropped
     ``crossover_v2`` key for the whole poll, and a history view is never worth
     that: an unreadable bundle root costs this key alone.
+
+    **The import is INSIDE the guard**, and ``ImportError`` is caught with the
+    rest. A half-rsynced ``/opt/jasper`` mid-deploy can fail this import, and
+    neither this tuple nor the caller's identical one lists ``ImportError`` —
+    so an import left outside would 500 the whole status route to publish a
+    disclosure.
     """
 
-    from jasper.active_speaker.controllability_ledger import (
-        read_controllability_ledger,
-    )
-
     try:
+        from jasper.active_speaker.controllability_ledger import (
+            read_controllability_ledger,
+        )
+
         return read_controllability_ledger().to_dict()
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         log_event(
             _host.logger,
             "correction.controllability_ledger_unavailable",

@@ -1148,13 +1148,15 @@ def test_the_controllability_ledger_reaches_the_operator_and_the_trail(
             {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "tolerance_db": 1.5,
              "confidence": "consistent",
              "realization": {"n_rounds": 4, "ratio_mean": 0.61,
-                             "ratio_sigma": 0.03, "coverage": 0.356},
+                             "ratio_sigma": 0.03, "coverage": 0.356,
+                             "fitted_band_hz": [953.5, 9999.98]},
              "spec": {"n_rounds": 4, "passed": 3, "failed": 0,
                       "undisclosed": 1}},
             {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "tolerance_db": 2.5,
              "confidence": "unobserved",
              "realization": {"n_rounds": 0, "ratio_mean": None,
-                             "ratio_sigma": None, "coverage": None},
+                             "ratio_sigma": None, "coverage": None,
+                             "fitted_band_hz": None},
              "spec": {"n_rounds": 4, "passed": 1, "failed": 3,
                       "undisclosed": 0}},
         ],
@@ -1179,8 +1181,9 @@ def test_the_controllability_ledger_reaches_the_operator_and_the_trail(
     # The unobserved band reaches the operator as unobserved, never as a zero.
     assert "8000.0-16000.0 Hz" in proc.stdout
     assert "unobserved" in proc.stdout
-    # A ratio measured over a third of its band says so where it is read.
-    assert "over 36% of band" in proc.stdout
+    # A ratio measured over a third of its band says so where it is read —
+    # with the span it was actually fitted over, which is wider than the band.
+    assert "36% of band, fit over 953.5-9999.98 Hz" in proc.stdout
 
 
 def test_a_round_with_no_ledger_prints_no_controllability_block(
