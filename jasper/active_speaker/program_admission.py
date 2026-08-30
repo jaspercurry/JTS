@@ -50,6 +50,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program import (
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
+    PROGRAM_PHASE_NULL_CONFIRM,
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
@@ -558,10 +559,17 @@ def _map_safety_plan_error(exc: ExcitationSafetyPlanError) -> ProgramAdmissionRe
 def _validate_program(program: ExcitationProgram) -> None:
     if not isinstance(program, ExcitationProgram):
         raise ProgramAdmissionError("program must be an ExcitationProgram")
-    if program.phase not in {PROGRAM_PHASE_CHECK, PROGRAM_PHASE_MEASURE}:
+    # The null confirm joins the two ROUTED phases: it loads the measurement
+    # graph and plays through `play_program`, so the readmit gate is reachable
+    # for it and refusing here would make the confirm unplayable. VERIFY and the
+    # position groups stay out for their own reason, unchanged -- they ride the
+    # applied production graph with no load and no admission.
+    if program.phase not in {
+        PROGRAM_PHASE_CHECK, PROGRAM_PHASE_MEASURE, PROGRAM_PHASE_NULL_CONFIRM,
+    }:
         raise ProgramAdmissionError(
-            "program admission only covers CHECK/MEASURE programs; VERIFY rides "
-            "the applied production graph"
+            "program admission only covers CHECK/MEASURE/NULL_CONFIRM programs; "
+            "VERIFY rides the applied production graph"
         )
 
 

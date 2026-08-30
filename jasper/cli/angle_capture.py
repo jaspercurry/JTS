@@ -366,8 +366,10 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         choices=sorted(_REGIME_STOPS),
         help=(
             "what to play at each angle: per_driver (the forward model's "
-            "input), summed (the system response), or both (paired, so the "
-            "microphone moves once per angle)"
+            "input), summed (the system response), null_confirm (the "
+            "band-limited reverse-null sweep through the MEASUREMENT graph, "
+            "for --delayed-role/--delay-us confirmations), or both (paired, "
+            "so the microphone moves once per angle)"
         ),
     )
     parser.add_argument(

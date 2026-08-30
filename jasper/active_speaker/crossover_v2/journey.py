@@ -84,6 +84,32 @@ PHASE_CLOUD_VERIFY = "cloud_verify"
 # a summed curve cannot answer. So it is NOT in ``SUMMED_SWEEP_PHASES``: same
 # protected-neutral commissioning graph, same stimulus, same gains as MEASURE.
 PHASE_LATERAL = "lateral"
+# The DISPOSE half of the inter-driver delay method (docs/tuning-methodology.md
+# §4): one band-limited SUMMED sweep played with a branch inverted and a
+# candidate delay installed, to measure how deep the crossover null actually
+# gets at that coordinate. `delay_landscape.confirmation_verdict` grades the
+# result against the computed landscape.
+#
+# It is a summed capture and is deliberately NOT in ``SUMMED_SWEEP_PHASES``,
+# which is the one thing about it that matters. Every member of that set steps
+# the measurement graph ASIDE and measures the standing production graph,
+# because for them the applied system is the thing under test. Here the
+# measurement graph IS the thing under test: the inversion, the candidate delay
+# and the level-match trims that make a null possible all live in it, and a
+# confirm that restored first would play the production graph and measure a
+# coordinate it never installed. Same argument shape as PHASE_LATERAL's
+# exclusion above, opposite reason — that one is per-driver, this one is summed.
+#
+# NOT YET REACHABLE FROM A STAGED WALK, and deliberately not faked into being
+# so. `consume_capture` resolves its phase from the INDEX MAP
+# (`_phase_of_index`), while the engine leg composes from the spec's KIND, so a
+# walk that set only the kind would be analysed against MEASURE's program and
+# graded by `_consume_measure`. Reaching it needs the index map to carry this
+# phase and a priors arm to hand it `crossover_fc_hz` — without the corner
+# there is no `reverse_null_depth_db` to read at all. That is the walk lift
+# `_bind_engine_measure_leg` already names as pending; this phase, its
+# stimulus and its admission are the half that lands first.
+PHASE_NULL_CONFIRM = "null_confirm"
 # #2291's "before" measurement: ONE summed sweep at the design-axis mark, taken
 # as the last thing stage 1 does — immediately before the household applies.
 #
