@@ -13,6 +13,7 @@ uses the production admitted recorder path for three fixed-axis repeats.
 from __future__ import annotations
 
 import datetime
+import errno
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from ._common import (
     ROOM_AUTHORITY_RECEIPT_MALFORMED,
     ROOM_AUTHORITY_RECEIPT_STALE,
     ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+    ROOM_AUTHORITY_RECEIPT_UNREADABLE,
 )
 from .commissioning_evidence_store import (
     EVIDENCE_ROOT,
@@ -63,6 +65,7 @@ from .commissioning_run import (
     CommissioningLiveMutation,
     CommissioningRunConflict,
     CommissioningRunHandle,
+    CommissioningRunLockTimeout,
     CommissioningRunStore,
 )
 
@@ -727,18 +730,34 @@ class CommissioningVerificationService:
         }
 
 
+#: The last (reason, cause) this process disclosed. A denial is the STEADY
+#: state for most speakers and this reader is polled by the dashboard, the
+#: wizard and every LAN client, so an unconditional WARNING per read is a
+#: journal storm on a 1 GB Pi — one incident produced 27,548 identical lines in
+#: six hours. The transition is the event; the repeat is not. See ADR-0196.
+_LAST_DISCLOSED: tuple[str, str] | None = None
+
+
 def _deny(reason: str, cause: str) -> dict[str, Any]:
     """One un-vouched receipt answer, disclosed loudly and never enforced.
 
     Ruling S10: an unproven fact is a WARNING, not a stop. The caller records
     that the automatic crossover is not receipt-backed — which keeps room
     correction from CLAIMING the verified authority — and runs anyway.
+
+    ``cause`` rides the answer as well as the log: without it a household-facing
+    class name cannot say WHICH file or errno produced it, and the operator is
+    left SSHing to the journal for the one sentence that ends the incident.
     """
 
+    global _LAST_DISCLOSED
+
+    changed = _LAST_DISCLOSED != (reason, cause)
+    _LAST_DISCLOSED = (reason, cause)
     log_event(
         logger,
         "active_speaker.commissioning_receipt_unvouched",
-        level=logging.WARNING,
+        level=logging.WARNING if changed else logging.DEBUG,
         reason=reason,
         cause=cause,
     )
@@ -746,8 +765,52 @@ def _deny(reason: str, cause: str) -> dict[str, Any]:
         "allowed": False,
         "authority": "automatic_verified_receipt",
         "reason": reason,
+        "cause": cause,
         "receipt_fingerprint": None,
     }
+
+
+def _root_os_error(exc: BaseException) -> OSError | None:
+    """The deepest OS fault under a wrapped exception, if there is one.
+
+    Wrappers nest: the evidence store raises through a bundle reader that
+    itself wrapped an artifact reader, so a permission fault on one file
+    arrives three ``__cause__`` links down.
+    """
+
+    seen: set[int] = set()
+    found: OSError | None = None
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        if isinstance(cursor, OSError):
+            found = cursor
+        cursor = cursor.__cause__
+    return found
+
+
+def _os_cause(exc: OSError) -> str:
+    """Name the fault the way an operator can act on: class, errno, path."""
+
+    code = errno.errorcode.get(exc.errno or 0, str(exc.errno or ""))
+    return f"{type(exc).__name__}:{code}:{exc.filename or ''}"
+
+
+#: How the evidence store's own structured codes answer. Classified by what
+#: the household must DO: nothing was minted, the record's bytes cannot be
+#: trusted, or the machine could not produce it. Codes are the store's
+#: vocabulary, so nothing here sniffs an exception chain. See ADR-0196.
+_STORE_ABSENT_CODES = frozenset({CommissioningEvidenceStoreErrorCode.MISSING})
+_STORE_CONTENT_CODES = frozenset({
+    CommissioningEvidenceStoreErrorCode.INVALID_PATH,
+    CommissioningEvidenceStoreErrorCode.WRONG_AUTHORITY,
+    CommissioningEvidenceStoreErrorCode.NOT_REGULAR,
+    CommissioningEvidenceStoreErrorCode.TOO_LARGE,
+    CommissioningEvidenceStoreErrorCode.TOTAL_TOO_LARGE,
+    CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+    CommissioningEvidenceStoreErrorCode.NOT_CANONICAL,
+    CommissioningEvidenceStoreErrorCode.MALFORMED,
+})
 
 
 def read_commissioning_room_authority(
@@ -758,12 +821,14 @@ def read_commissioning_room_authority(
 ) -> dict[str, Any]:
     """Read Active's exact verified-receipt decision without claiming ownership.
 
-    The four denials are distinguishable on purpose. A receipt that was never
-    minted, one that no longer describes this speaker, one an older JTS minted
-    to a schema that has since gained fields, and one whose bytes will not
-    parse have four different remedies, and a disclosure that cannot say which
-    of them happened is vague rather than loud. None of them stops room
-    correction — see :func:`_deny`.
+    The denials are distinguishable on purpose: a disclosure that cannot say
+    which of them happened is vague rather than loud. None of them stops room
+    correction — see :func:`_deny`. What each one means, and how the arms below
+    decide between them, is ADR-0196.
+
+    A lifecycle that is not ``verified`` — including a run record that has
+    never been commissioned at all — is ABSENT: a true state, not a damaged
+    one, and the state most speakers are in.
     """
 
     from .bundles import sessions_dir
@@ -789,16 +854,11 @@ def read_commissioning_room_authority(
             root / run.session_id,
             expected_session_id=run.session_id,
         )
-        try:
-            artifact = store.identify_artifact(
-                _artifact_relative_path(receipt_source_path(run))
-            )
-        except CommissioningEvidenceStoreError as exc:
-            if exc.code == CommissioningEvidenceStoreErrorCode.MISSING:
-                return _deny(
-                    ROOM_AUTHORITY_RECEIPT_ABSENT, "no receipt artifact for this run"
-                )
-            raise
+        # Both reads answer through the store-code map below, so a receipt the
+        # retention sweep removed between them reads as ABSENT either way.
+        artifact = store.identify_artifact(
+            _artifact_relative_path(receipt_source_path(run))
+        )
         payload = store.reopen_json_artifact(artifact)
         # A receipt this JTS would have to grow fields to read is not corrupt
         # and its household did nothing wrong: an upgrade moved the schema
@@ -843,9 +903,26 @@ def read_commissioning_room_authority(
             "receipt_fingerprint": receipt.fingerprint,
             "receipt_artifact_fingerprint": artifact.fingerprint,
         }
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-        # Everything left is the receipt or its run record failing to read as
-        # what it claims to be: a strict-schema reject, a torn file, a run
-        # record missing a key. Naming the exception type is the whole point
-        # of narrowing the two structural causes out above it.
+    except CommissioningEvidenceStoreError as exc:
+        if exc.code in _STORE_ABSENT_CODES:
+            return _deny(ROOM_AUTHORITY_RECEIPT_ABSENT, str(exc.code))
+        if exc.code in _STORE_CONTENT_CODES:
+            return _deny(ROOM_AUTHORITY_RECEIPT_MALFORMED, str(exc.code))
+        os_fault = _root_os_error(exc)
+        return _deny(
+            ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+            _os_cause(os_fault) if os_fault is not None else str(exc.code),
+        )
+    except CommissioningRunLockTimeout as exc:
+        return _deny(ROOM_AUTHORITY_RECEIPT_UNREADABLE, type(exc).__name__)
+    except CommissioningRunConflict as exc:
+        # A generation moved under the read — a peer claimed the run while this
+        # one was several file reads in. STALE is that fact's own answer.
+        return _deny(ROOM_AUTHORITY_RECEIPT_STALE, type(exc).__name__)
+    except OSError as exc:
+        return _deny(ROOM_AUTHORITY_RECEIPT_UNREADABLE, _os_cause(exc))
+    except (RuntimeError, TypeError, ValueError, KeyError) as exc:
+        os_fault = _root_os_error(exc)
+        if os_fault is not None:
+            return _deny(ROOM_AUTHORITY_RECEIPT_UNREADABLE, _os_cause(os_fault))
         return _deny(ROOM_AUTHORITY_RECEIPT_MALFORMED, type(exc).__name__)

@@ -30,6 +30,7 @@ import json
 import logging
 import math
 import os
+import stat
 import re
 import threading
 import time
@@ -38,7 +39,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import IO, Any, cast
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import (
@@ -64,6 +65,11 @@ LIVE_MUTATION_TERMINAL_STATUSES = frozenset(
     {"aborted", "committed", "released", "retained"}
 )
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_commissioning_run.json")
+# Group-WRITABLE: holding an advisory lock means opening the file for write, so
+# 0o640 let a group member read a lock it could never take — the mode every
+# other lock in the tree already uses. Applied only when it differs, because a
+# non-owner cannot chmod a lock it CAN open. See ADR-0196.
+LOCK_FILE_MODE = 0o660
 
 # This is control-plane state, not an evidence store.  Keeping both collection
 # counts and serialized bytes bounded prevents a corrupt or adversarial file
@@ -84,6 +90,13 @@ _LIVE_EXECUTION_THREAD_LOCK = threading.Lock()
 _UUID_HEX_RE = re.compile(r"[0-9a-f]{32}")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def _ensure_lock_mode(handle: IO[str]) -> None:
+    """Publish an open lock at :data:`LOCK_FILE_MODE`, if it is not already."""
+
+    if stat.S_IMODE(os.fstat(handle.fileno()).st_mode) != LOCK_FILE_MODE:
+        os.fchmod(handle.fileno(), LOCK_FILE_MODE)
 
 
 class CommissioningRunError(RuntimeError):
@@ -954,6 +967,7 @@ class CommissioningRunStore:
         self.live_execution_lock_path = self.path.with_name(
             f".{self.path.name}.live-execution.lock"
         )
+        self.lock_path = self.path.with_name(f".{self.path.name}.lock")
         self._uuid_factory = uuid_factory
         self.owner_id = _uuid_hex(
             owner_id or uuid_factory().hex,
@@ -988,7 +1002,7 @@ class CommissioningRunStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.live_execution_lock_path.open("a+", encoding="utf-8") as lock:
-                os.chmod(self.live_execution_lock_path, 0o640)
+                _ensure_lock_mode(lock)
                 try:
                     try:
                         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1036,9 +1050,8 @@ class CommissioningRunStore:
             )
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            lock_path = self.path.with_name(f".{self.path.name}.lock")
-            with lock_path.open("a+", encoding="utf-8") as handle:
-                os.chmod(lock_path, 0o640)
+            with self.lock_path.open("a+", encoding="utf-8") as handle:
+                _ensure_lock_mode(handle)
                 file_lock_acquired = False
                 while not file_lock_acquired:
                     if remaining() <= 0.0:
@@ -2111,13 +2124,20 @@ class CommissioningRunStore:
         return True
 
     def snapshot(self) -> dict[str, Any]:
-        """Return a detached, fully validated snapshot without logging."""
+        """Return a detached, fully validated snapshot without logging.
 
-        # Status polling must not create a lock file or parent directory merely
-        # because no commissioning run has ever existed. A concurrent first
-        # writer may become visible on the next poll; all non-empty reads still
-        # take the advisory lock and validate the complete artifact.
-        if not self.path.exists():
-            return _state_payload(None)
-        with self._locked():
-            return cast(dict[str, Any], json.loads(json.dumps(self._read())))
+        LOCK-FREE, deliberately. :meth:`_write` publishes through
+        ``atomic_write_text``/``os.replace``, so a reader sees the whole
+        previous record or the whole new one and never a torn one — the
+        exclusive lock bought a pure read nothing, while taking it made that
+        read need WRITE access to the sibling lock file and CREATE it when
+        absent. A root-run status poll therefore published a root-owned lock
+        that no service account could open again. See ADR-0196.
+
+        A missing record is still "no run", answered by :meth:`_read`'s own
+        ``FileNotFoundError`` arm rather than by an ``exists()`` probe, so a
+        directory this process may not traverse raises instead of reading as
+        an empty record.
+        """
+
+        return cast(dict[str, Any], json.loads(json.dumps(self._read())))

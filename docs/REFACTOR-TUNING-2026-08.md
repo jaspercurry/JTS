@@ -1696,8 +1696,8 @@ lane might be abandoned, so `commissioning_capture_producer` was priced as a
 2,089-line orphan removal. Fixing #2202 makes the lane live, and then the real
 question is one nobody has asked: **the eligibility receipt has a production
 reader** — `read_commissioning_room_authority`, which denies on every call
-today, now naming which of `active_commissioning_receipt_absent` /
-`_stale` / `_malformed` it was rather than one opaque code. Wiring a producer
+today, now naming which of the five denial reasons in `_common.py` it was
+rather than one opaque code (ADR-0196). Wiring a producer
 means deciding what that receipt should *say*, which is a design question about
 commissioning eligibility, not a plumbing fix. **Scope it on the box during the
 #2202 fix, before wave 4 books an estimate** — that hour is **sanctioned S11

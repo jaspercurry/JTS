@@ -26,6 +26,7 @@ from ._common import (
     ROOM_AUTHORITY_RECEIPT_MALFORMED,
     ROOM_AUTHORITY_RECEIPT_STALE,
     ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+    ROOM_AUTHORITY_RECEIPT_UNREADABLE,
 )
 from .baseline_profile import (
     active_layer_a_fingerprint,
@@ -72,9 +73,16 @@ _RECEIPT_DETAIL = {
         "banking a verified result. Re-mint it when convenient."
     ),
     ROOM_AUTHORITY_RECEIPT_MALFORMED: (
-        "The commissioning proof on disk could not be read, so room "
-        "correction is running without banking a verified result. Re-run "
-        "commissioning to replace it."
+        "The commissioning proof on this speaker is not valid — its contents "
+        "are not what a proof has to be — so room correction is running "
+        "without banking a verified result. Re-run commissioning to replace "
+        "it."
+    ),
+    ROOM_AUTHORITY_RECEIPT_UNREADABLE: (
+        "JTS could not open or read this speaker's commissioning record, so "
+        "room correction is running without banking a verified result. That "
+        "is a machine-level fault rather than a verdict on the record, and "
+        "re-running commissioning is unlikely to change it."
     ),
     ROOM_AUTHORITY_RECEIPT_SUPERSEDED: (
         "This speaker's commissioning proof was minted before a JTS update "
@@ -347,6 +355,10 @@ def _acoustic_commissioning_status(
         "status": "ready" if allowed else "incomplete",
         "allowed": allowed,
         "reason": reason,
+        # The reader's own structured cause — a store code, or an exception
+        # class with its errno and path. The reason names the CLASS; this
+        # names the fault, which is what an operator acts on. See ADR-0196.
+        "cause": str(receipt_authority.get("cause") or "") if reason else "",
         "detail": detail,
         "setup_href": setup_href,
         "receipt_fingerprint": (
