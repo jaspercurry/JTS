@@ -571,7 +571,7 @@ def test_the_bank_is_the_one_owner_of_where_banked_candidates_live(bank):
 # --- the ordinal reset, disclosed rather than silent ------------------------
 
 
-def _round_receipt_state(ordinal: int | None, *, epoch: int | None = None) -> None:
+def _round_receipt_state(ordinal: int) -> None:
     """Put a banked round's series memory on disk, as a graded round leaves it.
 
     ``round_receipt`` is the ONE key the whole disclosure turns on: it is where
@@ -579,9 +579,7 @@ def _round_receipt_state(ordinal: int | None, *, epoch: int | None = None) -> No
     and it is what both reset doors drop.
     """
     state = dict(v2host.load_v2_state() or {})
-    state["round_receipt"] = None if ordinal is None else {"round_ordinal": ordinal}
-    if epoch is not None:
-        state[coordinator.ROUND_ORDINAL_EPOCH_STATE_KEY] = epoch
+    state["round_receipt"] = {"round_ordinal": ordinal}
     v2host.save_v2_state(state)
 
 
