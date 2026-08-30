@@ -164,6 +164,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPTURE_PHASES,
     PHASE_APPLYING,
     PHASE_CLOSING,
+    PHASE_NULL_CONFIRM,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
@@ -215,7 +216,16 @@ APPLY_PATH = "/correction/crossover/v2/apply"
 #: round mid-flight. So this is stated, and the complement is pinned: what is
 #: left over must be exactly ``{review, done}``, the two phases where a
 #: household is being asked something and nothing is running.
-RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {PHASE_CLOSING, PHASE_APPLYING}
+#:
+#: ``null_confirm`` joins for the reason ``closing`` and ``applying`` do:
+#: it is a capture that PLAYS but is not part of a journey's standing
+#: walk, so ``CAPTURE_PHASES`` does not carry it and a poller treating it
+#: as terminal would bank a round mid-confirmation. The complement pin in
+#: ``test_the_endpoints_are_the_products_own`` is what forced this visit,
+#: which is exactly what it exists for.
+RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {
+    PHASE_CLOSING, PHASE_APPLYING, PHASE_NULL_CONFIRM,
+}
 
 #: Where ``install.sh`` puts the runtime the two Pi-side CLIs live in.
 PI_VENV_BIN = "/opt/jasper/.venv/bin"

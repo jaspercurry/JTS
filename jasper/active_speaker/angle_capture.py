@@ -121,6 +121,7 @@ __all__ = [
     "AngleCaptureRequest",
     "ResolvedStop",
     "pose_at_angle",
+    "null_confirm_at",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -480,6 +481,22 @@ def per_driver_at(
     """
     return AngleCaptureRequest(
         stops=tuple(AngleStop(a, REGIME_PER_DRIVER) for a in angles_deg),
+        mover=mover,
+    )
+
+
+def null_confirm_at(
+    angles_deg: Sequence[int], *, mover: str = MOVER_HUMAN,
+) -> AngleCaptureRequest:
+    """Reverse-null confirmation captures at each angle.
+
+    The third constructor, beside :func:`per_driver_at` and :func:`summed_at`
+    and for their reason: the CLI expresses every regime through the seam's own
+    constructors rather than assembling stops itself, so a regime the seam
+    knows and the constructors do not is a vocabulary that exists in one half.
+    """
+    return AngleCaptureRequest(
+        stops=tuple(AngleStop(a, REGIME_NULL_CONFIRM) for a in angles_deg),
         mover=mover,
     )
 

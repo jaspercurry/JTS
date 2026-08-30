@@ -31,12 +31,14 @@ from jasper.active_speaker.angle_capture import (
     MOVER_ARM,
     MOVER_HUMAN,
     MOVERS,
+    REGIME_NULL_CONFIRM,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     REGIMES,
     AngleCaptureRequest,
     AngleStop,
     both_at,
+    null_confirm_at,
     per_driver_at,
     position_angle_deg,
     resolve_request,
@@ -132,6 +134,7 @@ def test_cli_resolves_every_regime_and_mover_through_the_seam(regime, mover):
     expected = {
         REGIME_PER_DRIVER: per_driver_at,
         REGIME_SUMMED: summed_at,
+        REGIME_NULL_CONFIRM: null_confirm_at,
         "both": both_at,
     }[regime](CAMPAIGN_ANGLES, mover=mover)
     assert built == expected
