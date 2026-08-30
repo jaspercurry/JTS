@@ -3836,27 +3836,102 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
     assert "fc_selection" not in (v2host.load_v2_state() or {})
 
 
-def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
-    """CC1: the DONE screen is in a different session from the one that banked.
+# --- what the MEASURING session disclosed, across the stage-2 bundle hop -----
+#
+# The verify-only prepare opens a NEW relay session AND a NEW evidence bundle,
+# so stage 2 runs under a conductor that never ran MEASURE and whose own
+# persist writes ``None`` over everything the measuring session banked. Without
+# the carry-forward the household reads the caveat on the screen where they
+# DECIDE and then not on the screen that tells them the speaker is tuned — the
+# worse half to lose, because that screen otherwise says only "Verified."
+# (CC1; #2087's ripple reservation; audit gauntlet 5a's mic calibration.)
 
-    The verify-only prepare opens a NEW relay session AND a NEW evidence
-    bundle, so "read this session's bundle" cannot reach the finding the
-    MEASURING session banked — the household would be told the speaker is tuned
-    with the disclosure silently dropped somewhere between deciding and being
-    told.
-    The projection therefore carries forward on its own predicate: a session
-    that never runs MEASURE never had the chance to bank one, so its silence is
-    a timestamp rather than a verdict.
+_FINDING_COPY = "Two measurements of how this speaker's ranges balance disagreed."
+_RIPPLE_RESERVATION = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
 
-    Walks the real seam (mirroring the ``cloud`` B1 test above): seeded durable
-    state → the REAL re-arm conductor → the REAL ``persist_conductor_state`` →
-    the state, `/state`'s projection, and the done screen.
+
+def _seeded_session_with_a_reservation(measure: dict) -> None:
+    """A completed measuring session whose accepted MEASURE banked one."""
+    v2host.save_v2_state({
+        "session_id": "cap_measuring_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": "fp-measured"},
+        "applied": True,
+        "measure": dict(measure),
+        "evidence": {"bundle_session_id": "bundle-stage-1"},
+    })
+
+
+_ABSENT = object()
+
+
+def _dig(payload, path, *, missing=None):
+    """Read ``path`` out of a projection, absence included.
+
+    A step that is missing or out of range reads as ``missing``; a step whose
+    stored value really is ``None`` reads as ``None``. The two collapse together
+    by default, which is what most callers want — but "the key was REMOVED" and
+    "the key was written as None" are different clearings, and a caller that
+    must tell them apart passes ``missing=_ABSENT``.
     """
-    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+    for step in path:
+        if payload is None:
+            return missing
+        try:
+            payload = payload[step]
+        except (KeyError, IndexError):
+            return missing
+    return payload
 
-    copy = "Two measurements of how this speaker's ranges balance disagreed."
-    _seeded_session_with_a_banked_finding(copy)
 
+@pytest.mark.parametrize(
+    ("seed", "state_path", "status_path", "expected", "screen_key", "copy_key",
+     "screen_exact", "expert_detail"),
+    (
+        pytest.param(
+            lambda: _seeded_session_with_a_banked_finding(_FINDING_COPY),
+            ("evidence", v2host.FINDING_HOUSEHOLD_REFS_KEY, 0, "household_copy"),
+            ("findings", 0, "household_copy"),
+            _FINDING_COPY,
+            "findings", "finding", True, None,
+            id="banked-finding",
+        ),
+        pytest.param(
+            lambda: _seeded_session_with_a_reservation(
+                {"ripple_reservation": _RIPPLE_RESERVATION}),
+            ("measure", "ripple_reservation"),
+            ("measure", "ripple_reservation"),
+            _RIPPLE_RESERVATION,
+            "nudges", "ripple", False,
+            "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold",
+            id="ripple-reservation",
+        ),
+        pytest.param(
+            lambda: _seeded_session_with_a_reservation(
+                {"calibration_reservation": True}),
+            ("measure", "calibration_reservation"),
+            ("measure", "calibration_reservation"),
+            True,
+            "nudges", "mic_calibration", False, None,
+            id="mic-calibration-reservation",
+        ),
+    ),
+)
+def test_stage_2_keeps_what_the_measuring_session_disclosed(
+    monkeypatch, seed, state_path, status_path, expected, screen_key, copy_key,
+    screen_exact, expert_detail,
+):
+    """Walks the real seam: seeded durable state -> the REAL re-arm conductor
+    -> the REAL ``persist_conductor_state`` -> the three surfaces the
+    disclosure has to reach (durable state, ``/state``, the done screen).
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        MIC_CALIBRATION_RESERVATION_COPY,
+        RIPPLE_RESERVATION_COPY,
+        build_crossover_envelope_v2,
+    )
+
+    seed()
     v2host.persist_conductor_state(
         _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
         failure_code=None,
@@ -3867,15 +3942,11 @@ def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
     state = v2host.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
     assert state["evidence"]["bundle_session_id"] == "bundle-stage-2"
-    assert state["evidence"][v2host.FINDING_HOUSEHOLD_REFS_KEY][0][
-        "household_copy"
-    ] == copy
+    assert _dig(state, state_path) == expected
 
     # Surface 2: /state's projection.
-    assert [
-        row["household_copy"]
-        for row in v2status.crossover_v2_status_block()["findings"]
-    ] == [copy]
+    status = v2status.crossover_v2_status_block()
+    assert _dig(status, status_path) == expected
 
     # Surface 3: the screen the household actually reads.
     monkeypatch.setattr(
@@ -3885,180 +3956,67 @@ def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
-            **v2status.crossover_v2_status_block(),
-            "phase": PHASE_DONE,
-            "verify": {"outcome": "pass"},
+            **status, "phase": PHASE_DONE, "verify": {"outcome": "pass"},
         },
     })
-    assert [f["text"] for f in env["findings"]] == [copy]
+    copy = {
+        "finding": _FINDING_COPY,
+        "ripple": RIPPLE_RESERVATION_COPY,
+        "mic_calibration": MIC_CALIBRATION_RESERVATION_COPY,
+    }[copy_key]
+    texts = [row["text"] for row in env[screen_key]]
+    assert texts == [copy] if screen_exact else copy in texts
+    if expert_detail is not None:
+        assert expert_detail in env["expert_details"]
 
 
-def test_a_fresh_measurement_that_banks_nothing_clears_the_old_finding():
+# ``cleared_state`` is a row parameter because the two rows are cleared in
+# DIFFERENT ways, and flattening them to a single `is None` would let a
+# regression that wrote None over the removed key pass the finding row.
+@pytest.mark.parametrize(
+    ("seed", "state_path", "cleared_state", "status_path", "cleared_status"),
+    (
+        pytest.param(
+            lambda: _seeded_session_with_a_banked_finding(
+                "An old finding nobody re-measured."),
+            ("evidence", v2host.FINDING_HOUSEHOLD_REFS_KEY),
+            # REMOVED from the evidence map, not written as None.
+            _ABSENT,
+            ("findings",),
+            [],
+            id="banked-finding",
+        ),
+        pytest.param(
+            lambda: _seeded_session_with_a_reservation(
+                {"ripple_reservation": _RIPPLE_RESERVATION}),
+            ("measure",),
+            # Still there, holding None: the key is the whole measure block.
+            None,
+            ("measure",),
+            None,
+            id="ripple-reservation",
+        ),
+    ),
+)
+def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
+    seed, state_path, cleared_state, status_path, cleared_status,
+):
     """The converse, and the reason the predicate is MEASURE rather than an
-    unconditional carry: a new measuring session writes its own projection —
-    empty included — so a speaker that has since been re-measured cleanly never
-    replays a previous session's finding as if this measurement had found it.
-    """
-    _seeded_session_with_a_banked_finding("An old finding nobody re-measured.")
-
-    # A fresh full session: its own session_phases include MEASURE, so it owns
-    # the answer to "what did this measurement learn" — and it learned nothing.
-    v2host.persist_conductor_state(
-        _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-fresh"},
-    )
-
-    state = v2host.load_v2_state()
-    assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in (state["evidence"] or {})
-    assert v2status.crossover_v2_status_block()["findings"] == []
-
-
-# --- G1's ripple reservation across the stage-2 bundle hop (#2087) ------------
-
-
-def _seeded_session_with_a_ripple_reservation() -> dict:
-    """A completed measuring session whose accepted MEASURE banked one."""
-    reservation = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
-    v2host.save_v2_state({
-        "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
-        "measure": {"ripple_reservation": dict(reservation)},
-        "evidence": {"bundle_session_id": "bundle-stage-1"},
-    })
-    return reservation
-
-
-def test_stage_2_keeps_the_measuring_sessions_ripple_reservation(monkeypatch):
-    """The reservation survives the stage-2 session hop to the DONE screen.
-
-    Same shape and same hazard as the banked-finding test above: stage 2 runs
-    under a NEW conductor that never ran MEASURE, so its own persist writes
-    ``None`` over the reservation. Without the carry-forward the household
-    would read the caveat on the screen where they DECIDE and then not on the
-    screen that tells them the speaker is tuned — the worse half to lose,
-    because that screen is the one that otherwise says only "Verified."
-
-    Walks the real seam: seeded durable state -> the REAL re-arm conductor ->
-    the REAL ``persist_conductor_state`` -> state, ``/state``, and the screen.
-    """
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        RIPPLE_RESERVATION_COPY,
-        build_crossover_envelope_v2,
-    )
-
-    reservation = _seeded_session_with_a_ripple_reservation()
-
-    v2host.persist_conductor_state(
-        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-stage-2"},
-    )
-
-    # Surface 1: the durable state — carried across the bundle hop.
-    state = v2host.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["measure"]["ripple_reservation"] == reservation
-
-    # Surface 2: /state's projection.
-    assert (
-        v2status.crossover_v2_status_block()["measure"]["ripple_reservation"]
-        == reservation
-    )
-
-    # Surface 3: the screen the household actually reads.
-    monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
-    )
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            **v2status.crossover_v2_status_block(),
-            "phase": PHASE_DONE,
-            "verify": {"outcome": "pass"},
-        },
-    })
-    assert RIPPLE_RESERVATION_COPY in [n["text"] for n in env["nudges"]]
-    assert (
-        "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold"
-        in env["expert_details"]
-    )
-
-
-def test_stage_2_keeps_the_measuring_sessions_calibration_reservation(monkeypatch):
-    """Audit gauntlet 5a's carry-forward sibling to the ripple test above:
-    the DONE screen must show the mic-calibration caveat even though stage 2
-    runs under a NEW conductor that never ran MEASURE — the same hazard, the
-    same fix (the ``measure`` dict carries forward as a whole), and the same
-    reason: the screen that tells the household the speaker is tuned is
-    exactly where an unstated caveat becomes an overclaim.
-    """
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        MIC_CALIBRATION_RESERVATION_COPY,
-        build_crossover_envelope_v2,
-    )
-
-    v2host.save_v2_state({
-        "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
-        "measure": {"calibration_reservation": True},
-        "evidence": {"bundle_session_id": "bundle-stage-1"},
-    })
-
-    v2host.persist_conductor_state(
-        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-stage-2"},
-    )
-
-    # Surface 1: the durable state — carried across the bundle hop.
-    state = v2host.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["measure"]["calibration_reservation"] is True
-
-    # Surface 2: /state's projection.
-    assert (
-        v2status.crossover_v2_status_block()["measure"]["calibration_reservation"]
-        is True
-    )
-
-    # Surface 3: the screen the household actually reads.
-    monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
-    )
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            **v2status.crossover_v2_status_block(),
-            "phase": PHASE_DONE,
-            "verify": {"outcome": "pass"},
-        },
-    })
-    assert MIC_CALIBRATION_RESERVATION_COPY in [n["text"] for n in env["nudges"]]
-
-
-def test_a_fresh_measurement_clears_a_previous_sessions_ripple_reservation():
-    """The converse, and the reason the predicate is MEASURE rather than an
-    unconditional carry: a new measuring session owns the answer to "how good
-    was this measurement", so a clean retake must not replay a caveat about a
+    unconditional carry: a new measuring session owns the answer to "what did
+    this measurement learn", so a clean retake must not replay a caveat about a
     capture the household already replaced.
     """
-    _seeded_session_with_a_ripple_reservation()
+    seed()
 
+    # A fresh full session: its own session_phases include MEASURE.
     v2host.persist_conductor_state(
         _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
         failure_code=None,
         evidence={"bundle_session_id": "bundle-fresh"},
     )
 
-    assert v2host.load_v2_state()["measure"] is None
-    assert v2status.crossover_v2_status_block()["measure"] is None
+    assert _dig(v2host.load_v2_state(), state_path, missing=_ABSENT) is cleared_state
+    assert _dig(v2status.crossover_v2_status_block(), status_path) == cleared_status
 
 
 # --- the projection contract, pinned AT the projection layer ------------------
@@ -6936,197 +6894,154 @@ def test_an_express_session_verified_at_the_mark_is_complete_and_scoped():
     assert grade["complete"] is True
 
 
-def test_a_closed_and_passing_group_is_a_complete_spatial_grade():
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL,
-        cloud_verify=_closed_cloud_group(passed=True, flatness={
-            **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
-        }),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_PASSED
-    assert grade["scope"] == v2host.GRADE_SCOPE_SPATIAL
-    assert grade["complete"] is True
-    # No number: there is no failure for it to quantify, and printing the
-    # margin of a pass beside a failure verdict is how the two get confused.
-    assert grade["spatial_worst_db"] is None
-    assert grade["spatial_worst_hz"] is None
-
-
-def test_a_group_that_could_not_be_graded_is_not_reported_as_a_failure():
-    """``SpecFlatness.passed`` is ``False`` for a spectrum no band survived to
-    measure, by its own "will not report a clean bill of health for a spectrum
-    it could not fully measure" rule. Reading that as a miss states a
-    measurement that never happened."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL,
-        cloud_verify=_closed_cloud_group(passed=False, flatness={
-            **_GRADED_AND_FAILED_FLATNESS,
-            "max_db": None, "max_hz": None, "evaluable": False, "passed": False,
-        }),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_UNMEASURABLE
-    assert grade["spatial_worst_db"] is None
-    # No spatial CLAIM exists, so the delivered width falls back to whatever
-    # the mark proved — and on Full that is short of the promise.
-    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
-    assert grade["complete"] is False
-
-
-def test_a_failing_group_with_no_gauge_at_all_stays_a_failure():
-    """Unmeasurable is claimed only on POSITIVE evidence. A durable state
-    written before the gauge shipped carries a real ``overall_passed=False``
-    and no ``flatness`` — downgrading that to "could not be measured" on the
-    ABSENCE of an instrument is the fabricated reading, pointed the other
-    way."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, cloud_verify=_closed_cloud_group(passed=False),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_FAILED
-    assert grade["spatial_worst_db"] is None  # no gauge, no number invented
-
-
-def test_an_unreadable_tier_is_judged_on_delivery_not_on_a_guessed_promise():
-    """A pre-tier state file, or one written by a later build. This build
-    cannot know what was promised, and manufacturing an incompleteness warning
-    about a promise it never read would be worse than saying what it said —
-    the same degrade rule the ``state`` vocabulary already follows."""
-    v2host.save_v2_state(_applied_state(tier=None))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
-    assert grade["complete"] is True
-
-    v2host.save_v2_state(_applied_state(tier="tier-from-2027"))
-    later = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert later["complete"] is True
-
-
-def test_a_verify_that_did_not_pass_delivers_no_scope_at_all():
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="inconclusive",
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_INCONCLUSIVE
-    assert grade["scope"] == v2host.GRADE_SCOPE_NONE
-    assert grade["complete"] is False
-
-
-# --- #2464: a failed mark-VERIFY caps the badge, whatever the group says -----
-
-
 _PASSING_GROUP = {"passed": True, "flatness": {
     **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
 }}
 
+# ``SpecFlatness.passed`` is False for a spectrum no band survived to measure,
+# by its own "will not report a clean bill of health for a spectrum it could
+# not fully measure" rule — a miss and an unmeasurable are not the same fact.
+_UNMEASURABLE_FLATNESS = {
+    **_GRADED_AND_FAILED_FLATNESS,
+    "max_db": None, "max_hz": None, "evaluable": False, "passed": False,
+}
 
-def test_a_failed_verify_is_not_masked_by_a_passing_spatial_grade():
-    """#2464, ruled 2026-08-19 (option (a)). ``cloud_verdict`` was tested
-    BEFORE the fail arm, so any closed group masked it: a re-verify that
-    failed against a carried-forward passing group reached ``GRADE_GRADED``
-    with ``graded=True``, and every surface that keys on those two — `/state`,
-    the doctor's green tick — reported the failure as a clean result."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="fail",
-        claims={"integration": {"status": "fail", "max_db": 4.2}},
-        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
-    ))
+_PASSING = _closed_cloud_group(**_PASSING_GROUP)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    (
+        pytest.param(
+            {"tier": TIER_FULL, "cloud_verify": _PASSING},
+            # No number beside a pass: printing the margin of a pass next to a
+            # failure verdict is how the two get confused.
+            {"spatial": v2host.GRADE_SPATIAL_PASSED,
+             "scope": v2host.GRADE_SCOPE_SPATIAL, "complete": True,
+             "spatial_worst_db": None, "spatial_worst_hz": None},
+            id="closed-and-passing-group-is-a-complete-spatial-grade",
+        ),
+        # Reading an unmeasurable spectrum as a miss states a measurement that
+        # never happened. No spatial CLAIM exists, so the delivered width falls
+        # back to what the mark proved — on Full, short of the promise.
+        pytest.param(
+            {"tier": TIER_FULL, "cloud_verify": _closed_cloud_group(
+                passed=False, flatness=_UNMEASURABLE_FLATNESS)},
+            {"spatial": v2host.GRADE_SPATIAL_UNMEASURABLE,
+             "spatial_worst_db": None, "scope": v2host.GRADE_SCOPE_MARK,
+             "complete": False},
+            id="an-ungradeable-group-is-not-a-failure",
+        ),
+        # Unmeasurable is claimed only on POSITIVE evidence: a state written
+        # before the gauge shipped carries a real ``overall_passed=False`` and
+        # no ``flatness``, and downgrading that on the ABSENCE of an instrument
+        # is the fabricated reading pointed the other way.
+        pytest.param(
+            {"tier": TIER_FULL, "cloud_verify": _closed_cloud_group(passed=False)},
+            {"spatial": v2host.GRADE_SPATIAL_FAILED, "spatial_worst_db": None},
+            id="a-failing-group-with-no-gauge-stays-a-failure",
+        ),
+        # A pre-tier state file, or one from a later build: this build cannot
+        # know what was promised, and manufacturing an incompleteness warning
+        # about a promise it never read is worse than saying what it said.
+        pytest.param(
+            {"tier": None},
+            {"scope": v2host.GRADE_SCOPE_MARK, "complete": True},
+            id="an-unreadable-tier-is-judged-on-delivery",
+        ),
+        pytest.param(
+            {"tier": "tier-from-2027"}, {"complete": True},
+            id="a-tier-from-the-future-is-judged-on-delivery",
+        ),
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "inconclusive"},
+            {"state": v2host.GRADE_INCONCLUSIVE,
+             "scope": v2host.GRADE_SCOPE_NONE, "complete": False},
+            id="a-verify-that-did-not-pass-delivers-no-scope",
+        ),
+        # #2464: a failed or undecided mark-VERIFY caps the badge whatever the
+        # group says. ``cloud_verdict`` was tested BEFORE the fail arm, so any
+        # closed group masked it. The spatial instrument's own verdict is
+        # untouched and still rides its own field (#2160 rider) — capping the
+        # badge is not co-locating the two facts.
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "fail",
+             "claims": {"integration": {"status": "fail", "max_db": 4.2}},
+             "cloud_verify": _PASSING},
+            {"state": v2host.GRADE_FAILED, "graded": False,
+             "spatial": v2host.GRADE_SPATIAL_PASSED,
+             "post_apply_spec_passed": True},
+            id="a-failed-verify-is-not-masked-by-a-passing-spatial-grade",
+        ),
+        # ``verify.outcome`` grades capture and tracking health ONLY, so a
+        # crossover-region claim that missed its tolerance rides a clean
+        # ``pass``: the CLAIMS record is the source, and both facts stand.
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "pass",
+             "claims": {"integration": {"status": "pass", "max_db": 0.7},
+                        "absolute": {"status": "fail", "max_db": 4.31,
+                                     "worst_hz": 1590.4}},
+             "cloud_verify": _PASSING},
+            {"state": v2host.GRADE_FAILED, "graded": False,
+             "verify_outcome": "pass"},
+            id="a-failed-absolute-claim-caps-the-badge-on-a-clean-capture",
+        ),
+        # The two instruments are a UNION, not a fallback: an ``outcome`` fail
+        # whose claims are ``not_evaluated`` still caps.
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "fail",
+             "claims": {"integration": {"status": "not_evaluated"},
+                        "absolute": {"status": "not_evaluated",
+                                     "reason": "no_trusted_region"}},
+             "cloud_verify": _PASSING},
+            {"state": v2host.GRADE_FAILED},
+            id="an-outcome-fail-whose-claims-could-not-grade-still-caps",
+        ),
+        # The same masking defect one arm over: the ``inconclusive`` arm was
+        # unreachable behind the closed-group test.
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "inconclusive",
+             "cloud_verify": _closed_cloud_group(passed=False)},
+            {"state": v2host.GRADE_INCONCLUSIVE, "graded": False},
+            id="an-inconclusive-verify-is-not-masked-by-a-closed-group",
+        ),
+        # The cap is scoped to a FAILED or undecided VERIFY. On a clean pass
+        # the walked group is the wider claim and still wins the state word,
+        # or this demotes every correctly graded Full session.
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "pass",
+             "claims": {"integration": {"status": "pass", "max_db": 0.7},
+                        "absolute": {"status": "pass", "max_db": 0.8}},
+             "cloud_verify": _PASSING},
+            {"state": v2host.GRADE_GRADED, "graded": True, "complete": True},
+            id="a-clean-pass-still-grades-on-the-wider-spatial-claim",
+        ),
+        # Absence of claims is a pre-R18 state file, never a fail and never a
+        # pass-of-claims: the outcome stands as the only record there is.
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "pass", "cloud_verify": _PASSING},
+            {"state": v2host.GRADE_GRADED},
+            id="no-claims-block-graded-on-a-passing-outcome-alone",
+        ),
+        pytest.param(
+            {"tier": TIER_FULL, "verify_outcome": "fail", "cloud_verify": _PASSING},
+            {"state": v2host.GRADE_FAILED},
+            id="no-claims-block-graded-on-a-failing-outcome-alone",
+        ),
+    ),
+)
+def test_the_post_apply_grade_badge_table(state, expected):
+    """What ``post_apply_grade`` publishes for each shape of applied session.
+
+    ``state`` is the vocabulary every consuming surface keys on; ``spatial``,
+    ``scope`` and ``complete`` say how wide the claim is and whether the tier
+    delivered what it promised. A row asserts only the fields its own shape
+    decides — the rest are pinned by the rows that turn on them.
+    """
+    v2host.save_v2_state(_applied_state(**state))
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_FAILED
-    assert grade["graded"] is False
-    # The rider (#2160, ratified 2026-08-17): the spatial instrument's own
-    # verdict is untouched and still rides its own field. Capping the badge
-    # is not co-locating the two facts.
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_PASSED
-    assert grade["post_apply_spec_passed"] is True
-
-
-def test_a_failed_absolute_claim_caps_the_badge_on_a_clean_capture():
-    """The retro-audit shape, and the reason the CLAIMS record is the source.
-
-    ``verify.outcome`` grades capture and tracking health only — its ``pass``
-    call site says so ("Absolute remains independent; the terminal owner
-    classifies its miss") — so a crossover-region claim that missed its
-    tolerance rides a clean ``pass`` and no ``outcome`` reader can see it."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="pass",
-        claims={
-            "integration": {"status": "pass", "max_db": 0.7},
-            "absolute": {"status": "fail", "max_db": 4.31, "worst_hz": 1590.4},
-        },
-        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_FAILED
-    assert grade["graded"] is False
-    assert grade["verify_outcome"] == "pass"  # both facts, neither overwritten
-
-
-def test_an_outcome_fail_whose_claims_could_not_grade_still_caps_the_badge():
-    """An absent or non-numeric tracking max is an ``outcome`` fail whose
-    integration claim is ``not_evaluated`` (``_verify_claims``), so the two
-    instruments are a UNION and not a fallback: neither can see the other's
-    failure."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="fail",
-        claims={
-            "integration": {"status": "not_evaluated"},
-            "absolute": {"status": "not_evaluated", "reason": "no_trusted_region"},
-        },
-        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_FAILED
-
-
-def test_an_inconclusive_verify_is_not_masked_by_a_closed_group():
-    """The same masking defect one arm over: the ``inconclusive`` arm was
-    unreachable behind the closed-group test, so the household lost the
-    "could not tell either way" copy and the doctor lost its warn."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="inconclusive",
-        cloud_verify=_closed_cloud_group(passed=False),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_INCONCLUSIVE
-    assert grade["graded"] is False
-
-
-def test_a_clean_pass_still_grades_on_the_wider_spatial_claim():
-    """The cap is scoped to a FAILED or undecided VERIFY. On a clean pass the
-    walked group is the wider claim and still wins the state word — otherwise
-    this would demote every correctly graded Full session."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="pass",
-        claims={
-            "integration": {"status": "pass", "max_db": 0.7},
-            "absolute": {"status": "pass", "max_db": 0.8},
-        },
-        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_GRADED
-    assert grade["graded"] is True
-    assert grade["complete"] is True
-
-
-def test_a_state_file_with_no_claims_block_is_graded_on_its_outcome_alone():
-    """Absence of claims is a pre-R18 state file, never a fail and never a
-    pass-of-claims: the outcome is left standing as the only record there is."""
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="pass",
-        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
-    ))
-    legacy = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert legacy["state"] == v2host.GRADE_GRADED
-
-    v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL, verify_outcome="fail",
-        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
-    ))
-    legacy_fail = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert legacy_fail["state"] == v2host.GRADE_FAILED
+    for key, value in expected.items():
+        assert grade[key] == value, key
 
 
 def test_status_block_never_asks_an_unapplied_session_for_a_grade():
@@ -8000,236 +7915,184 @@ def test_verify_fail_block_still_persists_evidence_and_no_flatness():
     assert "flatness" not in verify
 
 
-def test_candidate_summary_surfaces_linearization_outcome_and_octaves():
-    """Gauge fix (2026-07-24): items 2/3 -- _candidate_summary reads
-    linearization_outcome straight off the candidate, and reduces the rich
-    per-role linearization dict down to the two OBSERVE-layer honesty-ladder
-    disclosures the wizard payload needs -- observe_octave_summary and (since
-    #2638) the reason_summary that says what each of those numbers IS -- never
-    persisting the rest of LinearizationFit.to_dict()'s cargo (filters,
-    residuals, ...) into this session-scoped view."""
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
+def _linearization_summary(linearization=None, *, outcome=None, analysis=None):
+    """``_candidate_summary`` of a measured candidate — the projection itself.
 
-    candidate = MeasuredCrossoverCandidate(
-        program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9, "predicted_ripple_db": 1.1,
-                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
-        source_preset=_preset(),
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        linearization={
-            "woofer": {
-                "role": "woofer", "filters": [], "fit_band_hz": [150.0, 3951.5],
-                "target_level_db": -20.22, "residual_rms_db": 4.16,
-                "residual_max_db": 12.21, "reason_summary": {},
-                "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
-                "observe_octave_summary": {"8000": -0.3, "12000": -1.1, "16000": -2.8},
-            },
-            "tweeter": {
-                "role": "tweeter", "filters": [], "fit_band_hz": [2020.0, 13905.2],
-                "target_level_db": -8.63, "residual_rms_db": 2.63,
-                "residual_max_db": 7.13, "reason_summary": {},
-                "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
-                "observe_octave_summary": {"8000": -0.1, "12000": -3.2, "16000": -9.4},
-            },
-        },
-        linearization_outcome="fitted",
-    )
-
-    summary = v2host._candidate_summary(candidate)
-
-    assert summary["linearization_outcome"] == "fitted"
-    assert summary["linearization_octaves"] == {
-        "woofer": {"8000": -0.3, "12000": -1.1, "16000": -2.8},
-        "tweeter": {"8000": -0.1, "12000": -3.2, "16000": -9.4},
-    }
-    # Only the octave dict is threaded — confirm the rest of the rich
-    # LinearizationFit.to_dict() cargo (filters, residuals, ...) is NOT
-    # duplicated into this session-scoped view.
-    assert "filters" not in summary
-    assert "residual_rms_db" not in summary
-
-
-def test_candidate_summary_carries_the_reason_beside_each_octave_number():
-    """#2638: the number and the verdict travel together or not at all.
-
-    ``observe_octave_summary`` runs past the driver's own band, where the
-    crossover target dives at 24 dB/oct against a measurement floor that
-    stays put and the difference explodes POSITIVE. The fit engine labels
-    those octaves ``envelope_out_of_band`` in the same pass; before this the
-    projection dropped the labels, so a stopband artifact reached the review
-    screen as a bare "+23.0 dB" with nothing to say what it was.
-
-    Keyed band-for-band against the numbers (both dicts come off the same
-    octave-center sampling -- ``linearization_fit._observe_octave_summary``),
-    and a separate key, so a candidate persisted by an older build simply has
-    no reasons rather than a second shape of the same one.
+    This is the hop from ``MeasuredCrossoverCandidate`` into the session-scoped
+    wizard payload. The envelope suite's own ``_candidate_summary`` is a test
+    fixture that starts on the far side of it, so nothing over there can see
+    this projection at all.
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverCandidate,
     )
 
-    candidate = MeasuredCrossoverCandidate(
+    extra = {}
+    if linearization is not None:
+        extra["linearization"] = linearization
+    if outcome is not None:
+        extra["linearization_outcome"] = outcome
+    return v2host._candidate_summary(MeasuredCrossoverCandidate(
         program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9,
-                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
+        analysis=analysis or {
+            "alignment_confidence": 0.9, "predicted_ripple_db": 1.1,
+            "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4},
+        },
         source_preset=_preset(),
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        linearization={
-            "woofer": {
-                "role": "woofer",
-                "observe_octave_summary": {"8000": -0.3, "16000": 23.0},
-                "reason_summary": {
-                    "8000": "envelope_fitted",
-                    "16000": "envelope_out_of_band",
+        **extra,
+    ))
+
+
+# The ``_empty_fit`` shape — the envelope allowed correction nowhere — returns
+# an EMPTY ``observe_octave_summary`` beside a populated ``reason_summary``, so
+# a role can honestly hold verdicts and no numbers.
+_VERDICTS_WITHOUT_NUMBERS = {
+    "role": "tweeter",
+    "observe_octave_summary": {},
+    "reason_summary": {"8000": "envelope_out_of_band"},
+}
+
+
+@pytest.mark.parametrize(
+    ("linearization", "outcome", "expected", "absent"),
+    (
+        # Gauge fix items 2/3: only the octave dict is threaded — the rest of
+        # ``LinearizationFit.to_dict()``'s cargo stays out of this
+        # session-scoped view.
+        pytest.param(
+            {
+                "woofer": {
+                    "role": "woofer", "filters": [],
+                    "fit_band_hz": [150.0, 3951.5], "target_level_db": -20.22,
+                    "residual_rms_db": 4.16, "residual_max_db": 12.21,
+                    "reason_summary": {}, "mic_tier": "reference",
+                    "driver_class": "unknown", "n_repeats": 2,
+                    "observe_octave_summary": {
+                        "8000": -0.3, "12000": -1.1, "16000": -2.8,
+                    },
+                },
+                "tweeter": {
+                    "role": "tweeter", "filters": [],
+                    "fit_band_hz": [2020.0, 13905.2], "target_level_db": -8.63,
+                    "residual_rms_db": 2.63, "residual_max_db": 7.13,
+                    "reason_summary": {}, "mic_tier": "reference",
+                    "driver_class": "unknown", "n_repeats": 2,
+                    "observe_octave_summary": {
+                        "8000": -0.1, "12000": -3.2, "16000": -9.4,
+                    },
                 },
             },
-        },
-        linearization_outcome="fitted",
-    )
-
-    summary = v2host._candidate_summary(candidate)
-
-    assert summary["linearization_octaves"] == {
-        "woofer": {"8000": -0.3, "16000": 23.0},
-    }
-    assert summary["linearization_octave_reasons"] == {
-        "woofer": {"8000": "envelope_fitted", "16000": "envelope_out_of_band"},
-    }
-
-
-def test_a_role_with_verdicts_but_no_octave_numbers_persists_no_reasons():
-    """The one place the two sibling projections could disagree.
-
-    ``linearization_fit._empty_fit`` -- the envelope allowed correction
-    nowhere -- returns an EMPTY ``observe_octave_summary`` beside a fully
-    populated ``reason_summary``, so a role can honestly hold verdicts and no
-    numbers. Keying the reasons off the numbers keeps the reason set a subset
-    of the octave set by construction, which is what makes the sibling's
-    "band-for-band" claim true for every candidate rather than most of them.
-    """
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
-
-    candidate = MeasuredCrossoverCandidate(
-        program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9,
-                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
-        source_preset=_preset(),
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        linearization={
-            "woofer": {
-                "role": "woofer",
-                "observe_octave_summary": {"8000": -0.3},
-                "reason_summary": {"8000": "envelope_fitted"},
+            "fitted",
+            {
+                "linearization_outcome": "fitted",
+                "linearization_octaves": {
+                    "woofer": {"8000": -0.3, "12000": -1.1, "16000": -2.8},
+                    "tweeter": {"8000": -0.1, "12000": -3.2, "16000": -9.4},
+                },
             },
-            # The _empty_fit shape: verdicts, no numbers.
-            "tweeter": {
-                "role": "tweeter",
-                "observe_octave_summary": {},
-                "reason_summary": {"8000": "envelope_out_of_band"},
+            ("filters", "residual_rms_db"),
+            id="outcome-and-octaves",
+        ),
+        # #2638: the number and the verdict travel together or not at all. A
+        # stopband octave reads large and POSITIVE, and without its label it
+        # reached the review screen as a bare "+23.0 dB".
+        pytest.param(
+            {
+                "woofer": {
+                    "role": "woofer",
+                    "observe_octave_summary": {"8000": -0.3, "16000": 23.0},
+                    "reason_summary": {
+                        "8000": "envelope_fitted",
+                        "16000": "envelope_out_of_band",
+                    },
+                },
             },
-        },
-        linearization_outcome="fitted",
-    )
-
-    summary = v2host._candidate_summary(candidate)
-
-    assert summary["linearization_octaves"] == {"woofer": {"8000": -0.3}}
-    assert summary["linearization_octave_reasons"] == {
-        "woofer": {"8000": "envelope_fitted"},
-    }
-
-
-def test_candidate_summary_carries_the_declared_driver_class_beside_each_role():
-    """Audit item 4i: the household-facing remedy for an undeclared
-    ``driver_class`` needs the ACTUAL declared class beside the reason, so it
-    can tell "unknown" (an action is available at /sound/setup/) apart from a
-    real class's own prior (there is none) — ``LinearizationFit.driver_class``
-    is already computed and serialized (``to_dict``'s ``"driver_class"`` key);
-    this is its own household-reachable projection, the third sibling of the
-    reason/number projections above, keyed the same subset-of-the-octave-set
-    way.
-    """
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
-
-    candidate = MeasuredCrossoverCandidate(
-        program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9,
-                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
-        source_preset=_preset(),
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        linearization={
-            "woofer": {
-                "role": "woofer",
-                "observe_octave_summary": {"8000": -0.3},
-                "reason_summary": {"8000": "envelope_limited_by_class_prior"},
-                "driver_class": "unknown",
+            "fitted",
+            {
+                "linearization_octaves": {"woofer": {"8000": -0.3, "16000": 23.0}},
+                "linearization_octave_reasons": {
+                    "woofer": {
+                        "8000": "envelope_fitted",
+                        "16000": "envelope_out_of_band",
+                    },
+                },
             },
-        },
-        linearization_outcome="fitted",
-    )
-
-    summary = v2host._candidate_summary(candidate)
-
-    assert summary["linearization_driver_class"] == {"woofer": "unknown"}
-
-
-def test_a_role_with_no_octave_numbers_persists_no_driver_class():
-    """Same subset-of-the-octave-set rule
-    :func:`test_a_role_with_verdicts_but_no_octave_numbers_persists_no_reasons`
-    pins for reasons, for the identical cause: a driver_class value with no
-    octave row to sit beside it is a value the review screen never displays.
-    """
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
-
-    candidate = MeasuredCrossoverCandidate(
-        program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9,
-                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
-        source_preset=_preset(),
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        linearization={
-            "tweeter": {
-                "role": "tweeter",
-                "observe_octave_summary": {},
-                "reason_summary": {"8000": "envelope_out_of_band"},
-                "driver_class": "soft_dome",
+            (),
+            id="reason-beside-each-octave",
+        ),
+        # Keying the reasons off the NUMBERS keeps the reason set a subset of
+        # the octave set by construction, which is what makes the row above's
+        # band-for-band claim true for every candidate rather than most.
+        pytest.param(
+            {
+                "woofer": {
+                    "role": "woofer",
+                    "observe_octave_summary": {"8000": -0.3},
+                    "reason_summary": {"8000": "envelope_fitted"},
+                },
+                "tweeter": _VERDICTS_WITHOUT_NUMBERS,
             },
-        },
-        linearization_outcome="fitted",
-    )
-
-    summary = v2host._candidate_summary(candidate)
-
-    assert summary["linearization_driver_class"] == {}
-
-
-def test_candidate_summary_linearization_fields_default_empty():
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
-
-    candidate = MeasuredCrossoverCandidate(
-        program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9,
-                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
-        source_preset=_preset(),
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-    )
-
-    summary = v2host._candidate_summary(candidate)
-
-    assert summary["linearization_outcome"] == ""
-    assert summary["linearization_octaves"] == {}
-    assert summary["linearization_octave_reasons"] == {}
-    assert summary["linearization_driver_class"] == {}
+            "fitted",
+            {
+                "linearization_octaves": {"woofer": {"8000": -0.3}},
+                "linearization_octave_reasons": {
+                    "woofer": {"8000": "envelope_fitted"},
+                },
+            },
+            (),
+            id="verdicts-without-numbers-persist-no-reasons",
+        ),
+        # Audit item 4i: the household remedy for an undeclared class needs the
+        # ACTUAL declared class beside the reason, to tell "unknown" (an action
+        # exists at /sound/setup/) from a real class's own prior (there is none).
+        pytest.param(
+            {
+                "woofer": {
+                    "role": "woofer",
+                    "observe_octave_summary": {"8000": -0.3},
+                    "reason_summary": {
+                        "8000": "envelope_limited_by_class_prior",
+                    },
+                    "driver_class": "unknown",
+                },
+            },
+            "fitted",
+            {"linearization_driver_class": {"woofer": "unknown"}},
+            (),
+            id="declared-driver-class",
+        ),
+        # Same subset-of-the-octave-set rule as the reasons, same cause: a
+        # class with no octave row to sit beside is never displayed.
+        pytest.param(
+            {"tweeter": {**_VERDICTS_WITHOUT_NUMBERS, "driver_class": "soft_dome"}},
+            "fitted",
+            {"linearization_driver_class": {}},
+            (),
+            id="no-numbers-persists-no-driver-class",
+        ),
+        pytest.param(
+            None,
+            None,
+            {
+                "linearization_outcome": "",
+                "linearization_octaves": {},
+                "linearization_octave_reasons": {},
+                "linearization_driver_class": {},
+            },
+            (),
+            id="defaults-empty",
+        ),
+    ),
+)
+def test_candidate_summary_carries_the_linearization_disclosures(
+    linearization, outcome, expected, absent,
+):
+    summary = _linearization_summary(linearization, outcome=outcome)
+    for key, value in expected.items():
+        assert summary[key] == value, key
+    for key in absent:
+        assert key not in summary
 
 
 def test_candidate_summary_carries_whether_the_polarity_was_pinned():
@@ -8245,19 +8108,7 @@ def test_candidate_summary_carries_whether_the_polarity_was_pinned():
     Absent reads False rather than missing, so the renderer's ``=== true`` has
     a value to test on every candidate, including ones frozen before the field.
     """
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
-
-    def _summary_for(analysis):
-        return v2host._candidate_summary(MeasuredCrossoverCandidate(
-            program_id="prog-abc",
-            analysis=analysis,
-            source_preset=_preset(),
-            role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        ))
-
-    pinned = _summary_for({
+    pinned = _linearization_summary(analysis={
         "alignment_confidence": 0.9,
         "alignment_objective": "explicit_prescription_committed",
         "polarity_pinned": True,
@@ -8266,7 +8117,7 @@ def test_candidate_summary_carries_whether_the_polarity_was_pinned():
 
     # The same objective WITHOUT the bit — the discriminator the objective
     # cannot supply, which is the whole reason this key exists.
-    unpinned = _summary_for({
+    unpinned = _linearization_summary(analysis={
         "alignment_confidence": 0.9,
         "alignment_objective": "explicit_prescription_committed",
     })
@@ -11002,217 +10853,160 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
         )
 
 
-def test_the_probe_verdict_is_persisted_even_on_a_pass():
-    """#1811 SF1: the durable record the done screen's caveat and /state read.
+# Absent is what "unknown" looks like on every field of this summary (#2533);
+# ``safety_anchored`` is False because the realized-energy check cannot have run
+# on a probe that does not carry the field (series-2 D1).
+_UNKNOWN_DELTA_PROBE_FIELDS = {
+    "safety_anchored": False,
+    "entry_anchor_offset_db": None,
+    "quiet_n_bins": None,
+    "quiet_core_band_hz": None,
+    "quiet_probe_coverage": None,
+}
 
-    Persisted on EVERY outcome, not only a failing one — a ``level_mismatch``
-    only ever occurs alongside a pass (it produces no refusal), so gating this
-    on failure would have persisted it exactly never.
-    """
-    probe = SimpleNamespace(
-        verdict="level_mismatch", reason="uncommanded_level_shift",
-        expected_offset_db=-22.458, residual_offset_db=-4.0,
-        frame=SimpleNamespace(
-            offset_db=None, tilt_db_per_octave=None, n_bins=0, band_hz=None,
+# Two of the four are structurally not-evaluated: VERIFY plays one summed
+# sweep, so no per-branch capture exists to grade (R18, #1868).
+_SECTION_7_CLAIMS = {
+    "woofer_branch": {
+        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
+    },
+    "hf_branch": {
+        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
+    },
+    "integration": {"status": "pass", "max_db": 0.069, "tolerance_db": 1.5},
+    "absolute": {
+        "status": "pass", "max_db": 0.69, "tolerance_db": 2.0,
+        "band_hz": [1000.0, 4000.0], "worst_db": 0.69, "worst_hz": 1050.0,
+    },
+}
+
+_COMPARED_FRAME = {
+    "offset_db": -0.75, "tilt_db_per_octave": -0.79,
+    "rms_db_tilt_removed": 1.34, "max_db_tilt_removed": 0.62,
+}
+
+# Copied byte-for-byte off the conductor — the host does not re-derive a
+# sentence of its own (#1966).
+_GATE_DISCLOSURE = {
+    "disclosure": (
+        "no reflection found; window capped at the 7.00 ms search ceiling, "
+        "so nothing was gated out, valid above 357 Hz"
+    ),
+    "reflection_measured": False,
+}
+
+
+@pytest.mark.parametrize(
+    ("attrs", "key", "expected", "also_absent", "plain_outcome"),
+    (
+        # #1811 SF1. A ``level_mismatch`` produces no refusal, so it only ever
+        # occurs alongside a pass — gating this on failure persists it never.
+        pytest.param(
+            {"delta_probe": SimpleNamespace(
+                verdict="level_mismatch", reason="uncommanded_level_shift",
+                expected_offset_db=-22.458, residual_offset_db=-4.0,
+                frame=SimpleNamespace(
+                    offset_db=None, tilt_db_per_octave=None, n_bins=0,
+                    band_hz=None,
+                ),
+            )},
+            "delta_probe",
+            {
+                **_UNKNOWN_DELTA_PROBE_FIELDS,
+                "verdict": "level_mismatch",
+                "reason": "uncommanded_level_shift",
+                "expected_offset_db": -22.458, "residual_offset_db": -4.0,
+                "frame_offset_db": None, "frame_tilt_db_per_octave": None,
+                "frame_n_bins": 0, "frame_band_hz": None,
+            },
+            (),
+            "pass",
+            id="delta-probe-level-mismatch",
         ),
-    )
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "pass"
-    conductor.delta_probe = probe
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    persisted = (v2host.load_v2_state() or {})["verify"]["delta_probe"]
-    assert persisted == {
-        "verdict": "level_mismatch",
-        "reason": "uncommanded_level_shift",
-        # Absent on this stand-in too, and ``False`` is the honest reading of
-        # that: the realized-energy check cannot have run on a probe that does
-        # not carry the field (series-2 D1).
-        "safety_anchored": False,
-        "expected_offset_db": -22.458,
-        "residual_offset_db": -4.0,
-        # Absent on this duck-typed stand-in, and absent is what "unknown"
-        # looks like on every field of this summary (#2533).
-        "entry_anchor_offset_db": None,
-        "quiet_n_bins": None,
-        "quiet_core_band_hz": None,
-        "quiet_probe_coverage": None,
-        "frame_offset_db": None,
-        "frame_tilt_db_per_octave": None,
-        "frame_n_bins": 0,
-        "frame_band_hz": None,
-    }
-    # A conductor with no probe writes no key rather than an empty claim.
-    plain = _StubConductor("s1")
-    plain.verify_outcome = "pass"
-    v2host.persist_conductor_state(plain, failure_code=None)
-    assert "delta_probe" not in (v2host.load_v2_state() or {})["verify"]
-
-
-def test_a_frame_mismatch_persists_the_frame_it_is_a_claim_about():
-    """#2521: the second non-rollback finding, and the numbers behind it.
-
-    ``frame_mismatch`` says a level offset and a broadband tilt explain the
-    finding. A durable record naming that verdict while withholding the two
-    terms would be telling a reader what happened and refusing to say by how
-    much — the same gap ``residual_offset_db`` was added to close for
-    ``level_mismatch``.
-
-    The span the two terms were fitted over travels with them (adversarial
-    gate, 2026-08-15): a tilt fitted over a narrow quiet region is free to be
-    large and mean nothing — measured p95 |tilt| of 10.5 dB/octave over a
-    10-bin span — so a reader judging this verdict needs ``frame_fit``'s own
-    ill-conditioning defence, not only its answer.
-    """
-    probe = SimpleNamespace(
-        verdict="frame_mismatch", reason="uncommanded_frame_shift",
-        expected_offset_db=0.0, residual_offset_db=-2.39,
-        frame=SimpleNamespace(
-            offset_db=-2.39, tilt_db_per_octave=-0.916, n_bins=214,
-            band_hz=(120.0, 3_300.0),
+        # #2521: the offset and tilt that explain the verdict, and the span
+        # they were fitted over — a tilt fitted over a narrow quiet region is
+        # free to be large and mean nothing.
+        pytest.param(
+            {"delta_probe": SimpleNamespace(
+                verdict="frame_mismatch", reason="uncommanded_frame_shift",
+                expected_offset_db=0.0, residual_offset_db=-2.39,
+                frame=SimpleNamespace(
+                    offset_db=-2.39, tilt_db_per_octave=-0.916, n_bins=214,
+                    band_hz=(120.0, 3_300.0),
+                ),
+            )},
+            "delta_probe",
+            {
+                **_UNKNOWN_DELTA_PROBE_FIELDS,
+                "verdict": "frame_mismatch",
+                "reason": "uncommanded_frame_shift",
+                "expected_offset_db": 0.0, "residual_offset_db": -2.39,
+                "frame_offset_db": -2.39, "frame_tilt_db_per_octave": -0.916,
+                "frame_n_bins": 214, "frame_band_hz": [120.0, 3_300.0],
+            },
+            (),
+            "fail",
+            id="delta-probe-frame-mismatch",
         ),
-    )
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "pass"
-    conductor.delta_probe = probe
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(conductor, failure_code=None)
+        # #1868. ``evidence``'s pass-only suppression is UNCHANGED — only the
+        # band, which bounds the claim, is added beside it.
+        pytest.param(
+            {
+                "verify_evidence": {
+                    "max_db": 0.9, "rms_db": 0.4, "tolerance_db": 1.5,
+                },
+                "verify_graded_band_hz": [2000.0, 4000.0],
+            },
+            "graded_band_hz", [2000.0, 4000.0], ("evidence",), "fail",
+            id="graded-band",
+        ),
+        # R18 (#1868): the band bounds how wide the tracking claim is; the
+        # claims say which claims exist at all.
+        pytest.param(
+            {"verify_claims": _SECTION_7_CLAIMS},
+            "claims", _SECTION_7_CLAIMS, (), "fail",
+            id="section-7-claims",
+        ),
+        # Rung P1: a pass is precisely when an undisclosed tilt is dangerous.
+        pytest.param(
+            {"verify_frame": _COMPARED_FRAME},
+            "frame", _COMPARED_FRAME, (), "fail",
+            id="compared-frame",
+        ),
+        # #1966: before R9 this sentence rendered nowhere a screen could read.
+        pytest.param(
+            {"verify_gate": _GATE_DISCLOSURE},
+            "gate", _GATE_DISCLOSURE, (), "fail",
+            id="gate-disclosure",
+        ),
+    ),
+)
+def test_a_verify_record_is_persisted_even_on_a_pass(
+    attrs, key, expected, also_absent, plain_outcome,
+):
+    """Every VERIFY record the done screen and ``/state`` read has to survive a
+    PASSING persist, because a pass is the one outcome nobody interrogates.
 
-    persisted = (v2host.load_v2_state() or {})["verify"]["delta_probe"]
-    assert persisted["verdict"] == "frame_mismatch"
-    assert persisted["frame_offset_db"] == -2.39
-    assert persisted["frame_tilt_db_per_octave"] == -0.916
-    assert persisted["frame_n_bins"] == 214
-    assert persisted["frame_band_hz"] == [120.0, 3_300.0]
-
-
-def test_the_graded_band_is_persisted_even_on_a_pass():
-    """#1868: what VERIFY actually graded, on every outcome.
-
-    It used to ride ``verify.evidence``, which is persisted only when the
-    outcome is NOT a pass — so the state behind the "Verified." screen, the
-    one place the household is told the result is good, was the one place
-    that never carried the band bounding that word. Same always-persisted
-    shape as ``delta_probe`` above, for the same reason.
+    The converse half is the same contract read backwards: a conductor that
+    recorded nothing writes no key rather than an empty claim, so absent means
+    "this was never measured" and never "measured, and clean".
     """
     conductor = _StubConductor("s1")
     conductor.verify_outcome = "pass"
-    conductor.verify_evidence = {"max_db": 0.9, "rms_db": 0.4, "tolerance_db": 1.5}
-    conductor.verify_graded_band_hz = [2000.0, 4000.0]
+    for name, value in attrs.items():
+        setattr(conductor, name, value)
     v2host.save_v2_state({"session_id": "s1"})
     v2host.persist_conductor_state(conductor, failure_code=None)
 
     verify = (v2host.load_v2_state() or {})["verify"]
-    assert verify["graded_band_hz"] == [2000.0, 4000.0]
-    # The evidence block's pass-only suppression is UNCHANGED — a pass keeps
-    # its lean shape; only the band, which bounds the claim, is added.
-    assert "evidence" not in verify
+    assert verify[key] == expected
+    for absent in also_absent:
+        assert absent not in verify
 
-    # A verify that reached no tracking comparison writes no key rather than
-    # an empty claim — absent means "graded nothing", never "graded all".
     plain = _StubConductor("s1")
-    plain.verify_outcome = "fail"
+    plain.verify_outcome = plain_outcome
     v2host.persist_conductor_state(plain, failure_code=None)
-    assert "graded_band_hz" not in (v2host.load_v2_state() or {})["verify"]
-
-
-def test_the_section_7_claims_are_persisted_even_on_a_pass():
-    """R18 (#1868): WHICH claims were proved, on every outcome.
-
-    Same always-persisted shape and argument as the graded band above, one
-    step further: that band bounds how wide the tracking claim is, this says
-    which claims exist at all — and two of the four are structurally
-    not-evaluated, because VERIFY plays one summed sweep.
-    """
-    claims = {
-        "woofer_branch": {
-            "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
-        },
-        "hf_branch": {
-            "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
-        },
-        "integration": {"status": "pass", "max_db": 0.069, "tolerance_db": 1.5},
-        "absolute": {
-            "status": "pass", "max_db": 0.69, "tolerance_db": 2.0,
-            "band_hz": [1000.0, 4000.0], "worst_db": 0.69, "worst_hz": 1050.0,
-        },
-    }
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "pass"
-    conductor.verify_claims = claims
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (v2host.load_v2_state() or {})["verify"]["claims"] == claims
-
-    # Graded nothing ⇒ no key: absent means "nothing was judged", not "passed".
-    plain = _StubConductor("s1")
-    plain.verify_outcome = "fail"
-    v2host.persist_conductor_state(plain, failure_code=None)
-    assert "claims" not in (v2host.load_v2_state() or {})["verify"]
-
-
-def test_the_compared_frame_is_persisted_even_on_a_pass():
-    """Rung P1: the frame the comparison spanned, on every outcome.
-
-    Same always-persisted shape and same argument as the graded band above. A
-    pass is precisely when an undisclosed tilt is dangerous: on the 2026-07-29
-    corpus one −0.79 dB/octave frame tilt was 84 % of what the flow reported as
-    prediction error, and nothing in a "Verified." state file would have said
-    so.
-    """
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "pass"
-    conductor.verify_frame = {
-        "offset_db": -0.75, "tilt_db_per_octave": -0.79,
-        "rms_db_tilt_removed": 1.34, "max_db_tilt_removed": 0.62,
-    }
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    verify = (v2host.load_v2_state() or {})["verify"]
-    assert verify["frame"] == conductor.verify_frame
-
-    # A verify that fitted no frame writes no key — absent means "no frame was
-    # measured", never "the frames agreed".
-    plain = _StubConductor("s1")
-    plain.verify_outcome = "fail"
-    v2host.persist_conductor_state(plain, failure_code=None)
-    assert "frame" not in (v2host.load_v2_state() or {})["verify"]
-
-
-def test_the_gate_disclosure_is_persisted_even_on_a_pass():
-    """Issue #1966: the sentence that says what the gate DID has to survive the
-    hop to the wizard, or it renders nowhere — which is exactly where it stood
-    before R9 (an off-by-default operator sidecar and a bundle artifact, both
-    dropped by every projection a screen reads).
-
-    Same always-persisted shape and same argument as the frame above: a pass is
-    when nobody would otherwise ask how much of the response the comparison
-    could see. The persisted value is the CONDUCTOR's record, byte-for-byte —
-    the host copies it, it does not re-derive a sentence of its own.
-    """
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "pass"
-    conductor.verify_gate = {
-        "disclosure": (
-            "no reflection found; window capped at the 7.00 ms search ceiling, "
-            "so nothing was gated out, valid above 357 Hz"
-        ),
-        "reflection_measured": False,
-    }
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    verify = (v2host.load_v2_state() or {})["verify"]
-    assert verify["gate"] == conductor.verify_gate
-
-    # No gating block, no key: absent means "this capture was never gated",
-    # never "the gate found nothing".
-    plain = _StubConductor("s1")
-    plain.verify_outcome = "fail"
-    v2host.persist_conductor_state(plain, failure_code=None)
-    assert "gate" not in (v2host.load_v2_state() or {})["verify"]
+    assert key not in (v2host.load_v2_state() or {})["verify"]
 
 
 def test_the_verify_code_is_persisted_beside_its_outcome():

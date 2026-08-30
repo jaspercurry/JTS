@@ -683,105 +683,78 @@ def test_the_verify_gate_record_is_gate_disclosures_own_sentence():
     assert "no reflection found" in record["disclosure"]
 
 
-def test_a_measured_reflection_is_recorded_as_one():
-    """The other epistemic state — the only one where "reflections were
-    removed" is a true thing to say (``GateDisclosure.gated_anything``)."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = lambda program: _verify_analysis(
-        program, max_db=0.5, gate_ms=5.0, floor_source=gating.FLOOR_MEASURED,
-    )
-    _run_phase(c, 3, 3)
-    assert c.verify_gate is not None
-    assert c.verify_gate["reflection_measured"] is True
-    assert "reflection measured" in c.verify_gate["disclosure"]
-
-
-def test_the_gate_record_banks_the_two_numbers_its_sentence_narrates():
-    """Ticket 1.5. The sentence was the only copy of both, and prose is not a
-    number: the evidence packet's ``not_evaluated`` block said in so many words
-    that the reflection time "is narrated inside verify.gate.disclosure prose
-    and is not banked as a number anywhere in a round's artifacts".
+@pytest.mark.parametrize(
+    ("block_kwargs", "moved_rms_db", "reflection_delay_ms", "reflection_measured"),
+    [
+        pytest.param({}, 2.59, pytest.approx(5.33), True, id="both-numbers-banked"),
+        # Null, never 0.0: nothing was found, so there is nothing to time, and a
+        # 0.0 would say the reflection arrived with the direct sound. The delta
+        # survives — ``SMALL_DELTA_RMS_DB``'s two readings: a capped gate still
+        # moved the spectrum, which means "nothing was proven about
+        # reflections" rather than "clean".
+        pytest.param(
+            {"first_reflection_ms": None, "floor_source": gating.FLOOR_SEARCH_BOUND},
+            2.59, None, False, id="ceiling-capped-banks-no-delay",
+        ),
+        # ``pre_post_gate_delta`` is ``None`` when no band could price the gate
+        # (an ungateable capture, or a program that declared no radiated band —
+        # the over-report ``evaluation_band_hz`` refuses to make). A 0.0 here
+        # would claim the gate changed nothing, which is a measurement.
+        pytest.param({"rms_db": None}, None, pytest.approx(5.33), True,
+                     id="unpriceable-banks-no-movement"),
+    ],
+)
+def test_the_gate_record_banks_each_number_its_sentence_narrates_or_a_null(
+    block_kwargs, moved_rms_db, reflection_delay_ms, reflection_measured,
+):
+    """Ticket 1.5. The sentence was the only copy of both numbers, and prose is
+    not a number: the evidence packet's ``not_evaluated`` block said in so many
+    words that the reflection time "is narrated inside verify.gate.disclosure
+    prose and is not banked as a number anywhere in a round's artifacts".
 
     Equality against ``build_gate_disclosure``'s own derivations, not a
     recomputation — same discipline as the sentence's own test above. A record
     that assembled these from the raw block would be a second derivation of a
     fact that has one owner, and the digits in the prose and the digits in the
     fields could then disagree.
+
+    The delay is a DELAY, not the absolute time the gating block spells
+    ``first_reflection_ms`` — whose origin is the deconvolution window's, and
+    which ``GateDisclosure.reflection_delay_ms`` calls meaningless to a reader
+    on its own. 15.73 - 10.40, never 15.73.
     """
     from jasper.active_speaker.crossover_v2_flow import _gate_record
     from jasper.audio_measurement import gate_disclosure as gd
     from tests.crossover_v2_fixtures import _driver_response_diag
 
-    block = _gate_block()
-    response = dataclasses.replace(
-        _driver_response_diag("summed"), gating=block,
-    )
+    block = _gate_block(**block_kwargs)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
     typed = gd.build_gate_disclosure(block)
     record = _gate_record(response)
 
     assert record is not None
-    assert record["moved_rms_db"] == typed.delta_rms_db == 2.59
+    assert record["moved_rms_db"] == typed.delta_rms_db == moved_rms_db
     assert record["reflection_delay_ms"] == typed.reflection_delay_ms
-    # A DELAY, not the absolute time the gating block spells
-    # ``first_reflection_ms`` — whose origin is the deconvolution window's, and
-    # which ``GateDisclosure.reflection_delay_ms`` calls meaningless to a
-    # reader on its own. 15.73 - 10.40, never 15.73.
-    assert record["reflection_delay_ms"] == pytest.approx(5.33)
-    assert record["reflection_delay_ms"] != block["first_reflection_ms"]
-    # The screen's two facts are untouched beside them.
-    assert record["reflection_measured"] is True
+    assert record["reflection_delay_ms"] == reflection_delay_ms
+    # The screen's two facts, beside the numbers.
+    assert record["reflection_measured"] is reflection_measured
     assert record["disclosure"] == gd.describe_gate(block)
 
 
-def test_a_ceiling_capped_gate_banks_no_reflection_delay_at_all():
-    """Null, never 0.0. Nothing was found, so there is nothing to time — and a
-    0.0 there would say the reflection arrived with the direct sound.
-
-    The delta survives, which is the whole point of ``SMALL_DELTA_RMS_DB``'s
-    two readings: a capped gate still moved the spectrum, and that number means
-    "nothing was proven about reflections" rather than "clean".
-    """
-    from jasper.active_speaker.crossover_v2_flow import _gate_record
-    from tests.crossover_v2_fixtures import _driver_response_diag
-
-    response = dataclasses.replace(
-        _driver_response_diag("summed"),
-        gating=_gate_block(
-            first_reflection_ms=None, floor_source=gating.FLOOR_SEARCH_BOUND,
-        ),
-    )
-    record = _gate_record(response)
-
-    assert record is not None
-    assert record["reflection_delay_ms"] is None
-    assert record["moved_rms_db"] == 2.59
-    assert record["reflection_measured"] is False
-
-
-def test_an_unpriceable_gate_banks_no_movement_rather_than_a_zero():
-    """``pre_post_gate_delta`` is ``None`` when no band could price the gate —
-    an ungateable capture, or a program that declared no radiated band, which
-    is exactly the over-report ``evaluation_band_hz`` refuses to make. A 0.0
-    here would claim the gate changed nothing, which is a measurement."""
-    from jasper.active_speaker.crossover_v2_flow import _gate_record
-    from tests.crossover_v2_fixtures import _driver_response_diag
-
-    response = dataclasses.replace(
-        _driver_response_diag("summed"), gating=_gate_block(rms_db=None),
-    )
-    record = _gate_record(response)
-
-    assert record is not None
-    assert record["moved_rms_db"] is None
-    assert record["reflection_delay_ms"] == pytest.approx(5.33)
-
-
-def test_the_gate_is_recorded_on_a_passing_verify_too():
+@pytest.mark.parametrize(
+    ("floor_source", "verify_kwargs", "accepted", "reflection_measured", "prose"),
+    [
+        # The one epistemic state where "reflections were removed" is a true
+        # thing to say (``GateDisclosure.gated_anything``).
+        pytest.param(gating.FLOOR_MEASURED, {"max_db": 0.5, "gate_ms": 5.0},
+                     False, True, "reflection measured", id="measured-reflection"),
+        pytest.param(gating.FLOOR_SEARCH_BOUND, {}, True, False, None,
+                     id="passing-verify"),
+    ],
+)
+def test_the_verify_gate_is_recorded_whatever_the_outcome(
+    floor_source, verify_kwargs, accepted, reflection_measured, prose,
+):
     """On EVERY outcome, like the graded band and the frame beside it: a pass
     is exactly when nobody would otherwise ask how much of the response the
     comparison could see."""
@@ -790,13 +763,17 @@ def test_the_gate_is_recorded_on_a_passing_verify_too():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
+
     fakes.verify = lambda program: _verify_analysis(
-        program, floor_source=gating.FLOOR_SEARCH_BOUND,
+        program, floor_source=floor_source, **verify_kwargs,
     )
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
+
+    assert verdict["accepted"] is accepted
     assert c.verify_gate is not None
-    assert c.verify_gate["reflection_measured"] is False
+    assert c.verify_gate["reflection_measured"] is reflection_measured
+    if prose is not None:
+        assert prose in c.verify_gate["disclosure"]
 
 
 def test_an_early_return_retry_cannot_repair_the_gate_onto_a_stale_verdict():
@@ -949,125 +926,77 @@ def test_conductor_exposes_no_per_capture_flatness_evidence():
 # --- measurement-honesty gate G3: verify inter-attempt pilot consistency --------
 
 
-def test_verify_pilot_baseline_never_fires_on_first_usable_attempt():
-    """Measurement-honesty gate G3 (2026-07-22): the FIRST usable VERIFY
-    attempt establishes the reference and never rejects on its own — a
-    normal, otherwise-clean VERIFY with its first-ever pilot pair passes."""
+# ``reference`` is the pilot state of the attempt that ESTABLISHES the G3
+# comparator, or ``None`` for a row with no preceding attempt; ``attempt`` is the
+# pilot state of the attempt under test. Both are ``_verify_analysis`` kwargs.
+_G3_CEILING_DB = VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
+_G3_STEPS = [
+    # No reference yet: the FIRST usable attempt establishes one and never
+    # rejects on its own.
+    pytest.param(None, {"pilot_hi_dbfs": -20.0}, True, None, "pass",
+                 id="first-usable-attempt-establishes-and-passes"),
+    # A legacy VERIFY program with no leading pilot pair (the default fixture,
+    # ``pilot_hi_dbfs=None`` => ``pilots=()``) never reaches the gate at all —
+    # mirrors the other two gates' own skip conditions.
+    pytest.param(None, {}, True, None, "pass", id="no-pilots-skips-the-gate"),
+    # The 2026-07-22 hardware evidence: a phone's input chain stepped ~0.56 dB
+    # between attempts and kept producing dishonest verify verdicts.
+    pytest.param({"pilot_hi_dbfs": -20.0},
+                 {"pilot_hi_dbfs": -20.0 + 0.56, "max_db": 0.5},
+                 False, "verify_level_shift", "inconclusive",
+                 id="step-0.56dB-fires"),
+    pytest.param({"pilot_hi_dbfs": -20.0},
+                 {"pilot_hi_dbfs": -20.0 + 0.1, "max_db": 0.5},
+                 True, None, "pass", id="step-0.1dB-inside-the-ceiling-passes"),
+    # The boundary, exclusive (``>``, not ``>=``), matching this file's other
+    # comparators. ``programmed_hi_gain_db=0.0`` (not the -20.0 the rows above
+    # use) so the transfer IS the pilot level with no subtraction involved: a
+    # -20.0 baseline computes ``(0.0 - (-20.0)) - (0.35 - (-20.0))``, which
+    # picks up a ~1e-15 float rounding artifact that would make an exactly-at-
+    # the-boundary row flaky.
+    pytest.param({"pilot_hi_dbfs": 0.0, "programmed_hi_gain_db": 0.0},
+                 {"pilot_hi_dbfs": _G3_CEILING_DB, "programmed_hi_gain_db": 0.0,
+                  "max_db": 0.5},
+                 True, None, "pass", id="step-exactly-at-the-ceiling-passes"),
+    pytest.param({"pilot_hi_dbfs": 0.0, "programmed_hi_gain_db": 0.0},
+                 {"pilot_hi_dbfs": _G3_CEILING_DB + 0.01, "programmed_hi_gain_db": 0.0,
+                  "max_db": 0.5},
+                 False, "verify_level_shift", "inconclusive",
+                 id="step-0.01dB-above-the-ceiling-fires"),
+]
+
+
+@pytest.mark.parametrize(
+    ("reference", "attempt", "accepted", "code", "outcome"), _G3_STEPS
+)
+def test_the_g3_pilot_transfer_gate_fires_only_above_its_ceiling(
+    reference, attempt, accepted, code, outcome,
+):
+    """Measurement-honesty gate G3 (2026-07-22): an attempt whose own pilot
+    transfer stepped away from the reference cannot honestly be graded, however
+    clean its tracking looks."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
-    fakes.verify = lambda program: _verify_analysis(program, pilot_hi_dbfs=-20.0)
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    assert c.verify_outcome == "pass"
 
+    index = 3
+    if reference is not None:
+        # Independently out of tolerance so a retry is admitted at all —
+        # scaffolding, unrelated to G3.
+        fakes.verify = lambda program: _verify_analysis(
+            program, max_db=5.0, **reference
+        )
+        assert _run_phase(c, 3, index)["code"] == "verify_out_of_tolerance"
+        index += 1
 
-def test_verify_pilot_level_shift_fires_on_large_step():
-    """Mirrors the 2026-07-22 hardware evidence: a phone's input chain
-    stepped ~0.56 dB between VERIFY attempts, producing escalating
-    dishonest verify verdicts. Attempt 1 (independently out of tolerance,
-    unrelated to G3) establishes the reference; attempt 2's otherwise-clean
-    capture (max_db well within tolerance) still rejects because its own
-    pilot transfer stepped 0.56 dB away from that reference."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(program, **attempt)
+    verdict = _run_phase(c, 3, index)
 
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0, max_db=5.0,
-    )
-    verdict1 = _run_phase(c, 3, 3)
-    assert verdict1["code"] == "verify_out_of_tolerance"  # unrelated to G3
-
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
-    )
-    verdict2 = _run_phase(c, 3, 4)
-    assert verdict2["accepted"] is False
-    assert verdict2["code"] == "verify_level_shift"
-    assert c.verify_outcome == "inconclusive"
-
-
-def test_verify_pilot_level_shift_within_tolerance_passes():
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0, max_db=5.0,
-    )
-    _run_phase(c, 3, 3)
-
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.1, max_db=0.5,
-    )
-    verdict = _run_phase(c, 3, 4)
-    assert verdict["accepted"] is True
-
-
-def test_verify_pilot_level_shift_boundary_exact_passes_just_above_fires():
-    """The ceiling is an exclusive upper bound (``>``, not ``>=``) — exactly
-    at the ceiling passes, matching this file's other boundary comparators.
-    ``programmed_hi_gain_db=0.0`` (not the -20.0 the other G3 tests use) so
-    the transfer IS the pilot level with no subtraction involved — a
-    baseline of -20.0 would compute ``(0.0 - (-20.0)) - (0.35 - (-20.0))``,
-    which picks up a ~1e-15 float rounding artifact that would make an
-    "exactly at the boundary" test flaky."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=0.0, programmed_hi_gain_db=0.0, max_db=5.0,
-    )
-    _run_phase(c, 3, 3)
-    fakes.verify = lambda program: _verify_analysis(
-        program,
-        pilot_hi_dbfs=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-        programmed_hi_gain_db=0.0,
-        max_db=0.5,
-    )
-    verdict = _run_phase(c, 3, 4)
-    assert verdict["accepted"] is True
-
-    fakes2 = FakeSeams()
-    c2 = _conductor(fakes2)
-    _run_phase(c2, 1, 1)
-    _run_phase(c2, 2, 2)
-    c2.note_apply_complete()
-    fakes2.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=0.0, programmed_hi_gain_db=0.0, max_db=5.0,
-    )
-    _run_phase(c2, 3, 3)
-    fakes2.verify = lambda program: _verify_analysis(
-        program,
-        pilot_hi_dbfs=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB + 0.01,
-        programmed_hi_gain_db=0.0,
-        max_db=0.5,
-    )
-    verdict2 = _run_phase(c2, 3, 4)
-    assert verdict2["accepted"] is False
-    assert verdict2["code"] == "verify_level_shift"
-
-
-def test_verify_pilot_level_shift_skips_when_pilots_absent():
-    """A legacy VERIFY program with no leading pilot pair (the default
-    ``_verify_analysis`` fixture, ``pilot_hi_dbfs=None`` ⇒ ``pilots=()``)
-    never gates on G3 — mirrors the other two gates' own skip conditions."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
+    assert verdict["accepted"] is accepted
+    assert (verdict.get("code") or None) == code
+    assert c.verify_outcome == outcome
 
 
 def test_verify_pilot_level_shift_baseline_does_not_rebaseline():
@@ -1147,22 +1076,46 @@ def test_verify_pilot_reference_is_session_scoped_not_inherited():
     assert reference["at"] > 0.0
 
 
-def test_verify_level_reference_reset_is_disclosed_when_material():
+@pytest.mark.parametrize(
+    ("dated", "step_db", "disclosed"),
+    [
+        pytest.param(True, 0.775, True, id="step-0.775dB-past-the-ceiling"),
+        # A prior the session's own chain agrees with is not news: the ceiling
+        # that defines "the chain moved" (0.35 dB) is the one that defines
+        # "worth saying". 0.30 dB sits comfortably inside it rather than exactly
+        # on it — this row is about agreement, and the boundary itself is pinned
+        # (with the float care it needs) by
+        # ``test_the_g3_pilot_transfer_gate_fires_only_above_its_ceiling``.
+        pytest.param(True, 0.30, False, id="step-0.30dB-inside-the-ceiling"),
+        # An undated record cannot be shown as history (#1942's rule), so it is
+        # not carried as one — the constructor drops it rather than inventing a
+        # date, and it never reaches the comparator either way.
+        pytest.param(False, 0.775, False, id="undated-prior"),
+    ],
+)
+def test_the_level_reference_reset_is_disclosed_only_when_a_dated_prior_moved(
+    dated, step_db, disclosed,
+):
     """The reset is reported (dated, with the step) — never enforced."""
     fakes = FakeSeams()
     prior_at = time.time() - 86400.0
-    c = _rearm_conductor(
-        fakes,
-        verify_pilot_transfer_prior={"values": {"summed": 0.0}, "at": prior_at},
-    )
+    prior: dict = {"values": {"summed": 0.0}}
+    if dated:
+        prior["at"] = prior_at
+    c = _rearm_conductor(fakes, verify_pilot_transfer_prior=prior)
     assert c.verify_level_reference_reset is None
+
     fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
+        program, pilot_hi_dbfs=-20.0 + step_db, max_db=0.5,
     )
     assert _run_phase(c, 1, 1)["accepted"] is True
-    disclosed = c.verify_level_reference_reset
-    assert disclosed["prior_at"] == prior_at
-    assert disclosed["step_db"] == pytest.approx(0.775)
+
+    reset = c.verify_level_reference_reset
+    if not disclosed:
+        assert reset is None
+        return
+    assert reset["prior_at"] == prior_at
+    assert reset["step_db"] == pytest.approx(step_db)
 
 
 def test_verify_level_reference_reset_is_journalled(caplog):
@@ -1186,42 +1139,6 @@ def test_verify_level_reference_reset_is_journalled(caplog):
     assert "step_db=0.775" in caplog.text
     assert "ceiling_db=0.35" in caplog.text
     assert "prior_age_s=" in caplog.text
-
-
-def test_verify_level_reference_reset_is_silent_when_the_prior_agrees():
-    """A prior the session's own chain agrees with is not news — the ceiling
-    that defines "the chain moved" is the one that defines "worth saying".
-    0.30 dB, comfortably inside the 0.35 dB ceiling rather than exactly on it:
-    this test is about agreement, and the boundary itself is pinned (with the
-    float care it needs) by
-    ``test_verify_pilot_level_shift_boundary_exact_passes_just_above_fires``."""
-    fakes = FakeSeams()
-    c = _rearm_conductor(
-        fakes,
-        verify_pilot_transfer_prior={
-            "values": {"summed": 0.0}, "at": time.time() - 86400.0,
-        },
-    )
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.30, max_db=0.5,
-    )
-    assert _run_phase(c, 1, 1)["accepted"] is True
-    assert c.verify_level_reference_reset is None
-
-
-def test_verify_level_reference_reset_needs_a_dated_prior():
-    """An undated record cannot be shown as history (#1942's rule), so it is
-    not carried as one — the constructor drops it rather than inventing a
-    date, and it never reaches the comparator either way."""
-    fakes = FakeSeams()
-    c = _rearm_conductor(
-        fakes, verify_pilot_transfer_prior={"values": {"summed": 0.0}},
-    )
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
-    )
-    assert _run_phase(c, 1, 1)["accepted"] is True
-    assert c.verify_level_reference_reset is None
 
 
 def test_verify_level_shift_still_fires_within_one_session():

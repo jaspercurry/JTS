@@ -118,7 +118,65 @@ def test_local_sub_owns_one_natural_bass_extension_pair() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _topology(groups: list[dict], routing: dict) -> OutputTopology:
+def _stereo_topology(
+    *,
+    mode: str = "full_range_passive",
+    identity_verified: bool = False,
+    subwoofer: bool = True,
+    sub_crossover_fc_hz: float | None = None,
+) -> OutputTopology:
+    """Stereo mains on the bench DAC8x, with an optional local sub.
+
+    NOT ``tests.active_speaker_fixtures.mono_output_topology``: every graph in
+    this module is stereo — one group per side, and a sub fed by the clip-safe
+    L+R sum — which that single-group builder cannot express.
+    """
+
+    roles = ["woofer", "tweeter"] if mode == "active_2_way" else ["full_range"]
+    width = len(roles)
+    groups: list[dict] = [
+        {
+            "id": side,
+            "label": side.capitalize(),
+            "kind": side,
+            "mode": mode,
+            "channels": [
+                {
+                    "role": role,
+                    "physical_output_index": index * width + offset,
+                    "identity_verified": identity_verified,
+                }
+                | (
+                    {
+                        "protection_required": True,
+                        "protection_status": "software_guard_requested",
+                    }
+                    if role == "tweeter"
+                    else {}
+                )
+                for offset, role in enumerate(roles)
+            ],
+        }
+        for index, side in enumerate(("left", "right"))
+    ]
+    routing: dict = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right",
+    }
+    if subwoofer:
+        # The sub always takes the next contiguous output after the mains.
+        sub_channel: dict = {"role": "subwoofer", "physical_output_index": 2 * width}
+        if sub_crossover_fc_hz is not None:
+            sub_channel["crossover_fc_hz"] = sub_crossover_fc_hz
+        groups.append({
+            "id": "sub",
+            "label": "Subwoofer",
+            "kind": "subwoofer",
+            "mode": "subwoofer",
+            "channels": [sub_channel],
+        })
+        routing["subwoofer_group_ids"] = ["sub"]
+
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -137,87 +195,19 @@ def _topology(groups: list[dict], routing: dict) -> OutputTopology:
 
 
 def _active_2way_sub_topology() -> OutputTopology:
-    return _topology(
-        [
-            {
-                "id": "left",
-                "label": "Left",
-                "kind": "left",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            },
-            {
-                "id": "right",
-                "label": "Right",
-                "kind": "right",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 2, "identity_verified": True},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 3,
-                        "identity_verified": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            },
-            {
-                "id": "sub",
-                "label": "Subwoofer",
-                "kind": "subwoofer",
-                "mode": "subwoofer",
-                "channels": [{"role": "subwoofer", "physical_output_index": 4}],
-            },
-        ],
-        {
-            "main_left_group_id": "left",
-            "main_right_group_id": "right",
-            "subwoofer_group_ids": ["sub"],
-        },
-    )
+    return _stereo_topology(mode="active_2_way", identity_verified=True)
 
 
 def _passive_1way_sub_topology() -> OutputTopology:
-    return _topology(
-        [
-            {
-                "id": "left",
-                "label": "Left",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            },
-            {
-                "id": "right",
-                "label": "Right",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 1}],
-            },
-            {
-                "id": "sub",
-                "label": "Subwoofer",
-                "kind": "subwoofer",
-                "mode": "subwoofer",
-                "channels": [{"role": "subwoofer", "physical_output_index": 2}],
-            },
-        ],
-        {
-            "main_left_group_id": "left",
-            "main_right_group_id": "right",
-            "subwoofer_group_ids": ["sub"],
-        },
-    )
+    return _stereo_topology()
+
+
+def _passive_1way_sub_topology_fc(fc: float | None) -> OutputTopology:
+    return _stereo_topology(identity_verified=True, sub_crossover_fc_hz=fc)
+
+
+def _subless_passive_topology() -> OutputTopology:
+    return _stereo_topology(subwoofer=False)
 
 
 def _active_2way_sub_preset() -> ActiveSpeakerPreset:
@@ -794,68 +784,6 @@ def test_commissioning_reproof_blocks_malformed_sub_lowpass_while_muted() -> Non
 # --------------------------------------------------------------------------- #
 # User-settable crossover Fc threading + passive-mains+sub build path.
 # --------------------------------------------------------------------------- #
-
-
-def _passive_1way_sub_topology_fc(fc: float | None) -> OutputTopology:
-    sub_channel: dict = {"role": "subwoofer", "physical_output_index": 2}
-    if fc is not None:
-        sub_channel["crossover_fc_hz"] = fc
-    return _topology(
-        [
-            {
-                "id": "left",
-                "label": "Left",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [
-                    {"role": "full_range", "physical_output_index": 0, "identity_verified": True}
-                ],
-            },
-            {
-                "id": "right",
-                "label": "Right",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "channels": [
-                    {"role": "full_range", "physical_output_index": 1, "identity_verified": True}
-                ],
-            },
-            {
-                "id": "sub",
-                "label": "Subwoofer",
-                "kind": "subwoofer",
-                "mode": "subwoofer",
-                "channels": [sub_channel],
-            },
-        ],
-        {
-            "main_left_group_id": "left",
-            "main_right_group_id": "right",
-            "subwoofer_group_ids": ["sub"],
-        },
-    )
-
-
-def _subless_passive_topology() -> OutputTopology:
-    return _topology(
-        [
-            {
-                "id": "left",
-                "label": "Left",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            },
-            {
-                "id": "right",
-                "label": "Right",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 1}],
-            },
-        ],
-        {"main_left_group_id": "left", "main_right_group_id": "right"},
-    )
 
 
 def test_local_subwoofer_uses_topology_crossover_fc() -> None:

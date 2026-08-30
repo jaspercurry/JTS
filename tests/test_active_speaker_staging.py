@@ -89,141 +89,56 @@ def _dual_apple_topology(*, protection_status: str = "present") -> OutputTopolog
     return OutputTopology.from_mapping(raw)
 
 
-def _three_way_topology(*, protection_status: str = "present") -> OutputTopology:
-    raw = _topology(protection_status=protection_status).to_dict()
-    raw["topology_id"] = "bench_mono_3way"
-    raw["speaker_groups"][0]["mode"] = "active_3_way"
-    raw["speaker_groups"][0]["channels"] = [
-        {
-            "role": "woofer",
-            "physical_output_index": 0,
-            "identity_verified": True,
-        },
-        {
-            "role": "mid",
-            "physical_output_index": 1,
-            "identity_verified": True,
-        },
-        {
-            "role": "tweeter",
-            "physical_output_index": 2,
-            "identity_verified": True,
-            "startup_muted": True,
-            "protection_required": True,
-            "protection_status": protection_status,
-        },
-    ]
-    return OutputTopology.from_mapping(raw)
+def _three_way_topology() -> OutputTopology:
+    return mono_output_topology(
+        mode="active_3_way", protection_status="present",
+        topology_id="bench_mono_3way",
+    )
 
 
 def _topology_with_subwoofer() -> OutputTopology:
-    raw = _topology().to_dict()
-    raw["topology_id"] = "bench_mono_with_sub"
-    raw["speaker_groups"].append({
-        "id": "sub",
-        "label": "Bench subwoofer",
-        "kind": "subwoofer",
-        "mode": "subwoofer",
-        "channels": [
-            {
-                "role": "subwoofer",
-                "physical_output_index": 2,
-                "identity_verified": True,
-            }
-        ],
-    })
-    raw["routing"]["subwoofer_group_ids"] = ["sub"]
-    return OutputTopology.from_mapping(raw)
+    return mono_output_topology(
+        with_subwoofer=True, protection_status="present",
+        topology_id="bench_mono_with_sub", sub_label="Bench subwoofer",
+    )
 
 
-def _stereo_three_way_topology() -> OutputTopology:
+def _stereo_topology(*, way_count: int) -> OutputTopology:
+    """The mono fixture's stereo twin: one group per side, lanes contiguous.
+
+    Not `mono_output_topology`, which owns exactly one group — the split mixer,
+    the routing keys and the lane count all differ, so this is a second
+    topology rather than a variant of that one.
+    """
+
+    roles = ["woofer", "mid", "tweeter"] if way_count == 3 else ["woofer", "tweeter"]
     raw = _topology().to_dict()
-    raw["topology_id"] = "bench_stereo_3way"
+    raw["topology_id"] = f"bench_stereo_{way_count}way"
     raw["speaker_groups"] = [
         {
-            "id": "left",
-            "label": "Left speaker",
-            "kind": "left",
-            "mode": "active_3_way",
+            "id": side,
+            "label": f"{side.capitalize()} speaker",
+            "kind": side,
+            "mode": f"active_{way_count}_way",
             "channels": [
-                {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
-                {"role": "mid", "physical_output_index": 1, "identity_verified": True},
                 {
-                    "role": "tweeter",
-                    "physical_output_index": 2,
+                    "role": role,
+                    "physical_output_index": index * way_count + offset,
                     "identity_verified": True,
-                    "startup_muted": True,
-                    "protection_required": True,
-                    "protection_status": "present",
-                },
+                }
+                | (
+                    {
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    }
+                    if role == "tweeter"
+                    else {}
+                )
+                for offset, role in enumerate(roles)
             ],
-        },
-        {
-            "id": "right",
-            "label": "Right speaker",
-            "kind": "right",
-            "mode": "active_3_way",
-            "channels": [
-                {"role": "woofer", "physical_output_index": 3, "identity_verified": True},
-                {"role": "mid", "physical_output_index": 4, "identity_verified": True},
-                {
-                    "role": "tweeter",
-                    "physical_output_index": 5,
-                    "identity_verified": True,
-                    "startup_muted": True,
-                    "protection_required": True,
-                    "protection_status": "present",
-                },
-            ],
-        },
-    ]
-    raw["routing"] = {
-        "main_left_group_id": "left",
-        "main_right_group_id": "right",
-        "mono_group_id": None,
-        "subwoofer_group_ids": [],
-    }
-    return OutputTopology.from_mapping(raw)
-
-
-def _stereo_two_way_topology() -> OutputTopology:
-    raw = _topology().to_dict()
-    raw["topology_id"] = "bench_stereo_2way"
-    raw["speaker_groups"] = [
-        {
-            "id": "left",
-            "label": "Left speaker",
-            "kind": "left",
-            "mode": "active_2_way",
-            "channels": [
-                {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
-                {
-                    "role": "tweeter",
-                    "physical_output_index": 1,
-                    "identity_verified": True,
-                    "startup_muted": True,
-                    "protection_required": True,
-                    "protection_status": "present",
-                },
-            ],
-        },
-        {
-            "id": "right",
-            "label": "Right speaker",
-            "kind": "right",
-            "mode": "active_2_way",
-            "channels": [
-                {"role": "woofer", "physical_output_index": 2, "identity_verified": True},
-                {
-                    "role": "tweeter",
-                    "physical_output_index": 3,
-                    "identity_verified": True,
-                    "startup_muted": True,
-                    "protection_required": True,
-                    "protection_status": "present",
-                },
-            ],
-        },
+        }
+        for index, side in enumerate(("left", "right"))
     ]
     raw["routing"] = {
         "main_left_group_id": "left",
@@ -581,7 +496,7 @@ def test_the_late_filter_blocker_is_now_unreachable_from_the_draft() -> None:
 
 
 def test_compile_preset_from_crossover_preview_sets_polarity_and_delay() -> None:
-    topology = _stereo_two_way_topology()
+    topology = _stereo_topology(way_count=2)
     preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
     for group in preview["groups"]:
         crossover = group["crossovers"][0]
@@ -621,7 +536,7 @@ def test_compile_preset_from_crossover_preview_omits_polarity_and_delay_by_defau
 
 
 def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed() -> None:
-    topology = _stereo_two_way_topology()
+    topology = _stereo_topology(way_count=2)
     legacy = _driver_research(frequency_hz=2500, way_count=2)
     draft = build_design_draft(
         topology,
@@ -652,7 +567,7 @@ def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed(
 
 
 def test_compile_preset_from_crossover_preview_stereo_polarity_mismatch_blocks() -> None:
-    topology = _stereo_two_way_topology()
+    topology = _stereo_topology(way_count=2)
     preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
     left_group = next(g for g in preview["groups"] if g["kind"] == "left")
     left_group["crossovers"][0]["lower_polarity"] = "inverted"
@@ -668,7 +583,7 @@ def test_compile_preset_from_crossover_preview_stereo_polarity_mismatch_blocks()
 
 
 def test_compile_preset_from_crossover_preview_stereo_delay_mismatch_blocks() -> None:
-    topology = _stereo_two_way_topology()
+    topology = _stereo_topology(way_count=2)
     preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
     right_group = next(g for g in preview["groups"] if g["kind"] == "right")
     right_group["crossovers"][0]["delay_ms"] = 0.5
@@ -928,7 +843,7 @@ def test_stage_protected_startup_config_supports_active_three_way_preview(
 def test_stage_protected_startup_config_supports_stereo_three_way_on_dac8x(
     tmp_path: Path,
 ) -> None:
-    topology = _stereo_three_way_topology()
+    topology = _stereo_topology(way_count=3)
     preview = _crossover_preview(topology, frequency_hz=2800, way_count=3)
 
     payload = stage_protected_startup_config(
