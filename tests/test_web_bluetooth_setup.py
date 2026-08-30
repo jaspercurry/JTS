@@ -22,6 +22,7 @@ hardware-free (no dbus / bluez).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http
 import inspect
 import json
@@ -43,6 +44,7 @@ from tests._web_test_helpers import make_real_handler
 # --------------------------------------------------------------------------
 
 CSRF = "tok-abcdefghijklmnopqrstuvwxyz0123456789ABCD"  # 43+ url-safe chars
+MUTATION_ID = "mutation-test-0001"
 
 
 def _availability(
@@ -89,17 +91,29 @@ def _hardware_free_availability_and_pair_cleanup(monkeypatch):
         "probe_bluetooth_availability",
         lambda _unit_probe: _availability(),
     )
-    with bluetooth_setup._PAIR_STREAMS_LOCK:
+    with bluetooth_setup._DEVICE_COORDINATION_LOCK:
         abandoned = list(bluetooth_setup._PAIR_STREAMS.values())
         bluetooth_setup._PAIR_STREAMS.clear()
+        mutations = list(bluetooth_setup._DEVICE_MUTATIONS.values())
+        bluetooth_setup._DEVICE_MUTATIONS.clear()
+        bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = None
     for attempt in abandoned:
         bluetooth_setup._cancel_pair_attempt(attempt)
+    for mutation in mutations:
+        if mutation.expiry_timer is not None:
+            mutation.expiry_timer.cancel()
     yield
-    with bluetooth_setup._PAIR_STREAMS_LOCK:
+    with bluetooth_setup._DEVICE_COORDINATION_LOCK:
         abandoned = list(bluetooth_setup._PAIR_STREAMS.values())
         bluetooth_setup._PAIR_STREAMS.clear()
+        mutations = list(bluetooth_setup._DEVICE_MUTATIONS.values())
+        bluetooth_setup._DEVICE_MUTATIONS.clear()
+        bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = None
     for attempt in abandoned:
         bluetooth_setup._cancel_pair_attempt(attempt)
+    for mutation in mutations:
+        if mutation.expiry_timer is not None:
+            mutation.expiry_timer.cancel()
 
 
 @pytest.fixture
@@ -223,12 +237,18 @@ class _FakeDispatcher:
     def __init__(self) -> None:
         self._engine = _FakeEngine()
         self.run_calls = 0
+        self.submit_calls = 0
 
     def run(self, coro, **_kwargs):
         import asyncio
 
         self.run_calls += 1
         return asyncio.run(coro)
+
+    def submit(self, coro):
+        self.submit_calls += 1
+        asyncio.run(coro)
+        return object()
 
     @property
     def engine(self):
@@ -242,6 +262,7 @@ def _make_request(
     cookies: str = "",
     csrf_header: str = "",
     content_length: str | None = None,
+    idle_hold=None,
 ):
     """Instantiate the REAL handler class without running
     BaseHTTPRequestHandler.__init__ (which expects a live socket), then attach
@@ -258,8 +279,13 @@ def _make_request(
         headers["Cookie"] = cookies
     if csrf_header:
         headers["X-CSRF-Token"] = csrf_header
+    handler_cls = (
+        bluetooth_setup._make_handler()
+        if idle_hold is None
+        else bluetooth_setup._make_handler(idle_hold=idle_hold)
+    )
     handler, _ = make_real_handler(
-        bluetooth_setup._make_handler(),
+        handler_cls,
         path,
         body=body,
         headers=headers,
@@ -405,6 +431,421 @@ class _InlineLoop:
         callback(*args)
 
 
+def test_device_mutation_returns_accepted_before_work_and_holds_idle(monkeypatch):
+    mac = "AA:BB:CC:DD:EE:FF"
+    submitted: list[object] = []
+    hold_events: list[str] = []
+
+    class _DeferredDispatcher:
+        engine = _FakeEngine()
+
+        def submit(self, coro):
+            submitted.append(coro)
+            return _PendingFuture()
+
+    @contextlib.contextmanager
+    def hold(label: str):
+        hold_events.append(f"enter:{label}")
+        try:
+            yield
+        finally:
+            hold_events.append(f"exit:{label}")
+
+    dispatcher = _DeferredDispatcher()
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", dispatcher)
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "source_intent_enabled",
+        mock.Mock(return_value=True),
+    )
+    token = "d" * 64
+    handler = _make_request(
+        "/connect",
+        body=json.dumps({"mac": mac, "mutationId": MUTATION_ID}).encode(),
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+        idle_hold=hold,
+    )
+
+    handler.do_POST()
+
+    assert handler.status == int(http.HTTPStatus.ACCEPTED)
+    assert json.loads(handler.wfile.getvalue()) == {
+        "status": "pending",
+        "mutationId": MUTATION_ID,
+        "action": "connect",
+        "mac": mac,
+        "stream": f"actions/{MUTATION_ID}/stream",
+        "resumed": False,
+    }
+    assert dispatcher.engine.calls == []
+    assert hold_events == ["enter:bluetooth:connect"]
+
+    asyncio.run(submitted[0])
+
+    assert dispatcher.engine.calls == [("connect", mac)]
+    assert hold_events == ["enter:bluetooth:connect", "exit:bluetooth:connect"]
+
+
+def test_device_mutation_retry_resumes_and_conflict_is_busy(monkeypatch):
+    mac = "AA:BB:CC:DD:EE:FF"
+    submitted: list[object] = []
+
+    class _DeferredDispatcher:
+        engine = _FakeEngine()
+
+        def submit(self, coro):
+            submitted.append(coro)
+            return _PendingFuture()
+
+    dispatcher = _DeferredDispatcher()
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", dispatcher)
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "source_intent_enabled",
+        mock.Mock(return_value=True),
+    )
+    token = "i" * 64
+
+    def post(action: str, mutation_id: str, address: str = mac):
+        handler = _make_request(
+            f"/{action}",
+            body=json.dumps({
+                "mac": address,
+                "mutationId": mutation_id,
+            }).encode(),
+            cookies="jts_csrf=" + token,
+            csrf_header=token,
+        )
+        handler.do_POST()
+        return handler
+
+    first = post("connect", MUTATION_ID)
+    retry = post("connect", MUTATION_ID)
+    same_intent = post("connect", "mutation-test-0002")
+    conflicts = (
+        post("disconnect", MUTATION_ID),
+        post("disconnect", "mutation-test-0003"),
+        post("connect", "mutation-test-0004", "11:22:33:44:55:66"),
+    )
+
+    assert first.status == int(http.HTTPStatus.ACCEPTED)
+    assert json.loads(first.wfile.getvalue())["resumed"] is False
+    assert retry.status == int(http.HTTPStatus.ACCEPTED)
+    assert json.loads(retry.wfile.getvalue())["resumed"] is True
+    assert same_intent.status == int(http.HTTPStatus.ACCEPTED)
+    assert json.loads(same_intent.wfile.getvalue()) == {
+        "status": "pending",
+        "mutationId": MUTATION_ID,
+        "action": "connect",
+        "mac": mac,
+        "stream": f"actions/{MUTATION_ID}/stream",
+        "resumed": True,
+    }
+    for conflict in conflicts:
+        assert conflict.status == int(http.HTTPStatus.CONFLICT)
+        assert json.loads(conflict.wfile.getvalue()) == {
+            "error": "another Bluetooth action is already running",
+            "code": "device_busy",
+        }
+    assert len(submitted) == 1
+
+    asyncio.run(submitted[0])
+
+    new_intent = post("connect", "mutation-test-0005")
+    assert new_intent.status == int(http.HTTPStatus.ACCEPTED)
+    assert json.loads(new_intent.wfile.getvalue())["resumed"] is False
+    assert len(submitted) == 2
+    asyncio.run(submitted[1])
+
+
+def test_device_mutation_pending_registration_resumes_without_wait(monkeypatch):
+    mac = "AA:BB:CC:DD:EE:FF"
+    submission_started = threading.Event()
+    release_submission = threading.Event()
+    retry_done = threading.Event()
+    submitted: list[object] = []
+
+    class _BlockingDispatcher:
+        engine = _FakeEngine()
+
+        def submit(self, coro):
+            submitted.append(coro)
+            submission_started.set()
+            assert release_submission.wait(timeout=2)
+            return _PendingFuture()
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", _BlockingDispatcher())
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "source_intent_enabled",
+        mock.Mock(return_value=True),
+    )
+    token = "p" * 64
+
+    def request():
+        return _make_request(
+            "/connect",
+            body=json.dumps({"mac": mac, "mutationId": MUTATION_ID}).encode(),
+            cookies="jts_csrf=" + token,
+            csrf_header=token,
+        )
+
+    first = request()
+    first_thread = threading.Thread(target=first.do_POST)
+    first_thread.start()
+    assert submission_started.wait(timeout=1)
+
+    retry = request()
+
+    def retry_request() -> None:
+        retry.do_POST()
+        retry_done.set()
+
+    retry_thread = threading.Thread(target=retry_request)
+    retry_thread.start()
+    try:
+        assert retry_done.wait(timeout=0.5)
+    finally:
+        release_submission.set()
+        first_thread.join(timeout=1)
+        retry_thread.join(timeout=1)
+
+    assert not first_thread.is_alive()
+    assert not retry_thread.is_alive()
+    assert first.status == int(http.HTTPStatus.ACCEPTED)
+    assert retry.status == int(http.HTTPStatus.ACCEPTED)
+    assert json.loads(retry.wfile.getvalue())["resumed"] is True
+    assert len(submitted) == 1
+    asyncio.run(submitted[0])
+
+
+def test_device_mutation_submission_failure_wakes_retained_stream(monkeypatch):
+    mac = "AA:BB:CC:DD:EE:FF"
+    captured: list[object] = []
+    received: list[dict[str, object]] = []
+    consumer_waiting = threading.Event()
+    consumer_done = threading.Event()
+
+    class _RejectingDispatcher:
+        engine = _FakeEngine()
+
+        def submit(self, coro):
+            captured.append(coro)
+
+            def consume() -> None:
+                stream = bluetooth_setup._consume_device_mutation(MUTATION_ID)
+                received.append(next(stream))
+                consumer_waiting.set()
+                received.extend(stream)
+                consumer_done.set()
+
+            threading.Thread(target=consume, daemon=True).start()
+            assert consumer_waiting.wait(timeout=1)
+            raise RuntimeError("loop stopped")
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", _RejectingDispatcher())
+
+    with pytest.raises(RuntimeError, match="loop stopped"):
+        bluetooth_setup._start_device_mutation(
+            "forget",
+            mac,
+            MUTATION_ID,
+        )
+
+    attempt = bluetooth_setup._DEVICE_MUTATIONS[MUTATION_ID]
+    assert inspect.getcoroutinestate(captured[0]) == inspect.CORO_CLOSED
+    assert bluetooth_setup._ACTIVE_BLUETOOTH_ACTION is None
+    assert consumer_done.wait(timeout=1)
+    assert received == [{
+        "status": "pending",
+        "mutationId": MUTATION_ID,
+        "action": "forget",
+        "mac": mac,
+    }, {
+        "status": "interrupted",
+        "mutationId": MUTATION_ID,
+        "action": "forget",
+        "mac": mac,
+        "message": "Bluetooth action could not start.",
+        "code": "interrupted",
+    }]
+    assert bluetooth_setup._start_device_mutation(
+        "forget",
+        mac.lower(),
+        MUTATION_ID,
+    ) == (attempt, True)
+
+
+def test_device_mutation_stream_disconnect_does_not_cancel_driver(monkeypatch):
+    mac = "AA:BB:CC:DD:EE:FF"
+    attempt = bluetooth_setup._DeviceMutation(
+        mutation_id=MUTATION_ID,
+        action="forget",
+        mac=mac,
+        created_at=1.0,
+    )
+    bluetooth_setup._DEVICE_MUTATIONS[MUTATION_ID] = attempt
+
+    class _PendingEvent:
+        @staticmethod
+        def is_set() -> bool:
+            return False
+
+        @staticmethod
+        def wait(_timeout: float) -> bool:
+            return False
+
+    attempt.finished = _PendingEvent()
+    handler = _make_request("/")
+    handler._begin_sse = mock.Mock()
+    handler._sse_write = mock.Mock(side_effect=(True, False))
+
+    handler._stream_device_action(MUTATION_ID)
+
+    assert handler._sse_write.call_args_list == [mock.call({
+        "status": "pending",
+        "mutationId": MUTATION_ID,
+        "action": "forget",
+        "mac": mac,
+    }), mock.call({
+        "status": "pending",
+        "mutationId": MUTATION_ID,
+        "action": "forget",
+        "mac": mac,
+    })]
+    assert bluetooth_setup._DEVICE_MUTATIONS[MUTATION_ID] is attempt
+
+
+def test_device_mutation_expiry_is_generation_safe():
+    mac = "AA:BB:CC:DD:EE:FF"
+    old = bluetooth_setup._DeviceMutation(MUTATION_ID, "connect", mac, 1.0)
+    current = bluetooth_setup._DeviceMutation(MUTATION_ID, "disconnect", mac, 2.0)
+    bluetooth_setup._DEVICE_MUTATIONS[MUTATION_ID] = current
+
+    bluetooth_setup._expire_device_mutation(MUTATION_ID, old)
+
+    assert bluetooth_setup._DEVICE_MUTATIONS[MUTATION_ID] is current
+
+
+def test_pair_and_device_mutations_share_action_slot(monkeypatch):
+    mac = "AA:BB:CC:DD:EE:FF"
+    pair_attempt = bluetooth_setup._PairAttempt(
+        queue=asyncio.Queue(),
+        created_at=1.0,
+    )
+    bluetooth_setup._PAIR_STREAMS[mac] = pair_attempt
+    bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = pair_attempt
+
+    attempt, resumed = bluetooth_setup._start_device_mutation(
+        "connect",
+        mac,
+        MUTATION_ID,
+    )
+
+    assert (attempt, resumed) == (None, False)
+    bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = None
+
+    submitted: list[object] = []
+
+    class _DeviceDispatcher:
+        engine = _FakeEngine()
+
+        def submit(self, coro):
+            submitted.append(coro)
+            return _PendingFuture()
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", _DeviceDispatcher())
+    attempt, resumed = bluetooth_setup._start_device_mutation(
+        "connect",
+        mac,
+        MUTATION_ID,
+    )
+    assert attempt is not None and resumed is False
+    asyncio.run(submitted[0])
+
+    active = bluetooth_setup._DeviceMutation(
+        MUTATION_ID,
+        "connect",
+        mac,
+        1.0,
+    )
+    bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = active
+
+    class _PairDispatcher:
+        _loop = object()
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", _PairDispatcher())
+    assert bluetooth_setup._start_pair_stream(mac) is False
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    (
+        ("/power", {"on": True}),
+        ("/discoverable", {"on": True}),
+        ("/scan", {"action": "start"}),
+        ("/pair", {"mac": "11:22:33:44:55:66"}),
+    ),
+)
+def test_adapter_activation_rejects_active_device_mutation(monkeypatch, path, body):
+    mac = "AA:BB:CC:DD:EE:FF"
+    active = bluetooth_setup._DeviceMutation(
+        MUTATION_ID,
+        "connect",
+        mac,
+        1.0,
+    )
+    bluetooth_setup._DEVICE_MUTATIONS[MUTATION_ID] = active
+    bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = active
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    token = "b" * 64
+    handler = _make_request(
+        path,
+        body=json.dumps(body).encode(),
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+
+    handler.do_POST()
+
+    assert handler.status == int(http.HTTPStatus.CONFLICT)
+    assert json.loads(handler.wfile.getvalue()) == {
+        "error": "another Bluetooth action is already running",
+        "code": "device_busy",
+    }
+
+
+def test_adapter_activation_holds_action_slot_until_write_finishes(monkeypatch):
+    overlap: list[tuple[object, bool]] = []
+
+    def request_intent(_source, _on):
+        overlap.append(bluetooth_setup._start_device_mutation(
+            "connect",
+            "11:22:33:44:55:66",
+            "mutation-test-0002",
+        ))
+
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(bluetooth_setup, "request_source_intent", request_intent)
+    token = "w" * 64
+    handler = _make_request(
+        "/power",
+        body=b'{"on":true}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+
+    handler.do_POST()
+
+    assert handler.status == int(http.HTTPStatus.OK)
+    assert overlap == [(None, False)]
+    assert bluetooth_setup._ACTIVE_BLUETOOTH_ACTION is None
+
+
 def test_pair_attempt_is_registered_before_driver_submission(monkeypatch):
     mac = "AA:BB:CC:DD:EE:FF"
     driver_future = _PendingFuture()
@@ -419,6 +860,14 @@ def test_pair_attempt_is_registered_before_driver_submission(monkeypatch):
 
     def submit(coro, _loop):
         assert mac in bluetooth_setup._PAIR_STREAMS
+        assert bluetooth_setup._ACTIVE_BLUETOOTH_ACTION is (
+            bluetooth_setup._PAIR_STREAMS[mac]
+        )
+        assert bluetooth_setup._start_device_mutation(
+            "connect",
+            "11:22:33:44:55:66",
+            "mutation-test-0002",
+        ) == (None, False)
         coro.close()
         return driver_future
 
@@ -932,7 +1381,10 @@ def test_address_routes_reject_invalid_body_without_dispatch(
         ("/discoverable", {"on": True}),
         ("/scan", {"action": "start"}),
         ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
-        ("/connect", {"mac": "AA:BB:CC:DD:EE:FF"}),
+        ("/connect", {
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "mutationId": MUTATION_ID,
+        }),
     ),
 )
 def test_unavailable_adapter_blocks_only_radio_activation(monkeypatch, path, body):
@@ -978,8 +1430,14 @@ def test_unavailable_adapter_blocks_only_radio_activation(monkeypatch, path, bod
         ("/power", {"on": False}),
         ("/discoverable", {"on": False}),
         ("/scan", {"action": "stop"}),
-        ("/disconnect", {"mac": "AA:BB:CC:DD:EE:FF"}),
-        ("/forget", {"mac": "AA:BB:CC:DD:EE:FF"}),
+        ("/disconnect", {
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "mutationId": MUTATION_ID,
+        }),
+        ("/forget", {
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "mutationId": MUTATION_ID,
+        }),
     ),
 )
 def test_unavailable_adapter_still_allows_shutdown_and_cleanup(
@@ -1017,7 +1475,12 @@ def test_unavailable_adapter_still_allows_shutdown_and_cleanup(
 
     h.do_POST()
 
-    assert h.status == int(http.HTTPStatus.OK)
+    expected = (
+        http.HTTPStatus.ACCEPTED
+        if path in {"/disconnect", "/forget"}
+        else http.HTTPStatus.OK
+    )
+    assert h.status == int(expected)
     if path == "/power":
         request_intent.assert_called_once_with(bluetooth_setup.Source.BLUETOOTH, False)
     else:
@@ -1025,7 +1488,7 @@ def test_unavailable_adapter_still_allows_shutdown_and_cleanup(
 
 
 @pytest.mark.parametrize("action", ("connect", "disconnect", "forget"))
-def test_device_not_ready_is_a_structured_conflict(monkeypatch, action):
+def test_device_not_ready_is_a_structured_terminal_result(monkeypatch, action):
     token = "n" * 64
     fake = _FakeDispatcher()
 
@@ -1043,19 +1506,21 @@ def test_device_not_ready_is_a_structured_conflict(monkeypatch, action):
     )
     h = _make_request(
         f"/{action}",
-        body=b'{"mac":"AA:BB:CC:DD:EE:FF"}',
+        body=json.dumps({
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "mutationId": MUTATION_ID,
+        }).encode(),
         cookies="jts_csrf=" + token,
         csrf_header=token,
     )
 
     h.do_POST()
 
-    assert h.status == int(http.HTTPStatus.CONFLICT)
+    assert h.status == int(http.HTTPStatus.ACCEPTED)
     payload = json.loads(h.wfile.getvalue())
-    assert payload == {
-        "error": "Turn Bluetooth on to manage devices.",
-        "code": "adapter_not_ready",
-    }
+    assert payload["message"] == "Turn Bluetooth on to manage devices."
+    assert payload["code"] == "adapter_not_ready"
+    assert payload["status"] == "failed"
     assert fake.engine.calls == [(action, "AA:BB:CC:DD:EE:FF")]
 
 
@@ -1584,12 +2049,15 @@ def test_post_connect_drives_engine(monkeypatch):
 
     h = _make_request(
         "/connect",
-        body=b'{"mac": "AA:BB:CC:DD:EE:FF"}',
+        body=json.dumps({
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "mutationId": MUTATION_ID,
+        }).encode(),
         cookies="jts_csrf=" + token,
         csrf_header=token,
     )
     h.do_POST()
-    assert h.status == 200
+    assert h.status == int(http.HTTPStatus.ACCEPTED)
     assert ("connect", "AA:BB:CC:DD:EE:FF") in fake.engine.calls
 
 
@@ -1602,14 +2070,17 @@ def test_post_connect_normalizes_mac_before_engine_call(monkeypatch):
     )
     h = _make_request(
         "/connect",
-        body=b'{"mac": "  aa:bb:cc:dd:ee:ff  "}',
+        body=json.dumps({
+            "mac": "  aa:bb:cc:dd:ee:ff  ",
+            "mutationId": MUTATION_ID,
+        }).encode(),
         cookies="jts_csrf=" + token,
         csrf_header=token,
     )
 
     h.do_POST()
 
-    assert h.status == int(http.HTTPStatus.OK)
+    assert h.status == int(http.HTTPStatus.ACCEPTED)
     assert ("connect", "AA:BB:CC:DD:EE:FF") in fake.engine.calls
 
 
@@ -1620,12 +2091,15 @@ def test_post_forget_drives_engine(monkeypatch):
 
     h = _make_request(
         "/forget",
-        body=b'{"mac": "11:22:33:44:55:66"}',
+        body=json.dumps({
+            "mac": "11:22:33:44:55:66",
+            "mutationId": MUTATION_ID,
+        }).encode(),
         cookies="jts_csrf=" + token,
         csrf_header=token,
     )
     h.do_POST()
-    assert h.status == 200
+    assert h.status == int(http.HTTPStatus.ACCEPTED)
     assert ("forget", "11:22:33:44:55:66") in fake.engine.calls
 
 
