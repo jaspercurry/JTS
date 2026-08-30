@@ -426,7 +426,7 @@ def test_live_execution_claim_is_fail_fast_and_released_by_scope(
         with pytest.raises(CommissioningRunConflict, match="owns execution"):
             with peer.claim_live_execution(handle):
                 pytest.fail("a second execution claim must never enter")
-        assert oct(store.live_execution_lock_path.stat().st_mode & 0o777) == "0o640"
+        assert oct(store.live_execution_lock_path.stat().st_mode & 0o777) == "0o660"
 
     with peer.claim_live_execution(handle):
         assert peer.callback_is_current(handle)
@@ -1025,7 +1025,7 @@ def test_in_process_lock_contention_has_a_typed_bounded_timeout(
     assert acquired.wait(timeout=5)
     try:
         with pytest.raises(CommissioningRunLockTimeout, match="in-process"):
-            contended.snapshot()
+            contended.claim_owner()
     finally:
         release.set()
         holder.join(timeout=5)
@@ -1062,7 +1062,7 @@ def test_file_lock_polling_uses_one_deadline_and_never_sleeps_after_it(
     with lock_path.open("a+", encoding="utf-8") as holder:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(CommissioningRunLockTimeout, match="file lock"):
-            store.snapshot()
+            store.claim_owner()
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
 
     assert sum(sleeps) == pytest.approx(0.025)
@@ -1131,12 +1131,18 @@ def test_empty_store_snapshot_is_exact_and_owner_claim_is_noop(tmp_path: Path) -
 
 
 def test_lock_and_state_are_not_world_readable(tmp_path: Path) -> None:
+    """The record stays group-read; the lock is group-WRITE.
+
+    Taking an advisory lock opens the file for write, so a group member that
+    can only read one cannot take it at all — the defect ADR-0196 records.
+    Neither is world-anything.
+    """
+
     path = tmp_path / "run.json"
     store = CommissioningRunStore(path=path, owner_id="3" * 32)
     _start(store)
 
-    lock = path.with_name(f".{path.name}.lock")
-    assert oct(os.stat(lock).st_mode & 0o777) == "0o640"
+    assert oct(os.stat(store.lock_path).st_mode & 0o777) == "0o660"
     assert oct(os.stat(path).st_mode & 0o777) == "0o640"
 
 

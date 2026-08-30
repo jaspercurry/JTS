@@ -13,6 +13,8 @@ disclosure, not as damaged bytes.
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from jasper.active_speaker import _common
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
+    CommissioningEvidenceStoreErrorCode,
 )
 from jasper.active_speaker.commissioning_lifecycle import CommissioningTransition
 from jasper.active_speaker.commissioning_receipt import (
@@ -32,6 +35,7 @@ from jasper.active_speaker.commissioning_run import (
     CommissioningRunStore,
 )
 from jasper.active_speaker.commissioning_verification import (
+    _artifact_relative_path,
     _bundle_forensics,
     read_commissioning_room_authority,
     receipt_source_path,
@@ -206,3 +210,170 @@ def test_unreadable_bundle_forensics_never_stop_a_receipt(tmp_path: Path) -> Non
     """Ruling S10: a forensic mirror that will not open is not a blocker."""
 
     assert _bundle_forensics(tmp_path / "not-a-bundle") == (None, None, None)
+
+
+def _unconfigured_record(tmp_path: Path) -> Path:
+    """A valid, schema-clean record at lifecycle `unconfigured`."""
+
+    run_state_path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=run_state_path, owner_id="1" * 32)
+    run = store.start(session_id="549d1cd82c91", session_fingerprint=_hash("a"))
+    assert store.lifecycle_state(run) == "unconfigured"
+    return run_state_path
+
+
+def test_a_never_commissioned_run_record_reads_as_absent_not_malformed(
+    tmp_path: Path,
+) -> None:
+    """The state most speakers are in is a true state, not a damaged one."""
+
+    result = read_commissioning_room_authority(
+        mono_output_topology(mode="active_2_way"),
+        run_state_path=_unconfigured_record(tmp_path),
+        sessions_root=tmp_path / "sessions",
+    )
+
+    assert result["allowed"] is False
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
+
+
+def test_a_status_read_does_not_need_a_lock_it_cannot_open(
+    tmp_path: Path,
+) -> None:
+    """The mechanism fix, as behavior.
+
+    A root-run status poll used to CREATE this record's sibling lock as
+    root:root, after which no service account could open it and every later
+    read failed. The record is published atomically, so a read takes no lock
+    and an unopenable one cannot deny it. See ADR-0196.
+    """
+
+    run_state_path = _unconfigured_record(tmp_path)
+    lock_path = run_state_path.with_name(f".{run_state_path.name}.lock")
+    if lock_path.exists():
+        lock_path.unlink()
+    lock_path.mkdir()
+
+    result = read_commissioning_room_authority(
+        mono_output_topology(mode="active_2_way"),
+        run_state_path=run_state_path,
+        sessions_root=tmp_path / "sessions",
+    )
+
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
+
+
+def _unopenable_record(run_state_path: Path) -> None:
+    run_state_path.mkdir()
+
+
+def _unparseable_record(run_state_path: Path) -> None:
+    run_state_path.write_text('{"current": {', encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("break_record", "expected"),
+    [
+        pytest.param(
+            _unopenable_record,
+            _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+            id="record_cannot_be_opened",
+        ),
+        pytest.param(
+            _unparseable_record,
+            _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
+            id="record_will_not_parse",
+        ),
+    ],
+)
+def test_a_record_that_cannot_be_opened_is_not_a_record_that_will_not_parse(
+    tmp_path: Path,
+    break_record,
+    expected: str,
+) -> None:
+    """Two different facts, two different remedies.
+
+    The failures here are built from a directory rather than a mode bit so the
+    test means the same thing when it runs as root.
+    """
+
+    run_state_path = tmp_path / "run.json"
+    break_record(run_state_path)
+
+    result = read_commissioning_room_authority(
+        mono_output_topology(mode="active_2_way"),
+        run_state_path=run_state_path,
+        sessions_root=tmp_path / "sessions",
+    )
+
+    assert result["allowed"] is False
+    assert result["reason"] == expected
+
+
+def test_a_broken_evidence_bundle_names_the_store_code_that_refused_it(
+    verified_run: VerifiedRun,
+) -> None:
+    """The disclosure carries the store's own structured verdict.
+
+    Every bundle fault — a deleted session directory, an `info.json` that will
+    not open — reaches this reader as the store's authority verdict rather than
+    as the underlying errno, so the answer is read from that code and the code
+    rides the denial. Without it the operator has a class name and no file.
+    """
+
+    topology, run_state_path, sessions_root, store, _run = verified_run
+    shutil.rmtree(store.bundle_dir)
+
+    result = _authority(topology, run_state_path, sessions_root)
+
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_MALFORMED
+    assert result["cause"] == CommissioningEvidenceStoreErrorCode.WRONG_AUTHORITY
+
+
+def test_a_substituted_receipt_artifact_is_a_record_defect(
+    verified_run: VerifiedRun,
+) -> None:
+    """A symlink in place of the receipt is not a file-access problem.
+
+    The store opens artifacts `O_NOFOLLOW` and answers `NOT_REGULAR`; the
+    remedy is a fresh mint, so it must not reach the household as the class
+    that says nothing is wrong with the record.
+    """
+
+    topology, run_state_path, sessions_root, store, run = verified_run
+    store.publish_json_artifact(
+        receipt_source_path(run),
+        {"schema_version": RECEIPT_SCHEMA_VERSION, "kind": RECEIPT_KIND},
+    )
+    artifact = store.bundle_dir / _artifact_relative_path(receipt_source_path(run))
+    body = artifact.read_bytes()
+    decoy = artifact.with_name("decoy.json")
+    decoy.write_bytes(body)
+    artifact.unlink()
+    artifact.symlink_to(decoy)
+
+    result = _authority(topology, run_state_path, sessions_root)
+
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_MALFORMED
+
+
+def test_two_reads_of_one_denial_disclose_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A denial is the steady state for most speakers; the change is the event."""
+
+    run_state_path = _unconfigured_record(tmp_path)
+    kwargs = {
+        "run_state_path": run_state_path,
+        "sessions_root": tmp_path / "sessions",
+    }
+    topology = mono_output_topology(mode="active_2_way")
+    with caplog.at_level(logging.WARNING):
+        read_commissioning_room_authority(topology, **kwargs)
+        read_commissioning_room_authority(topology, **kwargs)
+
+    assert sum(
+        1 for record in caplog.records
+        if "commissioning_receipt_unvouched" in record.getMessage()
+    ) == 1

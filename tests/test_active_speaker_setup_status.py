@@ -890,6 +890,7 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
         _common.ROOM_AUTHORITY_RECEIPT_STALE,
         _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
         _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+        _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
     ],
 )
 def test_receipt_denial_reason_reaches_the_room_decision_intact(
@@ -902,8 +903,10 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
     They used to collapse into one opaque code, so a doctor line could say
     only "no receipt" — never whether nothing was ever minted, something moved
     under one that was, an upgrade grew the schema past what an older mint
-    recorded, or the bytes will not parse. Those have different remedies, and
-    each carries its own detail.
+    recorded, the record could not be opened at all, or the bytes will not
+    parse. Those have different remedies, and each carries its own detail —
+    a reason with no entry of its own inherits the copy for a receipt that was
+    never minted, which sends the household to the wrong remedy.
     """
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
@@ -946,7 +949,29 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
     assert acoustic["authority"] is None
     assert acoustic["receipt_fingerprint"] is None
     assert acoustic["reason"] == receipt_reason
-    assert isinstance(acoustic["detail"], str) and acoustic["detail"]
+    assert acoustic["detail"] == setup_mod._RECEIPT_DETAIL[receipt_reason]
+
+
+def test_every_receipt_denial_carries_a_remedy_that_is_its_own() -> None:
+    """Totality and distinctness, not presence.
+
+    A reason missing from the table inherits ABSENT's remedy through the
+    lookup default, and two reasons sharing a sentence make the split that
+    distinguishes them cosmetic. Both are silent failures the parametrized
+    test above cannot see, because it reads the same table production reads.
+    """
+
+    reasons = {
+        _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+        _common.ROOM_AUTHORITY_RECEIPT_STALE,
+        _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+        _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+    }
+
+    assert reasons <= set(setup_mod._RECEIPT_DETAIL)
+    details = [setup_mod._RECEIPT_DETAIL[reason] for reason in reasons]
+    assert len(set(details)) == len(details)
 
 
 @pytest.mark.parametrize(

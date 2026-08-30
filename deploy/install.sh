@@ -1907,6 +1907,30 @@ widen_jasper_web_writable_dirs() {
             chmod 0640 /var/lib/jasper/active_speaker_baseline_profile.json \
                 2>/dev/null || true
         fi
+        # Same repair for the commissioning run record's advisory locks: a
+        # root-run status poll used to CREATE them root:root 0640, after which
+        # no service account could take them (ADR-0196). Only the two LOCKS are
+        # widened to 0660 -- holding a lock means opening it for write. The
+        # record and its live-mutation sibling stay group-READ, published that
+        # way by their own atomic writers.
+        for _commissioning_lock in \
+            /var/lib/jasper/.active_speaker_commissioning_run.json.lock \
+            /var/lib/jasper/.active_speaker_commissioning_run.json.live-execution.lock
+        do
+            [[ -e ${_commissioning_lock} ]] || continue
+            chgrp jasper "${_commissioning_lock}" 2>/dev/null || true
+            chmod 0660 "${_commissioning_lock}" 2>/dev/null || true
+        done
+        unset _commissioning_lock
+        for _commissioning_state in \
+            /var/lib/jasper/active_speaker_commissioning_run.json \
+            /var/lib/jasper/.active_speaker_commissioning_run.json.live-mutation.json
+        do
+            [[ -f ${_commissioning_state} ]] || continue
+            chgrp jasper "${_commissioning_state}" 2>/dev/null || true
+            chmod 0640 "${_commissioning_state}" 2>/dev/null || true
+        done
+        unset _commissioning_state
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }
