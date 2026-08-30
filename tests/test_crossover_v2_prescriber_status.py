@@ -597,8 +597,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
     """The value door W3-b will call agrees with the print door on shape.
 
     ``status_document`` takes the packet as a value rather than
-    ``argparse.Namespace``, so W3-b's ``Recommender`` adapter
-    (docs/REFACTOR-CUTOVER-2026-08.md §3) can hand it a packet it already
+    ``argparse.Namespace``, so a caller can hand it a packet it already
     built — via ``build_crossover_evidence_packet``, the same builder used
     here — without a second walk of the bundle. Structured keys only, never
     prose: a wording change in a section's ``summary`` must not be able to

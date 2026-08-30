@@ -55,14 +55,13 @@ can never strand another's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol
 
 from .playback_transaction import PlaybackTransaction
 
 __all__ = [
     "EngineSeams",
     "RecordStore",
-    "Recommender",
     "SessionGraph",
     "VolumeClaim",
 ]
@@ -95,7 +94,7 @@ class SessionGraph(Protocol):
     **These three verbs are ``async``**, so
     :class:`~.session_graph.MeasurementSessionGraph` satisfies them directly:
     the transport is CamillaDSP over a websocket and every production caller is
-    already on the event loop. See ADR-0179 for why all five seams took one
+    already on the event loop. See ADR-0179 for why all the seams took one
     colour rather than one per seam.
     """
 
@@ -236,17 +235,12 @@ class RecordStore(Protocol):
     finding set and a round receipt land through the same seam a capture does.
     Fail-soft stays in a named wrapper at the caller, never in the store.
 
-    **The read halves are what make ``analyze`` an offline verb.** Ruling S3: a
+    **The read halves are what make the bank re-readable offline.** Ruling S3: a
     banked session can be re-analyzed by any analysis that did not exist when it
     was captured, which is the whole return on banking ``DriverResponse`` with
     its phase instead of re-deriving it from WAVs. A store that could only be
-    written to would make that a promise nothing could keep.
-
-    **Rebuilding a session over a previous bank is
-    :class:`~.prior_bank.PriorBank`**, and it needs both read halves: the state
-    to learn which records a previous session banked and what it disclosed, and
-    the record read to fetch the "before" back. That is why :meth:`read_state`
-    exists rather than :meth:`persist` being write-only.
+    written to would make that a promise nothing could keep. Since ADR-0198 that
+    reading is the tuning tools' — no engine verb calls these two.
 
     **An integrity refusal still banks.** The discriminator is #2087's: would
     measuring again plausibly fix it? Yes, and the capture is a defect that is
@@ -262,7 +256,7 @@ class RecordStore(Protocol):
         """One banked record by id, or ``None`` when the store has no such id.
 
         ``None`` rather than a raise: a missing record is a fact an offline
-        ``analyze`` discloses, not an exception that strands the run.
+        reader discloses, not an exception that strands the run.
         """
         raise NotImplementedError
 
@@ -282,22 +276,12 @@ class RecordStore(Protocol):
         raise NotImplementedError
 
 
-#: What ``recommend`` delegates to, given the ids of everything banked.
-#:
-#: Not extracted, and deliberately: the prescriber's ``packet → propose → stage
-#: → status`` path is already shipped and already decoupled, and §3's wave-3
-#: table says in as many words **do not re-extract** it. The engine's job is to
-#: have a verb that reaches it, so a front end asks the session rather than
-#: assembling a CLI invocation of its own.
-Recommender = Callable[[Sequence[str]], Awaitable[Mapping[str, Any]]]
-
-
 @dataclass(frozen=True)
 class EngineSeams:
     """Everything a :class:`~.session.TuningSession` needs from outside itself.
 
     Frozen and injected, exactly as ``V2FlowSeams`` is: every side effect the
-    session can have crosses one of these five fields, so a test double is a
+    session can have crosses one of these four fields, so a test double is a
     complete substitute rather than a partial one.
 
     ``play`` sits here beside the three lifetime slots even though ruling S1
@@ -321,4 +305,3 @@ class EngineSeams:
     volume: VolumeClaim
     records: RecordStore
     play: PlaybackTransaction
-    recommend: Recommender

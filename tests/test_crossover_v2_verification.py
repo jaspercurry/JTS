@@ -2455,9 +2455,8 @@ def test_no_front_end_reaches_through_the_engine_seams():
 
     The failure this prevents is quiet: a host calling
     ``session.seams.records.bank(...)`` banks a record the session never counts
-    in ``banked_record_ids``, so ``save`` omits it and a later ``PriorBank``
-    grades against a bank short of what the speaker actually measured. Nothing
-    raises, and every other assertion stays green.
+    in ``banked_record_ids`` — evidence on disk that the session denies taking.
+    Nothing raises, and every other assertion stays green.
 
     A source-text pin under the same exception the import-direction guard above
     already records: an access that does not exist has no behaviour to observe,

@@ -832,67 +832,57 @@ def summarise_spec(block: Mapping[str, Any], trail: Trail) -> None:
 
 
 def summarise_controllability(block: Mapping[str, Any], trail: Trail) -> None:
-    """Print where commands realize as commanded, across the banked rounds.
+    """Print the raw per-band realization rows each banked round carries.
 
-    Read off ``controllability`` — the ledger the speaker already aggregated
-    over its own banked receipts — so this print and the evidence behind it
-    cannot state different numbers. Nothing is derived here.
+    Read off ``controllability`` — what the speaker banked, unpooled — so this
+    print and the evidence behind it cannot state different numbers. Nothing is
+    derived here: ``ratio`` is the fraction of commanded depth that arrived on
+    THAT round, and pooling several rounds into a mean, a spread or a label is
+    the reader's (ADR-0198).
 
     It answers the question ``flatness`` above cannot, because that block is
-    one round: not "how flat is it now" but "in which bands do our commands
-    land where we aim them, and in which bands has that answer been moving".
-    A driver placing the next experiment wants the second, and ``ratio`` is
-    the fraction of commanded depth that arrived — 1.0 is full delivery.
+    one round: not "how flat is it now" but "in which bands did our commands
+    land where we aimed them, round by round".
     """
     ledger = block.get("controllability")
     if not isinstance(ledger, Mapping):
         return
-    bands = [b for b in ledger.get("bands") or () if isinstance(b, Mapping)]
-    if not bands:
+    rounds = [r for r in ledger.get("rounds") or () if isinstance(r, Mapping)]
+    if not rounds:
         return
     n_rounds = ledger.get("n_rounds")
     plural = "" if n_rounds == 1 else "s"
     print(
         f"\n=== controllability ({_render(n_rounds)} banked round{plural}) ==="
     )
-    for band in bands:
-        realization = band.get("realization")
-        realization = realization if isinstance(realization, Mapping) else {}
-        spec = band.get("spec") if isinstance(band.get("spec"), Mapping) else {}
-        mean = realization.get("ratio_mean")
-        sigma = realization.get("ratio_sigma")
-        # No ratio, no ratio clause. Printing "ratio=None +/-None" spends the
-        # widest column on the one row that has nothing to put in it, and
-        # invites the reader to see a zero where the ledger reports an absence.
-        depth = "" if mean is None else f"  ratio={_render(mean)}"
-        if depth and sigma is not None:
-            depth += f" +/-{_render(sigma)}"
-        # Printed only when the measurement did NOT span the whole band, and
-        # the FITTED span goes with it: "36% of band" alone reads as "measured
-        # over the lower third", when the number is really one slope taken
-        # mostly above this band. A full-coverage row needs neither column.
-        coverage = realization.get("coverage")
-        band_hz = realization.get("fitted_band_hz")
-        if depth and isinstance(coverage, (int, float)) and coverage < 0.995:
-            depth += f" ({round(coverage * 100)}% of band"
-            if isinstance(band_hz, (list, tuple)) and len(band_hz) == 2:
-                depth += f", fit over {_render(band_hz[0])}-{_render(band_hz[1])} Hz"
-            depth += ")"
+    for index, entry in enumerate(rounds, start=1):
+        raw = entry.get("bands")
+        bands = raw if isinstance(raw, Mapping) else {}
+        misses = len(entry.get("spec_misses") or ())
         print(
-            f"  {_render(band.get('f_lo_hz'))}-{_render(band.get('f_hi_hz'))} Hz"
-            f"  {band.get('confidence')}{depth}"
-            f"  n={_render(realization.get('n_rounds'))}"
-            f"  spec={_render(spec.get('passed'))}p/"
-            f"{_render(spec.get('failed'))}f/"
-            f"{_render(spec.get('undisclosed'))}?"
+            f"  round {index}  spec={entry.get('spec') or '?'}  misses={misses}"
         )
+        for band_id, row in sorted(bands.items()):
+            row = row if isinstance(row, Mapping) else {}
+            span = row.get("band_hz")
+            where = (
+                f"{_render(span[0])}-{_render(span[1])} Hz"
+                if isinstance(span, (list, tuple)) and len(span) == 2
+                else "-"
+            )
+            print(
+                f"    {band_id}  {where}"
+                f"  ratio={_render(row.get('ratio'))}"
+                f"  n_bins={_render(row.get('n_bins'))}"
+                f"  graded={row.get('graded')}"
+            )
     trail.emit(
         "controllability",
-        n_rounds=ledger.get("n_rounds"),
-        # The whole per-band table, not a hand-picked scalar off it: the
-        # ledger's claim IS the shape across bands, and a trail row carrying
+        n_rounds=n_rounds,
+        # The whole per-round table, not a hand-picked scalar off it: the
+        # claim IS the shape across bands and rounds, and a trail row carrying
         # one band's number would pin the wrong thing.
-        bands=bands,
+        rounds=rounds,
     )
 
 

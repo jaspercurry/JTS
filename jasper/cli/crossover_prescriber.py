@@ -960,9 +960,8 @@ def status_document(
 
     Exactly what :func:`_print_status` prints and what ``status --json``
     dumps. The packet is a parameter rather than ``argparse.Namespace`` so a
-    caller that already built one — W3-b's ``Recommender`` adapter,
-    ``docs/REFACTOR-CUTOVER-2026-08.md`` §3 — can hand it in directly instead
-    of walking the bundle a second time.
+    caller that already built one can hand it in directly instead of walking
+    the bundle a second time.
 
     **A partial answer beats no answer**, so an unreadable bundle does not stop
     the report: the packet's failure becomes every evidence section's reason,

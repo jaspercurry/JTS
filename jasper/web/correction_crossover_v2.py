@@ -5655,8 +5655,6 @@ def bind_v2_engine_seams(
       returns a store-relative PATH while the shipped flow publishers write
       artifact FINGERPRINTS into ``refs`` — and they still do. W1-d's index is
       the first reader that will want the path.
-    * **The recommender.** The bundle directory is read when the verb is
-      ASKED, not when the seam is bound.
 
     ``capture_stimulus`` is bound for the WIRED source and ``None`` for the
     relay, whose microphone is on a phone answering through its own
@@ -5664,7 +5662,6 @@ def bind_v2_engine_seams(
     """
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-    from jasper.cli.crossover_recommender import BankedRoundRecommender
 
     claim = volume_claim if volume_claim is not None else _session_volume_claim()
     if claim is None:
@@ -5681,9 +5678,6 @@ def bind_v2_engine_seams(
         session_volume_plan=session_volume_plan(),
         compose_stimulus=compose_stimulus,
         capture_stimulus=capture_stimulus,
-        recommend=lambda record_ids: BankedRoundRecommender(
-            evidence_store.bundle_dir,
-        )(record_ids),
         routed_phases=routed_phases,
     )
 

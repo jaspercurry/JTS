@@ -2,18 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The little measurement database: what it indexes, and what rebuilds it.
+"""Selecting banked takes: what a rescan reads off the files, and what it skips.
 
-Two pins carry the suite: ``test_a_banked_take_is_findable_by`` fails if the
-store stops indexing at all, and ``test_a_rebuild_by_rescan_reproduces_the_
-banked_rows`` fails if the index and the files it derives from can disagree —
-which is the whole claim that losing this database loses nothing.
+``test_a_banked_take_is_findable_by`` is the pin that carries the suite: it
+fails if a take the store banked stops being selectable. There is no index file
+to reconcile any more (ADR-0198), so what used to be the rebuild-agrees-with-
+the-files claim is now structural — the files are the only thing read.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +22,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
-    MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
-    MEASURE_KIND_VERIFY,
     ROUND_RECEIPT_KIND,
 )
 from jasper.active_speaker.crossover_v2.journey import (
@@ -33,17 +30,11 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
 )
-from jasper.active_speaker.crossover_v2.record_index import (
-    bundle_measurements,
-    find_measurements,
-    index_path,
-    rebuild,
-)
+from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.web import correction_crossover_v2 as host
 from tests.test_crossover_v2_record_store import (
     RELAY,
-    _banked_file,
     _bundle,
     _take,
 )
@@ -53,7 +44,7 @@ ARTIFACTS = "evidence/v1/artifacts"
 
 @pytest.fixture
 def store(tmp_path):
-    """The production store over a real bundle — the index's only writer."""
+    """The production store over a real bundle — what the rescan reads."""
     info = _bundle(tmp_path)
     host.set_state_path_for_tests(tmp_path / "state.json")
     yield BankedRecordStore(
@@ -67,8 +58,8 @@ def store(tmp_path):
     host.set_state_path_for_tests(None)
 
 
-def _db(store: BankedRecordStore) -> Path:
-    return index_path(store.evidence.bundle_dir)
+def _found(store: BankedRecordStore, **filters: Any):
+    return bundle_measurements(store.evidence.bundle_dir, **filters)
 
 
 def _artifacts(store: BankedRecordStore) -> Path:
@@ -85,7 +76,7 @@ def _builder_take(**overrides: Any) -> dict[str, Any]:
     [("kind", MEASURE_KIND_CANDIDATE), ("position_deg", 30)],
 )
 async def test_a_banked_take_is_findable_by(store, field, value):
-    """The point of the database: a take found without globbing a directory.
+    """The point of the reader: a take found without globbing a directory.
 
     Both axes the reader ships — the two ``position_cycle`` was asked for.
     """
@@ -93,7 +84,7 @@ async def test_a_banked_take_is_findable_by(store, field, value):
         kind=MEASURE_KIND_CANDIDATE, position_deg=30, candidate_id="cand-7",
     ))
 
-    found = find_measurements(_db(store), **{field: value})
+    found = _found(store, **{field: value})
 
     assert [row.path for row in found] == [record_id]
 
@@ -110,120 +101,34 @@ async def test_the_phase_axis_selects_the_takes_that_ARE_that_phase(store, phase
     wanted = await store.bank(_builder_take(phase=phase, take_id="pose_00_a01"))
     await store.bank(_builder_take(phase=PHASE_CHECK, take_id="pose_00_a02"))
 
-    found = find_measurements(_db(store), phase=phase)
+    found = _found(store, phase=phase)
 
     assert [row.path for row in found] == [wanted]
     assert [row.phase for row in found] == [phase]
 
 
-async def test_a_bundle_read_rescans_before_it_answers(store):
-    """The reader's door does not trust the table it queries.
-
-    The store's own index write is contained — a bank that succeeded must
-    never be reported as one that failed — so a table missing rows is a
-    reachable state while every take's bytes sit in the bundle. Emptying it
-    here stands in for that, and the read still finds the take.
-    """
-    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
-    connection = sqlite3.connect(_db(store))
-    try:
-        connection.execute("DELETE FROM measurements")
-        connection.commit()
-    finally:
-        connection.close()
-    assert find_measurements(_db(store)) == ()
-
-    found = bundle_measurements(store.evidence.bundle_dir, phase=PHASE_LATERAL)
-
-    assert [row.path for row in found] == [record_id]
-
-
-async def test_a_bundle_read_rescans_past_an_index_it_cannot_query(store):
-    """A table an older build wrote answers nothing, and costs nothing.
-
-    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
-    database already on a speaker can hold the right NUMBER of rows under
-    columns this query does not name. The count check passes and the query
-    still raises, which is why both are here.
-    """
-    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
-    _db(store).unlink()
-    connection = sqlite3.connect(_db(store))
-    try:
-        connection.execute("CREATE TABLE measurements (path TEXT PRIMARY KEY)")
-        connection.execute("INSERT INTO measurements VALUES (?)", (record_id,))
-        connection.commit()
-    finally:
-        connection.close()
-
-    found = bundle_measurements(store.evidence.bundle_dir, phase=PHASE_LATERAL)
-
-    assert [row.path for row in found] == [record_id]
-
-
-async def test_a_bundle_read_writes_no_index_of_its_own(store):
-    """The reader is a reader. It never mints the file it would rather have.
+async def test_a_read_writes_nothing_into_the_bundle(store):
+    """The reader has no side effect — no table, no file, nothing.
 
     ``jasper-crossover-prescriber status`` is pinned to leave a banked corpus
-    byte-identical, and it reaches this function through the evidence packet —
-    so a read that rebuilt the table on the way past would be a reader with a
-    side effect. A corpus banked before the index existed carries none, and
-    still reads.
+    byte-identical, which a reader that wrote an index could not promise.
     """
-    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
-    _db(store).unlink()
+    await store.bank(_builder_take())
+    before = {
+        p: p.stat().st_mtime_ns
+        for p in Path(store.evidence.bundle_dir).rglob("*")
+        if p.is_file()
+    }
 
-    found = bundle_measurements(store.evidence.bundle_dir, phase=PHASE_LATERAL)
+    assert _found(store)
 
-    assert [row.path for row in found] == [record_id]
-    assert not _db(store).exists()
-
-
-async def test_a_rebuild_replaces_a_table_whose_columns_predate_the_read(store):
-    """An index a previous build wrote self-heals rather than refusing rows.
-
-    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
-    database already on a speaker refuses an insert naming a column it does
-    not have. Replacing the file is the recovery, and it is the same one
-    corrupt bytes get.
-    """
-    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
-    _db(store).unlink()
-    connection = sqlite3.connect(_db(store))
-    try:
-        connection.execute(
-            "CREATE TABLE measurements (path TEXT PRIMARY KEY, kind TEXT)"
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    assert rebuild(_db(store), _artifacts(store)) == 1
-
-    found = find_measurements(_db(store), phase=PHASE_LATERAL)
-    assert [row.path for row in found] == [record_id]
-
-
-async def test_a_rebuild_by_rescan_reproduces_the_banked_rows(store):
-    """Delete the index, rebuild it from the files, get the same seven columns.
-
-    This is what makes the index derived rather than a second store: the
-    banked records carry every column, so the database can be thrown away.
-    """
-    for index, kind in enumerate(
-        (MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE, MEASURE_KIND_VERIFY)
-    ):
-        await store.bank(_builder_take(
-            kind=kind, position_deg=index * 15,
-            take_id=f"pose_{index:02d}_a01", candidate_id=f"cand-{index}",
-        ))
-    banked = find_measurements(_db(store))
-    assert len(banked) == 3
-
-    _db(store).unlink()
-    assert rebuild(_db(store), _artifacts(store)) == 3
-
-    assert find_measurements(_db(store)) == banked
+    after = {
+        p: p.stat().st_mtime_ns
+        for p in Path(store.evidence.bundle_dir).rglob("*")
+        if p.is_file()
+    }
+    assert after == before
+    assert list(Path(store.evidence.bundle_dir).rglob("*.sqlite3*")) == []
 
 
 @pytest.mark.parametrize(
@@ -238,12 +143,12 @@ async def test_a_rebuild_by_rescan_reproduces_the_banked_rows(store):
         (None, None),
     ],
 )
-async def test_the_indexed_clock_is_the_records_own(store, captured_at, expected):
+async def test_the_read_clock_is_the_records_own(store, captured_at, expected):
     """Two builder types normalize to one spelling; an absent one stays absent.
 
-    The types genuinely disagree upstream, and normalizing here rather than at
-    the builders is what keeps the store from rewriting records it already
-    wrote once.
+    The types genuinely disagree upstream, and normalizing at the read rather
+    than at the builders is what keeps the store from rewriting records it
+    already wrote once.
     """
     take = _take() if captured_at is None else _builder_take(
         captured_at=captured_at,
@@ -251,48 +156,20 @@ async def test_the_indexed_clock_is_the_records_own(store, captured_at, expected
 
     await store.bank(take)
 
-    assert [row.captured_at for row in find_measurements(_db(store))] == [expected]
+    assert [row.captured_at for row in _found(store)] == [expected]
 
 
-async def test_an_artifact_that_is_not_a_measurement_is_not_indexed(store):
+async def test_an_artifact_that_is_not_a_measurement_is_not_selected(store):
     """Five of the six banked kinds are not takes, and none of them get a row."""
     await store.bank({
         "kind": ROUND_RECEIPT_KIND, "session_id": "engine-session",
         "phase": "verify",
     })
 
-    assert find_measurements(_db(store)) == ()
-    assert rebuild(_db(store), _artifacts(store)) == 0
+    assert _found(store) == ()
 
 
-async def test_a_take_still_banks_when_the_index_cannot_be_written(store):
-    """The capture survives its index. This is the whole reason for the catch.
-
-    A directory where the database goes is a database that cannot be opened,
-    and it stands in for the real cases — a full disk, a read-only bundle.
-    The index write runs AFTER the artifact is durable, so a raise here would
-    report a bank that succeeded as one that did not, and the caller's
-    fail-soft would drop the take from ``record_ids`` while its bytes sit in
-    the bundle.
-    """
-    _db(store).mkdir()
-
-    record_id = await store.bank(_builder_take())
-
-    assert record_id
-    assert _banked_file(store, record_id)["session_id"] == "engine-session"
-
-
-async def test_a_rebuild_replaces_a_corrupt_index(store):
-    """Bytes that are not a database are not a reason to refuse a rebuild."""
-    record_id = await store.bank(_builder_take())
-    _db(store).write_bytes(b"not a database" * 64)
-
-    assert rebuild(_db(store), _artifacts(store)) == 1
-    assert [row.path for row in find_measurements(_db(store))] == [record_id]
-
-
-async def test_a_rescanned_nan_clock_indexes_no_timestamp(store):
+async def test_a_rescanned_nan_clock_reads_no_timestamp(store):
     """``json.loads`` accepts a bare ``NaN``, so the rescan is where it lands.
 
     The banked file is edited under the store rather than written through it,
@@ -304,20 +181,13 @@ async def test_a_rescanned_nan_clock_indexes_no_timestamp(store):
     document["captured_at"] = float("nan")
     banked.write_text(json.dumps(document))
 
-    assert rebuild(_db(store), _artifacts(store)) == 1
-    assert [row.captured_at for row in find_measurements(_db(store))] == [None]
+    assert [row.captured_at for row in _found(store)] == [None]
 
 
-async def test_the_index_never_lands_in_the_byte_budgeted_subtree(store):
-    """The database is derived, so it stays out of ``evidence/v1``.
+async def test_a_file_the_rescan_cannot_parse_costs_only_itself(store):
+    """One unreadable take is not a reason to refuse the rest of the corpus."""
+    good = await store.bank(_builder_take(take_id="pose_00_a01"))
+    broken = await store.bank(_builder_take(take_id="pose_00_a02"))
+    (_artifacts(store) / broken).write_text("{not json at all")
 
-    That subtree is walked file-by-file against the session byte limit and
-    refuses anything that is not a regular file, which a mutable database and
-    its journal sidecars are not.
-    """
-    await store.bank(_builder_take())
-    evidence = Path(store.evidence.bundle_dir) / "evidence"
-
-    assert _db(store).exists()
-    assert _db(store).parent == Path(store.evidence.bundle_dir)
-    assert list(evidence.rglob("*.sqlite3*")) == []
+    assert [row.path for row in _found(store)] == [good]

@@ -1499,7 +1499,7 @@ BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 
 #: The key a banked file carries its MEASUREMENT kind under. A record's own
 #: `kind` is its ARTIFACT kind — `position_cycle`'s readers accept a file only
-#: when that says `POSITION_EVIDENCE_KIND`, while `PriorBank.read` selects by
+#: when that says `POSITION_EVIDENCE_KIND`, while a take selection filters by
 #: the measurement kind. Two questions, so two keys. Spelled here, with the
 #: three values it takes, because `record_store` writes it and
 #: `record_index` reads it: a second spelling in either would let the store's

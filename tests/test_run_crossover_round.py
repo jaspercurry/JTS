@@ -1203,22 +1203,28 @@ def test_the_controllability_ledger_reaches_the_operator_and_the_trail(
     contract.
     """
     ledger = {
-        "n_rounds": 4,
-        "bands": [
-            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "tolerance_db": 1.5,
-             "confidence": "consistent",
-             "realization": {"n_rounds": 4, "ratio_mean": 0.61,
-                             "ratio_sigma": 0.03, "coverage": 0.356,
-                             "fitted_band_hz": [953.5, 9999.98]},
-             "spec": {"n_rounds": 4, "passed": 3, "failed": 0,
-                      "undisclosed": 1}},
-            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "tolerance_db": 2.5,
-             "confidence": "unobserved",
-             "realization": {"n_rounds": 0, "ratio_mean": None,
-                             "ratio_sigma": None, "coverage": None,
-                             "fitted_band_hz": None},
-             "spec": {"n_rounds": 4, "passed": 1, "failed": 3,
-                      "undisclosed": 0}},
+        "n_rounds": 2,
+        "rounds": [
+            {
+                "bands": {
+                    "low": {"band_hz": [250.0, 2000.0], "n_bins": 12,
+                             "ratio": 0.61, "graded": True},
+                    "high": {"band_hz": [8000.0, 16000.0], "n_bins": 0,
+                             "ratio": None, "graded": False},
+                },
+                "spec": "flat-v1",
+                "spec_misses": ["high"],
+            },
+            {
+                "bands": {
+                    "low": {"band_hz": [250.0, 2000.0], "n_bins": 14,
+                             "ratio": 0.58, "graded": True},
+                    "high": {"band_hz": [8000.0, 16000.0], "n_bins": 3,
+                             "ratio": 0.22, "graded": True},
+                },
+                "spec": "flat-v1",
+                "spec_misses": [],
+            },
         ],
     }
     server = _Wizard(after_open={
@@ -1235,15 +1241,17 @@ def test_the_controllability_ledger_reaches_the_operator_and_the_trail(
 
     assert proc.returncode == 0, proc.stderr
     row = next(r for r in _trail(trail) if r["step"] == "controllability")
-    assert row["n_rounds"] == 4
-    # The whole table, because the ledger's claim IS the shape across bands.
-    assert row["bands"] == ledger["bands"]
-    # The unobserved band reaches the operator as unobserved, never as a zero.
-    assert "8000.0-16000.0 Hz" in proc.stdout
-    assert "unobserved" in proc.stdout
-    # A ratio measured over a third of its band says so where it is read —
-    # with the span it was actually fitted over, which is wider than the band.
-    assert "36% of band, fit over 953.5-9999.98 Hz" in proc.stdout
+    assert row["n_rounds"] == 2
+    # The whole per-round table, because the ledger's claim IS the shape
+    # across bands and rounds.
+    assert row["rounds"] == ledger["rounds"]
+    # A band with no bins yet reaches the operator as ratio=None, never as a
+    # zero — round 1's high band hasn't landed a fit.
+    assert "high  8000.0-16000.0 Hz  ratio=None  n_bins=0  graded=False" in proc.stdout
+    # The second round did land in that band, with the spec it was graded
+    # against and how many bands it missed.
+    assert "round 2  spec=flat-v1  misses=0" in proc.stdout
+    assert "high  8000.0-16000.0 Hz  ratio=0.22  n_bins=3  graded=True" in proc.stdout
 
 
 def test_a_round_with_no_ledger_prints_no_controllability_block(

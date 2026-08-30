@@ -7,15 +7,14 @@
 Three things live here, and they share one reason: they are what a FRONT END
 calls to stand the engine up, and none of them is web vocabulary — so homing
 them in the web module made the 8,000-line host a required import for any
-second caller. Ruling: the walk's UI is the web wizard, but ``analyze`` and
-``recommend`` are LLM-over-SSH surfaces (ADR-0188 §4) — a runner on that
-surface constructs the same engine through this module and never imports
-:mod:`jasper.web`.
+second caller. Ruling: the walk's UI is the web wizard, but reading the bank is
+an LLM-over-SSH surface (ADR-0188 §4) — a runner on that surface constructs the
+same engine through this module and never imports :mod:`jasper.web`.
 
-* :func:`bind_engine_seams` — the engine's five seams as ONE constructor call,
+* :func:`bind_engine_seams` — the engine's four seams as ONE constructor call,
   taking only engine vocabulary. Host policy stays with the host: which claim,
-  which record store, which recommender, and what refusal a missing volume
-  owner renders are the CALLER's inputs, not decisions made here.
+  which record store, and what refusal a missing volume owner renders are the
+  CALLER's inputs, not decisions made here.
 * :func:`bind_program_playback_seams` — the real CamillaController-backed
   seams for :func:`~..program_playback.play_program`, lifted whole from the
   flow file (band AE of its dissolution map).
@@ -37,7 +36,7 @@ from .program_transaction import (
     ProgramPlaybackTransaction,
     StimulusCapture,
 )
-from .session_seams import EngineSeams, RecordStore, Recommender, VolumeClaim
+from .session_seams import EngineSeams, RecordStore, VolumeClaim
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram
@@ -115,18 +114,16 @@ def bind_engine_seams(
     volume_claim: VolumeClaim,
     session_volume_plan: Any,
     compose_stimulus: Compose,
-    recommend: Recommender,
     capture_stimulus: StimulusCapture | None = None,
     routed_phases: bool = True,
 ) -> EngineSeams:
-    """The engine's five seams from a host's parts — one binder, any caller.
+    """The engine's four seams from a host's parts — one binder, any caller.
 
     What this owns: the routed/summed graph switch, the play transaction's
     construction, and the ``EngineSeams`` assembly. What it deliberately does
     NOT own: resolving the claim (rank policy and the refusal copy a missing
-    owner renders are the host's), building the record store (its state I/O
-    is the host's), and the recommender (the host decides when the bundle is
-    read). A second front end supplies its own five parts and never touches
+    owner renders are the host's) and building the record store (its state I/O
+    is the host's). A second front end supplies its own parts and never touches
     :mod:`jasper.web`.
 
     ``session_volume_plan`` is the plan object ``play_program`` asserts
@@ -149,7 +146,6 @@ def bind_engine_seams(
         volume=volume_claim,
         records=records,
         play=play,
-        recommend=recommend,
     )
 
 

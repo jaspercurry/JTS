@@ -9,11 +9,10 @@ the engine twin and the real store — because the twin is what every engine
 test states its "before" through, and two banks that disagree about what
 ``read`` returns would make a green suite mean nothing about the real one.
 
-The acceptance pin is :func:`test_prior_bank_rebuilds_over_the_store`: bank a
-walk, ``persist``, drop the session, and rebuild a ``PriorBank`` over the
-store. It is the only pin that catches a ``bank`` returning a useless id,
-which empties ``record_ids`` and silently leaves a candidate check with no
-"before" at all.
+The acceptance pin is :func:`test_a_banked_walk_reads_back_by_the_ids_it_returned`:
+bank a walk, ``persist``, drop the session, and resolve every id again. It is
+the only pin that catches a ``bank`` returning a useless id, which empties
+``record_ids`` and silently leaves a later reader with nothing to fetch.
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     ROUND_RECEIPT_KIND,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
-from jasper.active_speaker.crossover_v2.prior_bank import CapturePose, PriorBank
 from jasper.active_speaker.crossover_v2.record_store import (
     CHECK_EVIDENCE_KIND,
     CLOUD_EVIDENCE_KIND,
@@ -223,12 +221,11 @@ async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
 
     That they reach the bytes on disk whole — the store's canonical JSON is
     where a nested mapping would be flattened — and that a take carrying them
-    is still a take: the measurement index reads six named columns off the
-    file, so three new top-level keys must move no row.
+    is still a take: the take reader reads six named columns off the file, so
+    three new top-level keys must move no row.
     """
     from jasper.active_speaker.crossover_v2.record_index import (
-        find_measurements,
-        index_path,
+        bundle_measurements,
     )
 
     record_id = await real_store.bank({**_take(), **_EVIDENCE_BLOCKS})
@@ -236,12 +233,12 @@ async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
     banked = _banked_file(real_store, record_id)
     for name, block in _EVIDENCE_BLOCKS.items():
         assert banked[name] == block
-    found = find_measurements(index_path(real_store.evidence.bundle_dir))
+    found = bundle_measurements(real_store.evidence.bundle_dir)
     assert [row.path for row in found] == [record_id]
 
 
 async def test_persist_then_read_state_round_trips(store):
-    """P4: the five keys ``save`` writes come back as they were written."""
+    """P4: a session state's keys come back as they were written."""
     state = {
         "session_id": "engine-session",
         "graph_fingerprint": "graph-abc",
@@ -261,12 +258,12 @@ async def test_persist_then_read_state_round_trips(store):
         assert _as_json(read_back[key]) == _as_json(value)
 
 
-async def test_prior_bank_rebuilds_over_the_store(store):
-    """P8: bank a walk, ``save`` it, drop the session, read the bank back.
+async def test_a_banked_walk_reads_back_by_the_ids_it_returned(store):
+    """P8: bank a walk, persist it, drop the session, resolve every id again.
 
     The acceptance pin. A ``bank`` that returns a useless id passes every
     other pin here and fails this one, because ``session.py`` drops falsy ids
-    out of ``record_ids`` and ``PriorBank`` is left with nothing to pair.
+    out of ``record_ids`` and a later reader is left with nothing to fetch.
     """
     ids = [
         await store.bank(_take(position_deg=degrees))
@@ -278,24 +275,20 @@ async def test_prior_bank_rebuilds_over_the_store(store):
         "graph_fingerprint": "graph-abc",
         "measurement_level_db": -18.0,
         "record_ids": tuple(identifier for identifier in ids if identifier),
-        "disclosures": (),
     })
 
-    prior = await PriorBank.read(store, state_id)
+    state = await store.read_state(state_id)
 
-    # Asserted before the baselines, and load-bearing: a ``bank`` that returns
-    # ``""`` drops every id out of ``record_ids``, and a baseline compared
-    # against that same ``""`` would agree with itself and pass.
+    # Asserted before the reads, and load-bearing: a ``bank`` that returns
+    # ``""`` drops every id out of ``record_ids``, and a read compared against
+    # that same ``""`` would agree with itself and pass.
     assert all(ids)
-    assert prior is not None
-    assert prior.record_ids == tuple(ids)
-    assert prior.measurement_level_db == -18.0
-    assert prior.baseline_for(
-        CapturePose(position_axis="lateral", position_deg=0, stimulus_dbfs=-12.0)
-    ) == ids[0]
-    assert prior.baseline_for(
-        CapturePose(position_axis="lateral", position_deg=30, stimulus_dbfs=-12.0)
-    ) == ids[1]
+    assert state is not None
+    assert _as_json(state["record_ids"]) == _as_json(tuple(ids))
+    assert state["measurement_level_db"] == -18.0
+    assert [
+        (await store.read(identifier))["position_deg"] for identifier in ids[:2]
+    ] == [0, 30]
 
 
 # --------------------------------------------------------------------------- #
@@ -348,7 +341,7 @@ async def test_the_banked_kind_is_the_readers_discriminator(real_store):
     """P5: the file names the artifact kind ``position_cycle`` accepts.
 
     Not the record's own measurement kind, which asks a different question and
-    rides beside it — ``PriorBank`` selects on ``baseline``/``candidate``/
+    rides beside it — a take selection filters on ``baseline``/``candidate``/
     ``verify`` while every bundle reader accepts a file only when its ``kind``
     is the position-evidence discriminator.
     """

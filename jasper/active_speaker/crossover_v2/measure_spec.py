@@ -79,26 +79,22 @@ __all__ = [
     "inverted_roles_for",
     "level_trims_for",
     "measurement_delays_for",
-    "stub_for_code",
     "stubbed_capabilities",
 ]
 
 #: R-3. The near-field capture ships; the splice onto the far-field trace is
-#: the ``analyze`` function that does not exist.
+#: the analysis that does not exist.
 NEAR_FIELD_SPLICE_NOT_IMPLEMENTED = "near_field_splice_not_implemented"
 #: R-4. Every rung of the ladder plays and banks its own record; what does not
-#: exist is the ``analyze`` consumer that turns the set into a measured floor.
+#: exist is the consumer that turns the set into a measured floor.
 DISTORTION_VS_LEVEL_NOT_IMPLEMENTED = "distortion_vs_level_not_implemented"
 #: R-5a. A vertical pose now plays and banks, labelled with the elevation the
 #: operator was asked for (:attr:`~.spatial.PositionGeometry.vertical_deg`) —
 #: a person raises the microphone, and no automation is asked to. What does not
-#: exist is the ``analyze`` consumer that reads lobing back out of an elevation
-#: set; ``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE`` separately tells the
+#: exist is the consumer that reads lobing back out of an elevation set;
+#: ``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE`` separately tells the
 #: household that an externally positioned walk covers the horizontal axis
 #: only, which stays true — a positioner cannot raise the microphone.
-#:
-#: The code string is unchanged so a bank written while this hole still
-#: captured nothing re-renders through :func:`stub_for_code` as what it was.
 VERTICAL_AXIS_NOT_IMPLEMENTED = "vertical_axis_not_implemented"
 
 
@@ -442,30 +438,6 @@ def inverted_roles_for(spec: MeasureSpec) -> tuple[str, ...]:
     if spec.polarity != POLARITY_INVERTED:
         return ()
     return (spec.inverted_role,)
-
-
-def stub_for_code(code: str, *, captured: bool) -> CapabilityStub | None:
-    """One stub named by its code, or ``None`` when this build has no such hole.
-
-    What :class:`~.prior_bank.PriorBank` re-renders a *banked* disclosure with:
-    a session persists the code and whether the capture happened, and the
-    sentence is composed here rather than stored, so a bank read by a later
-    build gets that build's wording for the same hole.
-
-    ``captured`` is not decoration. A near-field spec that ran alone banked its
-    capture; the same spec aborted by a sibling stub banked nothing, and
-    ``analyze`` treats the two differently — one has evidence waiting for the
-    analysis that will read it and one has none. Passing the flag back in is
-    how that survives the round trip.
-
-    ``None`` for an unknown code, because a hole a later build named is one
-    this build cannot describe, and inventing a sentence for it would be the
-    dishonest half of ruling S12.
-    """
-    stub = _STUBS.get(code)
-    if stub is None:
-        return None
-    return stub if captured else stub.aborted()
 
 
 def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:

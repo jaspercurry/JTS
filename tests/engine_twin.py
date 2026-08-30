@@ -47,7 +47,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping
 
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.playback_transaction import (
@@ -66,7 +66,6 @@ from tests.engine_declarations import (
 __all__ = [
     "FakeGraph",
     "FakePlay",
-    "FakeRecommender",
     "FakeRecords",
     "FakeSeams",
     "FakeVolume",
@@ -211,11 +210,8 @@ def _find(
 class FakeRecords:
     """The record slot: an in-memory bank that reads back.
 
-    :meth:`read` and :meth:`read_state` are what make ``analyze`` an offline
-    verb (ruling S3), so the twin implements both rather than stubbing them — a
-    test can bank a walk, ``save`` it, drop the session, and rebuild a
-    :class:`~jasper.active_speaker.crossover_v2.prior_bank.PriorBank` over the
-    result, which is how a candidate-check test states its "before".
+    :meth:`read` and :meth:`read_state` are what make a bank re-readable
+    offline (ruling S3), so the twin implements both rather than stubbing them.
 
     :meth:`bank` takes ONE record of any kind, not one capture record (the
     2026-08-26 FOLD ruling): the five ``V2FlowSeams`` publishers land through
@@ -313,27 +309,8 @@ class FakePlay:
 
 
 @dataclass
-class FakeRecommender:
-    """The prescriber seam: records what it was asked over, answers a stub.
-
-    Thin on purpose — §3's wave-3 table says the prescriber is already shipped
-    and already decoupled, **do not re-extract it**, so the twin's job is to
-    prove the verb reaches it and to let a test see which records it reached
-    with.
-    """
-
-    answer: Mapping[str, Any] = field(default_factory=dict)
-    asked: list[tuple[str, ...]] = field(default_factory=list)
-
-    async def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
-        ids = tuple(record_ids)
-        self.asked.append(ids)
-        return dict(self.answer) if self.answer else {"records": len(ids)}
-
-
-@dataclass
 class FakeSeams:
-    """All five seams, each controllable, and the engine's view of them.
+    """All four seams, each controllable, and the engine's view of them.
 
     The name ``crossover_v2_fixtures`` gave the same idea, kept because §3
     names it — *"a ``FakeSeams``-equivalent"* — and because the thing it means
@@ -350,7 +327,6 @@ class FakeSeams:
     volume: FakeVolume = field(default_factory=FakeVolume)
     records: FakeRecords = field(default_factory=FakeRecords)
     play: FakePlay = field(default_factory=FakePlay)
-    recommend: FakeRecommender = field(default_factory=FakeRecommender)
 
     def seams(self) -> EngineSeams:
         """The frozen bundle the engine actually takes."""
@@ -359,7 +335,6 @@ class FakeSeams:
             volume=self.volume,
             records=self.records,
             play=self.play,
-            recommend=self.recommend,
         )
 
     def replace(self, **overrides: Any) -> "FakeSeams":
