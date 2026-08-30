@@ -7,12 +7,11 @@
 A campaign is dozens of takes across positions and candidates, and without this
 the only way to find one is to glob a directory and parse every hit by hand.
 
-**No index file exists** (ADR-0198). Every read rescans the banked takes into
-an in-memory table and selects over that, so there is nothing to write,
-nothing to go stale, and nothing to reconcile — the take files are the single
-source of truth at the read side as well as the write side. The rescan costs
-nothing these callers were not already paying: each opens every selected take
-anyway.
+**No index file exists** (ADR-0198). Every read rescans the banked takes and
+filters them in Python, so there is nothing to write, nothing to go stale,
+and nothing to reconcile — the take files are the single source of truth at
+the read side as well as the write side. The rescan costs nothing these
+callers were not already paying: each opens every selected take anyway.
 
 Only measurement takes get a row: five of the store's six artifact kinds are
 group payloads, a candidate, a receipt and a finding set.
@@ -21,10 +20,7 @@ group payloads, a candidate, a receipt and a finding set.
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -41,24 +37,6 @@ __all__ = [
     "bundle_measurements",
 ]
 
-#: The in-memory table every read builds and throws away.
-_TABLE = """
-CREATE TABLE IF NOT EXISTS measurements (
-    path         TEXT PRIMARY KEY,
-    session_id   TEXT NOT NULL DEFAULT '',
-    kind         TEXT NOT NULL DEFAULT '',
-    phase        TEXT NOT NULL DEFAULT '',
-    position_deg INTEGER,
-    candidate_id TEXT NOT NULL DEFAULT '',
-    captured_at  TEXT
-)
-"""
-
-_COLUMNS = (
-    "path", "session_id", "kind", "phase", "position_deg", "candidate_id",
-    "captured_at",
-)
-
 
 @dataclass(frozen=True)
 class Measurement:
@@ -71,18 +49,6 @@ class Measurement:
     position_deg: int | None
     candidate_id: str
     captured_at: str | None
-
-
-@contextmanager
-def _connect(db_path: Path | str) -> Iterator[sqlite3.Connection]:
-    """One connection per read, over ``:memory:`` — nothing here is durable."""
-    connection = sqlite3.connect(db_path)
-    try:
-        connection.execute(_TABLE)
-        yield connection
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def _text(value: Any) -> str:
@@ -144,15 +110,6 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
     )
 
 
-def _insert(connection: sqlite3.Connection, rows: list[tuple[Any, ...]]) -> None:
-    """``REPLACE`` because re-banking identical bytes is idempotent."""
-    connection.executemany(
-        f"INSERT OR REPLACE INTO measurements ({', '.join(_COLUMNS)}) "
-        f"VALUES ({', '.join('?' * len(_COLUMNS))})",
-        rows,
-    )
-
-
 def _load(take: Path) -> Mapping[str, Any]:
     """One banked file's JSON, or empty when it is not readable — a file a
     rescan cannot parse is one it has nothing to select, not a reason to stop.
@@ -174,24 +131,6 @@ def _scan(artifacts_dir: Path) -> list[tuple[Any, ...]]:
     return rows
 
 
-def _select(
-    connection: sqlite3.Connection,
-    *,
-    kind: str | None,
-    phase: str | None,
-    position_deg: int | None,
-) -> tuple[Measurement, ...]:
-    filters = {"kind": kind, "phase": phase, "position_deg": position_deg}
-    named = [(name, value) for name, value in filters.items() if value is not None]
-    where = "".join(f" AND {name} = ?" for name, _ in named)
-    rows = connection.execute(
-        f"SELECT {', '.join(_COLUMNS)} FROM measurements "
-        f"WHERE 1{where} ORDER BY path",
-        [value for _, value in named],
-    ).fetchall()
-    return tuple(Measurement(*row) for row in rows)
-
-
 def bundle_measurements(
     bundle_dir: Path,
     *,
@@ -201,10 +140,10 @@ def bundle_measurements(
 ) -> tuple[Measurement, ...]:
     """One bundle's takes, matching every filter — the offline reader's door.
 
-    **The take files ARE the index.** Every read rescans them into an in-memory
-    table and selects over that, so there is no file to go stale, none to
-    write, and none to reconcile. It costs nothing these callers were not
-    already paying: each of them opens every selected take anyway.
+    **The take files ARE the index.** Every read rescans them and filters in
+    Python, so there is no file to go stale, none to write, and none to
+    reconcile. It costs nothing these callers were not already paying: each
+    of them opens every selected take anyway.
 
     Three filter axes and not seven: these are the three the banked corpus is
     actually asked for — ``position_cycle``'s ``takes_by_position`` and its
@@ -218,14 +157,17 @@ def bundle_measurements(
     questions, two columns, exactly as ``contracts.MEASURE_KIND_KEY`` says.
 
     Ordered by ``path`` and not by ``captured_at``: the timestamp is the
-    record's own and can be absent, where the path is the take's key.
+    record's own and can be absent, where the path is the take's key —
+    :func:`_scan` already walks in that order.
 
     The rows SELECT; the take files still DECIDE. Every caller re-reads the
     file it was pointed at through its own accept rule.
     """
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    with _connect(":memory:") as connection:
-        _insert(connection, _scan(artifacts))
-        return _select(
-            connection, kind=kind, phase=phase, position_deg=position_deg,
-        )
+    rows = (Measurement(*columns) for columns in _scan(artifacts))
+    return tuple(
+        row for row in rows
+        if (kind is None or row.kind == kind)
+        and (phase is None or row.phase == phase)
+        and (position_deg is None or row.position_deg == position_deg)
+    )
