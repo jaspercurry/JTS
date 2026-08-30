@@ -1580,6 +1580,10 @@ def load_applied_baseline_profile_state(
 APPLIED_PROFILE_DISPLACED = "applied_profile_displaced"
 APPLIED_PROFILE_PATH_UNKNOWN = "applied_profile_path_unknown"
 APPLIED_PROFILE_RUNNING_UNKNOWN = "running_config_path_unknown"
+#: The record names a config file that is no longer on disk. A fifth answer to
+#: the same question, and NOT one of the four above: the record's own
+#: ``config.exists`` is frozen at apply time, so only a fresh stat can say it.
+APPLIED_PROFILE_CONFIG_MISSING = "applied_profile_config_missing"
 
 
 def applied_profile_displacement(
@@ -1633,6 +1637,58 @@ def applied_profile_displacement(
     return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED
 
 
+#: Source keys an apply path can record that no write-free rebuild can
+#: reproduce, because only the apply paths are handed a measured candidate.
+#: A key here present on the applied record and absent from a rebuild means the
+#: rebuild knows less; any OTHER saved-only key is incomparable and supersedes.
+#: See ADR-0195.
+_REBUILD_BLIND_SOURCE_KEYS = frozenset({"measured_candidate_fingerprint"})
+
+
+def _changed_source_keys(
+    saved_source: Mapping[str, Any],
+    current_source: Mapping[str, Any],
+) -> list[str]:
+    """Source keys that differ between an applied record and a re-derivation.
+
+    Derived from the payloads rather than a hand-listed subset: a subset stops
+    naming whatever ``_source_payload`` grows next, which is how a supersede
+    shipped with an empty ``changed``. The composite ``fingerprint`` is not a
+    key of its own — it is a hash of the rest.
+    """
+
+    keys = (set(current_source) | set(saved_source)) - {"fingerprint"}
+    return sorted(
+        key
+        for key in keys
+        if key not in _REBUILD_BLIND_SOURCE_KEYS or key in current_source
+        if saved_source.get(key) != current_source.get(key)
+    )
+
+
+def _applied_profile_proves_driver_targets(
+    saved: Mapping[str, Any] | None,
+    current_source: Mapping[str, Any],
+) -> bool:
+    """Whether a standing applied profile carries its own driver-target proof.
+
+    Compared-and-clean only, and measured only: a record with no source
+    fingerprint was never compared against anything, and a ``provisional`` one
+    was applied from sensitivity estimates rather than from measurement, so
+    neither may stand in for driver evidence. See ADR-0195.
+    """
+
+    applied = _applied_profile_anchor(saved)
+    if applied is None or bool(applied.get("provisional")):
+        return False
+    applied_source = (
+        applied.get("source") if isinstance(applied.get("source"), Mapping) else {}
+    )
+    if not applied_source.get("fingerprint"):
+        return False
+    return not _changed_source_keys(applied_source, current_source)
+
+
 def _revalidation_payload(
     saved: Mapping[str, Any] | None,
     current_source: Mapping[str, Any],
@@ -1646,6 +1702,9 @@ def _revalidation_payload(
     current evidence instead of trusting the saved JSON. When that re-derivation
     invalidates a profile that had already been applied, keep that fact visible:
     the household needs a "revalidate" path, not a mysterious blocked profile.
+
+    Staleness is decided by :func:`_changed_source_keys`, never by the
+    composite fingerprint. See ADR-0195.
     """
 
     saved = _applied_profile_anchor(saved)
@@ -1656,7 +1715,8 @@ def _revalidation_payload(
     )
     saved_fingerprint = saved_source.get("fingerprint")
     current_fingerprint = current_source.get("fingerprint")
-    if not saved_fingerprint or saved_fingerprint == current_fingerprint:
+    changed = _changed_source_keys(saved_source, current_source)
+    if not saved_fingerprint or not changed:
         return {"required": False, "status": "not_required"}
 
     issue_codes = {
@@ -1682,18 +1742,6 @@ def _revalidation_payload(
             "finish the highlighted setup checks, then save and apply a fresh profile"
         )
 
-    changed = [
-        key
-        for key in (
-            "topology_fingerprint",
-            "design_draft_updated_at",
-            "crossover_preview_updated_at",
-            "crossover_preview_fingerprint",
-            "measurements_updated_at",
-            "measurement_summary_fingerprint",
-        )
-        if saved_source.get(key) != current_source.get(key)
-    ]
     saved_config = (
         saved.get("config") if isinstance(saved.get("config"), Mapping) else {}
     )
@@ -2121,6 +2169,7 @@ def build_baseline_profile_candidate(
             f"{config_target.suffix}"
         )
     retained_applied = _frozen_applied_profile(applied_anchor)
+    applied_profile_proves = _applied_profile_proves_driver_targets(saved, source)
 
     def finalize(payload: dict[str, Any]) -> dict[str, Any]:
         if retained_applied is not None:
@@ -2134,6 +2183,20 @@ def build_baseline_profile_candidate(
                 if isinstance(issue, Mapping)
             ],
         )
+        # THE applied verdict, derived once where both the record and the
+        # comparison are in hand. Consumers read this rather than the rebuild's
+        # own status, which cannot reach "applied" for a measured profile.
+        # Whether the speaker still PLAYS it needs the statefile, so that half
+        # stays with the loader. See ADR-0195.
+        payload["applied_profile_stands"] = bool(
+            retained_applied is not None
+            and payload["revalidation"].get("required") is not True
+        )
+        # Attached even on a blocked payload, whose `verification` is empty:
+        # the /sound/ combined-test door and the validation writer read this
+        # answer through the commissioning view, and a speaker whose driver
+        # proof rides on its applied profile is exactly the one that blocks.
+        payload["driver_target_proof_from_applied_profile"] = applied_profile_proves
         return payload
 
     if (
@@ -2265,6 +2328,14 @@ def build_baseline_profile_candidate(
             ):
                 driver_target_proof_complete = True
                 driver_target_proof_source = "applied_profile_revalidation"
+            elif applied_profile_proves:
+                # The revalidation relaxer above answers only for a profile
+                # something HAS superseded. One nothing has superseded proves
+                # the same targets with nothing outstanding against it, and
+                # since ADR-0195 stopped a measured apply reading as superseded
+                # this is the branch that state lands in.
+                driver_target_proof_complete = True
+                driver_target_proof_source = "applied_profile"
         if not driver_target_proof_complete:
             issues.append(_issue(
                 "blocker",

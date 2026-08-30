@@ -2198,8 +2198,35 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return measurementSummary().summed_validation_complete === true ||
       summed.complete === true;
   }
+  function baselineProfileAppliedRecord() {
+    // The rebuild's own status cannot reach 'applied' for a measured profile;
+    // `applied_profile_stands` is the payload's verdict. See ADR-0195.
+    var profile = activeSpeaker.baselineProfile || {};
+    if (profile.applied_profile_stands === true) {
+      var anchor = profile.applied_recomposition_profile;
+      if (anchor && typeof anchor === 'object') return anchor;
+    }
+    // The save-and-apply response replaces this state with the record it just
+    // wrote — the record itself, not a rebuild, so it carries no verdict and
+    // its own status is the answer.
+    return profile.status === 'applied' ? profile : null;
+  }
   function baselineProfileApplied() {
-    return activeSpeaker.baselineProfile && activeSpeaker.baselineProfile.status === 'applied';
+    return baselineProfileAppliedRecord() !== null;
+  }
+  function appliedProfileCorrections(record) {
+    // What the basic door would not re-emit, named for the household.
+    if (!record) return '';
+    var parts = [];
+    var linearization = record.linearization;
+    if (linearization && typeof linearization === 'object' &&
+      Object.keys(linearization).length) {
+      parts.push('its per-driver linearization');
+    }
+    if (Array.isArray(record.blend_correction) && record.blend_correction.length) {
+      parts.push('its blend correction');
+    }
+    return parts.join(' and ');
   }
   function baselineProfileRevalidation() {
     var profile = activeSpeaker.baselineProfile || {};
@@ -4674,10 +4701,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
-    var statusValue = profile.status || 'not_saved';
-    var config = profile.config || {};
+    var appliedRecord = baselineProfileAppliedRecord();
+    var config = (appliedRecord || profile).config || {};
     var permissions = profile.permissions || {};
-    var applied = statusValue === 'applied';
+    var applied = appliedRecord !== null;
     var readyToApply = permissions.may_apply === true;
     var mayCompile = summedValidationComplete();
     var applyBlocked = baselineProfileApplyBlocked(profile);
@@ -4707,20 +4734,33 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var actionLabel = busy ?
       'Saving and applying' :
       'Save and apply';
-    var actions = (applied || applyBlocked) ? '' :
+    // Applied: the basic door stays reachable — the household may want it —
+    // but it is never the primary here and never offered without saying what
+    // it replaces (ADR-0195).
+    var replaces = appliedProfileCorrections(appliedRecord);
+    var actions = applyBlocked ? '' : (applied ?
+      (replaces ?
+        '<div class="active-speaker-actions active-speaker-profile-actions">' +
+          '<button type="button" class="btn" data-act="save-apply-baseline-profile"' +
+            (busy ? ' disabled' : '') + '>' +
+            escapeHtml(busy ? actionLabel : 'Replace with basic profile') + '</button>' +
+          '<p class="setting-row__hint">The basic profile compiles the saved ' +
+            'crossover with driver trims only. Applying it replaces the ' +
+            'measured profile: ' + escapeHtml(replaces) + ' are not re-emitted.</p>' +
+        '</div>' : '') :
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
         '<button type="button" class="btn btn--primary' +
           '" data-act="save-apply-baseline-profile"' +
           ((busy || !canFinish) ? ' disabled' : '') + '>' +
           escapeHtml(actionLabel) + '</button>' +
-      '</div>';
+      '</div>');
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and confirmed outputs.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
-      renderLevelMatchSummary(profile) +
+      renderLevelMatchSummary(appliedRecord || profile) +
       (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +
     '</div>';

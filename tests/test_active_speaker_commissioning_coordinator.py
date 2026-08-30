@@ -9,6 +9,12 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.baseline_profile import (
+    APPLIED_PROFILE_CONFIG_MISSING,
+    APPLIED_PROFILE_DISPLACED,
+    APPLIED_PROFILE_PATH_UNKNOWN,
+    APPLIED_PROFILE_RUNNING_UNKNOWN,
+)
 from jasper.active_speaker.commissioning_coordinator import (
     _SUMMED_TEST_FAILURE_COPY,
     COMMISSIONING_STEP_PAGE_TITLES,
@@ -107,6 +113,67 @@ def _ready_preview() -> dict:
         "kind": "jts_active_speaker_crossover_preview",
         "status": "ready_for_protected_staging",
         "permissions": {"may_prepare_protected_startup_config": True},
+    }
+
+
+def _validated_measurements(*, summed_validated: bool = True) -> dict:
+    """Driver checks done, and the combined check validated unless told not."""
+
+    return {
+        "summary": {
+            "driver_checks_complete": True,
+            "captured_driver_check_count": 2,
+            "required_driver_check_count": 2,
+            "summed_validation_complete": summed_validated,
+            "validated_summed_group_count": 1 if summed_validated else 0,
+            "required_summed_group_count": 1,
+            "latest_summed_tests": {
+                "mono": {
+                    "captured": True,
+                    "audio_emitted": True,
+                    "summed_test_id": "summed-playback-audible",
+                    "issues": [],
+                },
+            },
+            "latest_summed_validations": {
+                "mono": {
+                    "validated": True,
+                    "summed_test_id": "summed-playback-audible",
+                },
+            } if summed_validated else {},
+        },
+    }
+
+
+def _applied_anchor(basename: str = "candidate_f7e9.yml") -> dict:
+    """The retained applied record a write-free rebuild carries.
+
+    Measured: it holds the per-driver linearization and blend correction the
+    basic save-and-apply door does not re-emit.
+    """
+
+    return {
+        "status": "applied",
+        "applied_at": "2026-08-30T01:33:34Z",
+        "linearization": {"tweeter": [{"type": "Peaking"}]},
+        "blend_correction": [{"type": "Peaking"}],
+        "config": {
+            "path": "/var/lib/camilladsp/configs/" + basename,
+            "basename": basename,
+            "exists": True,
+        },
+    }
+
+
+def _applied_baseline_profile(**overrides) -> dict:
+    """A write-free rebuild payload over a standing measured applied profile."""
+
+    return {
+        "status": "ready_to_compile",
+        "revalidation": {"required": False, "status": "not_required"},
+        "applied_profile_stands": True,
+        "applied_recomposition_profile": _applied_anchor(),
+        **overrides,
     }
 
 
@@ -221,30 +288,7 @@ def test_commissioning_view_does_not_reoffer_record_for_validated_combined_test(
         _topology(),
         design_draft=_ready_design(),
         crossover_preview=_ready_preview(),
-        measurements={
-            "summary": {
-                "driver_checks_complete": True,
-                "captured_driver_check_count": 2,
-                "required_driver_check_count": 2,
-                "summed_validation_complete": True,
-                "validated_summed_group_count": 1,
-                "required_summed_group_count": 1,
-                "latest_summed_tests": {
-                    "mono": {
-                        "captured": True,
-                        "audio_emitted": True,
-                        "summed_test_id": "summed-playback-audible",
-                        "issues": [],
-                    },
-                },
-                "latest_summed_validations": {
-                    "mono": {
-                        "validated": True,
-                        "summed_test_id": "summed-playback-audible",
-                    },
-                },
-            },
-        },
+        measurements=_validated_measurements(),
     )
 
     group = view["combined_groups"][0]
@@ -255,6 +299,139 @@ def test_commissioning_view_does_not_reoffer_record_for_validated_combined_test(
         view["next_action"]["endpoint"]
         == "./active-speaker/baseline-profile/save-and-apply"
     )
+
+
+def test_commissioning_view_over_a_live_measured_profile_does_not_recommend_basic():
+    """The basic door is named, never the recommendation, over a live tune.
+
+    It emits the saved crossover with driver trims only, so recommending it
+    here recommends replacing the measured profile. See ADR-0195.
+    """
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements=_validated_measurements(),
+        baseline_profile=_applied_baseline_profile(),
+    )
+
+    assert view["status"] == "applied"
+    assert view["next_action"] == {}
+    assert view["secondary_action"]["id"] == "save_basic_profile"
+    assert view["applied_profile"] == {
+        "stands": True, "verdict": "", "carries_correction": True,
+    }
+    assert _step(view, "profile")["status"] == "done"
+
+
+def test_commissioning_view_routes_a_genuine_supersede_to_re_measuring():
+    """Something really did move under a measured profile.
+
+    Saving a fresh basic profile is a real option and stays offered, named;
+    what carries the tune forward is a re-measure, so that is the primary.
+    """
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements=_validated_measurements(),
+        baseline_profile=_applied_baseline_profile(
+            applied_profile_stands=False,
+            revalidation={
+                "required": True,
+                "status": "required",
+                "reason": "applied_profile_superseded",
+                "next_step": "save_profile",
+                "changed": ["measurements_updated_at"],
+            },
+        ),
+    )
+
+    assert view["next_action"]["id"] == "remeasure_crossover"
+    assert view["secondary_action"]["id"] == "save_basic_profile"
+
+
+def test_commissioning_view_does_not_claim_applied_over_a_displaced_record():
+    """The statefile says the speaker is playing something else."""
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements=_validated_measurements(),
+        baseline_profile=_applied_baseline_profile(),
+        applied_profile_verdict=APPLIED_PROFILE_DISPLACED,
+    )
+
+    assert view["status"] != "applied"
+    assert view["applied_profile"]["stands"] is False
+    assert _step(view, "profile")["status"] != "done"
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [APPLIED_PROFILE_PATH_UNKNOWN, APPLIED_PROFILE_RUNNING_UNKNOWN,
+     APPLIED_PROFILE_CONFIG_MISSING],
+)
+def test_commissioning_view_discloses_a_check_it_could_not_make(verdict: str) -> None:
+    """"Could not check" is not "checked and it moved".
+
+    The profile stays applied and the caveat is disclosed, with the recovery
+    door offered rather than the claim withdrawn.
+    """
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements=_validated_measurements(),
+        baseline_profile=_applied_baseline_profile(),
+        applied_profile_verdict=verdict,
+    )
+
+    assert view["applied_profile"] == {
+        "stands": True, "verdict": verdict, "carries_correction": True,
+    }
+    assert _step(view, "profile")["status"] == "done"
+    assert view["secondary_action"]["id"] == "save_basic_profile"
+
+
+def test_commissioning_view_never_dead_ends_over_a_blocked_rebuild():
+    """A blocker does not un-apply the profile, and does not strand the page."""
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements=_validated_measurements(),
+        baseline_profile=_applied_baseline_profile(status="blocked"),
+    )
+
+    assert _step(view, "profile")["status"] == "done"
+    assert view["next_action"] or view["secondary_action"]
+
+
+def test_a_retained_applied_record_never_stands_in_for_driver_evidence():
+    """The audible combined test is gated on `driver_target_proof.complete`.
+
+    Only the revalidation state may let an applied profile carry that proof
+    (`applied_profile_revalidation_satisfies_driver_target_proof`); a retained
+    record answering "is a profile applied" must not reach it.
+    """
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements={"summary": {}},
+        baseline_profile=_applied_baseline_profile(),
+    )
+
+    assert view["driver_target_proof"]["complete"] is False
+    assert view["driver_checks"]["complete"] is False
+    assert view["next_action"]["id"] != "start_combined_test"
 
 
 def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():
