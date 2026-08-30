@@ -121,15 +121,17 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     written = _write_json(
         grade.to_dict(), args.out, Path(args.round_dir) / "entry_state_grade.json"
     )
-    if not grade.available:
+    report = grade.report
+    # ``report is None`` IS ``not available`` — the two move together on
+    # ``EntryStateGrade`` — and testing the report narrows it for the summary
+    # below without a second, unfalsifiable assertion that they agree.
+    if report is None:
         # Exit 0, not 1: "this round banked no gradeable entry baseline" is an
         # ANSWER — the one this door exists to give instead of an operator's
         # hand-rolled evaluation — not a failure to read the round. Exit 1 is
         # reserved for a round directory that could not be read at all.
         print(f"entry-state: NOT GRADED — {grade.reason}", file=sys.stderr)
         return EXIT_OK
-    report = grade.report
-    assert report is not None  # `available` and `report` move together
     n_failed = sum(1 for band in report.bands if band.passed is not True)
     print(
         f"entry-state: {len(report.bands)} band(s), {n_failed} not passing; "

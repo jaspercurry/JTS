@@ -1971,9 +1971,9 @@ def build_conductor_state(
     )
     # How many times the ordinal sequence has been RESET, carried forward
     # unconditionally like the anchor keys above and for a sharper version of
-    # their reason: the conductor cannot contribute this — only the republish
-    # door increments it — and it has to outlive the very session that door
-    # creates. Session-scoping it would erase the disclosure on the first
-    # persist after a republish, which is exactly the round it exists to label.
+    # their reason: the conductor cannot contribute this — only the two reset
+    # doors increment it — and it has to outlive the very session those doors
+    # create. Session-scoping it would erase the disclosure on the first persist
+    # after a reset, which is exactly the round it exists to label.
     state[ROUND_ORDINAL_EPOCH_STATE_KEY] = round_ordinal_epoch_from_state(prior)
     return ConductorState(state, receipt_identity is not None)
