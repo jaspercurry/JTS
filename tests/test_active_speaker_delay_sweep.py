@@ -2,278 +2,291 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behaviour pins for bounding and grading the reverse-null delay walk."""
+"""Behaviour pins for the PROPOSE door onto a banked round.
+
+Three questions, one altitude each: does the door read the bank the store
+actually wrote, does it hand the operator a line they can run, and does a
+refusal reach them as the refusing module's own sentence.
+"""
 
 import json
 import math
+import shlex
+from pathlib import Path
 
+import numpy as np
 import pytest
 
-from jasper.active_speaker.delay_sweep import (
-    ROBUST_NULL_DEPTH_DB,
-    USABLE_NULL_DEPTH_DB,
-    VERDICT_AXIS_LIMITED,
-    VERDICT_ROBUST,
-    VERDICT_WEAK,
-    rows_at_pose,
-    sweep_spec,
-    sweep_verdict,
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.delay_landscape import (
+    DelayLandscapeError,
+    compute_landscape,
 )
-from jasper.audio_measurement.null_walk import (
-    BoundedNullWalkSchedule,
-    select_delay,
-    select_scheduled_delay,
-)
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
+from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
+from jasper.active_speaker.delay_sweep import sweep_spec
+from jasper.cli.angle_capture import build_parser as angle_capture_parser
+from jasper.cli.delay_sweep import main
 
 FC_HZ = 1800.0
 
 
-def _spec(seed_m=0.0):
-    return sweep_spec(
-        crossover_fc_hz=FC_HZ,
-        upper_role="tweeter",
-        lower_role="woofer",
-        signed_acoustic_path_difference_m=seed_m,
+def _lr4(freqs, *, highpass: bool):
+    """One LR4 branch: an inverted, aligned pair cancels hard at Fc."""
+
+    s = 1j * (np.asarray(freqs, dtype=float) / FC_HZ)
+    butter2 = (s**2 if highpass else 1.0) / (s**2 + math.sqrt(2.0) * s + 1.0)
+    return butter2**2
+
+
+def _curve(role: str, *, arrival_us: float = 0.0, band=(200.0, 12000.0)):
+    """One curve in `spatial.pose_curve_record`'s exact banked shape."""
+
+    freqs = np.linspace(band[0], band[1], 512)
+    tf = _lr4(freqs, highpass=(role == "tweeter")) * np.exp(
+        -2j * np.pi * freqs * arrival_us * 1e-6
     )
+    return {
+        "role": role,
+        "band_hz": [float(band[0]), float(band[1])],
+        "freqs_hz": [float(hz) for hz in freqs],
+        "magnitude_db": [float(db) for db in 20.0 * np.log10(np.abs(tf))],
+        "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
+    }
 
 
-# --------------------------------------------------------------------------- #
-# the null-depth search recovers a known offset
-# --------------------------------------------------------------------------- #
+def _bank(
+    tmp_path: Path,
+    *,
+    curves,
+    phase: str = PHASE_MEASURE,
+    position_deg: int = 0,
+    kind: str = POSITION_EVIDENCE_KIND,
+    take_id: str = "p0_a01",
+) -> Path:
+    """A bundle carrying one banked take, at the path the store writes.
 
-
-def _synthetic_depth(applied_us: float, true_offset_us: float) -> float:
-    """Null depth for two equal, inverted branches mistimed by the residual.
-
-    Summing a signal with its inverted, delayed copy gives 2*sin(pi*f*tau); the
-    null depth relative to the aligned case is -20*log10 of that, so a perfect
-    cancellation is deep and a half-period error is 0 dB. Capped well below the
-    analytic infinity at tau=0 because a real null floors on noise.
+    No index file: `bundle_measurements` rescans the corpus when the table does
+    not account for every take on disk, which is the arm a hand-built fixture
+    exercises and the one a round with a stale index takes too.
     """
 
-    residual_s = (applied_us - true_offset_us) * 1e-6
-    ratio = abs(2.0 * math.sin(math.pi * FC_HZ * residual_s))
-    if ratio < 1e-6:
-        return 40.0
-    return min(40.0, max(0.0, -20.0 * math.log10(ratio / 2.0)))
+    positions = (
+        tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "relay-1" / "positions"
+    )
+    positions.mkdir(parents=True, exist_ok=True)
+    (positions / f"{take_id}.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": kind,
+            "phase": phase,
+            "take_id": take_id,
+            "position_deg": position_deg,
+            "curves": curves,
+        }),
+        encoding="utf-8",
+    )
+    return tmp_path
 
 
-def _rows(depth: float, *, pose_deg=None, count=5):
-    acoustic = {
-        "null_depth_db": depth,
-        "null_depth_capped": False,
-        "mic_clipping": False,
-        "calibrated": True,
-        "expect_null": True,
-        "crossover_fc_hz": FC_HZ,
-        "gating": {"applied": True},
-        "above_validity_floor": True,
-        "snr": {"decision_class": "alignment", "verdict": "ok"},
-        "verdict": "blend_ok",
-    }
-    return [
-        {"acoustic": dict(acoustic), "pose_deg": pose_deg} for _ in range(count)
+def _propose(bundle: Path, capsys, *extra):
+    code = main(["propose", str(bundle), "--fc-hz", str(FC_HZ), *extra])
+    captured = capsys.readouterr()
+    return code, json.loads(captured.out), captured.err
+
+
+def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
+    tmp_path, capsys,
+) -> None:
+    """The woofer arrives 200 us late, so delaying the tweeter by 200 us aligns
+    them — read off two curves banked exactly as `pose_curve_record` writes
+    them, through the measurement index, with no audio played."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    code, payload, err = _propose(bundle, capsys)
+
+    assert code == 0
+    assert payload["status"] == "proposed"
+    assert payload["take_path"].endswith("positions/p0_a01.json")
+    landscape = payload["landscape"]
+    assert landscape["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+    assert landscape["kind"] == "jts_inter_driver_delay_landscape"
+    # Two or three: the optimum and its immediate neighbours.
+    assert 2 <= len(landscape["confirmation_coordinates_us"]) <= 3
+
+
+def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> None:
+    """One `confirm_with` line per coordinate, in the flags
+    `jasper-angle-capture stage` actually takes — this is the whole point of
+    the verb: propose, then stage, without hand-deriving which branch moves."""
+
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
+    ])
+    _code, payload, err = _propose(bundle, capsys)
+
+    commands = payload["confirm_with"]
+    assert len(commands) == len(payload["landscape"]["confirmation_coordinates_us"])
+
+    # Parsed by the REAL parser, not matched against a copy of its wording: a
+    # printed line is only "ready to run" if the tool it names accepts it, and
+    # a vocabulary change must fail here rather than rot silently.
+    for line in commands:
+        argv = shlex.split(line)
+        assert argv[0] == "jasper-angle-capture"
+        parsed = angle_capture_parser().parse_args(argv[1:])
+        assert parsed.angles == "0"
+        assert parsed.inverted_role == "tweeter"
+        # The signed coordinate reaches the flags as an executable (role,
+        # delay) pair, never as a negative microsecond count.
+        assert parsed.delay_us is None or parsed.delay_us >= 0.0
+
+
+def test_the_zero_coordinate_stages_no_delay_at_all(tmp_path, capsys) -> None:
+    """Neither branch is delayed at 0 us, and `MeasureSpec` refuses a
+    half-stated (role, delay) pair — so a line naming a role with 0 us would be
+    refused at the very door it was printed for."""
+
+    bundle = _bank(tmp_path, curves=[_curve("woofer"), _curve("tweeter")])
+    _code, payload, err = _propose(bundle, capsys)
+
+    zero = [
+        line for line, coordinate in zip(
+            payload["confirm_with"],
+            payload["landscape"]["confirmation_coordinates_us"],
+        )
+        if coordinate == 0.0
     ]
+    assert zero, "the aligned fixture puts a zero coordinate in the set"
+    for line in zero:
+        assert "--delayed-role" not in line
+        assert "--delay-us" not in line
 
 
-def _graded(true_offset_us: float, *, poses=(None,), scale=1.0):
-    spec = _spec()
-    coarse = spec.coarse_candidate_delays_us()
-    rows = {
-        coordinate: [
-            row
-            for pose in poses
-            for row in _rows(
-                _synthetic_depth(coordinate, true_offset_us) * scale, pose_deg=pose
-            )
-        ]
-        for coordinate in coarse
-    }
-    schedule = BoundedNullWalkSchedule.from_coarse_evidence(
-        spec, {coordinate: rows[coordinate] for coordinate in coarse}
-    )
-    for coordinate in schedule.refinement_delays_us:
-        rows[coordinate] = [
-            row
-            for pose in poses
-            for row in _rows(
-                _synthetic_depth(coordinate, true_offset_us) * scale, pose_deg=pose
-            )
-        ]
-    selection = select_scheduled_delay(spec, schedule, rows)
-    return spec, rows, selection
+def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
+    tmp_path, capsys,
+) -> None:
+    """The refusal IS the output. A bank swept only above Fc cannot carry a
+    null at Fc, and the sentence the operator needs is the one
+    `delay_landscape` wrote — printed through, never re-spelled here."""
 
+    bundle = _bank(tmp_path, curves=[
+        _curve("woofer", band=(2000.0, 12000.0)),
+        _curve("tweeter", band=(2000.0, 12000.0)),
+    ])
+    code, payload, err = _propose(bundle, capsys)
 
-@pytest.mark.parametrize("true_offset_us", [-200.0, -100.0, 0.0, 100.0, 200.0])
-def test_known_offset_is_recovered_within_one_step(true_offset_us):
-    spec, rows, selection = _graded(true_offset_us)
-    assert selection["status"] == "selected"
-    assert abs(selection["selected_relative_delay_us"] - true_offset_us) <= spec.step_us
+    assert code == 1
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "delay_propose_landscape_unsupported"
 
-    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
-    assert verdict["verdict"] == VERDICT_ROBUST
-    assert verdict["meets_robustness_bar"] is True
-    assert verdict["best_measured_null_depth_db"] >= ROBUST_NULL_DEPTH_DB
-
-
-def test_positive_offset_delays_the_upper_branch_and_negative_the_lower():
-    _, _, positive = _graded(200.0)
-    _, _, negative = _graded(-200.0)
-    assert positive["selected_delay_target"] == "tweeter"
-    assert negative["selected_delay_target"] == "woofer"
-    assert positive["selected_delay_us"] >= 0.0
-    assert negative["selected_delay_us"] >= 0.0
-
-
-# --------------------------------------------------------------------------- #
-# the honest verdict
-# --------------------------------------------------------------------------- #
-
-
-def test_no_coordinate_reaching_the_floor_reads_as_axis_limited_not_an_error():
-    # Every depth scaled under the usable floor: a real null never forms, so the
-    # residual at Fc is not something a delay can move.
-    _, rows, selection = _graded(0.0, scale=0.2)
-    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
-    assert verdict["verdict"] == VERDICT_AXIS_LIMITED
-    assert verdict["best_measured_null_depth_db"] < USABLE_NULL_DEPTH_DB
-    assert verdict["meets_robustness_bar"] is False
-    # Disclosed, never raised: the selected coordinate is still reported.
-    assert verdict["selected_delay_us"] is not None
-
-
-def test_a_shallow_but_usable_null_grades_weak():
-    _, rows, selection = _graded(0.0, scale=0.45)
-    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
-    assert USABLE_NULL_DEPTH_DB <= verdict["best_measured_null_depth_db"]
-    assert verdict["best_measured_null_depth_db"] < ROBUST_NULL_DEPTH_DB
-    assert verdict["verdict"] == VERDICT_WEAK
-
-
-def test_poses_disagreeing_about_the_null_downgrades_a_deep_result():
-    spec = _spec()
-    coarse = spec.coarse_candidate_delays_us()
-    # On axis the null sits at +100 us; off axis it sits at -200 us. A deep null
-    # that moves with the microphone is not a delay answer.
-    rows = {
-        coordinate: (
-            _rows(_synthetic_depth(coordinate, 100.0), pose_deg=0)
-            + _rows(_synthetic_depth(coordinate, -200.0), pose_deg=15)
+    # Verbatim, pinned against the module that owns the sentence rather than
+    # against a copy of its wording: re-word the refusal there and this still
+    # holds, but swallow or paraphrase it here and it does not.
+    with pytest.raises(DelayLandscapeError) as refusal:
+        compute_landscape(
+            _curve("woofer", band=(2000.0, 12000.0)),
+            _curve("tweeter", band=(2000.0, 12000.0)),
+            spec=sweep_spec(
+                crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
+                signed_acoustic_path_difference_m=0.0,
+            ),
+            inverted_role="tweeter",
         )
-        for coordinate in coarse
-    }
-    on_axis = rows_at_pose(rows, 0)
-    schedule = BoundedNullWalkSchedule.from_coarse_evidence(spec, dict(on_axis))
-    for coordinate in schedule.refinement_delays_us:
-        rows[coordinate] = (
-            _rows(_synthetic_depth(coordinate, 100.0), pose_deg=0)
-            + _rows(_synthetic_depth(coordinate, -200.0), pose_deg=15)
-        )
-    selection = select_scheduled_delay(spec, schedule, rows_at_pose(rows, 0))
-    verdict = sweep_verdict(selection, spec=spec, rows_by_delay=rows, poses_deg=(0, 15))
-    assert verdict["poses_agree"] is False
-    assert verdict["verdict"] == VERDICT_WEAK
+    assert payload["detail"] == str(refusal.value)
+    assert err.strip(), "an operator running this by hand gets a line on stderr"
 
 
-def test_incomplete_evidence_is_refused_with_the_selectors_own_reason():
-    spec = _spec()
-    rows = {coordinate: _rows(30.0) for coordinate in spec.candidate_delays_us()}
-    # One coordinate short of MIN_CAPTURE_COUNT is enough to refuse the walk.
-    rows[spec.candidate_delays_us()[0]] = _rows(30.0, count=2)
-    selection = select_delay(spec, rows)
-    verdict = sweep_verdict(selection, spec=_spec(), rows_by_delay=rows)
-    assert verdict["verdict"] == "evidence_incomplete"
-    assert verdict["reason"] == selection["reason"]
-    assert verdict["selected_delay_us"] is None
+def test_a_bundle_with_no_round_refuses_before_it_reads_anything(
+    tmp_path, capsys,
+) -> None:
+    code, payload, err = _propose(tmp_path, capsys)
+    assert code == 1
+    assert payload["reason"] == "delay_propose_no_round"
 
 
-# --------------------------------------------------------------------------- #
-# the operator door
-# --------------------------------------------------------------------------- #
+def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> None:
+    """Both transfers are summed against each other, so they must ride ONE
+    take: curves from two captures would be summed across whatever moved
+    between them."""
+
+    bundle = _bank(tmp_path, curves=[_curve("woofer")])
+    code, payload, err = _propose(bundle, capsys)
+    assert code == 1
+    assert payload["reason"] == "delay_propose_no_banked_curves"
 
 
-def test_plan_prints_the_bounded_grid_and_its_capture_cost(capsys):
-    from jasper.cli.delay_sweep import main
+@pytest.mark.parametrize(
+    ("phase", "kind", "curves"),
+    [
+        pytest.param(PHASE_LATERAL, POSITION_EVIDENCE_KIND, "ok", id="wrong_phase"),
+        pytest.param(PHASE_MEASURE, "something_else", "ok", id="not_a_take"),
+        pytest.param(PHASE_MEASURE, POSITION_EVIDENCE_KIND, [], id="no_curves"),
+    ],
+)
+def test_the_curve_reader_answers_none_and_never_raises(
+    tmp_path, phase, kind, curves,
+) -> None:
+    """One corrupt or unrelated sidecar must not cost a reader the takes that
+    are fine — the same rule `read_lateral_take` follows."""
 
-    assert main(["plan", "--fc-hz", "1800", "--repeats", "5"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    spec = _spec()
-    assert payload["coarse_delays_us"] == list(spec.coarse_candidate_delays_us())
-    assert payload["spec"]["half_period_us"] == spec.half_period_us
-    # The cost is knowable before any sound: coarse plus at most two refinement
-    # neighbours, times the repeats, times the poses.
-    assert payload["maximum_captures"] == (len(payload["coarse_delays_us"]) + 2) * 5
-
-
-def test_grade_reads_banked_rows_and_reports_the_prescription_number(tmp_path, capsys):
-    from jasper.cli.delay_sweep import main
-
-    spec = _spec()
-    rows = {
-        str(coordinate): _rows(_synthetic_depth(coordinate, 100.0))
-        for coordinate in spec.candidate_delays_us()
-    }
-    captures = tmp_path / "rows.json"
-    captures.write_text(json.dumps(rows), encoding="utf-8")
-
-    assert main(["grade", "--fc-hz", "1800", "--captures", str(captures)]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "graded"
-    assert payload["verdict"]["verdict"] == VERDICT_ROBUST
-    assert abs(payload["verdict"]["selected_relative_delay_us"] - 100.0) <= spec.step_us
-    assert payload["verdict"]["selected_delay_target"] == "tweeter"
-
-
-def test_grade_refuses_unreadable_captures_without_a_traceback(tmp_path, capsys):
-    from jasper.cli.delay_sweep import main
-
-    broken = tmp_path / "broken.json"
-    broken.write_text("not json", encoding="utf-8")
-    assert main(["grade", "--fc-hz", "1800", "--captures", str(broken)]) == 2
-    assert "unreadable captures" in capsys.readouterr().err
-
-
-# --------------------------------------------------------------------------- #
-# review findings, pinned
-# --------------------------------------------------------------------------- #
-
-
-def test_a_refusal_verdict_still_carries_every_key_a_consumer_reads():
-    spec = _spec()
-    rows = {coordinate: _rows(30.0) for coordinate in spec.candidate_delays_us()}
-    rows[spec.candidate_delays_us()[0]] = _rows(30.0, count=2)
-    verdict = sweep_verdict(select_delay(spec, rows), spec=spec, rows_by_delay=rows)
-    assert verdict["selected_relative_delay_us"] is None
-    assert set(verdict) == set(
-        sweep_verdict(_graded(100.0)[2], spec=spec, rows_by_delay=_graded(100.0)[1])
+    payload = [_curve("woofer"), _curve("tweeter")] if curves == "ok" else curves
+    bundle = _bank(tmp_path, curves=payload, phase=phase, kind=kind)
+    take = (
+        bundle / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "relay-1"
+        / "positions" / "p0_a01.json"
     )
+    assert read_take_curves(take, phase=PHASE_MEASURE) is None
+    assert read_take_curves(tmp_path / "nope.json", phase=PHASE_MEASURE) is None
 
 
-def test_an_ungradeable_off_axis_pose_cannot_agree_by_silence():
-    spec = _spec()
-    coarse = spec.coarse_candidate_delays_us()
-    rows = {
-        coordinate: (
-            _rows(_synthetic_depth(coordinate, 100.0), pose_deg=0)
-            # The off-axis pose clipped: gradeable rows, zero of them valid.
-            + _rows(30.0, pose_deg=15, count=5)
-        )
-        for coordinate in coarse
-    }
-    for coordinate in coarse:
-        for row in rows[coordinate]:
-            if row["pose_deg"] == 15:
-                row["acoustic"]["mic_clipping"] = True
-    schedule = BoundedNullWalkSchedule.from_coarse_evidence(
-        spec, dict(rows_at_pose(rows, 0))
+def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
+    tmp_path, capsys,
+) -> None:
+    """A per-driver walk pose carries the same curve shape a design-axis
+    MEASURE capture does; which phase answers is the caller's to state."""
+
+    bundle = _bank(
+        tmp_path,
+        curves=[_curve("woofer", arrival_us=200.0), _curve("tweeter")],
+        phase=PHASE_LATERAL,
     )
-    selection = select_scheduled_delay(spec, schedule, rows_at_pose(rows, 0))
-    verdict = sweep_verdict(
-        selection, spec=spec, rows_by_delay=rows, poses_deg=(0, 15)
+    code, payload, err = _propose(bundle, capsys, "--phase", PHASE_LATERAL)
+    assert code == 0
+    assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
+
+
+def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
+    """`propose` must bound its grid with the same `sweep_spec` the landscape
+    reads its bars from, or the printed coordinates would not be the ones the
+    verdict grades."""
+
+    spec = sweep_spec(
+        crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
     )
-    assert verdict["pose_best_delays_us"]["15"] is None
-    assert verdict["unmeasured_poses_deg"] == ["15"]
-    assert verdict["poses_agree"] is False
-    assert verdict["verdict"] == VERDICT_WEAK
+    assert spec.positive_delay_target == "tweeter"
+    assert spec.negative_delay_target == "woofer"
 
 
+def test_a_retaken_pose_proposes_off_the_retake_not_the_take_it_replaced(
+    tmp_path, capsys,
+) -> None:
+    """A superseded take stays on disk as the honest walk record, and `take_id`
+    is zero-padded so the index's `ORDER BY path` is chronological. Reading the
+    FIRST match would answer off the capture a retake was taken to replace."""
+
+    _bank(tmp_path, curves=[_curve("woofer"), _curve("tweeter")], take_id="p0_a01")
+    _bank(
+        tmp_path,
+        curves=[_curve("woofer", arrival_us=200.0), _curve("tweeter")],
+        take_id="p0_a02",
+    )
+    code, payload, _err = _propose(tmp_path, capsys)
+
+    assert code == 0
+    assert payload["take_path"].endswith("p0_a02.json")
+    assert payload["landscape"]["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)

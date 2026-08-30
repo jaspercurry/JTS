@@ -2,32 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator door onto the inter-driver reverse-null delay sweep.
+"""Operator door onto the inter-driver reverse-null delay: the PROPOSE half.
 
-Two verbs, both offline:
+One verb, offline:
 
-``plan``
-    Print the bounded grid — the geometry seed, the half-period bounds either
-    side of it, the step, and every coordinate — and what a full walk of it
-    would cost in captures.
+``propose``
+    Read a banked round's per-driver curves, complex-sum them across the whole
+    delay grid, and print the landscape plus the two or three coordinates worth
+    playing. **No audio plays and no device is opened** — an existing MEASURE
+    bank answers this today.
 
-``grade``
-    Read banked capture rows and print the selected delay plus the honest
-    verdict. This is the number the operator hands to
-    ``run-crossover-round.py --alignment-prescription``.
+The method of record is compute-then-confirm
+(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`). This is its first
+step; the second is staging the printed coordinates with
+``jasper-angle-capture stage --delayed-role R --delay-us N``, which
+``propose`` prints ready to run.
 
-Neither verb opens a device, a socket, or a CamillaDSP connection.
+**A refusal is an output, not an error.** Banked curves that do not span both
+crossover shoulders cannot support a null at Fc, and the sentence saying so is
+printed verbatim from the module that decided it.
 
-**These verbs grade a full measured sweep, which is no longer how a delay is
-found.** The method of record is compute-then-confirm
-(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`): the coordinate is
-proposed from banked transfers with no audio at all, and confirmed by three
-acoustic takes staged through ``jasper-angle-capture``. Nothing in the tree
-runs a full sweep any more, so ``grade`` reads rows an operator banked by hand
-or from an older run.
-
-Applying a graded delay is NOT this tool's job. The prescription door owns that,
-with its own lobe gate and its own receipts.
+Applying a proposed delay is NOT this tool's job. The prescription door owns
+that, with its own lobe gate and its own receipts.
 """
 
 from __future__ import annotations
@@ -38,23 +34,32 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.active_speaker.delay_sweep import (
-    rows_at_pose,
-    sweep_spec,
-    sweep_verdict,
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.active_speaker.crossover_v2.contracts import (
+    DESIGN_AXIS_DEG,
+    DRIVER_ROLES,
+    POLARITY_INVERTED,
 )
-from jasper.audio_measurement.null_walk import (
-    MIN_CAPTURE_COUNT,
-    BoundedNullWalkSchedule,
-    NullWalkError,
-    select_scheduled_delay,
+from jasper.active_speaker.crossover_v2.delay_landscape import (
+    DelayLandscapeError,
+    compute_landscape,
 )
+from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
+from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
+from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
+from jasper.active_speaker.delay_sweep import sweep_spec
+from jasper.audio_measurement.null_walk import NullWalkError
 
 from ._logging import configure_verbose_logging
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
+
+REFUSE_NO_ROUND = "delay_propose_no_round"
+REFUSE_NO_CURVES = "delay_propose_no_banked_curves"
+REFUSE_LANDSCAPE = "delay_propose_landscape_unsupported"
 
 
 def _spec_from_args(args: argparse.Namespace) -> Any:
@@ -67,135 +72,168 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
     )
 
 
-def _cmd_plan(args: argparse.Namespace) -> int:
-    spec = _spec_from_args(args)
-    coarse = spec.coarse_candidate_delays_us()
-    payload = {
-        "status": "planned",
-        "spec": spec.to_dict(),
-        "coarse_delays_us": list(coarse),
-        "coarse_candidate_count": len(coarse),
-        # The refinement phase adds at most two neighbours of whichever coarse
-        # coordinate measures deepest, so the cost is known before any sound.
-        "maximum_captures": (len(coarse) + 2) * args.repeats * max(len(args.poses), 1),
-        "repeats_per_coordinate": args.repeats,
-        "poses_deg": list(args.poses),
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return EXIT_OK
+def _curve_pair(
+    bundle_dir: Path, *, phase: str, position_deg: int, roles: tuple[str, str],
+) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
+    """The latest banked take carrying BOTH roles, and the take it came from.
+
+    Selected through the measurement index, the shape
+    :func:`~jasper.active_speaker.crossover_v2.position_cycle._banked_take_records`
+    established: the rows narrow the candidates and the take file decides.
+
+    Both roles must ride ONE take: the two transfers are summed against each
+    other, so curves from two different captures would be summed across
+    whatever moved between them.
+
+    **Latest attempt wins.** A superseded take stays on disk as the honest walk
+    record, and ``take_id`` is ``{position}_a{attempt:02d}`` zero-padded so the
+    index's ``ORDER BY path`` is also chronological -- so the FIRST match is
+    the take a retake replaced.
+    """
+
+    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
+    for row in reversed(bundle_measurements(
+        bundle_dir, phase=phase, position_deg=position_deg
+    )):
+        curves = read_take_curves(artifacts / row.path, phase=phase)
+        if curves is None:
+            continue
+        by_role = {str(curve.get("role")): curve for curve in curves}
+        if roles[0] in by_role and roles[1] in by_role:
+            return by_role[roles[0]], by_role[roles[1]], row.path
+    return None
 
 
-def _rows_by_delay(document: Any) -> dict[float, list[Mapping[str, Any]]]:
-    """Read banked rows, keyed by the exact coordinate each was captured at."""
-
-    if isinstance(document, Mapping):
-        document = document.get("rows", document)
-    if not isinstance(document, Mapping):
-        raise ValueError("capture document must map a delay coordinate to its rows")
-    rows: dict[float, list[Mapping[str, Any]]] = {}
-    for key, value in document.items():
-        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-            raise ValueError(f"rows for coordinate {key!r} must be a list")
-        rows[float(key)] = [item for item in value if isinstance(item, Mapping)]
-    return rows
-
-
-def _cmd_grade(args: argparse.Namespace) -> int:
-    spec = _spec_from_args(args)
-    try:
-        document = json.loads(Path(args.captures).read_text(encoding="utf-8"))
-        rows = _rows_by_delay(document)
-    except (OSError, ValueError) as exc:
-        print(f"unreadable captures: {exc}", file=sys.stderr)
-        return EXIT_INPUT
-
-    axis = tuple(args.poses)[0] if args.poses else None
-    on_axis = rows_at_pose(rows, axis)
-    try:
-        schedule = BoundedNullWalkSchedule.from_coarse_evidence(
-            spec,
-            {
-                coordinate: on_axis[coordinate]
-                for coordinate in spec.coarse_candidate_delays_us()
-                if coordinate in on_axis
-            },
-        )
-        selection = select_scheduled_delay(spec, schedule, on_axis)
-    except NullWalkError as exc:
-        print(
-            json.dumps(
-                {"status": "refused", "reason": "walk_evidence_invalid",
-                 "detail": str(exc)},
-                indent=2, sort_keys=True,
-            )
-        )
-        return EXIT_REFUSED
-
-    verdict = sweep_verdict(
-        selection,
-        spec=spec,
-        rows_by_delay=rows,
-        poses_deg=tuple(args.poses) or (None,),
-    )
+def _refused(reason: str, detail: str) -> int:
     print(
         json.dumps(
-            {"status": "graded", "selection": selection, "verdict": verdict},
-            indent=2, sort_keys=True, default=str,
+            {"status": "refused", "reason": reason, "detail": detail},
+            indent=2, sort_keys=True,
         )
     )
+    print(f"refused ({reason}): {detail}", file=sys.stderr)
+    return EXIT_REFUSED
+
+
+def _cmd_propose(args: argparse.Namespace) -> int:
+    bundle_dir = Path(args.bundle_dir)
+    spec = _spec_from_args(args)
+    lower_role = spec.negative_delay_target
+    upper_role = spec.positive_delay_target
+
+    round_dir, why = round_artifact_dir(bundle_dir)
+    if round_dir is None:
+        return _refused(
+            REFUSE_NO_ROUND,
+            f"{bundle_dir}: {why}; bundle_dir must hold info.json beside "
+            "evidence/v1/artifacts/crossover_v2/<relay>/",
+        )
+
+    found = _curve_pair(
+        bundle_dir,
+        phase=args.phase,
+        position_deg=args.position_deg,
+        roles=(lower_role, upper_role),
+    )
+    if found is None:
+        return _refused(
+            REFUSE_NO_CURVES,
+            f"{bundle_dir}: no {args.phase} take at {args.position_deg} deg "
+            f"carries curves for both {lower_role!r} and {upper_role!r}",
+        )
+    lower_curve, upper_curve, take_path = found
+
+    try:
+        landscape = compute_landscape(
+            lower_curve, upper_curve, spec=spec, inverted_role=args.inverted_role,
+        )
+    except DelayLandscapeError as exc:
+        # Verbatim: a bank that cannot carry a null at Fc is a finding about
+        # the bank, and the module that decided it owns the sentence.
+        return _refused(REFUSE_LANDSCAPE, str(exc))
+
+    print(json.dumps({
+        "status": "proposed",
+        "take_path": take_path,
+        "landscape": landscape.to_dict(),
+        "confirm_with": [
+            _stage_command(spec.dsp_candidate(coordinate), args)
+            for coordinate in landscape.confirmation_coordinates_us
+        ],
+    }, indent=2, sort_keys=True))
     return EXIT_OK
 
 
-def _repeats(raw: str) -> int:
-    value = int(raw)
-    if value < MIN_CAPTURE_COUNT:
-        raise argparse.ArgumentTypeError(
-            f"repeats must be at least {MIN_CAPTURE_COUNT}"
-        )
-    return value
+def _stage_command(candidate: Any, args: argparse.Namespace) -> str:
+    """The ``jasper-angle-capture stage`` line that plays one coordinate.
 
+    Built from ``dsp_candidate``, which maps a signed grid coordinate onto the
+    executable (role, non-negative delay) pair — re-deriving that sign here
+    would be a second opinion about which branch moves.
 
-def _poses(raw: str) -> tuple[int | None, ...]:
-    if not raw.strip():
-        return (None,)
-    return tuple(int(item) for item in raw.split(",") if item.strip())
+    The zero coordinate carries NO delay flags. ``delay_target`` is ``None``
+    there because neither branch is delayed, and ``MeasureSpec`` refuses a
+    half-stated pair, so a line naming a role with 0 us would be refused at the
+    door it was printed for.
+    """
+
+    line = (
+        f"jasper-angle-capture stage --angles {args.position_deg} "
+        f"--polarity {POLARITY_INVERTED} --inverted-role {args.inverted_role}"
+    )
+    if candidate.delay_target is None:
+        return line
+    return (
+        f"{line} --delayed-role {candidate.delay_target} "
+        f"--delay-us {candidate.delay_us:g}"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-delay-sweep",
-        description="Plan and grade an inter-driver reverse-null delay sweep.",
+        description=(
+            "Propose an inter-driver delay from banked curves. Computes only; "
+            "plays nothing."
+        ),
     )
     parser.add_argument("--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    for name, handler in (("plan", _cmd_plan), ("grade", _cmd_grade)):
-        child = sub.add_parser(name)
-        child.add_argument("--fc-hz", type=float, required=True,
-                           help="the applied crossover corner")
-        child.add_argument("--upper-role", default="tweeter")
-        child.add_argument("--lower-role", default="woofer")
-        child.add_argument(
-            "--path-difference-m", type=float, default=0.0,
-            help="lower-driver path minus upper-driver path; 0.0 centres the "
-                 "half-period window on zero when geometry is undeclared",
-        )
-        child.add_argument(
-            "--step-us", type=float, default=None,
-            help="grid step in microseconds (50-100); the shared walk's own "
-                 "default is used when omitted",
-        )
-        child.add_argument(
-            "--repeats", type=_repeats, default=MIN_CAPTURE_COUNT,
-            help=f"captures per coordinate; at least {MIN_CAPTURE_COUNT}, below "
-                 "which the shared walk cannot call a coordinate repeatable",
-        )
-        child.add_argument("--poses", type=_poses, default=(None,),
-                           help="comma-separated pose angles, e.g. 0,-7,7")
-        if name == "grade":
-            child.add_argument("--captures", required=True,
-                               help="JSON of banked rows keyed by coordinate")
-        child.set_defaults(func=handler)
+    child = sub.add_parser("propose")
+    child.add_argument(
+        "bundle_dir",
+        help="a commissioning bundle directory (the one holding info.json "
+             "beside evidence/v1/artifacts/crossover_v2/<relay-session-id>/)",
+    )
+    child.add_argument("--fc-hz", type=float, required=True,
+                       help="the applied crossover corner")
+    child.add_argument("--upper-role", default="tweeter")
+    child.add_argument("--lower-role", default="woofer")
+    child.add_argument(
+        "--inverted-role", default="tweeter", choices=sorted(DRIVER_ROLES),
+        help="which branch the confirmation flips",
+    )
+    child.add_argument(
+        "--path-difference-m", type=float, default=0.0,
+        help="lower-driver path minus upper-driver path; 0.0 centres the "
+             "half-period window on zero when geometry is undeclared",
+    )
+    child.add_argument(
+        "--step-us", type=float, default=None,
+        help="grid step in microseconds (50-100); the shared walk's own "
+             "default is used when omitted",
+    )
+    child.add_argument(
+        "--phase", default=PHASE_MEASURE, choices=(PHASE_MEASURE, PHASE_LATERAL),
+        help="which banked phase carries the per-driver curves to sum",
+    )
+    child.add_argument(
+        "--position-deg", type=int, default=DESIGN_AXIS_DEG,
+        help="the bearing whose take is read; the reverse null is a "
+             "design-axis act",
+    )
+    child.set_defaults(func=_cmd_propose)
     return parser
 
 
@@ -207,6 +245,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except NullWalkError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
+    except OSError as exc:
+        print(f"unreadable bundle: {exc}", file=sys.stderr)
+        return EXIT_INPUT
 
 
 if __name__ == "__main__":  # pragma: no cover
