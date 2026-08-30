@@ -602,6 +602,32 @@ def test_transport_coherence_error_is_not_disguised_as_audio_is_ready() -> None:
     assert _ROUTE_DISCONNECTED not in health["signal_path"]["detail"]
 
 
+def test_sampler_tracks_transport_coherence_park_as_an_ongoing_incident() -> None:
+    route = _route(transport={
+        "coherence_errors": [_ROUTE_DISCONNECTED],
+        "capability_gap": None,
+    })
+    airplay = _airplay()
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([airplay]),
+        outputd_probe=_outputd,
+        mux_probe=lambda: airplay["mux_status"],
+        route_probe=lambda: route,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health["signal_path"]["code"] == "transport_parked"
+    assert health["current_incident"]["key"] == "path.transport_parked"
+    assert any(
+        issue["key"] == "path.transport_parked"
+        and issue["status"] == "ongoing"
+        for issue in health["issues"]
+    )
+
+
 def test_parked_status_is_the_value_the_dashboard_alerts_on() -> None:
     """The household's parked surface is keyed to this status string.
 

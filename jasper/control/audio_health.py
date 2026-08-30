@@ -635,9 +635,8 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     transport-coherence check, which fails on the same fact and prints every
     error with its remedy.
 
-    Presentation only: :class:`AudioHealthSampler` deliberately feeds
-    :func:`_state_issues` the raw signal path, so a warn-level issue keeps its
-    own incident row instead of being swallowed by the standing reason.
+    The returned shape owns both the signal-path presentation and the
+    :class:`IssueTracker` candidate, so the card and incident row cannot drift.
     """
     transport = _mapping(route.get("transport"))
     errors = [
@@ -1188,9 +1187,19 @@ def _state_issues(
     *,
     activity_unknown: bool = False,
     undeclared_hardware: Mapping[str, Any] | None = None,
+    coherence_park: Mapping[str, Any] | None = None,
     transport_park: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    if coherence_park is not None:
+        issues.append(_issue(
+            "path.transport_parked",
+            scope="path",
+            impact="continuity",
+            severity="issue",
+            title=str(coherence_park.get("headline")),
+            detail=str(coherence_park.get("detail")),
+        ))
     # ADR-0178's named transport parks, one row per class so the household
     # card and the operator both see EVERY tracked issue this box waits on
     # rather than a first-match verdict. Ahead of the live-daemon rows and
@@ -2523,6 +2532,7 @@ class AudioHealthSampler:
         undeclared_hardware = _undeclared_hardware_signal(
             output_hardware, self._output_topology_snapshot
         )
+        coherence_park = _parked_signal(_mapping(self._route))
         state_issues = _state_issues(
             airplay,
             outputd,
@@ -2533,6 +2543,7 @@ class AudioHealthSampler:
             intents,
             activity_unknown=activity_unknown,
             undeclared_hardware=undeclared_hardware,
+            coherence_park=coherence_park,
             transport_park=self._transport_park,
         )
         tracked_state_issues = [
