@@ -20,6 +20,7 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 )
 from jasper.active_speaker.delay_sweep import (
     ROBUST_NULL_DEPTH_DB,
+    USABLE_NULL_DEPTH_DB,
     VERDICT_AXIS_LIMITED,
     VERDICT_ROBUST,
     VERDICT_WEAK,
@@ -261,15 +262,24 @@ def test_a_deeper_null_at_a_neighbour_than_at_the_optimum_is_a_model_break():
 
 
 def test_agreement_on_a_null_nobody_can_use_reads_axis_limited():
-    landscape = _landscape(0.0)
-    predicted = landscape.best_predicted_null_depth_db
-    shallow = min(3.0, predicted)
-    landscape_shallow = confirmation_verdict(
-        landscape,
-        {c: shallow for c in landscape.confirmation_coordinates_us},
+    # The branches are 6 dB apart, so the complex sum CANNOT cancel deeply and
+    # the model itself predicts an unusable null. That is the only shape this
+    # verdict is reachable on: where the model promises a usable null and the
+    # room refuses, `promised_unkept` fires and the answer is a model break.
+    landscape = compute_landscape(
+        _curve("woofer", arrival_us=0.0, gain_db=-6.0),
+        _curve("tweeter", arrival_us=0.0),
+        spec=_spec(),
+        inverted_role="tweeter",
     )
-    if landscape_shallow["model_agrees"]:
-        assert landscape_shallow["verdict"] == VERDICT_AXIS_LIMITED
+    assert landscape.best_predicted_null_depth_db < USABLE_NULL_DEPTH_DB
+    verdict = confirmation_verdict(
+        landscape,
+        {c: 3.0 for c in landscape.confirmation_coordinates_us},
+    )
+    assert verdict["model_agrees"] is True
+    assert verdict["verdict"] == VERDICT_AXIS_LIMITED
+    assert verdict["prescribable_delay_us"] is None
 
 
 def test_a_confirmation_that_missed_the_optimum_says_so():
