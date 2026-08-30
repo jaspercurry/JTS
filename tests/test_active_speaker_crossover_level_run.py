@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -118,18 +119,56 @@ def test_a_write_publishes_the_lock_group_writable(tmp_path):
     assert oct(os.stat(store.lock_path).st_mode & 0o777) == "0o660"
 
 
-def test_snapshot_reads_without_taking_the_lock(tmp_path):
-    """The poll path must not open the lock; a bare read cannot create it.
+def test_snapshot_reads_without_taking_the_file_lock(tmp_path):
+    """The poll path must not open the advisory lock; a bare read cannot create it.
 
     This is the ~3 s ERROR loop's root cause: a lock-taking read opened a
     sibling lock every poll, and on a fresh box created it -- so a record that
-    was merely absent surfaced as a permission fault. Lock-free, the absent
-    record is just "no run" (ADR-0196 decision 1).
+    was merely absent surfaced as a permission fault. Lock-free of the FILE
+    lock, the absent record is just "no run" (ADR-0196 decision 1).
     """
     store = CrossoverLevelRunStore(path=tmp_path / "run.json")
 
     assert store.snapshot() is None
     assert not store.lock_path.exists()
+
+
+def test_snapshot_reads_the_record_and_flag_under_the_thread_lock(tmp_path):
+    """Fix for a torn read the lock-free read introduced.
+
+    ``_finish`` publishes the file record and the in-memory
+    ``_live_succeeded_run_id`` flag as a PAIR under ``_THREAD_LOCK``. Reading
+    the two without it can see the record SUCCEEDED one ~1.5 s cycle before the
+    flag catches up. So ``snapshot`` must hold ``_THREAD_LOCK`` (the in-process
+    lock) across its read -- but NOT the advisory FILE lock (the ADR-0196
+    point). Probe from another thread: while ``_read`` runs, ``_THREAD_LOCK``
+    must be unacquirable.
+    """
+    import jasper.active_speaker.crossover_level_run as clr
+
+    store = CrossoverLevelRunStore(path=tmp_path / "run.json")
+    held_during_read: list[bool] = []
+    original_read = store._read
+
+    def _probe_from_other_thread() -> None:
+        # _THREAD_LOCK is an RLock (reentrant), so it must be probed from a
+        # DIFFERENT thread to tell whether snapshot's own thread holds it.
+        got = clr._THREAD_LOCK.acquire(blocking=False)
+        if got:
+            clr._THREAD_LOCK.release()
+        held_during_read.append(not got)
+
+    def _read_while_probing() -> dict:
+        probe = threading.Thread(target=_probe_from_other_thread)
+        probe.start()
+        probe.join()
+        return original_read()
+
+    store._read = _read_while_probing  # type: ignore[method-assign]
+    store.snapshot()
+
+    # A different thread could NOT take _THREAD_LOCK while _read ran.
+    assert held_during_read == [True]
 
 
 def test_concurrent_identical_claims_dispatch_exactly_once(tmp_path):

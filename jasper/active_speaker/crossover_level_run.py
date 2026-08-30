@@ -59,6 +59,17 @@ class CrossoverLevelRunConflict(CrossoverLevelRunError):
     """Another exact request currently owns the Active run slot."""
 
 
+class CrossoverLevelRunLockTimeout(CrossoverLevelRunConflict):
+    """The bounded advisory-lock deadline expired under cross-process contention.
+
+    A CONFLICT, deliberately (like the commissioning store's
+    ``CommissioningRunLockTimeout``): a peer held the write lock past the
+    deadline, so the caller retries rather than treating a completed run as
+    lost. Never a hard error -- that would discard a finished run over a
+    transient two-second wait.
+    """
+
+
 class CrossoverLevelRunPhase(str, Enum):
     """Public phases for one exact run."""
 
@@ -415,7 +426,8 @@ class CrossoverLevelRunStore:
 
     @contextmanager
     def _locked(self):
-        # WRITE paths only: ``snapshot`` reads lock-free (ADR-0196 decision 1).
+        # WRITE paths only: ``snapshot`` never opens the FILE lock (it takes
+        # only ``_THREAD_LOCK`` for the record/flag pairing). ADR-0196.
         with _THREAD_LOCK:
             lock_path = self.lock_path
             if lock_path is None:
@@ -426,13 +438,20 @@ class CrossoverLevelRunStore:
             # member that can only READ one cannot take it at all; and an
             # unconditional chmod on a lock this process does not own raises
             # EPERM even when the open succeeds.  Both are ADR-0196.
-            with advisory_file_lock(
-                lock_path,
-                mode=0o660,
-                group_from_parent=True,
-                timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
-            ):
-                yield
+            try:
+                with advisory_file_lock(
+                    lock_path,
+                    mode=0o660,
+                    group_from_parent=True,
+                    timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
+                ):
+                    yield
+            except TimeoutError as exc:
+                # A retryable conflict, not a hard error: a completed run must
+                # not be discarded over a two-second wait for a peer's lock.
+                raise CrossoverLevelRunLockTimeout(
+                    "timed out waiting for the crossover level-run lock"
+                ) from exc
 
     def _read(self) -> dict[str, Any]:
         if self.path is None:
@@ -971,23 +990,24 @@ class CrossoverLevelRunStore:
     def snapshot(self) -> dict[str, Any] | None:
         """Return the browser-safe current run without config or relay secrets.
 
-        LOCK-FREE, deliberately (ADR-0196 decision 1, as the commissioning run
-        store applies it): :meth:`_write` publishes through
-        ``atomic_write_text``/``os.replace``, so a reader sees a whole record
-        or none. Taking the advisory lock here would make this poll -- hit
-        every ~1.5 s for a whole tuning round -- need WRITE on the sibling lock
-        and CREATE it when absent, which is exactly the permission storm this
-        removes. A missing record reads as "no run" through :meth:`_read`'s
-        ``FileNotFoundError`` arm, never an ``exists()`` probe.
+        Takes only the in-process ``_THREAD_LOCK`` (never the advisory FILE
+        lock), which is the ADR-0196 point: this poll -- hit every ~1.5 s for a
+        whole tuning round -- must not open (and, on a fresh box, CREATE) the
+        sibling lock file, so the record's ``FileNotFoundError`` reads as "no
+        run". The thread lock is still required because ``_finish`` publishes
+        the file record and the ``_live_succeeded_run_id`` flag as a pair under
+        it; reading the two without it can see the record SUCCEEDED one ~1.5 s
+        cycle before the flag catches up (a self-healing false negative).
         """
 
-        current = self._read().get("current")
-        result_available = bool(
-            isinstance(current, Mapping)
-            and current.get("phase") == CrossoverLevelRunPhase.SUCCEEDED.value
-            and current.get("owner_id") == self.owner_id
-            and current.get("run_id") == self._live_succeeded_run_id
-        )
+        with _THREAD_LOCK:
+            current = self._read().get("current")
+            result_available = bool(
+                isinstance(current, Mapping)
+                and current.get("phase") == CrossoverLevelRunPhase.SUCCEEDED.value
+                and current.get("owner_id") == self.owner_id
+                and current.get("run_id") == self._live_succeeded_run_id
+            )
         if not isinstance(current, Mapping):
             return None
         request = CrossoverLevelRunRequest.from_dict(current["request"])

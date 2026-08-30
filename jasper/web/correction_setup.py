@@ -71,6 +71,7 @@ from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYT
 from jasper.audio_measurement import room_boundary
 
 from ..log_event import log_event
+from ..transition_log import TransitionLog
 from . import correction_tuning
 from ._systemd import no_hold
 
@@ -95,6 +96,11 @@ from ._common import (
 )
 
 logger = logging.getLogger(__name__)
+
+# When the writer boundary proceeds on an UNREADABLE receipt whose binding did
+# not match (a disclosed fail-open), surface it once per transition rather than
+# on every retried accept. Keyed by the banked-under binding. See ADR-0196.
+_AUTHORITY_UNCONFIRMED_DISCLOSURE = TransitionLog(reminder_sec=3600.0)
 
 
 # 48 kHz, EC=NS=AGC=false — pinned by the iOS verify step. The Phase 1
@@ -2907,7 +2913,26 @@ async def _assert_room_authority_current(
     # six-position measurement. The binding is preserved; a genuine APPEARS or
     # CHANGES is still refused. See ADR-0196.
     unreadable = current.reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE
-    if current.authority_binding == expected or unreadable:
+    binding_matches = current.authority_binding == expected
+    if binding_matches or unreadable:
+        if unreadable and not binding_matches:
+            # Fail-OPEN, disclosed: we proceed rather than discard a completed
+            # run (blocker 2), but the binding did NOT match, so if the
+            # authority genuinely changed we are banking under the prior one.
+            # The receipt is unreadable, so we cannot tell drift from a
+            # transient fault -- surface it (once per transition via the shared
+            # gate) so the fail-open is visible, never silent. ADR-0196.
+            if _AUTHORITY_UNCONFIRMED_DISCLOSURE.should_log(
+                str(expected), "unreadable_at_writer_boundary"
+            ):
+                log_event(
+                    logger,
+                    "correction.layer_a_authority_unconfirmed",
+                    level=logging.WARNING,
+                    expected_active=expected[0],
+                    expected_authority=expected[1],
+                    reason=current.reason,
+                )
         summary = graph.details.get("bass_extension_profile_summary")
         if isinstance(summary, Mapping):
             return summary

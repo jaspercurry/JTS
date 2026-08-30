@@ -1527,6 +1527,60 @@ def test_crossover_terminal_success_requires_process_local_level_result(tmp_path
     assert lease.mark_level_run_succeeded(claim.run_id) is False
 
 
+def test_accept_under_lock_contention_is_a_retryable_conflict_not_a_lost_run(
+    monkeypatch, tmp_path,
+):
+    """A completed run must survive a lock wait, not be discarded (fix 2).
+
+    The write paths take a bounded (2 s) advisory lock. If a peer holds it past
+    the deadline, ``succeed()`` must raise a retryable CONFLICT the operator can
+    re-accept -- never a raw ``TimeoutError`` (an unhandled 500) and never a
+    silent loss of a finished run. The timeout is a ``CrossoverLevelRunConflict``
+    subclass, so every caller that already handles conflicts degrades correctly.
+    """
+    from contextlib import contextmanager
+
+    from jasper.active_speaker import crossover_level_run as clr
+    from jasper.active_speaker.crossover_level_run import (
+        CrossoverLevelRunConflict,
+        CrossoverLevelRunLockTimeout,
+    )
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    target = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "b" * 64,
+        "geometry": "near_field_driver:mono:woofer",
+    }
+    claim = lease.claim_level_match_run(
+        topology_id="topology-1",
+        protected_profile_fingerprint="a" * 64,
+        target=target,
+    )
+    lease.mark_level_run_phone_armed(claim.run_id)
+    lease._level_run_store.begin_backend(claim.run_id, geometry=target["geometry"])
+    lease._outcomes[target["geometry"]] = object()
+
+    @contextmanager
+    def _peer_holds_the_lock(*_args, **_kwargs):
+        raise TimeoutError("held by a peer past the deadline")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(clr, "advisory_file_lock", _peer_holds_the_lock)
+
+    with pytest.raises(CrossoverLevelRunLockTimeout) as excinfo:
+        lease.mark_level_run_succeeded(claim.run_id)
+    # Retryable, not a 500: a caller handling conflicts sees it as one.
+    assert isinstance(excinfo.value, CrossoverLevelRunConflict)
+
+    # The run is NOT lost -- the write never landed, so a retry once the lock
+    # is free completes it.
+    monkeypatch.undo()
+    assert lease.mark_level_run_succeeded(claim.run_id) is True
+    assert lease.level_run_snapshot()["result_available"] is True
+
+
 async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_path):
     from jasper.active_speaker.capture_geometry import driver_level_geometry
     from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError

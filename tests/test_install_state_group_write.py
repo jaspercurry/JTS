@@ -254,6 +254,8 @@ def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
         tmp_path / ".active_speaker_commissioning_run.json.live-mutation.json",
         0o600,
     )
+    # The Layer-A SSOT, folded off its own hand-rolled path-following heal.
+    baseline = _mk(tmp_path / "active_speaker_baseline_profile.json", 0o600)
 
     _run_heal(tmp_path)
 
@@ -263,6 +265,7 @@ def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
     assert _mode(live_exec_lock) == 0o660
     assert _mode(record) == 0o640
     assert _mode(live_mutation) == 0o640
+    assert _mode(baseline) == 0o640
 
 
 def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
@@ -286,4 +289,28 @@ def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
 
     assert proc.returncode != 0
     assert "refusing unsafe shared-state path" in proc.stderr
+    assert _mode(target) == 0o600
+
+
+def test_heal_refuses_a_hardlinked_run_lock_without_mutating_target(tmp_path):
+    """The hardlink variant O_NOFOLLOW cannot catch.
+
+    A hardlink onto a root file is not a symlink -- O_NOFOLLOW opens it and
+    fstat sees a plain regular file -- so the heal would fchown/fchmod the
+    aliased target. The st_nlink check refuses any name whose inode has more
+    than one link, regardless of the fs.protected_hardlinks sysctl.
+    """
+    target = _mk(tmp_path / "root-owned-secret", 0o600)
+    os.link(target, tmp_path / ".active_speaker_crossover_level_run.json.lock")
+    script = (
+        "set -euo pipefail\n"
+        + _STUBS
+        + _extract("heal_shared_state_modes")
+        + f'\nSTATE_DIR="{tmp_path}"\nheal_shared_state_modes\n'
+    )
+
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    assert proc.returncode != 0
+    assert "refusing hardlinked shared-state path" in proc.stderr
     assert _mode(target) == 0o600

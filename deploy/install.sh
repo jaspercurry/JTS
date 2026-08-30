@@ -1897,22 +1897,13 @@ widen_jasper_web_writable_dirs() {
         chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
         find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
             -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
-        # Correction-web still runs as root while jasper-control renders the
-        # aggregate /state surface as group jasper. Repair the one Layer-A SSOT
-        # that older root atomic writers published as root:root 0640; future
-        # writes preserve the parent group in baseline_profile.py.
-        if [[ -f /var/lib/jasper/active_speaker_baseline_profile.json ]]; then
-            chgrp jasper /var/lib/jasper/active_speaker_baseline_profile.json \
-                2>/dev/null || true
-            chmod 0640 /var/lib/jasper/active_speaker_baseline_profile.json \
-                2>/dev/null || true
-        fi
-        # The Active run-record locks + records used to be healed here with
-        # path-following chgrp/chmod. That is a local priv-esc under a
-        # group-writable /var/lib/jasper (a group member can pre-create the
-        # name as a symlink onto a root file), so it moved to
-        # heal_shared_state_modes, which pins each inode with O_NOFOLLOW+fstat
-        # before touching it. See deploy/lib/install/env-migrations.sh.
+        # The Layer-A SSOT (active_speaker_baseline_profile.json) and the Active
+        # run-record locks + records used to be healed here with path-following
+        # chgrp/chmod. That is a local priv-esc under a group-writable
+        # /var/lib/jasper (a group member can pre-create the name as a symlink
+        # onto a root file), so it moved to heal_shared_state_modes, which pins
+        # each inode with O_NOFOLLOW+fstat before touching it. See
+        # deploy/lib/install/env-migrations.sh.
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }

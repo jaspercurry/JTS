@@ -121,6 +121,10 @@ heal_shared_state_modes() {
         # step milder (an unreadable file reads as "no measurements").
         "f:0640:${STATE_DIR}/bt_roles.json"
         "f:0640:${STATE_DIR}/active_speaker_measurements.json"
+        # The Layer-A SSOT older root atomic writers published root:root 0640;
+        # jasper-control reads it group `jasper` for the aggregate /state.
+        # Future writes preserve the parent group in baseline_profile.py.
+        "f:0640:${STATE_DIR}/active_speaker_baseline_profile.json"
         # Active run-record advisory locks. A root-run status poll used to
         # CREATE them root:root 0640, after which no service account could take
         # a lock it can only READ -- the ~3 s crossover_level_run_unavailable
@@ -195,6 +199,16 @@ for spec in sys.argv[3:]:
         if not expected:
             raise SystemExit(
                 f"ERROR: refusing unexpected shared-state file type at {path}"
+            )
+        # O_NOFOLLOW stops a SYMLINK redirect, but not a HARDLINK: a group
+        # member could pre-create one of these names as a hardlink onto a
+        # root-owned file, and fstat would see a plain regular file. A file we
+        # own or created has st_nlink == 1; more than one name means the inode
+        # is aliased elsewhere, so refuse rather than fchown/fchmod a target we
+        # cannot see. Holds regardless of the fs.protected_hardlinks sysctl.
+        if not stat.S_ISDIR(file_stat.st_mode) and file_stat.st_nlink != 1:
+            raise SystemExit(
+                f"ERROR: refusing hardlinked shared-state path {path}"
             )
         os.fchown(fd, web_uid if kind == "w" else -1, gid)
         os.fchmod(fd, int(mode_text, 8))
