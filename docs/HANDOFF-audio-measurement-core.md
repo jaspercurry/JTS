@@ -68,9 +68,9 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   The strict SHA-256 values are content identities, not signatures, trusted
   issuers, or transferable playback capabilities. The original Wave 1 slice had
   no producer; Active's isolated-driver production adapter now supplies the
-  trusted live consumer. The strict pure per-region evidence shape now has a
-  typed internal host and raw-WAV producer that can collect synthetic-admitted
-  evidence and advance an exact run to `measured`. A separate strict
+  trusted live consumer. The strict pure per-region evidence shape has a typed
+  internal host; its raw-WAV producer is deleted (ADR-0197), so nothing
+  advances an exact run to `measured` today. A separate strict
   `CompleteIsolatedDriverEvidence` aggregate now binds exactly three fresh
   admitted captures for every physical driver in that same plan, with one
   canonical run-scoped artifact and deep child/admission verification on every
@@ -344,10 +344,9 @@ the server-derived region schedule, exact
 adjacent-output isolation, fresh generation/playback admission, bounded raw-WAV
 ingress, analysis/quality persistence, exact restoration, and lifecycle
 progression to `measured`. `SummedCaptureProducer` was written to that contract
-and is **not wired**: `commissioning_service.py` composes
-`commissioning_isolated_producer` and never imports it, the host itself contains
-no reference to a producer, and outside its own module and test file the class
-has no reader. See "The gaps". The complete normal/reverse/delay program stays bound
+and never wired; it is **deleted** (ADR-0197), so no summed producer exists.
+`commissioning_service.py` composes `commissioning_isolated_producer`, which is
+unaffected. The complete normal/reverse/delay program stays bound
 to one normalized applied baseline and microphone-calibration context, and every
 normal, reverse, and delay coordinate requires a distinct live-graph identity.
 Cleanup freshly proves the predecessor graph and path before restoring its
@@ -428,8 +427,8 @@ lifecycle transition. The separate typed internal host retains
 the run handle, reserves bounded attempts, builds and freshly confirms each exact
 adjacent-pair graph under the writer lock, admits generation and playback,
 persists/reopens strict values only after exact restoration, and consumes the
-bounded schedule and evaluator. Its summed-side producer is written to the same
-contract but has no production caller — see "The gaps". Legacy direct/browser summed ingress remains
+bounded schedule and evaluator. Its summed-side producer never had a production
+caller and is deleted (ADR-0197). Legacy direct/browser summed ingress remains
 pre-audio refused; the production `kind=summed` relay supplies recorder bytes
 and generation-specific signed geometry to that host (retired by W5b on
 2026-07-24 — see "The gaps" below; `kind=summed` is no longer a shipped

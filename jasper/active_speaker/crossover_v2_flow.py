@@ -1365,8 +1365,7 @@ class AnalyzeCapture(Protocol):
     the call, not fall back silently to ``program.phase`` and reintroduce
     the mislabel. A plain ``Callable[[...], R]`` can't express a required
     keyword-only parameter, hence this Protocol — prior art in-package:
-    ``jasper.active_speaker.playback.TonePlaybackBackend`` and
-    ``jasper.active_speaker.commissioning_capture_producer.RegionCaptureOperation``.
+    ``jasper.active_speaker.playback.TonePlaybackBackend``.
     """
 
     def __call__(
