@@ -99,8 +99,8 @@ _ENTRY_POINTS = {
     # is the plan's "uncounted 19th writer" (§3 wave 5), routed by the same
     # change that routed W18 and reachable only because it registers here.
     "jasper/cli/aec_commission.py": "main",
-    # `jasper-audition` — swaps the running graph down to the crossover-only
-    # layer and back (jasper/active_speaker/audition.py). Unlike every other
+    # `jasper-audition` — swaps the running graph down to the baseline layer
+    # and back (jasper/active_speaker/audition.py). Unlike every other
     # row here it swaps UNDER live household audio, so it is the one that most
     # needs the duck release to land on the real target rather than a stale
     # entry snapshot. See ADR-0193.

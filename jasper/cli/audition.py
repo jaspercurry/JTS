@@ -11,7 +11,7 @@ this is a different job — one an owner runs while music is playing.
 
 Usage::
 
-    jasper-audition start            # crossover-only, holds until you stop it
+    jasper-audition start            # measured correction off, holds until you stop
     jasper-audition stop             # from a second shell; puts the full graph back
     jasper-audition status           # what is playing, and until when
 

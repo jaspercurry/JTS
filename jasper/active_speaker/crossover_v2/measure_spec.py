@@ -25,16 +25,19 @@ exactly this reason. ``contracts`` declares them and
 ``tests/test_crossover_v2_engine_skeleton.py`` pins each equal to its owner's
 spelling, so the cheap copy cannot drift off the real one.
 
-**The four stubs, and which roster row lands each** (§5's instrument roster):
+**The three stubs, and which roster row lands each** (§5's instrument roster):
 
 ===========================  ==============  ============================
 Parameter                    Instrument      What still happens today
 ===========================  ==============  ============================
 ``regime=near_field``        R-3             the capture is taken and banked
-``polarity=inverted``        R-1             the capture is taken and banked
 ``level_ladder_dbfs=(…)``    R-4             every rung plays and banks
 ``position_axis=vertical``   R-5a            the capture is taken and banked
 ===========================  ==============  ============================
+
+``polarity=inverted`` (R-1) needs no stub: the flip plays and banks through
+:func:`inverted_roles_for`, and the null depth it produces is read by
+:mod:`.delay_landscape`.
 
 Impedance (R-6) gets **no** stub: it needs hardware that may never exist, and a
 parameter for it would be the speculative flexibility the charter forbids.
