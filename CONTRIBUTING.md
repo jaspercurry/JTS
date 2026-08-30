@@ -308,7 +308,7 @@ it; enable it locally with
 ## Where to start
 
 - **First-timer**: read README.md, then pick something from
-  [PLAN.md's sequenced roadmap](PLAN.md#sequenced-roadmap). Open an
+  [PLAN.md](PLAN.md). Open an
   issue first to discuss approach before coding.
 - **Returning**: scan open PRs and `git log --since="2 weeks ago"`
   for active workstreams. Active subsystems (AEC, mic-quality, USB

@@ -106,6 +106,7 @@ docs = [
   "CLAUDE.md",
   "README.md",
   "CONTRIBUTING.md",
+  "docs/README.md",
   "docs/testing-tooling.md",
   "docs/DEEP-AUDIT-PLAYBOOK.md",
 ]

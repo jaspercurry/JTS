@@ -8,8 +8,8 @@
 > migration). Preserved as a point-in-time OSS-readiness assessment, not
 > current operational truth. Current documentation rules live in
 > [AGENTS.md](../AGENTS.md) and [docs/adr/](adr/);
-> the repo doc atlas lives in
-> [README.md#documentation-map](../README.md#documentation-map).
+> the repository documentation atlas lives in
+> [docs/README.md](README.md).
 >
 > **Refresh against main (2026-05-26, `6d6ff52`).** Main now has an
 > Apache-2.0 [LICENSE](../LICENSE), [CONTRIBUTING.md](../CONTRIBUTING.md),

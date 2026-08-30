@@ -1,42 +1,8 @@
-# Dependency-update automation for JTS.
-#
-# Why: JTS is a months-unattended appliance with a security-relevant
-# dependency surface (openai, google-genai, httpx, spotipy, onnxruntime,
-# pyusb, dbus-next, zeroconf) plus GitHub Actions and Rust crates.
-# Without this, CVEs in pinned deps age silently. Dependabot raises
-# review-able PRs that the existing pytest + provenance CI gate validates.
-#
-# Scope note: Python CI consumes uv.lock, so Python dependency PRs must
-# update the lock alongside pyproject.toml. GitHub Actions and Rust crates
-# remain separate ecosystems below.
-#
-# Why every ecosystem is grouped: without `groups`, Dependabot raises one PR
-# per dependency per directory. The cargo crates share the same dependencies
-# (alsa, serde, serde_json, anyhow, libc), so a single weekly cycle fanned out
-# into 8+ near-identical Rust PRs — and each entry is allowed 5 open PRs, so
-# many can land within seconds of each other. That happened on 2026-07-21
-# 20:24Z, when there were four entries (a 20-PR ceiling): eight dependabot
-# runs were created inside 20 seconds and saturated the 20-concurrent-job
-# GitHub Actions ceiling, delaying their own jobs by 137-559s. It is the only
-# contention-driven CI queueing episode in the measured window.
-#
-# Grouping REDUCES the burst rather than removing it. A full-lane PR peaks at
-# 6 concurrent jobs (shell + the 3-version pytest matrix + js + rust). One
-# grouped PR per group means today's three entries can raise at most 4 a week
-# (uv's two groups, github-actions, and the single cargo group) — ~24 jobs
-# against the 20-job ceiling. The durable win is a handful of PRs a week to
-# review instead of ~16, and a shorter queue tail. The cost is that a broken
-# bump reddens its whole group's PR (exclude that one package, or ask
-# Dependabot to split, when it happens).
-#
-# `groups` deliberately omits `applies-to`, which defaults to
-# "version-updates", so SECURITY updates are structurally ungrouped and are
-# exempt from open-pull-requests-limit.
-#
-# A uv-side bump here moves `uv.lock` but cannot touch the Pi's
-# `deploy/constraints-pi.txt`, so any bump on the #1275 cross-ecosystem pin
-# chain lands red until both sides are co-resolved with
-# `python3 scripts/align-pi-constraint-pins.py`.
+# Group weekly version updates to limit review and CI bursts. Security updates
+# remain ungrouped because `applies-to` keeps its default of `version-updates`.
+# Python changes update `uv.lock`; changes on the Pi pin chain must also update
+# `deploy/constraints-pi.txt` with `python3 scripts/align-pi-constraint-pins.py`.
+# GitHub Actions and Cargo remain separate ecosystems.
 version: 2
 updates:
   - package-ecosystem: "uv"
@@ -45,14 +11,9 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
-      # Dependabot assigns a dependency to the FIRST group it matches, so
-      # this narrow group must precede the catch-all below. Dev tooling is
-      # split out because a ruff or mypy bump routinely requires source
-      # fixes (new lint rules, stricter inference) and `pyproject.toml`'s
-      # frozen suppression counts are asserted by
-      # tests/test_lint_contracts.py. Bundled with the runtime SDKs, one
-      # such bump would hold back an openai/google-genai/httpx security
-      # update behind unrelated lint work.
+      # First match wins. Keep development tools ahead of the runtime catch-all
+      # because formatter, lint, and type-checker bumps can require source
+      # changes unrelated to runtime dependency updates.
       python-dev-tooling:
         patterns:
           - "ruff"
@@ -72,31 +33,9 @@ updates:
         patterns:
           - "*"
 
-  # ONE entry spanning every crate that links libasound, because those four
-  # must hold the SAME `alsa` version and a bump therefore has to be atomic.
-  # `directories` (plural) is what makes it so: Dependabot groups cannot span
-  # `updates` entries, so one entry per crate would raise one PR per crate,
-  # each rewriting a single manifest. tests/test_build_and_ci_contracts.py
-  # requires the four to agree, so each of those PRs would fail that guard on
-  # its own and NONE would be mergeable — the bump would deadlock.
-  #
-  # That is not hypothetical. Commit adf15a2cc (PR #1725, 2026-08-08) is a
-  # dependabot PR that rewrote `rust/jasper-outputd/Cargo.toml` alone, taking
-  # outputd to alsa 0.12.1 and leaving fan-in on 0.11 and the lab runner on
-  # 0.9 — the exact drift issue #2266 had to repair by hand.
-  #
-  # The acknowledged trade: one PR covering four directories means a single
-  # crate's broken build reddens the whole PR, where an entry per crate would
-  # have kept a red Cargo.lock scoped to the crate that broke. Build isolation
-  # loses to atomicity here — a scoped red PR is a nicer failure than a
-  # four-way deadlock, and the usual escape (exclude the offending package, or
-  # ask Dependabot to split) still applies.
-  #
-  # jasper-host-clock links libasound behind an optional `alsa` feature that
-  # jasper-fanin enables unconditionally, so its pin reaches the production
-  # binary. jasper-dual-dac-lab is lab-only and install.sh never builds it, so
-  # CI's `cargo test --locked` step is its sole rot gate. Both were unwatched
-  # before #2266, which is why nothing raised a PR as they fell behind.
+  # One entry keeps the shared `alsa` dependency atomic across every crate that
+  # links libasound. Dependabot groups cannot span separate update entries, and
+  # tests/test_build_and_ci_contracts.py requires these manifests to agree.
   - package-ecosystem: "cargo"
     directories:
       - "/rust/jasper-fanin"

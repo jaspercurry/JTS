@@ -190,168 +190,17 @@ The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
 
 ---
 
-## Documentation map
+## Start here
 
-[AGENTS.md](AGENTS.md) is canonical for how to work in this repo;
-[docs/adr/](docs/adr/) is canonical for why things are the way they are.
-This README owns architecture and layout only — everything below is a
-pointer, not a second copy.
-
-### Repo-root docs
-
-| File | Purpose |
-|---|---|
-| [AGENTS.md](AGENTS.md) | Operational rules for every AI agent. Canonical — edit here. |
-| [CLAUDE.md](CLAUDE.md) | Thin import shim (`@AGENTS.md` + per-checkout `@CLAUDE.local.md`). |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Quick start, PR flow, CI lanes, branch protection |
-| [QUICKSTART.md](QUICKSTART.md) | Imager → boot → `scripts/onboard.sh --adopt` → working speaker |
-| [BRINGUP.md](BRINGUP.md) | Long-form operator runbook: flash, XVF firmware, calibration |
-| [PLAN.md](PLAN.md) | v1 phased build and the forward roadmap |
-| [CHANGELOG.md](CHANGELOG.md) | Keep-a-Changelog release notes |
-| [SECURITY.md](SECURITY.md) | Supported versions, reporting path, LAN-appliance security model |
-| [PRIVACY.md](PRIVACY.md) | What leaves the device, what stays local, retention defaults |
-| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
-| [LICENSE](LICENSE) / [NOTICE](NOTICE) | Apache 2.0 and the project notice |
-| [LICENSE-third-party.md](LICENSE-third-party.md) | Third-party software, asset, model, and data attribution |
-
-### Decisions
-
-- [`docs/adr/`](docs/adr/) — append-only decision records, one decision per
-  file. Start with
-  [ADR-0001](docs/adr/0001-operating-model-reset.md) (the operating model)
-  and read the family for a subsystem's *why*.
-- [`docs/extensibility.md`](docs/extensibility.md) — **read before adding a
-  modular subsystem:** host-mediated indirection, the five extension
-  contracts, and the what-kind → which-pattern decision tree.
-- [`docs/testing-tooling.md`](docs/testing-tooling.md) — index of every
-  capture / scoring / forensic tool. Read before writing a new one.
-- [`docs/doc-map.toml`](docs/doc-map.toml) — advisory code-glob → doc routing
-  used by `scripts/docs-impact.py`.
-
-### Subsystem spines
-
-One line each; the doc is the canonical "read this before modifying". (The
-per-subsystem HANDOFF docs this section used to index were deleted — ruling
-13, [ADR-0199](docs/adr/0199-the-handoff-doc-corpus-is-deleted.md); a
-subsystem fact gets re-derived at HEAD, not parked in a handoff.)
-
-- [`multi-user-spotify.md`](docs/multi-user-spotify.md) — per-household-member
-  Spotify account routing
-- [`design-language.md`](docs/design-language.md) — the craft layer under the
-  UI: type ladder, depth, radii, touch targets, motion, interface writing
-- [`adr/0145-remote-updates-stay-a-laptop-deploy.md`](docs/adr/0145-remote-updates-stay-a-laptop-deploy.md)
-  — why there is no OTA update button, and the shape if that changes
-- [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) — Zero 2 W
-  streambox lab runbook and the two-install-profile decision
-- [`docs/audio-paths.md`](docs/audio-paths.md) — the two ALSA paths, which
-  volume knob attenuates which, and the checklist for a new music source
-
-### Speaker tuning and measurement program
-
-Its own doctrine and cadence; start at the doctrine, not the plans.
-
-- [`measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md) —
-  **canonical doctrine:** the measure → analyze → recommend → loop → save
-  cycle, the authority model, the ethos rulings, the hard-stop list
-- [`tuning-master-plan.md`](docs/tuning-master-plan.md) — ratified plan:
-  declared-design executor, linearization tournaments, LLM operator
-- [`tuning-operator-runbook.md`](docs/tuning-operator-runbook.md) — the one
-  operational map: what the `/sound/crossover/` commission session is, how to
-  drive a round over SSH, and what the doors refuse
-- [`tuning-methodology.md`](docs/tuning-methodology.md) — the decisions a
-  driving LLM makes, in what order and on what evidence: the sequence, the
-  failure catalog keyed to receipt signatures, and the honesty rules
-- [`crossover-v2-engine-design.md`](docs/crossover-v2-engine-design.md) — the
-  engine's architecture: the session, its seams, the file map, and the contracts
-  a refactor must preserve
-- [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md) —
-  commissioned, volume-scheduled low-frequency alignment. Waves 1–3 are merged
-  plus the Wave 4 `ladder.py` slice; commissioning backend and runtime
-  scheduling have not shipped. Per-wave prompts live in that directory
-- [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
-  — the adopted five-layer tuning model and its decision register
-- [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
-  and [`room-correction-information-design.md`](docs/room-correction-information-design.md)
-  — product/architecture designs of record for the two builder surfaces
-- [`correction-journey-design.md`](docs/correction-journey-design.md) — the
-  three-step Crossover → Room → Bass journey (design record)
-- [`historical/linearization-campaign-2026-07.md`](docs/historical/linearization-campaign-2026-07.md)
-  — the 2026-07 linearization campaign's archived decision record: the flat
-  spec, the six fundamentals, the non-goals, the boost ruling, and the
-  integrity ladder that production constants cite as provenance
-- [`gating-v2-plan.md`](docs/gating-v2-plan.md),
-  [`room-correction-regime-plan.md`](docs/room-correction-regime-plan.md),
-  [`two-stage-commission-flow-plan.md`](docs/two-stage-commission-flow-plan.md)
-  — adopted work orders, each scoped to one campaign
-- [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
-  — decision archaeology for the phone-mic measurement flow
-- [`PROPOSAL-dac-profile-registry.md`](docs/PROPOSAL-dac-profile-registry.md) —
-  the data-driven DAC profile registry in `jasper/audio_hardware/dac.py`
-- [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) — lab-only runbook for
-  two Apple dongles as one stereo DAC
-- [`phone-mic-relay-plan.md`](docs/phone-mic-relay-plan.md) — the capture page
-  plus stateless end-to-end-encrypted dead-drop relay design and build record
-- [`jasper/calibration_agent/corpus/`](jasper/calibration_agent/corpus/README.md)
-  — tuning knowledge the product reads at runtime (a package resource)
-
-### Plans and proposals
-
-- [`tool-platform-plan.md`](docs/tool-platform-plan.md) — the extensible tool
-  platform and its trust gradient; records the shipped Phase-1.5 pieces
-- [`research-tool-plan.md`](docs/research-tool-plan.md) — the async
-  "research this and tell me later" tool
-- [`conversation-history-plan.md`](docs/conversation-history-plan.md) — the
-  `/chat/` household-visible conversation log
-- [`docs/examples/tool_pack_starter.py`](docs/examples/tool_pack_starter.py) —
-  copyable capability-pack example; tests import it so it cannot drift
-- [`install-update-resilience-plan.md`](docs/install-update-resilience-plan.md)
-  and [`install-hardware-tier-and-staleness.md`](docs/install-hardware-tier-and-staleness.md)
-  — the install/update hardening brief and its tier-awareness finding
-- [`multiroom-pairing-reliability-plan.md`](docs/multiroom-pairing-reliability-plan.md)
-  — rescued, not-yet-executed pairing-reliability plan (2026-07-28 snapshot)
-- [`PLAN-usb-mic-export-latency-fix.md`](docs/PLAN-usb-mic-export-latency-fix.md)
-  — verbatim point-in-time plan and execution record
-- [`barge-in-build-prompts.md`](docs/barge-in-build-prompts.md) — execution
-  artifact for building barge-in; retire once it ships
-- [`docs/correction-ux-wave3/`](docs/correction-ux-wave3/README.md) — staged
-  execution prompts for the correction/crossover IA rework
-- [`audit-pending-followups.md`](docs/audit-pending-followups.md) — deferred
-  and rejected follow-ups from the May 2026 pattern audit
-- [`OSS-READINESS-TOP-FIVE.md`](docs/OSS-READINESS-TOP-FIVE.md) — contributor
-  "files to know" register and OSS-readiness priorities
-- [`DEEP-AUDIT-PLAYBOOK.md`](docs/DEEP-AUDIT-PLAYBOOK.md) — the whole-codebase
-  audit method behind the `/deep-audit` command
-- [`REVIEW-deep-audit-ledger.md`](docs/REVIEW-deep-audit-ledger.md) — live
-  findings tracker joined to the deep-audit reports by DA-NNNN id
-
-### Historical and research
-
-Preserved for archaeology; **not** current operational truth.
-
-- [`docs/historical/`](docs/historical/) — completed or superseded runbooks,
-  campaign records, and investigation histories
-- [`docs/research/`](docs/research/) — verbatim external and model-generated
-  research inputs, one directory per study
-- [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) — 2026-05/06 lab
-  evidence that proved external-DAC chip AEC
-- [`historical/chip-aec-dac-portability-2026-06.md`](docs/historical/chip-aec-dac-portability-2026-06.md)
-  — clock-domain measurements and the rejected rate-matcher design
-- [`historical/volume-control-redesign-2026-05.md`](docs/historical/volume-control-redesign-2026-05.md)
-  — why AirPlay receiver-originated volume reflection did not work
-- [`RESEARCH-pipewire-low-latency.md`](docs/RESEARCH-pipewire-low-latency.md) —
-  what PipeWire's source does, and the JTS verdict per technique
-- [`crossover-design-guide-deep-research-2026-08-19.md`](docs/crossover-design-guide-deep-research-2026-08-19.md)
-  and [`crossover-measurement-deep-research-2026-07-18.md`](docs/crossover-measurement-deep-research-2026-07-18.md)
-  — owner-supplied primary-source research reports
-- [`AEC-DIAG-06-xvf-format-level-profile.md`](docs/AEC-DIAG-06-xvf-format-level-profile.md)
-  — entry point to the dated AEC diagnostic notes
-- [`REVIEW-2026-06-04-deep-dive.md`](docs/REVIEW-2026-06-04-deep-dive.md),
-  [`-big-rocks`](docs/REVIEW-2026-06-04-big-rocks.md),
-  [`-small-wins`](docs/REVIEW-2026-06-04-small-wins.md),
-  [`REVIEW-2026-06-12-oss-due-diligence.md`](docs/REVIEW-2026-06-12-oss-due-diligence.md),
-  [`REVIEW-google-oss-readiness.md`](docs/REVIEW-google-oss-readiness.md),
-  [`REVIEW-deep-audit-2026-07-11.md`](docs/REVIEW-deep-audit-2026-07-11.md) —
-  point-in-time review snapshots
+- [QUICKSTART.md](QUICKSTART.md) — install a speaker from a fresh Raspberry Pi.
+- [BRINGUP.md](BRINGUP.md) — perform full hardware bring-up and calibration.
+- [docs/audio-paths.md](docs/audio-paths.md) — understand the live audio path.
+- [docs/design-language.md](docs/design-language.md) — use the shared public
+  interface language.
+- [docs/README.md](docs/README.md) — find current references, decisions, plans,
+  research, and historical records.
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) — change the
+  repository safely.
 
 ---
 
@@ -459,6 +308,5 @@ wraps the command in a transient systemd unit with memory and runtime
 bounds. `GET /state` on `jasper-control` returns one fail-soft JSON snapshot
 of voice, audio, and renderers.
 
-Common failure modes are at the bottom of [BRINGUP.md](BRINGUP.md). For
-anything subsystem-specific, the relevant doc above almost certainly
-addresses the symptom.
+Common failure modes are at the bottom of [BRINGUP.md](BRINGUP.md). Start at
+[docs/README.md](docs/README.md) for current subsystem references.
