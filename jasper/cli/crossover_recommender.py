@@ -84,9 +84,18 @@ class BankedRoundRecommender:
     directory are two views of one round by construction.
 
     ``state_path`` is the crossover-v2 flow state, banked separately from the
-    bundle; ``driver_draft_path`` is the packet builder's own and is passed
-    through unchanged. Whether a state was supplied is a fact
-    ``status_document`` reports on, so it is carried rather than inferred.
+    bundle; ``driver_draft_path`` and ``applied_profile_path`` are the packet
+    builder's own and are passed through unchanged. Whether a state was
+    supplied is a fact ``status_document`` reports on, so it is carried rather
+    than inferred.
+
+    ``applied_profile_path`` defaults to this speaker's own SSOT rather than to
+    ``None``, unlike the two beside it: this recommender runs ON the speaker,
+    where the file it names is the live record — and a packet that reported no
+    incumbent there would hand the model "the graph carries nothing" over a
+    corrected speaker, which is the reading defect ``_incumbent_block``
+    documents. The other two ARE optional here because neither has a
+    speaker-side default the seam can resolve.
     """
 
     def __init__(
@@ -95,10 +104,18 @@ class BankedRoundRecommender:
         *,
         state_path: Path | None = None,
         driver_draft_path: Path | None = None,
+        applied_profile_path: Path | None = None,
     ) -> None:
+        from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+
         self._bundle_dir = Path(bundle_dir)
         self._state_path = state_path
         self._driver_draft_path = driver_draft_path
+        self._applied_profile_path = (
+            applied_profile_path
+            if applied_profile_path is not None
+            else baseline_profile_state_path()
+        )
 
     async def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
         """What should happen next, over exactly the records named.
@@ -140,6 +157,7 @@ class BankedRoundRecommender:
                 self._bundle_dir,
                 state_path=self._state_path,
                 driver_draft_path=self._driver_draft_path,
+                applied_profile_path=self._applied_profile_path,
             ), ""
         except (CrossoverEvidencePacketError, OSError) as exc:
             return None, str(exc)

@@ -906,9 +906,17 @@ def _next_actions(
                 "`stage` to leave it for the next round"
             )
 
-    if not sections["applied"]["from_applied_profile"]["available"]:
+    applied_profile = sections["applied"]["from_applied_profile"]
+    if not applied_profile["available"]:
+        # Keyed on the packet's answer and carrying its reason, on the
+        # ``--drivers`` line's rule above rather than the ``--state`` line's
+        # below: this is optional evidence whose absence has more than one
+        # cause, and "the flag was passed and the file was unreadable" and
+        # "the bundle itself could not be read" send an operator somewhere
+        # different from "you did not pass it".
         out.append(
-            "pass --applied-profile <applied baseline profile JSON>: without it "
+            f"no applied profile is available ({applied_profile['reason']}) — "
+            "pass --applied-profile <applied baseline profile JSON>; without it "
             "this packet cannot name the correction the graph already carries, "
             "and a per-driver prescription's displacement is unknown"
         )

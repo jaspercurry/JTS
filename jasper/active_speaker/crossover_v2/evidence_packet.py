@@ -524,6 +524,14 @@ def _applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, s
     collapses every failure into ``None``, so the REASON is read separately and
     only on that path — this packet's rule that an artifact which never arrived
     and one that arrived unreadable are different facts.
+
+    A file that parsed but the loader rejected has its own three causes — a
+    document of some other kind, a schema version this install does not read,
+    and a state carrying only a staged candidate — and they send an operator
+    somewhere different. Rather than re-derive that verdict here (the accept
+    rule has one owner and a second copy is only a place for the two to drift),
+    the reason ECHOES the document's own three self-describing fields and lets
+    the reader see which one is wrong.
     """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
@@ -534,8 +542,16 @@ def _applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, s
     profile = load_applied_baseline_profile_state(path)
     if profile is not None:
         return profile, ""
-    _, reason = _read_json(path)
-    return None, reason or "the file carries no applied baseline profile"
+    raw, reason = _read_json(path)
+    if reason:
+        return None, reason
+    document = _mapping(raw)
+    return None, (
+        "the file is not an applied baseline profile this install can read "
+        f"(kind={document.get('kind')!r}, "
+        f"artifact_schema_version={document.get('artifact_schema_version')!r}, "
+        f"status={document.get('status')!r})"
+    )
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -631,10 +647,14 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     The ``incumbent`` block's filters are the exception, and it is stated
     rather than implied: they come from the applied-profile SSOT, which
     ``persist_applied_baseline_profile`` writes with a plain ``json.dumps``. A
-    non-finite gain there would reach ``_fingerprint`` and cost the round its
-    packet. Nothing has ever written one — the fit produces finite gains and
-    ``save_v2_state`` would already have refused to record the apply — so this
-    is disclosure of a narrow exposure, not a defended hypothetical.
+    non-finite gain there would reach ``_fingerprint``, and the failure is a
+    HARD one rather than a degraded block — no packet for the round, and
+    :func:`~.round_views.load_banked_round` refusing the whole banked
+    directory. Nothing has ever written one — the fit produces finite gains,
+    and ``save_v2_state`` would already have refused to record the apply that
+    made the profile — so this ships as a disclosed exposure rather than as a
+    guard, per ``AGENTS.md``'s rule against defending hypotheticals. Routing
+    the block through this function is the fix if one is ever observed.
 
     That retires neither this branch nor its argument: the two inputs at the
     top of this docstring are the ones it exists for, and the classifier still
@@ -2086,8 +2106,13 @@ def _incumbent_block(
         "from_applied_profile": (
             list(from_profile)
             if from_profile is not None
+            # ``profile_blend_correction`` returns ``()`` for a profile that
+            # applied no blend, so ``None`` beside a READABLE profile can only
+            # be a malformed record — a different fact from a missing one, and
+            # ``_absence``'s bare ``field_null`` would spell them the same.
             else _absence(
-                profile_reason,
+                profile_reason
+                or "the profile is readable but its blend_correction is not a list",
                 False,
                 "applied_baseline_profile.blend_correction",
             )
