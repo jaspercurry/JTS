@@ -30,7 +30,10 @@ from jasper.web import (
 )
 
 
-WEB_SETUP_FILES = tuple(Path("jasper/web").glob("*_setup.py"))
+WEB_SETUP_FILES = (
+    *Path("jasper/web").glob("*_setup.py"),
+    Path("jasper/web/correction_room_flow.py"),
+)
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
 _SHARED_JSON_OBJECT_READERS = {
