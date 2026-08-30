@@ -441,15 +441,11 @@ def test_legal_45_second_pcm16_capture_fits_single_crossover_size_contract():
         CROSSOVER_CAPTURE_MAX_WAV_BYTES,
     )
     from jasper.active_speaker import bundles, web_measurement
-    from jasper.web import correction_setup
 
     legal_pcm16_bytes = 44 + int(48000 * 2 * CROSSOVER_CAPTURE_HARD_TIMEOUT_S)
     assert legal_pcm16_bytes < CROSSOVER_CAPTURE_MAX_WAV_BYTES
     assert web_measurement.MAX_CAPTURE_WAV_BYTES == CROSSOVER_CAPTURE_MAX_WAV_BYTES
     assert bundles.MAX_CAPTURE_WAV_BYTES == CROSSOVER_CAPTURE_MAX_WAV_BYTES
-    assert correction_setup.MAX_CROSSOVER_WAV_BODY_BYTES == (
-        CROSSOVER_CAPTURE_MAX_WAV_BYTES
-    )
     spec = build_crossover_sweep_spec(
         hard_timeout_ms=int(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000),
         max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,

@@ -1947,10 +1947,8 @@ _LinearizationState = _candidates.LinearizationState
 _SpeculativeClose = _candidates.SpeculativeClose
 
 
-# The crossover-region null registry and the committed region it is asked
-# about. Re-exported from
-# :mod:`jasper.active_speaker.crossover_v2.verification`.
-_crossover_region_null_registry = _verification._crossover_region_null_registry
+# The committed region the crossover-region null registry is asked about.
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`.
 committed_crossover_region_hz = _verification.committed_crossover_region_hz
 
 
@@ -8994,20 +8992,6 @@ class CrossoverV2Session:
         return _planning.exclusion_evidence_json(
             cloud,
             cloud_result=self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {},
-        )
-
-    def _linearization_ineligible_reason(self, analysis: ProgramAnalysis) -> str | None:
-        """HARD GATE for the Layer-1a fit path, as a named reason or ``None`` —
-        see :func:`~jasper.active_speaker.crossover_v2.planning.ineligible_reason`.
-
-        A session attribute rather than a bare module call so a substitution
-        binds on production, per the sibling rule (#2354). The build calls the
-        module function directly, since nothing substitutes it there — both
-        routes resolve to the one definition.
-        """
-        return _planning.ineligible_reason(
-            analysis,
-            woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
         )
 
     def _journal_linearization(
