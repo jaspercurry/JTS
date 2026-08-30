@@ -121,6 +121,24 @@ heal_shared_state_modes() {
         # step milder (an unreadable file reads as "no measurements").
         "f:0640:${STATE_DIR}/bt_roles.json"
         "f:0640:${STATE_DIR}/active_speaker_measurements.json"
+        # The Layer-A SSOT older root atomic writers published root:root 0640;
+        # jasper-control reads it group `jasper` for the aggregate /state.
+        # Future writes preserve the parent group in baseline_profile.py.
+        "f:0640:${STATE_DIR}/active_speaker_baseline_profile.json"
+        # Active run-record advisory locks. A root-run status poll used to
+        # CREATE them root:root 0640, after which no service account could take
+        # a lock it can only READ -- the ~3 s crossover_level_run_unavailable
+        # ERROR storm and its repeat-admission twin (ADR-0196). The stores now
+        # publish 0660 group-writable, but a non-owner cannot repair a lock it
+        # cannot open, so the existing ones are healed here. `l` derives the
+        # ".<record>.lock" name; only the LOCKS widen to write, the records
+        # stay group-READ (published that way by their own atomic writers).
+        "l:0660:${STATE_DIR}/active_speaker_commissioning_run.json"
+        "l:0660:${STATE_DIR}/active_speaker_crossover_level_run.json"
+        "l:0660:${STATE_DIR}/active_speaker_repeat_admission.json"
+        "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
+        "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"
+        "f:0640:${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json"
         # The capture/sweep/tone trees the /correction/ and /sound/ commissioning
         # arms share. install.sh's install_camilladsp() now creates these at
         # install time (2770 group `jasper`, matching their
@@ -157,6 +175,13 @@ gid = int(sys.argv[1])
 web_uid = int(sys.argv[2])
 for spec in sys.argv[3:]:
     kind, mode_text, path = spec.split(":", 2)
+    if kind == "l":
+        # A record's advisory lock sibling, named the one way the stores name
+        # it (jasper.atomic_io callers: ".<record>.lock"), so install does not
+        # respell a filename Python owns. Group-WRITABLE, because taking an
+        # advisory lock opens the file for write. See ADR-0196.
+        head, base = os.path.split(path)
+        path = os.path.join(head, "." + base + ".lock")
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     if kind == "d":
         flags |= os.O_DIRECTORY
@@ -174,6 +199,16 @@ for spec in sys.argv[3:]:
         if not expected:
             raise SystemExit(
                 f"ERROR: refusing unexpected shared-state file type at {path}"
+            )
+        # O_NOFOLLOW stops a SYMLINK redirect, but not a HARDLINK: a group
+        # member could pre-create one of these names as a hardlink onto a
+        # root-owned file, and fstat would see a plain regular file. A file we
+        # own or created has st_nlink == 1; more than one name means the inode
+        # is aliased elsewhere, so refuse rather than fchown/fchmod a target we
+        # cannot see. Holds regardless of the fs.protected_hardlinks sysctl.
+        if not stat.S_ISDIR(file_stat.st_mode) and file_stat.st_nlink != 1:
+            raise SystemExit(
+                f"ERROR: refusing hardlinked shared-state path {path}"
             )
         os.fchown(fd, web_uid if kind == "w" else -1, gid)
         os.fchmod(fd, int(mode_text, 8))

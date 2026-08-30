@@ -1236,6 +1236,54 @@ async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
     assert outcome.ramp.restored is True
 
 
+def test_a_persistent_level_run_fault_discloses_once_not_once_per_poll(
+    monkeypatch, caplog, tmp_path,
+):
+    """The browser polls this all round; a persistent fault answers the same.
+
+    A record no account can read cannot be fixed by asking again, so logging
+    it per poll turns one incident into hundreds of ERROR lines and buries the
+    transition that did happen. ``snapshot`` is lock-free, so the faulting file
+    is the RECORD, and the line names it plus the errno -- the sentence that
+    ends the incident. The repeat is not the event (ADR-0196).
+    """
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    record = tmp_path / "run.json"
+    lease = CrossoverLevelLease(level_run_state_path=record)
+    denied = True
+
+    def _snapshot():
+        if denied:
+            raise PermissionError(13, "Permission denied", str(record))
+        return None
+
+    monkeypatch.setattr(lease._level_run_store, "snapshot", _snapshot)
+
+    def _errors():
+        return [
+            entry for entry in caplog.records
+            if "crossover_level_run_unavailable" in entry.getMessage()
+            and entry.levelno == logging.ERROR
+        ]
+
+    with caplog.at_level(logging.DEBUG):
+        polled = [lease.level_run_snapshot() for _ in range(3)]
+        assert len(_errors()) == 1
+        # Names the RECORD (lock-free read) and the errno, not the lock.
+        assert f"path={record}" in _errors()[0].getMessage()
+        assert "EACCES" in _errors()[0].getMessage()
+
+        denied = False
+        lease.level_run_snapshot()
+        denied = True
+        lease.level_run_snapshot()
+
+    # Every poll still answers, and a fault that came back is a new incident.
+    assert {snapshot["terminal_reason"] for snapshot in polled} == {"state_unavailable"}
+    assert len(_errors()) == 2
+
+
 async def test_crossover_lease_restores_then_exposes_the_geometry_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -1477,6 +1525,60 @@ def test_crossover_terminal_success_requires_process_local_level_result(tmp_path
         capture_geometry="near_field",
     )
     assert lease.mark_level_run_succeeded(claim.run_id) is False
+
+
+def test_accept_under_lock_contention_is_a_retryable_conflict_not_a_lost_run(
+    monkeypatch, tmp_path,
+):
+    """A completed run must survive a lock wait, not be discarded (fix 2).
+
+    The write paths take a bounded (2 s) advisory lock. If a peer holds it past
+    the deadline, ``succeed()`` must raise a retryable CONFLICT the operator can
+    re-accept -- never a raw ``TimeoutError`` (an unhandled 500) and never a
+    silent loss of a finished run. The timeout is a ``CrossoverLevelRunConflict``
+    subclass, so every caller that already handles conflicts degrades correctly.
+    """
+    from contextlib import contextmanager
+
+    from jasper.active_speaker import crossover_level_run as clr
+    from jasper.active_speaker.crossover_level_run import (
+        CrossoverLevelRunConflict,
+        CrossoverLevelRunLockTimeout,
+    )
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    target = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "b" * 64,
+        "geometry": "near_field_driver:mono:woofer",
+    }
+    claim = lease.claim_level_match_run(
+        topology_id="topology-1",
+        protected_profile_fingerprint="a" * 64,
+        target=target,
+    )
+    lease.mark_level_run_phone_armed(claim.run_id)
+    lease._level_run_store.begin_backend(claim.run_id, geometry=target["geometry"])
+    lease._outcomes[target["geometry"]] = object()
+
+    @contextmanager
+    def _peer_holds_the_lock(*_args, **_kwargs):
+        raise TimeoutError("held by a peer past the deadline")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(clr, "advisory_file_lock", _peer_holds_the_lock)
+
+    with pytest.raises(CrossoverLevelRunLockTimeout) as excinfo:
+        lease.mark_level_run_succeeded(claim.run_id)
+    # Retryable, not a 500: a caller handling conflicts sees it as one.
+    assert isinstance(excinfo.value, CrossoverLevelRunConflict)
+
+    # The run is NOT lost -- the write never landed, so a retry once the lock
+    # is free completes it.
+    monkeypatch.undo()
+    assert lease.mark_level_run_succeeded(claim.run_id) is True
+    assert lease.level_run_snapshot()["result_available"] is True
 
 
 async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_path):

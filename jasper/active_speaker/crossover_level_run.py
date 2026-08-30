@@ -14,7 +14,6 @@ authority for recovery after any possible listening-level mutation.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import math
@@ -30,7 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.ramp import MeasurementRamp
 from jasper.log_event import log_event
@@ -43,6 +42,9 @@ STATE_KIND = "jts_active_crossover_level_run_state"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_level_run.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_CROSSOVER_LEVEL_RUN_STATE"
 PHONE_TRANSPORT_GRACE_S = 30.0
+# Bounded backpressure for the write paths that keep the lock: a peer holding
+# it must not strand a request thread forever. Mirrors the sibling run stores.
+DEFAULT_LOCK_TIMEOUT_S = 2.0
 
 logger = logging.getLogger(__name__)
 _THREAD_LOCK = threading.RLock()
@@ -55,6 +57,17 @@ class CrossoverLevelRunError(RuntimeError):
 
 class CrossoverLevelRunConflict(CrossoverLevelRunError):
     """Another exact request currently owns the Active run slot."""
+
+
+class CrossoverLevelRunLockTimeout(CrossoverLevelRunConflict):
+    """The bounded advisory-lock deadline expired under cross-process contention.
+
+    A CONFLICT, deliberately (like the commissioning store's
+    ``CommissioningRunLockTimeout``): a peer held the write lock past the
+    deadline, so the caller retries rather than treating a completed run as
+    lost. Never a hard error -- that would discard a finished run over a
+    transient two-second wait.
+    """
 
 
 class CrossoverLevelRunPhase(str, Enum):
@@ -403,21 +416,42 @@ class CrossoverLevelRunStore:
             raise CrossoverLevelRunError("level-run clock is non-finite")
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
 
+    @property
+    def lock_path(self) -> Path | None:
+        """The advisory lock beside the record; ``None`` for the memory store."""
+
+        if self.path is None:
+            return None
+        return self.path.with_name(f".{self.path.name}.lock")
+
     @contextmanager
     def _locked(self):
+        # WRITE paths only: ``snapshot`` never opens the FILE lock (it takes
+        # only ``_THREAD_LOCK`` for the record/flag pairing). ADR-0196.
         with _THREAD_LOCK:
-            if self.path is None:
+            lock_path = self.lock_path
+            if lock_path is None:
                 yield
                 return
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            lock_path = self.path.with_name(f".{self.path.name}.lock")
-            with lock_path.open("a+", encoding="utf-8") as handle:
-                os.chmod(lock_path, 0o640)
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
+            # Group-WRITE, and chmod only when the mode actually differs.
+            # Taking an advisory lock opens the file for write, so a group
+            # member that can only READ one cannot take it at all; and an
+            # unconditional chmod on a lock this process does not own raises
+            # EPERM even when the open succeeds.  Both are ADR-0196.
+            try:
+                with advisory_file_lock(
+                    lock_path,
+                    mode=0o660,
+                    group_from_parent=True,
+                    timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
+                ):
                     yield
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except TimeoutError as exc:
+                # A retryable conflict, not a hard error: a completed run must
+                # not be discarded over a two-second wait for a peer's lock.
+                raise CrossoverLevelRunLockTimeout(
+                    "timed out waiting for the crossover level-run lock"
+                ) from exc
 
     def _read(self) -> dict[str, Any]:
         if self.path is None:
@@ -954,9 +988,19 @@ class CrossoverLevelRunStore:
         return self._finish(run_id, succeeded=False, reason=reason)
 
     def snapshot(self) -> dict[str, Any] | None:
-        """Return the browser-safe current run without config or relay secrets."""
+        """Return the browser-safe current run without config or relay secrets.
 
-        with self._locked():
+        Takes only the in-process ``_THREAD_LOCK`` (never the advisory FILE
+        lock), which is the ADR-0196 point: this poll -- hit every ~1.5 s for a
+        whole tuning round -- must not open (and, on a fresh box, CREATE) the
+        sibling lock file, so the record's ``FileNotFoundError`` reads as "no
+        run". The thread lock is still required because ``_finish`` publishes
+        the file record and the ``_live_succeeded_run_id`` flag as a pair under
+        it; reading the two without it can see the record SUCCEEDED one ~1.5 s
+        cycle before the flag catches up (a self-healing false negative).
+        """
+
+        with _THREAD_LOCK:
             current = self._read().get("current")
             result_available = bool(
                 isinstance(current, Mapping)

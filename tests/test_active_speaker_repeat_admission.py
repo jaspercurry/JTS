@@ -4,12 +4,35 @@
 
 import json
 import multiprocessing
+import os
 import threading
 from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker import repeat_admission as admission
+
+
+def test_a_write_publishes_the_lock_group_writable(tmp_path):
+    """The identical broken lock the level-run store had (ADR-0196).
+
+    A write path takes the lock and must publish it group-WRITABLE; a
+    0o640 lock a root poll created first shut out every service account.
+    """
+    path = tmp_path / "repeat.json"
+    admission.activate(_comparison(), path=path)
+    lock_path = path.with_name(f".{path.name}.lock")
+
+    assert oct(os.stat(lock_path).st_mode & 0o777) == "0o660"
+
+
+def test_snapshot_reads_without_taking_the_lock(tmp_path):
+    """The crossover poll reads this; a bare read must not open the lock."""
+    path = tmp_path / "repeat.json"
+
+    admission.snapshot(path=path)
+
+    assert not path.with_name(f".{path.name}.lock").exists()
 
 
 def _reserve_in_process(path: str, comparison: dict, start, queue) -> None:

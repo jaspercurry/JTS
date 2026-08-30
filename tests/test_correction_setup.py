@@ -5802,6 +5802,131 @@ def test_room_authority_guard_returns_exact_canonical_bass_summary(
     assert classifications == 1
 
 
+def test_unreadable_receipt_mid_run_preserves_a_completed_measurement(
+    monkeypatch,
+) -> None:
+    """A machine fault at the writer boundary must not discard the run.
+
+    The run started under a proven binding and measured six positions. If the
+    receipt becomes UNREADABLE between /start and accept, the denied readiness
+    collapses the binding to (None, None, None) -- which, treated as an
+    authority CHANGE, raises and throws the whole measurement away. An
+    unreadable-but-unchanged authority is a device fault, not drift: the guard
+    proceeds and returns the graph's bass summary (blocker 2 / ADR-0196).
+    """
+    from jasper.active_speaker._common import ROOM_AUTHORITY_RECEIPT_UNREADABLE
+
+    expected = (True, "automatic_commissioning_receipt", "layer-a-at-start")
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+
+    async def unreadable_with_graph(_cam):
+        raw = {
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
+                "layer_a_identity": None,
+                "allowed": False,
+                "status": "incomplete",
+                "reason": ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+                "detail": "the record could not be opened",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+        return raw, GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={"bass_extension_profile_summary": summary},
+        )
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness_with_graph",
+        unreadable_with_graph,
+    )
+
+    returned = asyncio.run(
+        correction_setup._assert_room_authority_current(object(), expected)
+    )
+
+    assert returned is summary
+
+
+@pytest.mark.parametrize(
+    ("expected", "discloses"),
+    [
+        # Started PROVEN, now UNREADABLE: the binding does not match, so if the
+        # authority genuinely changed we bank under the prior one -- a fail-OPEN
+        # that must be surfaced.
+        ((True, "automatic_commissioning_receipt", "layer-a-at-start"), True),
+        # Started unproven, still unproven: the binding matches, nothing is
+        # ambiguous, so no disclosure.
+        ((None, None, None), False),
+    ],
+)
+def test_unreadable_fail_open_at_writer_boundary_is_disclosed(
+    monkeypatch, caplog, expected, discloses,
+) -> None:
+    """Fix 4: proceeding on UNREADABLE keeps the run (blocker 2), but when the
+    binding did not match it is a fail-open -- surfaced once, never silent."""
+    from jasper.active_speaker._common import ROOM_AUTHORITY_RECEIPT_UNREADABLE
+    from jasper.transition_log import TransitionLog
+
+    # Isolate the process-global disclosure gate from other tests.
+    monkeypatch.setattr(
+        correction_setup,
+        "_AUTHORITY_UNCONFIRMED_DISCLOSURE",
+        TransitionLog(reminder_sec=3600.0),
+    )
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+
+    async def unreadable_with_graph(_cam):
+        raw = {
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
+                "layer_a_identity": None,
+                "allowed": False,
+                "status": "incomplete",
+                "reason": ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+                "detail": "the record could not be opened",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+        return raw, GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={"bass_extension_profile_summary": summary},
+        )
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness_with_graph",
+        unreadable_with_graph,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        returned = asyncio.run(
+            correction_setup._assert_room_authority_current(object(), expected)
+        )
+
+    assert returned is summary  # always proceeds -- the run is never discarded
+    unconfirmed = [
+        record for record in caplog.records
+        if "layer_a_authority_unconfirmed" in record.getMessage()
+    ]
+    assert len(unconfirmed) == (1 if discloses else 0)
+
+
 def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
     from jasper.correction.session import SessionState
 

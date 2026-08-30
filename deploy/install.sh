@@ -1897,40 +1897,13 @@ widen_jasper_web_writable_dirs() {
         chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
         find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
             -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
-        # Correction-web still runs as root while jasper-control renders the
-        # aggregate /state surface as group jasper. Repair the one Layer-A SSOT
-        # that older root atomic writers published as root:root 0640; future
-        # writes preserve the parent group in baseline_profile.py.
-        if [[ -f /var/lib/jasper/active_speaker_baseline_profile.json ]]; then
-            chgrp jasper /var/lib/jasper/active_speaker_baseline_profile.json \
-                2>/dev/null || true
-            chmod 0640 /var/lib/jasper/active_speaker_baseline_profile.json \
-                2>/dev/null || true
-        fi
-        # Same repair for the commissioning run record's advisory locks: a
-        # root-run status poll used to CREATE them root:root 0640, after which
-        # no service account could take them (ADR-0196). Only the two LOCKS are
-        # widened to 0660 -- holding a lock means opening it for write. The
-        # record and its live-mutation sibling stay group-READ, published that
-        # way by their own atomic writers.
-        for _commissioning_lock in \
-            /var/lib/jasper/.active_speaker_commissioning_run.json.lock \
-            /var/lib/jasper/.active_speaker_commissioning_run.json.live-execution.lock
-        do
-            [[ -e ${_commissioning_lock} ]] || continue
-            chgrp jasper "${_commissioning_lock}" 2>/dev/null || true
-            chmod 0660 "${_commissioning_lock}" 2>/dev/null || true
-        done
-        unset _commissioning_lock
-        for _commissioning_state in \
-            /var/lib/jasper/active_speaker_commissioning_run.json \
-            /var/lib/jasper/.active_speaker_commissioning_run.json.live-mutation.json
-        do
-            [[ -f ${_commissioning_state} ]] || continue
-            chgrp jasper "${_commissioning_state}" 2>/dev/null || true
-            chmod 0640 "${_commissioning_state}" 2>/dev/null || true
-        done
-        unset _commissioning_state
+        # The Layer-A SSOT (active_speaker_baseline_profile.json) and the Active
+        # run-record locks + records used to be healed here with path-following
+        # chgrp/chmod. That is a local priv-esc under a group-writable
+        # /var/lib/jasper (a group member can pre-create the name as a symlink
+        # onto a root file), so it moved to heal_shared_state_modes, which pins
+        # each inode with O_NOFOLLOW+fstat before touching it. See
+        # deploy/lib/install/env-migrations.sh.
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }

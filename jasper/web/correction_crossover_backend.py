@@ -41,8 +41,13 @@ from jasper.active_speaker.volume_latch import (
 )
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
+from jasper.transition_log import TransitionLog, os_fault_cause
 
 logger = logging.getLogger(__name__)
+# One incident, not one per ~1.5 s poll: disclose a persistent level-run read
+# fault on its transition and once an hour after, never on every repeat. Keyed
+# by the record path so a different file's fault is its own event. ADR-0196.
+_LEVEL_RUN_DISCLOSURE = TransitionLog(reminder_sec=3600.0)
 # The emergency floor + readback tolerance are owned by the shared volume_latch
 # leaf so this per-step lease and the session-scoped SessionVolumePlan cannot
 # drift. Re-exported at the historical names for this module's importers.
@@ -573,21 +578,35 @@ class CrossoverLevelLease:
             CrossoverLevelRunError,
         )
 
+        record = str(self._level_run_store.path or "")
         try:
-            return self._level_run_store.snapshot()
+            snapshot = self._level_run_store.snapshot()
         except (OSError, CrossoverLevelRunError, ValueError) as exc:
-            log_event(
-                logger,
-                "correction.crossover_level_run_unavailable",
-                level=logging.ERROR,
-                reason=type(exc).__name__,
-            )
+            # The browser polls this every ~1.5s for a whole tuning round, so a
+            # machine fault that persists -- a record no account can read -- is
+            # one incident, not hundreds. The transition (and a slow reminder)
+            # is the event; the repeat is not. ``snapshot`` is lock-free, so
+            # the faulting file is the RECORD, and the errno+path is the one
+            # sentence that ends the incident. See ADR-0196 and jasper.
+            # transition_log, the shared gate output_topology also uses.
+            cause = os_fault_cause(exc)
+            if _LEVEL_RUN_DISCLOSURE.should_log(record, cause):
+                log_event(
+                    logger,
+                    "correction.crossover_level_run_unavailable",
+                    level=logging.ERROR,
+                    reason=type(exc).__name__,
+                    cause=cause,
+                    path=record,
+                )
             return {
                 "schema_version": SCHEMA_VERSION,
                 "phase": "failed",
                 "terminal_reason": "state_unavailable",
                 "late_success": False,
             }
+        _LEVEL_RUN_DISCLOSURE.cleared(record)
+        return snapshot
 
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
         from jasper.correction.level_match import LevelMatchSession
