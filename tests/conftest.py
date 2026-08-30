@@ -23,6 +23,7 @@ Three pieces here, all load-bearing:
   from a test_doctor case — see #254 / #255 / #256 for context (this
   fixture, which contains that leak, landed in #256).
 """
+import logging
 import os
 import socketserver
 import sys
@@ -376,6 +377,17 @@ def _isolate_correction_volume_claims(monkeypatch):
         return
     for claim in _CORRECTION_SETUP_CLAIMS:
         monkeypatch.setattr(mod, claim, None, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_jasper_logger_level():
+    """Restore the process-global Jasper logger level after each test."""
+    logger = logging.getLogger("jasper")
+    level = logger.level
+    try:
+        yield
+    finally:
+        logger.setLevel(level)
 
 
 def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
