@@ -11,6 +11,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tomllib
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,13 @@ def load_script():
 @pytest.fixture
 def turntable():
     return load_script()
+
+
+def test_help_lists_internal_hotplug_stop_without_argparse_placeholder(turntable):
+    help_text = turntable.build_parser().format_help()
+
+    assert "hotplug-stop" in help_text
+    assert argparse.SUPPRESS not in help_text
 
 
 class FakeProtocolError(Exception):
@@ -1692,7 +1700,7 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
         "jts_turntable",
         "turntable-autostop",
     )
-    files = [ROOT / "pyproject.toml"]
+    files: list[Path] = []
     for root in (ROOT / "deploy", ROOT / "jasper"):
         files.extend(
             path for path in root.rglob("*")
@@ -1707,6 +1715,11 @@ def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> Non
         return any(marker in searchable for marker in markers)
 
     matches = {path.relative_to(ROOT).as_posix() for path in files if has_marker(path)}
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = project["project"].get("scripts", {})
+    script_entries = "\n".join((*scripts.keys(), *scripts.values()))
+    if any(marker in script_entries for marker in markers):
+        matches.add("pyproject.toml")
     assert matches == {
         "deploy/lib/install/python-runtime.sh",
         "deploy/lib/install/systemd-units.sh",

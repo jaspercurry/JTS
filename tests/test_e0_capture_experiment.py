@@ -19,6 +19,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -258,12 +259,18 @@ def test_no_product_code_depends_on_the_experiment() -> None:
     set is empty. An empty result proves nothing on its own, so the same
     scan runs against a marker the product certainly does contain.
     """
-    files = [ROOT / "pyproject.toml"]
+    files: list[Path] = []
     for directory in (ROOT / "deploy", ROOT / "jasper"):
         files.extend(path for path in directory.rglob("*") if path.is_file())
 
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    product_metadata = {
+        "scripts": pyproject["project"].get("scripts", {}),
+        "setuptools": pyproject["tool"].get("setuptools", {}),
+    }
+
     def scan(markers: tuple[str, ...]) -> set[str]:
-        return {
+        matches = {
             path.relative_to(ROOT).as_posix()
             for path in files
             if any(
@@ -272,6 +279,10 @@ def test_no_product_code_depends_on_the_experiment() -> None:
                 for marker in markers
             )
         }
+        metadata = json.dumps(product_metadata, sort_keys=True)
+        if any(marker in metadata for marker in markers):
+            matches.add("pyproject.toml")
+        return matches
 
     assert scan(("e0-capture", "e0_capture", "preflight_noaudio", "reset_run")) == set()
     # Positive control: the scan can find something.
