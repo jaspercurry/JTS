@@ -8,7 +8,7 @@
 > migration). Preserved as a point-in-time OSS-readiness assessment, not
 > current operational truth. Current documentation rules live in
 > [AGENTS.md](../AGENTS.md) and [docs/adr/](adr/);
-> the repository documentation atlas lives in
+> the repository documentation index lives in
 > [docs/README.md](README.md).
 >
 > **Refresh against main (2026-05-26, `6d6ff52`).** Main now has an
@@ -82,16 +82,16 @@ not redesign.
 2. **Post-incident engineering.** Restart policies, watchdog config, and
    transport choices cite PR numbers and incident dates in the source. The
    UDP-localhost replacement for snd-aloop
-   ([docs/HANDOFF-resilience.md](HANDOFF-resilience.md)) is a textbook
+   (`docs/HANDOFF-resilience.md`) is a textbook
    case of "diagnose root cause before fix." The wake-event telemetry
    ([jasper/wake_events.py](../jasper/wake_events.py)) doubles as a
    *feedback loop on AEC quality* — `bridge_config_json` + per-leg peak
    scores let you ask "did changing `JASPER_AEC_NS_LEVEL` help?" against
    real user attempts. Most embedded voice projects can't.
 
-3. **The HANDOFF discipline.** [docs/HANDOFF-aec.md](HANDOFF-aec.md)
-   (2,372 lines), [docs/HANDOFF-airplay.md](HANDOFF-airplay.md),
-   [docs/HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) — every
+3. **The HANDOFF discipline.** `docs/HANDOFF-aec.md`
+   (2,372 lines), `docs/HANDOFF-airplay.md`,
+   `docs/HANDOFF-voice-providers.md` — every
    nontrivial subsystem has a "what we tried / why it failed / what
    shipped" doc with primary-source citations (XMOS docs, OpenAI cookbook,
    HA core source). New contributors can ramp in days, not weeks.
@@ -173,7 +173,7 @@ not redesign.
 11. **~250 LOC duplication between OpenAI and Gemini adapters** —
     `ConnectionState` enum, `_set_state`, `_maybe_fire_escalation_cue`,
     `_supervisor_loop` scaffold, reconnect-loop boilerplate.
-    [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) defends not
+    `HANDOFF-voice-providers.md` defends not
     sharing the loop *body*, which is correct — but the scaffolding
     around the body should still be lifted. Template-method refactor in
     `_supervisor.py`.
