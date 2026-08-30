@@ -1,6 +1,5 @@
 [Unit]
 Description=Snapshot the speaker's effective mDNS identity to /var/lib/jasper/identity.env
-Documentation=file:/opt/jasper/docs/HANDOFF-identity.md
 # Avahi must be up for GetHostNameFqdn to answer; the script degrades
 # gracefully (falls back to the OS hostname + logs avahi_unavailable)
 # if it isn't, so this is an ordering hint, not a hard requirement.

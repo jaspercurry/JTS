@@ -35,8 +35,7 @@ OnFailure=jasper-camilla-recover.service
 # MemorySwapMax=0 so CamillaDSP's audio buffers + DSP state never
 # get swapped to zram. Empirically validated as needed by today's
 # stress test (2026-05-24) — splotchy music = zstd decompression
-# jitter on swapped audio pages. See docs/HANDOFF-resilience.md
-# "Stage 2 — audio-protection subset (shipped)".
+# jitter on swapped audio pages.
 Slice=jts-audio.slice
 Type=simple
 # --statefile lets CamillaDSP persist the currently-loaded config path
@@ -62,7 +61,7 @@ Type=simple
 # fix the underlying YAML or apply a new measurement, then remove
 # --no_config.
 #
-# Pipe guard (multi-room, HANDOFF-multiroom.md §2): if the statefile
+# Pipe guard: if the statefile
 # points at a BONDED pipe config but the snapserver FIFO is dead,
 # camilladsp 4.1.3 exits CLEAN (measured) — which Restart=always +
 # the start-limit recovery handler would otherwise turn into a repeated
@@ -123,8 +122,7 @@ LimitMEMLOCK=infinity
 LogRateLimitIntervalSec=60s
 LogRateLimitBurst=120
 
-# OOM protection (Stage 1 of the memory-resilience plan, see
-# docs/HANDOFF-resilience.md). Camilla is the audio bottleneck:
+# OOM protection (Stage 1 of the memory-resilience plan). Camilla is the audio bottleneck:
 # silencing music = worst possible UX. -900 makes the kernel OOM
 # killer almost-never pick this process. Note -1000 is reserved for
 # sshd / systemd-journald — we need the killer to retain *some*

@@ -1,6 +1,6 @@
 // WS1 Phase 3b-2 — polkit grant for the non-root `jasper-control` service user.
 //
-// docs/HANDOFF-privilege-separation.md. Installed to
+// Installed to
 // /etc/polkit-1/rules.d/49-jasper-control.rules (root:root 0644) by
 // install.sh's install_jasper_control_polkit. polkitd monitors rules.d and
 // auto-reloads on change — no daemon-reload or polkit restart is needed.
@@ -39,7 +39,7 @@
 // only enable/disable jasper-control ever needed was a redundant defensive
 // `enable jasper-voice`; jasper-voice's authoritative enable/disable is owned
 // by the root jasper-aec-reconcile (Tier B). So we grant manage-units (scoped)
-// + reboot/power-off only. See docs/HANDOFF-privilege-separation.md.
+// + reboot/power-off only.
 polkit.addRule(function(action, subject) {
     if (subject.user !== "jasper-control") {
         return polkit.Result.NOT_HANDLED;

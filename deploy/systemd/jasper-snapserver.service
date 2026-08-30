@@ -13,7 +13,6 @@ Description=Jasper Snapcast server — multi-room grouping leader (synchronised 
 # it joins jts-audio.slice (MemorySwapMax=0) alongside fanin/camilla
 # and the renderers.
 #
-# See docs/HANDOFF-multiroom.md for the full design.
 After=jasper-fanin.service jasper-camilla.service sound.target
 Wants=jasper-fanin.service
 
@@ -55,7 +54,7 @@ UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 # bonded config swap in jasper.multiroom.leader_config), AFTER this
 # unit starts — snapserver's pipe source (mode=create) owns the FIFO
 # and opens the read end first, so CamillaDSP's write-open never
-# blocks. See HANDOFF-multiroom.md §2 "Canonical signal flow".
+# blocks.
 ExecStart=/usr/bin/snapserver $JASPER_SNAPSERVER_ARGS
 Restart=on-failure
 RestartSec=2s

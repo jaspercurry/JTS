@@ -1,6 +1,5 @@
 [Unit]
 Description=Jasper renderer fan-in (per-substream → summed music reference)
-Documentation=file:///opt/jasper/docs/HANDOFF-fan-in-daemon.md
 After=sound.target
 Before=jasper-camilla.service shairport-sync.service librespot.service bluealsa-aplay.service jasper-usbsink.service jasper-aec-bridge.service
 
@@ -82,14 +81,12 @@ RestartPreventExitStatus=78
 # upstream source of the music signal both consume; killing it
 # preferentially over Camilla makes sense (Camilla can emit silence
 # briefly; losing Camilla itself means total silence).
-# See docs/HANDOFF-resilience.md "OOM ladder" section.
 OOMScoreAdjust=-800
 
 # Stage 2 audio protection: pages never paged to zram. Audio jitter
 # from zram decompression latency is the dominant risk on a 1 GB
 # Pi 5 under memory pressure; this slice membership shields the
-# work loop. See docs/HANDOFF-resilience.md "Stage 2 audio-protection
-# subset" section. The slice itself is defined in
+# work loop. The slice itself is defined in
 # deploy/systemd/jts-audio.slice.
 Slice=jts-audio.slice
 

@@ -27,7 +27,7 @@
 # an ordinary full-range box. camilla#2 IS the per-driver crossover on an
 # ACTIVE speaker — a flat config there would send FULL-RANGE signal to the
 # tweeter (the exact hazard the whole distributed-active increment exists
-# to prevent; docs/HANDOFF-distributed-active.md "Stage B"). So this guard
+# to prevent). So this guard
 # repairs ONLY to the re-proven DRIVER-DOMAIN baseline (Layer A intact),
 # NEVER to flat.
 #

@@ -1,7 +1,5 @@
 [Unit]
 Description=Capture jasper-doctor --json for the /system dashboard (root fidelity)
-# WS1 Phase 3b-2 — docs/HANDOFF-privilege-separation.md.
-#
 # jasper-control dropped to a non-root user, but jasper-doctor is a root tool
 # (it runs aplay/amixer probes, reads the journal, and `sudo -u <renderer>
 # aplay`). Running it AS the non-root jasper-control makes ~7 hardware checks

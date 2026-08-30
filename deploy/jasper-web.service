@@ -100,8 +100,7 @@ RestartSec=2
 # dedicated non-root service user in the shared `jasper` group (the cross-daemon
 # /run socket + /var/lib/jasper access boundary).
 #
-# This drop is GATED on hardware validation (recovery matrix in
-# docs/HANDOFF-privilege-separation.md) of every privileged surface it owns.
+# This drop is GATED on hardware validation of every privileged surface it owns.
 # Each one's mechanism, validated on jts.local (systemd 257, polkit 126, NM 1.52):
 #   * NetworkManager (/wifi/ scan/connect/forget/radio/PSK-stash) — a polkit
 #     rule (deploy/polkit/49-jasper-web.rules) grants this uid the 5 NM actions
@@ -140,7 +139,6 @@ Group=jasper
 # no UMask= line for it). On an unarmed box — the fleet default — spawns
 # stay on the correction_substream aloop alias and the membership grants
 # only directory write, pointing nothing at a ring.
-# docs/HANDOFF-privilege-separation.md.
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
@@ -189,7 +187,7 @@ ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecret
 RuntimeDirectory=jasper-active-speaker
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-# WS1 phase-1 hardening (docs/HANDOFF-privilege-separation.md): jasper-web gets
+# WS1 phase-1 hardening: jasper-web gets
 # the full phase-1 stanza. ProtectKernelLogs is OMITTED — the wizards shell to
 # nmcli / journalctl -k for Wi-Fi diagnostics and must not be starved of kernel-
 # log access. CapabilityBoundingSet= + SystemCallFilter= landed with the 3b-3

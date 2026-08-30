@@ -11,8 +11,7 @@ StartLimitIntervalSec=600
 StartLimitBurst=20
 
 [Service]
-# Stage 2 audio-protection: pages never swap to zram. See
-# docs/HANDOFF-resilience.md "Stage 2 — audio-protection subset".
+# Stage 2 audio-protection: pages never swap to zram.
 Slice=jts-audio.slice
 Type=simple
 # Type=simple completes start after exec; keep the coordinator-facing job
@@ -76,7 +75,7 @@ CacheDirectoryMode=0700
 # Volume curve: --volume-ctrl log + --volume-range 60 gives a
 # perceptually linear slider over 60 dB. go-librespot's hardcoded
 # cubic curve packed all useful loudness into the bottom third —
-# unusable on real speakers. See docs/HANDOFF-volume.md.
+# unusable on real speakers.
 #
 # Format: S24_3 + tpdf dither = 24-bit packed output with triangular-
 # distribution dither, ~141 dB SNR, well below any DAC noise floor.

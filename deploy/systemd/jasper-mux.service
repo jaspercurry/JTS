@@ -38,7 +38,6 @@ RestartSec=5
 # jasper) for its librespot-stall recovery — it is a non-root broker client now
 # with no direct-systemctl fallback — and read/write the group-shared
 # speaker_volume.json. No capability needed.
-# docs/HANDOFF-privilege-separation.md.
 User=jasper-mux
 Group=jasper
 # WS1 Phase 4b — mux builds a Spotify Web API router for guarded handoff; spotipy
@@ -64,15 +63,13 @@ RuntimeDirectoryMode=0750
 # (mux_mode.json) and the shared speaker_volume.json. The dir is guaranteed to
 # exist by voice's StateDirectory + install.sh's ensure_state_dir; mux's
 # Restart=always rides out any transient dir-not-created-yet window.
-# docs/HANDOFF-privilege-separation.md ("S2: single StateDirectory owner").
 # UMask=0007 — files mux CREATES in /var/lib/jasper land group-`jasper`-writable
 # (0660), not 0644. voice (sole owner) re-chowns the tree to jasper-voice:jasper
 # on its restarts, so mux (same `jasper` group) must write shared files via the
 # group bit. Same directive jasper-fanin/-outputd already use for their sockets.
 UMask=0007
 
-# OOM protection (Stage 1 of memory-resilience plan, see
-# docs/HANDOFF-resilience.md). Mux is restartable but now sits on the
+# OOM protection (Stage 1 of memory-resilience plan). Mux is restartable but now sits on the
 # audible source-selection path: fan-in starts safe/closed and mux
 # opens the chosen renderer lane after volume handoff. Keep moderate
 # protection, but restart on every exit.
@@ -81,7 +78,7 @@ UMask=0007
 # documentation of intent.
 OOMScoreAdjust=-300
 
-# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
+# WS1 phase-1 hardening (hardened root).
 # mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
 # the phase-1 directives. Writes are covered by RuntimeDirectory=jasper-mux +
 # ReadWritePaths (/var/lib/jasper for the source pin, /var/lib/jasper-intsecrets

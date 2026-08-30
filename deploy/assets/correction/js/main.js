@@ -10,8 +10,7 @@
 // and renders that closed contract while /status continues to drive capture,
 // upload, autolevel, and safety-control mechanics. The getUserMedia,
 // AudioWorklet, local/relay capture, and canvas paths still require a real Pi
-// browser pass (HTTPS secure context + mic + CamillaDSP). See
-// docs/HANDOFF-correction.md.
+// browser pass (HTTPS secure context + mic + CamillaDSP).
 import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // This page's local copy was named escapeText; import the shared escapeHtml

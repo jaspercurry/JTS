@@ -1,6 +1,5 @@
 [Unit]
 Description=Disarm StartLimitAction=reboot escalation when boots are looping
-Documentation=file:/opt/jasper/docs/HANDOFF-tier5-watchdog-liveness.md
 # Cross-boot circuit breaker for T5.1: a PERMANENT daemon failure
 # (corrupt config, dead binary) would otherwise reboot the Pi every few
 # minutes forever via the per-unit StartLimitAction=reboot ladder. On

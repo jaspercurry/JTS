@@ -15,7 +15,7 @@
 // eq-math.js for RBJ biquad math and active-speaker-ui.js for active-crossover
 // vocabulary/step policy. The editor's live-draft path still must be exercised
 // on the Pi (band-drag + live-draft → CamillaDSP) before deeper splitting.
-// Do not blind-refactor it. See docs/HANDOFF-management-ui.md.
+// Do not blind-refactor it.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { jsonHeaders } from "/assets/shared/js/http.js";

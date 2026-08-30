@@ -1,6 +1,5 @@
 [Unit]
 Description=Capture and recover CamillaDSP after restart-limit exhaustion
-Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 After=local-fs.target systemd-journald.socket
 
 [Service]

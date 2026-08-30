@@ -1,6 +1,5 @@
 [Unit]
 Description=Periodically check whether JTS Wi-Fi needs recovery
-Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 
 # 3-minute cadence, not seconds: NetworkManager's connection.autoconnect
 # -retries=0 (retry-forever, set on every JTS profile) already covers the

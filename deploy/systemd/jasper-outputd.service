@@ -1,6 +1,5 @@
 [Unit]
 Description=Jasper final output owner
-Documentation=file:///opt/jasper/docs/HANDOFF-speaker-output-reference.md
 After=sound.target
 # outputd owns the read side of Ring B, the SHM ring CamillaDSP writes its
 # post-DSP program into (ADR-0100). Start it before Camilla so Camilla never
@@ -83,7 +82,7 @@ EnvironmentFile=-/var/lib/jasper/outputd.env
 # reference fanout and outputd's UDP reference tap. Keep this after
 # operator retunes so entering/leaving corpus mode is reversible.
 EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
-# Multi-room round-trip lane (HANDOFF-multiroom.md §2, Increment 5).
+# Multi-room round-trip lane (Increment 5).
 # Written ONLY by jasper-grouping-reconcile (the single writer):
 # JASPER_OUTPUTD_DAC_CONTENT_FIFO + _CHANNEL wire the Increment 3
 # dac_content reader to the member round-trip FIFO + this speaker's

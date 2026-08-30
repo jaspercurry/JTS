@@ -1,6 +1,5 @@
 [Unit]
 Description=Recreate lost Wi-Fi profile from /var/lib/jasper/wifi_guardian.env
-Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 # Run after NetworkManager finishes its own connect attempt. If NM
 # successfully restored the profile from /etc/NetworkManager/system-
 # connections/ on its own, the guardian no-ops (Case 1: steady_state).

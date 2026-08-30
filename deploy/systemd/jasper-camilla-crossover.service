@@ -2,9 +2,8 @@
 Description=CamillaDSP #2 (endpoint-crossover instance; active-leader reconciler-gated)
 After=sound.target network.target jasper-fanin.service
 Wants=sound.target jasper-fanin.service
-# camilla#2 is the per-driver crossover instance on an ACTIVE LEADER
-# (docs/HANDOFF-distributed-active.md "Stage B — the ratified active-
-# leader realization"). It coexists with the always-on camilla#1
+# camilla#2 is the per-driver crossover instance on an ACTIVE LEADER.
+# It coexists with the always-on camilla#1
 # (jasper-camilla.service, :1234). Install does not enable it globally;
 # grouping reconcile enables/starts it only while the box is a bonded
 # active leader and disables it again on unbond.
@@ -25,7 +24,7 @@ StartLimitBurst=5
 # Same audio-protection slice as camilla#1: MemorySwapMax=0 keeps
 # CamillaDSP's biquad/limiter DSP state off zram so it cannot suffer
 # zstd-decompression jitter under memory pressure (the 2026-05-24
-# stress-test finding; see docs/HANDOFF-resilience.md "Stage 2").
+# stress-test finding).
 Slice=jts-audio.slice
 Type=simple
 # --statefile + NO positional CONFIGFILE, for the SAME reason as

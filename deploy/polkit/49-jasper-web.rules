@@ -1,6 +1,6 @@
 // WS1 Phase 3b-3 — polkit grant for the non-root `jasper-web` service user.
 //
-// docs/HANDOFF-privilege-separation.md. Installed to
+// Installed to
 // /etc/polkit-1/rules.d/49-jasper-web.rules (root:root 0644) by install.sh's
 // install_jasper_web_polkit. polkitd monitors rules.d and auto-reloads on
 // change — no daemon-reload or polkit restart is needed.
@@ -65,8 +65,7 @@
 //     CRIT_PROTOCOL_STOP is NOT granted — the most network-exposed daemon
 //     stays cap-less. /wifi/scan asks jasper-control's scoped restart broker
 //     to start the root-only jasper-wifi-scan-repair.service helper instead;
-//     if that fails, the page keeps "Join by name". See
-//     docs/HANDOFF-privilege-separation.md.
+//     if that fails, the page keeps "Join by name".
 //   * NetworkManager's own reload / sleep / wake / checkpoint actions — the
 //     wizard never calls them; granting only what wifi_setup.py exercises
 //     keeps the blast radius of a jasper-web compromise to the Wi-Fi

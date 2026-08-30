@@ -1,6 +1,5 @@
 [Unit]
 Description=Reconcile enhanced AEC after a verified JTS deploy
-Documentation=file:/opt/jasper/docs/HANDOFF-enhanced-aec.md
 
 [Path]
 # build.txt is deliberately the final successful-deploy mutation. Watching it
