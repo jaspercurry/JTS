@@ -7,17 +7,14 @@
 Two verbs, both offline:
 
 ``plan``
-    Print the bounded grid a sweep would walk — the geometry seed, the
-    half-period bounds either side of it, the step, and every coordinate. Run
-    this before any sound: it is what tells the operator how many captures the
-    sweep costs at the chosen step and crossover.
+    Print the bounded grid — the geometry seed, the half-period bounds either
+    side of it, the step, and every coordinate — and what a full walk of it
+    would cost in captures.
 
 ``grade``
     Read banked capture rows and print the selected delay plus the honest
     verdict. This is the number the operator hands to
-    ``run-crossover-round.py --alignment-prescription``; grading is deliberately
-    separate from measuring so a banked sweep can be re-graded without replaying
-    a single tone.
+    ``run-crossover-round.py --alignment-prescription``.
 
 Neither verb opens a device, a socket, or a CamillaDSP connection.
 
@@ -25,9 +22,9 @@ Neither verb opens a device, a socket, or a CamillaDSP connection.
 found.** The method of record is compute-then-confirm
 (:mod:`jasper.active_speaker.crossover_v2.delay_landscape`): the coordinate is
 proposed from banked transfers with no audio at all, and confirmed by three
-acoustic takes staged through ``jasper-angle-capture``. These verbs remain
-useful for grading a sweep somebody already banked; they are not the path a new
-measurement takes.
+acoustic takes staged through ``jasper-angle-capture``. Nothing in the tree
+runs a full sweep any more, so ``grade`` reads rows an operator banked by hand
+or from an older run.
 
 Applying a graded delay is NOT this tool's job. The prescription door owns that,
 with its own lobe gate and its own receipts.
@@ -42,7 +39,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.delay_sweep import (
-    DelaySweepRefused,
     rows_at_pose,
     sweep_spec,
     sweep_verdict,
@@ -208,14 +204,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_verbose_logging(verbose=args.verbose)
     try:
         return int(args.func(args))
-    except DelaySweepRefused as exc:
-        print(
-            json.dumps(
-                {"status": "refused", "reason": exc.reason, "detail": exc.detail},
-                indent=2, sort_keys=True,
-            )
-        )
-        return EXIT_REFUSED
     except NullWalkError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED

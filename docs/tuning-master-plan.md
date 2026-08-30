@@ -213,14 +213,14 @@ ratified rulings. Constants land in code as the named program definitions;
   evidence path (`commissioning_evidence`) is the shipped reverse-null
   implementation this program reuses rather than re-inventing.
   `null_walk` is the bounded delay stepping's decision content — spec,
-  schedule, scoring, selection — and `active_speaker.delay_sweep` is the
-  host that executes it, grading the walk and disclosing when no delay
-  explains the residual. `jasper-delay-sweep` is the operator door onto
-  that walk's plan and its grading. Note the two reverse-null sites are
-  deliberately different graphs, not a fork: `measure_spec.inverted_roles_for`
-  flips the protected-neutral MEASURE program at the routed mixer, while
-  the delay sweep flips the driver's own baseline gain in the APPLIED
-  graph, because what it measures is the applied crossover and its trims.
+  schedule, scoring, selection — and `active_speaker.delay_sweep` bounds
+  the grid and grades a walk's evidence, disclosing when no delay explains
+  the residual. `jasper-delay-sweep` is the operator door onto that plan
+  and that grading. A delay is found by compute-then-confirm
+  (`crossover_v2.delay_landscape`), which proposes the coordinate from
+  banked complex transfers and confirms it with three staged takes; the
+  flip and the swept delay both ride the protected-neutral MEASURE program
+  via `measure_spec.inverted_roles_for` and `measurement_delays_us`.
 - **Boost probe:** +6 dB is the standard probe (+3 dB when headroom is
   tight). A dip is correctable when measured gain-back ≥ ~0.8× commanded AND
   excess group delay is flat there; non-correctable when ≤ ~0.5× or excess-GD
