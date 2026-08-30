@@ -1180,8 +1180,10 @@ correction to 7e's own wording: `llm-operator-runbook.md` (673) and
 archived — only a distillation reached `docs/historical/`.
 
 **7h's outcome landed; its instruction did not.** `test_lint_contracts.py` is
-**577** lines at HEAD, down from **2,164** (the row says 2,159 — off by five).
-But **`MAX_LINES_BY_PATH` was not deleted.** It was *repurposed* into the row's
+**288** lines at HEAD, down from **2,164** (the row says 2,159 — off by five);
+the last 302 lines of that drop were the noqa ratchet's own dated ledger, cut
+once the line-ceiling half had already been converted. But
+**`MAX_LINES_BY_PATH` was not deleted.** It was *repurposed* into the row's
 own prescribed replacement: an eight-entry un-ratcheted ceiling table at round
 numbers, carrying its own removal condition. A ledger claiming the constant is
 gone is checkable and false. The four named guard deletions all did land.
