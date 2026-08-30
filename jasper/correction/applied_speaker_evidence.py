@@ -177,10 +177,10 @@ def _expected_candidate_fingerprint(profile: Mapping[str, Any]) -> str:
 
 
 def _candidate_artifact_paths(root: Path) -> list[Path]:
-    """Every published candidate.json under the bundle root, newest last.
+    """Every published candidate.json under the bundle root, in a stable order.
 
     Delegates to the bank reader, which owns the on-disk shape and the scan
-    bound (including WHY the truncation keeps the newest end). Kept as a named
+    bound (including why the order is not chronological). Kept as a named
     local seam because this module's own tests drive it directly.
     """
     return candidate_bank.candidate_artifact_paths(root)

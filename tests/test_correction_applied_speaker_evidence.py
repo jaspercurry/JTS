@@ -346,18 +346,15 @@ def test_corrupt_candidate_artifact_does_not_raise(tmp_path, applied):
     assert result.reason == "candidate_unresolved"
 
 
-def test_artifact_scan_is_bounded_and_keeps_the_newest(tmp_path):
-    """A pathological bundle directory must not become an unbounded walk —
-    and the truncation must drop the OLDEST, never the newest.
+def test_artifact_scan_is_bounded(tmp_path):
+    """A pathological bundle directory must not become an unbounded parse.
 
-    Which end survives is the whole point: the applied profile's candidate is
-    almost always among the most recent, so truncating from the front would
-    discard exactly what the reader is looking for and report a false
-    `candidate_stale`. Zero-padded names make the sort order the age order.
+    The bound and the sort are pinned; WHICH subset survives the cap is not.
+    Bundle ids are random (``uuid4().hex[:12]``), so path order carries no
+    time information and no end of it is the meaningful one to keep.
     """
     session_root = tmp_path / "bundle-a" / "evidence" / "v1" / "artifacts" / "crossover_v2"
-    overflow = 15
-    total = seam.MAX_CANDIDATE_ARTIFACTS_SCANNED + overflow
+    total = seam.MAX_CANDIDATE_ARTIFACTS_SCANNED + 15
     for index in range(total):
         target = session_root / f"s{index:03d}" / "candidate.json"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -365,9 +362,7 @@ def test_artifact_scan_is_bounded_and_keeps_the_newest(tmp_path):
 
     found = seam._candidate_artifact_paths(tmp_path)
     assert len(found) == seam.MAX_CANDIDATE_ARTIFACTS_SCANNED
-    # The newest survives; the oldest `overflow` are the ones dropped.
-    assert found[-1].parent.name == f"s{total - 1:03d}"
-    assert found[0].parent.name == f"s{overflow:03d}"
+    assert found == sorted(found)
 
 
 #: The seam this file's last test pins as unconsumed.
