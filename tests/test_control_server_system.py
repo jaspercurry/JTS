@@ -1141,31 +1141,60 @@ def test_state_transit_read_failure_is_fail_soft(
     assert body["transit"] is None
 
 
-def test_state_voice_wake_legs_flows_from_session_status(
+def test_state_voice_classifies_every_session_status_field(
     server_with_coordinator, monkeypatch,
 ):
-    """Regression for the curated-vs-passthrough drop: /state.voice is
-    hand-built in _get_state, so a session_status field (here wake_legs —
-    the runtime-armed legs jasper-doctor cross-checks against configured
-    intent) only reaches /state if it's explicitly pulled through. Before
-    that pull-through, wake_legs lived in session_status but was absent
-    from /state.voice, silently disabling the doctor's runtime check."""
+    """Every daemon status field is published or deliberately withheld."""
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
+    from jasper.voice_daemon import WakeLoop
+
+    voice_status = WakeLoop.for_tests().session_status()
+    published_paths = {
+        "barge_in_count_session": ("barge_in", "count_session"),
+        "barge_in_last_at": ("barge_in", "last_at"),
+        "barge_in_last_leg": ("barge_in", "last_leg"),
+        "camilla_volume_locked": ("camilla_volume_locked",),
+        "connection_paused": ("connection_paused",),
+        "duck_active": ("duck_active",),
+        "endpointer": ("endpointer",),
+        "measurement_active": ("measurement_active",),
+        "mic_muted": ("mic_muted",),
+        "music_dbfs": ("music_dbfs",),
+        "push_to_talk_only": ("push_to_talk_only",),
+        "spend_allowed": ("spend_allowed",),
+        "tool_packs": ("tool_packs",),
+        "usage_tracking_degraded": ("usage_tracking_degraded",),
+        "wake_legs": ("wake_legs",),
+    }
+    withheld = {
+        "active_manual_mic_source",
+        "assistant_output",
+        "barge_in_reconcile",
+        "input_ended",
+        "manual_mic_sources",
+        "research",
+        "state",
+    }
+    published = set(published_paths)
+
+    assert published.isdisjoint(withheld)
+    assert set(voice_status) == published | withheld
 
     async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
-        return {
-            "state": "WAKE", "input_ended": False, "spend_allowed": True,
-            "connection_paused": False, "mic_muted": False,
-            "duck_active": False, "music_dbfs": -32.0,
-            "wake_legs": ["on", "off", "dtln"],
-        }
+        return voice_status
+
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
 
     status, body = _get(f"{base}/state")
     assert status == 200
-    assert body["voice"]["reachable"] is True
-    assert body["voice"]["wake_legs"] == ["on", "off", "dtln"]
+    projected = body["voice"]
+    assert set(projected).isdisjoint(withheld)
+    for source_key, path in published_paths.items():
+        value = projected
+        for part in path:
+            value = value[part]
+        assert value == voice_status[source_key]
 
 
 def test_state_audio_projects_temporary_mute_as_zero(
@@ -1188,71 +1217,6 @@ def test_state_audio_projects_temporary_mute_as_zero(
 
     assert status == 200
     assert body["audio"]["listening_level_percent"] == 0
-
-
-def test_state_voice_tool_packs_flows_from_session_status(
-    server_with_coordinator, monkeypatch,
-):
-    """Same curated-vs-passthrough regression as wake_legs, for tool_packs:
-    jasper-voice's session_status reports per-pack registration outcomes,
-    and /state.voice must pull the field through for jasper-doctor's
-    check_tool_packs to see runtime truth (a pack that failed to build)."""
-    base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
-
-    packs = [
-        {"name": "audio", "status": "registered", "tool_count": 5,
-         "error": None},
-        {"name": "spotify", "status": "failed", "tool_count": 0,
-         "error": "ImportError('spotipy')"},
-    ]
-
-    async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
-        return {
-            "state": "WAKE", "input_ended": False, "spend_allowed": True,
-            "connection_paused": False, "mic_muted": False,
-            "duck_active": False, "music_dbfs": -32.0,
-            "wake_legs": ["on"], "tool_packs": packs,
-        }
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["voice"]["reachable"] is True
-    assert body["voice"]["tool_packs"] == packs
-
-
-def test_state_voice_push_to_talk_only_flows_from_session_status(
-    server_with_coordinator, monkeypatch,
-):
-    """Same curated-vs-passthrough regression as wake_legs/tool_packs, for
-    push_to_talk_only: jasper-voice's session_status reports whether this
-    box has no room mic of its own (every turn opened by an accessory
-    button), and /state.voice must pull the field through — jasper-doctor's
-    `Wake legs` check does not read it: the doctor re-derives the same fact
-    from the published env + accessory file to report `n/a` instead of a
-    permanent yellow on such a box. Pinned here at the aggregator seam
-    specifically: _get_state hand-curates /state.voice field-by-field, so a
-    key silently dropped from that dict literal is invisible to daemon-side
-    coverage of session_status() (tests/test_voice_daemon_wake_triple_stream.py)
-    and to source-level checks that the key is merely present somewhere in
-    the module."""
-    base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
-
-    async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
-        return {
-            "state": "WAKE", "input_ended": False, "spend_allowed": True,
-            "connection_paused": False, "mic_muted": False,
-            "duck_active": False, "music_dbfs": -32.0,
-            "wake_legs": [], "push_to_talk_only": True,
-        }
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["voice"]["reachable"] is True
-    assert body["voice"]["push_to_talk_only"] is True
 
 
 def test_state_audio_metrics_sanitize_non_finite_values(
