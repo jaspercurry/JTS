@@ -95,8 +95,8 @@ function responseRun(slot, id) {
     },
     series: [
       responseSeries("average", "average", true),
-      responseSeries("7-deg", "position", false, { validity_floor_hz: 250 }),
-      responseSeries("14-deg", "position", false, { validity_floor_hz: 250 }),
+      responseSeries("7-deg", "measurement", false, { validity_floor_hz: 250 }),
+      responseSeries("14-deg", "analysis", false, { validity_floor_hz: 250 }),
     ],
   };
 }
@@ -133,7 +133,7 @@ globalThis.__getJSON = getJSON;
 globalThis.__cssColor = (_canvas, _name, fallback) => fallback;
 globalThis.__drawFrequencyChart = drawFrequencyChart;
 
-await loadEsm(repoPath("deploy/assets/correction/js/crossover/measurements.js"), {
+await loadEsm(repoPath("deploy/assets/correction/js/measurements.js"), {
   stripImports: true,
   guardNoImports: true,
   prelude: [
@@ -159,12 +159,12 @@ check(
 );
 check(
   JSON.stringify(chart.series[1].dash) !== JSON.stringify(chart.series[2].dash),
-  "individual positions have stable, distinct line styles",
+  "generic detail curves have stable, distinct line styles",
 );
 const swatchLines = descendants(elements.get("measurement-series"), "line");
 check(
   swatchLines[1]["stroke-dasharray"] !== swatchLines[2]["stroke-dasharray"],
-  "each position control shows the same distinct style used on the chart",
+  "each detail control shows the same distinct style used on the chart",
 );
 check(
   chart.excludedIntervals.some((band) => band.f_lo_hz === 20 && band.f_hi_hz === 200) &&

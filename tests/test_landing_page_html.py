@@ -568,6 +568,7 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         "room": "room",
         "crossover": "crossover",
         "bass": "bass",
+        "measurements": "measurements",
     }
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
         nginx = path.read_text(encoding="utf-8")

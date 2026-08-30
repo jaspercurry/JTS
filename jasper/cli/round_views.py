@@ -27,8 +27,9 @@ Subcommands:
 * ``agreement <round-dir>`` — per-position sign/magnitude testimony for
   every feature in the trusted sweep, built from the same per-seat curves
   ``per-seat`` computes. Writes ``<round-dir>/agreement.json``.
-* ``frequency <round-a> [<round-b>]`` — the renderer-neutral frequency view
-  shared with the JTS web page. Writes ``<round-a>/frequency_view.json``.
+* ``frequency <source-a> [<source-b>]`` — the renderer-neutral frequency view
+  shared with the JTS web page. A source may be a banked round, a session
+  bundle, or a JSON measurement/analysis document.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout), and prints a one-line human summary to stderr either
@@ -55,7 +56,13 @@ from jasper.active_speaker.crossover_v2.round_views import (
     repeatability_spread,
     verify_pose_curve,
 )
-from jasper.active_speaker.crossover_v2.frequency_view import build_frequency_view
+from jasper.active_speaker.frequency_view import build_frequency_view
+from jasper.active_speaker.measurement_archive import (
+    ArchivedMeasurement,
+    load_measurement,
+)
+from jasper.active_speaker.measurement_document import frequency_run_from_documents
+from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -214,19 +221,46 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _cmd_frequency(args: argparse.Namespace) -> int:
-    try:
-        run_a = load_banked_round(Path(args.round_a))
-        run_b = load_banked_round(Path(args.round_b)) if args.round_b else None
-        payload = build_frequency_view(
-            run_a.packet,
-            run_b.packet if run_b is not None else None,
+def _frequency_source(path: Path):
+    """One round, bundle, or JSON document as a neutral frequency run."""
+
+    if path.is_file():
+        document = json.loads(path.read_text())
+        if not isinstance(document, dict):
+            raise ValueError(f"{path}: expected one JSON object")
+        run = frequency_run_from_documents(
+            run_id=path.stem, documents=(document,),
         )
+    elif (path / "info.json").is_file():
+        info = json.loads((path / "info.json").read_text())
+        if not isinstance(info, dict):
+            raise ValueError(f"{path / 'info.json'}: expected one JSON object")
+        run = load_measurement(ArchivedMeasurement(
+            id=str(info.get("session_id") or path.name),
+            bundle_dir=path,
+            started_at=info.get("started_at"),
+            state=str(info.get("state") or "") or None,
+        ))
+    else:
+        run = frequency_run(load_banked_round(path).packet)
+    if not run.series:
+        raise ValueError(f"{path}: no usable frequency-response curves")
+    return run
+
+
+def _cmd_frequency(args: argparse.Namespace) -> int:
+    source_a = Path(args.source_a)
+    try:
+        run_a = _frequency_source(source_a)
+        run_b = _frequency_source(Path(args.source_b)) if args.source_b else None
+        payload = build_frequency_view(run_a, run_b)
     except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     written = _write_json(
-        payload, args.out, Path(args.round_a) / "frequency_view.json"
+        payload,
+        args.out,
+        (source_a if source_a.is_dir() else source_a.parent) / "frequency_view.json",
     )
     print(
         f"frequency: {len(payload['runs'])} run(s)"
@@ -283,8 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
     agreement.set_defaults(func=_cmd_agreement)
 
     frequency = sub.add_parser("frequency", help="build the shared frequency-response view")
-    frequency.add_argument("round_a", help="banked round directory for run A")
-    frequency.add_argument("round_b", nargs="?", help="optional banked round directory for run B")
+    frequency.add_argument(
+        "source_a", help="banked round, session bundle, or JSON document for A",
+    )
+    frequency.add_argument(
+        "source_b", nargs="?",
+        help="optional banked round, session bundle, or JSON document for B",
+    )
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frequency.set_defaults(func=_cmd_frequency)
 

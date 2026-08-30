@@ -15,6 +15,13 @@ INSTALL_SH = ROOT / "deploy" / "install.sh"
 NGINX_CONF = ROOT / "deploy" / "nginx-jasper.conf"
 
 
+def test_measurement_view_routes_to_correction_web_on_http_and_https():
+    conf = NGINX_CONF.read_text()
+
+    assert conf.count("location /sound/measurements/ {") == 2
+    assert conf.count("proxy_pass http://127.0.0.1:8770/measurements/;") == 2
+
+
 def test_correction_web_waits_for_time_sync_before_https_lookup():
     body = UNIT_PATH.read_text()
     assert (

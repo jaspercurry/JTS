@@ -823,6 +823,35 @@ def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     assert payload["runs"][0]["series"][0]["kind"] == "average"
 
 
+def test_cli_frequency_accepts_a_standalone_analysis_document(tmp_path):
+    from jasper.cli.round_views import main
+
+    source = tmp_path / "analysis.json"
+    source.write_text(json.dumps({
+        "analysis": {
+            "summed_response": {
+                "freqs_hz": [100.0, 1000.0],
+                "magnitude_db": [-24.0, -23.0],
+            },
+        },
+    }))
+
+    assert main(["frequency", str(source)]) == 0
+    payload = json.loads((tmp_path / "frequency_view.json").read_text())
+    assert payload["runs"][0]["id"] == "analysis"
+    assert payload["runs"][0]["series"][0]["kind"] == "analysis"
+
+
+def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
+    from jasper.cli.round_views import main
+
+    source = tmp_path / "notes.json"
+    source.write_text(json.dumps({"notes": "not a measurement"}))
+
+    assert main(["frequency", str(source)]) == 1
+    assert "no usable frequency-response curves" in capsys.readouterr().err
+
+
 def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli.round_views import main
 

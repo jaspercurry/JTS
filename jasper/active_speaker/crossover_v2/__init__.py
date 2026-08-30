@@ -19,8 +19,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.round_evidence` — the two measurements a round compares, reduced.
 * :mod:`.round_views` — the round-grading comparison views a laptop campaign
   had been re-deriving by hand.
-* :mod:`.frequency_view` — saved response curves prepared once for web and
-  command-line renderers.
+* :mod:`.frequency_view` — retained round packets translated into the neutral
+  :mod:`jasper.active_speaker.frequency_view` web/LLM contract.
 * :mod:`.round_anchor` — what an apply displaced, what it put live, and whether
   it still is.
 * :mod:`.durable_state` — the durable crossover-v2 state document: every key it
