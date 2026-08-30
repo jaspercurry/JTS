@@ -519,8 +519,9 @@ def test_touch_target_floor_assertion_actually_fires():
 
 
 def test_design_language_doc_is_reachable_and_dated():
-    """Documentation paradigm rules 3 and 8: every HANDOFF-style reference
-    carries a Last verified footer and is listed in README's doc atlas."""
+    """Documentation paradigm rules 3 and 8: every canonical subsystem
+    reference doc carries a Last verified footer and is listed in README's
+    doc atlas."""
     doc = DESIGN_LANGUAGE_DOC.read_text()
     assert re.search(r"(?m)^Last verified: \d{4}-\d{2}-\d{2}$", doc), (
         "docs/design-language.md needs a `Last verified: YYYY-MM-DD` footer"

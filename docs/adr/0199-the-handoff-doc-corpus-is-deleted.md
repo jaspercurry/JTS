@@ -1,4 +1,4 @@
-# ADR-0198: The HANDOFF doc corpus is deleted
+# ADR-0199: The HANDOFF doc corpus is deleted
 
 - **Date:** 2026-08-30
 - **Status:** Accepted

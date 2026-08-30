@@ -73,7 +73,7 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   parking on unproven-ness is reserved for the non-negotiables (ADR-0101).
 - **Docs:** decisions go to `docs/adr/` (append-only, dated, one decision per
   file; supersede, never edit). The HANDOFF doc corpus was deleted for good
-  (ruling 13, ADR-0198) — do not recreate that tier; a subsystem fact gets
+  (ruling 13, ADR-0199) — do not recreate that tier; a subsystem fact gets
   re-derived at HEAD, not parked in a new handoff. Do not restate here, in
   README, or in code what another file owns.
 - **Duplication:** before writing a helper, constant vocabulary, or module,
@@ -166,7 +166,7 @@ Its spirit is folded into the Defaults above — do not restate it here.
 What agents must remember lives in, in order: this file (operational),
 `docs/adr/` (decisions and their why), git history and PR descriptions
 (what changed and when). The HANDOFF doc corpus that used to sit at the end
-of that list is gone (ruling 13, ADR-0198) — a subsystem fact not covered by
+of that list is gone (ruling 13, ADR-0199) — a subsystem fact not covered by
 the three sources above gets re-derived at HEAD, never trusted from a
 handoff. Inline code prose is not a memory store.
 

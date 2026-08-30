@@ -232,7 +232,7 @@ pointer, not a second copy.
 
 One line each; the doc is the canonical "read this before modifying". (The
 per-subsystem HANDOFF docs this section used to index were deleted — ruling
-13, [ADR-0198](docs/adr/0198-the-handoff-doc-corpus-is-deleted.md); a
+13, [ADR-0199](docs/adr/0199-the-handoff-doc-corpus-is-deleted.md); a
 subsystem fact gets re-derived at HEAD, not parked in a handoff.)
 
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — per-household-member
