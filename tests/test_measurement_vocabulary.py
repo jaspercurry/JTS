@@ -88,6 +88,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/correction/failures.py",
     "jasper/correction/level_match.py",
     "jasper/web/correction_setup.py",
+    "jasper/web/correction_room_flow.py",
     "jasper/web/balance_flow.py",
     "jasper/web/sync_flow.py",
     # Cluster 3 — relay hand-off chrome (the speaker-side pages that hand the
