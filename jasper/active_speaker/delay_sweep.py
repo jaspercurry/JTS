@@ -395,6 +395,11 @@ class DelaySweepSeams:
     restore_graph: Callable[[], Coroutine[Any, Any, dict[str, Any]]]
     measure: Callable[..., Awaitable[Mapping[str, Any]]]
     session_claim: Callable[[], str | None] | None = None
+    # Announced before each coordinate's graph is applied, so a host that binds
+    # durable per-coordinate identity (one attempt per coordinate, ordinals
+    # within its repeat set) learns the coordinate from the walk rather than
+    # re-deriving it from the graph it was handed.
+    begin_coordinate: Callable[[float], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -539,6 +544,8 @@ async def _measure_coordinate(
     """Apply one coordinate, measure every pose and repeat, record the receipts."""
 
     candidate = plan.spec.dsp_candidate(coordinate)
+    if seams.begin_coordinate is not None:
+        seams.begin_coordinate(candidate.relative_delay_us)
     graph = reverse_null_graph(
         live_graph,
         inverted_role=plan.inverted_role,
