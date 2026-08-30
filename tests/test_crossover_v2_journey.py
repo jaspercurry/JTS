@@ -472,7 +472,7 @@ def test_the_flow_re_exports_every_phase_name_the_journey_owns():
     from jasper.active_speaker.crossover_v2 import journey
 
     phase_names = [n for n in vars(journey) if n.startswith("PHASE_")]
-    assert len(phase_names) == 11, phase_names
+    assert len(phase_names) == 12, phase_names
     for name in [*phase_names, "CAPTURE_PHASES", "GROUP_PHASES"]:
         if name in JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS:
             assert not hasattr(flow, name), (

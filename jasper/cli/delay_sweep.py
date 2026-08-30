@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.active_speaker.angle_capture import REGIME_NULL_CONFIRM
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
@@ -176,6 +177,13 @@ def _stage_command(candidate: Any, args: argparse.Namespace) -> str:
     half-stated pair, so a line naming a role with 0 us would be refused at the
     door it was printed for.
 
+    Every line carries ``--regime null_confirm``. That regime is what makes the
+    printed line a confirmation rather than a system response: it plays the
+    band-limited summed sweep THROUGH the measurement graph, so the inversion
+    and the coordinate named on the same line are actually in the signal path
+    when the null is read. The ordinary ``summed`` regime would restore the
+    production graph first and measure a speaker with neither.
+
     Every line carries ``--level-matched``, including the zero coordinate.
     These are reverse-null confirmations, and a null between branches ~10 dB
     apart in sensitivity is bounded by that gap however well the coordinate is
@@ -185,6 +193,7 @@ def _stage_command(candidate: Any, args: argparse.Namespace) -> str:
 
     line = (
         f"jasper-angle-capture stage --angles {args.position_deg} "
+        f"--regime {REGIME_NULL_CONFIRM} "
         f"--polarity {POLARITY_INVERTED} --inverted-role {args.inverted_role} "
         "--level-matched"
     )

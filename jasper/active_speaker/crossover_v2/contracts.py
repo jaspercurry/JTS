@@ -1456,17 +1456,23 @@ REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 # `tests/test_crossover_v2_engine_skeleton.py` pins every one of them equal to
 # its owner's spelling so the cheap copy cannot drift off the real one.
 
-#: The three parameterizations of the one `measure` verb — ruling S1's
+#: The parameterizations of the one `measure` verb — ruling S1's
 #: "measuring is measuring" made visible in the data, and wave 4j's `kind`
 #: index column. A baseline, a candidate check and a re-measure differ by this
 #: word and by nothing else in the code that runs them.
 MEASURE_KIND_BASELINE = "baseline"
 MEASURE_KIND_CANDIDATE = "candidate"
 MEASURE_KIND_VERIFY = "verify"
+#: The DISPOSE half of the inter-driver delay method: a summed capture whose
+#: whole purpose is the null depth at one INSTALLED delay coordinate. A fourth
+#: word rather than a flag on `candidate` because it plays a different stimulus
+#: through a different graph — see `journey.PHASE_NULL_CONFIRM`.
+MEASURE_KIND_NULL_CONFIRM = "null_confirm"
 MEASURE_KINDS = (
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
+    MEASURE_KIND_NULL_CONFIRM,
 )
 
 #: ``kind`` on the speaker's own per-take record, stamped by

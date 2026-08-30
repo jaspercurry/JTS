@@ -150,8 +150,22 @@ PROGRAM_SAMPLE_RATE_HZ = 48_000
 PROGRAM_PHASE_CHECK = "check"
 PROGRAM_PHASE_MEASURE = "measure"
 PROGRAM_PHASE_VERIFY = "verify"
+# The null confirm's own stimulus phase. It shares VERIFY's shape and its
+# analyzer, and it is NOT `PROGRAM_PHASE_VERIFY` for one reason that decides
+# whether it can play at all: a confirm is ROUTED — it loads the measurement
+# graph and rides `play_program`, so it passes the play-time readmit gate,
+# which `program_admission._validate_program` raises for every verify-class
+# program ("VERIFY rides the applied production graph"). Its own phase is what
+# lets that gate admit it, so the confirm is checked segment-by-segment against
+# the declared driver caps rather than resting on a compose-time clamp alone.
+PROGRAM_PHASE_NULL_CONFIRM = "null_confirm"
 PROGRAM_PHASES = frozenset(
-    {PROGRAM_PHASE_CHECK, PROGRAM_PHASE_MEASURE, PROGRAM_PHASE_VERIFY}
+    {
+        PROGRAM_PHASE_CHECK,
+        PROGRAM_PHASE_MEASURE,
+        PROGRAM_PHASE_VERIFY,
+        PROGRAM_PHASE_NULL_CONFIRM,
+    }
 )
 
 # Segment kinds.
@@ -298,6 +312,13 @@ DEFAULT_VERIFY_SWEEP_S = 6.0
 DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = 20_000.0
+
+# How far past each crossover shoulder the null-confirm sweep reaches. The null
+# depth is read at Fc/2 and 2*Fc (`analysis.crossover_null_depth_db`) and
+# `np.interp` CLAMPS outside the data, so a sweep stopping exactly on a shoulder
+# would have that shoulder read off its own edge bin. A quarter-octave of run-up
+# either side puts both read points inside measured data.
+NULL_CONFIRM_SHOULDER_MARGIN = 1.25
 
 # The leading VERIFY pilot pair's OWN band (W6.7 ruling 2) — deliberately NOT
 # the summed sweep's full band. The sweep spans the crossover overlap on
@@ -1475,6 +1496,165 @@ def build_verify_program(
             downstream_gain_db=downstream_gain_db,
         )
     return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
+
+
+def null_confirm_band_hz(
+    fc_hz: float,
+    *,
+    shoulder_margin: float = NULL_CONFIRM_SHOULDER_MARGIN,
+) -> tuple[float, float]:
+    """The band a null confirm sweeps: both shoulders, inside VERIFY's envelope.
+
+    Derived, never declared. The confirm exists to read
+    :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`, which
+    interpolates at ``Fc/2``, ``Fc`` and ``2*Fc`` — so the sweep must span both
+    shoulders, with :data:`NULL_CONFIRM_SHOULDER_MARGIN` of run-up either side
+    so neither shoulder is read off an edge bin.
+
+    **Why this is not intersected with the per-driver declared bands.** A summed
+    stimulus does not reach either driver as composed: it enters the measurement
+    graph, whose configured crossover and protection filters are what band-limit
+    each branch. Intersecting the shoulder window with both DECLARED bands would
+    treat the mono signal as if it arrived at both drivers unfiltered, and it
+    refuses the ordinary case rather than a dangerous one — a 2-way tweeter
+    declares down to about Fc, so the lower shoulder ``Fc/2`` sits below its
+    declared floor on essentially every real speaker. ``build_verify_program``,
+    the shipped summed sweep, intersects nothing for exactly this reason.
+
+    **The safety argument is containment.** The returned band is clamped to
+    VERIFY's own envelope — the same ``min(VERIFY_F_LO_HZ, fc/2)`` low edge and
+    the same :data:`VERIFY_F_HI_HZ` ceiling — so a confirm sweep is always a
+    frequency SUBSET of the summed sweep this speaker already plays, at a level
+    its caller clamps to the most restrictive driver cap. Narrowing to the
+    crossover region takes energy AWAY from both extremes: the woofer sees less
+    low-frequency content than VERIFY gives it and the tweeter less HF.
+
+    **This asserts; it does not re-judge.** A corner whose shoulders fall outside
+    that envelope has no confirmable null, and the PROPOSE door already refused
+    it upstream on the banked curves (``delay_landscape._curve``'s "do not span
+    both crossover shoulders"). Reaching here having failed that test is a caller
+    defect, so it raises rather than quietly returning a depth read off two
+    clamped edge bins.
+    """
+    if not (fc_hz > 0) or not math.isfinite(fc_hz):
+        raise ValueError("fc_hz must be finite and positive")
+    if not shoulder_margin >= 1.0:
+        raise ValueError("shoulder_margin must be at least 1.0")
+    lower_shoulder_hz = fc_hz / 2.0
+    upper_shoulder_hz = fc_hz * 2.0
+    # VERIFY's own edges, spelled the way build_verify_program spells them, so
+    # the containment claim above is checkable rather than asserted.
+    lo = max(lower_shoulder_hz / shoulder_margin, min(VERIFY_F_LO_HZ, fc_hz / 2.0))
+    hi = min(upper_shoulder_hz * shoulder_margin, VERIFY_F_HI_HZ)
+    if lo > lower_shoulder_hz or hi < upper_shoulder_hz:
+        raise ValueError(
+            f"a null confirm at fc={fc_hz:g} Hz needs the shoulders "
+            f"[{lower_shoulder_hz:g},{upper_shoulder_hz:g}] Hz, which do not fit "
+            f"inside the summed sweep envelope [{lo:g},{hi:g}] Hz"
+        )
+    return lo, hi
+
+
+def build_null_confirm_program(
+    fc_hz: float,
+    *,
+    gain_db: float = BASE_STIMULUS_PEAK_DBFS,
+    guard_s: float = DEFAULT_VERIFY_GUARD_S,
+    sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
+    tail_s: float = DEFAULT_VERIFY_TAIL_S,
+    downstream_gain_db: float = 0.0,
+    leading_pilot_gains_db: tuple[float, float] | None = None,
+    pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
+    pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
+    courtesy_prelude: bool = False,
+) -> ExcitationProgram:
+    """The acoustic null confirm's stimulus: a BAND-LIMITED mono summed sweep.
+
+    Same shape as :func:`build_verify_program` — ambient window, optional pilot
+    pair, guard, one summed ESS, tail — and deliberately the same
+    ``PROGRAM_PHASE_VERIFY`` and ``"sweep_verify"`` segment id, so
+    ``program_analysis`` routes it to ``_analyze_verify`` and reads
+    ``reverse_null_depth_db`` off it with no dispatch change. That reuse is the
+    point: a confirmed depth and a computed one must be the same subtraction
+    (:func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`), and a
+    second analyzer would be a second null depth.
+
+    The ONE difference from VERIFY is the band. VERIFY sweeps the whole audible
+    range because it is asking "what does the system do?"; a null confirm asks
+    only "how deep is the notch at Fc?", which is read from
+    ``[Fc/2, 2*Fc]``. Sweeping two decades of spectrum that the answer does not
+    depend on spends the energy budget away from the octaves that decide it, and
+    drives both drivers well outside the crossover region for no reading.
+    :func:`null_confirm_band_hz` derives that band from ``fc_hz`` alone and
+    clamps it inside VERIFY's own envelope — see its docstring for why the
+    per-driver declared bands are deliberately not intersected here.
+
+    Level is the caller's (``gain_db``); this composer applies no clamp of its
+    own, exactly as :func:`build_verify_program` applies none — the min-cap
+    clamp lives in ``crossover_v2.programs.SessionExcitation``, which is the one
+    level guard for every summed stimulus.
+    """
+    f1_hz, f2_hz = null_confirm_band_hz(fc_hz)
+
+    segments: list[ProgramSegment] = []
+    cursor = 0
+    prelude_at: int | None = None
+    if leading_pilot_gains_db is not None:
+        if len(leading_pilot_gains_db) != 2:
+            raise ValueError("leading_pilot_gains_db must be exactly two levels")
+        # The VERIFY pilot band verbatim, including its low-Fc fallback: the
+        # pilot must stay clear of the crossover overlap for the same reason it
+        # does there (a pilot swept through the notch goes noise-dominated and
+        # misfires the linearity ratio), and that reason is unchanged by this
+        # program's narrower sweep.
+        pilot_lo = VERIFY_PILOT_F_LO_HZ
+        pilot_hi = min(VERIFY_PILOT_F_HI_HZ, fc_hz / VERIFY_PILOT_FC_CLEARANCE_RATIO)
+        if not pilot_lo < pilot_hi:
+            pilot_lo, pilot_hi = fc_hz / 8.0, fc_hz / 4.0
+        prelude_at = cursor
+        cursor = _append_pilot_ambient_window(segments, cursor)
+        cursor = _append_leading_pilot_pair(
+            segments, cursor,
+            role=VERIFY_PILOT_ROLE,
+            channel=0,
+            f1_hz=pilot_lo,
+            f2_hz=pilot_hi,
+            gains_db=leading_pilot_gains_db,
+            pilot_duration_s=pilot_duration_s,
+            pilot_gap_s=pilot_gap_s,
+            downstream_gain_db=downstream_gain_db,
+        )
+    guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
+    segments.append(_silence("guard", cursor, guard_n))
+    cursor += guard_n
+    if prelude_at is None:
+        prelude_at = cursor
+
+    sweep = _stimulus(
+        segment_id="sweep_verify",
+        kind=KIND_SUMMED_SWEEP,
+        role=None,
+        channel=0,
+        start=cursor,
+        f1_hz=f1_hz,
+        f2_hz=f2_hz,
+        duration_s=sweep_s,
+        gain_db=gain_db,
+        downstream_gain_db=downstream_gain_db,
+    )
+    segments.append(sweep)
+    cursor += sweep.n_samples
+
+    tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
+    segments.append(_silence("tail", cursor, tail_n))
+    cursor += tail_n
+
+    if courtesy_prelude:
+        segments, cursor = _insert_courtesy_prelude(
+            segments, cursor, at_sample=prelude_at, channels=1,
+            downstream_gain_db=downstream_gain_db,
+        )
+    return _finalize(PROGRAM_PHASE_NULL_CONFIRM, 1, segments, cursor)
 
 
 def segment_stimulus(segment: ProgramSegment):

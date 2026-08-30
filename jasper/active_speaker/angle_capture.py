@@ -82,7 +82,11 @@ from typing import Mapping, Sequence
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.contracts import POLARITY_NORMAL
-from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
+from .crossover_v2.journey import (
+    PHASE_CLOUD_VERIFY,
+    PHASE_MEASURE,
+    PHASE_NULL_CONFIRM,
+)
 from .crossover_v2.programs import program_for_phase
 from .crossover_v2_flow import (
     MARK_DISTANCE_M,
@@ -105,6 +109,7 @@ from .crossover_v2_flow import (
 __all__ = [
     "REGIME_PER_DRIVER",
     "REGIME_SUMMED",
+    "REGIME_NULL_CONFIRM",
     "REGIMES",
     "MOVER_ARM",
     "MOVER_HUMAN",
@@ -153,7 +158,14 @@ REGIME_PER_DRIVER = "per_driver"
 #: response at that angle -- the before/after evidence.
 REGIME_SUMMED = "summed"
 
-REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED)
+#: One BAND-LIMITED sweep through the MEASUREMENT graph, with a branch inverted
+#: and a candidate delay installed -- the DISPOSE half of the delay method. It
+#: is summed like :data:`REGIME_SUMMED` and differs in the one way that decides
+#: the reading: that regime measures the standing production graph, this one
+#: measures the graph carrying the coordinate under test.
+REGIME_NULL_CONFIRM = "null_confirm"
+
+REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_NULL_CONFIRM)
 
 #: An external driver turns the microphone and reports the angle reached. It is
 #: the one mover that auto-advances -- there is no hand to tap -- which is what
@@ -213,6 +225,7 @@ MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
 _REGIME_PROGRAM_PHASE = {
     REGIME_PER_DRIVER: PHASE_MEASURE,
     REGIME_SUMMED: PHASE_CLOUD_VERIFY,
+    REGIME_NULL_CONFIRM: PHASE_NULL_CONFIRM,
 }
 
 
@@ -598,6 +611,7 @@ def program_for_stop(
     measure: ExcitationProgram | None,
     verify: ExcitationProgram,
     cloud: ExcitationProgram,
+    null_confirm: ExcitationProgram | None = None,
 ) -> ExcitationProgram:
     """The composed program this stop plays -- BY IDENTITY, through the shipped
     dispatcher.
@@ -621,6 +635,7 @@ def program_for_stop(
         measure=measure,
         verify=verify,
         cloud=cloud,
+        null_confirm=null_confirm,
     )
 
 

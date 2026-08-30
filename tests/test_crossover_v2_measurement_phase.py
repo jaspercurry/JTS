@@ -18,6 +18,7 @@ import pytest
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_NULL_CONFIRM,
     MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
     MEASURE_REGIMES,
@@ -25,6 +26,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
+    PHASE_NULL_CONFIRM,
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.measurement_phase import (
@@ -51,6 +53,8 @@ _TABLE = [
     (MEASURE_KIND_CANDIDATE, "near_field", PHASE_MEASURE),
     (MEASURE_KIND_VERIFY, "reference_axis", PHASE_VERIFY),
     (MEASURE_KIND_VERIFY, "near_field", PHASE_VERIFY),
+    (MEASURE_KIND_NULL_CONFIRM, "reference_axis", PHASE_NULL_CONFIRM),
+    (MEASURE_KIND_NULL_CONFIRM, "near_field", PHASE_NULL_CONFIRM),
 ]
 
 

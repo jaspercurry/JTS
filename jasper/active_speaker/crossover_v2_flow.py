@@ -223,6 +223,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
+    PHASE_NULL_CONFIRM,
     PHASE_VERIFY,
     CommissionJourney,
     JourneyPlan,
@@ -2481,6 +2482,11 @@ class CrossoverV2Session:
         # — a position does not open a session). Held for the same reason as the
         # other three: ``program_for_phase`` answers by identity.
         self._cloud_program = self._excitation.cloud_program()
+        # The DISPOSE half's stimulus: the same min-cap clamp, band-limited to
+        # the crossover shoulders. Held beside the other four for the identity
+        # reason, and composed unconditionally because — unlike MEASURE — it
+        # depends on no gain solve, only on the declared corner.
+        self._null_confirm_program = self._excitation.null_confirm_program()
 
         # Per-SLOT attempt bookkeeping + the last failure reason. A slot is the
         # phase for a single-capture phase and the ``phase:index`` pair inside a
@@ -4131,6 +4137,7 @@ class CrossoverV2Session:
                 measure=self._measure_program,
                 verify=self._verify_program,
                 cloud=self._cloud_program,
+                null_confirm=self._null_confirm_program,
             )
         except _programs.NoProgramForPhaseError as exc:
             # The flow's own error type is what every caller (and the relay
@@ -4181,6 +4188,12 @@ class CrossoverV2Session:
             # would grade #2291's pre-apply capture as a post-apply tracking
             # result, bank it as a tuning attempt, and do it silently.
             verdict = self._consume_entry_baseline(index, attempt, analysis, result)
+        elif phase == PHASE_NULL_CONFIRM:
+            # Explicit for the same reason, and a sharper one: a confirm is
+            # DELIBERATELY a deep notch at Fc, which is what `_consume_verify`'s
+            # tracking gates read as a defect. The catch-all would refuse the
+            # measurement for succeeding.
+            verdict = self._consume_null_confirm(index, attempt, analysis, result)
         else:
             verdict = self._consume_verify(
                 index, attempt, analysis, result, phase=phase,
@@ -7025,6 +7038,49 @@ class CrossoverV2Session:
             pilot_snr_db=_worst_pilot_snr_db(analysis),
             glitch=analysis.glitch_detected,
         )
+
+    def _consume_null_confirm(
+        self,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
+    ) -> PhaseVerdict:
+        """The DISPOSE half's capture: screen it, then report the depth it read.
+
+        The screens are the entry baseline's, unchanged and for its reason: both
+        are one summed sweep at the design-axis mark, so "was the stimulus
+        located, did the pilots carry, was the capture intact" is the same
+        question with the same shipped answer
+        (:func:`~jasper.active_speaker.crossover_v2.spatial.entry_baseline_screens`).
+
+        **What it does NOT do is judge the depth.** A shallow null is a result —
+        the model breaking at this band, or a branch level gap — and
+        :func:`~jasper.active_speaker.crossover_v2.delay_landscape.confirmation_verdict`
+        is the one grader, offline, against the computed landscape. Refusing a
+        capture here for reading shallow would throw away the evidence that
+        grader exists to weigh.
+
+        ``reverse_null_depth_db`` is ``None`` when the capture did not span both
+        shoulders or sat under the gate's validity floor; that is carried
+        through as absent rather than as a zero, because "no depth" and "no
+        cancellation" are different findings.
+        """
+        screen = _spatial.entry_baseline_screens(
+            analysis,
+            stimulus_located=_stimulus_locate_ok(analysis),
+            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
+        )
+        if screen.kind is not None:
+            return PhaseVerdict(
+                False,
+                _screen_refusal_code(screen.kind),
+                payload=dict(screen.integrity_payload or {}),
+            )
+        payload: dict[str, Any] = {}
+        if analysis.reverse_null_depth_db is not None:
+            payload["null_depth_db"] = float(analysis.reverse_null_depth_db)
+        return PhaseVerdict(True, payload=payload)
 
     def _consume_entry_baseline(
         self,

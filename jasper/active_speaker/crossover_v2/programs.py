@@ -78,6 +78,7 @@ from jasper.audio_measurement.program import (
     RoleBand,
     build_check_program,
     build_measure_program,
+    build_null_confirm_program,
     build_verify_program,
 )
 
@@ -88,6 +89,7 @@ from .journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
+    PHASE_NULL_CONFIRM,
     PHASE_VERIFY,
 )
 
@@ -204,6 +206,11 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
 #: identical program OBJECT. Removing it from this set would not merely change
 #: the stimulus — it would make every round's benefit verdict
 #: :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_PROGRAM_MISMATCH`.
+#:
+#: :data:`~.journey.PHASE_NULL_CONFIRM` is summed and is deliberately NOT a
+#: member: it measures the MEASUREMENT graph, whose inversion and candidate
+#: delay are the thing under test, so restoring before it would play the
+#: production graph and grade a coordinate that was never installed.
 SUMMED_SWEEP_PHASES = frozenset(
     {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE}
 )
@@ -392,6 +399,39 @@ class SessionExcitation:
             extra_backoff_db=extra_backoff_db,
         )
 
+    def null_confirm_program(
+        self, *, extra_backoff_db: float = 0.0,
+    ) -> ExcitationProgram:
+        """The acoustic null confirm's band-limited summed sweep.
+
+        Clamped to the MOST RESTRICTIVE cap through the same
+        :func:`back_off_gain` call the other summed sweeps use, and for the
+        identical reason invariant 1 gives: this is a summed signal, it reaches
+        every driver, and it plays with no play-time admission gate. It is
+        band-limited to the crossover shoulders
+        (``program.null_confirm_band_hz``), which makes it a frequency SUBSET of
+        :meth:`verify_program`'s sweep at the same clamp — strictly less
+        excitation, never more.
+
+        It differs from :meth:`verify_program` in WHERE it plays, not in how
+        loud: the confirm is the one summed phase that measures the measurement
+        graph (:data:`SUMMED_SWEEP_PHASES` excludes it), because the inversion
+        and the candidate delay under test live there.
+        """
+        binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
+        gain = back_off_gain(
+            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
+            self.session_volume_db,
+            binding_cap,
+        )
+        return build_null_confirm_program(
+            self.fc_hz,
+            gain_db=gain,
+            downstream_gain_db=self.session_volume_db,
+            leading_pilot_gains_db=self.pilot_gains(gain),
+            courtesy_prelude=courtesy_prelude_for_phase(PHASE_NULL_CONFIRM),
+        )
+
     def _summed_sweep(
         self, *, courtesy_prelude: bool, extra_backoff_db: float,
     ) -> ExcitationProgram:
@@ -419,6 +459,7 @@ def program_for_phase(
     measure: ExcitationProgram | None,
     verify: ExcitationProgram,
     cloud: ExcitationProgram,
+    null_confirm: ExcitationProgram | None = None,
 ) -> ExcitationProgram:
     """Which composed program this phase plays — **by identity, not by value**.
 
@@ -453,6 +494,19 @@ def program_for_phase(
                 "MEASURE armed before the CHECK gain solve produced a program"
             )
         return measure
+    if phase == PHASE_NULL_CONFIRM:
+        # Its OWN arm, ahead of both summed branches, because it is the one
+        # summed phase that is not a SUMMED_SWEEP_PHASES member: falling through
+        # to `verify` would hand it the full-band object AND put its phase in
+        # the set whose members restore the measurement graph. Defaulted to
+        # None on the same terms as `measure` — a session that composed no
+        # confirm refuses by name rather than playing something at a guessed
+        # band.
+        if null_confirm is None:
+            raise NoProgramForPhaseError(
+                "a null confirm was armed before its program was composed"
+            )
+        return null_confirm
     if phase in GROUP_SUMMED_SWEEP_PHASES:
         # One composed sweep serves both position groups. Same excitation, same
         # min-cap clamp, same ``program.phase`` ("verify") so the analyzer

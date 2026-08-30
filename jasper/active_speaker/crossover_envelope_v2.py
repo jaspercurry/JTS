@@ -80,6 +80,7 @@ from .crossover_v2.journey import (
     PHASE_DONE,
     PHASE_LATERAL,
     PHASE_MEASURE,
+    PHASE_NULL_CONFIRM,
     PHASE_CLOSING,
     PHASE_REVIEW,
     PHASE_VERIFY,
@@ -244,6 +245,11 @@ _PHASE_STEP = {
     # fallback, which is ``microphone_check`` — the stepper would walk BACKWARDS
     # to step 1 on the final capture of the session.
     PHASE_ENTRY_BASELINE: "measure",
+    # A delay confirmation is still measuring, and it is registered for the
+    # reason directly above rather than left to the unmapped fallback: it is an
+    # operator-staged capture that can run at any point in a session, and the
+    # fallback would step a household's screen backwards to step 1.
+    PHASE_NULL_CONFIRM: "measure",
     # The review interlude sits on the APPLY step: measuring is finished and
     # what the household is now doing IS the apply decision (two-stage D3).
     # It shares the step with PHASE_APPLYING deliberately — the stepper tracks

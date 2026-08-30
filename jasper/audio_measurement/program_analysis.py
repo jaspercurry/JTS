@@ -38,6 +38,7 @@ from jasper.audio_measurement.program import (
     KIND_SWEEP,
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
+    PROGRAM_PHASE_NULL_CONFIRM,
     PROGRAM_PHASE_VERIFY,
     STIMULUS_KINDS,
     ExcitationProgram,
@@ -5392,7 +5393,14 @@ def analyze_program_capture(
             program, capture, sample_rate, global_offset, locations,
             calibration, geometry, priors,
         )
-    elif program.phase == PROGRAM_PHASE_VERIFY:
+    elif program.phase in (PROGRAM_PHASE_VERIFY, PROGRAM_PHASE_NULL_CONFIRM):
+        # ONE analyzer for both, deliberately. A null confirm is a summed sweep
+        # read for `reverse_null_depth_db`, which is the number `_analyze_verify`
+        # already computes with `crossover_null_depth_db` — the same subtraction
+        # `delay_landscape` grades a COMPUTED depth with. A second analyzer here
+        # would be a second null depth, and the walk comparing them could not
+        # tell which it had. The confirm's own segment keeps the `sweep_verify`
+        # id so this reads it unchanged; what differs is its band.
         analysis = _analyze_verify(
             program, capture, sample_rate, global_offset, locations,
             calibration, priors, frame_ledger,

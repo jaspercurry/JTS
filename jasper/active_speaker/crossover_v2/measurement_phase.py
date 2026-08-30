@@ -30,7 +30,7 @@ plays; what differs is the mic, and the splice that near-field still owes
 is asserted rather than assumed — a future regime that really did need its own
 stimulus would have to break the pin to get in.
 
-**Three kinds, three phases, and the flow has more phases than that.** ``check``
+**Four kinds, four phases, and the flow has more phases than that.** ``check``
 (the gain solve that MEASURE's program depends on), ``applying``, ``lateral``
 and the two position-group clouds have no engine kind at all, because the
 engine's ``measure`` verb does not express them: a lateral pose replays the
@@ -44,9 +44,15 @@ from __future__ import annotations
 from .contracts import (
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_NULL_CONFIRM,
     MEASURE_KIND_VERIFY,
 )
-from .journey import PHASE_ENTRY_BASELINE, PHASE_MEASURE, PHASE_VERIFY
+from .journey import (
+    PHASE_ENTRY_BASELINE,
+    PHASE_MEASURE,
+    PHASE_NULL_CONFIRM,
+    PHASE_VERIFY,
+)
 
 __all__ = [
     "UNMAPPED_MEASUREMENT_KIND",
@@ -91,10 +97,15 @@ class NoPhaseForMeasurementError(RuntimeError):
 #:   per-driver claim and a summed curve cannot answer it.
 #: * ``verify`` → :data:`~.journey.PHASE_VERIFY` — the "after" half of the same
 #:   summed question the baseline asks.
+#: * ``null_confirm`` -> :data:`~.journey.PHASE_NULL_CONFIRM` -- the DISPOSE
+#:   half of the delay method. Summed like the two above and unlike them played
+#:   through the MEASUREMENT graph, because the coordinate under test lives in
+#:   that graph.
 PHASE_BY_MEASURE_KIND = {
     MEASURE_KIND_BASELINE: PHASE_ENTRY_BASELINE,
     MEASURE_KIND_CANDIDATE: PHASE_MEASURE,
     MEASURE_KIND_VERIFY: PHASE_VERIFY,
+    MEASURE_KIND_NULL_CONFIRM: PHASE_NULL_CONFIRM,
 }
 
 
