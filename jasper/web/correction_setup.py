@@ -6352,8 +6352,9 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /propose: one paid call. The confirm-gated proposer.
 
     Nothing is applied here — proposals are validated + deterministically
-    simulated, and returned with their sim verdict for the UI to surface
-    for user confirmation. Applying happens only via /propose/apply.
+    simulated, and returned with what the simulation predicts for the UI
+    to surface for user confirmation. Applying happens only via
+    /propose/apply.
     """
     from jasper.calibration_agent import correction_advisor
 
@@ -6392,11 +6393,14 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
     NO paid call. The body carries the proposed ``correction_peqs`` (from
     a prior /propose response) and an explicit ``confirm: true``. The
-    server RE-VALIDATES the set against the active strategy caps and
-    RE-SIMULATES it (never trusting the client that it was accepted); only
-    if the deterministic gate accepts AND the user confirmed does it
-    populate ``session.peqs`` and route through the EXISTING apply path
+    server RE-VALIDATES the set against the active strategy caps, then
+    populates ``session.peqs`` and routes through the EXISTING apply path
     (the same simulate/headroom/re-clip apply any correction gets).
+
+    The simulation rides along as DISCLOSURE — predicted curve, predicted
+    improvement, ring Q and summed boost against their ceilings — and
+    refuses nothing. What holds this path is the strategy caps re-checked
+    below, the explicit confirm, and the emitter's re-clip at apply.
     """
     from jasper.calibration_agent import proposal_sim, response as advisor_response
     from jasper.correction.session import PEQJSON, SessionState
@@ -6453,7 +6457,8 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         }
     validated_peqs = validation["validated_action_plan"][0]["correction_peqs"]
 
-    # Re-SIMULATE server-side; a client cannot assert acceptance for us.
+    # Simulate server-side for the disclosure numbers; a client cannot
+    # author them for us.
     sim = proposal_sim.simulate_correction_proposal(
         validated_peqs,
         measured=getattr(sess, "measured_curve", None),
@@ -6467,48 +6472,16 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # (issue #1787).
         f_high_hz=float(bounds.get("f_high_hz", room_boundary.ROOM_BOUNDARY_DEFAULT_HZ)),
     )
-    if not sim.accepted:
-        return {
-            "applied": False,
-            "failure": failures.public_failure(
-                failures.TUNING_PROPOSAL_REJECTED,
-            ),
-            "reason": "proposal rejected by the deterministic simulation gate",
-            "simulation": sim.to_dict(),
-            "session_id": sess.session_id,
-            "state": sess.state.value,
-        }
-    if sim.acceptance is None:
-        # Fail-closed at the apply seam: the P4 acceptance judge could not
-        # run (baseline/target curves were absent), so the promise "every
-        # applied proposal is judged by the same acceptance evaluator" can't
-        # hold. The propose PREVIEW stays lenient by design (a ring+headroom
-        # only preview is honest there); applying without the judge is not.
-        return {
-            "applied": False,
-            "failure": failures.public_failure(
-                failures.TUNING_PROPOSAL_REJECTED,
-            ),
-            "code": "missing_acceptance_basis",
-            "reason": (
-                "proposal could not be judged against the room baseline "
-                "(no baseline/target curves for the acceptance evaluator); "
-                "not applying"
-            ),
-            "simulation": sim.to_dict(),
-            "session_id": sess.session_id,
-            "state": sess.state.value,
-        }
-
-    # Deterministic gate + explicit confirm both passed: swap in the
-    # proposed filters and route through the SAME apply path any
-    # correction uses (which re-clips headroom at emit).
+    # Bounds re-checked and the household confirmed: swap in the proposed
+    # filters and route through the SAME apply path any correction uses
+    # (which re-clips headroom at emit).
     log_event(
         logger,
         "correction.tuning_apply",
         session_id=sess.session_id,
         filter_count=len(validated_peqs),
-        sim_verdict=(sim.acceptance or {}).get("verdict"),
+        sim_rms_delta_db=sim.predicted_rms_delta_db,
+        sim_issues=[i.code for i in sim.issues],
     )
     sess.peqs = [
         PEQJSON(freq_hz=p["freq_hz"], q=p["q"], gain_db=p["gain_db"])

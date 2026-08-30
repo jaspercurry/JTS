@@ -371,7 +371,17 @@ def test_propose_apply_rejects_out_of_bounds_without_applying(monkeypatch):
     assert applied["called"] is False
 
 
-def test_propose_apply_rejects_regressing_set_via_resimulation(monkeypatch):
+def test_propose_apply_applies_a_regressing_set_with_the_prediction_disclosed(
+    monkeypatch,
+):
+    """The demoted simulation veto. A stack of wide, deep cuts that the
+    noise-free simulation predicts will make the room worse still applies
+    behind the household's explicit confirm — the prediction is disclosed
+    on the response instead of refusing. (Bounds pass: all within the
+    balanced band, cuts-only, no boost stacking.)
+
+    **Mutation guard.** Restoring the veto returns before ``_handle_apply``
+    and fails the ``called`` assertion."""
     sess = _fake_session("ready")
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     applied = {"called": False}
@@ -381,10 +391,6 @@ def test_propose_apply_rejects_regressing_set_via_resimulation(monkeypatch):
         return {"session_id": "x", "state": "applied", "config_path": None}
 
     monkeypatch.setattr(correction_setup, "_handle_apply", fake_apply)
-    # A stack of wide, deep cuts around the mode over-corrects and gouges
-    # the region below target — the noise-free simulation returns a
-    # revert-class verdict, so the server rejects before apply. (Bounds
-    # pass: all within the balanced band, cuts-only, no boost stacking.)
     body = (
         b'{"confirm":true,"correction_peqs":['
         b'{"freq_hz":62,"q":1.0,"gain_db":-10},'
@@ -392,10 +398,10 @@ def test_propose_apply_rejects_regressing_set_via_resimulation(monkeypatch):
         b'{"freq_hz":80,"q":1.0,"gain_db":-10}]}'
     )
     out = correction_setup._handle_propose_apply(_FakeHandler(body))
-    assert out["applied"] is False
-    assert out["failure"]["code"] == "tuning_proposal_rejected"
-    assert "simulation" in out["reason"]
-    assert applied["called"] is False
+    assert applied["called"] is True
+    assert out["applied"] is True
+    assert "failure" not in out
+    assert out["simulation"]["predicted_rms_delta_db"] < 0
 
 
 def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
@@ -432,7 +438,7 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
     # session.peqs was populated with the proposed filter as a PEQJSON.
     assert applied["peqs"] and isinstance(applied["peqs"][0], PEQJSON)
     assert applied["peqs"][0].freq_hz == 62.0
-    assert out["simulation"]["accepted"] is True
+    assert out["simulation"]["predicted_curve"] is not None
 
 
 def test_propose_apply_proceeds_despite_failed_measurement_evidence(monkeypatch):
@@ -470,7 +476,7 @@ def test_propose_apply_proceeds_despite_failed_measurement_evidence(monkeypatch)
     out = correction_setup._handle_propose_apply(_FakeHandler(body))
 
     assert out["applied"] is True
-    assert out["simulation"]["accepted"] is True
+    assert out["simulation"]["predicted_curve"] is not None
 
 
 def _real_ready_session(tmp_path, *, with_target=True):
@@ -555,30 +561,33 @@ def test_propose_apply_reports_honest_failure_when_reload_rejected(
     assert out["state"] == "failed"
     assert out["failure"]["code"] == "correction_update_failed"
     assert "previous sound" in out["reason"]
-    # The simulation itself HAD accepted (the failure is downstream).
-    assert out["simulation"]["accepted"] is True
+    # The disclosure still rides along on the failed apply.
+    assert out["simulation"]["predicted_curve"] is not None
 
 
-def test_propose_apply_fails_closed_without_acceptance_basis(monkeypatch):
-    """Fail-closed split: the propose PREVIEW is lenient without
-    baseline/target curves (ring+headroom only), but the APPLY seam
-    requires the P4 acceptance judge to have run — no judge, no apply."""
+def test_propose_apply_applies_without_a_target_curve(monkeypatch):
+    """No target curve means no predicted-improvement number to disclose.
+    That is a gap in the disclosure, not a reason to refuse an apply the
+    household confirmed and the strategy caps passed.
+
+    **Mutation guard.** Restoring the ``missing_acceptance_basis`` refusal
+    returns before ``_handle_apply`` and fails the ``applied`` assertion."""
     sess = _fake_session("ready")
-    sess.target_curve = None  # no target -> evaluate_acceptance cannot run
+    sess.target_curve = None  # nothing to measure the prediction against
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-
-    def forbidden_apply(handler):  # pragma: no cover - must never run
-        raise AssertionError("apply must not be reached without the judge")
-
-    monkeypatch.setattr(correction_setup, "_handle_apply", forbidden_apply)
+    monkeypatch.setattr(
+        correction_setup, "_handle_apply",
+        lambda handler: {
+            "session_id": sess.session_id, "state": "applied",
+            "config_path": "/x.yml",
+        },
+    )
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
     out = correction_setup._handle_propose_apply(_FakeHandler(body))
-    assert out["applied"] is False
-    assert out["code"] == "missing_acceptance_basis"
-    assert out["failure"]["code"] == "tuning_proposal_rejected"
-    # The sim preview itself stayed lenient: bounds+ring+headroom passed.
-    assert out["simulation"]["accepted"] is True
-    assert out["simulation"]["acceptance"] is None
+    assert out["applied"] is True
+    assert out["simulation"]["predicted_rms_delta_db"] is None
+    # The rest of the disclosure still lands.
+    assert out["simulation"]["predicted_curve"] is not None
 
 
 # --- P6 tuning spend ledger: gate before + record after ----------------

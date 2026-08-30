@@ -53,8 +53,8 @@ ACTION_AUDITION = "propose_preference_eq_audition"
 ACTION_COMMIT = "request_user_approved_preference_commit"
 # P6 correction-scope proposals. Unlike the preference actions above,
 # these move room-correction filters / the shared target. Both are
-# CONFIRM-GATED and, critically, every candidate is SIMULATED
-# deterministically and judged by the P4 AcceptanceEvaluator downstream
+# CONFIRM-GATED, and every candidate is SIMULATED deterministically
+# downstream so the household sees what it would do before confirming
 # (see jasper.calibration_agent.proposal_sim). This module only validates
 # schema + bounds; it never applies anything and never authors a number a
 # tool computed.
@@ -503,12 +503,13 @@ def _validate_correction_peq_action(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Schema + BOUNDS gate for a proposed room-correction filter set.
 
-    This is the *first* gate. It rejects a set whose per-filter or
-    stacked values fall outside the active strategy caps, but it does NOT
-    decide acoustics — the deterministic simulate-and-judge step
-    (:mod:`jasper.calibration_agent.proposal_sim`, then the P4 acceptance
-    evaluator) runs downstream on what survives here. The model proposes
-    filter values only; JTS owns simulation, headroom, and apply.
+    This is the gate that rejects: a set whose per-filter or stacked
+    values fall outside the active strategy caps does not proceed. It
+    does NOT decide acoustics — the deterministic simulation
+    (:mod:`jasper.calibration_agent.proposal_sim`) runs downstream on
+    what survives here and discloses, rather than judges, what the set
+    would do. The model proposes filter values only; JTS owns
+    simulation, headroom, and apply.
     """
     rationale = _bounded_text(raw.get("rationale"), "rationale", index, issues)
     bounds = _correction_bounds(advisor_context)

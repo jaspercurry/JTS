@@ -2303,25 +2303,28 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
     "tuning: available hides the nudge");
 }
 
-// 33. A simulate-accepted room-correction proposal renders an applicable
-//     card; a rejected one renders its reason and no Apply button; a
-//     target move renders as a suggestion with plain-text guidance to the
-//     flow's Target curve picker (no apply path, and no dead #target-select
-//     anchor — that picker is hidden in relay mode, so a link would
-//     silently scroll nowhere).
+// 33. Room-correction proposals render an Apply button whatever the
+//     simulation predicted — a flagged one discloses its note and still
+//     offers Apply; a target move renders as a suggestion with plain-text
+//     guidance to the flow's Target curve picker (no apply path, and no
+//     dead #target-select anchor — that picker is hidden in relay mode, so
+//     a link would silently scroll nowhere).
 {
   renderTuningProposals([
     {
       kind: "room_correction", applicable: true,
       correction_peqs: [{ freq_hz: 62, q: 3, gain_db: -7 }],
       rationale: "deeper cut at the 62 Hz mode",
-      simulation: { accepted: true, issues: [], acceptance: { verdict: "accept", overall_rms_delta_db: 2.4 } },
+      simulation: { issues: [], predicted_rms_delta_db: 2.4 },
     },
     {
-      kind: "room_correction", applicable: false,
+      kind: "room_correction", applicable: true,
       correction_peqs: [{ freq_hz: 62, q: 6, gain_db: 6 }],
       rationale: "boost the dip",
-      simulation: { accepted: false, issues: [{ code: "boost_would_ring", message: "would ring" }], acceptance: null },
+      simulation: {
+        issues: [{ code: "boost_would_ring", message: "would ring" }],
+        predicted_rms_delta_db: -1.2,
+      },
     },
     {
       // Honest server payload shape: suggestion-only, never applicable.
@@ -2331,9 +2334,15 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
   ]);
   const cards = tuningProposalsEl().children;
   assert(cards.length === 3, "tuning: three proposal cards render", { got: cards.length });
-  // The rejected card carries the rejection modifier class.
-  assert(cards[1].className.indexOf("tuning-proposal--rejected") >= 0,
-    "tuning: the ring-rejected proposal card is styled as rejected");
+  // The ring note is DISCLOSED and the card still offers Apply — the
+  // household reads the note and decides.
+  const flagged = cards[1];
+  assert(flagged.children.some(
+      (c) => c.className === "tuning-proposal-detail"
+        && (c.textContent || "").indexOf("would ring") >= 0),
+    "tuning: the ring-flagged proposal discloses its note");
+  assert(flagged.children.some((c) => c.className === "btn btn--primary"),
+    "tuning: the ring-flagged proposal still offers Apply");
   // The target-move card's guidance is plain text — an honest affordance,
   // NOT a dead #target-select link (that anchor no-ops on the review
   // screen when the picker's container is hidden in relay mode).
