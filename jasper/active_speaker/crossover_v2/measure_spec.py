@@ -117,19 +117,6 @@ class CapabilityStub:
     captured: bool
     message: str
 
-    def aborted(self) -> "CapabilityStub":
-        """The same hole, re-rendered for a call that captured nothing.
-
-        A spec can trip two stubs at once — one whose capture still ships and
-        one that stops the stimulus dead. When the second wins, the first must
-        stop claiming *"capture banked"*, or the disclosure lies about evidence
-        that does not exist. That is ruling S12's honesty clause turned on the
-        disclosure itself.
-        """
-        if not self.captured:
-            return self
-        return _stub(self.code, _ROWS[self.code], captured=False)
-
 
 @dataclass(frozen=True)
 class _StubRow:
@@ -148,8 +135,8 @@ def _stub(code: str, row: _StubRow, *, captured: bool) -> CapabilityStub:
     which is why the sentence is composed rather than stored: a second stub
     written by hand would drift out of the shape by its second line.
 
-    ``captured`` is a parameter rather than ``row.captured`` because
-    :meth:`CapabilityStub.aborted` re-renders a row as having captured nothing.
+    ``captured`` is a parameter rather than ``row.captured`` so a caller can
+    render a row either way without a second copy of the sentence.
     """
     banked = "capture banked" if captured else "nothing captured"
     return CapabilityStub(
@@ -163,9 +150,9 @@ def _stub(code: str, row: _StubRow, *, captured: bool) -> CapabilityStub:
     )
 
 
-#: One row per named hole. Kept as data so :meth:`CapabilityStub.aborted` can
-#: re-render a stub without a second copy of any phrase — and so a fifth stub
-#: joins the engine's vocabulary by adding a row here and nowhere else.
+#: One row per named hole. Kept as data so a stub renders without a second
+#: copy of any phrase — and so a further stub joins the engine's vocabulary by
+#: adding a row here and nowhere else.
 _ROWS: dict[str, _StubRow] = {
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: _StubRow(
         "near-field splice", "splice", "R-3", captured=True,

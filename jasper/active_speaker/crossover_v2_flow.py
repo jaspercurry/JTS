@@ -477,7 +477,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
     REASON_REGISTRY,
-    REASON_SNR_FLOOR,
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
@@ -7124,6 +7123,13 @@ class CrossoverV2Session:
                 payload=dict(screen.integrity_payload or {}),
             )
         if analysis.reverse_null_depth_db is None:
+            # Imported at call scope: this name is one the flow deliberately
+            # does not re-export, so its consumers reach the owner directly
+            # (``test_the_flow_does_not_reach_the_names_its_consumers_import_directly``).
+            from jasper.active_speaker.crossover_v2.refusal_copy import (
+                REASON_SNR_FLOOR,
+            )
+
             return PhaseVerdict(False, REASON_SNR_FLOOR)
         return PhaseVerdict(
             True, payload={"null_depth_db": float(analysis.reverse_null_depth_db)},

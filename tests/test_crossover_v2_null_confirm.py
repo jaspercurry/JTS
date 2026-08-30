@@ -78,7 +78,30 @@ def test_the_confirm_sweeps_both_crossover_shoulders_with_run_up():
     assert lo == pytest.approx(FC_HZ / 2.0 / NULL_CONFIRM_SHOULDER_MARGIN)
 
 
-@pytest.mark.parametrize("fc_hz", [300.0, 800.0, 1600.0, 2400.0, 4000.0])
+@pytest.mark.parametrize("fc_hz", [250.0, 300.0, 10_000.0, 11_000.0])
+def test_a_corner_with_no_run_up_to_give_is_refused(fc_hz: float):
+    """The corners where the envelope lands EXACTLY on a shoulder.
+
+    Below ~300 Hz VERIFY's own floor is ``fc/2``, so the low edge coincides with
+    the lower shoulder; at 10 kHz the 20 kHz ceiling coincides with the upper
+    one. A non-strict bound accepted both and returned a depth whose reference
+    shoulder was a clamped endpoint — the precise failure this guard exists to
+    refuse, passing silently at the two corners least able to afford it.
+    """
+    with pytest.raises(ValueError, match="run-up"):
+        null_confirm_band_hz(fc_hz)
+
+
+@pytest.mark.parametrize("fc_hz", [301.0, 800.0, 1600.0, 2400.0, 8000.0, 9000.0])
+def test_an_accepted_corner_always_has_real_run_up(fc_hz: float):
+    """Anti-vacuity for the refusals above: the accepted band must clear BOTH
+    shoulders strictly, or the guard is refusing the wrong corners."""
+    lo, hi = null_confirm_band_hz(fc_hz)
+    assert lo < fc_hz / 2.0
+    assert hi > fc_hz * 2.0
+
+
+@pytest.mark.parametrize("fc_hz", [301.0, 800.0, 1600.0, 2400.0, 4000.0])
 def test_the_confirm_sweep_stays_inside_the_summed_sweep_this_speaker_plays(
     fc_hz: float,
 ):
@@ -230,3 +253,41 @@ def test_the_confirm_gets_its_own_object_and_not_verifys():
         null_confirm=confirm,
     )
     assert resolved is confirm
+
+
+def test_a_confirm_that_read_no_depth_is_refused_not_accepted_empty(monkeypatch):
+    """The one number this phase exists to produce, missing.
+
+    ``reverse_null_depth_db`` is ``None`` when the capture did not span both
+    shoulders or sat under the validity floor. Accepting it would bank a
+    confirmation take carrying no confirmation, and the offline grader would
+    then report ``confirmation_missing`` for a capture the session had already
+    called good — a green take and a missing result for the same capture.
+
+    Note the asymmetry this pins: a SHALLOW null is accepted, because a shallow
+    depth is a result the landscape grader weighs. No depth at all is not a
+    result; it is a capture that failed to measure.
+    """
+    from types import SimpleNamespace
+
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_SNR_FLOOR
+
+    # The integrity screens are exercised by their own suite; stub them PASSING
+    # so this pins the depth decision alone.
+    monkeypatch.setattr(
+        flow._spatial, "entry_baseline_screens",
+        lambda *a, **k: SimpleNamespace(kind=None, integrity_payload=None),
+    )
+    monkeypatch.setattr(flow, "_stimulus_locate_ok", lambda analysis: True)
+
+    consume = flow.CrossoverV2Session._consume_null_confirm
+
+    missing = consume(None, 1, 1, SimpleNamespace(reverse_null_depth_db=None), None)
+    assert missing.accepted is False
+    assert missing.code == REASON_SNR_FLOOR
+
+    # A shallow null is a RESULT and stays accepted.
+    shallow = consume(None, 1, 1, SimpleNamespace(reverse_null_depth_db=3.2), None)
+    assert shallow.accepted is True
+    assert shallow.payload["null_depth_db"] == 3.2

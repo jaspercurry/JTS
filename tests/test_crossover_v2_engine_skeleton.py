@@ -29,6 +29,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLES,
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_NULL_CONFIRM,
     MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
     MEASURE_REGIMES,
@@ -417,9 +418,17 @@ def test_a_manually_raised_pose_is_accepted_and_carries_its_elevation(elevation)
 
 
 def test_the_measure_kinds_are_the_index_columns_and_no_more():
-    """Wave 4j's ``kind`` column, and ruling S1's "measuring is measuring"."""
+    """Wave 4j's ``kind`` column, and ruling S1's "measuring is measuring".
+
+    ``null_confirm`` is the fourth and joins for the ruling's own reason: a
+    delay confirmation IS a measurement, differing from the other three by this
+    word and by the stimulus the word selects, not by a separate verb.
+    """
     assert MEASURE_KINDS == (
-        MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE, MEASURE_KIND_VERIFY,
+        MEASURE_KIND_BASELINE,
+        MEASURE_KIND_CANDIDATE,
+        MEASURE_KIND_VERIFY,
+        MEASURE_KIND_NULL_CONFIRM,
     )
 
 
