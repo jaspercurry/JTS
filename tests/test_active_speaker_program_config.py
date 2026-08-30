@@ -621,7 +621,9 @@ def test_the_graph_says_which_delay_coordinate_it_carries():
         protection_sections_by_role=_confirmed_protection(),
         measurement_delays_us={"tweeter": 250.0},
     )
-    assert "# measurement_delays_us={'tweeter': 250.0}" in text
+    # Counted, not `in`: the line names the coordinate a fingerprint stands
+    # for, and a graph that states it twice states it once too often.
+    assert text.count("# measurement_delays_us={'tweeter': 250.0}") == 1
 
     # And absent entirely when there is no coordinate: an unconditional line
     # would change the fingerprint of every CHECK and MEASURE graph in the tree.

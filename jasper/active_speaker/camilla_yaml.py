@@ -3781,22 +3781,6 @@ def emit_active_speaker_program_config(
             if measurement_delays_us
             else []
         ),
-        # Beside `inverted_roles` below and for its reason: the graph SAYS which
-        # coordinate it carries, so a record naming it by fingerprint can be
-        # read without reconstructing the Delay filter body.
-        #
-        # Emitted ONLY when there is a coordinate. An unconditional line would
-        # change the bytes -- and so the fingerprint -- of every CHECK and
-        # MEASURE graph in the tree, which is exactly the byte-identity this
-        # parameter is scoped to protect. Its absence is unambiguous.
-        *(
-            [
-                "# measurement_delays_us="
-                + repr(dict(sorted(measurement_delays_us.items())))
-            ]
-            if measurement_delays_us
-            else []
-        ),
     ]
     if inverted_roles:
         # Emitted only when a branch is actually flipped, so every non-inverted
