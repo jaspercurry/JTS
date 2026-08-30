@@ -1900,6 +1900,7 @@ def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
                 "enabled": True,
                 "pending_frames": 0,
                 "budget_frames": 96000,
+                "protocol_errors": 0,
                 "dropped_commands": 0,
                 "dropped_audio_frames": 0,
             }
@@ -1908,6 +1909,22 @@ def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
     r = doctor.check_fanin_tts_drops()
     assert r.status == "ok"
     assert "none since fan-in start" in r.detail
+
+
+def test_check_fanin_tts_drops_warns_on_protocol_error(monkeypatch):
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_payload_with_tts(
+            {
+                "enabled": True,
+                "protocol_errors": 1,
+                "dropped_commands": 0,
+                "dropped_audio_frames": 0,
+            }
+        ),
+    )
+
+    assert doctor.check_fanin_tts_drops().status == "warn"
 
 
 def test_check_fanin_tts_drops_warns_with_seconds_and_hint(monkeypatch):
