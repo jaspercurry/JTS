@@ -4558,6 +4558,40 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
     assert "+8.00 dB" in err
 
 
+def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(tmp_path, capsys):
+    """A pin moves a LEVEL, so it cannot be invisible at the decision point.
+
+    The control matters as much as the pin: an ordinary document says nothing
+    about trims, and an operator who never sees the line must be able to read
+    its absence as "this round solves them all".
+    """
+    session, _ = _bundle(tmp_path / "bundle")
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (round_dir / "feature_classification.json").write_text(
+        json.dumps(_classification())
+    )
+    draft_path = tmp_path / "draft.json"
+    draft_path.write_text(json.dumps(_draft()))
+    packet = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+
+    def _propose(document: dict[str, Any]) -> str:
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps(document))
+        assert cli.main([
+            "propose", str(session), "--drivers", str(draft_path),
+            "--prescription", str(path),
+        ]) == 0
+        return capsys.readouterr().err
+
+    err = _propose(
+        _document([_cut()], packet, pinned_trim_db={"tweeter": -6.5})
+    )
+    assert "pins: tweeter -6.50 dB" in err
+    assert "not re-solved" in err
+
+    assert "pins:" not in _propose(_document([_cut()], packet))
+
+
 def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog):
     """The disclosures' durable reader: the journal line that banks the stage.
 
