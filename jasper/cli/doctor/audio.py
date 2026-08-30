@@ -1661,11 +1661,19 @@ def check_room_correction_authority() -> CheckResult:
         )
     reason = str(acoustic.get("reason") or "")
     detail = str(acoustic.get("detail") or "")
+    cause = str(acoustic.get("cause") or "")
     if reason == ROOM_AUTHORITY_RECEIPT_ABSENT:
-        # The state every uncommissioned speaker is in, which is most of them.
-        # A warning the whole fleet shows forever teaches its owner to skip
-        # warnings; nothing here is damaged and no remedy is owed.
-        return CheckResult(label, "ok", f"room correction runs unbanked ({reason})")
+        # The state every uncommissioned speaker is in, which is most of them:
+        # demoted from a fleet-wide WARN nag. But ABSENT is the module's
+        # catch-all default reason, so it also covers a receipt that VANISHED
+        # under a verified lifecycle -- a genuine anomaly a bare "ok" would
+        # hide. Forwarding `cause` keeps that sub-state visible (a store code
+        # vs "lifecycle is not verified") without turning it into a nag.
+        return CheckResult(
+            label, "ok",
+            f"room correction runs unbanked ({reason})"
+            + (f": {cause}" if cause else ""),
+        )
     if reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
         # A machine fault, not a verdict on the record: the file and errno are
         # the sentence that ends the incident. Without them an operator reads

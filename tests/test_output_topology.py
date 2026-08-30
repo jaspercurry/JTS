@@ -1364,7 +1364,7 @@ def test_load_failure_state_is_bounded(
         load_output_topology(path)
 
     assert (
-        len(output_topology_mod._load_failure_state)
+        output_topology_mod._load_failures.tracked()
         <= output_topology_mod._LOAD_FAILURE_STATE_MAX
     )
 

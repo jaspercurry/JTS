@@ -225,3 +225,65 @@ def test_heal_refuses_source_intent_fifo_without_blocking(tmp_path):
 
     assert proc.returncode != 0
     assert "unexpected shared-state file type" in proc.stderr
+
+
+def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
+    """The ~3 s crossover_level_run_unavailable storm and its twin (ADR-0196).
+
+    A root-run poll created these advisory locks root:root 0640 -- a lock no
+    service account could then TAKE, because taking one opens the file for
+    write. The heal widens only the LOCKS to 0660 (the `l` kind derives the
+    ".<record>.lock" name, so install does not respell it) while the records
+    stay group-READ, published that way by their own atomic writers.
+    """
+    level_lock = _mk(
+        tmp_path / ".active_speaker_crossover_level_run.json.lock", 0o640,
+    )
+    repeat_lock = _mk(
+        tmp_path / ".active_speaker_repeat_admission.json.lock", 0o640,
+    )
+    commissioning_lock = _mk(
+        tmp_path / ".active_speaker_commissioning_run.json.lock", 0o640,
+    )
+    live_exec_lock = _mk(
+        tmp_path / ".active_speaker_commissioning_run.json.live-execution.lock",
+        0o640,
+    )
+    record = _mk(tmp_path / "active_speaker_commissioning_run.json", 0o600)
+    live_mutation = _mk(
+        tmp_path / ".active_speaker_commissioning_run.json.live-mutation.json",
+        0o600,
+    )
+
+    _run_heal(tmp_path)
+
+    assert _mode(level_lock) == 0o660
+    assert _mode(repeat_lock) == 0o660
+    assert _mode(commissioning_lock) == 0o660
+    assert _mode(live_exec_lock) == 0o660
+    assert _mode(record) == 0o640
+    assert _mode(live_mutation) == 0o640
+
+
+def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
+    """Blocker 1: the run-record lock heal must not follow a symlink.
+
+    A group member can pre-create the lock NAME as a symlink onto a root file
+    under group-writable /var/lib/jasper; a path-following chgrp/chmod would
+    then redirect the mutation. O_NOFOLLOW on the `l`-derived path pins the
+    inode, so a symlink aborts the install without touching its target.
+    """
+    target = _mk(tmp_path / "root-owned-secret", 0o600)
+    (tmp_path / ".active_speaker_crossover_level_run.json.lock").symlink_to(target)
+    script = (
+        "set -euo pipefail\n"
+        + _STUBS
+        + _extract("heal_shared_state_modes")
+        + f'\nSTATE_DIR="{tmp_path}"\nheal_shared_state_modes\n'
+    )
+
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    assert proc.returncode != 0
+    assert "refusing unsafe shared-state path" in proc.stderr
+    assert _mode(target) == 0o600

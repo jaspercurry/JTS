@@ -42,6 +42,9 @@ STATE_KIND = "jts_active_crossover_level_run_state"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_level_run.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_CROSSOVER_LEVEL_RUN_STATE"
 PHONE_TRANSPORT_GRACE_S = 30.0
+# Bounded backpressure for the write paths that keep the lock: a peer holding
+# it must not strand a request thread forever. Mirrors the sibling run stores.
+DEFAULT_LOCK_TIMEOUT_S = 2.0
 
 logger = logging.getLogger(__name__)
 _THREAD_LOCK = threading.RLock()
@@ -412,6 +415,7 @@ class CrossoverLevelRunStore:
 
     @contextmanager
     def _locked(self):
+        # WRITE paths only: ``snapshot`` reads lock-free (ADR-0196 decision 1).
         with _THREAD_LOCK:
             lock_path = self.lock_path
             if lock_path is None:
@@ -426,6 +430,7 @@ class CrossoverLevelRunStore:
                 lock_path,
                 mode=0o660,
                 group_from_parent=True,
+                timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
             ):
                 yield
 
@@ -964,16 +969,25 @@ class CrossoverLevelRunStore:
         return self._finish(run_id, succeeded=False, reason=reason)
 
     def snapshot(self) -> dict[str, Any] | None:
-        """Return the browser-safe current run without config or relay secrets."""
+        """Return the browser-safe current run without config or relay secrets.
 
-        with self._locked():
-            current = self._read().get("current")
-            result_available = bool(
-                isinstance(current, Mapping)
-                and current.get("phase") == CrossoverLevelRunPhase.SUCCEEDED.value
-                and current.get("owner_id") == self.owner_id
-                and current.get("run_id") == self._live_succeeded_run_id
-            )
+        LOCK-FREE, deliberately (ADR-0196 decision 1, as the commissioning run
+        store applies it): :meth:`_write` publishes through
+        ``atomic_write_text``/``os.replace``, so a reader sees a whole record
+        or none. Taking the advisory lock here would make this poll -- hit
+        every ~1.5 s for a whole tuning round -- need WRITE on the sibling lock
+        and CREATE it when absent, which is exactly the permission storm this
+        removes. A missing record reads as "no run" through :meth:`_read`'s
+        ``FileNotFoundError`` arm, never an ``exists()`` probe.
+        """
+
+        current = self._read().get("current")
+        result_available = bool(
+            isinstance(current, Mapping)
+            and current.get("phase") == CrossoverLevelRunPhase.SUCCEEDED.value
+            and current.get("owner_id") == self.owner_id
+            and current.get("run_id") == self._live_succeeded_run_id
+        )
         if not isinstance(current, Mapping):
             return None
         request = CrossoverLevelRunRequest.from_dict(current["request"])

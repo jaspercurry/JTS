@@ -249,6 +249,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   var KNOWN_FAILURES = {
     speaker_setup_incomplete: {text: "Finish speaker setup first.", retryable: false},
     speaker_readiness_unavailable: {text: "Speaker setup could not be checked. Try again.", retryable: true},
+    speaker_readiness_fault: {text: "The speaker's saved setup could not be read. That looks like a device fault rather than a setup step, so trying again is unlikely to help.", retryable: false},
     measurement_in_progress: {text: "A measurement is already in progress. Finish or stop it before starting again.", retryable: true},
     measurement_setup_invalid: {text: "The measurement setup changed. Review the microphone choices and try again.", retryable: true},
     speaker_measurement_unsafe: {text: "The speaker is not ready to measure safely. Review speaker setup, then try again.", retryable: false},

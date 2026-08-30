@@ -121,6 +121,20 @@ heal_shared_state_modes() {
         # step milder (an unreadable file reads as "no measurements").
         "f:0640:${STATE_DIR}/bt_roles.json"
         "f:0640:${STATE_DIR}/active_speaker_measurements.json"
+        # Active run-record advisory locks. A root-run status poll used to
+        # CREATE them root:root 0640, after which no service account could take
+        # a lock it can only READ -- the ~3 s crossover_level_run_unavailable
+        # ERROR storm and its repeat-admission twin (ADR-0196). The stores now
+        # publish 0660 group-writable, but a non-owner cannot repair a lock it
+        # cannot open, so the existing ones are healed here. `l` derives the
+        # ".<record>.lock" name; only the LOCKS widen to write, the records
+        # stay group-READ (published that way by their own atomic writers).
+        "l:0660:${STATE_DIR}/active_speaker_commissioning_run.json"
+        "l:0660:${STATE_DIR}/active_speaker_crossover_level_run.json"
+        "l:0660:${STATE_DIR}/active_speaker_repeat_admission.json"
+        "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
+        "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"
+        "f:0640:${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json"
         # The capture/sweep/tone trees the /correction/ and /sound/ commissioning
         # arms share. install.sh's install_camilladsp() now creates these at
         # install time (2770 group `jasper`, matching their
@@ -157,6 +171,13 @@ gid = int(sys.argv[1])
 web_uid = int(sys.argv[2])
 for spec in sys.argv[3:]:
     kind, mode_text, path = spec.split(":", 2)
+    if kind == "l":
+        # A record's advisory lock sibling, named the one way the stores name
+        # it (jasper.atomic_io callers: ".<record>.lock"), so install does not
+        # respell a filename Python owns. Group-WRITABLE, because taking an
+        # advisory lock opens the file for write. See ADR-0196.
+        head, base = os.path.split(path)
+        path = os.path.join(head, "." + base + ".lock")
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     if kind == "d":
         flags |= os.O_DIRECTORY

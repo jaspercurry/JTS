@@ -5802,6 +5802,60 @@ def test_room_authority_guard_returns_exact_canonical_bass_summary(
     assert classifications == 1
 
 
+def test_unreadable_receipt_mid_run_preserves_a_completed_measurement(
+    monkeypatch,
+) -> None:
+    """A machine fault at the writer boundary must not discard the run.
+
+    The run started under a proven binding and measured six positions. If the
+    receipt becomes UNREADABLE between /start and accept, the denied readiness
+    collapses the binding to (None, None, None) -- which, treated as an
+    authority CHANGE, raises and throws the whole measurement away. An
+    unreadable-but-unchanged authority is a device fault, not drift: the guard
+    proceeds and returns the graph's bass summary (blocker 2 / ADR-0196).
+    """
+    from jasper.active_speaker._common import ROOM_AUTHORITY_RECEIPT_UNREADABLE
+
+    expected = (True, "automatic_commissioning_receipt", "layer-a-at-start")
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+
+    async def unreadable_with_graph(_cam):
+        raw = {
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
+                "layer_a_identity": None,
+                "allowed": False,
+                "status": "incomplete",
+                "reason": ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+                "detail": "the record could not be opened",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+        return raw, GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={"bass_extension_profile_summary": summary},
+        )
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness_with_graph",
+        unreadable_with_graph,
+    )
+
+    returned = asyncio.run(
+        correction_setup._assert_room_authority_current(object(), expected)
+    )
+
+    assert returned is summary
+
+
 def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
     from jasper.correction.session import SessionState
 

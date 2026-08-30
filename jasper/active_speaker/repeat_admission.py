@@ -14,7 +14,6 @@ the audio gate.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -26,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.log_event import log_event
 
 STATE_KIND = "jts_active_speaker_repeat_admission"
@@ -60,6 +59,8 @@ MAX_RESERVATIONS = 8
 INFRA_RETRY_EXHAUSTED = "infra_retry_exhausted"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_admission.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE"
+# Bounded backpressure for the write paths that keep the lock (ADR-0196).
+DEFAULT_LOCK_TIMEOUT_S = 2.0
 OWNER_ID = uuid.uuid4().hex
 _THREAD_LOCK = threading.RLock()
 _CLAIM_ERROR: str | None = None
@@ -233,16 +234,19 @@ def _write(path: Path, state: Mapping[str, Any]) -> None:
 
 @contextmanager
 def _locked(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # WRITE paths only: ``snapshot`` reads lock-free (ADR-0196 decision 1). The
+    # lock is group-WRITABLE because taking it opens the file for write; a
+    # 0o640 lock a root poll created first was one no service account could
+    # then take, which was the live permission storm. See ADR-0196.
     lock_path = path.with_name(f".{path.name}.lock")
     with _THREAD_LOCK:
-        with lock_path.open("a+", encoding="utf-8") as handle:
-            os.chmod(lock_path, 0o640)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with advisory_file_lock(
+            lock_path,
+            mode=0o660,
+            group_from_parent=True,
+            timeout_sec=DEFAULT_LOCK_TIMEOUT_S,
+        ):
+            yield
 
 
 def invalidate(*, path: str | Path | None = None) -> None:
@@ -590,8 +594,11 @@ def snapshot(
             "crossover repeat admission ownership claim failed at service start"
         )
     target = state_path(path)
-    with _locked(target):
-        state = _load(target)
-        if comparison_set is not None:
-            _assert_comparison(state, comparison_set)
-        return state
+    # LOCK-FREE (ADR-0196 decision 1): ``_write`` publishes atomically, so this
+    # status read -- on the crossover poll path -- sees a whole record or none
+    # and never needs WRITE on the sibling lock. ``_load`` answers a missing
+    # record as the empty base, not an error.
+    state = _load(target)
+    if comparison_set is not None:
+        _assert_comparison(state, comparison_set)
+    return state

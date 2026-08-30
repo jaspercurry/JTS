@@ -1239,36 +1239,40 @@ async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
 def test_a_persistent_level_run_fault_discloses_once_not_once_per_poll(
     monkeypatch, caplog, tmp_path,
 ):
-    """The browser polls this all round; a broken lock answers the same way.
+    """The browser polls this all round; a persistent fault answers the same.
 
-    A lock no service account can open cannot be fixed by asking again, so
-    logging it per read turns one incident into hundreds of ERROR lines and
-    buries the transition that did happen. The repeat is not the event, and
-    the class alone never says WHICH file (ADR-0196).
+    A record no account can read cannot be fixed by asking again, so logging
+    it per poll turns one incident into hundreds of ERROR lines and buries the
+    transition that did happen. ``snapshot`` is lock-free, so the faulting file
+    is the RECORD, and the line names it plus the errno -- the sentence that
+    ends the incident. The repeat is not the event (ADR-0196).
     """
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
-    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    record = tmp_path / "run.json"
+    lease = CrossoverLevelLease(level_run_state_path=record)
     denied = True
 
     def _snapshot():
         if denied:
-            raise PermissionError(13, "Permission denied")
+            raise PermissionError(13, "Permission denied", str(record))
         return None
 
     monkeypatch.setattr(lease._level_run_store, "snapshot", _snapshot)
 
     def _errors():
         return [
-            record for record in caplog.records
-            if "crossover_level_run_unavailable" in record.getMessage()
-            and record.levelno == logging.ERROR
+            entry for entry in caplog.records
+            if "crossover_level_run_unavailable" in entry.getMessage()
+            and entry.levelno == logging.ERROR
         ]
 
     with caplog.at_level(logging.DEBUG):
         polled = [lease.level_run_snapshot() for _ in range(3)]
         assert len(_errors()) == 1
-        assert str(lease._level_run_store.lock_path) in _errors()[0].getMessage()
+        # Names the RECORD (lock-free read) and the errno, not the lock.
+        assert f"path={record}" in _errors()[0].getMessage()
+        assert "EACCES" in _errors()[0].getMessage()
 
         denied = False
         lease.level_run_snapshot()

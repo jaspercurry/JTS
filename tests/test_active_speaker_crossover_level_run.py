@@ -103,18 +103,33 @@ def test_request_refuses_declared_geometry_substitution():
         )
 
 
-def test_the_advisory_lock_is_group_writable(tmp_path):
+def test_a_write_publishes_the_lock_group_writable(tmp_path):
     """A group member that can only READ this lock cannot take it at all.
 
     Holding an advisory lock opens the file for write, so a group-read lock
-    shuts out every service account that does not own it -- which is the whole
-    fleet once any root-run poll created it first (ADR-0196).
+    shuts out every service account that does not own it -- the whole fleet
+    once any root-run poll created it first (ADR-0196). A write path is what
+    takes the lock; ``snapshot`` is deliberately lock-free.
     """
     store = CrossoverLevelRunStore(path=tmp_path / "run.json")
 
-    store.snapshot()
+    store.claim(_request())
 
     assert oct(os.stat(store.lock_path).st_mode & 0o777) == "0o660"
+
+
+def test_snapshot_reads_without_taking_the_lock(tmp_path):
+    """The poll path must not open the lock; a bare read cannot create it.
+
+    This is the ~3 s ERROR loop's root cause: a lock-taking read opened a
+    sibling lock every poll, and on a fresh box created it -- so a record that
+    was merely absent surfaced as a permission fault. Lock-free, the absent
+    record is just "no run" (ADR-0196 decision 1).
+    """
+    store = CrossoverLevelRunStore(path=tmp_path / "run.json")
+
+    assert store.snapshot() is None
+    assert not store.lock_path.exists()
 
 
 def test_concurrent_identical_claims_dispatch_exactly_once(tmp_path):

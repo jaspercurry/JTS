@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 SPEAKER_SETUP_INCOMPLETE = "speaker_setup_incomplete"
 SPEAKER_READINESS_UNAVAILABLE = "speaker_readiness_unavailable"
+SPEAKER_READINESS_FAULT = "speaker_readiness_fault"
 MEASUREMENT_IN_PROGRESS = "measurement_in_progress"
 MEASUREMENT_SETUP_INVALID = "measurement_setup_invalid"
 SPEAKER_MEASUREMENT_UNSAFE = "speaker_measurement_unsafe"
@@ -37,6 +38,15 @@ _FAILURE_COPY: dict[str, tuple[str, bool]] = {
     SPEAKER_READINESS_UNAVAILABLE: (
         "Speaker setup could not be checked. Try again.",
         True,
+    ),
+    # A machine fault reading the saved setup, not a step the household left
+    # undone: non-retryable on purpose, because asking again will not open a
+    # record the machine could not open. The specific cause rides `detail`.
+    SPEAKER_READINESS_FAULT: (
+        "The speaker's saved setup could not be read. That looks like a "
+        "device fault rather than a setup step, so trying again is unlikely "
+        "to help.",
+        False,
     ),
     MEASUREMENT_IN_PROGRESS: (
         "A measurement is already in progress. Finish or stop it before "
@@ -126,8 +136,18 @@ def public_failure(
     code: str,
     *,
     recovery_action: Mapping[str, Any] | None = None,
+    detail: str | None = None,
+    cause: str | None = None,
 ) -> dict[str, Any]:
-    """Return one validated public failure block from the closed catalog."""
+    """Return one validated public failure block from the closed catalog.
+
+    ``text`` and ``retryable`` are fixed by ``code`` -- the browser renders
+    from its own copy of this catalog and never from server text, so a
+    partially deployed server cannot smuggle diagnostics into the UI. ``detail``
+    (Active's own reason-specific copy) and ``cause`` (an errno+path) ride the
+    block for server-side consumers -- the doctor, `/state`, and logs -- which
+    is how a receipt denial keeps its distinct explanation past this line.
+    """
     try:
         text, retryable = _FAILURE_COPY[code]
     except KeyError as exc:
@@ -138,6 +158,13 @@ def public_failure(
         "retryable": retryable,
         "recovery_action": None,
     }
+    # Present only when supplied, so the common block keeps its historical shape
+    # and only a receipt denial (which has a reason-specific explanation) grows
+    # these two server-side fields.
+    if detail:
+        out["detail"] = str(detail)
+    if cause:
+        out["cause"] = str(cause)
     if recovery_action is not None:
         label = str(recovery_action.get("label") or "").strip()
         href = str(recovery_action.get("href") or "").strip()

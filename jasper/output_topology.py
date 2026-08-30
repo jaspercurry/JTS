@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import re
-import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -27,6 +26,7 @@ from typing import Any, Callable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
+from .transition_log import TransitionLog
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -2638,10 +2638,6 @@ LOAD_FAILURE_REMINDER_SEC = 3600.0
 # Bounded because this lives for the process's lifetime. Production resolves
 # one path; the cap only matters for callers that pass explicit paths.
 _LOAD_FAILURE_STATE_MAX = 8
-_load_failure_lock = threading.Lock()
-# path -> (failure signature, monotonic time of the WARN it was logged with),
-# ordered least-recently-logged first.
-_load_failure_state: dict[str, tuple[str, float]] = {}
 
 
 def _now() -> float:
@@ -2649,33 +2645,26 @@ def _now() -> float:
     return time.monotonic()
 
 
+# One shared transition-or-reminder gate (jasper.transition_log), not a
+# hand-rolled dict+lock: the crossover level-run poller consumes the same one.
+# The clock is looked up through this module so a test may monkeypatch `_now`.
+_load_failures = TransitionLog(
+    reminder_sec=LOAD_FAILURE_REMINDER_SEC,
+    max_keys=_LOAD_FAILURE_STATE_MAX,
+    clock=lambda: _now(),
+)
+
+
 def _load_failure_is_loggable(target: Path, signature: str) -> bool:
     """Whether this failure is a transition or a due reminder, not a repeat."""
 
-    now = _now()
-    key = str(target)
-    with _load_failure_lock:
-        previous = _load_failure_state.get(key)
-        if (
-            previous is not None
-            and previous[0] == signature
-            and now - previous[1] < LOAD_FAILURE_REMINDER_SEC
-        ):
-            return False
-        # Re-insert rather than assign so dict order stays recency order and
-        # the eviction below drops the stalest entry, never this one.
-        _load_failure_state.pop(key, None)
-        _load_failure_state[key] = (signature, now)
-        while len(_load_failure_state) > _LOAD_FAILURE_STATE_MAX:
-            _load_failure_state.pop(next(iter(_load_failure_state)))
-        return True
+    return _load_failures.should_log(str(target), signature)
 
 
 def _load_failure_cleared(target: Path) -> bool:
     """Whether ``target`` just recovered from a failure that was logged."""
 
-    with _load_failure_lock:
-        return _load_failure_state.pop(str(target), None) is not None
+    return _load_failures.cleared(str(target))
 
 
 def load_output_topology(path: str | Path | None = None) -> OutputTopology:

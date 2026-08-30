@@ -2715,6 +2715,38 @@ def test_room_correction_authority_names_the_record_it_could_not_open(monkeypatc
     assert cause in r.detail
 
 
+def test_absent_forwards_its_cause_so_a_vanished_receipt_is_not_hidden(monkeypatch):
+    """ABSENT is demoted from a fleet-wide nag but is the catch-all default.
+
+    "lifecycle is not verified" is the normal never-commissioned state; a store
+    MISSING code under a verified lifecycle is a receipt that VANISHED -- a real
+    anomaly. Both surface as ABSENT, so forwarding `cause` keeps them
+    distinguishable in doctor output without turning the normal state that most
+    of the fleet is in back into a warning (ruling 10 / ADR-0196).
+    """
+    from jasper.active_speaker import setup_status
+
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "acoustic_commissioning": {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+                "cause": "missing",
+                "detail": "finish commissioning when convenient",
+            },
+        },
+    )
+
+    r = doctor.check_room_correction_authority()
+
+    assert r.status == "ok"
+    assert "missing" in r.detail
+
+
 def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
     from jasper.active_speaker import setup_status
 

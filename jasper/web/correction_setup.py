@@ -2711,13 +2711,31 @@ def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
     crosses this adapter.
     """
     from jasper.correction import failures
-    from jasper.active_speaker._common import ROOM_AUTHORITY_RECEIPT_UNREADABLE
+    from jasper.active_speaker._common import (
+        ROOM_AUTHORITY_RECEIPT_ABSENT,
+        ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        ROOM_AUTHORITY_RECEIPT_STALE,
+        ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+        ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+    )
     from jasper.active_speaker.setup_status import (
         ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
         ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
         ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
         ROOM_ELIGIBILITY_SCHEMA_VERSION,
     )
+
+    # The closed set of Active-owned commissioning denials, whose `detail` is
+    # bounded copy from setup_status._RECEIPT_DETAIL. Only these carry detail
+    # through to the block; a non-receipt reason's detail may be arbitrary and
+    # must not reach a household surface.
+    receipt_denials = {
+        ROOM_AUTHORITY_RECEIPT_ABSENT,
+        ROOM_AUTHORITY_RECEIPT_STALE,
+        ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+        ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+    }
 
     setup = raw if isinstance(raw, Mapping) else {}
     acoustic_raw = setup.get("acoustic_commissioning")
@@ -2807,22 +2825,33 @@ def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
         or setup.get("detail")
         or "speaker setup is not ready for room correction"
     )
+    cause = str(acoustic.get("cause") or "")
     unavailable = not well_formed or acoustic_status == "unknown"
-    # A receipt JTS could not OPEN is a machine fault, not an unconfigured
-    # speaker: the wizard detail for this same denial says re-running
-    # commissioning is unlikely to clear it. Room may not answer it with
-    # "finish speaker setup first" or send the owner to that wizard. ADR-0196.
     if reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
-        unavailable = True
-        action = None
-    public_code = (
-        failures.SPEAKER_READINESS_UNAVAILABLE
-        if unavailable
-        else failures.SPEAKER_SETUP_INCOMPLETE
-    )
+        # A receipt JTS could not OPEN is a machine fault, not an unconfigured
+        # speaker and not a step to retry: Active's own detail for this denial
+        # says re-running commissioning is unlikely to clear it. So it is
+        # neither "finish speaker setup first" (wrong wizard) nor the "Check
+        # again" retry loop -- a non-retryable device fault, ADR-0196.
+        public_code = failures.SPEAKER_READINESS_FAULT
+        recovery_action = None
+    elif unavailable:
+        public_code = failures.SPEAKER_READINESS_UNAVAILABLE
+        recovery_action = action or failures.ROOM_RETRY_ACTION
+    else:
+        public_code = failures.SPEAKER_SETUP_INCOMPLETE
+        recovery_action = action or failures.ROOM_RETRY_ACTION
+    # A receipt denial's bounded detail (and errno+path) ride the block so the
+    # ABSENT/STALE/MALFORMED/SUPERSEDED/UNREADABLE distinction survives past
+    # this line for the doctor, `/state`, and logs. The browser still renders
+    # from `code`, and a non-receipt reason's detail (possibly arbitrary) is
+    # never carried.
+    is_receipt_denial = reason in receipt_denials
     blocker = failures.public_failure(
         public_code,
-        recovery_action=action or failures.ROOM_RETRY_ACTION,
+        recovery_action=recovery_action,
+        detail=detail if is_receipt_denial else None,
+        cause=(cause or None) if is_receipt_denial else None,
     )
     return _RoomReadiness(
         allowed=False,
@@ -2863,13 +2892,22 @@ async def _assert_room_authority_current(
 ) -> Mapping[str, Any]:
     """Revalidate the accepted Active identity at a DSP-writer boundary."""
 
+    from jasper.active_speaker._common import ROOM_AUTHORITY_RECEIPT_UNREADABLE
+
     if expected is None:
         raise RuntimeError("room correction authority binding is missing")
     raw_readiness, graph = await _read_room_correction_readiness_with_graph(cam)
     current = _normalize_room_readiness(
         raw_readiness,
     )
-    if current.authority_binding == expected:
+    # An UNREADABLE receipt at this DSP-writer boundary is a machine fault, not
+    # evidence the crossover authority moved. A denial collapses the binding to
+    # (None, None, None), so without this a transient read fault between /start
+    # and accept would read as "authority changed" and DISCARD a completed
+    # six-position measurement. The binding is preserved; a genuine APPEARS or
+    # CHANGES is still refused. See ADR-0196.
+    unreadable = current.reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE
+    if current.authority_binding == expected or unreadable:
         summary = graph.details.get("bass_extension_profile_summary")
         if isinstance(summary, Mapping):
             return summary
