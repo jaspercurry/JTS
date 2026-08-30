@@ -316,8 +316,9 @@ VERIFY_F_HI_HZ = 20_000.0
 # How far past each crossover shoulder the null-confirm sweep reaches. The null
 # depth is read at Fc/2 and 2*Fc (`analysis.crossover_null_depth_db`) and
 # `np.interp` CLAMPS outside the data, so a sweep stopping exactly on a shoulder
-# would have that shoulder read off its own edge bin. A quarter-octave of run-up
-# either side puts both read points inside measured data.
+# would have that shoulder read off its own edge bin. 1.25x either side is
+# roughly a THIRD of an octave (2**(1/3) = 1.26), which puts both read points
+# inside measured data with room for the analysis grid's own spacing.
 NULL_CONFIRM_SHOULDER_MARGIN = 1.25
 
 # The leading VERIFY pilot pair's OWN band (W6.7 ruling 2) — deliberately NOT
@@ -1546,11 +1547,20 @@ def null_confirm_band_hz(
     # the containment claim above is checkable rather than asserted.
     lo = max(lower_shoulder_hz / shoulder_margin, min(VERIFY_F_LO_HZ, fc_hz / 2.0))
     hi = min(upper_shoulder_hz * shoulder_margin, VERIFY_F_HI_HZ)
-    if lo > lower_shoulder_hz or hi < upper_shoulder_hz:
+    # STRICT on both sides, and that IS the guard rather than a style choice. A
+    # band whose edge lands exactly ON a shoulder still reads that shoulder off
+    # its own edge bin -- `np.interp` clamps there, so the number is an endpoint
+    # wearing a measurement's clothes, which is the one thing this function
+    # exists to refuse. Non-strict bounds made the low arm dead for every
+    # fc <= 300 (VERIFY's floor is `min(150, fc/2)`, so `lo` lands on `fc/2`
+    # exactly) and the high arm dead for 8k <= fc <= 10k (the 20 kHz ceiling
+    # binds at or below `2*fc`) -- precisely the corners with no run-up to give.
+    if lo >= lower_shoulder_hz or hi <= upper_shoulder_hz:
         raise ValueError(
-            f"a null confirm at fc={fc_hz:g} Hz needs the shoulders "
-            f"[{lower_shoulder_hz:g},{upper_shoulder_hz:g}] Hz, which do not fit "
-            f"inside the summed sweep envelope [{lo:g},{hi:g}] Hz"
+            f"a null confirm at fc={fc_hz:g} Hz needs run-up PAST the shoulders "
+            f"[{lower_shoulder_hz:g},{upper_shoulder_hz:g}] Hz, and the summed "
+            f"sweep envelope only reaches [{lo:g},{hi:g}] Hz; a shoulder read at "
+            "the band edge is a clamped endpoint, not a measurement"
         )
     return lo, hi
 
@@ -1571,13 +1581,19 @@ def build_null_confirm_program(
     """The acoustic null confirm's stimulus: a BAND-LIMITED mono summed sweep.
 
     Same shape as :func:`build_verify_program` — ambient window, optional pilot
-    pair, guard, one summed ESS, tail — and deliberately the same
-    ``PROGRAM_PHASE_VERIFY`` and ``"sweep_verify"`` segment id, so
-    ``program_analysis`` routes it to ``_analyze_verify`` and reads
+    pair, guard, one summed ESS, tail — and it keeps that composer's
+    ``"sweep_verify"`` SEGMENT ID so ``_analyze_verify`` reads
     ``reverse_null_depth_db`` off it with no dispatch change. That reuse is the
     point: a confirmed depth and a computed one must be the same subtraction
     (:func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`), and a
     second analyzer would be a second null depth.
+
+    It returns under its OWN :data:`PROGRAM_PHASE_NULL_CONFIRM`, not VERIFY's.
+    The phase is what ``program_admission`` keys on, and the two are opposites
+    there: VERIFY is refused because it rides the applied production graph with
+    no load and no admission, while a confirm is ROUTED — it loads the
+    measurement graph and is admitted per segment. Returning VERIFY's phase
+    would make the confirm unplayable.
 
     The ONE difference from VERIFY is the band. VERIFY sweeps the whole audible
     range because it is asking "what does the system do?"; a null confirm asks

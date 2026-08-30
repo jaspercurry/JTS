@@ -404,19 +404,26 @@ class SessionExcitation:
     ) -> ExcitationProgram:
         """The acoustic null confirm's band-limited summed sweep.
 
-        Clamped to the MOST RESTRICTIVE cap through the same
-        :func:`back_off_gain` call the other summed sweeps use, and for the
-        identical reason invariant 1 gives: this is a summed signal, it reaches
-        every driver, and it plays with no play-time admission gate. It is
-        band-limited to the crossover shoulders
-        (``program.null_confirm_band_hz``), which makes it a frequency SUBSET of
-        :meth:`verify_program`'s sweep at the same clamp — strictly less
-        excitation, never more.
+        **Invariant 1 does not describe this one, and that difference is the
+        point.** The other summed sweeps are their own only level guard because
+        they ride the applied production graph with no program-graph load and
+        no play-time admission gate. A confirm is ROUTED: it loads the
+        measurement graph and plays through ``play_program``, so the play-time
+        readmit gate (``program_admission``) IS on its path. The compose-time
+        clamp below is therefore the first of two guards here, not the only one.
 
-        It differs from :meth:`verify_program` in WHERE it plays, not in how
-        loud: the confirm is the one summed phase that measures the measurement
-        graph (:data:`SUMMED_SWEEP_PHASES` excludes it), because the inversion
-        and the candidate delay under test live there.
+        Clamped to the MOST RESTRICTIVE cap through the same
+        :func:`back_off_gain` call the other summed sweeps use, because a summed
+        signal still reaches every driver. Band-limited to the crossover
+        shoulders (``program.null_confirm_band_hz``), which makes it a frequency
+        SUBSET of :meth:`verify_program`'s sweep at the same clamp — strictly
+        less excitation, never more.
+
+        It differs from :meth:`verify_program` in WHERE it plays as well as in
+        how much: the confirm is the one summed phase that measures the
+        MEASUREMENT graph (:data:`SUMMED_SWEEP_PHASES` excludes it), because the
+        inversion and the candidate delay under test live there. It never plays
+        the production graph.
         """
         binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
         gain = back_off_gain(
