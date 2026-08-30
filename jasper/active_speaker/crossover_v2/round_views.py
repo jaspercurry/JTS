@@ -51,6 +51,7 @@ the only transform left anywhere here is the ``fraction=1`` residual
       bundle/<session-id>/...        one active-speaker session bundle
       state.json                     crossover-v2 flow state (optional)
       design-draft.json              active-speaker design draft (optional)
+      applied-profile.json           applied baseline profile SSOT (optional)
 
 **A seat's BEARING is read, and the position id alone is no longer enough.**
 Every view here keys a position by its stable ``position_id``
@@ -158,6 +159,11 @@ AGREEMENT_DISSENT_MAX = 1
 #: location fact it spelled in two places and then changed in one.
 _STATE_FILENAME = "state.json"
 
+#: The applied-baseline-profile SSOT the same script drops beside the bundle.
+#: It answers "what was the speaker playing when this round was banked", which
+#: the flow state cannot (see ``evidence_packet._incumbent_block``).
+_APPLIED_PROFILE_FILENAME = "applied-profile.json"
+
 
 class RoundViewsError(ValueError):
     """A banked round directory could not be read into a comparable view."""
@@ -232,11 +238,13 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     session_dir = _bundle_session_dir(round_dir)
     state_path = round_dir / _STATE_FILENAME
     draft_path = round_dir / "design-draft.json"
+    applied_path = round_dir / _APPLIED_PROFILE_FILENAME
     try:
         packet = build_crossover_evidence_packet(
             session_dir,
             state_path=state_path if state_path.is_file() else None,
             driver_draft_path=draft_path if draft_path.is_file() else None,
+            applied_profile_path=applied_path if applied_path.is_file() else None,
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc

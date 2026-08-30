@@ -515,6 +515,29 @@ def _read_json(path: Path) -> tuple[Any, str]:
         return None, f"not valid JSON: {exc.msg}"
 
 
+def _applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
+    """The applied-profile SSOT, and why there is none when there is none.
+
+    One owner for "what is this speaker playing":
+    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`,
+    the same reader ``correction_crossover_v2._applied_graph_boosts`` asks. It
+    collapses every failure into ``None``, so the REASON is read separately and
+    only on that path — this packet's rule that an artifact which never arrived
+    and one that arrived unreadable are different facts.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+
+    if path is None:
+        return None, "no applied baseline profile was supplied"
+    profile = load_applied_baseline_profile_state(path)
+    if profile is not None:
+        return profile, ""
+    _, reason = _read_json(path)
+    return None, reason or "the file carries no applied baseline profile"
+
+
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -597,17 +620,21 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     time, so they structurally cannot carry one here. The two further inputs
     that were once unguarded now carry the same ``allow_nan=False`` at their
     own writers (#2839): ``save_v2_state``
-    (:mod:`jasper.web.correction_crossover_v2`) for the flow state, whose four
-    fields this packet copies — ``verify.claims``,
-    ``pre_apply_profile.blend_correction``, ``pre_apply_profile.linearization``
-    (through :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
-    which selects the authoritative copy and does not screen) and
-    ``evidence.calibration`` — and
-    :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
+    (:mod:`jasper.web.correction_crossover_v2`) for the flow state, whose two
+    fields this packet copies — ``verify.claims`` and ``evidence.calibration``
+    — and :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
     ``driver_safety_profile.confirmation`` is copied whole. The draft's
     passbands never needed it, because
     :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
     drops a non-finite bound.
+
+    The ``incumbent`` block's filters are the exception, and it is stated
+    rather than implied: they come from the applied-profile SSOT, which
+    ``persist_applied_baseline_profile`` writes with a plain ``json.dumps``. A
+    non-finite gain there would reach ``_fingerprint`` and cost the round its
+    packet. Nothing has ever written one — the fit produces finite gains and
+    ``save_v2_state`` would already have refused to record the apply — so this
+    is disclosure of a narrow exposure, not a defended hypothetical.
 
     That retires neither this branch nor its argument: the two inputs at the
     top of this docstring are the ones it exists for, and the classifier still
@@ -1991,9 +2018,12 @@ def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
 
 
 def _incumbent_block(
-    receipt: dict[str, Any], reason: str, state: dict[str, Any], state_reason: str
+    receipt: dict[str, Any],
+    reason: str,
+    profile: dict[str, Any] | None,
+    profile_reason: str,
 ) -> dict[str, Any]:
-    """What the measurement was taken THROUGH — three records, two questions.
+    """What the speaker is PLAYING — three records, two questions.
 
     The BLEND correction is recorded in two places, deliberately reported side
     by side rather than reconciled here: the receipt's
@@ -2012,20 +2042,40 @@ def _incumbent_block(
     :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
     which owns WHICH copy of that field is authoritative.
 
+    **The applied-profile SSOT answers both halves; the Undo stash does not.**
+    This block read the flow state's ``pre_apply_profile`` until 2026-08-29.
+    Only ``observe_apply_success`` writes that field, and it names the graph
+    Undo restores TO — the one live BEFORE the last v2 apply — so it is one
+    apply behind after any v2 apply and arbitrarily behind after an apply
+    through a door that never touches v2 state (``/sound/setup``'s is one).
+    Both directions were measured on jts3 that night: a 15-hour-old chain
+    reported over a freshly applied baseline, and an empty one reported over a
+    graph carrying nine linearization filters. Issue #2859 named the staleness
+    mechanism and was closed against the restore path alone.
+
+    ``identity`` says WHICH profile the answer describes, so a reader can catch
+    the next drift of this kind. ``config.path`` is not among its fields — the
+    packet excludes absolute paths, and ``config.sha256`` names the same graph.
+
     Why it is load-bearing: a per-driver prescription is a total for every role
     it names (:class:`~.driver_prescription.DriverPrescription`), so a role's
     incumbent filters are DELETED by any document that names the role and does
     not repeat them. On 2026-08-22 that deleted a −6.0744 dB Lowshelf at
     5844.67 Hz the prescriber had never been shown, and the round measured a
-    6.065 dB tilt step for it (issue #2863). The gain is the banked one, read
-    from that round's ``pre_apply_profile.linearization.tweeter``.
+    6.065 dB tilt step for it (issue #2863).
     """
-    from jasper.active_speaker.baseline_profile import profile_linearization
+    from jasper.active_speaker.baseline_profile import (
+        profile_blend_correction,
+        profile_linearization,
+    )
 
     blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
-    profile = _mapping(state.get("pre_apply_profile"))
     from_receipt = blend.get("incumbent")
-    from_profile = profile.get("blend_correction")
+    # ``profile_blend_correction`` and not an attribute read: it owns the same
+    # snapshot-first authority rule ``profile_linearization`` owns, and it
+    # keeps ``None`` (no readable profile) apart from ``()`` (a profile that
+    # applied none) — the distinction this block's two consumers both need.
+    from_profile = profile_blend_correction(profile)
     linearization = profile_linearization(profile)
     return {
         "from_round_receipt": (
@@ -2034,13 +2084,28 @@ def _incumbent_block(
             else _absence(reason, False, "round_measurements.blend.incumbent")
         ),
         "from_applied_profile": (
-            from_profile
+            list(from_profile)
             if from_profile is not None
             else _absence(
-                state_reason,
-                bool(profile),
-                "pre_apply_profile.blend_correction",
+                profile_reason,
+                False,
+                "applied_baseline_profile.blend_correction",
             )
+        ),
+        "identity": (
+            {
+                "baseline_id": profile.get("baseline_id"),
+                "candidate_fingerprint": profile.get("candidate_fingerprint"),
+                "applied_at": profile.get("applied_at"),
+                "config_sha256": _mapping(profile.get("config")).get("sha256"),
+                "note": (
+                    "which applied profile the filters below describe. A "
+                    "packet built from a bank names the profile that was live "
+                    "when the bank was pulled, not the one live now"
+                ),
+            }
+            if profile
+            else _absence(profile_reason, False, "applied_baseline_profile")
         ),
         "note": (
             "a prescription is a TOTAL, not a delta: prescribe the whole "
@@ -2065,12 +2130,12 @@ def _incumbent_block(
                 }
                 if profile
                 else _absence(
-                    state_reason, False, "pre_apply_profile.linearization"
+                    profile_reason, False, "applied_baseline_profile.linearization"
                 )
             ),
             "source": (
-                "pre_apply_profile.recomposition_snapshot.linearization, "
-                "falling back to pre_apply_profile.linearization"
+                "applied_baseline_profile.recomposition_snapshot.linearization, "
+                "falling back to applied_baseline_profile.linearization"
             ),
             "note": (
                 "the per-driver correction each branch is already carrying. A "
@@ -2297,6 +2362,7 @@ def _not_evaluated(
     receipt_reason: str,
     cloud_reason: str,
     state_reason: str,
+    applied_profile_reason: str,
     classification_available: bool,
     drivers_available: bool,
     lateral_poses_available: bool,
@@ -2444,9 +2510,16 @@ def _not_evaluated(
     if state_reason:
         entries.append({
             "field": "flow_state",
+            "reason": f"{state_reason}; per-claim verify verdicts live only here",
+        })
+    if applied_profile_reason:
+        entries.append({
+            "field": "incumbent",
             "reason": (
-                f"{state_reason}; per-claim verify verdicts and the applied "
-                "profile live only here"
+                f"{applied_profile_reason}; without the applied-profile SSOT "
+                "this packet cannot name the correction the graph is already "
+                "carrying, so a per-driver prescription's displacement is "
+                "unknown rather than zero"
             ),
         })
     if isinstance(findings.get("findings"), list) and not findings["findings"]:
@@ -2465,6 +2538,7 @@ def build_crossover_evidence_packet(
     *,
     state_path: Path | None = None,
     driver_draft_path: Path | None = None,
+    applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -2476,9 +2550,17 @@ def build_crossover_evidence_packet(
     ``state_path`` is the flow state file (``jts_crossover_v2_flow_state``),
     which is banked separately because the bundle does not contain it. It is
     OPTIONAL and its absence is reported rather than papered over — but a
-    packet without it cannot carry the per-claim verify verdicts, the Fc
-    selection, or the applied profile's own incumbent, and says so in the
-    packet's ``not_evaluated`` block.
+    packet without it cannot carry the per-claim verify verdicts or the Fc
+    selection, and says so in the packet's ``not_evaluated`` block.
+
+    ``applied_profile_path`` is the applied-baseline-profile SSOT
+    (``active_speaker_baseline_profile.json``), which answers "what is this
+    speaker playing" for the ``incumbent`` block. Same posture, same reason:
+    OPTIONAL, absence reported. A packet without it can name neither the
+    per-driver correction nor the blend correction the graph already carries,
+    so a per-driver prescription's displacement is ``unknown`` rather than
+    guessed — see :func:`_incumbent_block` for why the flow state cannot stand
+    in for this file.
 
     ``driver_draft_path`` is the active-speaker design draft
     (``active_speaker_design_draft.json``), which carries the confirmed
@@ -2521,6 +2603,10 @@ def build_crossover_evidence_packet(
         state_reason = read_reason
     state = _mapping(state_raw)
     state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
+
+    applied_profile, applied_profile_reason = _applied_profile_source(
+        applied_profile_path
+    )
 
     draft_raw: Any = None
     draft_reason = "no driver design draft was supplied"
@@ -2603,7 +2689,9 @@ def build_crossover_evidence_packet(
             **_absence(receipt_reason, bool(receipt), "round_receipt.json"),
         },
         "crossover_region": _region_block(receipt, receipt_reason),
-        "incumbent": _incumbent_block(receipt, receipt_reason, state, state_reason),
+        "incumbent": _incumbent_block(
+            receipt, receipt_reason, applied_profile, applied_profile_reason
+        ),
         # Verbatim, every one of them. `spec.bands[]` carries `evaluable`,
         # `n_excluded` and `graded_lo_hz`; `flatness` carries `n_excluded` and
         # `evaluable`. Those are the fields that say how much of the band the
@@ -2672,6 +2760,7 @@ def build_crossover_evidence_packet(
             receipt_reason=receipt_reason,
             cloud_reason=cloud_reason,
             state_reason=state_reason,
+            applied_profile_reason=applied_profile_reason,
             classification_available=bool(classification.get("available")),
             drivers_available=bool(drivers.get("available")),
             lateral_poses_available=bool(lateral_poses.get("available")),

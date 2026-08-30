@@ -37,6 +37,7 @@ from tests.test_crossover_v2_driver_prescription import (
     WOOFER_BAND,
     _classification,
     _draft,
+    applied_profile,
 )
 
 
@@ -105,13 +106,17 @@ def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
     session, draft = _speaker_dirs(
         tmp_path, draft=_draft(), classification=_classification()
     )
-    state = tmp_path / "state.json"
-    state.write_text(
-        json.dumps({"pre_apply_profile": {"blend_correction": [{"freq": 1000.0}]}})
+    applied = tmp_path / "applied-profile.json"
+    applied.write_text(
+        json.dumps(applied_profile(blend=[{"freq": 1000.0}]))
     )
 
     code, payload = _status(
-        [str(session), "--drivers", str(draft), "--state", str(state)], capsys
+        [
+            str(session), "--drivers", str(draft),
+            "--applied-profile", str(applied),
+        ],
+        capsys,
     )
 
     assert code == cli.EXIT_OK
@@ -195,7 +200,7 @@ def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
     assert payload["applied"]["from_applied_profile"]["available"] is False
     assert (
         payload["applied"]["from_applied_profile"]["reason"]
-        == "no flow state file was supplied"
+        == "no applied baseline profile was supplied"
     )
 
 

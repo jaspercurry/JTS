@@ -149,6 +149,9 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
         Path(args.session_dir),
         state_path=Path(args.state) if args.state else None,
         driver_draft_path=Path(args.drivers) if args.drivers else None,
+        applied_profile_path=(
+            Path(args.applied_profile) if args.applied_profile else None
+        ),
     )
 
 
@@ -766,13 +769,17 @@ def _staged_section() -> dict[str, Any]:
 def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """What the round was measured THROUGH — the packet's two BLEND records.
+    """The packet's two BLEND records — and they answer different questions.
+
+    ``from_round_receipt`` is what the round said it derived from;
+    ``from_applied_profile`` is what the speaker is playing now, read from the
+    applied-profile SSOT. They should agree, and the packet reports both rather
+    than reconciling them.
 
     The packet keeps a third under ``incumbent.linearization``, the per-driver
     correction each branch carries, and this verb does not surface it yet
     (#2863's follow-up). Named here rather than left as a silent omission: a
-    reader told "what the round was measured through" would otherwise take
-    these two lines for the whole answer.
+    reader would otherwise take these two lines for the whole answer.
     """
     block = _block(packet, "incumbent")
     from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
@@ -899,11 +906,15 @@ def _next_actions(
                 "`stage` to leave it for the next round"
             )
 
-    if not state_supplied:
+    if not sections["applied"]["from_applied_profile"]["available"]:
         out.append(
-            "pass --state <flow state JSON>: `stage` refuses without it, and the "
-            "applied profile's own incumbent cannot be read"
+            "pass --applied-profile <applied baseline profile JSON>: without it "
+            "this packet cannot name the correction the graph already carries, "
+            "and a per-driver prescription's displacement is unknown"
         )
+
+    if not state_supplied:
+        out.append("pass --state <flow state JSON>: `stage` refuses without it")
 
     if sections["staged"]["pending"]:
         out.append(f"a prescription is already staged — {STAGED_LIFECYCLE_NOTE}")
@@ -1000,8 +1011,7 @@ _STATE_HELP = (
 )
 _STATE_HELP_OPTIONAL = (
     f"{_STATE_HELP}. Optional; without it the packet cannot carry the "
-    "per-claim verify verdicts, the Fc selection, or the applied profile's "
-    "incumbent, and says so"
+    "per-claim verify verdicts or the Fc selection, and says so"
 )
 _STATE_HELP_REQUIRED = (
     f"{_STATE_HELP}. REQUIRED for this verb: the round a prescription becomes "
@@ -1023,6 +1033,20 @@ _DRIVERS_HELP = (
 )
 
 
+#: What ``--applied-profile`` is. Optional on the same terms as ``--drivers``,
+#: and NOT interchangeable with ``--state``: the flow state's
+#: ``pre_apply_profile`` is the Undo stash, which is one apply behind the graph
+#: whenever a round has applied and arbitrarily behind it whenever a graph was
+#: applied through a door that never touches v2 state.
+_APPLIED_PROFILE_HELP = (
+    "the applied baseline profile JSON — this speaker's record of what it is "
+    "PLAYING (default location on a speaker: "
+    "/var/lib/jasper/active_speaker_baseline_profile.json). Optional; without "
+    "it the packet cannot name the correction the graph already carries, so a "
+    "per-driver prescription's displacement is reported unknown rather than "
+    "guessed"
+)
+
 
 def _add_evidence_args(
     parser: argparse.ArgumentParser, *, state_help: str = _STATE_HELP_OPTIONAL
@@ -1039,6 +1063,9 @@ def _add_evidence_args(
     # that says WHY the flag matters here. The check lives in `_cmd_stage`.
     parser.add_argument("--state", default=None, help=state_help)
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
+    parser.add_argument(
+        "--applied-profile", default=None, help=_APPLIED_PROFILE_HELP
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
