@@ -1633,10 +1633,15 @@ def check_room_correction_authority() -> CheckResult:
     Ruling S10 and ADR-0019: an unminted, stale or unreadable commissioning
     receipt no longer refuses a room-correction run. The run proceeds on the
     applied crossover and simply does not bank a verified result, which means
-    the only place a household can learn the difference is here. WARN, never
-    FAIL: nothing is broken, and nothing is stopped.
+    the only place a household can learn the difference is here. Never FAIL:
+    nothing is broken, and nothing is stopped. The denials do not share one
+    line, because they do not share a remedy — see ADR-0196.
     """
 
+    from ...active_speaker._common import (
+        ROOM_AUTHORITY_RECEIPT_ABSENT,
+        ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+    )
     from ...active_speaker.setup_status import read_active_speaker_setup_status
 
     label = "room correction authority"
@@ -1654,10 +1659,24 @@ def check_room_correction_authority() -> CheckResult:
             label, "ok",
             f"room correction is banked under {acoustic.get('authority')}",
         )
+    reason = str(acoustic.get("reason") or "")
+    detail = str(acoustic.get("detail") or "")
+    if reason == ROOM_AUTHORITY_RECEIPT_ABSENT:
+        # The state every uncommissioned speaker is in, which is most of them.
+        # A warning the whole fleet shows forever teaches its owner to skip
+        # warnings; nothing here is damaged and no remedy is owed.
+        return CheckResult(label, "ok", f"room correction runs unbanked ({reason})")
+    if reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
+        # A machine fault, not a verdict on the record: the file and errno are
+        # the sentence that ends the incident. Without them an operator reads
+        # "unproven" and goes looking for a mint that was never the problem.
+        return CheckResult(
+            label, "warn",
+            "room correction cannot read its commissioning record "
+            f"({acoustic.get('cause') or reason}): {detail}",
+        )
     return CheckResult(
-        label, "warn",
-        f"room correction runs unproven ({acoustic.get('reason')}): "
-        f"{acoustic.get('detail')}",
+        label, "warn", f"room correction runs unproven ({reason}): {detail}"
     )
 
 

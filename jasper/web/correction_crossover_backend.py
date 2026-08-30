@@ -255,6 +255,7 @@ class CrossoverLevelLease:
             self._volume_safety_state_path
         )
         self._level_run_store = CrossoverLevelRunStore(path=level_run_state_path)
+        self._last_level_run_fault: tuple[str, str] | None = None
 
     @property
     def unresolved_volume_safety(self) -> dict[str, Any] | None:
@@ -574,13 +575,22 @@ class CrossoverLevelLease:
         )
 
         try:
-            return self._level_run_store.snapshot()
+            snapshot = self._level_run_store.snapshot()
         except (OSError, CrossoverLevelRunError, ValueError) as exc:
+            # The browser polls this every ~1.5s for the length of a tuning
+            # round, so a machine fault that persists — a lock no service
+            # account can open — is one incident, not hundreds of them. The
+            # transition is the event; the repeat is not (ADR-0196). The path
+            # rides the line because the class alone cannot say WHICH file.
+            fault = (type(exc).__name__, str(self._level_run_store.lock_path or ""))
+            changed = self._last_level_run_fault != fault
+            self._last_level_run_fault = fault
             log_event(
                 logger,
                 "correction.crossover_level_run_unavailable",
-                level=logging.ERROR,
-                reason=type(exc).__name__,
+                level=logging.ERROR if changed else logging.DEBUG,
+                reason=fault[0],
+                path=fault[1],
             )
             return {
                 "schema_version": SCHEMA_VERSION,
@@ -588,6 +598,9 @@ class CrossoverLevelLease:
                 "terminal_reason": "state_unavailable",
                 "late_success": False,
             }
+        # A fault that returns after the store recovers is a new incident.
+        self._last_level_run_fault = None
+        return snapshot
 
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
         from jasper.correction.level_match import LevelMatchSession

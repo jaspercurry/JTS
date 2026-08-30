@@ -883,31 +883,14 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
     assert status["automatic_candidate"]["ready"] is False
 
 
-@pytest.mark.parametrize(
-    "receipt_reason",
-    [
-        _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
-        _common.ROOM_AUTHORITY_RECEIPT_STALE,
-        _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
-        _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
-        _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
-    ],
-)
-def test_receipt_denial_reason_reaches_the_room_decision_intact(
+def _denied_receipt_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     receipt_reason: str,
-) -> None:
-    """Which denial it was survives the hop to the household surface.
+    cause: str = "",
+) -> dict:
+    """One real setup status whose receipt denial is ``receipt_reason``."""
 
-    They used to collapse into one opaque code, so a doctor line could say
-    only "no receipt" — never whether nothing was ever minted, something moved
-    under one that was, an upgrade grew the schema past what an older mint
-    recorded, the record could not be opened at all, or the bytes will not
-    parse. Those have different remedies, and each carries its own detail —
-    a reason with no entry of its own inherits the copy for a receipt that was
-    never minted, which sends the household to the wrong remedy.
-    """
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
     config_path = tmp_path / "active_speaker_baseline.yml"
@@ -937,19 +920,102 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
             "allowed": False,
             "authority": "automatic_verified_receipt",
             "reason": receipt_reason,
+            "cause": cause,
             "receipt_fingerprint": None,
         },
     )
-
-    acoustic = setup_mod.read_active_speaker_setup_status(
+    return setup_mod.read_active_speaker_setup_status(
         active_config_path=str(config_path),
-    )["acoustic_commissioning"]
+    )
+
+
+@pytest.mark.parametrize(
+    "receipt_reason",
+    [
+        _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+        _common.ROOM_AUTHORITY_RECEIPT_STALE,
+        _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+        _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+    ],
+)
+def test_receipt_denial_reason_reaches_the_room_decision_intact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    receipt_reason: str,
+) -> None:
+    """Which denial it was survives the hop to the household surface.
+
+    They used to collapse into one opaque code, so a doctor line could say
+    only "no receipt" — never whether nothing was ever minted, something moved
+    under one that was, an upgrade grew the schema past what an older mint
+    recorded, the record could not be opened at all, or the bytes will not
+    parse. Those have different remedies, and each carries its own detail —
+    a reason with no entry of its own inherits the copy for a receipt that was
+    never minted, which sends the household to the wrong remedy.
+    """
+    acoustic = _denied_receipt_status(monkeypatch, tmp_path, receipt_reason)[
+        "acoustic_commissioning"
+    ]
 
     assert acoustic["allowed"] is False
     assert acoustic["authority"] is None
     assert acoustic["receipt_fingerprint"] is None
     assert acoustic["reason"] == receipt_reason
     assert acoustic["detail"] == setup_mod._RECEIPT_DETAIL[receipt_reason]
+
+
+@pytest.mark.parametrize(
+    ("receipt_reason", "expected_code", "retryable"),
+    [
+        (_common.ROOM_AUTHORITY_RECEIPT_ABSENT, "speaker_setup_incomplete", False),
+        (_common.ROOM_AUTHORITY_RECEIPT_STALE, "speaker_setup_incomplete", False),
+        (
+            _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
+            "speaker_setup_incomplete",
+            False,
+        ),
+        (
+            _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+            "speaker_setup_incomplete",
+            False,
+        ),
+        (
+            _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+            "speaker_readiness_unavailable",
+            True,
+        ),
+    ],
+)
+def test_room_answers_an_unopenable_receipt_as_a_machine_fault(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    receipt_reason: str,
+    expected_code: str,
+    retryable: bool,
+) -> None:
+    """A receipt JTS cannot OPEN is not an unconfigured speaker.
+
+    The four record-level denials are answered by finishing or re-running
+    setup. UNREADABLE is not: the wizard detail for this same decision says a
+    machine-level fault is unlikely to change by re-running commissioning, so
+    a non-retryable "finish speaker setup first" — with a button into that
+    wizard — points the household at the one remedy that cannot work.
+    """
+    from jasper.web import correction_setup
+
+    status = _denied_receipt_status(monkeypatch, tmp_path, receipt_reason)
+    readiness = correction_setup._normalize_room_readiness(status)
+
+    assert readiness.allowed is False
+    assert readiness.reason == receipt_reason
+    assert readiness.blocker["code"] == expected_code
+    assert readiness.blocker["retryable"] is retryable
+    assert readiness.blocker["recovery_action"]["href"] == (
+        "/correction/room/"
+        if retryable
+        else status["acoustic_commissioning"]["setup_href"]
+    )
 
 
 def test_every_receipt_denial_carries_a_remedy_that_is_its_own() -> None:

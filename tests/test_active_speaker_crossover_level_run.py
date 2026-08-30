@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -100,6 +101,20 @@ def test_request_refuses_declared_geometry_substitution():
             capture_geometry=raw["capture_geometry"],
             ramp_config=raw["ramp_config"],
         )
+
+
+def test_the_advisory_lock_is_group_writable(tmp_path):
+    """A group member that can only READ this lock cannot take it at all.
+
+    Holding an advisory lock opens the file for write, so a group-read lock
+    shuts out every service account that does not own it -- which is the whole
+    fleet once any root-run poll created it first (ADR-0196).
+    """
+    store = CrossoverLevelRunStore(path=tmp_path / "run.json")
+
+    store.snapshot()
+
+    assert oct(os.stat(store.lock_path).st_mode & 0o777) == "0o660"
 
 
 def test_concurrent_identical_claims_dispatch_exactly_once(tmp_path):

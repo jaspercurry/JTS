@@ -1907,21 +1907,23 @@ widen_jasper_web_writable_dirs() {
             chmod 0640 /var/lib/jasper/active_speaker_baseline_profile.json \
                 2>/dev/null || true
         fi
-        # Same repair for the commissioning run record's advisory locks: a
-        # root-run status poll used to CREATE them root:root 0640, after which
-        # no service account could take them (ADR-0196). Only the two LOCKS are
+        # Same repair for the Active run records' advisory locks: a root-run
+        # status poll used to CREATE them root:root 0640, after which no
+        # service account could take them (ADR-0196). Only the LOCKS are
         # widened to 0660 -- holding a lock means opening it for write. The
-        # record and its live-mutation sibling stay group-READ, published that
-        # way by their own atomic writers.
-        for _commissioning_lock in \
+        # records and their live-mutation siblings stay group-READ, published
+        # that way by their own atomic writers. A non-owner cannot repair a
+        # lock it cannot open, so code alone never heals an existing box.
+        for _active_run_lock in \
             /var/lib/jasper/.active_speaker_commissioning_run.json.lock \
-            /var/lib/jasper/.active_speaker_commissioning_run.json.live-execution.lock
+            /var/lib/jasper/.active_speaker_commissioning_run.json.live-execution.lock \
+            /var/lib/jasper/.active_speaker_crossover_level_run.json.lock
         do
-            [[ -e ${_commissioning_lock} ]] || continue
-            chgrp jasper "${_commissioning_lock}" 2>/dev/null || true
-            chmod 0660 "${_commissioning_lock}" 2>/dev/null || true
+            [[ -e ${_active_run_lock} ]] || continue
+            chgrp jasper "${_active_run_lock}" 2>/dev/null || true
+            chmod 0660 "${_active_run_lock}" 2>/dev/null || true
         done
-        unset _commissioning_lock
+        unset _active_run_lock
         for _commissioning_state in \
             /var/lib/jasper/active_speaker_commissioning_run.json \
             /var/lib/jasper/.active_speaker_commissioning_run.json.live-mutation.json

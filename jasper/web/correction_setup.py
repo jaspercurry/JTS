@@ -2711,6 +2711,7 @@ def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
     crosses this adapter.
     """
     from jasper.correction import failures
+    from jasper.active_speaker._common import ROOM_AUTHORITY_RECEIPT_UNREADABLE
     from jasper.active_speaker.setup_status import (
         ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
         ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
@@ -2807,6 +2808,13 @@ def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
         or "speaker setup is not ready for room correction"
     )
     unavailable = not well_formed or acoustic_status == "unknown"
+    # A receipt JTS could not OPEN is a machine fault, not an unconfigured
+    # speaker: the wizard detail for this same denial says re-running
+    # commissioning is unlikely to clear it. Room may not answer it with
+    # "finish speaker setup first" or send the owner to that wizard. ADR-0196.
+    if reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
+        unavailable = True
+        action = None
     public_code = (
         failures.SPEAKER_READINESS_UNAVAILABLE
         if unavailable

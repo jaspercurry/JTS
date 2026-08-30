@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+import jasper.active_speaker._common as _common
 from jasper.cli import doctor
 from jasper.correction import bundles
 
@@ -2636,6 +2637,29 @@ def test_check_room_correction_authority_registered_in_sync_checks():
             "warn",
             id="unproven_runs_anyway",
         ),
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+                "detail": "finish commissioning when convenient",
+            },
+            "ok",
+            id="never_minted_is_the_state_most_speakers_are_in",
+        ),
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+                "cause": "PermissionError:EACCES:/var/lib/jasper/receipt.json",
+                "detail": "a machine-level fault",
+            },
+            "warn",
+            id="machine_fault_still_warns",
+        ),
     ],
 )
 def test_room_correction_authority_warns_but_never_fails(
@@ -2658,6 +2682,37 @@ def test_room_correction_authority_warns_but_never_fails(
     r = doctor.check_room_correction_authority()
 
     assert r.status == expected_status
+
+
+def test_room_correction_authority_names_the_record_it_could_not_open(monkeypatch):
+    """The one sentence that ends the incident, without a trip to the journal.
+
+    The reason names the CLASS. Only the cause says which file and which
+    errno, and an unreadable receipt is indistinguishable from a stale one --
+    a wrong remedy, not merely a vague line -- until the doctor prints it.
+    """
+    from jasper.active_speaker import setup_status
+
+    cause = "PermissionError:EACCES:/var/lib/jasper/receipt.json"
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "acoustic_commissioning": {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+                "cause": cause,
+                "detail": "a machine-level fault",
+            },
+        },
+    )
+
+    r = doctor.check_room_correction_authority()
+
+    assert r.status == "warn"
+    assert cause in r.detail
 
 
 def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):

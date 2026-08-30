@@ -14,7 +14,6 @@ authority for recovery after any possible listening-level mutation.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import math
@@ -30,7 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.ramp import MeasurementRamp
 from jasper.log_event import log_event
@@ -403,21 +402,32 @@ class CrossoverLevelRunStore:
             raise CrossoverLevelRunError("level-run clock is non-finite")
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
 
+    @property
+    def lock_path(self) -> Path | None:
+        """The advisory lock beside the record; ``None`` for the memory store."""
+
+        if self.path is None:
+            return None
+        return self.path.with_name(f".{self.path.name}.lock")
+
     @contextmanager
     def _locked(self):
         with _THREAD_LOCK:
-            if self.path is None:
+            lock_path = self.lock_path
+            if lock_path is None:
                 yield
                 return
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            lock_path = self.path.with_name(f".{self.path.name}.lock")
-            with lock_path.open("a+", encoding="utf-8") as handle:
-                os.chmod(lock_path, 0o640)
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            # Group-WRITE, and chmod only when the mode actually differs.
+            # Taking an advisory lock opens the file for write, so a group
+            # member that can only READ one cannot take it at all; and an
+            # unconditional chmod on a lock this process does not own raises
+            # EPERM even when the open succeeds.  Both are ADR-0196.
+            with advisory_file_lock(
+                lock_path,
+                mode=0o660,
+                group_from_parent=True,
+            ):
+                yield
 
     def _read(self) -> dict[str, Any]:
         if self.path is None:
