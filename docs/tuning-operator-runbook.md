@@ -451,7 +451,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |
-| **driver door** | per-driver cuts and boosts | mutating-with-gates | spool |
+| **driver door** | per-driver cuts and boosts, and an optional per-role trim pin (`pinned_trim_db` — a trim you name is carried, not re-solved) | mutating-with-gates | spool |
 | republish a banked candidate | make any banked candidate live again by its own fingerprint | mutating-with-gates | `POST /crossover/v2/republish` |
 | restore | the v2-aware undo; withdraws any staged prescription first | mutating | `POST /crossover/v2/restore` |
 | decline | reject a reviewed candidate ("keep current sound") | mutating | `POST /crossover/v2/decline` |
@@ -489,7 +489,7 @@ Five prescription doors, one refusal vocabulary each, counted at HEAD:
 | alignment | 9 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
 | topology | 9 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
 | blend | 17 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
-| driver | 16 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
+| driver | 17 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
 | spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
 
 The topology door lost `outside_declared_search_band` when
@@ -503,7 +503,10 @@ classification bar's — `driver_feature_not_classified`,
 tested, so the vouch DISCLOSES and the round decides. It dropped two more on
 2026-08-29 — `driver_filter_cut_too_shallow` and `driver_filter_boost_too_shallow`
 — on the same ruling: a filter under the fit engine's 0.5 dB cosmetic floor is
-now admitted and counted onto `prescription.subaudible_filters`.
+now admitted and counted onto `prescription.subaudible_filters`. It GAINED one
+with the trim pin: `driver_trim_pin_malformed` is the whole judgment on
+`pinned_trim_db` — an object keyed by role, each value between −60 and 0 dB, and
+only for a role the same document prescribes filters for.
 
 One refusal still shapes what you can ask for, and it is about **boosts**:
 

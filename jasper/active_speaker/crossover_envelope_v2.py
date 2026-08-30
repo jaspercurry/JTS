@@ -430,13 +430,23 @@ def _candidate_review_payload(
     if not candidate:
         return None
     trims_db = _mapping(candidate.get("trims_db"))
+    # A trim the round CARRIED rather than solved, per role. On the row itself
+    # rather than as a flat bit beside the list, because unlike the crossover
+    # and the polarity below there is one of these per driver — and the
+    # renderer's rule is the same one: a pinned number is never worded as
+    # something this round measured.
+    pinned = _mapping(candidate.get("trims_pinned"))
     trims: list[dict[str, Any]] = []
     for role, value in sorted(
         trims_db.items(), key=lambda kv: (_ROLE_ORDER.get(str(kv[0]), 99), str(kv[0]))
     ):
         db = _finite(value)
         if db is not None:
-            trims.append({"role": str(role), "attenuation_db": db})
+            trims.append({
+                "role": str(role),
+                "attenuation_db": db,
+                "pinned": str(role) in pinned,
+            })
 
     alignment = _mapping(candidate.get("alignment"))
     delay_us = _finite(alignment.get("delay_us"))

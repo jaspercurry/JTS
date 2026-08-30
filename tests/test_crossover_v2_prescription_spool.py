@@ -1466,6 +1466,7 @@ def test_configuring_logging_does_not_silence_the_human_summary(tmp_path):
 def _stage_driver(
     tmp_path: Path, *, ordinal: int = 9, filters: Any = None,
     classification: dict[str, Any] | None = None,
+    pinned_trim_db: Any = None,
 ) -> tuple[Any, bytes]:
     """One accepted per-driver document, banked in THIS module's spool.
 
@@ -1474,7 +1475,8 @@ def _stage_driver(
     production would have accepted rather than a hand-built stand-in.
     """
     packet = _driver_packet(tmp_path / "driver-bundle", classification=classification)
-    document = _driver_document(filters or [_driver_cut()], packet)
+    over = {} if pinned_trim_db is None else {"pinned_trim_db": pinned_trim_db}
+    document = _driver_document(filters or [_driver_cut()], packet, **over)
     payload = json.dumps(document).encode()
     prescription = _driver_gate(packet, document)
     spool.stage_prescription(
@@ -1937,6 +1939,126 @@ def test_a_round_with_no_per_driver_document_carries_the_fit_untouched(monkeypat
     candidate, fit = _candidate_from_a_prescribed_round(monkeypatch, None)
 
     assert candidate.linearization == fit
+
+
+# --- the trim pin: a trim you name is not re-solved ------------------------- #
+
+
+_PINNED_TWEETER_DB = -7.25
+
+
+def _round_candidate(
+    tmp_path, monkeypatch, *, pin: Any = None, failed_fit: bool = False,
+) -> Any:
+    """One taken document, built through the real ``build_candidate``.
+
+    ``failed_fit`` takes the SF2 degrade instead of the fitted lane — the two
+    assign ``role_attenuations_db`` at different points, which is the whole
+    reason the pin folds above both rather than inside either.
+    """
+    _stage_driver(tmp_path, ordinal=9, pinned_trim_db=pin)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+    if failed_fit:
+        return _candidate_from_a_failed_fit(monkeypatch, taken)[0]
+    return _candidate_from_a_prescribed_round(monkeypatch, taken)[0]
+
+
+@pytest.mark.parametrize("failed_fit", [False, True], ids=["fitted", "fit_failed"])
+def test_a_pinned_trim_ships_and_an_unpinned_one_is_still_solved(
+    tmp_path, monkeypatch, failed_fit,
+):
+    """The headline, on both lanes a candidate can take.
+
+    A transplanted chain rides the trim it was shaped against; every role the
+    document did not name keeps the value this round solved.
+    """
+    # Its own bundle per round: the packet fixture builds a real artifact tree
+    # and cannot be laid down twice in one directory.
+    pinned = _round_candidate(
+        tmp_path / "pinned", monkeypatch,
+        pin={"tweeter": _PINNED_TWEETER_DB}, failed_fit=failed_fit,
+    )
+    control = _round_candidate(
+        tmp_path / "control", monkeypatch, failed_fit=failed_fit
+    )
+
+    assert pinned.role_attenuations_db["tweeter"] == _PINNED_TWEETER_DB
+    assert control.role_attenuations_db["tweeter"] != _PINNED_TWEETER_DB
+    # …and it is the number the compiler is handed, not just one on a receipt.
+    assert pinned.driver_corrections()["tweeter"]["gain_db"] == _PINNED_TWEETER_DB
+    # The woofer is named by neither document, so the round solved it both times
+    # and the pin moved nothing it was not pointed at.
+    assert (
+        pinned.role_attenuations_db["woofer"]
+        == control.role_attenuations_db["woofer"]
+    )
+
+
+def test_a_pinned_trim_is_charged_headroom_at_the_value_that_ships(
+    tmp_path, monkeypatch,
+):
+    """The charge describes the emitted chain, so it reads the PINNED trim.
+
+    Folding the pin below the charge would disclose the household a cost
+    computed against a trim the speaker never plays.
+    """
+    from jasper.active_speaker.branch_chain import branch_headroom_db
+    from jasper.active_speaker.crossover_v2.planning import _sections_for_candidate
+
+    candidate = _round_candidate(
+        tmp_path, monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
+    )
+    entry = candidate.linearization["tweeter"]
+
+    assert entry["trim_pinned"] is True
+    assert entry["headroom_cost_db"] == pytest.approx(
+        branch_headroom_db(
+            entry["filters"],
+            sections=_sections_for_candidate(None, candidate.source_preset).get(
+                "tweeter", ()
+            ),
+            trim_db=_PINNED_TWEETER_DB,
+        ),
+        abs=1e-9,
+    )
+
+
+def test_the_receipt_discloses_a_pinned_trim_beside_what_the_round_measured(
+    tmp_path, monkeypatch,
+):
+    """Disclose, never block — and never worded as a measurement.
+
+    The solver still ran, so the receipt carries its answer and the gap beside
+    the pinned value rather than quietly replacing one with the other.
+    """
+    from jasper.active_speaker.crossover_v2.durable_state import _candidate_summary
+
+    candidate = _round_candidate(
+        tmp_path, monkeypatch, pin={"tweeter": _PINNED_TWEETER_DB}
+    )
+
+    summary = _candidate_summary(candidate)
+    disclosed = summary["trims_pinned"]
+    assert set(disclosed) == {"tweeter"}
+    assert disclosed["tweeter"]["pinned_db"] == _PINNED_TWEETER_DB
+    measured = disclosed["tweeter"]["measured_db"]
+    assert isinstance(measured, float)
+    assert measured != _PINNED_TWEETER_DB, "the fixture must have a gap to disclose"
+    assert disclosed["tweeter"]["delta_db"] == pytest.approx(
+        _PINNED_TWEETER_DB - measured, abs=1e-9
+    )
+    assert summary["trims_db"]["tweeter"] == _PINNED_TWEETER_DB
+
+
+def test_an_unpinned_round_discloses_no_pin_at_all(tmp_path, monkeypatch):
+    from jasper.active_speaker.crossover_v2.durable_state import _candidate_summary
+
+    candidate = _round_candidate(tmp_path, monkeypatch)
+
+    assert _candidate_summary(candidate)["trims_pinned"] == {}
+    assert "trim_pinned" not in candidate.linearization["tweeter"]
 
 
 def test_a_prescribed_boost_discloses_what_the_emitter_charges_for_it(

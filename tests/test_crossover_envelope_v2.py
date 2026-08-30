@@ -1979,9 +1979,12 @@ def test_done_candidate_review_carries_the_measured_numbers():
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
     review = env["candidate_review"]
+    # ``pinned`` is on every row, never only the pinned ones: the renderer reads
+    # it ``=== true``, so an absent key and a solved trim have to be the same
+    # thing on the wire.
     assert review["trims"] == [
-        {"role": "woofer", "attenuation_db": -3.1},
-        {"role": "tweeter", "attenuation_db": 0.0},
+        {"role": "woofer", "attenuation_db": -3.1, "pinned": False},
+        {"role": "tweeter", "attenuation_db": 0.0, "pinned": False},
     ]
     assert review["delay"] == {"role": "woofer", "delay_ms": 0.25}
     assert review["polarity"] == "invert"
@@ -2373,6 +2376,46 @@ def test_the_browser_and_python_agree_on_the_pinned_crossover_key():
     # reads `review.crossover.fc_hz` by name too, so the row cannot render a
     # real pin marker beside an `undefined` number.
     assert payload["crossover"]["fc_hz"] == 2400.0
+
+
+def test_the_browser_and_python_agree_on_the_pinned_trim_key():
+    """The per-driver twin of the two guards above.
+
+    A pinned TRIM is the third thing on this screen that is carried rather than
+    measured, and it is the first that is per-ROLE: the bit rides each trim row
+    instead of sitting flat beside the list, so neither guard above can see it.
+    Same failure mode either way — a rename leaves the row wording a level the
+    round was told to hold as one it measured.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const trimPinned = trim\.([a-z0-9_]+) === true;", source)
+    assert match, "the renderer no longer reads a named pinned-trim bit"
+
+    payload = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            trims_pinned={
+                "tweeter": {
+                    "pinned_db": -7.25, "measured_db": -2.0, "delta_db": -5.25,
+                },
+            },
+            trims_db={"woofer": -3.1, "tweeter": -7.25},
+        ),
+    ))["candidate_review"]
+    rows = {row["role"]: row for row in payload["trims"]}
+    # The name the browser reads is a key Python actually sends, True on the
+    # pinned role and False — never absent — on the one the round solved.
+    assert rows["tweeter"][match.group(1)] is True
+    assert rows["woofer"][match.group(1)] is False
+    # …beside a number that survived the same round trip: the renderer reads
+    # `trim.attenuation_db` by name too, so a real pin marker can never sit
+    # next to an `undefined` level.
+    assert rows["tweeter"]["attenuation_db"] == -7.25
 
 
 def test_done_candidate_review_omits_linearization_fields_when_absent():

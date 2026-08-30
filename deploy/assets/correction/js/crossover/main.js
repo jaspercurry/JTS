@@ -326,12 +326,21 @@ function renderCandidateReview(review) {
     ]));
   }
   trims.forEach((trim) => {
+    // The SAME rule as the two rows above, one per driver: a level this round
+    // was told to hold is not a level it measured. Python owns the bit
+    // (`DriverPrescription.pinned_trim_db` → `_candidate_summary` →
+    // `_candidate_review_payload`);
+    // `tests/js/crossover_trim_provenance_test.mjs` drives this renderer with a
+    // pinned payload, and `tests/test_crossover_envelope_v2.py` pins the
+    // round-trip that carries it here.
+    const trimPinned = trim.pinned === true;
     rows.push(el('div', {class: 'measurement-row'}, [
       el('div', {}, [
         el('p', {class: 'measurement-row__title', text: `${trim.role} level`}),
         el('p', {
           class: 'measurement-row__meta',
-          text: `${Number(trim.attenuation_db).toFixed(1)} dB`,
+          text: `${Number(trim.attenuation_db).toFixed(1)} dB` +
+            (trimPinned ? ' (pinned for this round)' : ''),
         }),
       ]),
     ]));

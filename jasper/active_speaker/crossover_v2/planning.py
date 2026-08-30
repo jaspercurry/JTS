@@ -852,6 +852,27 @@ def build_candidate(
     # ``_mic_trust_ceiling_hz`` says so on the journal rather than going quiet.)
     candidate_linearization: Mapping[str, Any] = linearization
     if driver_prescription is not None:
+        # THE TRIM PIN. A trim the document names is carried; every other role
+        # keeps the value its lane above solved. Folded HERE, at the same
+        # altitude as the filter merge and above every arm that assigns
+        # ``role_attenuations_db`` — the fitted lane, the trims-only lane and
+        # the SF2 degrade — so a pin does not depend on which one the round
+        # took. It is also above the headroom charge and the prediction
+        # recompose below, both of which must describe the trim the speaker
+        # will actually emit rather than the one the round re-solved.
+        #
+        # Restricted to roles the candidate already carries: a pin REPLACES a
+        # trim and never invents one, and the candidate refuses a map that does
+        # not cover exactly the preset's driver roles. The value's own bound is
+        # the door's (non-positive, floored at the solver's own
+        # ``MAX_ATTENUATION_DB``) and ``MeasuredCrossoverCandidate`` re-proves
+        # it below, so the pin folds INSIDE the clamp rather than past it.
+        pinned = dict(driver_prescription.pinned_trim_db)
+        if pinned:
+            role_attenuations_db = {
+                role: pinned.get(role, db)
+                for role, db in role_attenuations_db.items()
+            }
         candidate_linearization = driver_prescription_to_candidate_fields(
             driver_prescription, fitted=linearization
         )[LINEARIZATION_CANDIDATE_FIELD]

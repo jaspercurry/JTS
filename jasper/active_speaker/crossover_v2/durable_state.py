@@ -815,6 +815,44 @@ def _candidate_octave_driver_classes(
     return out
 
 
+def _candidate_pinned_trims(
+    candidate: Any, analysis: Mapping[str, Any]
+) -> dict[str, dict[str, float | None]]:
+    """Each pinned role's shipped trim, the solved one, and the gap.
+
+    Read off the candidate rather than taken from the session, on
+    ``polarity_pinned``'s route: the pin is already frozen onto the artifact —
+    ``driver_prescription_to_candidate_fields`` stamps ``trim_pinned`` on the
+    role it applies to — so nothing here has to ask who chose it.
+
+    ``measured_db``/``delta_db`` are ``None`` when the analysis banked no solved
+    trim for the role, which is the honest "nobody measured this", never a
+    substituted zero. A delta is disclosure only: a pin the solver disagrees
+    with is the ordinary case and the reason the field exists.
+    """
+    solved = analysis.get("trim_db")
+    solved = solved if isinstance(solved, Mapping) else {}
+    out: dict[str, dict[str, float | None]] = {}
+    for role, entry in (candidate.linearization or {}).items():
+        if not isinstance(entry, Mapping) or entry.get("trim_pinned") is not True:
+            continue
+        shipped = candidate.role_attenuations_db.get(str(role))
+        if shipped is None:
+            continue
+        raw = solved.get(str(role))
+        measured = (
+            float(raw)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            else None
+        )
+        out[str(role)] = {
+            "pinned_db": float(shipped),
+            "measured_db": measured,
+            "delta_db": None if measured is None else float(shipped) - measured,
+        }
+    return out
+
+
 def _candidate_summary(
     candidate: Any, *, topology_pinned: bool = False,
     headroom_cost_basis: str | None = None,
@@ -842,6 +880,13 @@ def _candidate_summary(
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
         "trims_db": dict(candidate.role_attenuations_db),
+        # …and which of those trims the round did NOT solve. Same rule as
+        # ``crossover_pinned`` and ``polarity_pinned`` below: the household copy
+        # must never word a pinned number as a measured result. The MEASURED
+        # value rides beside it because the solver still ran — a reader judging
+        # a pin needs the answer it overrode, and this discloses rather than
+        # blocks.
+        "trims_pinned": _candidate_pinned_trims(candidate, analysis),
         # WHERE this candidate crosses, and whether the round was PINNED there.
         # The corner comes off the candidate, read by the module that owns the
         # shape; the bit comes from the session, because a corner cannot say
