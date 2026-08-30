@@ -1074,12 +1074,18 @@ class TuningSession:
             "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,
-            "level_matched": spec.level_matched,
+            # Derived from what INSTALLED, not from what the spec ASKED: a spec
+            # can ask for a level match the session was opened with no trims to
+            # supply (``level_trims_for`` answers empty then), and a record
+            # that read ``level_matched`` off the flag would claim a match its
+            # own graph did not carry. Reading it off ``applied_trims`` — the
+            # same value the trims key below is gated on — makes the boolean
+            # and the numbers one fact that cannot disagree, however the engine
+            # was reached.
+            "level_matched": bool(applied_trims),
             # The numbers only when there ARE numbers, on ``vertical_deg``'s
             # terms: an absent key reads as the un-matched capture every
-            # record banked before this existed was, so no schema moves. A
-            # ``level_matched`` take that carried no trims would be the record
-            # claiming a level match a reader cannot check.
+            # record banked before this existed was, so no schema moves.
             **(
                 {"level_match_trims_db": applied_trims}
                 if applied_trims

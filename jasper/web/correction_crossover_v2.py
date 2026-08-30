@@ -2099,21 +2099,30 @@ def _take_staged_angle_walk(
     Adoption is the one place that can both ask the evidence question and still
     refuse, so it is asked exactly once: the answer travels to the session that
     installs the graph and to the record that states what played, and no later
-    hop re-derives it. The evidence itself has ONE owner
+    hop re-derives it. A ``level_matched`` walk faces TWO refusals here, both
+    the same S12 lie caught at different seams. FIRST, the source: the trims
+    ride the engine MEASURE leg exactly as a sign-flip does, so a non-wired
+    source refuses with
+    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NEEDS_WIRED`
+    before any statefile is read. THEN, on a wired source, the evidence: it has
+    ONE owner
     (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`,
-    banked base trim before guided captures); a box neither of those answers
-    for refuses with :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`
+    banked base trim before guided captures), and a box neither of those
+    answers for refuses with
+    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`
     rather than measuring unmatched branches under a record that says matched.
     A datasheet estimate is deliberately not a fallback: it is physics about
     the driver model, not a measurement of this cabinet.
 
-    ``capture_source`` is read for ONE question: only a wired session binds the
-    engine MEASURE leg (:func:`_bind_engine_measure_leg` returns ``None`` with
-    no local capture half), and every other source runs MEASURE on the flow
-    leg, which has no ``spec`` and would play the ordinary graph. So a walk
-    asking for a sign-flipped branch on a non-wired source is one this session
-    cannot honour — it refuses, rather than banking a normal capture under a
-    record that says ``inverted`` and a journal line that says so too.
+    ``capture_source`` is read for TWO questions, both the same one asked of a
+    different capability: only a wired session binds the engine MEASURE leg
+    (:func:`_bind_engine_measure_leg` returns ``None`` with no local capture
+    half), and every other source runs MEASURE on the flow leg, which has no
+    ``spec``, installs the ordinary graph, and knows nothing about a sign-flip
+    or a level match. So a walk asking for a sign-flipped branch OR a level
+    match on a non-wired source is one this session cannot honour — it refuses,
+    rather than banking an ordinary capture under a record, and a journal line,
+    that say otherwise.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
@@ -2131,6 +2140,7 @@ def _take_staged_angle_walk(
     """
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
+        WALK_LEVEL_MATCH_NEEDS_WIRED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
         WALK_POLARITY_NEEDS_WIRED,
         WALK_DELAY_NOT_ACCEPTED,
@@ -2228,6 +2238,22 @@ def _take_staged_angle_walk(
             f"which only a {SOURCE_WIRED} session binds; this session's "
             f"capture source is {capture_source!r}",
         )
+    if measure_spec.level_matched and capture_source != SOURCE_WIRED:
+        # The twin of the polarity gate above, and BEFORE the evidence
+        # resolution below: the trims ride the engine MEASURE leg's
+        # ``graph.install``, which only a wired session binds — the flow leg
+        # calls ``session_graph.install()`` with none and plays the ordinary
+        # graph. A non-wired box that HAS evidence still cannot play the match,
+        # so this is a source refusal and not a no-evidence one, and asked
+        # first so a doomed walk never reads a statefile. Without it a
+        # ``level_matched`` walk on a relay source would journal
+        # ``level_matched=true`` over an unmatched capture — the S12 lie.
+        raise refused(
+            WALK_LEVEL_MATCH_NEEDS_WIRED,
+            "a level-matched capture plays through the engine MEASURE leg, "
+            f"which only a {SOURCE_WIRED} session binds; this session's "
+            f"capture source is {capture_source!r}",
+        )
     level_trims, trim_source = _resolve_measurement_level_trims(
         measure_spec, preset=preset, topology=topology,
     )
@@ -2275,9 +2301,20 @@ def _resolve_measurement_level_trims(
     one owner of *banked base trim before guided captures*, and this function
     hands it the same two inputs the applied profile's own build hands it, so
     the graph a measurement plays through is levelled by the same evidence the
-    speaker would be levelled by. A read that fails answers empty, which the
-    caller turns into a refusal — an unreadable statefile is a box with no
-    usable evidence, not a reason to measure unmatched.
+    speaker would be levelled by.
+
+    **No/unreadable evidence answers empty WITHOUT raising, and there is no
+    catch to dress a genuine fault up as no-evidence.** Both loaders fail soft
+    — an absent, unreadable or corrupt-but-readable document returns a status
+    dict, never a raise (``measurement._normalise_state`` and the preview
+    loader both narrow a non-mapping back to a base document) — and the
+    estimator is fail-closed, answering empty trims for every unusable-evidence
+    case. So a box with nothing to level by reaches the caller's
+    ``WALK_LEVEL_MATCH_NO_EVIDENCE`` refusal through the empty return, and NO
+    exception is expected here at all. There is therefore nothing to catch: an
+    exception that does arise is a real fault in the derivation, and it
+    propagates with its traceback pointing straight at this function rather
+    than being swallowed and misread as "this box has not measured its trims".
     """
     if not spec.level_matched:
         return {}, ""
@@ -2285,18 +2322,11 @@ def _resolve_measurement_level_trims(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.measurement import load_measurement_state
 
-    try:
-        trims, meta = measured_level_trims(
-            preset,
-            load_measurement_state(topology) or {},
-            load_crossover_preview() or {},
-        )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        log_event(
-            logger, "correction.crossover_v2_level_match_unreadable",
-            level=logging.WARNING,
-        )
-        return {}, ""
+    trims, meta = measured_level_trims(
+        preset,
+        load_measurement_state(topology) or {},
+        load_crossover_preview() or {},
+    )
     return (
         {str(role): float(db) for role, db in trims.items()},
         str(meta.get("source") or ""),

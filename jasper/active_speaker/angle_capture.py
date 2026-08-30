@@ -133,6 +133,7 @@ __all__ = [
     "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_POLARITY_NEEDS_WIRED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
+    "WALK_LEVEL_MATCH_NEEDS_WIRED",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -706,6 +707,20 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 #: :data:`WALK_POLARITY_NEEDS_WIRED` already uses.
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
+#: The walk asks its graph to level-match the driver branches and this
+#: session's capture source cannot deliver one. The level match lives in the
+#: measurement graph's per-driver gain, and only a WIRED session binds the
+#: engine's MEASURE leg that installs it; every other source runs MEASURE on
+#: the flow leg, which installs the ordinary graph and knows nothing about the
+#: trims. The exact twin of :data:`WALK_POLARITY_NEEDS_WIRED`, and refused for
+#: its reason: the alternative banks an unmatched capture — and journals
+#: ``level_matched=true`` — under a walk that says it was levelled, the S12 lie
+#: through a seam the graph does not cover. Its own slug rather than the
+#: polarity one so an operator reading ``reason=`` learns WHICH capability the
+#: non-wired source cannot play. Declared here so the vocabulary has one home;
+#: raised by the CALLER, since this module reads no session facts.
+WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -717,6 +732,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_DELAY_NOT_ACCEPTED,
     WALK_POLARITY_NEEDS_WIRED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
+    WALK_LEVEL_MATCH_NEEDS_WIRED,
 })
 
 

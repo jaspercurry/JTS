@@ -1940,6 +1940,30 @@ async def test_a_session_holding_no_trims_installs_none():
     assert parts["graph"].level_trims == [{}, {}]
 
 
+async def test_a_record_states_the_level_match_that_installed_not_the_one_asked():
+    """Defense in depth: the record's ``level_matched`` is derived from what
+    the graph actually CARRIED, never from what the spec asked.
+
+    A spec can ask for a level match a session was opened with no trims to
+    supply — the host refuses that pairing before open, but the engine is a
+    separate unit and must be self-consistent however it is reached. Here the
+    session holds no trims and the spec asks for a match, so nothing installs;
+    the record must say ``level_matched=False`` and carry no numbers rather
+    than claim a match its own graph never played. Reading the boolean off the
+    installed trims is what keeps it from ever disagreeing with the trims key.
+    """
+    session, parts = _session()  # holds NO trims
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, level_matched=True,
+        ))
+
+    record, = parts["records"].banked
+    assert record["level_matched"] is False
+    assert "level_match_trims_db" not in record
+
+
 async def test_a_banked_level_matched_record_says_what_levelled_it():
     """A reverse-null depth is only readable by somebody who knows whether the
     branches were levelled before they were summed, and by how much — so the
