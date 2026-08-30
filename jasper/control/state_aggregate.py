@@ -91,6 +91,39 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 _STATE_AGGREGATE_BUDGET_SEC = 20.0
 _default_ha_status_cache: Any | None = None
 
+_VOICE_STATUS_DIRECT_KEYS = (
+    "endpointer",
+    "spend_allowed",
+    "usage_tracking_degraded",
+    "connection_paused",
+    "mic_muted",
+    "measurement_active",
+    "duck_active",
+    "camilla_volume_locked",
+    "music_dbfs",
+    "wake_legs",
+    "push_to_talk_only",
+    "tool_packs",
+)
+_VOICE_STATUS_NESTED_FIELDS = {
+    "last_at": "barge_in_last_at",
+    "count_session": "barge_in_count_session",
+    "last_leg": "barge_in_last_leg",
+}
+_VOICE_STATUS_PUBLISHED_KEYS = (
+    frozenset(_VOICE_STATUS_DIRECT_KEYS)
+    | frozenset(_VOICE_STATUS_NESTED_FIELDS.values())
+)
+_VOICE_STATUS_WITHHELD_KEYS = frozenset({
+    "state",
+    "input_ended",
+    "assistant_output",
+    "manual_mic_sources",
+    "active_manual_mic_source",
+    "barge_in_reconcile",
+    "research",
+})
+
 
 def _ha_failed_status(error: str = "probe failed") -> dict[str, Any]:
     return {
@@ -1062,7 +1095,8 @@ async def _get_state(
         ),
     )
 
-    voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
+    voice_status = voice_st or {}
+    voice_session = bool(voice_st) and voice_status.get("state") == "SESSION"
     # Active-source picks. Mux owns the effective audible source in
     # both manual and auto mode. Fall back to raw renderer probes only
     # when mux is unavailable or has no selected winner yet.
@@ -1215,7 +1249,7 @@ async def _get_state(
         chat_state = None
 
     try:
-        research_state = _research_state((voice_st or {}).get("research"))
+        research_state = _research_state(voice_status.get("research"))
     except (ImportError, OSError, RuntimeError, ValueError):
         logger.exception("research state read failed")
         research_state = None
@@ -1246,67 +1280,16 @@ async def _get_state(
             "provider_status": active_provider.status,
             "provider_error": active_provider.detail or None,
             "session_active": voice_session,
-            # Which mechanism closes a turn's user input: push_to_talk
-            # (an accessory button owns both boundaries), server_vad, or
-            # silero_aec. Curated pull-through like wake_legs /
-            # tool_packs below. Worth the field because "the remote cut
-            # me off" and "the remote never cut me off" are otherwise
-            # indistinguishable from outside the daemon.
-            #
-            # Read it ALONGSIDE `session_active`: the daemon sets this at
-            # turn start and never clears it, so between turns it reports
-            # the PREVIOUS turn's mechanism rather than nothing.
-            "endpointer": (voice_st or {}).get("endpointer"),
-            "spend_allowed": (voice_st or {}).get("spend_allowed"),
-            # usage.db writes failing -> recorded spend goes stale and the cap
-            # can't enforce. Curated explicitly like the other voice fields
-            # (see the wake_legs note below); a new session_status field must be
-            # pulled through here too.
-            "usage_tracking_degraded": (voice_st or {}).get("usage_tracking_degraded"),
-            "connection_paused": (voice_st or {}).get("connection_paused"),
-            "mic_muted": (voice_st or {}).get("mic_muted"),
-            "measurement_active": (voice_st or {}).get("measurement_active"),
-            "duck_active": (voice_st or {}).get("duck_active"),
-            "camilla_volume_locked": (voice_st or {}).get(
-                "camilla_volume_locked"
-            ),
-            "music_dbfs": (voice_st or {}).get("music_dbfs"),
-            # Runtime-armed wake-leg tokens from jasper-voice's
-            # session_status. jasper-doctor's check_wake_legs cross-checks
-            # this against the configured intent in aec_mode.env to surface
-            # a startup leg-skip; the /state aggregator curates voice
-            # fields explicitly, so a new session_status field must be
-            # pulled through here too.
-            "wake_legs": (voice_st or {}).get("wake_legs"),
-            # Why `wake_legs` is empty, from the daemon that decided it: on a
-            # speaker with no room mic and a paired accessory, zero legs is
-            # the design and every turn is a button turn. Without this the
-            # two opposite states — "arms nothing on purpose" and "every leg
-            # failed to open" — render identically. Curated pull-through like
-            # the fields above; null when voice is unreachable.
-            "push_to_talk_only": (voice_st or {}).get("push_to_talk_only"),
-            # Per-pack tool-registration outcomes from jasper-voice's
-            # session_status (added with the data-driven tool-pack
-            # registry). jasper-doctor's check_tool_packs reads this to
-            # flag a tool family that silently failed to build. Curated
-            # explicitly here like the other voice fields, so a new
-            # session_status field must be pulled through.
-            "tool_packs": (voice_st or {}).get("tool_packs"),
-            # In-session barge-in (full-duplex). `enabled` is read FRESH
-            # per active provider here (same rationale as provider/model
-            # above): jasper-control is NOT restarted on a barge-in toggle,
-            # so an os.environ/Config cache would show a stale value. The
-            # firing stats are curated pull-through from jasper-voice's
-            # session_status (like wake_legs / tool_packs) — null when
-            # voice is unreachable.
+            **{key: voice_status.get(key) for key in _VOICE_STATUS_DIRECT_KEYS},
             "barge_in": {
                 "enabled": (
                     read_barge_in_enabled(active_provider.provider)
                     if active_provider.provider else False
                 ),
-                "last_at": (voice_st or {}).get("barge_in_last_at"),
-                "count_session": (voice_st or {}).get("barge_in_count_session"),
-                "last_leg": (voice_st or {}).get("barge_in_last_leg"),
+                **{
+                    field: voice_status.get(status_key)
+                    for field, status_key in _VOICE_STATUS_NESTED_FIELDS.items()
+                },
             },
             "reachable": voice_st is not None,
             # Disambiguates reachable:false. True when the AEC reconciler
