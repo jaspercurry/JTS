@@ -815,6 +815,47 @@ def _candidate_octave_driver_classes(
     return out
 
 
+def _candidate_pinned_trims(
+    candidate: Any,
+) -> dict[str, dict[str, float | None]]:
+    """Each pinned role's shipped trim, the value it displaced, and the gap.
+
+    Read off the candidate rather than taken from the session, on
+    ``polarity_pinned``'s route: the pin is already frozen onto the artifact —
+    ``build_candidate`` stamps ``trim_pinned`` and the ``displaced_trim_db`` it
+    replaced onto the role's entry — so nothing here has to ask who chose it or
+    re-derive what it moved.
+
+    ``displaced_db``/``delta_db`` come from that banked ``displaced_trim_db``,
+    which is the trim THIS round's lane actually solved for the role — exact on
+    every lane. The program-analysis ``trim_db`` is deliberately NOT read: on the
+    fitted lane it is the pre-commit number, a different value from the
+    giveback-and-normalized trim the pin displaced, so a delta against it would
+    misstate what the pin changed. ``None`` means the candidate carries no
+    displaced value (a durable read-back of a pre-field artifact), never a
+    substituted zero.
+    """
+    out: dict[str, dict[str, float | None]] = {}
+    for role, entry in (candidate.linearization or {}).items():
+        if not isinstance(entry, Mapping) or entry.get("trim_pinned") is not True:
+            continue
+        shipped = candidate.role_attenuations_db.get(str(role))
+        if shipped is None:
+            continue
+        raw = entry.get("displaced_trim_db")
+        displaced = (
+            float(raw)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            else None
+        )
+        out[str(role)] = {
+            "pinned_db": float(shipped),
+            "displaced_db": displaced,
+            "delta_db": None if displaced is None else float(shipped) - displaced,
+        }
+    return out
+
+
 def _candidate_summary(
     candidate: Any, *, topology_pinned: bool = False,
     headroom_cost_basis: str | None = None,
@@ -842,6 +883,13 @@ def _candidate_summary(
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
         "trims_db": dict(candidate.role_attenuations_db),
+        # …and which of those trims the round did NOT solve. Same rule as
+        # ``crossover_pinned`` and ``polarity_pinned`` below: the household copy
+        # must never word a pinned number as a measured result. The DISPLACED
+        # value rides beside it — the trim this round would have shipped for the
+        # role absent the pin — so a reader judging a pin sees the answer it
+        # overrode. This discloses rather than blocks.
+        "trims_pinned": _candidate_pinned_trims(candidate),
         # WHERE this candidate crosses, and whether the round was PINNED there.
         # The corner comes off the candidate, read by the module that owns the
         # shape; the bit comes from the session, because a corner cannot say

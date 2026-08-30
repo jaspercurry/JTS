@@ -1194,14 +1194,128 @@ def test_a_type_outside_the_emitters_set_is_refused_by_the_vocabulary_bound(
 def test_a_prescription_may_not_reach_past_numbers_into_a_fixed_shape(packet, payload):
     """The blocklist is the family's one set, walked by the family's one walk.
 
-    ``role_attenuations_db`` stays prohibited even though this class names a
-    role per FILTER: naming which driver a filter belongs to is this seam's
-    subject, naming a driver's level is not.
+    ``role_attenuations_db`` stays prohibited even though this class may now PIN
+    a level: the pin has its own field with its own bound, and the solver's
+    output map is not a thing a document writes into.
     """
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut()], packet, **payload))
 
     assert excinfo.value.reason == dp.DRIVER_PRESCRIPTION_PROHIBITED_FIELD
+
+
+# --------------------------------------------------------------------------- #
+# the trim pin — a trim you name is not re-solved
+# --------------------------------------------------------------------------- #
+
+
+def test_a_named_trim_is_carried_onto_the_prescription_and_survives_the_bank(packet):
+    """The door's whole job: accept the pin, and read it back unchanged.
+
+    The read-back matters because the durable path re-parses the receipt through
+    the same shape checks — a field the reader dropped would leave a banked
+    prescription silently un-pinned.
+    """
+    document = _document([_cut()], packet, pinned_trim_db={"tweeter": -6.5})
+
+    prescription = _gate(packet, document)
+
+    assert prescription.pinned_trim_db == (("tweeter", -6.5),)
+    assert prescription.to_dict()["pinned_trim_db"] == {"tweeter": -6.5}
+    reread = dp.driver_prescription_from_mapping(prescription.to_dict())
+    assert reread is not None
+    assert reread.pinned_trim_db == prescription.pinned_trim_db
+
+
+def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
+    assert _gate(packet, _document([_cut()], packet)).pinned_trim_db == ()
+    assert _gate(packet, _document([_cut()], packet)).to_dict()["pinned_trim_db"] == {}
+
+
+@pytest.mark.parametrize("pin", [
+    [("tweeter", -6.5)],
+    "tweeter",
+    {"tweeter": "-6.5"},
+    {"tweeter": None},
+    {"tweeter": True},
+    {"tweeter": float("nan")},
+    {"tweeter": float("inf")},
+    # A legal JSON number, a legal Python int, and `float()` RAISES on it — so
+    # it escapes an isinstance-then-float check as an OverflowError rather than
+    # a refusal, which is the shape `_finite_number`'s own docstring records
+    # having already escaped this family once.
+    {"tweeter": 10 ** 400},
+    # Positive is the hearing-relevant one: the emitted graph refuses a positive
+    # per-driver Gain, and a pin is not a way past it.
+    {"tweeter": 0.5},
+    {"tweeter": dp.MAX_ATTENUATION_DB - 0.001},
+    # A role this document prescribes nothing for. A pin travels with the chain
+    # it protects; on its own it is the bare level command the blocklist refuses.
+    {"woofer": -3.0},
+    {"": -3.0},
+    {"   ": -3.0},
+    # Two keys that strip to one role: a silent last-wins would let a document
+    # name two trims for a driver and ship whichever iterated last.
+    {"tweeter": -3.0, " tweeter": -6.5},
+])
+def test_the_pin_is_judged_once_and_refuses_under_one_name(packet, pin):
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut()], packet, pinned_trim_db=pin))
+
+    assert excinfo.value.reason == dp.TRIM_PIN_MALFORMED
+    assert dp.TRIM_PIN_MALFORMED in dp.DRIVER_PRESCRIPTION_REFUSAL_REASONS
+
+
+@pytest.mark.parametrize("db", [0.0, -0.0, dp.MAX_ATTENUATION_DB, -12.25])
+def test_the_pin_s_range_is_the_solver_s_own_and_its_edges_are_inclusive(packet, db):
+    """One bound, consumed rather than restated.
+
+    ``MeasuredCrossoverCandidate`` re-proves this same range on every candidate,
+    so a value this door admits is one the candidate can carry — which is what
+    keeps a pin inside the clamp rather than a way around it.
+    """
+    prescription = _gate(
+        packet, _document([_cut()], packet, pinned_trim_db={"tweeter": db})
+    )
+
+    assert prescription.pinned_trim_db == (("tweeter", db),)
+
+
+def test_the_pin_is_accepted_by_exactly_one_prescription_door():
+    """The scoping mechanism is that ONE door's allowlist names it.
+
+    Every prescription class in this package gates its request on a
+    ``_PRESCRIPTION_FIELDS`` allowlist, so a second door growing the same key —
+    and with it a second judgment of one number — fails here rather than at the
+    round that discovers the two disagree.
+    """
+    import importlib
+    import pkgutil
+
+    import jasper.active_speaker.crossover_v2 as pkg
+
+    doors = {}
+    for info in pkgutil.iter_modules(pkg.__path__):
+        if not info.name.endswith("_prescription"):
+            continue
+        module = importlib.import_module(f"{pkg.__name__}.{info.name}")
+        fields = getattr(module, "_PRESCRIPTION_FIELDS", None)
+        if fields is not None:
+            doors[info.name] = set(fields)
+
+    assert "driver_prescription" in doors
+    assert len(doors) >= 4, doors
+    accepting = {name for name, fields in doors.items() if "pinned_trim_db" in fields}
+    assert accepting == {"driver_prescription"}
+
+
+def test_the_contract_advertises_the_pin_as_an_optional_top_level_field():
+    fmt = dp.driver_prescription_response_format()
+
+    assert "pinned_trim_db" in fmt["optional_top_level"]
+    assert "pinned_trim_db" not in fmt["required_top_level"]
+    assert "pinned_trim_db" not in fmt["prohibited_keys"]
+    assert dp.TRIM_PIN_MALFORMED in fmt["refusal_reasons"]
 
 
 # --------------------------------------------------------------------------- #
@@ -4450,6 +4564,40 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
     assert code == 0
     assert "displaces: 4 incumbent filter(s)" in err
     assert "+8.00 dB" in err
+
+
+def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(tmp_path, capsys):
+    """A pin moves a LEVEL, so it cannot be invisible at the decision point.
+
+    The control matters as much as the pin: an ordinary document says nothing
+    about trims, and an operator who never sees the line must be able to read
+    its absence as "this round solves them all".
+    """
+    session, _ = _bundle(tmp_path / "bundle")
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (round_dir / "feature_classification.json").write_text(
+        json.dumps(_classification())
+    )
+    draft_path = tmp_path / "draft.json"
+    draft_path.write_text(json.dumps(_draft()))
+    packet = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+
+    def _propose(document: dict[str, Any]) -> str:
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps(document))
+        assert cli.main([
+            "propose", str(session), "--drivers", str(draft_path),
+            "--prescription", str(path),
+        ]) == 0
+        return capsys.readouterr().err
+
+    err = _propose(
+        _document([_cut()], packet, pinned_trim_db={"tweeter": -6.5})
+    )
+    assert "pins: tweeter -6.50 dB" in err
+    assert "not re-solved" in err
+
+    assert "pins:" not in _propose(_document([_cut()], packet))
 
 
 def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog):

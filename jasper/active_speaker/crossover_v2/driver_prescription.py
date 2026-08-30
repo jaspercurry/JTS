@@ -200,6 +200,11 @@ from jasper.active_speaker.driver_protection import (
 # — imported for its one key name rather than restating the literal, because
 # three modules have to agree on it or a hearing-relevant ceiling goes quiet.
 from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
+# The floor a per-driver trim may not go below, consumed rather than restated:
+# `level_trim`'s own docstring exports it for exactly this — a document
+# validated against a second copy could be accepted at a depth the solver would
+# never produce, and `MeasuredCrossoverCandidate` re-proves the same bound.
+from jasper.active_speaker.level_trim import MAX_ATTENUATION_DB
 
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
@@ -370,8 +375,9 @@ DRIVER_MAX_BOOST_Q = 8.0
 
 #: Narrowest Q, taken from the family's owner. Below this a Peaking filter is a
 #: broadband tilt rather than a shape correction, and broadband per-driver level
-#: is the trim's fact — a prescriber reaching for it is answering a question
-#: this seam does not own.
+#: is the trim's fact — which a prescriber names as a trim
+#: (``pinned_trim_db``) or not at all, never smuggled in as a filter wide enough
+#: to be one.
 #:
 #: Deliberately the PRESCRIPTION floor (0.5) and not the fit engine's own
 #: ``_PEAKING_Q_MIN`` (1.0). That constant is load-bearing for a different
@@ -684,6 +690,7 @@ FILTER_CUT_TOO_DEEP = "driver_filter_cut_too_deep"
 COMPOSED_CUT_EXCEEDED = "driver_composed_cut_exceeded"
 FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
+TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
 
 # NINE slugs stood here and every one is now a DISCLOSURE. Six went on
 # 2026-08-23, all the classification bar's: `driver_feature_not_classified`,
@@ -716,6 +723,7 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     COMPOSED_CUT_EXCEEDED,
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
+    TRIM_PIN_MALFORMED,
 })
 
 #: Top-level fields a proposal may carry. Anything else is refused rather than
@@ -727,6 +735,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     PACKET_FINGERPRINT_FIELD,
     "prescriber",
     "filters",
+    "pinned_trim_db",
     "rationale",
     # Written BY the gate, accepted on the way back in so a durable block
     # round-trips through the SAME parser rather than needing a second, laxer
@@ -764,10 +773,10 @@ _PRESCRIPTION_FIELDS = frozenset({
 })
 
 #: Fields ONE filter may carry. ``role`` is the addition that makes this class
-#: what it is — and note that ``role_attenuations_db`` stays PROHIBITED. Naming
-#: which driver a FILTER belongs to is this seam's whole subject; naming a
-#: driver's LEVEL is the trim's fact and remains out of every prescriber's
-#: reach.
+#: what it is — and note that ``role_attenuations_db`` stays PROHIBITED. A
+#: prescriber may PIN one role's trim, through :data:`_PRESCRIPTION_FIELDS`'
+#: ``pinned_trim_db`` and nowhere else; what it may not do is write the solver's
+#: own output field, or reach a level through a FILTER.
 _FILTER_FIELDS = frozenset({"role", "biquad_type", "freq", "q", "gain"})
 
 
@@ -876,6 +885,29 @@ class DriverPrescription:
     #: ``composed_boost_db`` beside it, and the same first-role-wins tie rule.
     displaced_boost_db: float | None = None
     displaced_boost_role: str | None = None
+    #: Roles whose trim this document NAMES, as ``((role, db), ...)`` sorted by
+    #: role — a tuple rather than a mapping for :attr:`passbands_hz`' reason.
+    #: Empty is the ordinary case and leaves every trim to the solver.
+    #:
+    #: A named trim is CARRIED, not re-solved: :func:`~.planning.build_candidate`
+    #: folds it over the round's own solved value. The solver still measures and
+    #: banks its answer for the role — the pin decides only what the candidate
+    #: ships. It holds the ABSOLUTE per-driver level the chain was shaped
+    #: against, so a transplanted filter chain keeps that level instead of riding
+    #: a level-match datum re-derived this round.
+    #:
+    #: An absolute pin does NOT promise to preserve the inter-driver delta: it
+    #: overrides this role's trim while the round's own common-mode reference set
+    #: the others, and the two agree only when the pin was captured against that
+    #: same reference (true on a woofer-referenced 2-way, not in general). Where
+    #: they differ the pinned branch may leave the ceiling under-used — the safe
+    #: direction, and charged honestly as headroom by ``build_candidate`` against
+    #: the pinned value.
+    #:
+    #: Non-positive by the gate, on the same bound
+    #: ``MeasuredCrossoverCandidate`` re-proves: the emitted graph refuses a
+    #: positive per-driver Gain and a pin is not a way past it.
+    pinned_trim_db: tuple[tuple[str, float], ...] = ()
     #: The prescriber's own words. **Never parsed for behaviour** — no branch in
     #: this module or any caller reads it, and it is excluded by construction
     #: from every instruction this harness renders.
@@ -907,6 +939,7 @@ class DriverPrescription:
             "kind": DRIVER_PRESCRIPTION_KIND,
             "prescription_class": self.prescription_class,
             "filters": [dict(f) for f in self.filters],
+            "pinned_trim_db": {role: db for role, db in self.pinned_trim_db},
             "passbands_hz": [
                 [role, lo, hi] for role, lo, hi in self.passbands_hz
             ],
@@ -1723,9 +1756,92 @@ def _rationale(raw: Any) -> tuple[str, int]:
     return text[:RATIONALE_MAX_CHARS], max(0, len(text) - RATIONALE_MAX_CHARS)
 
 
+def _parse_pinned_trim(
+    raw: Any, filters: Sequence[Mapping[str, Any]]
+) -> tuple[tuple[str, float], ...]:
+    """The named trims, judged ONCE — shape, range and scope in one place.
+
+    A pin rides beside the filters rather than replacing the solver: see
+    :attr:`DriverPrescription.pinned_trim_db`. This is the only judgment it
+    gets, which is why it sits in :func:`_parse_prescription` with the other
+    shape checks rather than with the bounds — the durable read-back must
+    re-apply it too, and a banked pin outside this range could never have been
+    produced by the door that wrote it.
+
+    **Scope: only a role this same document already names.** A pin on a role the
+    filters say nothing about is a bare level command, which is exactly what
+    ``role_attenuations_db`` stays prohibited for. The pin travels with the chain
+    it protects or it does not travel.
+
+    **Range: non-positive, floored at :data:`MAX_ATTENUATION_DB`.** Consumed
+    from the solver's own constant so this door and
+    ``MeasuredCrossoverCandidate.__post_init__`` cannot admit different depths.
+    Refused HERE as well as there so a prescriber gets an actionable answer at
+    the door instead of losing the round to a refusal raised mid-build.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, Mapping):
+        _refuse(
+            TRIM_PIN_MALFORMED,
+            f"pinned_trim_db must be an object keyed by driver role, got "
+            f"{type(raw).__name__}",
+        )
+    named = {str(entry["role"]) for entry in filters}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            _refuse(TRIM_PIN_MALFORMED, "pinned_trim_db keys must name a driver role")
+        role = key.strip()
+        if role in out:
+            # Two keys that differ only in surrounding whitespace strip to one
+            # role; a silent last-wins would let a document name two trims for a
+            # driver and ship whichever the dict happened to iterate last.
+            _refuse(
+                TRIM_PIN_MALFORMED,
+                f"pinned_trim_db names role {role!r} more than once",
+                role=role,
+            )
+        if role not in named:
+            _refuse(
+                TRIM_PIN_MALFORMED,
+                f"pinned_trim_db names role {role!r}, which this document "
+                "prescribes no filters for: a trim is pinned to protect the "
+                "chain beside it, never on its own",
+                role=role,
+                document_names=sorted(named),
+            )
+        # This module's own reader, consumed rather than re-written: it refuses
+        # ``bool`` (``True`` would read as +1 dB), refuses a string, and survives
+        # an arbitrary-precision int whose ``float()`` raises — which is a legal
+        # JSON number and would otherwise escape this gate as an OverflowError.
+        db = _finite_or_none(value)
+        if db is None:
+            _refuse(
+                TRIM_PIN_MALFORMED,
+                f"pinned_trim_db[{role!r}] must be a finite number of dB, got "
+                f"{value!r}",
+                role=role,
+            )
+        if db > 0.0 or db < MAX_ATTENUATION_DB:
+            _refuse(
+                TRIM_PIN_MALFORMED,
+                f"pinned_trim_db[{role!r}] must be between {MAX_ATTENUATION_DB} "
+                "and 0 dB: a per-driver trim attenuates, and the emitted graph "
+                "refuses a positive per-driver gain",
+                role=role,
+                pinned_trim_db=db,
+                floor_db=MAX_ATTENUATION_DB,
+            )
+        out[role] = db
+    return tuple(sorted(out.items()))
+
+
 def _parse_prescription(
     raw: Mapping[str, Any],
-) -> tuple[tuple[dict[str, Any], ...], str, str, str, str, int]:
+) -> tuple[
+    tuple[dict[str, Any], ...], tuple[tuple[str, float], ...], str, str, str, str, int
+]:
     """Shape, identity and provenance — and none of the bounds.
 
     Shared whole between the request gate and the durable read-back, so the only
@@ -1778,8 +1894,10 @@ def _parse_prescription(
         )
     model, operator = _prescriber(raw.get("prescriber"))
     rationale, dropped = _rationale(raw.get("rationale"))
+    filters = _parse_filters(raw.get("filters"))
     return (
-        _parse_filters(raw.get("filters")),
+        filters,
+        _parse_pinned_trim(raw.get("pinned_trim_db"), filters),
         fingerprint.strip(),
         model,
         operator,
@@ -1836,7 +1954,8 @@ def read_driver_prescription(
     if raw is None:
         return None
     (
-        filters, fingerprint, model, operator, rationale, rationale_dropped,
+        filters, pinned_trim_db, fingerprint, model, operator, rationale,
+        rationale_dropped,
     ) = _parse_prescription(raw)
 
     if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
@@ -1875,6 +1994,7 @@ def read_driver_prescription(
 
     prescription = DriverPrescription(
         filters=filters,
+        pinned_trim_db=pinned_trim_db,
         prescription_class=prescription_class,
         packet_fingerprint=fingerprint,
         prescriber_model=model,
@@ -2035,6 +2155,7 @@ def driver_prescription_to_candidate_fields(
         for role, value in (fitted or {}).items()
         if isinstance(role, str) and role.strip()
     }
+    pinned_roles = {role for role, _db in prescription.pinned_trim_db}
     for role in prescription.roles:
         entry: dict[str, Any] = {
             "filters": [dict(f) for f in prescription.filters_for(role)],
@@ -2044,6 +2165,14 @@ def driver_prescription_to_candidate_fields(
                 PACKET_FINGERPRINT_FIELD: prescription.packet_fingerprint,
             },
         }
+        # PROVENANCE, like ``prescribed_by`` beside it, and deliberately the BIT
+        # rather than the number: the pinned value itself is the candidate's own
+        # ``role_attenuations_db`` entry once ``build_candidate`` folds it, and
+        # writing it twice is how the two copies come to disagree. What the
+        # candidate cannot otherwise say is which of its trims the round did not
+        # solve, which is what a receipt has to disclose.
+        if role in pinned_roles:
+            entry["trim_pinned"] = True
         # The one field that survives replacement — see the docstring. Read off
         # the entry being replaced, so a role the fit never reached carries none
         # and the ceiling's reader is told rather than left to infer.
@@ -2088,7 +2217,7 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
         # what the prescriber originally wrote. `rationale_dropped_chars` takes
         # its `None` default — "nobody computed this" — which is the honest
         # answer and the same convention every other disclosure here follows.
-        filters, fingerprint, model, operator, rationale, _dropped = (
+        filters, pinned_trim_db, fingerprint, model, operator, rationale, _dropped = (
             _parse_prescription(raw)
         )
     except BlendPrescriptionRefused:
@@ -2098,6 +2227,7 @@ def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
         return None
     return DriverPrescription(
         filters=filters,
+        pinned_trim_db=pinned_trim_db,
         prescription_class=(
             "boost" if any(float(f["gain"]) > 0.0 for f in filters) else "cut"
         ),
@@ -2193,6 +2323,18 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
         },
         "optional_top_level": {
+            "pinned_trim_db": (
+                "{<role>: <dB, between "
+                f"{MAX_ATTENUATION_DB} and 0>}} — pin that driver's LEVEL "
+                "instead of letting this round re-solve it. Only for a role "
+                "you also prescribe filters for. Use it when the chain you are "
+                "prescribing was shaped against a level this round will not "
+                "re-derive: the trim is re-solved every round from a "
+                "level-match datum, so a chain carried over from another round "
+                "otherwise rides a level it was not shaped against. A trim you "
+                "name is CARRIED, never re-solved, and it is never a "
+                "measurement of this round"
+            ),
             "rationale": (
                 f"free text. The first {RATIONALE_MAX_CHARS} characters are "
                 "banked and anything past them is dropped — a long rationale is "

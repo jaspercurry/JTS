@@ -244,6 +244,13 @@ baseline profile's trim derivation, which prefers a banked base trim and falls
 back to the declared estimate). **Absent is normal.** Know which of the two you
 stand on before you attribute a level error to the graph.
 
+**A trim is re-solved every round.** So **a transplanted chain needs its trim
+pinned, or a refit against the new trim.** Filters carried over from an earlier
+round were shaped against that round's level; re-solved against a new one they
+are right at the crossover and wrong across the band. Pin the level you shaped
+against (`pinned_trim_db` on the driver prescription) or re-fit the chain.
+A pinned trim is carried, never measured, and every surface says so.
+
 ## 6. LINEARIZE PER DRIVER — minimum-phase features only
 
 **The correctable set is not "every deviation".** A region is correctable where

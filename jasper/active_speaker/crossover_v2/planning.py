@@ -852,6 +852,41 @@ def build_candidate(
     # ``_mic_trust_ceiling_hz`` says so on the journal rather than going quiet.)
     candidate_linearization: Mapping[str, Any] = linearization
     if driver_prescription is not None:
+        # THE TRIM PIN. A trim the document names is carried; every other role
+        # keeps the value its lane above solved. Folded HERE, at the same
+        # altitude as the filter merge and above every arm that assigns
+        # ``role_attenuations_db`` — the fitted lane, the trims-only lane and
+        # the SF2 degrade — so a pin does not depend on which one the round
+        # took. It is also above the headroom charge and the prediction
+        # recompose below, both of which must describe the trim the speaker
+        # will actually emit rather than the one the round re-solved.
+        #
+        # Restricted to roles the candidate already carries: a pin REPLACES a
+        # trim and never invents one, and the candidate refuses a map that does
+        # not cover exactly the preset's driver roles. The value's own bound is
+        # the door's (non-positive, floored at the solver's own
+        # ``MAX_ATTENUATION_DB``) and ``MeasuredCrossoverCandidate`` re-proves
+        # it below, so the pin folds INSIDE the clamp rather than past it.
+        pinned = dict(driver_prescription.pinned_trim_db)
+        # What each pin DISPLACED — the trim this lane solved for the role,
+        # captured before the substitution below overwrites it. This is the only
+        # place both numbers are in hand, so it is the single writer of the
+        # disclosure the receipt reads (:func:`~.durable_state._candidate_pinned_trims`).
+        # It is exact on every lane by construction — the fitted lane's
+        # committed trim after giveback+normalize, the trims-only lane's applied
+        # trim, the SF2 degrade's — whereas the program-analysis ``trim_db`` is
+        # only the fitted lane's PRE-commit number and would misstate what the
+        # pin changed.
+        displaced_trim_db = {
+            role: float(role_attenuations_db[role])
+            for role in pinned
+            if role in role_attenuations_db
+        }
+        if pinned:
+            role_attenuations_db = {
+                role: pinned.get(role, db)
+                for role, db in role_attenuations_db.items()
+            }
         candidate_linearization = driver_prescription_to_candidate_fields(
             driver_prescription, fitted=linearization
         )[LINEARIZATION_CANDIDATE_FIELD]
@@ -879,6 +914,12 @@ def build_candidate(
                 sections=sections.get(role, ()),
                 trim_db=float(role_attenuations_db.get(role, 0.0)),
             )
+            # The value this role's pin displaced, banked beside the ``trim_pinned``
+            # bit the translator stamped — for the pinned roles only, since the
+            # rest displaced nothing. The receipt reads it back rather than
+            # re-deriving a baseline the analysis cannot exactly supply.
+            if role in displaced_trim_db:
+                entry["displaced_trim_db"] = displaced_trim_db[role]
             charged[role] = entry
         candidate_linearization = charged
         # SF1: the prediction must model the EMITTED graph. Recomposed through

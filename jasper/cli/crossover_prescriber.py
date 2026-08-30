@@ -487,6 +487,19 @@ def _print_prescription(
             file=sys.stderr,
         )
     if isinstance(prescription, DriverPrescription):
+        # Only when there IS one, unlike the two lines below — those always have
+        # something to say and a pin is rare. Printed first because it is the
+        # one thing here that moves a LEVEL rather than a shape: an operator
+        # reading a filter list has to be told the round will not solve the trim
+        # underneath it.
+        if prescription.pinned_trim_db:
+            pins = ", ".join(
+                f"{role} {db:+.2f} dB" for role, db in prescription.pinned_trim_db
+            )
+            print(
+                f"  pins: {pins} — carried, not re-solved by the round",
+                file=sys.stderr,
+            )
         print(f"  {_displaced_phrase(prescription)}", file=sys.stderr)
         print(f"  {_vouch_phrase(prescription)}", file=sys.stderr)
 
