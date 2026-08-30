@@ -133,6 +133,10 @@ def handle_v2_republish(
         CandidateBankRefusal,
         find_banked_candidate,
     )
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        ROUND_ORDINAL_EPOCH_STATE_KEY,
+        round_ordinal_epoch_from_state,
+    )
     from jasper.active_speaker.crossover_declaration import (
         declaration_change_for_candidate,
     )
@@ -196,14 +200,43 @@ def handle_v2_republish(
         # the renderer already has a sentence for it.
         headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN,
     )
-    republished = {
-        "candidate_fingerprint": banked.fingerprint,
-        "bundle_session_id": banked.bundle_session_id,
-        "session_id": banked.relay_session_id,
-        "at": time.time() if now is None else float(now),
-    }
     with _host._state_lock:
         prior = _host.load_v2_state() or {}
+        # The ordinal sequence RESTARTS here, and until now it did so with no
+        # trace. The whole-dict replacement below drops ``round_receipt``, and
+        # ``coordinator.series_position_from_state`` reads that receipt for the
+        # previous ordinal — so the next round is round 1 again, indistinguishable
+        # from the first round of a box that has never measured. This is the
+        # disclosure, written at the line that causes it: the epoch counts the
+        # resets, and ``reset_round_ordinal_from`` names the ordinal the dropped
+        # receipt had reached, which is the number that stops existing.
+        #
+        # Disclosure, never a block: nothing gates on either value. The
+        # republish is an incident-recovery door and a reset that refused would
+        # be worse than a reset that admits itself.
+        epoch = round_ordinal_epoch_from_state(prior) + 1
+        prior_receipt = prior.get("round_receipt")
+        reset_from = (
+            prior_receipt.get("round_ordinal")
+            if isinstance(prior_receipt, Mapping)
+            else None
+        )
+        republished = {
+            "candidate_fingerprint": banked.fingerprint,
+            "bundle_session_id": banked.bundle_session_id,
+            "session_id": banked.relay_session_id,
+            "at": time.time() if now is None else float(now),
+            "round_ordinal_epoch": epoch,
+            # ``None`` when the state carried no readable receipt — a box that
+            # had banked no round, or a record this reader cannot vouch for.
+            # Both mean "there was no count to lose", which is a different fact
+            # from losing one and is worth keeping apart.
+            "reset_round_ordinal_from": (
+                reset_from
+                if isinstance(reset_from, int) and not isinstance(reset_from, bool)
+                else None
+            ),
+        }
         # Whole-dict replacement, exactly like ``reset_v2_journey_state``: every
         # session-scoped fact of the round that MINTED this candidate — cloud
         # verdict, tier, gain plan, receipt, a stale review decline — belongs to
@@ -228,6 +261,12 @@ def handle_v2_republish(
             "accepted_sound_declaration_change": None,
             "sound_design_revision": None,
             "republished": republished,
+            # Top-level and not only inside ``republished`` above, because this
+            # is the key that has to OUTLIVE this block: ``persist_conductor_state``
+            # rebuilds the state dict on the next round and carries this one
+            # forward by name, while ``republished`` — session-scoped like every
+            # other fact of the session this door mints — does not survive it.
+            ROUND_ORDINAL_EPOCH_STATE_KEY: epoch,
             # Preserved on exactly ``reset_v2_journey_state``'s terms, and for
             # its reason rather than a stronger-sounding one: these are the
             # HOST-OWNED apply keys — values only ``observe_apply_success``

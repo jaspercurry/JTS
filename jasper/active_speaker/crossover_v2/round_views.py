@@ -119,6 +119,9 @@ __all__ = [
     "AGREEMENT_TESTIFY_MIN",
     "AgreementFeature",
     "BankedRound",
+    "ENTRY_STATE_NOT_BANKED",
+    "ENTRY_STATE_UNREADABLE",
+    "EntryStateGrade",
     "FrozenReferenceResult",
     "RepeatabilityMetric",
     "RepeatabilityResult",
@@ -127,6 +130,7 @@ __all__ = [
     "VerifyPoseResult",
     "agreement_table",
     "default_agreement_lo_hz",
+    "entry_state_grade",
     "frozen_reference_grade",
     "load_banked_round",
     "per_seat_curves",
@@ -290,6 +294,140 @@ def load_banked_round(round_dir: Path) -> BankedRound:
         curve_grid_hz=grid,
         report=report,
         packet=packet,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# View 0 — grading the state the round STARTED from
+# --------------------------------------------------------------------------- #
+
+
+#: Why an entry state could not be graded, when the round banked no readable
+#: ``entry_baseline`` take at all. The packet's own block already words this
+#: case, so this constant is the fallback for a packet too old to carry a
+#: reason — the door must name one either way, never hand back a bare ``False``.
+ENTRY_STATE_NOT_BANKED = (
+    "this round's evidence packet carries no entry_baseline block"
+)
+
+#: Why an entry state could not be graded, when the take IS banked but will not
+#: rehydrate — a curve and mask whose lengths disagree, or a record from before
+#: the curve rode the take. ``EntryBaseline.from_dict`` owns that rule and
+#: answers ``None``; this is what that ``None`` MEANS to an operator.
+ENTRY_STATE_UNREADABLE = (
+    "this round banked an entry_baseline take, but its curve and exclusion "
+    "mask do not rehydrate into a gradeable baseline"
+)
+
+
+@dataclass(frozen=True)
+class EntryStateGrade:
+    """The graph a round ENTERED on, graded — or the named reason it was not.
+
+    **The gap this closes.** Every round grades what it PRODUCED and compares
+    that against the state it started from, but the entry state itself was
+    never graded as a first-class result: a fresh box wearing nothing but its
+    declarations-derived config had no way to ask "how flat am I right now"
+    short of an operator calling
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` by hand. The
+    measurement was always banked — the entry-baseline take is write-once,
+    which is ruling S3's offline promise — so this is a reader, not a new
+    capture and not a second grader.
+
+    ``report`` is a real :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
+    from the shipped evaluator, so it carries the same per-band table the
+    round's own ``spec`` block does and the two read side by side with no
+    translation step.
+
+    **The frame is the ROUND's, the honesty mask is the TAKE's**, and the split
+    is deliberate. The mask belongs to this capture: the interference screen
+    that ran at entry-baseline time flagged these bins, and grading this curve
+    through a different capture's exclusions would report deviations at bins
+    nobody vouched for. The floor and ceiling belong to the round: they are the
+    span its post-apply grade was taken over, and stating the before in a
+    different span would make the pair incomparable — which is the whole reason
+    to grade the before. :func:`_own_reference_db` already grades a foreign
+    curve in the round's frame for exactly this reason.
+
+    ``available`` ``False`` carries a non-empty ``reason`` and no report;
+    ``True`` carries a report and an empty ``reason``. A round that banked no
+    take is a fact this door reports rather than a failure it raises —
+    retention is fail-soft and never costs the household a retake.
+    """
+
+    available: bool
+    reason: str
+    program_id: str
+    reference_mark: str
+    graph_fingerprint: str
+    captured_at: str
+    artifact_ref: str
+    report: FlatSpecReport | None
+
+    @classmethod
+    def unavailable(cls, reason: str) -> "EntryStateGrade":
+        return cls(
+            available=False, reason=reason, program_id="", reference_mark="",
+            graph_fingerprint="", captured_at="", artifact_ref="", report=None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "reason": self.reason,
+            "program_id": self.program_id,
+            "reference_mark": self.reference_mark,
+            # WHICH entry state was graded. Without it the table is an
+            # unattributed set of numbers: a first round's entry graph is the
+            # declarations-derived config a fresh box wears, a later round's is
+            # whatever the previous round left on the speaker, and the two are
+            # told apart by this fingerprint and nothing else here.
+            "graph_fingerprint": self.graph_fingerprint,
+            "captured_at": self.captured_at,
+            "artifact_ref": self.artifact_ref,
+            "report": None if self.report is None else self.report.to_dict(),
+        }
+
+
+def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
+    """Grade the entry state this round measured before it applied anything.
+
+    Reads the banked entry-baseline take out of the round's evidence packet,
+    rehydrates it through
+    :meth:`~.round_evidence.EntryBaseline.from_dict` — which already owns the
+    "length-agreeing curve and mask, or nothing" rule, so this door does not
+    re-spell it — and hands the arrays to the shipped
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`. Every number
+    returned comes from that evaluator; see :class:`EntryStateGrade` for why
+    the frame is the round's and the mask is the take's.
+    """
+
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+    block = banked.packet.get("entry_baseline")
+    if not isinstance(block, Mapping) or not block.get("available"):
+        reason = block.get("reason") if isinstance(block, Mapping) else None
+        return EntryStateGrade.unavailable(str(reason or ENTRY_STATE_NOT_BANKED))
+    baseline = EntryBaseline.from_dict(block)
+    if baseline is None:
+        return EntryStateGrade.unavailable(ENTRY_STATE_UNREADABLE)
+    report = evaluate_flat_spec(
+        np.asarray(baseline.curve.hz, dtype=float),
+        np.asarray(baseline.curve.db, dtype=float),
+        np.asarray(baseline.excluded, dtype=bool),
+        smoothing_fraction=banked.report.smoothing_fraction,
+        trusted_floor_hz=banked.report.trusted_floor_hz,
+        trusted_ceiling_hz=banked.report.trusted_ceiling_hz,
+    )
+    return EntryStateGrade(
+        available=True,
+        reason="",
+        program_id=baseline.program_id,
+        reference_mark=baseline.reference_mark,
+        graph_fingerprint=baseline.graph_fingerprint,
+        captured_at=baseline.captured_at,
+        artifact_ref=baseline.artifact_ref,
+        report=report,
     )
 
 
