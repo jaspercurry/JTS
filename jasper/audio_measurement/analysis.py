@@ -24,6 +24,28 @@ import numpy as np
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 
+def crossover_null_depth_db(freqs, mag_db, crossover_fc_hz: float) -> float:
+    """How deep the notch at Fc sits below the passband either side of it.
+
+    THE definition of null depth in this repo: the mean of the one-octave
+    shoulders (Fc/2 and 2*Fc) minus the level at Fc, read off an already
+    calibrated, already gated magnitude curve. Positive is a notch; a flat sum
+    reads near zero.
+
+    Homed here rather than beside its acoustic caller because both consumers
+    live ABOVE this package: `active_speaker.driver_acoustics` reads it off a
+    captured WAV and `crossover_v2.delay_landscape` off a modelled sum, and
+    `jasper.audio_measurement` may import neither of them (the boundary SSOT
+    guard). Shared measurement math lives below the boundary and consumers
+    import down; two spellings of this subtraction would be two null depths,
+    and the walk that grades them could not tell which it had.
+    """
+    at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
+    lower_shoulder = float(np.interp(crossover_fc_hz / 2.0, freqs, mag_db))
+    upper_shoulder = float(np.interp(crossover_fc_hz * 2.0, freqs, mag_db))
+    return (lower_shoulder + upper_shoulder) / 2.0 - at_fc
+
+
 def smooth_fractional_octave(
     freqs: np.ndarray,
     magnitude_db: np.ndarray,

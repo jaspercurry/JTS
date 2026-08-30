@@ -44,7 +44,7 @@ from jasper.active_speaker.delay_sweep import (
     VERDICT_ROBUST,
     VERDICT_WEAK,
 )
-from jasper.active_speaker.driver_acoustics import crossover_null_depth_db
+from jasper.audio_measurement.analysis import crossover_null_depth_db
 from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
 LANDSCAPE_KIND = "jts_inter_driver_delay_landscape"
@@ -146,7 +146,7 @@ def predicted_null_depth_db(
     """The null depth a coordinate would produce, from the two banked transfers.
 
     One branch is sign-reversed and one is delayed, then they are summed and the
-    notch at Fc is read with :func:`~jasper.active_speaker.driver_acoustics.crossover_null_depth_db`
+    notch at Fc is read with :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`
     — the same subtraction an acoustic capture is graded with, so a computed
     depth and a measured one are the same quantity in the same units.
 

@@ -7104,7 +7104,9 @@ def _analyze_verify(
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
         # The one null-depth definition in the tree, shared with the acoustic
         # capture analyzer so a computed depth and a measured one are the same
-        # quantity (jasper.active_speaker.driver_acoustics).
+        # quantity. It lives in `audio_measurement.analysis` rather than beside
+        # that analyzer because BOTH consumers sit above this package and this
+        # package may import neither of them.
         #
         # Guarded the way `analyze_summed_crossover` guards it, and for the same
         # reason: the depth is read at Fc/2 and 2*Fc, `np.interp` CLAMPS outside
@@ -7112,7 +7114,7 @@ def _analyze_verify(
         # them below the gate's validity floor — would return a number built
         # from edge values with nothing saying so. No number is the honest
         # answer there.
-        from jasper.active_speaker.driver_acoustics import crossover_null_depth_db
+        from jasper.audio_measurement.analysis import crossover_null_depth_db
 
         lower_shoulder_hz = fc_hz / 2.0
         floor_hz = summed.validity_floor_hz
