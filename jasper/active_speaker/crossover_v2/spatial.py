@@ -2997,12 +2997,7 @@ def assemble_cloud_group_result(
             # blocks across phases is comparing different spans. Publishing it
             # here makes that visible rather than leaving it to be inferred
             # from inside `spec.trusted_ceiling_hz`.
-            "trusted_ceiling_hz": (
-                float(trusted_ceiling_hz)
-                if trusted_ceiling_hz is not None
-                and math.isfinite(trusted_ceiling_hz)
-                else None
-            ),
+            "trusted_ceiling_hz": spec_report.trusted_ceiling_hz,
             "echo_band_hz": list(echo_band_hz),
             "echo_band_provenance": (
                 dict(echo_band_provenance)

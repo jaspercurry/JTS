@@ -78,7 +78,7 @@ def _play_cue(slug: str) -> None:
 
 
 def _print_status(payload: dict[str, Any]) -> None:
-    layer = payload.get("layer") or AUDITION_LAYER_FULL
+    layer = payload["layer"]
     print(f"audition: {payload.get('status')}")
     print(f"  layer: {layer}")
     if payload.get("deadline_at"):
