@@ -353,6 +353,9 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
 - [`tuning-operator-runbook.md`](docs/tuning-operator-runbook.md) — the one
   operational map: what the `/sound/crossover/` commission session is, how to
   drive a round over SSH, and what the doors refuse
+- [`tuning-methodology.md`](docs/tuning-methodology.md) — the decisions a
+  driving LLM makes, in what order and on what evidence: the sequence, the
+  failure catalog keyed to receipt signatures, and the honesty rules
 - [`crossover-v2-engine-design.md`](docs/crossover-v2-engine-design.md) — the
   engine's architecture: the session, its seams, the file map, and the contracts
   a refactor must preserve

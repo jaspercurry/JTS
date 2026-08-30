@@ -446,6 +446,8 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-round-views frozen\|per-seat\|repeat\|agreement` | per-seat curves, pooled stats, session-to-session spread, per-feature testimony | advisory | `jasper/cli/round_views.py` |
 | `jasper-classify-features` | classify a round's features; file the verdict | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | read a round's H2/H3 out of its banked MEASURE captures; file the reading | advisory | `jasper/cli/read_distortion.py` |
+| `jasper-delay-sweep propose` | complex-sum a banked round's per-driver curves across the delay grid; print the computed optimum and the stage lines that confirm it | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
+| `jasper-audition start\|stop\|status` | listen to the applied graph with the measured driver correction removed, then put it back | mutating (runtime only; the durable graph is untouched — [ADR-0193](adr/0193-the-audition-door-is-a-runtime-only-swap.md)) | `jasper/cli/audition.py` |
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |

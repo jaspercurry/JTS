@@ -205,8 +205,11 @@ schedule, the geometry seed and the selectors — decision content, no DSP of it
 own. `crossover_v2/delay_landscape.py` is the propose half and the grader;
 `camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us` puts
 a candidate delay in the measurement graph and **that emitter only**. Offline,
-`jasper-delay-sweep plan` prints the bounded grid and `grade` reads banked rows;
-neither opens a device.
+`jasper-delay-sweep propose <bundle> --fc-hz N` reads that round's per-driver
+curves through the measurement index, prints the computed optimum, and hands
+back the `jasper-angle-capture stage` lines that confirm it. It opens no device
+and plays nothing. Grading the confirmation is not wired: no banked take
+records the delay coordinate it was played at.
 
 **Applying the winner — the alignment door**, reached with
 `--alignment-prescription` on the round runner (a session-open key, not a

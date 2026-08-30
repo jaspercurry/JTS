@@ -238,6 +238,40 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     return {field: raw.get(field) for field in _TAKE_FIELDS}
 
 
+def read_take_curves(path: Path, *, phase: str) -> list[Mapping[str, Any]] | None:
+    """The measured curves one banked take carries, or ``None``.
+
+    Ruling S3 banks magnitude AND phase for every measured curve
+    (:func:`~.spatial.pose_curve_record`), which is what lets an offline reader
+    reconstruct a transfer function exactly. The two readers above narrow a
+    take to its identity and drop ``curves``, because their consumers index
+    poses rather than re-analyse them; this returns the curves and nothing
+    else, so neither of those records grows a payload its readers never asked
+    for.
+
+    ``phase`` is the caller's — a per-driver walk pose and a design-axis
+    MEASURE capture both carry curves, and which one answers a question is the
+    caller's to state. The rest of the accept rule is the shared one: a
+    position-evidence record, readable, with a curve list on it. ``None`` for
+    everything else, never a raise, exactly as the siblings above.
+    """
+
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    if raw.get("kind") != POSITION_EVIDENCE_KIND:
+        return None
+    if raw.get("phase") != phase:
+        return None
+    curves = raw.get("curves")
+    if not isinstance(curves, list) or not curves:
+        return None
+    return [curve for curve in curves if isinstance(curve, Mapping)] or None
+
+
 def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:
     """One banked ``positions/{take_id}.json`` as the round's "before", or ``None``.
 
