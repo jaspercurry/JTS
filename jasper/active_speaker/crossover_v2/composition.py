@@ -64,20 +64,22 @@ class NoRoutedPhasesGraph:
     *"the host cannot name the graph"* — honest here, because there is no
     measurement graph to name.
 
-    **It cannot take either half of R-1, and says so instead of ignoring it.**
-    The flip and the delay both live in the measurement graph's per-driver
-    branch, and this stage measures through the APPLIED one; a silently dropped
-    ``inverted_roles`` would play a normal capture and bank a record claiming an
-    inverted one, and a silently dropped delay would bank a record naming a
-    coordinate it never played. That is the exact lie ruling S12 exists to
-    refuse, so either half bound to this stage is a caller error and raises
-    like one.
+    **It cannot take any per-driver measurement coordinate, and says so
+    instead of ignoring it.** The flip, the delay and the level match all live
+    in the measurement graph's per-driver branch, and this stage measures
+    through the APPLIED one; a silently dropped ``inverted_roles`` would play a
+    normal capture and bank a record claiming an inverted one, a silently
+    dropped delay would bank a record naming a coordinate it never played, and
+    a silently dropped level match would bank a record claiming branches that
+    were never levelled. That is the exact lie ruling S12 exists to refuse, so
+    any of them bound to this stage is a caller error and raises like one.
     """
 
     async def install(
         self,
         inverted_roles: tuple[str, ...] = (),
         measurement_delays_us: Mapping[str, float] | None = None,
+        level_trims_db: Mapping[str, float] | None = None,
     ) -> str:
         if inverted_roles:
             raise ValueError(
@@ -90,6 +92,12 @@ class NoRoutedPhasesGraph:
                 "this stage measures through the applied graph and has no "
                 "per-driver branch to delay; cannot delay "
                 + ", ".join(sorted(measurement_delays_us))
+            )
+        if level_trims_db:
+            raise ValueError(
+                "this stage measures through the applied graph and has no "
+                "per-driver branch to trim; cannot level-match "
+                + ", ".join(sorted(level_trims_db))
             )
         return ""
 

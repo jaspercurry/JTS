@@ -525,10 +525,12 @@ def test_only_the_named_role_is_touched():
         assert driver_delay_name("woofer") not in (step.get("names") or ())
 
 
-def test_the_delay_lane_cannot_reach_a_graph_a_household_plays():
+def test_the_measurement_lanes_cannot_reach_a_graph_a_household_plays():
     # The scoping mechanism is that the parameter exists on THIS emitter and
-    # nowhere else: the applied/baseline emitter takes its per-driver delay from
-    # the profile's corrections and has no argument a sweep could pass.
+    # nowhere else: the applied/baseline emitter takes its per-driver delay and
+    # its per-driver gain from the profile's corrections and has no argument a
+    # measurement could pass. Every per-stimulus measurement knob is scoped that
+    # way, so they are enumerated together rather than one test each.
     import inspect
 
     from jasper.active_speaker import camilla_yaml
@@ -540,9 +542,12 @@ def test_the_delay_lane_cannot_reach_a_graph_a_household_plays():
         and callable(getattr(camilla_yaml, name))
     }
     assert "emit_active_speaker_program_config" in emitters
-    for name, emitter in emitters.items():
-        has_knob = "measurement_delays_us" in inspect.signature(emitter).parameters
-        assert has_knob == (name == "emit_active_speaker_program_config"), name
+    for knob in ("measurement_delays_us", "measurement_level_trims_db"):
+        for name, emitter in emitters.items():
+            has_knob = knob in inspect.signature(emitter).parameters
+            assert has_knob == (
+                name == "emit_active_speaker_program_config"
+            ), (name, knob)
 
 
 def test_the_delay_lane_does_not_move_the_ceiling_or_the_limiter():
@@ -632,3 +637,127 @@ def test_the_graph_says_which_delay_coordinate_it_carries():
         protection_sections_by_role=_confirmed_protection(),
     )
     assert "measurement_delays_us" not in plain
+
+
+# --------------------------------------------------------------------------- #
+# the level-match lane — measurement emitter ONLY
+# --------------------------------------------------------------------------- #
+
+
+def _plain_program_text():
+    return emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+    )
+
+
+def _mixer_gains(parsed):
+    """Each output's single source, as ``{dest: (gain_db, inverted)}``."""
+    mapping = parsed["mixers"]["split_active_2way"]["mapping"]
+    return {
+        entry["dest"]: (
+            entry["sources"][0]["gain"], entry["sources"][0]["inverted"],
+        )
+        for entry in mapping
+    }
+
+
+@pytest.mark.parametrize("empty", [None, {}], ids=["none", "empty"])
+def test_no_level_match_asked_for_emits_the_graph_it_always_did(empty):
+    # Same scoping guarantee the delay lane pins: this emitter is shared with
+    # CHECK and MEASURE, so a caller naming no trim must get byte-identical
+    # output — the fingerprint of every existing graph in the tree depends on it.
+    assert emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_level_trims_db=empty,
+    ) == _plain_program_text()
+
+
+def test_a_named_role_is_attenuated_at_the_mixer_and_nothing_else_moves():
+    parsed = _program(measurement_level_trims_db={"tweeter": -9.5})
+    plain = yaml_lib.safe_load(_plain_program_text())
+
+    trimmed = _mixer_gains(parsed)
+    untrimmed = _mixer_gains(plain)
+    # Exactly the tweeter output moved, and only its gain: the polarity flag
+    # and every other output's source are what they were.
+    assert trimmed[1] == (-9.5, untrimmed[1][1])
+    assert trimmed[0] == untrimmed[0]
+
+    # The seam is the mixer and ONLY the mixer. A second landing site (the
+    # per-output commissioning Gain) would apply the same decision twice.
+    assert parsed["filters"] == plain["filters"]
+    assert parsed["pipeline"] == plain["pipeline"]
+
+
+def test_the_level_match_lane_does_not_move_the_ceiling_or_the_limiter():
+    parsed = _program(measurement_level_trims_db={"tweeter": -9.5})
+    plain = yaml_lib.safe_load(_plain_program_text())
+    assert parsed["devices"]["volume_limit"] == plain["devices"]["volume_limit"]
+    assert parsed["filters"][_TWEETER_LIMITER] == plain["filters"][_TWEETER_LIMITER]
+
+
+def test_a_level_matched_program_still_passes_the_emitters_own_proofs():
+    # The build-time protective-floor and tweeter-guard proofs run inside every
+    # emit and raise on failure, so a graph that comes back at all has passed
+    # them. Attenuating a branch is not a way past them.
+    text = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_level_trims_db={"tweeter": -9.5, "woofer": 0.0},
+    )
+    view = view_from_emitted_text(text)
+    assert not unprotected_tweeter_outputs(
+        view, tweeter_channels={ROLE_CHANNELS["tweeter"]}
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"midrange": -3.0},
+        {"tweeter": 0.5},
+        {"tweeter": float("nan")},
+        {"tweeter": float("inf")},
+    ],
+    ids=["unknown-role", "boost", "nan", "inf"],
+)
+def test_the_emitter_fails_closed_on_a_level_match_it_cannot_honour(bad):
+    # A boost is refused rather than clamped: this is the one measurement seam
+    # that could raise drive above the level the session was admitted at.
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_program_config(
+            _preset("mono"), role_channels=ROLE_CHANNELS,
+            playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_confirmed_protection(),
+            measurement_level_trims_db=bad,
+        )
+
+
+def test_the_graph_says_which_level_match_it_carries():
+    text = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_level_trims_db={"tweeter": -9.5},
+    )
+    # Counted, not `in`, for the delay line's reason: the comment names what a
+    # fingerprint stands for, and stating it twice states it once too often.
+    assert text.count("# measurement_level_trims_db={'tweeter': -9.5}") == 1
+    assert "measurement_level_trims_db" not in _plain_program_text()
+
+
+def test_two_level_matches_are_two_graphs():
+    # The take's graph_fingerprint is a hash of these bytes, so a record can
+    # only name the trims it played through if the trims move the bytes.
+    quiet = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_level_trims_db={"tweeter": -9.5},
+    )
+    quieter = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_level_trims_db={"tweeter": -10.5},
+    )
+    assert quiet != quieter

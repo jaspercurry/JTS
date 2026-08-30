@@ -159,6 +159,7 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
         inverted_role=args.inverted_role,
         delayed_role=args.delayed_role,
         delay_us=args.delay_us,
+        level_matched=args.level_matched,
     )
 
 
@@ -182,6 +183,7 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
         "externally_positioned": request.externally_positioned,
         "polarity": request.polarity,
         "inverted_role": request.inverted_role,
+        "level_matched": request.level_matched,
         "stops": [
             {
                 "index": stop.index,
@@ -417,6 +419,18 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "the confirmation coordinate in microseconds, non-negative. Pair "
             "with --delayed-role; the sign frame lives in the walk coordinate, "
             "which names the branch"
+        ),
+    )
+    parser.add_argument(
+        "--level-matched",
+        action="store_true",
+        help=(
+            "play the MEASURE capture through a graph carrying this speaker's "
+            "own per-driver level match, so branches of unequal sensitivity "
+            "meet the crossover at comparable level and a reverse null can "
+            "form. A flag and not a number: the trims are resolved on the box "
+            "from its banked evidence when the session adopts the walk, and a "
+            "box with none refuses the walk rather than measuring unmatched"
         ),
     )
     parser.add_argument(

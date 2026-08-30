@@ -3206,12 +3206,52 @@ def _validated_inverted_roles(
     return flipped
 
 
+def _validated_measurement_trims(
+    preset: ActiveSpeakerPreset, trims_db: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """The measurement's per-role level match, refused unless it can be honoured.
+
+    Fail-closed on the same question :func:`_validated_inverted_roles` asks,
+    and for its reason: a trim naming a role
+    no output declares would attenuate nothing, the graph would emit
+    byte-identical to its unmatched twin, and the banked record would claim a
+    level match nobody played.
+
+    **Attenuation only.** A positive value is refused rather than clamped: this
+    is the one seam that could raise a measurement's drive above the level the
+    session was admitted at, and the honest answer to "make the tweeter louder"
+    is that the measurement graph does not do that. It leaves every hearing
+    clamp untouched — ``volume_limit``, the per-driver limiter and the tweeter
+    protection high-pass are all downstream of this mixer and unreachable from
+    here.
+    """
+    if not trims_db:
+        return {}
+    declared = {output.driver_role for output in preset.channel_map.outputs}
+    validated: dict[str, float] = {}
+    for role, value in trims_db.items():
+        if role not in declared:
+            raise ActiveSpeakerConfigError(
+                "cannot level-match a driver role this preset declares no "
+                f"output for: {role}"
+            )
+        trim_db = _finite_float(value, f"measurement level trim for {role}")
+        if trim_db > 0.0:
+            raise ActiveSpeakerConfigError(
+                "a measurement level trim is attenuation only; "
+                f"{role} asked for {trim_db:g} dB"
+            )
+        validated[role] = trim_db
+    return validated
+
+
 def _emit_role_routed_mixer(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
     *,
     apply_region_polarity: bool = True,
     inverted_roles: Sequence[str] = (),
+    level_trims_db: Mapping[str, float] | None = None,
 ) -> str:
     """Emit the program graph's role-routed split mixer.
 
@@ -3222,8 +3262,16 @@ def _emit_role_routed_mixer(
     every ``dest`` of this mixer has exactly ONE source (a program channel is
     copied to its role's outputs, never summed), so flipping ``inverted``
     negates each sample and leaves its magnitude, and therefore every peak the
-    limiter and the volume ceiling answer for, bit-identical. No ``gain`` is
-    touched.
+    limiter and the volume ceiling answer for, bit-identical.
+
+    ``level_trims_db`` is the measurement's declared per-driver level match,
+    and it is the ONE thing that moves a ``gain``: each named role's single
+    source is attenuated by its value, so the branches meet the crossover at
+    comparable level and a reverse null can actually form. Attenuation only
+    (:func:`_validated_measurement_trims`), so every peak this mixer emits can
+    only fall — the limiter and the volume ceiling answer for strictly less
+    than they did. An unnamed role keeps the ``0.0`` it always carried, so an
+    emit that asks for no level match is byte-identical to what it was.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo program bus by output
     *side*), this routes by driver *role*: every physical output of role ``r``
@@ -3253,6 +3301,7 @@ def _emit_role_routed_mixer(
         else {role: False for role in region_polarity}
     )
     flipped = _validated_inverted_roles(preset, inverted_roles)
+    trims = _validated_measurement_trims(preset, level_trims_db)
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     channels_in = 1 + max(role_channels.values())
@@ -3261,7 +3310,7 @@ def _emit_role_routed_mixer(
             output.index,
             [(
                 role_channels[output.driver_role],
-                0.0,
+                trims.get(output.driver_role, 0.0),
                 polarity[output.driver_role] != (output.driver_role in flipped),
             )],
         )
@@ -3586,6 +3635,7 @@ def emit_active_speaker_program_config(
     enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     inverted_roles: Sequence[str] = (),
     measurement_delays_us: Mapping[str, float] | None = None,
+    measurement_level_trims_db: Mapping[str, float] | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -3601,7 +3651,8 @@ def emit_active_speaker_program_config(
     * carries either the legacy target crossover or caller-supplied confirmed
       role protection plus the per-driver limiter. The protected-neutral shape
       omits configured crossover, delay, linearization, bass, Room, and
-      preference filters;
+      preference filters, and carries no per-driver level trim unless the
+      measurement declares one (``measurement_level_trims_db`` below);
     * keeps the software volume ceiling non-positive and stays static (no reload
       mid-program).
 
@@ -3630,6 +3681,21 @@ def emit_active_speaker_program_config(
     every stage in this chain, so the position changes no magnitude; it is a
     readability choice, not an equivalence claim about the applied chain, which
     places its own delay after the crossover.
+
+    ``measurement_level_trims_db`` is the measurement's declared per-driver
+    LEVEL MATCH — the box's own banked per-driver trim, resolved on-box by the
+    session that opened this graph. **Scoped exactly like**
+    ``measurement_delays_us``, and for its reason: on a cabinet whose drivers
+    differ by ~10 dB of sensitivity the two branches never sum to a deep null
+    however well aligned they are, so the reverse-null confirmation needs the
+    branches level — and a household's applied graph takes its per-driver gain
+    from the profile's ``corrections``, cannot reach this argument, and is
+    therefore untouched by whatever a measurement declares. It lands on ONE
+    seam, the role-routed mixer's per-source gain
+    (:func:`_emit_role_routed_mixer`); the per-output commissioning gain is
+    deliberately NOT also touched, because two seams carrying one decision
+    would apply it twice. Attenuation only, refused otherwise. ``None`` or
+    empty moves no gain and keeps every existing program byte-identical.
 
     Two fail-closed gates run before the graph can leave this function: a
     build-time proof that the selected tweeter HP satisfies the declared floor, and
@@ -3749,10 +3815,12 @@ def emit_active_speaker_program_config(
         protection_sections_by_role=protection_sections_by_role,
         measurement_delays_us=measurement_delays_us,
     )
+    level_trims = _validated_measurement_trims(preset, measurement_level_trims_db)
     mixer_yaml = _emit_role_routed_mixer(
         preset, role_channels,
         apply_region_polarity=protection_sections_by_role is None,
         inverted_roles=inverted_roles,
+        level_trims_db=level_trims,
     )
     pipeline_yaml = _emit_commissioning_pipeline(
         preset,
@@ -3779,6 +3847,17 @@ def emit_active_speaker_program_config(
                 + repr(dict(sorted(measurement_delays_us.items())))
             ]
             if measurement_delays_us
+            else []
+        ),
+        # Beside the delay line, on its terms: emitted ONLY when the
+        # measurement declares a level match, so every graph that declares
+        # none keeps the bytes — and so the fingerprint — it always had. The
+        # numbers reach the comment from the SAME validated mapping the mixer
+        # gains came from, so the graph states the trims it actually carries
+        # and the take's ``graph_fingerprint`` moves with them for free.
+        *(
+            ["# measurement_level_trims_db=" + repr(dict(sorted(level_trims.items())))]
+            if level_trims
             else []
         ),
     ]

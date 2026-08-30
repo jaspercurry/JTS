@@ -528,6 +528,7 @@ def stage_walk(
     inverted_role: str | None = None,
     delayed_role: str | None = None,
     delay_us: float | None = None,
+    level_matched: bool = False,
 ) -> int:
     """``jasper-angle-capture stage`` on the Pi. Its refusal is its own.
 
@@ -551,6 +552,8 @@ def stage_walk(
         flags += f" --delayed-role {shlex.quote(delayed_role)}"
     if delay_us is not None:
         flags += f" --delay-us {delay_us!r}"
+    if level_matched:
+        flags += " --level-matched"
     remote = (
         f"sudo {PI_VENV_BIN}/jasper-angle-capture stage --mover arm "
         f"--angles {shlex.quote(angles)} --regime {shlex.quote(regime)}"
@@ -565,6 +568,7 @@ def stage_walk(
         "stage", ok=ok, angles=angles, regime=regime, mover="arm",
         polarity=polarity or "normal", inverted_role=inverted_role or "",
         delayed_role=delayed_role or "", delay_us=delay_us if delay_us else 0.0,
+        level_matched=level_matched,
         stops=staged_stops(angles),
         angle_capture_exit=proc.returncode,
         detail=(proc.stdout or proc.stderr).strip()[-300:],
@@ -1087,6 +1091,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             inverted_role=args.inverted_role,
             delayed_role=args.delayed_role,
             delay_us=args.delay_us,
+            level_matched=args.level_matched,
         )
         if rc != 0:
             return EXIT_STAGE
@@ -1260,6 +1265,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--delay-us", type=float, default=None,
         help="the confirmation coordinate in microseconds, non-negative",
+    )
+    parser.add_argument(
+        "--level-matched", action="store_true",
+        help="stage the walk with the speaker's own per-driver level match "
+             "applied to the measurement graph, so branches of unequal "
+             "sensitivity can null. The reverse-null confirmation needs it; a "
+             "normal round does not.",
     )
     parser.add_argument(
         "--alignment-prescription", type=_json_document, default=None,

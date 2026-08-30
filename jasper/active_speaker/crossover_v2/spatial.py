@@ -972,6 +972,15 @@ class TakeClaim:
     baseline_record_id: str = ""
     candidate_id: str = ""
     polarity: str = ""
+    #: Whether the graph this take played through carried the box's own
+    #: per-driver level match, and by how much.  Beside ``polarity`` and for
+    #: its reason: both are facts about the measurement branch, and a
+    #: reverse-null pair is only comparable to a reader who knows whether the
+    #: branches were levelled before they were summed.  ``False``/``None`` on
+    #: every take that declared none, which is what a record banked before
+    #: this existed reads back as.
+    level_matched: bool = False
+    level_match_trims_db: Mapping[str, float] | None = None
     level_db: float | None = None
     stimulus_dbfs: float | None = None
     incident: str = ""
@@ -1042,6 +1051,15 @@ def _take_identity(
         "baseline_record_id": claim.baseline_record_id,
         "candidate_id": claim.candidate_id,
         "polarity": claim.polarity,
+        "level_matched": claim.level_matched,
+        # The numbers only when there ARE numbers, exactly as the engine's own
+        # record states them: an absent key reads as the un-matched take every
+        # record banked before this existed was, so no schema version moves.
+        **(
+            {"level_match_trims_db": dict(claim.level_match_trims_db)}
+            if claim.level_matched and claim.level_match_trims_db
+            else {}
+        ),
         "level_db": claim.level_db,
         "stimulus_dbfs": claim.stimulus_dbfs,
         "incident": claim.incident,

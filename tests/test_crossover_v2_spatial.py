@@ -523,8 +523,8 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 _ENGINE_RECORD_FIELDS = (
     "session_id", "measure_kind", "baseline_record_id", "position_deg",
     "position_axis", "vertical_deg", "prompt", "candidate_id", "regime",
-    "polarity", "graph_fingerprint", "level_db", "stimulus_dbfs", "incident",
-    "wav_path",
+    "polarity", "level_matched", "graph_fingerprint", "level_db",
+    "stimulus_dbfs", "incident", "wav_path",
 )
 
 
@@ -532,7 +532,7 @@ _ENGINE_RECORD_FIELDS = (
     "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
 )
 def test_every_take_builder_carries_the_whole_engine_record(builder):
-    """All fifteen, on all four — parametrized, because it is one question.
+    """All of them, on all four — parametrized, because it is one question.
 
     Six of these were banked by NO builder before this pin: the comparand
     (``baseline_record_id``), which candidate was under test (``candidate_id``),
@@ -557,6 +557,8 @@ _STATED_CLAIM = spatial.TakeClaim(
     baseline_record_id="rec-before-7",
     candidate_id="cand-fp-42",
     polarity=POLARITY_INVERTED,
+    level_matched=True,
+    level_match_trims_db={"tweeter": -9.5},
     level_db=-18.5,
     stimulus_dbfs=-9.0,
     incident="unproven_level",
@@ -572,6 +574,8 @@ _STATED_CLAIM = spatial.TakeClaim(
         ("baseline_record_id", "rec-before-7"),
         ("candidate_id", "cand-fp-42"),
         ("polarity", POLARITY_INVERTED),
+        ("level_matched", True),
+        ("level_match_trims_db", {"tweeter": -9.5}),
         ("level_db", -18.5),
         ("stimulus_dbfs", -9.0),
         ("incident", "unproven_level"),
@@ -947,6 +951,31 @@ def test_the_carry_adds_curves_and_changes_nothing_else(builder):
     assert without["curves"] == []
     assert {k: v for k, v in without.items() if k != "curves"} == {
         k: v for k, v in carrying.items() if k != "curves"
+    }
+
+
+@pytest.mark.parametrize(
+    "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
+)
+def test_an_unmatched_take_states_no_level_match_trims_at_all(builder):
+    """Additive at the builder, on ``vertical_deg``'s terms: the numbers key
+    is ABSENT on a take that declared no level match, so a record banked before
+    this existed and one banked by an unmatched take are the same shape. An
+    empty mapping would be a third state a reader has to interpret.
+    """
+    without = builder()
+    carrying = builder(claim=spatial.TakeClaim(
+        level_matched=True, level_match_trims_db={"tweeter": -9.5},
+    ))
+
+    assert without["level_matched"] is False
+    assert "level_match_trims_db" not in without
+    assert carrying["level_match_trims_db"] == {"tweeter": -9.5}
+    assert {
+        k: v for k, v in without.items() if k != "level_matched"
+    } == {
+        k: v for k, v in carrying.items()
+        if k not in ("level_matched", "level_match_trims_db")
     }
 
 

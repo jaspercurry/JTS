@@ -175,11 +175,18 @@ def _stage_command(candidate: Any, args: argparse.Namespace) -> str:
     there because neither branch is delayed, and ``MeasureSpec`` refuses a
     half-stated pair, so a line naming a role with 0 us would be refused at the
     door it was printed for.
+
+    Every line carries ``--level-matched``, including the zero coordinate.
+    These are reverse-null confirmations, and a null between branches ~10 dB
+    apart in sensitivity is bounded by that gap however well the coordinate is
+    chosen — so a confirm line that did not ask for the level match would be
+    printing a measurement whose answer the graph had already decided.
     """
 
     line = (
         f"jasper-angle-capture stage --angles {args.position_deg} "
-        f"--polarity {POLARITY_INVERTED} --inverted-role {args.inverted_role}"
+        f"--polarity {POLARITY_INVERTED} --inverted-role {args.inverted_role} "
+        "--level-matched"
     )
     if candidate.delay_target is None:
         return line

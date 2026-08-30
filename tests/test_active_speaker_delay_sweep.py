@@ -142,7 +142,12 @@ def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> No
         assert parsed.inverted_role == "tweeter"
         # The signed coordinate reaches the flags as an executable (role,
         # delay) pair, never as a negative microsecond count.
-        assert parsed.delay_us is None or parsed.delay_us >= 0.0
+        assert parsed.delay_us >= 0.0
+        # EVERY line asks for the level match, the zero coordinate included: a
+        # null between branches ~10 dB apart in sensitivity is bounded by that
+        # gap however well the coordinate is chosen, so a confirm line without
+        # it would be staging a measurement whose answer was already decided.
+        assert parsed.level_matched is True
 
 
 def test_the_zero_coordinate_stages_no_delay_at_all(tmp_path, capsys) -> None:

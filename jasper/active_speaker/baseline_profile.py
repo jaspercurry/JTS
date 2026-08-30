@@ -479,6 +479,29 @@ def _effective_excitation_dbfs(record: Any) -> float | None:
     )
 
 
+def measured_level_trims(
+    preset: ActiveSpeakerPreset,
+    measurements: Mapping[str, Any],
+    crossover_preview: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """The public door onto :func:`_measured_level_trims`, for callers outside
+    the profile build.
+
+    It exists because the crossover-v2 MEASUREMENT graph needs the same answer
+    the applied profile needs — *"what does this box's own evidence say the
+    per-driver level offsets are?"* — and a second derivation of it would be
+    the third opinion the one-owner rule forbids. A thin wrapper rather than a
+    rename because the private name is the one the profile's own callers and
+    their fixtures spell.
+
+    ``meta['source']`` names WHICH evidence answered (``banked_base_trim`` or
+    ``guided_captures``), which is what a caller discloses beside the trims;
+    an empty mapping means neither did, and no caller may substitute an
+    estimate for it.
+    """
+    return _measured_level_trims(preset, measurements, crossover_preview)
+
+
 def _measured_level_trims(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],

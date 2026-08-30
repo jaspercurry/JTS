@@ -65,6 +65,7 @@ from .measure_spec import (
     CapabilityStub,
     MeasureSpec,
     inverted_roles_for,
+    level_trims_for,
     measurement_delays_for,
     stubbed_capabilities,
 )
@@ -332,9 +333,9 @@ class TuningSession:
     :meth:`open` and :meth:`close` — the second exists because a web front end's
     lifetime is a sequence of HTTP requests and cannot hold an ``async with``.
 
-    Four declarations and six fields of state. The 102-attribute session this
-    replaces is what happens when a class accumulates the answers instead of the
-    seams.
+    Eight declarations and seven fields of state. The 102-attribute session
+    this replaces is what happens when a class accumulates the answers instead
+    of the seams.
 
     ``seams`` is public because construction and testing need it, and it is
     **engine-internal** — see :class:`~.session_seams.EngineSeams` for why
@@ -370,6 +371,15 @@ class TuningSession:
     analysis_declaration: AnalysisDeclaration = field(
         default_factory=AnalysisDeclaration
     )
+    #: The per-role attenuation a ``level_matched`` spec's graph carries, in dB
+    #: and never positive. Resolved ONCE by the host that opened this session,
+    #: from the box's own banked evidence — the session applies it and never
+    #: derives it, which is what keeps one speaker's level match off another
+    #: speaker's measurement. Empty means no spec here may ask for one; the
+    #: host refuses that pairing at open, where an operator can still act on
+    #: it, so :func:`~.measure_spec.level_trims_for` answers empty rather than
+    #: raising mid-walk.
+    level_match_trims_db: Mapping[str, float] = field(default_factory=dict)
 
     _graph_installed: bool = field(default=False, init=False)
     _volume_held: bool = field(default=False, init=False)
@@ -881,6 +891,7 @@ class TuningSession:
         self._graph_fingerprint = await self.seams.graph.install(
             inverted_roles_for(spec),
             measurement_delays_for(spec),
+            level_trims_for(spec, self.level_match_trims_db),
         )
         proven_level_db = await self._proven_level()
         outcome: PlaybackOutcome = await self.seams.play.run(
@@ -1044,6 +1055,10 @@ class TuningSession:
         for why the engine has no position identity to derive one from. A
         record without it is a record the store cannot place.
         """
+        # Asked through the ONE translation the install used, never re-derived
+        # from the flag: the record then states the trims the stimulus actually
+        # played through rather than a second answer to the same question.
+        applied_trims = level_trims_for(spec, self.level_match_trims_db)
         return {
             "session_id": self.session_id,
             "take_id": take_id,
@@ -1059,6 +1074,17 @@ class TuningSession:
             "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,
+            "level_matched": spec.level_matched,
+            # The numbers only when there ARE numbers, on ``vertical_deg``'s
+            # terms: an absent key reads as the un-matched capture every
+            # record banked before this existed was, so no schema moves. A
+            # ``level_matched`` take that carried no trims would be the record
+            # claiming a level match a reader cannot check.
+            **(
+                {"level_match_trims_db": applied_trims}
+                if applied_trims
+                else {}
+            ),
             "graph_fingerprint": self._graph_fingerprint,
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,

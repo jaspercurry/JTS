@@ -263,6 +263,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "inverted_role": request.inverted_role,
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
+        "level_matched": request.level_matched,
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a
@@ -289,6 +290,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         inverted_role=request.inverted_role,
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
+        level_matched=request.level_matched,
         replaced=replaced,
     )
     return path
@@ -463,6 +465,11 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     back exactly as the polarity pair does, so a document spooled before either
     existed still reads as a normal, undelayed walk. Neither is judged here.
 
+    ``level_matched`` reads back on the same terms and is a BOOLEAN, never
+    numbers: an absent (or false) key is a walk whose graph carries no level
+    match, and the trims a true one asks for are the box's own, resolved when
+    the host adopts the walk.
+
     **The polarity pair is ADDITIVE and defaulted**, which is what keeps a
     document staged before it existed valid at the same schema version: an
     absent (or null) ``polarity`` is a normal-polarity walk, and an absent
@@ -511,6 +518,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         inverted_role=str(doc.get("inverted_role") or ""),
         delayed_role=str(doc.get("delayed_role") or ""),
         delay_us=float(doc.get("delay_us") or 0.0),
+        level_matched=bool(doc.get("level_matched")),
     )
 
 
