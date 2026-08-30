@@ -480,6 +480,18 @@ probe and the stopping rule all live in the plan's **"Measurement program
 constants"** section, their single source of truth; ticket 3.7 turns them into
 code.
 
+**The delay lane is two acts, and the second is not optional.**
+`jasper-delay-sweep propose` reads and prints; the alignment door applies. A
+delay the confirmation resolved gets prescribed — its size decides only where in
+the round's queue the work sits, never whether the work happens (methodology
+§4). Before grading a confirmation, check what the graph will actually play: the
+candidate delay arrives through the measurement-graph emitter, but the branch
+LEVELS are whatever the baseline profile's trim derivation resolved — the banked
+base trim where `jasper-driver-trim` wrote one, the declared estimate otherwise.
+On a speaker whose declared sensitivities sit far apart, bank the measured trim
+before you grade a null: an un-level-matched pair caps its own null depth, and
+the depth is the whole reading.
+
 ## The doors, and what they refuse
 
 Five prescription doors, one refusal vocabulary each, counted at HEAD:

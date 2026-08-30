@@ -177,19 +177,53 @@ band-limited reverse null: invert one branch, and read null depth at fc against
 the shoulders either side (fc/2 and 2·fc). What changed is how the coordinate is
 chosen.
 
-1. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
+1. **Clear the protection phase first — or know what replaced it.** §2's plant
+   is captured with the declared protective high-pass live, so that filter's
+   phase sits in the banked `phase_deg` beside the acoustic offset, and a
+   transfer-derived read is biased by however much the two branches' protection
+   differs. **Nothing on the propose path removes it**: `compute_landscape`
+   reads magnitude and phase and takes the argmax of predicted null depth over a
+   geometry-seeded grid, carrying no protection term of its own. What removes
+   it, where it runs at all, is upstream — the MEASURE-phase analysis divides
+   the emitted protection out and multiplies the **configured crossover** in, so
+   the curve you propose from carries that crossover's phase rather than a bare
+   driver's. The LATERAL phase skips that composition deliberately and keeps the
+   protection phase. **Which of the two you got is recorded on the banked curve
+   nowhere.** So the correction is not automated and not recoverable after the
+   fact: know it from the round you commanded, say which in the proposal, and
+   treat a lateral-phase optimum as protection-contaminated until the acoustic
+   confirm disposes of it.
+2. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
    phase for every measured curve, so the two per-driver transfers reconstruct
    exactly. Complex-sum them across `null_walk`'s whole delay grid — one branch
    sign-reversed, one delayed — and the entire landscape falls out with **no
    audio played**. An existing MEASURE bank answers this today.
-2. **Dispose, acoustically.** Play the null at the computed optimum and its two
+3. **Dispose, acoustically.** Play the null at the computed optimum and its two
    neighbours — three takes, not a blind nine to twenty-five — with the branch
    inverted and the candidate delay in the measurement graph, and measure what
-   actually cancels.
+   actually cancels. **Level-match first where the gap warrants it.** The branch
+   levels this graph plays are whatever §5's trim derivation resolved, so on a
+   speaker whose declared gap exceeds the bound below, §5's banked evidence
+   precedes this confirm — otherwise you are grading a null the levels capped
+   before the delay was ever wrong.
 
 Success is a measured null **≥ 20 dB below the summed passband**, sitting where
-the computation said it would. **A best null under 15 dB means directivity or
-lobing on that axis, not delay**: stop and return to §3.
+the computation said it would; `ROBUST_NULL_DEPTH_DB` and `USABLE_NULL_DEPTH_DB`
+(`active_speaker/delay_sweep.py`) are the two bars.
+
+**A shallow null has two mechanisms, and the level one comes first.** Anti-phase
+cancellation leaves the branch difference behind: where the branches differ by
+Δ dB the quieter one is `10^(−Δ/20)` of the louder, so the deepest cancellation
+available at *any* delay coordinate removes only `−20·log10(1 − 10^(−Δ/20))` of
+the louder branch — **≈3.3 dB at a 10 dB gap**, and no delay coordinate beats
+it. Reaching 15 dB needs the branches inside **≈1.7 dB** of each other; reaching
+20 dB needs **≈0.9 dB**. That ceiling bounds whatever depth you read afterwards,
+so compute it from this speaker's declared `sensitivity_db` spread (§0) before
+you read the graph, then check it on the graph itself: the reading brackets fc
+with the shoulders either side, so **shoulders that disagree are the branch
+gap**, measured rather than declared. Only a best null under the usable bar with
+the branches *already* matched inside that bound means directivity or lobing on
+that axis — then stop and return to §3.
 
 **Disagreement is a result.** A deep computed optimum whose acoustic null comes
 back shallow, or whose measured null sits at a neighbour instead, is the model
@@ -210,6 +244,16 @@ curves through the measurement index, prints the computed optimum, and hands
 back the `jasper-angle-capture stage` lines that confirm it. It opens no device
 and plays nothing. Grading the confirmation is not wired: no banked take
 records the delay coordinate it was played at.
+
+**Price orders the queue; it never empties it.** A delay the confirmation
+resolved is a measured physical error, so it gets applied — through the
+alignment door, as a standing step of the round, not a judgment call about
+whether it was worth the trouble. Size decides only WHERE the work sits: rank
+the round's pending corrections by how much measured error each removes and take
+the largest first, so a small residual lands later in the sequence and never
+outside it. The one reason not to prescribe a measured delay is that the
+measurement did not resolve one — the disagreement rule above — never that the
+number came back small.
 
 **Applying the winner — the alignment door**, reached with
 `--alignment-prescription` on the round runner (a session-open key, not a
@@ -244,6 +288,13 @@ baseline profile's trim derivation, which prefers a banked base trim and falls
 back to the declared estimate). **Absent is normal.** Know which of the two you
 stand on before you attribute a level error to the graph.
 
+**On a speaker with a material sensitivity gap, this step runs before §4's
+acoustic confirm.** That confirm plays whatever trim this derivation resolved,
+and a gap wider than §4's bound caps the null before delay is even in question —
+so bank the measured trim first, then go and null. `jasper-driver-trim`'s
+invocation belongs to [`testing-tooling.md`](testing-tooling.md), "Measured
+driver base trim".
+
 **A trim is re-solved every round.** So **a transplanted chain needs its trim
 pinned, or a refit against the new trim.** Filters carried over from an earlier
 round were shaped against that round's level; re-solved against a new one they
@@ -274,6 +325,21 @@ division of labour.
    `insufficient_evidence`. Every promoted finding is `unsure`: in one session,
    position invariance is equally consistent with an origin that travels with
    the speaker and with a room path that did not move. Rotation adjudicates.
+
+**Either discriminator can be UNAVAILABLE, and that is a third answer, not a
+negative one.** Both run over a round's capture WAVs in the `dumps/` ring —
+`jasper-classify-features` requires `--dumps` — and no banked record holds
+those, so a round whose ring is gone can never be classified afterwards: excess
+group delay is recomputed from the impulse response, not read off a curve.
+When the inputs are absent the surfaces say so rather than guess: the
+packet's `feature_classification` block reports `available: false` beside a
+`status` / `reason` / `field` triple, and discriminator 2 already has its own
+word for it above. **Read that as unavailable, never as a verdict of "not
+min-phase".** You may still measure the candidate — the bar discloses rather
+than refuses (below) — but you proceed on the **disclosed-weaker** path and say
+so in the receipt: which discriminator had no inputs, and what would have
+produced them. Inventing the verdict the instrument did not return is the one
+move barred here.
 
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
 (`classify_delta_probe`) grades realized against commanded — `matched`,
@@ -404,6 +470,7 @@ intervention whose measured evidence stands.
 | **Correcting into a positional dip** — the dip moves with position, the feature carries an excess-GD spike, the classifier says `interference-barred` or `room` | a cancellation or boundary effect | **no EQ, ever**; route it to position, placement, or corner choice |
 | **Flat on-axis but hot** — top-octave overshoot after an on-axis-flat fit above the beaming onset; realization matches, listeners call it bright | you targeted the wrong curve | refit weighted to the listening window (§6) |
 | **Delay masquerading as a response error** — a ripple centred on fc that EQ cannot remove and that changes with a polarity flip | the branches are not time-aligned | stop EQ-ing, go to §4, re-verify, resume |
+| **A null that will not deepen** — best null short of the usable bar, the shoulders either side of fc disagree, and the declared per-driver sensitivities are far apart | branch LEVEL mismatch, not geometry: the gap bounds the null on its own and no delay coordinate gets under it | level-match the branches from banked evidence and re-measure **before** concluding lobing; where the box refuses for want of that evidence, bank the measured base trim first (§5), then return to §4 |
 | **Gate-floor artifacts** — features below `validity_floor_hz` that vary with position and vanish when the gate moves | the analysis window, not the speaker | disclose the band unverified; correct nothing there (§9) |
 | **Measuring-noise chasing** — round-to-round differences inside the rig's own repeatability band, the story changing each round | you are reading noise | stop iterating, re-measure the repeat floor, raise the action threshold above it |
 
