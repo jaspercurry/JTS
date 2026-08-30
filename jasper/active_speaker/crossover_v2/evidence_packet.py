@@ -267,6 +267,7 @@ _POSITION_FIELDS = (
     "gating_applied",
     "glitch_detected",
     "summed_ripple_db",
+    "reverse_null_depth_db",
     "echo",
 )
 

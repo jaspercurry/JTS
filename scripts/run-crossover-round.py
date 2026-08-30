@@ -518,7 +518,15 @@ SSH_OPTS = [
 ]
 
 
-def stage_walk(target: Target, angles: str, regime: str, trail: Trail) -> int:
+def stage_walk(
+    target: Target,
+    angles: str,
+    regime: str,
+    trail: Trail,
+    *,
+    polarity: str | None = None,
+    inverted_role: str | None = None,
+) -> int:
     """``jasper-angle-capture stage`` on the Pi. Its refusal is its own.
 
     ``--angles`` and ``--regime`` are passed through as the operator wrote
@@ -526,10 +534,21 @@ def stage_walk(target: Target, angles: str, regime: str, trail: Trail) -> int:
     and a second validator here would be a second answer to the same question.
     ``--per-position`` repeats each token verbatim before it gets here for that
     same reason — see ``position_cycle.expand_angle_spec``.
+
+    ``polarity``/``inverted_role`` are R-1's pair, and they travel the same way:
+    forwarded verbatim, judged by the staging seam. Without them this runner
+    could stage only normal-polarity walks, which put the reverse-null
+    confirmation out of reach of the one command that drives a round.
     """
+    flags = ""
+    if polarity is not None:
+        flags += f" --polarity {shlex.quote(polarity)}"
+    if inverted_role is not None:
+        flags += f" --inverted-role {shlex.quote(inverted_role)}"
     remote = (
         f"sudo {PI_VENV_BIN}/jasper-angle-capture stage --mover arm "
-        f"--angles {shlex.quote(angles)} --regime {shlex.quote(regime)} --json"
+        f"--angles {shlex.quote(angles)} --regime {shlex.quote(regime)}"
+        f"{flags} --json"
     )
     proc = subprocess.run(
         [*SSH_OPTS, target.ssh_target, remote],
@@ -538,6 +557,7 @@ def stage_walk(target: Target, angles: str, regime: str, trail: Trail) -> int:
     ok = proc.returncode == 0
     trail.emit(
         "stage", ok=ok, angles=angles, regime=regime, mover="arm",
+        polarity=polarity or "normal", inverted_role=inverted_role or "",
         stops=staged_stops(angles),
         angle_capture_exit=proc.returncode,
         detail=(proc.stdout or proc.stderr).strip()[-300:],
@@ -1056,6 +1076,8 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             expand_angle_spec(args.angles, args.per_position),
             args.regime,
             trail,
+            polarity=args.polarity,
+            inverted_role=args.inverted_role,
         )
         if rc != 0:
             return EXIT_STAGE
@@ -1210,6 +1232,16 @@ def build_parser() -> argparse.ArgumentParser:
             "last session's (default: %(default)s). Ignored by --stage verify, "
             "which takes the instrument the MEASURING session recorded"
         ),
+    )
+    parser.add_argument(
+        "--polarity", default=None, choices=("normal", "inverted"),
+        help="stage the walk with one driver branch sign-flipped (R-1). "
+             "Pair with --inverted-role. The reverse-null confirmation needs "
+             "it; a normal round does not.",
+    )
+    parser.add_argument(
+        "--inverted-role", default=None,
+        help="which driver branch --polarity inverted flips, e.g. tweeter",
     )
     parser.add_argument(
         "--alignment-prescription", type=_json_document, default=None,

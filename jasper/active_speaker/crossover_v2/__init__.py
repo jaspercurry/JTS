@@ -106,7 +106,11 @@ call and neither extends:
   the mic-only regimes the engine has not built yet (ruling S12).
 * :mod:`.prior_bank` — a previous session's bank, read back: the "before" a
   candidate check grades against, and what that bank already disclosed.
-* :mod:`.analysis_units` — what ``analyze`` can run: fifteen named analyses,
+* :mod:`.delay_landscape` — the inter-driver delay, computed then confirmed:
+  the two banked transfers complex-summed across ``null_walk``'s whole grid to
+  propose a coordinate without playing a note, and the grader that decides
+  whether the acoustic confirmation agreed with it.
+* :mod:`.analysis_units` — what ``analyze`` can run: sixteen named analyses,
   the ``ProgramAnalysis`` fields each owns, and the gate that names the input a
   bank would have to carry for it to run at all.
 * :mod:`.analysis_walk` — that table walked over a bank: what one record

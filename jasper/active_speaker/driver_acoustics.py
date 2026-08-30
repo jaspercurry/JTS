@@ -756,6 +756,27 @@ def _validity_floor(
     return True, float(value)
 
 
+def crossover_null_depth_db(freqs, mag_db, crossover_fc_hz: float) -> float:
+    """How deep the notch at Fc sits below the passband either side of it.
+
+    THE definition of null depth in this repo: the mean of the one-octave
+    shoulders (Fc/2 and 2*Fc) minus the level at Fc, read off an already
+    calibrated, already gated magnitude curve. Positive is a notch; a flat sum
+    reads near zero.
+
+    Factored out of :func:`analyze_summed_crossover` so the wired-walk analysis
+    — which holds the summed curve directly and never sees a WAV — asks the same
+    question in the same units. Two spellings of this subtraction would be two
+    null depths, and the walk that grades them could not tell which it had.
+    """
+    import numpy as np
+
+    at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
+    lower_shoulder = float(np.interp(crossover_fc_hz / 2.0, freqs, mag_db))
+    upper_shoulder = float(np.interp(crossover_fc_hz * 2.0, freqs, mag_db))
+    return (lower_shoulder + upper_shoulder) / 2.0 - at_fc
+
+
 def _band_mean_db(freqs, mag_db, lo_hz: float, hi_hz: float) -> float | None:
     import numpy as np
 
@@ -1200,8 +1221,6 @@ def analyze_summed_crossover(
     ``near_validity_floor`` record the (non-excluding) advisory state for a
     usable result.
     """
-    import numpy as np
-
     if crossover_fc_hz <= 0:
         raise DriverAcousticsError(
             f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
@@ -1300,11 +1319,7 @@ def analyze_summed_crossover(
         above_validity_floor = True
         near_validity_floor = False
 
-    at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
-    lower_shoulder = float(np.interp(lower_shoulder_hz, freqs, mag_db))
-    upper_shoulder = float(np.interp(crossover_fc_hz * 2.0, freqs, mag_db))
-    shoulder_mean = (lower_shoulder + upper_shoulder) / 2.0
-    null_depth = shoulder_mean - at_fc
+    null_depth = crossover_null_depth_db(freqs, mag_db, crossover_fc_hz)
 
     deep = null_depth >= null_threshold_db
     if expect_null:

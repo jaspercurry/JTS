@@ -393,6 +393,9 @@ ANALYSIS_UNITS: tuple[AnalysisUnit, ...] = (
     AnalysisUnit("summed_response", ("summed_response",), _needs_summed_sweep),
     AnalysisUnit("summed_ripple", ("summed_ripple_db",), _needs_summed_and_fc),
     AnalysisUnit(
+        "reverse_null", ("reverse_null_depth_db",), _needs_summed_and_fc,
+    ),
+    AnalysisUnit(
         "verify_tracking",
         ("verify_tracking", "verify_tracking_curve"),
         _needs_prediction,

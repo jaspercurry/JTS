@@ -2761,6 +2761,7 @@ def _commissioning_driver_filter_chain(
     *,
     filter_mode: str,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    measurement_delay_roles: frozenset[str] = frozenset(),
 ) -> list[str]:
     """The startup chain minus the per-role mute.
 
@@ -2769,9 +2770,15 @@ def _commissioning_driver_filter_chain(
     per-output mute layer is applied in the pipeline instead. Bring-up retains
     the dedicated tweeter high-pass; automatic response measurement removes
     only that extra filter so it measures the applied crossover shoulder.
+
+    ``measurement_delay_roles`` is the reverse-null delay sweep's lane (R-1):
+    the named roles carry a ``Delay`` filter at the head of the chain, matching
+    the applied graph's own [delay, …] ordering. Empty for every other caller,
+    which keeps their chains byte-identical.
     """
     if protection_sections_by_role is not None:
         return [
+            *([_driver_delay_name(role)] if role in measurement_delay_roles else []),
             *(
                 _program_protection_name(role, index)
                 for index, _section in enumerate(protection_sections_by_role[role])
@@ -2793,9 +2800,22 @@ def _emit_commissioning_filter_definitions(
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    measurement_delays_us: Mapping[str, float] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
+    # R-1's delay lane. Definitions only for the roles the caller named, so an
+    # ordinary program emits exactly the filters it always did.
+    #
+    # ONE `fmt` pass over the raw microsecond value and no intermediate
+    # rounding: `_emit_delay_filter` formats through `jasper.camilla_emit.fmt`,
+    # which IS `delay_graph.quantized_delay_ms`'s implementation, so the value
+    # a proof recomputes from the same `delay_us` matches by construction.
+    # Pre-quantizing here would be the second pass that module forbids.
+    for role, delay_us in sorted((measurement_delays_us or {}).items()):
+        lines.extend(_emit_delay_filter(
+            _driver_delay_name(role), delay_ms=delay_us / 1000.0,
+        ))
     for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
         lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),
@@ -2870,6 +2890,7 @@ def _emit_commissioning_pipeline(
     *,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    measurement_delay_roles: frozenset[str] = frozenset(),
 ) -> str:
     lines = [
         "  - type: Filter",
@@ -2886,6 +2907,7 @@ def _emit_commissioning_pipeline(
                 role,
                 filter_mode=filter_mode,
                 protection_sections_by_role=protection_sections_by_role,
+                measurement_delay_roles=measurement_delay_roles,
             )
         )
         lines.extend([
@@ -3480,6 +3502,7 @@ def emit_active_speaker_program_config(
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
     enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     inverted_roles: Sequence[str] = (),
+    measurement_delays_us: Mapping[str, float] | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -3505,6 +3528,23 @@ def emit_active_speaker_program_config(
     it. Level-neutral: see :func:`_emit_role_routed_mixer` for why no peak
     moves, and note that the tweeter protection high-pass, the per-driver
     limiter and the ``volume_limit`` ceiling below are unreachable from it.
+
+    ``measurement_delays_us`` is R-1's other half — the delay sweep's candidate
+    coordinate, one non-negative microsecond value per named role. **Scoped
+    exactly like** ``inverted_roles``, and for the same reason: it is a
+    parameter of this measurement emitter and of nothing else. The applied and
+    baseline emitters take their per-driver delay from the profile's
+    ``corrections`` (:func:`_emit_baseline_driver_definitions`) and cannot
+    reach this argument, so a swept coordinate can never leak into a graph a
+    household plays. ``None`` or empty emits no ``Delay`` filter and no chain
+    entry, which keeps every existing program byte-identical. Values reach the
+    YAML through a single :func:`~jasper.camilla_emit.fmt` pass — the same
+    formatter :func:`~jasper.audio_measurement.delay_graph.quantized_delay_ms`
+    is implemented as — so a proof that recomputes the expected value from the
+    same ``delay_us`` agrees exactly, with no intermediate rounding to disagree
+    about.
+    Delays ride ahead of the protection sections, matching the applied chain's
+    own [delay, …] ordering.
 
     Two fail-closed gates run before the graph can leave this function: a
     build-time proof that the selected tweeter HP satisfies the declared floor, and
@@ -3622,6 +3662,7 @@ def emit_active_speaker_program_config(
         audible_gain_db=0.0,
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
+        measurement_delays_us=measurement_delays_us,
     )
     mixer_yaml = _emit_role_routed_mixer(
         preset, role_channels,
@@ -3632,6 +3673,7 @@ def emit_active_speaker_program_config(
         preset,
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
+        measurement_delay_roles=frozenset(measurement_delays_us or ()),
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",

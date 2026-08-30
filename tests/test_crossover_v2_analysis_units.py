@@ -189,6 +189,7 @@ PRODUCED_FIELDS = frozenset(
         "pilot_snr_ok",
         "pilots",
         "predicted_sum",
+        "reverse_null_depth_db",
         "summed_response",
         "summed_ripple_db",
         "verify_absolute",
@@ -212,7 +213,7 @@ UNOWNED_FIELDS = frozenset(
 
 
 def test_the_units_partition_the_produced_program_analysis_fields():
-    """Fifteen units over twenty fields, asserted by identity, not by count.
+    """Sixteen units over twenty-one fields, asserted by identity, not by count.
 
     The union is exactly the *produced* class of the ``ProgramAnalysis`` field
     census. The six fields that copy an input, project another field, or are a
@@ -305,7 +306,7 @@ def test_an_empty_bank_skips_every_gated_unit_and_names_the_missing_input():
         for unit in ANALYSIS_UNITS
         if unit.gate(inputs)
     ]
-    assert len(skips) == 12  # the three total units still run
+    assert len(skips) == 13  # the three total units still run
     assert all(skip.missing for skip in skips)
     assert tuple(f.name for f in dataclasses.fields(AnalysisSkip)) == (
         "name",

@@ -50,7 +50,6 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
 from jasper.active_speaker.crossover_v2.measure_spec import (
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
-    REVERSE_NULL_DEPTH_NOT_IMPLEMENTED,
     STUB_CODES,
     VERTICAL_AXIS_NOT_IMPLEMENTED,
     MeasureSpec,
@@ -105,12 +104,23 @@ class _Graph:
     patches: list[Mapping[str, Any]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
+    measurement_delays: list = field(default_factory=list)
 
-    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
+    async def install(
+        self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
+    ) -> str:
         self.installs += 1
         self.inverted_roles.append(tuple(inverted_roles))
+        self.measurement_delays.append(dict(measurement_delays_us or {}))
         if self.install_raises:
             raise RuntimeError("install blew up after arming half a graph")
+        if measurement_delays_us:
+            # A delay coordinate is a DIFFERENT graph, exactly as a polarity
+            # variant is, so it cannot answer with another one's fingerprint.
+            tail = "+".join(
+                f"{role}@{us:g}" for role, us in sorted(measurement_delays_us.items())
+            )
+            return f"{self.fingerprint}-{tail}"
         if not inverted_roles:
             return self.fingerprint
         # A variant is a DIFFERENT graph, so it must not answer with the
@@ -261,14 +271,6 @@ def _session(
         ),
         (
             MeasureSpec(
-                kind=MEASURE_KIND_BASELINE,
-                polarity=POLARITY_INVERTED,
-                inverted_role=DRIVER_ROLE_TWEETER,
-            ),
-            REVERSE_NULL_DEPTH_NOT_IMPLEMENTED, "R-1", True,
-        ),
-        (
-            MeasureSpec(
                 kind=MEASURE_KIND_BASELINE, level_ladder_dbfs=(-20.0, -12.0),
             ),
             DISTORTION_VS_LEVEL_NOT_IMPLEMENTED, "R-4", True,
@@ -342,9 +344,9 @@ def test_a_spec_may_trip_more_than_one_stub_at_once():
         inverted_role=DRIVER_ROLE_TWEETER,
     ))
 
-    assert {stub.code for stub in stubs} == {
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, REVERSE_NULL_DEPTH_NOT_IMPLEMENTED,
-    }
+    # R-1 is no longer among them: the reverse-null analysis ships, so an
+    # inverted spec discloses only what its REGIME still owes.
+    assert {stub.code for stub in stubs} == {NEAR_FIELD_SPLICE_NOT_IMPLEMENTED}
 
 
 def test_stub_codes_names_every_code_the_engine_can_emit():
@@ -1823,10 +1825,9 @@ async def test_an_inverted_capture_plays_and_banks_like_any_other():
 
     assert len(parts["play"].calls) == 1
     assert len(outcome.record_ids) == 1
-    assert [stub.code for stub in outcome.disclosures] == [
-        REVERSE_NULL_DEPTH_NOT_IMPLEMENTED
-    ]
-    assert outcome.disclosures[0].captured is True
+    # R-1 ships: an inverted take plays, banks, AND is analysed, so it owes no
+    # disclosure. The stub row it used to carry is gone from the registry.
+    assert [stub.code for stub in outcome.disclosures] == []
 
 
 async def test_the_named_branch_reaches_the_graph_that_stimulus_installs():
@@ -1845,6 +1846,49 @@ async def test_the_named_branch_reaches_the_graph_that_stimulus_installs():
 
     # One at open() and one per stimulus.
     assert parts["graph"].inverted_roles == [(), (), (DRIVER_ROLE_WOOFER,)]
+
+
+async def test_the_delay_coordinate_reaches_the_graph_that_stimulus_installs():
+    """R-1's delay travels the same road its polarity does: by INSTALLING a
+    different graph. A coordinate applied any other way would leave the
+    fingerprint naming a graph that carried a different delay."""
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+            delayed_role=DRIVER_ROLE_TWEETER,
+            delay_us=250.0,
+        ))
+
+    assert parts["graph"].measurement_delays == [
+        {}, {}, {DRIVER_ROLE_TWEETER: 250.0},
+    ]
+
+
+async def test_two_coordinates_are_two_graphs_not_one_reused():
+    """The confirmation plays three coordinates in a row. If the graph seam
+    keyed its cache on polarity alone it would hand the second coordinate the
+    first one's graph and measure the wrong delay."""
+    session, parts = _session()
+
+    async with session:
+        for delay_us in (100.0, 200.0):
+            await session.measure(MeasureSpec(
+                kind=MEASURE_KIND_BASELINE,
+                polarity=POLARITY_INVERTED,
+                inverted_role=DRIVER_ROLE_TWEETER,
+                delayed_role=DRIVER_ROLE_TWEETER,
+                delay_us=delay_us,
+            ))
+
+    installed = [d for d in parts["graph"].measurement_delays if d]
+    assert installed == [
+        {DRIVER_ROLE_TWEETER: 100.0}, {DRIVER_ROLE_TWEETER: 200.0},
+    ]
 
 
 async def test_a_banked_inverted_record_says_which_branch_was_flipped():

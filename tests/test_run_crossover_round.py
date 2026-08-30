@@ -421,6 +421,27 @@ def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
     assert "--attest-rig-clear" in walk_cmd
     assert "--expect-angles 7,-7" in walk_cmd
     assert "--complete-after 3" in walk_cmd
+    # R-1's pair is absent unless asked for, so an ordinary round stages the
+    # command it always did.
+    assert "--polarity" not in stage_cmd and "--inverted-role" not in stage_cmd
+
+
+def test_the_reverse_null_pair_is_forwarded_to_the_staging_seam(
+    checkout, wizard, tmp_path
+):
+    """R-1 over SSH: without this the one command that drives a round could
+    stage only normal-polarity walks, putting the reverse-null confirmation out
+    of its reach."""
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS,
+         "--polarity", "inverted", "--inverted-role", "tweeter"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--polarity inverted" in stage_cmd
+    assert "--inverted-role tweeter" in stage_cmd
 
 
 def test_without_an_attestation_no_walk_is_launched(checkout, wizard, tmp_path):

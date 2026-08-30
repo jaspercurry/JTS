@@ -1907,6 +1907,13 @@ class ProgramAnalysis:
     gain_plan: GainPlan | None = None
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
+    # R-1's read: how deep the notch at Fc sits below the shoulders either side
+    # of it, on THIS capture's summed curve. Meaningful when one branch rode the
+    # graph inverted (a deep null is then the aligned answer) and equally when it
+    # did not (a deep null is then the polarity/delay problem) -- the number is
+    # the same subtraction either way, and what it MEANS is the caller's
+    # polarity context, never this field's.
+    reverse_null_depth_db: float | None = None
     # Measured-vs-predicted scalars for one VERIFY capture, plus — since rung
     # P1 — the ``"frame"`` the two curves were compared ACROSS and the
     # tilt-removed twins of the two numbers a gate or a screen reads. The raw
@@ -7084,6 +7091,7 @@ def _analyze_verify(
     # keeping them apart is what lets the spec-facing SSOT land without
     # changing what gates today.
     ripple = None
+    reverse_null_depth = None
     tracking = None
     tracking_curve = None
     measured_db = None
@@ -7094,6 +7102,14 @@ def _analyze_verify(
             woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
         )
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
+        # The one null-depth definition in the tree, shared with the acoustic
+        # capture analyzer so a computed depth and a measured one are the same
+        # quantity (jasper.active_speaker.driver_acoustics).
+        from jasper.active_speaker.driver_acoustics import crossover_null_depth_db
+
+        reverse_null_depth = crossover_null_depth_db(
+            summed.freqs_hz, summed.magnitude_db, fc_hz,
+        )
         if priors.predicted_sum is not None:
             pred_freqs, pred_db = priors.predicted_sum
             measured_db = analysis_mod.smooth_fractional_octave(
@@ -7268,6 +7284,7 @@ def _analyze_verify(
         locations=tuple(locations),
         summed_response=summed,
         summed_ripple_db=ripple,
+        reverse_null_depth_db=reverse_null_depth,
         verify_tracking=tracking,
         verify_absolute=_verify_absolute_result(
             summed, seg, fc_hz, priors, measured_db=measured_db,

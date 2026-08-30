@@ -172,22 +172,41 @@ Estimate the expected range from declared geometry first, using `τ = Δpath / c
 (**1 mm ≈ 2.915 µs at 343 m/s**; use the round's own `speed_of_sound_m_s`). A
 measured delay far outside that estimate is a lobe hop, not a discovery.
 
-**Method of record — the band-limited reverse-null delay sweep.** Invert one
-branch, step per-branch delay across a bounded schedule, maximise null depth in
-a band around fc (roughly fc/2 … 2·fc). Success is a null **≥ 20–25 dB below the
-summed passband** at the same pose *and* **stable across a small angle range** —
-a null existing at one exact spot is a geometry coincidence, not alignment. **A
-best null under 15 dB everywhere in the sweep means the problem is directivity
-or lobing on that axis, not delay**: stop sweeping and return to §3.
+**Method of record — compute, then confirm.** The measurement is the
+band-limited reverse null: invert one branch, and read null depth at fc against
+the shoulders either side (fc/2 and 2·fc). What changed is how the coordinate is
+chosen.
 
-**What ships, and what is arriving.** `audio_measurement/null_walk.py` carries
-the spec, the bounded schedule, the geometry seed and the selectors, and
-`active_speaker/alignment_walk.py` builds the active-crossover spec — but **it
-is decision content only: no shared runner, no CLI verb**, and a host that
-executes a walk owns its own DSP mutation and restore. **An operator-facing
-delay-sweep verb is ARRIVING in a sibling change — do not name one you have not
-found at your own HEAD.** Until then the executable path is the commissioning
-evidence path's `normal` / `reverse` / `delay_null` kinds.
+1. **Propose, from evidence already banked.** Ruling S3 banks magnitude *and*
+   phase for every measured curve, so the two per-driver transfers reconstruct
+   exactly. Complex-sum them across `null_walk`'s whole delay grid — one branch
+   sign-reversed, one delayed — and the entire landscape falls out with **no
+   audio played**. An existing MEASURE bank answers this today.
+2. **Dispose, acoustically.** Play the null at the computed optimum and its two
+   neighbours — three takes, not a blind nine to twenty-five — with the branch
+   inverted and the candidate delay in the measurement graph, and measure what
+   actually cancels.
+
+Success is a measured null **≥ 20 dB below the summed passband**, sitting where
+the computation said it would. **A best null under 15 dB means directivity or
+lobing on that axis, not delay**: stop and return to §3.
+
+**Disagreement is a result.** A deep computed optimum whose acoustic null comes
+back shallow, or whose measured null sits at a neighbour instead, is the model
+breaking at this band — reported as `model_break_at_alignment_band`, with no
+delay prescribed on the strength of the computation. Depth itself is not
+compared: a modelled cancellation can be arbitrarily deep while a measured one
+floors on noise, so what the model claims — and what is checked — is *where* the
+null is. The measured-minus-computed delta is banked either way; it is the
+controllability evidence for this band.
+
+**What ships.** `audio_measurement/null_walk.py` carries the spec, the bounded
+schedule, the geometry seed and the selectors — decision content, no DSP of its
+own. `crossover_v2/delay_landscape.py` is the propose half and the grader;
+`camilla_yaml.emit_active_speaker_program_config`'s `measurement_delays_us` puts
+a candidate delay in the measurement graph and **that emitter only**. Offline,
+`jasper-delay-sweep plan` prints the bounded grid and `grade` reads banked rows;
+neither opens a device.
 
 **Applying the winner — the alignment door**, reached with
 `--alignment-prescription` on the round runner (a session-open key, not a

@@ -65,6 +65,7 @@ from .measure_spec import (
     CapabilityStub,
     MeasureSpec,
     inverted_roles_for,
+    measurement_delays_for,
     stubbed_capabilities,
 )
 from .playback_transaction import PlaybackOutcome
@@ -878,7 +879,8 @@ class TuningSession:
         provenance true of the stimulus it actually played.
         """
         self._graph_fingerprint = await self.seams.graph.install(
-            inverted_roles_for(spec)
+            inverted_roles_for(spec),
+            measurement_delays_for(spec),
         )
         proven_level_db = await self._proven_level()
         outcome: PlaybackOutcome = await self.seams.play.run(
