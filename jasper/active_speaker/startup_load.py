@@ -1151,8 +1151,8 @@ async def rollback_protected_startup_config(
 # `load_protected_startup_config` (above) loads the DURABLE all-muted staged
 # boot config and persists it as the config file path CamillaDSP reboots into.
 # Per-driver commissioning is different: it loads a TRANSIENT config that unmutes
-# one driver, and the boot config MUST stay all-muted (crash-recovery-MUTED, see
-# HANDOFF-active-speaker-dsp.md "Resolved decisions"). The two transactions share
+# one driver, and the boot config MUST stay all-muted (crash-recovery-MUTED).
+# The two transactions share
 # the same shape (snapshot → preflight gate → apply_dsp_config load with rollback)
 # but differ in TWO safety-critical ways:
 #

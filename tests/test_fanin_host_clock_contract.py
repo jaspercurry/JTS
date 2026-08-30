@@ -24,9 +24,6 @@ the two halves of the boundary this package's Python code consumes:
 The Rust-source grep-pins ``pytest.skip()`` if the fan-in sources are not
 present yet, mirroring the usbsink twin's idiom so the Python side never blocks
 the Rust side landing first.
-
-See docs/HANDOFF-usb-low-latency.md "USB DIRECT (combo mode)" →
-"Host-slaved USB clock in combo mode".
 """
 from __future__ import annotations
 

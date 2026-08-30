@@ -149,10 +149,9 @@ def test_status_payload_is_display_only_no_control_keys(monkeypatch):
 
 
 def test_status_payload_includes_bass_extension_section(monkeypatch):
-    """The Bass Extension status (a separate, not-yet-launched feature — see
-    docs/HANDOFF-bass-extension-plan.md §9) rides the same /bass/status
-    payload as the long-shipped bass-management section, verbatim from
-    bass_extension_state_summary()."""
+    """The Bass Extension status (a separate, not-yet-launched feature) rides
+    the same /bass/status payload as the long-shipped bass-management
+    section, verbatim from bass_extension_state_summary()."""
     import jasper.bass_extension.profile as profile_mod
 
     _state(monkeypatch)  # bass-management state is irrelevant here

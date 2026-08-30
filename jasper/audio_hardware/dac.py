@@ -62,8 +62,8 @@ class LatencyFloor:
 
     The lowest CamillaDSP + outputd buffering a given DAC tolerates xrun-free,
     captured as DATA on the profile so a fresh box reproduces the tuned floor
-    with zero per-user config (the #27 codification — see
-    docs/HANDOFF-usb-low-latency.md). Before this, the only per-DAC tuning was
+    with zero per-user config (the #27 codification). Before this, the only
+    per-DAC tuning was
     a live ``jasper.env`` override on jts.local (the codify-don't-memorize
     anti-pattern), so a fresh box silently got the conservative global default.
 
@@ -502,8 +502,7 @@ HIFIBERRY_DAC8X = DacProfile(
     # Declaring S32_LE here lets outputd's i32 program spine reach the DAC
     # edge with zero narrowing (wide-output-path PR-7) — the intended fix
     # for the horn-lane undithered-16-bit-requantization crackle (acoustic
-    # verdict pending the conductor's post-merge listen); see
-    # docs/HANDOFF-speaker-output-reference.md "Current Operational Truth".
+    # verdict pending the conductor's post-merge listen).
     #
     # Consequence: `AlignmentIdentity.output_format` records this field for
     # forensics only — ADR-0190 excludes it from comparison, so it never

@@ -276,8 +276,7 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
             "resync_threshold at 0.2 and "
             "audio_backend_buffer_desired_length at 0.5; those settings and "
             "the latency offset were held unchanged and still need their own "
-            "ring reliability and A/V validation "
-            "(docs/HANDOFF-airplay.md, U3)."
+            "ring reliability and A/V validation."
         ),
     ),
 )

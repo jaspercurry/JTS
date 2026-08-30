@@ -283,8 +283,7 @@ via DBus in `jasper/tools/transport.py`. Object path is dynamic — something li
 under `/org/bluez/hci0` for objects implementing
 `org.bluez.MediaPlayer1`. Methods are the standard MPRIS-shaped set
 (`Play`, `Pause`, `Next`, `Previous`). Remaining follow-on is the broader
-source-capability extraction and health surfacing described in
-`docs/HANDOFF-source-capabilities.md`.
+source-capability extraction and health surfacing.
 
 ### `get_now_playing` is now source-aware
 

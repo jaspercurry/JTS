@@ -176,8 +176,7 @@ be, and that was the bug: `postEvent`/`postHostEvent` each read the whole
 set. A phone `POST /event` whose request-start read predated the Pi's
 terminal `POST /host-event` would land afterward and silently revert
 `host_event` to the phone's stale snapshot. This is exactly what happened on
-JTS3 on 2026-07-15 (see
-[`docs/HANDOFF-correction.md`](../docs/HANDOFF-correction.md)): a locked
+JTS3 on 2026-07-15: a locked
 level-match ramp's terminal host-event was reverted by an interleaved phone
 event post, and the phone's own deadline fired even though the server had
 already succeeded. The Pi's terminal re-post latch (5 attempts) made a lost

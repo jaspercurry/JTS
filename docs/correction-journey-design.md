@@ -8,8 +8,7 @@
 > follow the checklist in §8 and update this banner to point at the
 > shipped code. Related canon:
 > [tuning-operator-runbook.md](tuning-operator-runbook.md)
-> (step 1), [HANDOFF-correction.md](HANDOFF-correction.md) (step 2),
-> [HANDOFF-bass-extension-plan.md](HANDOFF-bass-extension-plan.md) +
+> (step 1),
 > [bass-extension-waves/](bass-extension-waves/README.md) (step 3).
 
 ## 1. Product intent

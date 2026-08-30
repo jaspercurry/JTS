@@ -23,12 +23,11 @@ Trixie's `libwebrtc-audio-processing-dev` (v1.3-3 — which IS
 AEC3; the 1.x is package-API stability versioning, not algorithm
 version). AEC3 includes a frequency-domain residual echo
 suppressor + drift-tolerant delay estimator and runs at ~3-8% of
-one Pi 5 core. See docs/HANDOFF-aec.md for the full investigation.
+one Pi 5 core.
 
 JTS reads channel 1: per XMOS primary docs, channels 2-5 bypass
 every chip DSP stage (no BF, NS, AGC, HPF, not even MIC_GAIN), and
-the canonical XVF3800 voice-assistant capture is channel 0/1 —
-see HANDOFF-xvf3800.md §3.
+the canonical XVF3800 voice-assistant capture is channel 0/1.
 
 Topology:
 
@@ -53,9 +52,7 @@ Topology:
                                                           UdpMicCapture (binds 9877)
                                                           for dual-stream wake-word
                                                           detection (PR 2 of the
-                                                          wake-telemetry series —
-                                                          see docs/HANDOFF-wake-
-                                                          telemetry.md).
+                                                          wake-telemetry series).
 
 Why UDP instead of the previous snd-aloop `LoopbackAEC` card: see
 the `UdpMicCapture` docstring in jasper/audio_io.py. Short version:
@@ -79,9 +76,7 @@ Caveats this implementation does NOT yet address:
     a starting point for its delay estimator) but convergence
     takes longer when the offset drifts.
   - The engine is the linear AEC3 + residual suppressor only; no
-    neural residual stage. See docs/HANDOFF-aec.md "Deep tuning
-    landscape" for the staged options if AEC3 + REF_GAIN + MIC_GAIN
-    isn't enough.
+    neural residual stage.
 """
 from __future__ import annotations
 
@@ -207,11 +202,9 @@ OUT_RATE = 16000
 #
 # Why expose this: the 2026-05-20 wake-rate sweep showed the AEC ON
 # and AEC OFF legs catch mostly-disjoint sets of utterances —
-# test-1 yielded a 40 % union vs 25 % best single leg (see
-# HANDOFF-aec.md "Open work streams — option C"). Emitting both
+# test-1 yielded a 40 % union vs 25 % best single leg. Emitting both
 # lets the wake loop OR the detections without changing the AEC
-# pipeline. See docs/HANDOFF-wake-telemetry.md for the end-to-end
-# design.
+# pipeline.
 #
 # Jasper-voice consumes this leg when the reconciler configures
 # `JASPER_MIC_DEVICE_RAW`; otherwise the extra UDP packets are ignored.
@@ -221,8 +214,7 @@ OUT_PORT_RAW = _leg_default_port("off")
 # ref capture with the AEC3 engine. Each input chunk is fed to BOTH
 # engines; AEC3 output goes to OUT_PORT, DTLN output to OUT_PORT_DTLN.
 # Adds ~95 MB RAM + ~12% of one Pi 5 core. Disabled by default during
-# the triple-stream rollout; flip via env var per
-# docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
+# the triple-stream rollout; flip via env var.
 OUT_PORT_DTLN = _leg_default_port("dtln")
 # 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the
 # chip-direct stream on OUT_PORT_RAW (which is chip channel 1 = ASR
@@ -1374,7 +1366,7 @@ def _select_engine(
 
 class _SimpleAGC:
     """Frame-rate peak-tracking AGC for the raw mic UDP leg.
-    EXPERIMENTAL — gated off by default. See docs/HANDOFF-vad-experiments.md.
+    EXPERIMENTAL — gated off by default.
 
     Tracks per-frame peak with asymmetric attack/release smoothing,
     computes the gain to bring the envelope toward `target_dbfs`,
@@ -1550,8 +1542,7 @@ class _ReferenceFrameConverter:
     smart-speaker setup the digital ref is typically 25-30 dB *quieter* than
     what the mic captures (amp + speakers + room amplify the chain).
     Boosting ref closes that gap so the adaptive filter operates near its
-    design point. See docs/HANDOFF-aec.md "Tuning findings" for measured
-    impact.
+    design point.
     """
 
     def __init__(self, *, ref_gain_db: float, ref_hpf_hz: float) -> None:
@@ -2295,8 +2286,7 @@ def _aec_loop(  # noqa: PLR0915
     # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
     # the chip's mic preamp delivers a quiet AEC output. Default 0 dB
     # (off). Soft-clipped via tanh on the way out so high gain doesn't
-    # injecting hard-clip distortion into the wake-word input. See
-    # docs/HANDOFF-aec.md tuning findings for tested values.
+    # injecting hard-clip distortion into the wake-word input.
     global _ref_clipped_samples, _ref_total_samples
     global _out_clipped_samples, _out_total_samples
     global _ref_starved_frames
@@ -2676,9 +2666,6 @@ def _aec_loop(  # noqa: PLR0915
             # 20 ms-stale carry-forward; that staleness is well within
             # AEC3's delay-estimator tolerance and immediate replays
             # of the same bytes are eliminated entirely.
-            #
-            # See `docs/HANDOFF-aec.md` "Ref starvation bug (2026-05-19)"
-            # for the full diagnosis trail.
             try:
                 last_ref_bytes = ref_q.get_nowait()
             except Empty:
@@ -3066,7 +3053,7 @@ def main() -> int:
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
     # Log flight recorder + runtime debug toggle (/system Debug card).
-    # See jasper/flight_recorder.py / docs/HANDOFF-observability.md.
+    # See jasper/flight_recorder.py.
     from .. import flight_recorder
     flight_recorder.install("aec")
     config = BridgeConfig.from_env(log_sweep=True, logger_=logger)

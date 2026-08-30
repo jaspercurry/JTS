@@ -162,8 +162,7 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # applied by this reconciler via jasper.multiroom.leader_config (the
 # bonded emit + glitch-free config swap, reusing the wizards' shared
 # apply engine). The earlier outputd-as-producer machinery was removed
-# 2026-06-11 — see HANDOFF-multiroom.md §2 "Canonical signal flow" +
-# "Stranded by this design". Producer liveness for runtime health reads
+# 2026-06-11. Producer liveness for runtime health reads
 # the ACTIVE CamillaDSP config (the daemon-adjacent truth: camilla's own
 # statefile names it, and the doctor's `leader pipe` check scans it) —
 # never a Python mirror of env intent, the lesson the removed
@@ -237,8 +236,7 @@ AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 AUDIO_HARDWARE_RECONCILE = "/usr/local/sbin/jasper-audio-hardware-reconcile"
 
 # camilla#2 — the endpoint-crossover CamillaDSP instance (:1235), armed ONLY on
-# an ACTIVE LEADER (HANDOFF-distributed-active.md "Stage B — the ratified
-# active-leader realization"). Reconciler-gated: `enable --now` on bond (after
+# an ACTIVE LEADER. Reconciler-gated: `enable --now` on bond (after
 # the statefile is re-seeded with the re-proven driver-domain graph) and
 # `disable --now` on unbond. INERT/dormant infrastructure otherwise (PR #930).
 # It carries NO StartLimitAction=reboot, so a failed arm fails closed to silence
@@ -620,9 +618,9 @@ def outputd_grouping_env(
             # sub: its Layer-A graph only folds a mains HP when
             # preset.local_subwoofer is set, so with a wireless-only sub this
             # clear leaves the active box's mains running FULL-RANGE (zero
-            # mains-HP) — the documented "Remaining" active-endpoint sub path
-            # in HANDOFF-distributed-active.md; jasper.bass_management reports
-            # that state honestly to displays. Only a DUMB (passive single-DAC)
+            # mains-HP) — the documented "Remaining" active-endpoint sub path;
+            # jasper.bass_management reports that state honestly to displays.
+            # Only a DUMB (passive single-DAC)
             # member — active_endpoint=False, below — carries the wireless HP
             # in this lane.
             return {
@@ -1804,7 +1802,7 @@ def main(argv: list[str] | None = None) -> int:
     jasper-aec-reconcile. Unknown args are ignored so a future caller
     adding a flag can't crash the reconcile path.
 
-    ORDER (load-bearing — see HANDOFF-multiroom.md §2):
+    ORDER (load-bearing):
 
       1. Derived files (snapcast args + outputd lane env) + the member
          FIFO — before any unit work, so everything a started unit
@@ -1858,8 +1856,7 @@ def main(argv: list[str] | None = None) -> int:
     active_follower = active and cfg.role == "follower" and box_is_active
     # An ACTIVE leader is brains + an endpoint: camilla#1 bakes the program
     # domain to the wire AND camilla#2 runs this box's own Layer-A crossover on
-    # the round-tripped stream (two CamillaDSP; HANDOFF-distributed-active.md
-    # "Stage B — the ratified active-leader realization"). A PASSIVE leader keeps
+    # the round-tripped stream (two CamillaDSP). A PASSIVE leader keeps
     # the single-camilla pipe bake (jasper.multiroom.leader_config).
     # ``active_leader`` (valid leader, either kind) is unchanged; these split it.
     active_speaker_leader = active_leader and box_is_active
@@ -2032,8 +2029,8 @@ def main(argv: list[str] | None = None) -> int:
                 "reason",
                 "active_endpoint_precheck_error",
             )
-            # Distinct event per role (the follower name is documented in
-            # HANDOFF-distributed-active.md); both literals stay greppable.
+            # Distinct event per role (the follower name is documented);
+            # both literals stay greppable.
             blocked_event = (
                 "multiroom.reconcile.active_leader_blocked"
                 if active_speaker_leader
@@ -2424,8 +2421,7 @@ def main(argv: list[str] | None = None) -> int:
             # camilla#2 runs the active follower's clock seam unchanged — same
             # capture (the grouping ring), same per-sink rate-adjust
             # resolution — so the leader adds no clock topology the follower
-            # does not already have. No outputd-summer yet
-            # (HANDOFF-distributed-active.md "Sequencing" 1).
+            # does not already have. No outputd-summer yet.
             bake_ok = False
             if not _disable_crossover_unit():
                 rc = 1

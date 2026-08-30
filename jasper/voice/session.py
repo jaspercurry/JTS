@@ -233,8 +233,7 @@ class LiveTurn(Protocol):
     # needs — resolved once per daemon and surfaced on ``event=barge.detected``
     # and ``/state.voice.barge_in`` — not the runtime dispatch switch. Both
     # methods are safe no-ops in adapters that do not need them, so a single
-    # daemon code path works across providers. See the "Provider Interruption
-    # Contract" in docs/HANDOFF-voice-providers.md.
+    # daemon code path works across providers.
 
     async def cancel_response(self, reason: str) -> None:
         """Explicitly tell the provider to stop generating the in-progress

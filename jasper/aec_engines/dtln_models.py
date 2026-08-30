@@ -55,9 +55,7 @@ DTLN_MODELS_DIR = "/var/lib/jasper/dtln"
 # cells (the cases that motivated adding the DTLN leg) against CPU
 # cost (~25% of one Pi 5 core when streaming at 50 fps). 128-unit is
 # roughly half the CPU with slightly worse recall; the 512-unit
-# upstream model is too heavy for the Pi 5. See
-# `docs/HANDOFF-mic-quality-v2.md` "Triple-stream architecture plan"
-# for the recall/CPU trade-off discussion.
+# upstream model is too heavy for the Pi 5.
 DEFAULT_SIZE = 256
 
 

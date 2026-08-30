@@ -14,7 +14,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS_WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
-SUPPLY_CHAIN_DOC = ROOT / "docs" / "HANDOFF-supply-chain.md"
 
 
 def _pyproject() -> dict:
@@ -583,19 +582,12 @@ def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
     assert "py.typed" in data["tool"]["setuptools"]["package-data"]["jasper"]
 
 
-def test_python_resolution_artifacts_are_committed_and_documented() -> None:
+def test_python_resolution_artifacts_are_committed() -> None:
     """Local dev/CI and Pi deploys intentionally use different Python
-    resolution artifacts; keep both present and keep the canonical doc
-    from drifting back to the old "choose later" language."""
+    resolution artifacts; keep both present."""
 
     assert (ROOT / "uv.lock").is_file()
     assert (ROOT / "deploy" / "constraints-pi.txt").is_file()
-
-    doc = SUPPLY_CHAIN_DOC.read_text(encoding="utf-8")
-    assert "uv.lock" in doc
-    assert "deploy/constraints-pi.txt" in doc
-    assert "choose one shared artifact" not in doc
-    assert "does not currently commit a shared Python lock artifact" not in doc
 
 
 def test_linux_only_c_extensions_have_platform_markers() -> None:

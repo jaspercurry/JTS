@@ -15,8 +15,7 @@
 #
 # These form the stable A/B baseline for evaluating AEC engine
 # swaps (DTLN-aec, RS-tuned AEC3, etc.) and wake-word model swaps
-# offline. See docs/HANDOFF-mic-quality-v2.md "Testing methodology"
-# for the methodology + docs/testing-tooling.md for the catalog of
+# offline. See docs/testing-tooling.md for the catalog of
 # related scripts (scripts/wake-rate-test.sh covers the
 # fixed-phone-track case; this script covers the live-user-speech
 # case).
@@ -52,7 +51,7 @@ set -euo pipefail
 if [[ $# -lt 1 ]]; then
     cat >&2 <<USAGE
 Usage: $0 <condition> [seconds]
-  conditions per HANDOFF-mic-quality-v2.md "Testing methodology":
+  conditions:
     normal-quiet / normal-music
     whisper-quiet / whisper-music
     yell-quiet / yell-music

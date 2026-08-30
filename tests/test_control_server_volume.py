@@ -693,7 +693,7 @@ def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
 #
 # Unit tests for the probe factory consumed by per-request
 # VolumeCoordinators. Validates the wire format and the fail-open
-# error envelope. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
+# error envelope.
 
 
 def test_duck_active_probe_returns_true_when_voice_reports_ducked(monkeypatch):

@@ -54,8 +54,7 @@ class InputDeviceUnavailable(RuntimeError):
     device matching ...", busy capture, or a malformed/unbindable UDP
     transport). The daemon's ``main()`` catches it and exits
     ``VOICE_MIC_UNAVAILABLE_EXIT`` so systemd parks the unit cleanly
-    instead of crash-looping toward ``StartLimitAction=reboot``. See
-    ``docs/HANDOFF-hotplug-resilience.md`` "Layer 2"."""
+    instead of crash-looping toward ``StartLimitAction=reboot``."""
 
     def __init__(self, device: str, cause: BaseException | None = None) -> None:
         self.device = device

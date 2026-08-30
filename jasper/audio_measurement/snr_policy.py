@@ -333,7 +333,7 @@ def excitation_covered_bands(
     beyond its true level. A signal capture usually swamps this artifact (a
     near-mic'd driver is loud); an ambient capture has nothing to swamp it
     with, so the artifact dominates and the reported noise floor is overstated
-    by tens of dB (see docs/HANDOFF-audio-measurement-core.md "SNR" section).
+    by tens of dB.
 
     A band that is not fully covered by the reference is not safe to read
     from the deconvolved domain at all — callers should fall back to a

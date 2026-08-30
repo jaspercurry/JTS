@@ -495,7 +495,7 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
 #     same near-end bytes AEC3 consumes for cancellation.
 # Both batched to OUT_FRAME_BYTES (1280-sample / 80 ms) packets so
 # the consumer (jasper-voice's UdpMicCapture) sees identical chunk
-# shapes. See docs/HANDOFF-wake-telemetry.md for the rationale.
+# shapes.
 # ---------------------------------------------------------------------------
 
 

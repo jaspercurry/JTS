@@ -9,7 +9,7 @@
 # =============================================================================
 #
 # The measurement half of scripts/s0-sync-bench.sh. Answers the
-# docs/HANDOFF-distributed-active.md "Multi-Pi validation" S0-sync question:
+# S0-sync question:
 # does the active follower (snapclient -> snd-aloop -> crossover CamillaDSP ->
 # DAC) stay sample-locked?
 #
@@ -32,7 +32,7 @@
 #                      count resync jumps, and emit the combined PASS/FAIL +
 #                      the doc-ready numbers (p99, xrun count, CPU/temp).
 #
-# ACCEPTANCE (docs/HANDOFF-distributed-active.md): p99 inter-speaker offset
+# ACCEPTANCE: p99 inter-speaker offset
 # < 5 ms over a 2-hour run, no audible resync; PLUS a >= 24 h xrun soak with a
 # clean journal. PASS requires BOTH.
 #
@@ -68,7 +68,7 @@ except ModuleNotFoundError as exc:
         read_wav_mono as _shared_read_wav_mono,
     )
 
-TARGET_P99_MS = 5.0          # docs/HANDOFF-distributed-active.md sync target
+TARGET_P99_MS = 5.0          # sync target
 RESYNC_JUMP_MS = 2.0         # consecutive-capture median jump flagged as resync
 SAMPLE_RATE = 48_000
 LAG_MIN_MS = 0.3             # skip the zero-lag autocorrelation lobe
@@ -383,7 +383,7 @@ def run_soak(args):
     print("=" * 74)
     print(f"  S0-SYNC VERDICT: {overall}")
     print("=" * 74)
-    print("  Consequence (write into HANDOFF-distributed-active.md):")
+    print("  Consequence:")
     if overall.startswith("PASS"):
         print("    Clock seam holds. Slice 3 is go PROVIDED the acoustic p99 is\n"
               "    confirmed < 5 ms with a between-speakers mic (telemetry +\n"

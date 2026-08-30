@@ -6,8 +6,7 @@
 
 # Convert breizhn/DTLN-aec TFLite models to ONNX so they can run with
 # the onnxruntime that ships in the JTS Pi venv (tflite-runtime has no
-# Python 3.13 wheel — see install.sh comment + docs/HANDOFF-mic-quality-v2.md
-# Phase 1 "What to build" notes).
+# Python 3.13 wheel — see install.sh comment).
 #
 # Output ONNX files go to $OUT_DIR (default: ./dtln-aec-onnx/).
 # These should then be either:

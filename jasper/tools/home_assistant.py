@@ -10,7 +10,7 @@ and any LLM-backed agent); JTS is a relay. A second tool,
 `home_assistant_confirm()`, completes a consequential action the user was
 asked to confirm.
 
-Architecture rationale is in `docs/HANDOFF-homeassistant.md`. Summary:
+Summary:
 
   - Sentence triggers (the household's "bedroom medium" → automation
     wirings) only fire through HA's conversation pipeline. They are
@@ -29,8 +29,7 @@ it the confused-deputy target: untrusted content the model has read (an
 email body, a calendar invite) could steer it into calling
 `home_assistant("unlock the front door")` with no human intent. Per OWASP
 LLM01 "human oversight for high-risk operations" and the design-patterns
-literature (see docs/HANDOFF-prompting.md "Untrusted tool-result fencing"
-for sources), high-impact actions get an explicit user confirmation:
+literature, high-impact actions get an explicit user confirmation:
 `classify_consequential` flags them, the tool stashes the request and
 returns `needs_confirmation` WITHOUT acting, and only `home_assistant_confirm`
 — after the user audibly says yes — carries it out. This is a structural
@@ -47,7 +46,7 @@ door". This is a deliberately dumb wall-clock window, not tied to the
 model's context window or per-provider session persistence; voice/acoustic
 injection is out of scope by design. Residual (a fully-hijacked model that
 self-confirms in one breath) needs privilege separation / dual-LLM; tracked
-as future work in HANDOFF-prompting.md.
+as future work.
 
 The tool's description teaches the model both WHEN to call and WHEN NOT
 to call — conditional rules per the OpenAI Realtime Prompting Guide
@@ -289,7 +288,7 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
             logger.info("event=ha.confirm_gate action=%s", label)
             # Phrasing: a plain yes/no question, nothing more. The daemon has
             # no follow-up-listening yet (after this turn the user must
-            # re-wake to answer — see docs/HANDOFF-homeassistant.md), so a
+            # re-wake to answer), so a
             # "say yes to confirm" suffix would imply an instant reply we
             # can't honor. The question itself elicits "yes"; the
             # needs_confirmation rule in SYSTEM_INSTRUCTION owns the wait/

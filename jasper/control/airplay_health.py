@@ -67,7 +67,7 @@ SUBPROCESS_TIMEOUT_SEC = 2.0
 MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
 
 # Fan-in's 4096-frame input buffer is load-bearing for AirPlay burst
-# absorption. See docs/HANDOFF-airplay.md Pattern A3.
+# absorption.
 MIN_AIRPLAY_INPUT_BUFFER_FRAMES = 4096
 
 SHAIRPORT_UNIT = "shairport-sync"
@@ -129,8 +129,8 @@ def _as_float(value: Any) -> float | None:
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
     """Classify one journal line into the compact dashboard event shape.
 
-    The patterns are intentionally literal and pinned to the messages
-    documented in docs/HANDOFF-airplay.md. Unknown log lines are ignored.
+    The patterns are intentionally literal and pinned to the messages.
+    Unknown log lines are ignored.
     """
     if unit == SHAIRPORT_UNIT:
         if "Dropping out of date packet" in line:
@@ -267,7 +267,7 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
 # reload / restart clears it), so it cannot be reproduced on demand. These
 # hooks capture the rate-controller state WHEN IT ACTUALLY HAPPENS so the
 # mechanism and any future at-source tuning can be evaluated from real data
-# instead of reconstructed after the fact. See docs/HANDOFF-airplay.md.
+# instead of reconstructed after the fact.
 STORM_ENTER_PER_MIN = 120.0
 STORM_EXIT_PER_MIN = 30.0
 STORM_EXIT_DEBOUNCE_SEC = 90.0
@@ -1255,8 +1255,7 @@ class AirPlayHealthSampler:
         # (`_airplay_streaming`) — NOT the fan-in frame rate, which free-runs
         # ~48 kHz of silence whenever the pipeline is up and so reads
         # "active" even at idle. The frame rate is only a corroborating
-        # fault check once we know audio *should* be flowing. See
-        # docs/HANDOFF-airplay.md.
+        # fault check once we know audio *should* be flowing.
         mpris_playing = self._airplay_streaming()
         airplay = fanin.get("airplay", {})
         airplay_rate = (

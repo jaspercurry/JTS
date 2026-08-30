@@ -4,8 +4,7 @@
 
 """Contract tests for the wake-leg registry (``jasper.wake_legs``).
 
-PR 0.1 of the mic-fusion architecture
-(docs/HANDOFF-mic-fusion-architecture.md). The registry is the single
+PR 0.1 of the mic-fusion architecture. The registry is the single
 source of truth for leg identity + UDP ports; ``jasper.wake_ports``
 derives its ``DEFAULT_*_PORT`` constants from it. These tests lock the
 back-compat contract: the wire / on-disk tokens and ports must not

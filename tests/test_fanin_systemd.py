@@ -5,9 +5,7 @@
 """Lock down the jasper-fanin.service systemd unit shape.
 
 The unit's resilience-contract fields are load-bearing — they're
-the JTS-standard Tier 1+2 / Stage 1+2 protections documented in
-docs/HANDOFF-resilience.md and the fan-in-specific design in
-docs/HANDOFF-fan-in-daemon.md.
+the JTS-standard Tier 1+2 / Stage 1+2 protections.
 
 A future config edit that drops `WatchdogSec=`, lowers
 `OOMScoreAdjust=` priority, or removes the `Slice=` assignment
@@ -48,8 +46,7 @@ def test_type_notify_for_sd_notify_contract():
     unit = _read_unit()
     assert _value_for(unit, "Type") == "notify", (
         "jasper-fanin.service must declare Type=notify so systemd "
-        "honors the sd_notify watchdog contract. See "
-        "docs/HANDOFF-fan-in-daemon.md."
+        "honors the sd_notify watchdog contract."
     )
 
 
@@ -74,8 +71,7 @@ def test_timeout_stop_sec_short():
     val = _value_for(unit, "TimeoutStopSec")
     assert val == "5s", (
         f"jasper-fanin.service must declare TimeoutStopSec=5s "
-        f"to escalate to SIGKILL fast on a wedged daemon. "
-        f"docs/HANDOFF-resilience.md Tier 1+2 section. Got {val!r}"
+        f"to escalate to SIGKILL fast on a wedged daemon. Got {val!r}"
     )
 
 
@@ -98,7 +94,7 @@ def test_start_limit_action_reboot():
     StartLimitIntervalSec, systemd cleanly reboots. Critical for
     audio-path daemons — if jasper-fanin is wedging repeatedly,
     something structural is wrong; a clean reboot beats a flapping
-    restart loop. See docs/HANDOFF-tier5-watchdog-liveness.md."""
+    restart loop."""
     unit = _read_unit()
     val = _value_for(unit, "StartLimitAction")
     assert val == "reboot", (
@@ -192,8 +188,7 @@ def test_oom_score_adj_between_camilla_and_aec_bridge():
     """OOM ladder slot. -800 sits between jasper-camilla (-900,
     silence-critical) and jasper-aec-bridge (-700, capture-critical).
     fan-in is the upstream source of the music signal both
-    consume; killing it preferentially over Camilla makes sense.
-    See docs/HANDOFF-resilience.md "OOM ladder" section."""
+    consume; killing it preferentially over Camilla makes sense."""
     unit = _read_unit()
     val = _value_for(unit, "OOMScoreAdjust")
     assert val == "-800", (
@@ -419,9 +414,7 @@ def test_input_buffer_frames_sized_for_wifi_burst_absorption():
 
     Below 4096, AirPlay sessions produce ~1 input EPIPE-overrun per
     30-60 s on real hardware, each injecting one period of silence
-    into the mixer output. See docs/HANDOFF-fan-in-daemon.md
-    "Configuration → Buffer sizing" for the measurement story and
-    docs/HANDOFF-airplay.md Pattern A3 for what it fixes.
+    into the mixer output.
 
     The dmix layer (PR #214, which fanin replaces) had buffer_size
     4096; fanin must match that to preserve the burst-absorption
@@ -438,15 +431,13 @@ def test_input_buffer_frames_sized_for_wifi_burst_absorption():
     )
     assert match is not None, (
         "jasper-fanin.service must set Environment=\"JASPER_FANIN_INPUT_BUFFER_FRAMES=...\" "
-        "(production default for per-input ALSA buffer sizing). "
-        "See docs/HANDOFF-fan-in-daemon.md 'Buffer sizing'."
+        "(production default for per-input ALSA buffer sizing)."
     )
     val = int(match.group(1))
     assert val >= 4096, (
         f"JASPER_FANIN_INPUT_BUFFER_FRAMES={val} is below 4096 (~85 ms). "
         f"Below 4096, WiFi A-MPDU burst delivery overruns the input "
-        f"ring at ~2 xruns/min on AirPlay. See HANDOFF-airplay.md "
-        f"Pattern A3 + HANDOFF-fan-in-daemon.md 'Buffer sizing'."
+        f"ring at ~2 xruns/min on AirPlay."
     )
 
 

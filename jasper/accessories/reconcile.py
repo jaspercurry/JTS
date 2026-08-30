@@ -14,8 +14,7 @@ It owns the *accessory* fact and nothing else. It does NOT write the
 voice-input gate marker (``jasper-aec-reconcile`` is that marker's single
 writer, and the marker is the AND of "no local mic" and "no accessory mic").
 When this half moves, ``refresh_voice_input`` hands the decision back to that
-owner rather than deciding here — see its docstring and
-``docs/HANDOFF-hotplug-resilience.md`` "Layer 1".
+owner rather than deciding here — see its docstring.
 """
 from __future__ import annotations
 

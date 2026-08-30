@@ -16,7 +16,7 @@
 # core graph restarts while one of them still owns /dev/snd, CamillaDSP or
 # outputd start fails with "Device or resource busy" (EBUSY) — the exact
 # failure class the camilla EBUSY recovery handler exists to fix
-# (docs/HANDOFF-resilience.md, the 2026-06-25 JTS5 incident).
+# (the 2026-06-25 JTS5 incident).
 #
 # This list was duplicated byte-for-byte across the recovery handler
 # (deploy/bin/jasper-camilla-recover) and the installer's pre-restart park

@@ -12,13 +12,11 @@ reviewed offline.
 
 The persistence layer is ``WakeEventStore.record_flag`` — this file
 is just the LLM-facing surface. See that method's docstring for the
-"which event gets flagged" semantics, and ``docs/HANDOFF-wake-
-telemetry.md`` for the broader telemetry design.
+"which event gets flagged" semantics.
 
 The tool's description teaches the model WHEN to call (positive
 framing — phrases that should trigger it) and WHEN NOT to call
-(failure modes we caught in early iteration). Per the prompting
-playbook in ``docs/HANDOFF-prompting.md``, per-tool conditional
+(failure modes we caught in early iteration). Per-tool conditional
 rules live here, not in ``SYSTEM_INSTRUCTION``.
 """
 from __future__ import annotations

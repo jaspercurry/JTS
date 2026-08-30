@@ -65,7 +65,7 @@ install_jasper_support_files() {
 # Annotations preserved from the prior flat form:
 #   jasper-camilla-crossover.service — camilla#2 endpoint-crossover (:1235),
 #     not globally boot-enabled; grouping reconcile arms it only while the box
-#     is a bonded active leader. docs/HANDOFF-distributed-active.md "Stage B".
+#     is a bonded active leader.
 #   jasper-doctor-json.service — WS1 Phase 3b-2 root oneshot capturing
 #     jasper-doctor --json for /system/diagnostics (non-root jasper-control
 #     triggers it via polkit). On-demand only — not enabled.
@@ -1287,9 +1287,8 @@ install_systemd_units() {
         /usr/local/sbin/jasper-aec-reconcile
     # WiFi profile guardian. Type=oneshot boot-time recreate of a lost
     # /etc/NetworkManager/system-connections/<SSID>.nmconnection from
-    # the wizard-owned stash at /var/lib/jasper/wifi_guardian.env. See
-    # docs/HANDOFF-resilience.md "WiFi profile recovery" for the
-    # design and the 2026-05-23 incident this defends against.
+    # the wizard-owned stash at /var/lib/jasper/wifi_guardian.env. This
+    # defends against the 2026-05-23 incident.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
         "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
@@ -1315,7 +1314,7 @@ install_systemd_units() {
     # 5-min timer because a collision rename lands when the OTHER
     # device joins the LAN. jasper.http_security reads the file so a
     # renamed speaker's management UI stays reachable instead of
-    # 403ing. See docs/HANDOFF-identity.md.
+    # 403ing.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
@@ -1346,8 +1345,7 @@ install_systemd_units() {
     # lifecycle/readiness marker; jasper-fanin DIRECT-captures the gadget and
     # the marker orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
     # device-activated dnsmasq for the USB network. The resolved peripheral
-    # role must be active (handled by reconcile_usb_data_role above). See
-    # docs/HANDOFF-usb-gadget.md.
+    # role must be active (handled by reconcile_usb_data_role above).
     install_usbsink_unit_files
 
     # jasper multi-room grouping (snapcast). snapserver is the timing
@@ -1357,8 +1355,7 @@ install_systemd_units() {
     # follower => snapclient only; off/invalid => neither). All three ship
     # DISABLED — a solo speaker runs none of them, and the reconciler is
     # the only thing that enables/starts them on explicit opt-in. We do
-    # NOT auto-enable grouping here. See docs/HANDOFF-multiroom.md and
-    # jasper.multiroom.reconcile.
+    # NOT auto-enable grouping here. See jasper.multiroom.reconcile.
     #
     # Packages: we deliberately do NOT apt-install snapserver/snapclient
     # in the core install. The vast majority of speakers are solo, the
@@ -1417,7 +1414,7 @@ install_systemd_units() {
     # Triggered by the udev rule installed below when the Apple dongle
     # re-enumerates: reset-failed, restart Camilla, then run the
     # mic/AEC reconciler so a hardware reconnect recovers without
-    # manual intervention. See docs/HANDOFF-resilience.md.
+    # manual intervention.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
         "${SYSTEMD_DIR}/jasper-dongle-recover.service"
@@ -1591,7 +1588,7 @@ install_systemd_units() {
     # Hardware-gated USB management network: enable the composite gadget (first
     # gadget unit we enable) and wire the device-activated DHCP. Its condition
     # skips cleanly when the resolved role cannot provide management transport
-    # or no UDC exists yet. See docs/HANDOFF-usb-gadget.md.
+    # or no UDC exists yet.
     enable_usbgadget
 
     # Legacy migration cleanup: an old endpoint-tier box (the removed third

@@ -6,9 +6,9 @@
 
 A compromise of an always-on, network-facing `jasper-*` daemon is a full-root
 device compromise today (they all run as root). Phase 1 of the privilege-
-separation work (docs/HANDOFF-privilege-separation.md) hardens each so a root
-RCE can no longer write the filesystem, load kernel modules, change kernel
-tunables, or enter new namespaces — measured on hardware to drop
+separation work hardens each so a root RCE can no longer write the
+filesystem, load kernel modules, change kernel tunables, or enter new
+namespaces — measured on hardware to drop
 `systemd-analyze security` from 8.7-9.6 (EXPOSED/UNSAFE) to ~6.2-6.6 (MEDIUM).
 
 This test pins that contract: an edit that removes `ProtectSystem=strict` or any
@@ -175,7 +175,7 @@ def test_tier_a_required_directives(unit, path):
             missing.append(f"{key}={want}")
     assert not missing, (
         f"{unit} ({path.name}) lost WS1 phase-1 hardening directive(s): "
-        f"{missing}. See docs/HANDOFF-privilege-separation.md."
+        f"{missing}."
     )
 
 
@@ -639,8 +639,7 @@ def test_streambox_web_unit_stays_root_until_validated():
     assert streambox.is_file(), f"missing {streambox}"
     assert not any(k == "User" for k, _ in _directives(streambox)), (
         "deploy/jasper-web-streambox.service gained User= — the streambox web "
-        "drop needs streambox-hardware validation first (see "
-        "docs/HANDOFF-privilege-separation.md Phase 3b-3)."
+        "drop needs streambox-hardware validation first."
     )
 
 
@@ -650,8 +649,8 @@ def test_streambox_web_unit_stays_root_until_validated():
 # These are not Tier-A network-facing daemons, but they still run privileged
 # boot/udev/recovery work. The next WS1 increments should move them only one
 # validated vertical slice at a time. Guard against accidental half-drops:
-# adding User= here must come with the matching hardware validation, installer
-# user/group contract, and docs/HANDOFF-privilege-separation.md update.
+# adding User= here must come with the matching hardware validation and
+# installer user/group contract.
 # --------------------------------------------------------------------------
 
 DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
@@ -703,8 +702,7 @@ def test_privileged_support_units_stay_root_until_validated(unit, path):
     assert path.is_file(), f"{unit}: expected unit at {path}"
     assert not any(k == "User" for k, _ in _directives(path)), (
         f"{unit}: gained User= without updating the WS1 Tier-B plan and "
-        "validation guard. Drop these units one vertical slice at a time; see "
-        "docs/HANDOFF-privilege-separation.md Remaining WS1 scope."
+        "validation guard. Drop these units one vertical slice at a time."
     )
 
 
@@ -784,7 +782,7 @@ USBNET_DHCP_UNIT = ROOT / "deploy/systemd/jasper-usbnet-dhcp.service"
 
 def test_usbnet_dhcp_unit_is_hardened_scoped_dnsmasq():
     """The scoped dnsmasq for the USB management network ships the hardening
-    set the brief and HANDOFF-usb-gadget.md promise, and its device-activated
+    set the brief promises, and its device-activated
     lifecycle bounds (BindsTo/After/WantedBy on the usb0 device unit +
     MemoryMax + RuntimeDirectory).
 
@@ -1012,7 +1010,7 @@ def test_shared_state_writers_set_group_write_umask(unit, path):
         f"{unit}: must set UMask=0007 so files it creates in /var/lib/jasper are "
         "group-`jasper`-writable (0660). Without it shared state lands 0644 and a "
         "non-owner same-group daemon hits 'attempt to write a readonly database' "
-        "(the 2026-06-19 incident). docs/HANDOFF-privilege-separation.md."
+        "(the 2026-06-19 incident)."
     )
 
 

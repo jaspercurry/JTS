@@ -10,7 +10,7 @@
 # One invariant: no installer build step may starve or kill a live
 # production daemon. A build that runs out of memory must die itself —
 # never nginx, jasper-voice, jasper-camilla, or any other running
-# service. Canonical design: docs/HANDOFF-build-sandbox.md.
+# service.
 #
 # Two complementary levers:
 #   1. build_sandbox_jobs <kb_per_job>  — RAM-aware `-j`. Generalizes the

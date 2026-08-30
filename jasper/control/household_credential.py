@@ -13,8 +13,7 @@ minted at the human pairing moment (the ``/rooms/`` bond fan-out), distributed
 to each member over the trusted LAN, and presented on the cross-device grouping
 path as a STATIC bearer in the ``X-JTS-Household`` header. Distinct file,
 distinct header, distinct trust domain (peer identity, not page origin) — the
-two never blur. Full design + threat model + the rejected HMAC-signing
-alternative: ``docs/HANDOFF-control-plane-auth.md``.
+two never blur.
 
 This is a near-line-for-line clone of ``control_token.py`` (the smallest design
 that fits the system), with four deliberate differences:
@@ -141,9 +140,9 @@ def adopt(secret: str | None) -> bool:
 
     Refuses to OVERWRITE an existing secret: a member already paired must not be
     silently re-keyed by a different ``X-JTS-Household`` (the residual a shared
-    secret cannot close — a malicious LAN device initiating its own bond; see
-    docs/HANDOFF-control-plane-auth.md §6). An empty/None value is a no-op. To
-    re-key, the household unbonds (which :func:`clear`s) then re-bonds.
+    secret cannot close — a malicious LAN device initiating its own bond). An
+    empty/None value is a no-op. To re-key, the household unbonds (which
+    :func:`clear`s) then re-bonds.
     """
     if not secret:
         return False

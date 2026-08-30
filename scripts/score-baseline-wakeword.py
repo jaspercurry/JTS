@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Score a wake-word ONNX model offline against the 10-condition reference
-baseline (`reference-conditions/`, see docs/HANDOFF-mic-quality-v2.md).
+baseline (`reference-conditions/`).
 
 Runs the model across each condition's `aec-off.wav` (raw chip — pre-AEC3)
 and `aec-on.wav` (post-AEC3, what production consumes today) in 1280-sample

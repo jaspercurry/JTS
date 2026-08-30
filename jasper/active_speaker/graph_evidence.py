@@ -202,8 +202,7 @@ def all_commission_mutes_engaged(
     config (``audible_outputs=frozenset()``): a crash or power loss partway
     through commissioning must reboot into everything-muted, never a driver left
     unmuted at level with no protection. Per-driver unmute is a transient runtime
-    load, never the frozen boot config (HANDOFF-active-speaker-dsp.md "Resolved
-    decisions").
+    load, never the frozen boot config.
 
     This is the *only* mute assertion that runs on every staged config (the
     software guard runs solely in software-protection mode), so it verifies each
@@ -327,8 +326,8 @@ def driver_commission_audible_evidence(
     The single-audio-path commissioning loads, one driver at a time, a config
     where exactly the target driver's physical outputs are unmuted and every
     other output is hard-muted. This is the *config-level* form of the Stage-5
-    safety rule "assert the high-pass is present before the tweeter is unmuted"
-    (HANDOFF-active-speaker-dsp.md). It verifies, against the emitted YAML:
+    safety rule "assert the high-pass is present before the tweeter is unmuted".
+    It verifies, against the emitted YAML:
 
     1. **Audible mask is exactly ``audible_outputs``** — each listed output's
        ``as_out{idx}_commission_mute`` is un-muted AND wired to its channel;
@@ -473,8 +472,8 @@ def running_commission_evidence(
     output a -120 dB hard mute, all wired) and every audible tweeter still wrapped
     by its protective high-pass + startup limiter. This is the "assert the
     high-pass is present in the RUNNING pipeline, not just the config file" gate
-    that guards the per-driver tweeter unmute (HANDOFF-active-speaker-dsp.md
-    Stage 5). Fails closed: an unparseable read-back, a missing filter, a mask
+    that guards the per-driver tweeter unmute. Fails closed: an unparseable
+    read-back, a missing filter, a mask
     that drifted from intent, or any ``bypassed`` pipeline step all return
     ``passed=False``.
     """

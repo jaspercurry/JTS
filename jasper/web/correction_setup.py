@@ -11,7 +11,7 @@ positions, reviews confidence/visualization evidence, and optionally
 applies a bounded room-correction profile through the shared CamillaDSP
 apply path.
 
-Architecture (per docs/HANDOFF-correction.md):
+Architecture:
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
     spotify_setup, bluetooth_setup. No FastAPI / ASGI dependency.
   - Single in-memory `MeasurementSession` (jasper.correction.session)
@@ -22,10 +22,8 @@ Architecture (per docs/HANDOFF-correction.md):
     for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
-  - HTTP routes (after nginx strips the /correction/ prefix): the full,
-    maintained route list lives in docs/HANDOFF-correction.md (this
-    module now serves far more routes than fit a comment table, and
-    that doc is the source of truth kept in sync with do_GET/_POST_ROUTES).
+  - HTTP routes (after nginx strips the /correction/ prefix): this
+    module now serves far more routes than fit a comment table.
 
 Why a separate service from jasper-web (Spotify + voice settings):
 the correction flow eventually imports numpy/scipy through

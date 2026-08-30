@@ -4,9 +4,8 @@
 
 """Graph-carrier dispatch invariants for preference-EQ apply (PR-1).
 
-Design-of-record: docs/HANDOFF-dsp-graph-carrier.md. These tests pin the
-safety invariants that keep preference EQ from ever silently dropping driver
-protection:
+These tests pin the safety invariants that keep preference EQ from ever
+silently dropping driver protection:
 
 - inv 1: the carrier never resolves a roleful/active graph to a stereo host
   (which would re-emit through the stereo template and drop the

@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Active wireless follower CamillaDSP apply + solo restore — the grouping
-reconciler's *active-follower* arm (distributed-active Slice 3,
-docs/HANDOFF-distributed-active.md "The active follower (gap 2)").
+reconciler's *active-follower* arm (distributed-active Slice 3).
 
 A *dumb* (passive, single-DAC) follower plays the round-tripped stream through
 outputd's ``dac_content`` lane, dropping its channel with a ``ChannelPick``;
@@ -71,7 +70,7 @@ RESTORE_SOURCE = "grouping-follower-restore"
 # 2-way follower has ONE set of drivers, so it plays one inter-speaker
 # channel: a side (left/right) or a clip-safe mono sum. "stereo" (both
 # channels) and "sub" (the wireless-sub member, gap 5) are NOT a single-box
-# pick — fail closed rather than guess (HANDOFF-distributed-active.md gap 2).
+# pick — fail closed rather than guess.
 _CHANNEL_TO_PROGRAM = {"left": "left", "right": "right", "mono": "mono"}
 
 

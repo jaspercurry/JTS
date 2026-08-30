@@ -23,6 +23,4 @@ Production audio data plane:
 Package layout:
   volume_bridge.py  amixer-cget mixer poller → jasper-control. Runs in
                     jasper-usbsink-volume while USB Audio Input is enabled.
-
-See docs/HANDOFF-usbsink.md for the full design.
 """

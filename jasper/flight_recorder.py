@@ -9,13 +9,13 @@ and dumps them to the journal (tagged ``event=flightrec.dump``) only
 when an anomaly fires — a WARNING/ERROR record (automatic), or an
 explicit :func:`dump`: the "flag that" voice tool or an operator
 ``systemctl kill -s USR1 jasper-voice``. A doctor-fail auto-trigger
-was considered and dropped; see ``docs/HANDOFF-observability.md``.
+was considered and dropped.
 
 *Why.* The intermittent bugs that matter most already happened before
 anyone could flip the Tier-B debug toggle. The ring captures the
 verbose window around every anomaly automatically, at the cost of RAM
 (not SD writes) — the same idea as the wake-event 6 s audio rings,
-generalized to logs. See ``docs/HANDOFF-observability.md``.
+generalized to logs.
 
 *Mechanism — decouple the logger level from the journal level.*
 

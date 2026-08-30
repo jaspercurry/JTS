@@ -44,8 +44,7 @@ Several read-only surfaces need to consult it:
 - `/state` exposes ``voice.parked_no_mic`` so the dashboard can tell
   ``reachable:false`` "no mic, idle" from "crashed".
 
-Negative polarity + persistent storage are deliberate; see
-``docs/HANDOFF-hotplug-resilience.md`` "Layer 1". The marker is the
+Negative polarity + persistent storage are deliberate. The marker is the
 *absence* signal so the default (no file) fails **open** — voice runs
 unless the reconciler has explicitly said there is no input — and it lives
 in ``/var/lib/jasper`` (persistent, not ``/run``) so a no-input box is

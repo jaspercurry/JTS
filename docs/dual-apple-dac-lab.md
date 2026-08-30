@@ -3,8 +3,7 @@
 > **Status: bench runbook for a shipped output path.** This file is the lab
 > procedure and the measured evidence behind the composite output profile —
 > not the product reference. Sound-emitting product playback ships through
-> `jasper-outputd`'s `PairedCompositeSink`; its design is
-> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+> `jasper-outputd`'s `PairedCompositeSink`.
 > `jasper.output_topology` models this measured one-DAC-per-speaker pair as
 > `dual_apple_usb_c_dac_4ch` when exactly two Apple child DACs are observed on
 > the expected same USB controller/bus with four physical outputs total.

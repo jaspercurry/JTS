@@ -154,7 +154,7 @@ VOICE_PAGE_CSS_HREF = "/assets/voice/voice.css"
 # (JASPER_VOICE_PROVIDER + per-provider model/voice/extras) stay in the
 # broad PROVIDER_FILE so jasper-control can keep reading the active
 # provider for /system/. This set is catalog-derived so a new provider's
-# key env joins it automatically. See docs/HANDOFF-privilege-separation.md.
+# key env joins it automatically.
 _SECRET_KEY_ENVS = frozenset(p.key_env for p in PROVIDERS)
 
 
@@ -1079,11 +1079,6 @@ def _index_html(
   </section>
 
   {_pricing_refresh_html(discovery, csrf_token)}
-
-  <p class="form-hint" style="margin-block-start:2rem">
-    See <a href="https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-voice-providers.md" target="_blank" rel="noopener">HANDOFF-voice-providers.md</a>
-    for architecture, per-provider trade-offs, and the steps for adding a fourth backend.
-  </p>
 </main>
 <script type="module" src="/assets/voice/js/main.js"></script>
 """

@@ -9,7 +9,7 @@ ONE secret per household, minted at the /rooms/ bond, distributed to each
 member, and presented as X-JTS-Household on the cross-device /grouping/set. A
 near-line-for-line clone of control_token.py, so these mirror
 test_control_token.py — but they pin the load-bearing DIFFERENCES the design
-turns on (docs/HANDOFF-control-plane-auth.md §6):
+turns on:
 
 - FAIL-SAFE direction (absent/empty/unreadable ⇒ accept) — a refactor flipping
   it to fail-closed would deadlock first-bond bootstrap and brick re-bonding.

@@ -2474,7 +2474,7 @@ def _active_speaker_calibration_level_payload(
     level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
     # Bind the persisted level to the current commissioning run (the active
     # safe_playback session) so a previous session's test level can never
-    # seed this one — see docs/HANDOFF-active-speaker-dsp.md "Stage 5".
+    # seed this one.
     run_id = load_safe_playback_state().get("session_id")
     payload = update_calibration_level_state(
         action=action,

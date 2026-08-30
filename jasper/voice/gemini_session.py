@@ -1013,13 +1013,12 @@ class GeminiLiveConnection:
             #
             # Barge-in (flag JASPER_BARGE_IN_GEMINI, DEFAULT OFF) keeps THIS
             # config — manual VAD + NO_INTERRUPTION — even when enabled:
-            # option (a) of docs/HANDOFF-barge-in.md "Gemini pack". The
+            # option (a). The
             # daemon's local Silero-on-AEC gate (request_local_interrupt) is
             # the sole interruption authority, so this connection never reads
             # the flag and the flag-OFF/-ON payloads are identical. We do NOT
             # enable server VAD (option b): it would re-open the
-            # self-interrupt-on-bleed loop this line prevents. The doc owns the
-            # full rationale + the played-vs-sent gap; pinned by
+            # self-interrupt-on-bleed loop this line prevents. Pinned by
             # tests/test_gemini_barge_in.py.
             # Manual VAD: client owns turn boundaries via activity_start
             # / activity_end markers. This is the canonical multi-turn
@@ -1651,8 +1650,7 @@ class GeminiLiveConnection:
         Failure paths log `timed out` or `raised:` with the same elapsed.
 
         ``turn`` is the active turn whose idle anchor we reset between
-        tool dispatches (see docs/HANDOFF-voice-providers.md
-        "Idle anchor + tool rounds"). Optional for back-compat — the
+        tool dispatches. Optional for back-compat — the
         caller in ``GeminiLiveTurn._on_response`` always passes it.
         """
         assert self._registry is not None

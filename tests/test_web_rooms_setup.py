@@ -572,8 +572,8 @@ def test_self_excluded_by_exact_hostname_when_address_missed(monkeypatch):
 def test_rooms_json_self_has_name_key(monkeypatch):
     """The self block carries a `name` field — the speaker's friendly display
     name (the SAME jasper/speaker_name identity now advertised as the `name=`
-    TXT on `_jasper-control._tcp`, see docs/HANDOFF-multiroom.md §6). The
-    self-card must show the same name peers see, so this key is part of the
+    TXT on `_jasper-control._tcp`). The self-card must show the same name
+    peers see, so this key is part of the
     /rooms.json contract, not just incidental. Pinned separately from
     test_rooms_json_shape so an edit there can't silently drop it.
 
@@ -603,8 +603,7 @@ def test_rooms_json_self_hostname_and_room_flow_from_identity(monkeypatch):
     shared identity reader (jasper.identity.read_identity), read ONCE in
     _build_rooms_payload — NOT ad-hoc env/file reads or per-field helpers.
     Patch read_identity at the source so this genuinely exercises the single
-    identity read. `room` now lives in the speaker-identity home — see
-    docs/HANDOFF-multiroom.md §6."""
+    identity read. `room` now lives in the speaker-identity home."""
     fake = rooms_setup.identity.SpeakerIdentity(
         name="Sun Room", room="Sunroom", hostname="jts-sun.local", peer_id="pid",
     )

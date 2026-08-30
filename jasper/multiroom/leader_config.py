@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Bonded-leader CamillaDSP regeneration + solo restore — the grouping
-reconciler's config-apply arm (Increment 5, HANDOFF-multiroom.md §2).
+reconciler's config-apply arm (Increment 5).
 
 On bond form, the LEADER's one CamillaDSP must switch from the solo Ring B
 sink to the snapserver pipe (the shared-stream producer); on disband it

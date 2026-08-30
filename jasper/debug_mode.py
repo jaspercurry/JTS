@@ -21,8 +21,7 @@ INFO logging)::
 **Design invariant — additive only.** This module can only *raise*
 verbosity (INFO → DEBUG). It never lowers a logger and never touches
 WARNING/ERROR or the structured ``event=`` lines the resilience layer
-depends on. There is no "quiet mode" here. See
-``docs/HANDOFF-observability.md``.
+depends on. There is no "quiet mode" here.
 
 **Auto-expiry.** A single shared ``JASPER_DEBUG_EXPIRES_AT`` bounds the
 whole debug session (default 2 h, re-armed on each toggle change). Once

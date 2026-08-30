@@ -310,14 +310,6 @@ def test_control_health_overload_response_counts_as_alive():
     assert _control_health_response_alive(b"HTTP/1.1 503 Unavailable\r\n") is False
 
 
-def test_resilience_doc_mentions_control_overload_probe_semantics():
-    """The operator-facing T5.2 doc must match the 429 liveness contract."""
-    doc = (Path(__file__).resolve().parents[1] / "docs/HANDOFF-resilience.md")
-    text = doc.read_text(encoding="utf-8")
-    assert "429 Too Many Requests" in text
-    assert "alive-but-shedding" in text
-
-
 async def test_rate_limit_blocks_second_reboot_in_window():
     """After the first reboot, even sustained probe failures don't
     trigger a second one within the rate-limit window."""

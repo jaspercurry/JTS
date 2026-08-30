@@ -2,13 +2,10 @@
 
 > **Status: design of record.** This document owns the intended Room-tab user
 > experience, product states, whole-page visibility, default choices, language,
-> and implementation boundaries. Current shipped behavior and operating details
-> remain canonical in [`HANDOFF-correction.md`](HANDOFF-correction.md). Shared
-> measurement primitives remain canonical in
-> [`HANDOFF-audio-measurement-core.md`](HANDOFF-audio-measurement-core.md), and
-> driver-domain commissioning remains canonical in
+> and implementation boundaries. Driver-domain commissioning remains canonical
+> in
 > [`active-crossover-information-design.md`](active-crossover-information-design.md).
-> Those documents should link here for Room product behavior rather than restate
+> That document should link here for Room product behavior rather than restate
 > it.
 
 > **Implementation boundary (2026-07-15).** The sequential Room envelope,
@@ -49,7 +46,7 @@
 > persists the last successfully-established mic/calibration and the local
 > `/correction/` wizard pre-fills from it; the matching phone-side one-tap
 > confirm UI (reading the capture spec's `default_setup` hint) is a follow-up.
-> See `HANDOFF-correction.md` Status for the operational detail. Active's
+> Active's
 > evidence identities, excitation admission, and exact
 > automatic eligibility receipt are now production-wired authority.
 > Active now also exposes a versioned Room decision that distinguishes an
@@ -661,5 +658,4 @@ implied by a hardware-free merge.
 
 Last verified: 2026-07-16 (noted the Wave-2 household-mic persistence slice
 landing ahead of the broader Wave 3 returning-user preferences target; see
-the implementation-boundary blockquote above and `HANDOFF-correction.md`
-Status)
+the implementation-boundary blockquote above)

@@ -2474,8 +2474,8 @@ def record_driver_capture(
     # Bounded correction (W2.1/W2.2): the solve predicted a safe level would
     # clear the SNR requirement, but this attempt's OWN measured verdict
     # still rejected it -- either a clip (the tone-derived gain_map
-    # underestimated the driver's hottest band -- hardware run 18, see
-    # docs/HANDOFF-audio-measurement-core.md) or a measured SNR shortfall
+    # underestimated the driver's hottest band -- hardware run 18) or a
+    # measured SNR shortfall
     # (the fallback ambient guess, or a per-band evidence event, undershot
     # the real room). record_solve_correction writes ONE signed adjustment
     # per rejection, bounded at _MAX_SOLVE_CORRECTION_WRITES; a rejection

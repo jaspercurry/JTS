@@ -16,8 +16,6 @@
 # user-creation pattern in renderers.sh. All operations are idempotent and safe
 # to re-run (useradd only when absent; supplementary-group adds via usermod -aG
 # on the upgrade path).
-#
-# See docs/HANDOFF-privilege-separation.md.
 
 # Create the shared `jasper` group and the 3b-1 service users. The group is the
 # cross-daemon access boundary: it owns the /run UDS dirs (so a connector can
@@ -61,9 +59,8 @@ create_jasper_service_users() {
     # tmpfiles header flagged for decision at P6:
     #   - NOT `jasper`: that group also carries /var/lib/jasper at mode 0770 plus
     #     control_token and household_secret at 0640, so adding a renderer user
-    #     would grant write on all shared JTS state to buy write on one directory.
-    #     docs/HANDOFF-privilege-separation.md already refused this shape for the
-    #     source-intent files ("renderers do not join the writer group").
+    #     would grant write on all shared JTS state to buy write on one directory
+    #     ("renderers do not join the writer group").
     #   - NOT `audio`: that is the ALSA DEVICE-access group (/dev/snd), which is
     #     orthogonal to SHM-file sharing, and it is far broader than the set of
     #     processes that should be able to write frames into the mix.

@@ -1147,8 +1147,7 @@ class Ducker:
     def is_ducked(self) -> bool:
         """True iff this Ducker holds a claim on the main fader. Read by
         WakeLoop.session_status() so jasper-control can authoritatively
-        gate its own camilla writes during a voice session — see
-        docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal"."""
+        gate its own camilla writes during a voice session."""
         return self._claim is not None
 
     @property

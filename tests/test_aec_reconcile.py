@@ -2603,7 +2603,7 @@ def test_reconcile_unparks_voice_when_flag_absent(tmp_path: Path) -> None:
     assert "enable jasper-voice.service" in commands
 
 
-# --- microphone-presence marker (docs/HANDOFF-hotplug-resilience.md) ----
+# --- microphone-presence marker ----
 # The reconciler is the single writer of the persistent NEGATIVE marker
 # jasper-voice.service gates on (ConditionPathExists=!<marker>). These pin
 # both convergence directions: marker CREATED whenever voice is parked for

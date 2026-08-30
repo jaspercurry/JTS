@@ -78,8 +78,8 @@ TRANSPORT_SINK_SINGLE_ALSA = "single_alsa"
 TRANSPORT_SINK_COMPOSITE = "composite"
 
 # Every physical-DAC PCM the active path resolves MUST be a stable, name-keyed
-# ALSA identifier (``hw:CARD=<name>,DEV=<n>``). JTS has card-index drift history
-# (HANDOFF-identity.md): a USB DAC or the Apple dongles can re-enumerate to a
+# ALSA identifier (``hw:CARD=<name>,DEV=<n>``). JTS has card-index drift history:
+# a USB DAC or the Apple dongles can re-enumerate to a
 # different numeric ALSA index across a reboot/hotplug, so ``hw:<index>`` /
 # ``plughw:`` forms are unsafe on the active path. This regex is the single
 # guard that keeps the unsafe forms out at the type boundary. Anchored with
@@ -136,8 +136,8 @@ PROTECTION_STATUSES = {
 }
 DUAL_APPLE_CLOCK_EVIDENCE_STATUSES = {"passed", "failed", "unknown"}
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
-# Pure-data pairing intent recorded at commission time (gap 1 of
-# docs/HANDOFF-distributed-active.md). It answers "is this box meant to run
+# Pure-data pairing intent recorded at commission time (gap 1). It answers
+# "is this box meant to run
 # solo, become a wireless follower, or host one?" and seeds later reconciler
 # defaults. It carries NO behavior in this layer: nothing here reads it,
 # evaluate_output_topology ignores it, and the emitted CamillaDSP config is

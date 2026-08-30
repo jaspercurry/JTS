@@ -870,8 +870,8 @@ def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPrese
     docstring for why the two are deliberately not merged, and why it does not
     run on the commissioning-flow emitters this one also guards.
 
-    This closes the L0 hearing-safety hole (docs/HANDOFF-audio-measurement-core.md):
-    a compression driver is ~25 dB more sensitive than the woofer, so a graph
+    This closes the L0 hearing-safety hole: a compression driver is ~25 dB more
+    sensitive than the woofer, so a graph
     that routes full-range program to a tweeter output with no high-pass is a
     shrill / hot-tweeter hazard. The active emitters wire that protection by
     construction; this gate makes the guarantee ENFORCED (a future refactor that
@@ -4462,8 +4462,7 @@ def emit_active_speaker_program_bake_config(
 ) -> str:
     """Build the active-LEADER's **program-domain-only** camilla#1 bake.
 
-    Stage B (``docs/HANDOFF-distributed-active.md``, "camilla#1 program bake")
-    splits an active *leader*'s DSP across two CamillaDSP instances. This emits
+    Stage B splits an active *leader*'s DSP across two CamillaDSP instances. This emits
     the **program** half (camilla#1): Layer B room correction + Layer C
     preference EQ + program headroom, written to a ``File`` sink feeding the
     snapserver pipe (``SNAPFIFO``) so the follower(s) receive a corrected stereo

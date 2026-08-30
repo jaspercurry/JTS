@@ -41,8 +41,7 @@ merges them on top of the registry ports for tooling.
 
 Fields grow as later phases consume them: a per-leg threshold offset
 lands with the condition-aware fuser, and the ``wake_events`` per-leg
-column mapping lands with the ``LegRuntime`` WakeLoop refactor. See
-docs/HANDOFF-mic-fusion-architecture.md for the staged plan.
+column mapping lands with the ``LegRuntime`` WakeLoop refactor.
 """
 from __future__ import annotations
 

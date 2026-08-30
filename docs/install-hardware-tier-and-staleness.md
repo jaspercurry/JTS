@@ -13,8 +13,7 @@
 > **2026-07-27 resolution of the WebRTC-build question:** keep the small,
 > distro-linked AEC3 v1 binding as the unconditional software fallback, but
 > move vendored v2/BEST_A into an explicit, contained background install.
-> [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md) is current operational
-> truth. Statements below about `build_webrtc_v2_for_aec3` describe the
+> Statements below about `build_webrtc_v2_for_aec3` describe the
 > 2026-06-21 incident-era installer, not current code.
 
 ## Bottom line up front
@@ -428,14 +427,12 @@ and a dedicated test pins that the guard does *not* fire during
   on the tier vocabulary.
 - Gating the build manifest on verified success; rollback; broadening
   post-deploy verification beyond the management surface → **Workstream B
-  (landed)**, see
-  [HANDOFF-install-update-transaction.md](HANDOFF-install-update-transaction.md).
+  (landed)**.
 - Pairing the deploy preflight's skew advisory with the detected tier
   (the "dangerous quadrant" warning) → small follow-up once the tier is
   available remotely; depends on B's richer verification surface.
 - Conditional software-AEC fallback skip → **rejected**. Conditional vendored
-  v2 → **landed as explicit opt-in** without removing mandatory v1; see
-  [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md).
+  v2 → **landed as explicit opt-in** without removing mandatory v1.
 
 ---
 
@@ -444,7 +441,7 @@ and a dedicated test pins that the guard does *not* fire during
 | DoD invariant | This note's contribution |
 |---|---|
 | Install/update degrade *loudly* across 512 MB–16 GB | Tier is detected and surfaced (log + plan); arch mismatch fails loud. Safe *degradation under build pressure* is A. |
-| A failed update is observable, never false-success | This note diagnoses *why* (cold-cache rebuilds on low-RAM); the manifest/rollback fix is B ([landed](HANDOFF-install-update-transaction.md)). |
+| A failed update is observable, never false-success | This note diagnoses *why* (cold-cache rebuilds on low-RAM); the manifest/rollback fix is B (landed). |
 | No build step can starve/kill a live daemon | Diagnosed (staleness × low-RAM forces the OOM-prone rebuilds); containment is A. |
 | The whole flow is testable without owning every SKU | Test strategy above: synthetic-`/proc` decision matrix + cgroup smoke + canary. |
 

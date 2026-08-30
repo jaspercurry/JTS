@@ -9,7 +9,6 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = ROOT / "docs" / "bass-extension-waves" / "limiter-evidence-protocol.md"
 WAVE_4 = ROOT / "docs" / "bass-extension-waves" / "wave-4-commissioning-backend.md"
-PLAN = ROOT / "docs" / "HANDOFF-bass-extension-plan.md"
 
 
 def test_protocol_pins_detector_campaign_and_evidence_artifacts() -> None:
@@ -139,7 +138,6 @@ def test_protocol_pins_total_refusal_and_determinism_contract() -> None:
 
 def test_revision_9_authorizes_hardware_free_slice_and_keeps_fence() -> None:
     wave = WAVE_4.read_text(encoding="utf-8")
-    plan = PLAN.read_text(encoding="utf-8")
 
     # Rev 9 authorizes exactly the hardware-free commissioning slice.
     assert (
@@ -167,12 +165,4 @@ def test_revision_9_authorizes_hardware_free_slice_and_keeps_fence() -> None:
     assert "Everything below stays **blocked**" in wave
     assert (
         "reviewed bench runner/temporary\n> activation owner is not present yet" in wave
-    )
-
-    # The plan reflects both the frozen rev 8 protocol and the rev 9 slice.
-    assert "contract rev 8 freezes limiter protocol revision `2026-07-19b`" in plan
-    assert "reviewed bench runner/temporary activation owner" in plan
-    assert (
-        "contract revision 9\n> additionally authorizes one hardware-free "
-        "commissioning slice" in plan
     )

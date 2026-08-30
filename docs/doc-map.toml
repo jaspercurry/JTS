@@ -19,11 +19,10 @@ session_artifacts = [
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
   # historical decision archaeology, no longer a scan target; current truth
   # is tuning-operator-runbook.md.)
-  # Verbatim point-in-time implementation plan retained as an execution record;
-  # current relay truth lives in HANDOFF-usb-gadget.md and HANDOFF-aec.md.
+  # Verbatim point-in-time implementation plan retained as an execution record.
   "docs/PLAN-usb-mic-export-latency-fix.md",
-  # Execution artifact: per-window build prompts for the barge-in plan in
-  # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
+  # Execution artifact: per-window build prompts for the barge-in plan. Not a
+  # canonical scan target; retire when barge-in ships.
   "docs/barge-in-build-prompts.md",
   # Living on-hardware validation log of the JTS3 crossover+room e2e run. Records
   # what was exercised and the UX findings; the synthesized plan those findings
@@ -32,8 +31,8 @@ session_artifacts = [
   # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
   # active target for multiroom-grouping code-change routing until the plan
   # is re-verified and executed. Current operational truth remains
-  # HANDOFF-multiroom.md / HANDOFF-distributed-active.md / dumb-endpoint-bringup.md
-  # (see docs/doc-map.toml's multiroom-grouping subsystem). Tracked by #1852.
+  # docs/dumb-endpoint-bringup.md (see docs/doc-map.toml's multiroom-grouping
+  # subsystem). Tracked by #1852.
   "docs/multiroom-pairing-reliability-plan.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
@@ -176,21 +175,15 @@ docs = [
   "AGENTS.md",
   "QUICKSTART.md",
   "BRINGUP.md",
-  "docs/HANDOFF-runtime-memory.md",
-  "docs/HANDOFF-supply-chain.md",
-  "docs/HANDOFF-build-sandbox.md",
-  "docs/HANDOFF-enhanced-aec.md",
-  "docs/HANDOFF-resilience.md",
   "docs/install-update-resilience-plan.md",
-  "docs/HANDOFF-install-update-transaction.md",
   "docs/install-hardware-tier-and-staleness.md",
 ]
 requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
   "A build/download/provenance input or runtime install location changes.",
   "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes (see the install-update-resilience planning brief).",
-  "The mandatory-v1 / optional-v2 boundary, enhanced-AEC build target, verified activation, or deploy/boot retry behavior changes (see HANDOFF-enhanced-aec.md).",
-  "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change (see HANDOFF-install-update-transaction.md).",
+  "The mandatory-v1 / optional-v2 boundary, enhanced-AEC build target, verified activation, or deploy/boot retry behavior changes.",
+  "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change.",
 ]
 verification = [
   "python3 scripts/check-provenance.py when build/install fetches or direct URL dependencies changed",
@@ -210,9 +203,6 @@ code = [
   "c/jts-ring-ioplug/Makefile",
 ]
 docs = [
-  "docs/HANDOFF-first-party-arm64-artifacts.md",
-  "docs/HANDOFF-pi-image-delivery.md",
-  "docs/HANDOFF-supply-chain.md",
   "LICENSE-third-party.md",
 ]
 requires_docs_when = [
@@ -221,7 +211,7 @@ requires_docs_when = [
 verification = [
   "pytest -q tests/test_first_party_arm64_release.py",
   "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file docs/HANDOFF-first-party-arm64-artifacts.md",
+  "python3 scripts/docs-linkcheck.py --changed-file LICENSE-third-party.md",
 ]
 
 [[subsystem]]
@@ -234,9 +224,6 @@ code = [
 docs = [
   "docs/PROPOSAL-dac-profile-registry.md",
   "docs/audio-paths.md",
-  "docs/HANDOFF-audio-capability-platform.md",
-  "docs/HANDOFF-speaker-output-reference.md",
-  "docs/HANDOFF-active-speaker-dsp.md",
 ]
 requires_docs_when = [
   "A DAC profile id, physical output count, mixer/headphone policy, outputd sink, validation profile, or composite-output invariant changes.",
@@ -287,16 +274,7 @@ code = [
 ]
 docs = [
   "docs/audio-paths.md",
-  "docs/HANDOFF-barge-in.md",
-  "docs/HANDOFF-speaker-output-reference.md",
   "docs/AEC-DIAG-02-observability.md",
-  "docs/HANDOFF-fan-in-daemon.md",
-  "docs/HANDOFF-voice-music-control.md",
-  "docs/HANDOFF-volume.md",
-  "docs/HANDOFF-source-capabilities.md",
-  "docs/HANDOFF-audio-capability-platform.md",
-  "docs/HANDOFF-airplay.md",
-  "docs/HANDOFF-dlna.md",
 ]
 requires_docs_when = [
   "A source lane, fan-in buffer, ALSA PCM, mux arbitration rule, renderer device, or source-selection behavior changes.",
@@ -318,8 +296,6 @@ code = [
 ]
 docs = [
   "docs/dual-apple-dac-lab.md",
-  "docs/HANDOFF-active-speaker-dsp.md",
-  "docs/HANDOFF-speaker-output-reference.md",
   "docs/testing-tooling.md",
 ]
 requires_docs_when = [
@@ -381,16 +357,9 @@ code = [
 docs = [
   # Cross-cutting extensibility lens (the Tool + Feature contracts live here):
   "docs/extensibility.md",
-  "docs/HANDOFF-voice-providers.md",
-  "docs/HANDOFF-pricing-editor.md",
-  "docs/HANDOFF-prompting.md",
-  "docs/HANDOFF-audible-feedback.md",
-  "docs/HANDOFF-speaker-output-reference.md",
   # Mic presence-gate: a jasper-voice.service / audio_io / daemon_main change
   # near the no-mic park path must route here (ConditionPathExists marker +
   # exit-66 park + the cross-component convergence model).
-  "docs/HANDOFF-hotplug-resilience.md",
-  "docs/HANDOFF-vad-experiments.md",
   # Canonical doc for the tool-platform boundary (packs, catalog, dispatch,
   # the /tools/ wizard). The core tool code globbed above must route here so a
   # pack-walk / catalog / wizard change surfaces the living plan for review.
@@ -436,13 +405,7 @@ code = [
   "scripts/*corpus*",
 ]
 docs = [
-  "docs/HANDOFF-wake-training-experiment.md",
-  "docs/HANDOFF-custom-wakeword-training.md",
-  "docs/HANDOFF-wake-telemetry.md",
-  "docs/HANDOFF-wake-corpus-quality.md",
-  "docs/HANDOFF-usb-mic-wake.md",
-  "docs/HANDOFF-mic-fusion-architecture.md",
-  "docs/HANDOFF-audio-capability-platform.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
@@ -489,20 +452,9 @@ docs = [
   "docs/AEC-DIAG-03-timing-probe.md",
   "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
-  "docs/HANDOFF-aec.md",
-  "docs/HANDOFF-enhanced-aec.md",
-  "docs/HANDOFF-runtime-memory.md",
-  "docs/HANDOFF-barge-in.md",
   # The reconciler is the single writer of the mic presence-gate marker;
   # a change to its park/start paths must route here.
-  "docs/HANDOFF-hotplug-resilience.md",
-  "docs/HANDOFF-speaker-output-reference.md",
-  "docs/HANDOFF-xvf3800.md",
-  "docs/HANDOFF-mic-quality-v2.md",
-  "docs/HANDOFF-mic-fusion-architecture.md",
-  "docs/HANDOFF-usb-mic-wake.md",
   "docs/CHIP-AEC-EXPERIMENT.md",
-  "docs/HANDOFF-audio-capability-platform.md",
 ]
 requires_docs_when = [
   "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, debug captures, or chip-AEC experiment controls change.",
@@ -531,8 +483,6 @@ code = [
 ]
 docs = [
   "AGENTS.md",
-  "docs/HANDOFF-observability.md",
-  "docs/HANDOFF-resilience.md",
 ]
 requires_docs_when = [
   "Wi-Fi lockout protection, scan suppression repair, rollback behavior, guardian persistence, or NetworkManager recovery semantics change.",
@@ -555,7 +505,6 @@ code = [
 ]
 docs = [
   "AGENTS.md",
-  "docs/HANDOFF-identity.md",
 ]
 requires_docs_when = [
   "The host allowlist semantics, identity.env schema, collision/rename behavior, or the supported rename flow change.",
@@ -588,13 +537,8 @@ code = [
   "jasper/bluealsa_probe.py",
 ]
 docs = [
-  "docs/HANDOFF-volume.md",
-  "docs/HANDOFF-source-capabilities.md",
   "docs/audio-paths.md",
-  "docs/HANDOFF-sound-preferences.md",
-  "docs/HANDOFF-correction.md",
   "docs/phone-mic-relay-plan.md",
-  "docs/HANDOFF-dsp-graph-carrier.md",
 ]
 requires_docs_when = [
   "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
@@ -622,9 +566,6 @@ code = [
 ]
 docs = [
   "docs/multi-user-spotify.md",
-  "docs/HANDOFF-voice-music-control.md",
-  "docs/HANDOFF-volume.md",
-  "docs/HANDOFF-source-capabilities.md",
 ]
 requires_docs_when = [
   "Spotify OAuth, account storage, account routing, cold-start playback, librespot state, or Spotify voice-tool behavior changes.",
@@ -691,7 +632,7 @@ code = [
   "deploy/bin/jasper-deploy-health",
 ]
 docs = [
-  "docs/HANDOFF-source-lifecycle.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "A source intent key/default, desired-versus-effective state, source resource declaration, AirPlay/Spotify unit convergence, Bluetooth RF-kill/BlueZ/accessory ordering, USB transition ordering, follower parking interaction, any maintenance path that can restart a source, boot/deploy replay, or source-aware health behavior changes.",
@@ -720,19 +661,13 @@ code = [
   "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
-  "docs/HANDOFF-usb-gadget.md",
-  "docs/HANDOFF-usbsink.md",
-  "docs/HANDOFF-aec.md",
   "PRIVACY.md",
   "docs/audio-paths.md",
-  "docs/HANDOFF-fan-in-daemon.md",
-  "docs/HANDOFF-volume.md",
-  "docs/HANDOFF-audio-latency-foundation.md",
 ]
 
 requires_docs_when = [
   "Gadget enablement, reboot requirements, USB source state, USB host-microphone export/privacy, host volume observation, preemption, or source-lane wiring changes.",
-  "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes — see HANDOFF-usb-gadget.md.",
+  "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes.",
 ]
 verification = [
   "pytest tests/test_usbsink_volume_bridge.py tests/test_usbsink_systemd.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
@@ -761,14 +696,13 @@ code = [
   # that file, but the file is a multi-block aggregator already owned by
   # conversation-history (/state.chat), volume-and-sound (/state.audio), and
   # resilience-and-system-dashboard (/state.resilience). Routing the whole
-  # aggregator here too would spuriously flag HANDOFF-usb-gadget.md on every
+  # aggregator here too would spuriously flag AGENTS.md on every
   # unrelated /state change; a real change to the usb_network block co-occurs
   # with the gadget scripts/units/doctor globs above and still routes here.
   # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
 ]
 docs = [
-  "docs/HANDOFF-usb-gadget.md",
-  "docs/HANDOFF-usbsink.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "The hardware-conditional USB NCM network function, its per-speaker address plan or generated NetworkManager/dnsmasq projections, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
@@ -792,17 +726,14 @@ code = [
   "rust/jasper-host-clock/**",
 ]
 docs = [
-  "docs/HANDOFF-audio-latency-foundation.md",
-  "docs/HANDOFF-usb-low-latency.md",
-  "docs/HANDOFF-usb-latency-measurement.md",
   "docs/testing-tooling.md",
 ]
 requires_docs_when = [
   "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
-  "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes (see HANDOFF-usb-low-latency.md).",
-  "The click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see HANDOFF-usb-low-latency.md and testing-tooling.md's harness section).",
-  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS and `/state.audio_graph.fanin.host_clock` shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock in combo mode').",
-  "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table (see HANDOFF-usb-latency-measurement.md).",
+  "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes.",
+  "The click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see testing-tooling.md's harness section).",
+  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS and `/state.audio_graph.fanin.host_clock` shape, servo constants, or bandwidth-separation derivation change.",
+  "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table.",
 ]
 verification = [
   "pytest tests/test_audio_runtime_plan.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_route_latency_status_socket.py tests/test_route_latency_tap_transport.py tests/test_usbsink_impulse_tap_contract.py tests/test_doctor_usbsink.py tests/test_usbsink_systemd.py",
@@ -832,17 +763,9 @@ code = [
   "docs/active-crossover-information-design.md",
 ]
 docs = [
-  "docs/HANDOFF-audio-measurement-core.md",
-  "docs/HANDOFF-correction.md",
   "docs/measurement-loop-doctrine.md",
   "docs/correction-journey-design.md",
   "docs/room-correction-information-design.md",
-  "docs/HANDOFF-multiroom.md",
-  "docs/HANDOFF-bass-extension-plan.md",
-  "docs/HANDOFF-calibration-agent.md",
-  "docs/HANDOFF-active-speaker-dsp.md",
-  "docs/HANDOFF-dsp-graph-carrier.md",
-  "docs/HANDOFF-distributed-active.md",
   "docs/active-crossover-information-design.md",
   "docs/crossover-measurement-productization-design.md",
   "docs/active-speaker-tuning-layers-design.md",
@@ -946,7 +869,6 @@ code = [
 ]
 docs = [
   "docs/testing-tooling.md",
-  "docs/HANDOFF-observability.md",
   "BRINGUP.md",
 ]
 requires_docs_when = [
@@ -972,7 +894,6 @@ code = [
   "scripts/refresh-mta-stations.sh",
 ]
 docs = [
-  "docs/HANDOFF-transit-citibike.md",
   "docs/adr/0167-each-transit-network-is-its-own-provider-module.md",
 ]
 requires_docs_when = [
@@ -994,8 +915,7 @@ code = [
   "jasper/web/home_assistant_setup.py",
 ]
 docs = [
-  "docs/HANDOFF-homeassistant.md",
-  "docs/HANDOFF-runtime-memory.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "Conversation API usage, wizard setup flow, token handling, tool prompt/answer behavior, or observability surfaces change.",
@@ -1027,12 +947,7 @@ code = [
   "deploy/avahi/jasper-peer.service.template",
 ]
 docs = [
-  "docs/HANDOFF-peering.md",
-  # Canonical operational doc for the WiiM Remote 2 mic lifecycle: adapter
-  # gating, the per-connection CE reservation, and the degraded-but-working
-  # modes. Nothing routed accessory changes here before, so the doc silently
-  # aged behind the code.
-  "docs/HANDOFF-hotplug-resilience.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "Wake arbitration, peer discovery, supported accessory roles, or accessory microphone profiles change.",
@@ -1086,13 +1001,11 @@ code = [
   "scripts/s0-sync-measure.py",
 ]
 docs = [
-  "docs/HANDOFF-multiroom.md",
-  "docs/HANDOFF-distributed-active.md",
   "docs/dumb-endpoint-bringup.md",
 ]
 requires_docs_when = [
   "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
-  "The follower/leader Layer-A path (active crossover across a wireless pair): member-config role resolution, the round-trip capture repoint, outputd dac_content lane vs CamillaDSP re-entry, or the active-follower fail-closed/clock contract changes (see HANDOFF-distributed-active.md).",
+  "The follower/leader Layer-A path (active crossover across a wireless pair): member-config role resolution, the round-trip capture repoint, outputd dac_content lane vs CamillaDSP re-entry, or the active-follower fail-closed/clock contract changes.",
   "The Zero 2 W streambox bring-up path, the full/streambox install profile boundary, streambox DAC assumptions, or the lab spike invocation changes.",
   "The /rooms/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
   "The shared mDNS browse (jasper/mdns.py), the Avahi *.service renderer (jasper/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
@@ -1108,7 +1021,6 @@ safety = "design-only"
 code = [
   "PLAN.md",
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
-  "docs/HANDOFF-source-capabilities.md",
   "jasper/apple_music/**",
   "jasper/tools/apple_music.py",
   "jasper/web/apple_music_setup.py",
@@ -1119,7 +1031,6 @@ code = [
 docs = [
   "PLAN.md",
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
-  "docs/HANDOFF-source-capabilities.md",
   "docs/PROPOSAL-dac-profile-registry.md",
   "docs/tool-platform-plan.md",
 ]
@@ -1175,8 +1086,6 @@ docs = [
   "docs/DEEP-AUDIT-2026-08-25.md",
   "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
-  "docs/HANDOFF-supply-chain.md",
-  "docs/HANDOFF-management-ui.md",
 ]
 requires_docs_when = [
   "Security posture, diagnostic redaction, vulnerability reporting, license/provenance inventory, management-surface hardening, or OSS-readiness priorities change.",
@@ -1232,12 +1141,7 @@ code = [
   "deploy/udev/99-jasper-audio-hardware-reconcile.rules",
 ]
 docs = [
-  "docs/HANDOFF-resilience.md",
-  "docs/HANDOFF-observability.md",
-  "docs/HANDOFF-tier5-watchdog-liveness.md",
-  "docs/HANDOFF-airplay.md",
-  "docs/HANDOFF-management-ui.md",
-  "docs/HANDOFF-runtime-memory.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
@@ -1260,7 +1164,6 @@ code = [
   "deploy/assets/fonts/*",
 ]
 docs = [
-  "docs/HANDOFF-management-ui.md",
   "docs/design-language.md",
 ]
 requires_docs_when = [
@@ -1289,7 +1192,7 @@ code = [
   "tests/test_systemd_hardening.py",
 ]
 docs = [
-  "docs/HANDOFF-privilege-separation.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "A Tier-A unit's hardening stanza (ProtectSystem, capability/syscall/namespace restriction, User/Group), the restart-broker boundary, the auto-generated control token, or the user-drop / recovery-validation plan changes.",
@@ -1317,7 +1220,7 @@ code = [
   "tests/test_household_credential.py",
 ]
 docs = [
-  "docs/HANDOFF-control-plane-auth.md",
+  "AGENTS.md",
 ]
 requires_docs_when = [
   "The authentication posture of the cross-device grouping path (the /grouping/set bond/unbond fan-out, who may set another speaker's grouping, or the household-credential mint/distribute/verify) changes, or a token-gated-route client's token delivery changes.",

@@ -54,8 +54,6 @@ Disable knob: set `JASPER_GROUPING_SUPERVISOR=disabled` in
 /etc/jasper/jasper.env and restart jasper-control. Mirrors
 JASPER_SHAIRPORT_SUPERVISOR / JASPER_SYSTEM_SUPERVISOR (exact match,
 case-insensitive; anything else logs a warning and stays enabled).
-
-Design home: docs/HANDOFF-multiroom.md (Increment 5).
 """
 from __future__ import annotations
 

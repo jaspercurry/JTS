@@ -77,7 +77,7 @@ CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_
 # `--volume-ctrl log` for a perceptually linear volume slider —
 # go-librespot has a hardcoded cubic curve that concentrates
 # dynamic range at the top of the slider (unusable on real
-# speakers). See docs/HANDOFF-volume.md for full rationale.
+# speakers).
 RASPOTIFY_VERSION="0.48.1"
 RASPOTIFY_URL="https://github.com/dtcooper/raspotify/releases/download/${RASPOTIFY_VERSION}/raspotify_${RASPOTIFY_VERSION}.librespot.v0.8.0-ea81314_arm64.deb"
 RASPOTIFY_SHA256="dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a717"
@@ -430,7 +430,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
-     never a live daemon. See docs/HANDOFF-build-sandbox.md.
+     never a live daemon.
    - On low-RAM hosts, park audio/runtime daemons before Rust builds so
      the build has room without inducing service restart storms.
 
@@ -592,7 +592,6 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      via deploy/lib/install/build-sandbox.sh, so an OOM during an
      in-service update kills only the build, never a live daemon.
      The optional v2 job reuses that same installed containment helper.
-     See docs/HANDOFF-build-sandbox.md.
    - On low-RAM hosts, park audio/runtime daemons before Rust builds so
      the build has room without inducing service restart storms.
 
@@ -831,21 +830,19 @@ install_deps() {
     # dnsmasq-base is the DHCP server BINARY only — NOT the full `dnsmasq`
     # package, which would enable a global dnsmasq.service. The scoped,
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
-    # hardware-gated USB management network. See docs/HANDOFF-usb-gadget.md.
+    # hardware-gated USB management network.
     # rustc + cargo are required to build the Rust audio daemons
     # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
-    # our crate's rust-version=1.75 floor. See
-    # docs/HANDOFF-fan-in-daemon.md "Why Rust" for the language choice.
+    # our crate's rust-version=1.75 floor.
     # meson + ninja-build are installed ahead of time for the optional
     # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
     # binding; an explicit Advanced → Software action compiles v2 later in a
-    # contained background job. See
-    # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
+    # contained background job.
     # libasound2-plugins is REQUIRED for the rate_converter line in
     # deploy/alsa/asoundrc.jasper. Without it ALSA silently falls back
     # to the linear resampler which loses ~12 dB of 4-8 kHz content
     # during 44.1→48 conversion, which sabotages AEC speech-band
-    # performance. See docs/HANDOFF-aec.md "Resampler quality".
+    # performance.
 
     _install_renderer_native_deps
 }
@@ -1572,8 +1569,7 @@ provision_correction_tls() {
     # rejects leaf certs valid longer than that since iOS 13. CA
     # cert can be longer (10 years).
     #
-    # See deploy/nginx-jasper.conf "Why HTTPS is added back" and
-    # docs/HANDOFF-correction.md "Decision 1 — TLS" for context.
+    # See deploy/nginx-jasper.conf "Why HTTPS is added back" for context.
     local hostname="${JASPER_HOSTNAME:-jts.local}"
     local ca_dir=/var/lib/jasper/ca
     local ssl_dir=/etc/nginx/ssl
@@ -1848,7 +1844,7 @@ install_jasper_control_polkit() {
     # — silently breaking the Tier-3/Tier-5 recovery paths. polkitd monitors
     # /etc/polkit-1/rules.d and auto-reloads on change, so no reload/restart is
     # needed (a daemon-reload is for systemd units, not polkit). See
-    # deploy/polkit/49-jasper-control.rules + docs/HANDOFF-privilege-separation.md.
+    # deploy/polkit/49-jasper-control.rules.
     install -d -m 0755 /etc/polkit-1/rules.d
     install -m 0644 \
         "${REPO_DIR}/deploy/polkit/49-jasper-control.rules" \
@@ -1863,7 +1859,7 @@ install_jasper_web_polkit() {
     # one of those, so without this rule a non-root jasper-web cannot manage
     # Wi-Fi — the worst-case brick for a headless, often Ethernet-less speaker.
     # polkitd monitors /etc/polkit-1/rules.d and auto-reloads (no restart). See
-    # deploy/polkit/49-jasper-web.rules + docs/HANDOFF-privilege-separation.md.
+    # deploy/polkit/49-jasper-web.rules.
     install -d -m 0755 /etc/polkit-1/rules.d
     install -m 0644 \
         "${REPO_DIR}/deploy/polkit/49-jasper-web.rules" \
@@ -1952,8 +1948,7 @@ regenerate_audio_cues() {
     # Bake the speaker's audible-failure cues so they're ready before
     # the daemon ever needs them. The daemon retries on every startup
     # if this fails, so a no-internet-at-install scenario is tolerated
-    # — we just warn and continue. See docs/HANDOFF-audible-feedback.md
-    # for what cues exist and why.
+    # — we just warn and continue.
     if [[ ! -x /opt/jasper/.venv/bin/jasper-cues ]]; then
         echo "  (jasper-cues not on PATH yet — will run on first daemon boot)"
         return 0

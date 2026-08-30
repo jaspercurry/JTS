@@ -17,9 +17,6 @@ Don't add operator-tuning knobs here. These values are weighted
 priorities calibrated for JTS's specific daemon set. Forks of the
 project should rename the units and re-weight; they shouldn't tune
 JTS's numbers per-deployment.
-
-See docs/HANDOFF-resilience.md "Memory-pressure resilience (Stage 1)"
-for the rationale on each value.
 """
 from __future__ import annotations
 

@@ -56,7 +56,7 @@ ENV_FILES = (
     # in jasper-intsecrets (voice+control+mux+web). A non-member CLI/daemon
     # that runs env_load simply reads {} for an unreadable compartment file
     # (parse_env_file is fail-soft on EACCES); the root jasper-doctor reads
-    # them fine. See docs/HANDOFF-privilege-separation.md "Phase 4".
+    # them fine.
     "/var/lib/jasper-secrets/voice_keys.env",
     "/var/lib/jasper-secrets/google_credentials.env",
     "/var/lib/jasper-secrets/google_routes.env",

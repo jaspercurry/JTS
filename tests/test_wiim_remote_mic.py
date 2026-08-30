@@ -567,8 +567,7 @@ def test_segment_exposes_the_starved_rate_the_gap_detector_cannot_see(caplog):
     so `stream_reset` *structurally cannot* fire. Packets still decode, so
     `bad_packets` stays 0, and the cumulative `packets` count logged at
     disconnect has no denominator. The per-segment rate is the only instrument
-    on the audio path that tells a starved link from a healthy one, which is
-    what `docs/HANDOFF-hotplug-resilience.md` sends an operator here to read.
+    on the audio path that tells a starved link from a healthy one.
     """
     starved_spacing = 6 * 0.01125
     assert starved_spacing < WIIM_STREAM_GAP_SEC, (

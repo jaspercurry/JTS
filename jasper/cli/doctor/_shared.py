@@ -401,8 +401,8 @@ def _installed_units(units: list[str]) -> set[str] | None:
 def _parked_as_bonded_follower() -> bool:
     """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
 
-    The dumb-follower profile (HANDOFF-multiroom Increment 5) parks the
-    renderer/source stack while bonded — those liveness checks must read
+    The dumb-follower profile parks the renderer/source stack while bonded —
+    those liveness checks must read
     "parked (bonded follower)" as ok, never as failures against intended
     state. The same idiom serves PR-B's voice/AEC parking. Fail-open to
     NOT-parked: a broken read must never silently mask a real failure on

@@ -104,7 +104,7 @@ INTERNAL_ERROR_CUE_SLUG = "internal_error"
 # jasper-voice.service's SuccessExitStatus + RestartPreventExitStatus so
 # the daemon parks cleanly (waiting for the AEC reconciler / udev to
 # restart it on plug-in) instead of crash-looping toward
-# StartLimitAction=reboot. See docs/HANDOFF-hotplug-resilience.md "Layer 2".
+# StartLimitAction=reboot.
 VOICE_MIC_UNAVAILABLE_EXIT = 66
 
 
@@ -1325,7 +1325,7 @@ class WakeLoop:
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
 
-        # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3). The store
+        # Wake-event telemetry. The store
         # handles the SQLite writes + per-leg audio capture + retention;
         # the WakeLoop's contribution is the per-leg capture rings
         # (allocated in run(), sized CAPTURE_RING_FRAMES, aliased above)

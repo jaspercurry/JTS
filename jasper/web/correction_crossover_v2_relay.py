@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 # names below are that missing middle. ``ambient_started`` in particular had NO
 # producer anywhere on the Pi — the capture page's countdown consumer for it
 # has been shipped-but-dead since the producer it was written against was
-# deleted (see docs/HANDOFF-correction.md).
+# deleted.
 HOST_PHASE_PRELUDE_STARTED = "prelude_started"
 HOST_PHASE_AMBIENT_STARTED = "ambient_started"
 HOST_PHASE_SWEEP_STARTED = "sweep_started"

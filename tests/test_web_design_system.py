@@ -274,7 +274,7 @@ def test_canonical_page_observes_manifest_replacement_in_warm_process(
     assert '/assets/system-status/system.css?v=new456' in second
 
 
-# The three-tier typographic grammar (docs/HANDOFF-management-ui.md) lives partly
+# The three-tier typographic grammar lives partly
 # in the system page's ES modules, which the Python render tests don't execute —
 # so guard the grammar statically here.
 SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"

@@ -8,7 +8,7 @@ The pure measurement primitives (sweep generation, deconvolution, FR analysis,
 mic calibration, capture-quality assessment) now live in the shared kernel
 [`jasper.audio_measurement`](../audio_measurement/__init__.py); this package
 consumes them and adds the correction-specific target/strategy/PEQ logic and the
-web flow. See docs/HANDOFF-correction.md for the architecture and phase plan.
+web flow.
 
 Public surface (everything else is implementation detail):
   - jasper.audio_measurement.sweep.synchronized_swept_sine(...) → (sweep, meta)

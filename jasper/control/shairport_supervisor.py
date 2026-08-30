@@ -25,8 +25,6 @@ the next tick.
 
 Disable knob: set `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
 `/etc/jasper/jasper.env` and restart `jasper-control`.
-
-Design rationale: docs/HANDOFF-resilience.md (Tier 3).
 """
 from __future__ import annotations
 

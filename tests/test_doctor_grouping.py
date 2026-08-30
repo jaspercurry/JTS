@@ -68,8 +68,8 @@ def _patch_grouping(monkeypatch, cfg, is_active_stdout=None, *, unit_states=None
 
     monkeypatch.setattr(doctor.grouping, "_run", fake_run)
     # No producer-feed stubbing: check_grouping injects leader_tap_path=""
-    # unconditionally (no music producer exists yet — HANDOFF-multiroom.md
-    # §2, Increments 3–5), so a bonded leader honestly derives degraded.
+    # unconditionally (no music producer exists yet), so a bonded leader
+    # honestly derives degraded.
 
 
 # ------------------------------------------------------------ snapcast install

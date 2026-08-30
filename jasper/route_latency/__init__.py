@@ -7,8 +7,7 @@
 Measures the `usb_low_latency_48k` route's real per-impulse latency, on
 demand. Nothing here grades the result (ADR-0185). See
 `jasper.cli.route_latency_harness` for the CLI entry point
-(`jasper-route-latency-harness`) and `docs/HANDOFF-usb-low-latency.md` for
-the end-to-end quick/promotion usage.
+(`jasper-route-latency-harness`).
 
 Module map:
 

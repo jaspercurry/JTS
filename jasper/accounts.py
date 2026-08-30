@@ -78,8 +78,7 @@ LEGACY_CACHE_PATH = "/var/lib/jasper-intsecrets/.spotify-cache"
 # spotipy's stock CacheFileHandler writes the cache umask-restricted (0600,
 # owner-only), so those dropped readers logged "Couldn't read cache" on every
 # poll and reported linked accounts as needs-relink. 0640 group-read is now
-# granted via the WS1 Phase 4b jasper-intsecrets compartment. See
-# docs/HANDOFF-privilege-separation.md.
+# granted via the WS1 Phase 4b jasper-intsecrets compartment.
 SPOTIFY_CACHE_FILE_MODE = 0o640
 
 _CACHE_HANDLER_CLS = None

@@ -67,9 +67,9 @@ class GroupingRoutes(ControlHandlerMixin):
         # Set this speaker's grouping role. /grouping/set is token-gated
         # (WS1 Phase 2, _TOKEN_GATED_ROUTES); the cross-device bond-forming
         # UI on speaker A configures speaker B by POSTing here on B's port,
-        # authenticated by the household credential (Phase C,
-        # docs/HANDOFF-control-plane-auth.md). The reconciler (kicked below)
-        # is the single applier of the snapcast units + the outputd tap.
+        # authenticated by the household credential (Phase C). The reconciler
+        # (kicked below) is the single applier of the snapcast units + the
+        # outputd tap.
         body = self._read_json()
         enabled = bool(body.get("enabled"))
         role = str(body.get("role", "")).strip()

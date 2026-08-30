@@ -934,9 +934,8 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 
 
 # --- follower clock-seam guard -----------------------------------------------
-# docs/HANDOFF-distributed-active.md "Clock domain + fail-closed" calls the
-# active follower's ingress clock seam safety-critical, but the 2026-06-21
-# over-engineering pressure-test found it unpinned by any test.
+# The active follower's ingress clock seam is safety-critical, but the
+# 2026-06-21 over-engineering pressure-test found it unpinned by any test.
 #
 # SNAPCLIENT IS THE SOLE TRACKER. It steers its own playback rate against the
 # server clock, and the grouping ring it writes reports a real

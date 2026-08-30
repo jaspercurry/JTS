@@ -462,8 +462,7 @@ def value_for_env(
 #     `jasper-intsecrets`.
 #     The mode is the same 0o640; only the inherited group differs, which is
 #     what narrows those secrets away from jasper-mux/-control/-input.
-# Files only one daemon reads keep the 0o600 default. See
-# docs/HANDOFF-privilege-separation.md "Phase 4".
+# Files only one daemon reads keep the 0o600 default.
 SECRET_ENV_MODE = 0o640
 
 
@@ -648,7 +647,7 @@ def restart_voice_daemon() -> None:
     # the non-root jasper-control is deliberately NOT granted polkit
     # manage-unit-files — it can't be unit-scoped and `systemctl restart`
     # consults it, which would re-open restart-of-any-unit; see
-    # deploy/polkit/49-jasper-control.rules and docs/HANDOFF-privilege-separation.md.)
+    # deploy/polkit/49-jasper-control.rules.)
     restart_systemd_units("jasper-voice")
 
 
@@ -1042,8 +1041,8 @@ def control_token_meta_html() -> str:
     the token in `meta[name=jts-control-token]` and rides it on the destructive
     POSTs (via http.js) with zero household friction. A cross-site fetch can't
     read it; a determined LAN device that fetches the page can — by design this
-    is defense-in-depth on the annoyance-class routes, not a hard boundary (see
-    docs/HANDOFF-privilege-separation.md). Emits nothing when the gate is off
+    is defense-in-depth on the annoyance-class routes, not a hard boundary.
+    Emits nothing when the gate is off
     (no token file), so non-control pages stay byte-identical until the token
     exists."""
     token = control_token.current_token()

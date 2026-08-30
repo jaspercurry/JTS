@@ -1288,8 +1288,7 @@ def _aec_reference_failure_remediation(
             "a fresh /run/jasper/aec_bridge_stats.json to identify ref_source, "
             "then inspect that producer; run `sudo systemctl start "
             "jasper-aec-reconcile` and restart jasper-aec-bridge before "
-            "re-running doctor with program audio. See docs/HANDOFF-aec.md "
-            "Lessons learned for the original silent-ref failure mode."
+            "re-running doctor with program audio."
         )
 
     # Report the source the runtime actually published rather than a

@@ -66,8 +66,7 @@ def test_every_registered_cue_is_played_somewhere():
         f"CueDef(s) registered in jasper/cues/registry.py with no play "
         f"site anywhere in jasper/: {orphans}. Wire `cues.play(\"<slug>\")` "
         "into the failure path the cue announces (see docs/extensibility.md "
-        "'no silent failure -> audible cue' + "
-        "docs/HANDOFF-audible-feedback.md), or delete the "
+        "'no silent failure -> audible cue'), or delete the "
         "CueDef — an unplayed cue is regenerated on every provider switch "
         "for nothing."
     )

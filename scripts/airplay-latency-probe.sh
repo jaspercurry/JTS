@@ -3,9 +3,8 @@
 # sender negotiates with this speaker (and the AP2 stream type), so you
 # know whether a bonded leader's downstream delay fits inside it.
 #
-# WHY: bonded-leader AirPlay lip-sync (docs/HANDOFF-airplay.md, "AirPlay 2
-# latency is sender-authored — the bonded-leader consequence") hinges on
-# the sender's negotiated budget vs. the leader's hidden downstream delay
+# WHY: bonded-leader AirPlay lip-sync hinges on the sender's negotiated
+# budget vs. the leader's hidden downstream delay
 # (~150 ms pipeline + the Snapcast buffer_ms). The sender CHOOSES that
 # budget live, per session, and shairport already logs it
 # (log_verbosity = 2 in deploy/shairport-sync.conf.template) — so this

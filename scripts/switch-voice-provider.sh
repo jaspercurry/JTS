@@ -9,8 +9,7 @@
 # all sit behind the same `LiveConnection` /
 # `LiveTurn` Protocols, so the daemon's wake/turn loop is unchanged
 # regardless of which one is active — only the SDK calls beneath it
-# differ. See docs/HANDOFF-voice-providers.md for the architecture
-# and per-provider trade-offs.
+# differ.
 #
 # Each provider needs its own API key set in either the operator env
 # (/etc/jasper/jasper.env) or the wizard-owned keys file

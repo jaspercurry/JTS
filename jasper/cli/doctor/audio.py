@@ -412,7 +412,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     # headline so a mic-less box / a unit mid-unplug is one advisory, not a red
     # line. A genuine open failure (no absent verdict but the device won't open
     # — custom or busy mic) still falls through to the probe + its fail below.
-    # See jasper/mic_presence.py and docs/HANDOFF-hotplug-resilience.md "Layer 3".
+    # See jasper/mic_presence.py.
     presence = read_mic_presence()
     if presence.absent_confirmed:
         return CheckResult(

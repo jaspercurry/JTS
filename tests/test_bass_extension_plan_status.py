@@ -3,60 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
-import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLAN = ROOT / "docs" / "HANDOFF-bass-extension-plan.md"
-README = ROOT / "README.md"
 
 
-def test_bass_extension_plan_pins_merged_waves_and_remaining_gate() -> None:
-    text = PLAN.read_text(encoding="utf-8")
-
-    for merge_sha in (
-        "0670540654a6684f8ac98fb2e70b2e643d65d82f",
-        "9f39c70e418cf64316c23de535f322d21f825c8e",
-        "bb2919383b408d630f9d70ef24c14fe38ca98be0",
-    ):
-        assert merge_sha in text
-
-    assert "The transaction has\n> no production caller" in text
-    assert "crossover-program hardware burn-in prerequisite is **met**" in text
-    assert "contract rev 8 freezes limiter protocol revision `2026-07-19b`" in text
-    assert "reviewed bench runner/temporary activation owner" in text
-    # Truth pin (2026-07-24): the bench runner (#1630) is merged, but its
-    # live on-device executor is not — pin the honest gap so a future edit
-    # cannot silently claim the runner is fully wired without also updating
-    # this assertion.
-    assert "live pre/post-limiter tap executor" in text
-    # Truth pin (2026-07-24): the rev-9 hardware-free ladder slice is now on
-    # main — pin its landed status so a future edit cannot silently regress
-    # the plan back to describing it as pending review + merge.
-    assert "jasper/bass_extension/ladder.py" in text
-    assert "no real\n> target-specific limiter result is established yet" in text
-    assert "No implementation is authorized by revision 6" not in text
-    assert "no frozen contract maps ladder/sustain" not in text
-    assert "no frozen\n  wave defines" not in text
-    assert "Wave 4 revision 6" not in text
-    assert "missing deterministic limiter producer" not in text
-    assert "runtime/audio emission has not shipped" not in text
-    assert "hardware-unvalidated" not in text
-
-
-def test_readme_does_not_claim_bass_extension_has_no_code() -> None:
-    text = README.read_text(encoding="utf-8")
-    entry = re.search(
-        r"- \[`HANDOFF-bass-extension-plan\.md`\].*?"
-        r"(?=\n- \[`HANDOFF-correction\.md`\])",
-        text,
-        flags=re.DOTALL,
-    )
-
-    assert entry is not None
-    assert "Waves 1–3 are merged" in entry.group()
-    assert "No code exists yet" not in entry.group()
+def test_bass_extension_unshipped_surfaces_do_not_exist() -> None:
+    """Waves 1-3 are merged; the commissioning backend and runtime
+    scheduler are not. Pin the gap so a future edit cannot silently
+    claim they shipped without also updating this assertion."""
     for unshipped_surface in (
         "jasper/web/bassext_backend.py",
         "jasper/bass_extension/scheduler.py",

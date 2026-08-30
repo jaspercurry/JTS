@@ -25,9 +25,8 @@ to the same-origin dashboard as a meta tag behind the read guard — the
 household never sees or types it. This is defense-in-depth against drive-by /
 CSRF / casual curl on the annoyance-class routes, not a boundary against a
 determined LAN device (which can fetch the page too); the real containment is
-the daemon hardening + user drop. SECURITY.md and
-docs/HANDOFF-privilege-separation.md document the posture; ``jasper-control-token``
-remains for inspecting / rotating the value.
+the daemon hardening + user drop. SECURITY.md documents the posture;
+``jasper-control-token`` remains for inspecting / rotating the value.
 
 Design notes:
 
@@ -100,9 +99,8 @@ def current_token() -> str:
     dashboard — ``canonical_page`` embeds it as a meta tag behind the
     management-host / Fetch-Metadata read guard (WS1 Phase 2, the "invisible"
     delivery: zero household friction, defense-in-depth against drive-by/CSRF,
-    not a boundary against a determined LAN device — see
-    docs/HANDOFF-privilege-separation.md). Same read path as :func:`verify`, so
-    the embedded value and the verified value never disagree.
+    not a boundary against a determined LAN device). Same read path as
+    :func:`verify`, so the embedded value and the verified value never disagree.
     """
     return _stored_token()
 
@@ -128,7 +126,7 @@ def ensure_token() -> str:
     token would SILENTLY DISABLE the mandatory gate. So the file is group-`jasper`
     readable. The token is CSRF-grade defense-in-depth (not a hard boundary), and
     the readers are sibling daemons already in the trust domain; per-daemon
-    isolation is Phase 4 (LoadCredential). See docs/HANDOFF-privilege-separation.md.
+    isolation is Phase 4 (LoadCredential).
     """
     existing = _stored_token()
     if existing:

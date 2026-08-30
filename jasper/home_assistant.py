@@ -7,8 +7,7 @@
 Thin async wrapper around HA's `POST /api/conversation/process` endpoint.
 HA owns NLU + entity resolution + automation dispatch; this module is a
 relay that hands the user's utterance over and speaks whatever text HA
-returns. See `docs/HANDOFF-homeassistant.md` for the architecture choice
-(why conversation API, not MCP) and the full setup walkthrough.
+returns.
 
 Endpoint reference:
   POST {url}/api/conversation/process

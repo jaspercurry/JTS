@@ -19,8 +19,6 @@
 # transcript capture) AND `logger -t jasper-install` (structured
 # journald lines tagged `event=memory_resilience.*` for later
 # `journalctl -t jasper-install` queries).
-#
-# See docs/HANDOFF-resilience.md "Memory-pressure resilience".
 
 
 # Emit a structured event line to both stdout and journald.

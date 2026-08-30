@@ -9,7 +9,7 @@
 # =============================================================================
 #
 # Pure-stdlib. The measurement half of scripts/multiroom-spike.sh. Answers the
-# docs/HANDOFF-multiroom.md §8 P0 question: does some (buffer, codec) cell hold
+# P0 question: does some (buffer, codec) cell hold
 # inter-speaker sync within the working target p99 < 5 ms on WiFi?
 #
 # THREE subcommands:
@@ -86,7 +86,7 @@ except ModuleNotFoundError as exc:
         read_wav_mono as _shared_read_wav_mono,
     )
 
-# The working target from docs/HANDOFF-multiroom.md §8: p99 < 5 ms for L/R.
+# The working target: p99 < 5 ms for L/R.
 TARGET_P99_MS = 5.0
 
 

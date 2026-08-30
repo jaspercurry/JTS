@@ -42,10 +42,7 @@ This docstring describes the package's original 3-module shape
 (config.py/reconcile.py/state.py); it has since grown to 17 modules
 (leader/follower/member config, channel splitting, cascade timing,
 airplay latency, sync measurement, snapcast RPC, TTS routing, and
-more) across multiple shipped phases. See
-`docs/HANDOFF-multiroom.md` "Implementation status" for the current
-module map and phase-by-phase history rather than an enumeration
-here.
+more) across multiple shipped phases.
 """
 from __future__ import annotations
 

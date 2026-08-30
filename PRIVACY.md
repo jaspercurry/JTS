@@ -49,8 +49,7 @@ speech transcripts, or track metadata.
 Opt-in USB gadget forensics is also local-only and contains no audio or
 application content. Its RAM timeline records controller, interrupt, and USB
 network counters; deliberate captures retain only a bounded tail plus the
-gadget's technical state. Retention and exact paths are owned by
-[`docs/HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
+gadget's technical state.
 
 Conversation history is separate from spend accounting. When
 `JASPER_CONVERSATION_CAPTURE=1` (or the matching wizard-owned

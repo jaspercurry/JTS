@@ -5,7 +5,7 @@
 """Pin the jasper-camilla-crossover.service (camilla#2) unit invariants.
 
 camilla#2 is the endpoint-crossover CamillaDSP instance on an active
-leader (docs/HANDOFF-distributed-active.md "Stage B"). It coexists with
+leader. It coexists with
 the always-on camilla#1 and is enabled only by grouping reconcile while the
 box is a bonded active leader. The load-bearing safety invariants this file
 moats against:

@@ -278,7 +278,7 @@ def test_direct_muted_none_when_absent_or_non_bool():
 # sound streams frames just like a loud one. The confirmed start enters mux's
 # source-neutral latest-start-wins policy; pin/disable are the explicit opt-outs.
 # The per-lane rms readers below still exist for /state telemetry, but no longer
-# gate liveness. See jasper.mux.step_combo_liveness and docs/HANDOFF-usbsink.md.
+# gate liveness. See jasper.mux.step_combo_liveness.
 
 
 def test_step_combo_liveness_takes_no_level_argument():

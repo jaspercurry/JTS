@@ -21,7 +21,7 @@
 # This intentionally restarts shairport-sync + nqptp, not avahi-daemon.
 # shairport-sync re-registers its _airplay._tcp / _raop._tcp records on
 # restart; if the speaker is missing from the picker entirely, diagnose
-# discovery separately via docs/HANDOFF-airplay.md Pattern F.
+# discovery separately.
 #
 # Usage:
 #   bash scripts/airplay-reset.sh

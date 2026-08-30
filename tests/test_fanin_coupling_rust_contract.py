@@ -399,9 +399,8 @@ def test_fanin_music_output_tap_stays_deleted():
     best-effort open in `Mixer::new`, a per-period `write_music_only`, a
     `music_output` STATUS block — while **no writer anywhere ever set the env
     var**, so the producer half was inert for its whole life. Deleted 2026-08-14
-    by owner ruling (#2285 deletion arc, PR #2483), with both HANDOFF-multiroom.md
-    and HANDOFF-fan-in-daemon.md telling a future session to rebuild deliberately
-    rather than revive this one.
+    by owner ruling (#2285 deletion arc, PR #2483), telling a future session to
+    rebuild deliberately rather than revive this one.
 
     This is the assertion that makes those two sentences enforceable, and it is
     the shape P7-1, P7-2, and P7-3 each shipped for their own retirements: a
@@ -433,7 +432,7 @@ def test_fanin_music_output_tap_stays_deleted():
                 f"{filename} names the retired music-only tap ({name!r}). It was "
                 "deleted 2026-08-14 by owner ruling — nothing ever wrote its env "
                 "var, and the shipped bonded split routes the leader's TTS to "
-                "jasper-outputd instead (see docs/HANDOFF-multiroom.md §0). If "
+                "jasper-outputd instead. If "
                 "multi-room v2 wants a pre-TTS fan-in tap, design it against the "
                 "then-current topology and update this guard deliberately. (If "
                 "that hit is inside a TRAILING comment, the strip only drops "

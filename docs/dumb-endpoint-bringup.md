@@ -18,16 +18,14 @@
 > reconciler regardless of install profile. Read this doc for the Pi
 > Zero 2 W bring-up narrative, not for current install-profile state.
 > Current operational truth lives in `jasper/install_profile.py` (the
-> two-profile model) and [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md)
-> (the follower role).
+> two-profile model).
 
 This is the operator runbook for bringing up a cheap JTS endpoint such
 as `jts4`: a Raspberry Pi Zero 2 W that can be a synchronized satellite
 for a stereo pair / wireless subwoofer / multi-room group, or a
 standalone streambox for AirPlay / Spotify Connect / Bluetooth playback.
 
-It is **not** the full JTS speaker bring-up. The architecture lives in
-[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md); this file owns the
+It is **not** the full JTS speaker bring-up. This file owns the
 practical hardware/software path, the endpoint install tier, and the
 working build plan for a dumb endpoint.
 
@@ -260,7 +258,7 @@ not become room/content DSP. The grouping reconciler's role plan treats
 absent units as no-ops, so one role engine serves both full speakers and
 small endpoints.
 
-**DSP split (see HANDOFF-multiroom §7.5):** content DSP (room
+**DSP split:** content DSP (room
 correction, sound prefs) is leader-side for satellites, baked into the
 stream. Driver DSP (active crossover, driver protection) must live on
 the box driving the DAC; the future active-crossover capability adds the
@@ -575,8 +573,7 @@ a place the work will otherwise drift or wedge:
 ## Working build plan
 
 This is the plan of record for the dumb endpoint. Keep it scoped to the
-endpoint role; cross-speaker synchronized-playback architecture stays in
-[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md).
+endpoint role.
 
 ### Phase 0 — Lab endpoint
 
@@ -612,8 +609,7 @@ engine the endpoint tier reuses, and it ships household value on its own
 (a bonded Pi 5 follower frees ~370 MB and stops advertising sources it
 cannot honestly play).
 
-This phase is the dumb-follower increment tracked in
-[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md): grouping lands
+This phase is the dumb-follower increment: grouping lands
 role=follower, then the canonical source coordinator parks the renderer stack
 (shairport-sync, nqptp, librespot, bluealsa-aplay, bt-agent, mux, usbsink) —
 effective stop, never household-intent loss; `/sources/` keeps the desired

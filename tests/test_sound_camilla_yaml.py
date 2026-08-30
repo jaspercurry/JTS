@@ -211,7 +211,7 @@ def test_emit_sound_config_rejects_non_finite_volume_limit():
 
 
 # ---------------------------------------------------------------------------
-# room_peqs_right — the multi-room leader-bake axis (HANDOFF-multiroom.md §2).
+# room_peqs_right — the multi-room leader-bake axis.
 # Only the ROOM segment is per-channel (per-seat correction); preference EQ
 # is shared household taste and stays identical on both chains.
 # ---------------------------------------------------------------------------
@@ -274,8 +274,7 @@ def test_room_peqs_right_bakes_per_seat_room_segment_with_shared_tail():
 
 def test_room_peqs_right_empty_bakes_flat_right_room_segment():
     """[] is distinct from None: an uncalibrated follower's room segment
-    ships FLAT, never the leader's wrong-room curve (HANDOFF-multiroom.md
-    §2, Increment 6)."""
+    ships FLAT, never the leader's wrong-room curve."""
     profile = SoundProfile(
         enabled=False, curve_id="bk", simple_eq=SimpleEq(bass_db=6.0)
     )
@@ -347,11 +346,10 @@ def test_room_headroom_trims_by_the_louder_channel_for_leader_bake():
 def test_extract_room_peqs_skips_right_channel_filters_and_warns(caplog):
     """The extractor serves the SOLO re-emit path: it must return the
     left/solo chain only and stay blind to leader-bake right-channel
-    filters (the leader apply path composes from stored profiles —
-    HANDOFF-multiroom.md §2, Increment 5). Blindness must be LOUD, not
-    silent: re-emitting from this extraction alone would drop the
-    follower's correction, so seeing *_r* filters logs a WARNING (the
-    no-silent-failure rule)."""
+    filters (the leader apply path composes from stored profiles).
+    Blindness must be LOUD, not silent: re-emitting from this extraction
+    alone would drop the follower's correction, so seeing *_r* filters
+    logs a WARNING (the no-silent-failure rule)."""
     import logging
 
     yaml = emit_sound_config(
@@ -388,10 +386,10 @@ def test_extract_room_peqs_stays_quiet_on_solo_configs(caplog):
 
 
 def test_playback_pipe_path_emits_file_sink_for_the_bonded_leader():
-    """The bonded-leader playback axis (HANDOFF-multiroom.md §2,
-    Increment 5): playback becomes a File sink writing the shared stereo
-    program to snapserver's FIFO; capture and the rest of the config are
-    untouched. Pairs with room_peqs_right (the leader-bake combo)."""
+    """The bonded-leader playback axis: playback becomes a File sink
+    writing the shared stereo program to snapserver's FIFO; capture and
+    the rest of the config are untouched. Pairs with room_peqs_right
+    (the leader-bake combo)."""
     yaml = emit_sound_config(
         SoundProfile(enabled=True, curve_id="harman", simple_eq=SimpleEq()),
         room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
@@ -430,9 +428,9 @@ def test_playback_pipe_path_none_is_byte_identical_solo():
 
 def test_playback_pipe_path_requires_rate_adjust_off():
     """A File sink has no output clock — rate_adjust has nothing to steer,
-    and the synced chain's ONE rate-tracker is snapclient (§2 invariant 5).
-    The emitter fails loud instead of silently emitting a config whose
-    rate_adjust flag is a lie."""
+    and the synced chain's ONE rate-tracker is snapclient. The emitter
+    fails loud instead of silently emitting a config whose rate_adjust
+    flag is a lie."""
     import pytest
 
     with pytest.raises(ValueError, match="enable_rate_adjust=False"):

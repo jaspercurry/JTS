@@ -5,8 +5,7 @@
 """Grouping member-config policy — the ONE place that decides what a bonded
 member's local CamillaDSP config needs.
 
-CANONICAL MODEL (docs/HANDOFF-multiroom.md §2 "Canonical signal flow",
-wired by Increment 5): the LEADER's one CamillaDSP bakes the shared
+CANONICAL MODEL (wired by Increment 5): the LEADER's one CamillaDSP bakes the shared
 stereo program and writes it to snapserver's pipe; every member —
 including the leader itself — plays the round-tripped stream through
 outputd's ``dac_content`` lane, picking its channel THERE (outputd

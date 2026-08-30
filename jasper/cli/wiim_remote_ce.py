@@ -71,9 +71,7 @@ over nothing this helper trusts:
 The reservation lives on the connection, so it is lost on every disconnect —
 and it can also be overwritten mid-connection, because ``hci_le_conn_update()``
 zeroes the CE fields when BlueZ services a peripheral-initiated parameter
-update. Nothing here re-arms it; that residual risk, the jts4 measurement
-behind accepting it, and what to capture if it ever bites are recorded in
-``docs/HANDOFF-hotplug-resilience.md`` (the canonical WiiM mic lifecycle doc).
+update. Nothing here re-arms it.
 
 The BlueZ read comes first on purpose. It is the slow step (bounded at 5 s),
 and **connection handles are recycled**: if the remote dropped while we were

@@ -4,8 +4,7 @@
 
 """The active-leader's camilla#1 program-domain bake — emitter half.
 
-Covers the emitter for distributed-active Stage B (``docs/HANDOFF-distributed-active.md``,
-"camilla#1 program bake — verifier exemption"). camilla#1 emits the PROGRAM
+Covers the emitter for distributed-active Stage B. camilla#1 emits the PROGRAM
 domain only — Layer B room correction + Layer C preference EQ + program headroom
 — to a ``File`` sink writing the snapserver pipe, with ``enable_rate_adjust:
 false`` and NO Layer A (no ``2->N`` split, no per-driver crossover / delay /

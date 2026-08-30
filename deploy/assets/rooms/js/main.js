@@ -988,10 +988,7 @@ function buildPage(mount) {
       h("p.info-card__hint", null,
         "Creating a pair configures both speakers automatically. Perfect " +
         "sample-lock across the pair is still being validated on hardware, so " +
-        "treat stereo pairing as a preview for now. ",
-        h("a", { href: "https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-multiroom.md" },
-          "Details"),
-        ".",
+        "treat stereo pairing as a preview for now.",
       ),
     ),
   );

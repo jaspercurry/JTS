@@ -81,7 +81,6 @@ DOCS_HAND_REGISTERED_READERS = {
 DOCS_TEST_FILES = (
     "tests/test_active_speaker_attempts_replay.py",
     "tests/test_bass_extension_limiter_protocol.py",
-    "tests/test_bass_extension_plan_status.py",
     "tests/test_build_and_ci_contracts.py",
     "tests/test_calibration_agent_advisor_context.py",
     "tests/test_calibration_agent_tools.py",
@@ -98,13 +97,10 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
-    "tests/test_system_supervisor.py",
-    "tests/test_tool_failure_contract_doc.py",
     "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
     "tests/test_waveform_fusion_experiment.py",
-    "tests/test_web_correction_setup.py",
     "tests/test_web_design_system.py",
 )
 # The bundle RUNS the routing-policy test, so every docs PR re-validates its

@@ -103,7 +103,7 @@ def test_rule_does_not_grant_systemctl_or_reboot():
     ):
         assert forbidden not in code, (
             f"jasper-web rule must NOT grant {forbidden} (it restarts via the "
-            "broker, not polkit; see docs/HANDOFF-privilege-separation.md)."
+            "broker, not polkit)."
         )
 
 

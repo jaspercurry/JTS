@@ -134,8 +134,7 @@ GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 # The active-leader's camilla#1 program bake: a flat (no-Layer-A) program graph
 # whose playback is a File/pipe sink, not a DAC. Allowed regardless of topology
 # (safe by construction — no DAC, no driver to over-drive); see
-# _flat_graph_allowed and docs/HANDOFF-distributed-active.md "camilla#1 program
-# bake — verifier exemption".
+# _flat_graph_allowed.
 GRAPH_PROGRAM_BAKE_PIPE = "program_bake_pipe"
 # The PARKED graph (issue #2135): a roleful/protected topology that has declared
 # drivers but has not yet staged an all-muted active startup graph. Every

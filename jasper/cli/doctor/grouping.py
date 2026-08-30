@@ -448,7 +448,7 @@ def check_grouping_snapcast_version() -> CheckResult:
 
 @doctor_check(order=74, group="grouping")
 def check_grouping_rate_adjust() -> CheckResult:
-    """inv-5 (docs/HANDOFF-multiroom.md §2): no CamillaDSP **in a bonded chain**
+    """inv-5: no CamillaDSP **in a bonded chain**
     runs ``enable_rate_adjust: true`` — on either role.
 
     snapclient's sample-stuffing is the single rate-tracker for the synced
@@ -541,7 +541,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     pipe (``devices.playback`` = File → SNAPFIFO) — else snapserver streams
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
-    class this check exists for (HANDOFF-multiroom.md §2, Increment 5)."""
+    class this check exists for."""
     from ...multiroom.config import is_active_leader, load_config
     from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
@@ -1018,8 +1018,7 @@ def check_grouping_pair_channels() -> CheckResult:
 @doctor_check(order=75.8, group="grouping")
 def check_grouping_household_credential() -> CheckResult:
     """A BONDED member must hold the household credential — the device-to-device
-    secret that authenticates the cross-device ``/grouping/set`` fan-out
-    (docs/HANDOFF-control-plane-auth.md §6).
+    secret that authenticates the cross-device ``/grouping/set`` fan-out.
 
     A bonded member with NO secret is the recovery shape (the 2026-05-23
     ext4-loss class, or an adopt that never landed): its ``/grouping/set`` is
@@ -1053,8 +1052,7 @@ def check_grouping_airplay_latency() -> CheckResult:
     """A bonded LEADER receiving AirPlay must fit its hidden downstream
     delay (~150 ms pipeline + the Snapcast ``buffer_ms``) inside the budget
     the AirPlay sender negotiated, or its own output lands AFTER the AirPlay
-    anchor → bounded residual lip-sync lag (the "Stage D" gap,
-    docs/HANDOFF-airplay.md "AirPlay 2 latency is sender-authored").
+    anchor → bounded residual lip-sync lag (the "Stage D" gap).
 
     OBSERVABILITY ONLY — this never changes the offset. Skips (``ok``) on
     solo / follower. For a bonded leader it reads the sender's most-recent
@@ -1104,8 +1102,8 @@ def check_crossover_unit_installed() -> CheckResult:
     installed and parseable.
 
     camilla#2 (``jasper-camilla-crossover.service``, :1235) is the per-driver
-    crossover instance an active leader runs alongside the always-on camilla#1
-    (docs/HANDOFF-distributed-active.md "Stage B"). It is shipped INERT — not
+    crossover instance an active leader runs alongside the always-on camilla#1.
+    It is shipped INERT — not
     enabled, not yet reconciler-gated — so this check only asserts the dormant
     infrastructure is *present and valid* on the one box that will eventually
     run it; it does NOT assert the unit is active (a later PR arms it).
@@ -1189,5 +1187,3 @@ def check_crossover_unit_installed() -> CheckResult:
 # the check's premise was dead. Its operator story now lives in
 # ``check_grouping``'s runtime detail — a bonded leader reads degraded with
 # "leader streaming is not built yet — no music producer feeds the snapfifo".
-# See HANDOFF-multiroom.md §2 "Canonical signal flow" + "Stranded by this
-# design".

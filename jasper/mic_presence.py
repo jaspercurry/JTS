@@ -55,8 +55,7 @@ Three layers, kept strictly separate so the next microphone needs no change here
   enriches the record (card, channels, chip-AEC capability). A present non-XVF
   mic simply has no enrichment; the per-device doctor checks report its
   specifics. When a second mic profile lands and ``jasper/mics/base.py`` is
-  extracted (per ``docs/HANDOFF-mic-fusion-architecture.md``), enrichment
-  generalises there — presence already does not care.
+  extracted, enrichment generalises there — presence already does not care.
 """
 from __future__ import annotations
 

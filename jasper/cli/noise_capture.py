@@ -310,7 +310,7 @@ async def run_capture(args: argparse.Namespace) -> int:
             f"~{expected / SAMPLE_RATE_HZ:.0f}s.\n"
             "     Check that jasper-aec-bridge is running with the\n"
             "     6-channel XVF firmware, and that ports 9876/9877 are\n"
-            "     reachable (see HANDOFF-wake-telemetry.md)."
+            "     reachable."
         )
         return 1
     if "dtln" in leg_ports and samples_by_leg["dtln"] < expected * underflow_threshold:

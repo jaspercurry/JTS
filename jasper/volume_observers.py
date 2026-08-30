@@ -189,7 +189,7 @@ class VolumeObserver:
         # from `percent_to_db(listening_level)` in a band that
         # indicates a stale-state bug rather than a duck-in-progress.
         # See `VolumeCoordinator.maybe_reconcile_camilla` for the
-        # full gate logic and docs/HANDOFF-volume.md "Reconciler".
+        # full gate logic.
         try:
             await self._coord.maybe_reconcile_camilla()
         except Exception as e:  # noqa: BLE001

@@ -33,8 +33,7 @@ class InterruptReconcile(StrEnum):
     The matching adapter methods are ``LiveTurn.cancel_response()`` and
     ``LiveTurn.truncate_assistant_audio()`` in ``jasper/voice/session.py``.
 
-    Kinds (from the "Provider Interruption Contract" in
-    docs/HANDOFF-voice-providers.md):
+    Kinds:
 
     - ``needs_client_truncate`` — the WebSocket transport keeps the full
       generated assistant turn server-side, so the client must send
@@ -116,8 +115,7 @@ class ProviderCatalogEntry:
     # never silently defaulted (same no-silent-fallback stance the active-
     # provider selection takes). A future provider that omits it fails loudly
     # at construction instead of inheriting a wrong barge-in behaviour.
-    # tests/test_voice_catalog.py pins the known values; "Adding a fourth
-    # provider" in docs/HANDOFF-voice-providers.md lists it.
+    # tests/test_voice_catalog.py pins the known values.
     interrupt_reconcile: InterruptReconcile
     # Every module that must import for this provider's adapter to run,
     # ordered the way the daemon reaches them:

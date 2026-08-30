@@ -256,7 +256,7 @@ def test_wireless_dumb_member_reports_toggle_with_no_unwired_reason(
 def test_fourth_quadrant_active_main_with_wireless_only_sub_is_honest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The fourth quadrant (known gap, HANDOFF-distributed-active "Remaining"):
+    """The fourth quadrant (known gap):
     an ACTIVE-speaker main bonded to a wireless-only sub gets mains-HP applied
     ZERO times — the reconciler clears the wireless HP env for an active
     endpoint, and the Layer-A graph only folds a mains HP for a LOCAL sub. The

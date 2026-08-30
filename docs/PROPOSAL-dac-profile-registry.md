@@ -12,8 +12,6 @@
 > the narrower 2026-06-04 sketch that modeled only a single Apple dongle and a
 > HiFiBerry DAC8x. Current operational truth for
 > output ownership lives in
-> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
-> [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
 > [audio-paths.md](audio-paths.md).
 
 ## Summary

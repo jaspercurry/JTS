@@ -12,6 +12,5 @@ its own UDP port to jasper-voice.
 Today the bridge runs AEC3-v2 (BEST_A) as the primary engine via
 the binding in `jasper_aec3`. DTLN-aec sits in this package as a
 neural alternative + a candidate 3rd leg for the triple-stream
-wake-word architecture documented in
-`docs/HANDOFF-mic-quality-v2.md` "Triple-stream architecture plan".
+wake-word architecture.
 """

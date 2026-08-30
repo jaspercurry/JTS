@@ -10,8 +10,7 @@ speaker_volume.json, and the T5.2 SystemSupervisor's reboot rate-limit
 at /var/lib/jasper/system_supervisor_reboot.json. That last one is
 load-bearing: the persisted timestamp is what keeps a *permanent*
 userspace wedge from reboot-looping forever (see
-jasper/control/system_supervisor.py and
-docs/HANDOFF-tier5-watchdog-liveness.md).
+jasper/control/system_supervisor.py).
 
 Today those writes work only because `ProtectSystem=full` leaves /var
 writable. A future tightening to `ProtectSystem=strict` would silently

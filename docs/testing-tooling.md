@@ -63,9 +63,7 @@
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
 | Measure `usb_low_latency_48k`'s real p95/p99 route latency with click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
 | Read the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency](#usb-microphone-export-latency) |
-| Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
-| Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
-| Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
+| Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get a periodic read-only journal-health digest with week-over-week `event=` deltas | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/journal-review.sh`](../scripts/journal-review.sh) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
 | Check every shipped deploy unit/rule/script has an install step (and every install reference resolves) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided orphan-artifact guard |
@@ -244,9 +242,6 @@ Run it when touching install/build downloads or dependency declarations:
 python3 scripts/check-provenance.py
 ```
 
-The policy and update workflow live in
-[`docs/HANDOFF-supply-chain.md`](HANDOFF-supply-chain.md).
-
 ## First-party ARM64 release artifact
 
 The manual native-ARM64 release lane builds and validates the narrow compiled
@@ -260,9 +255,6 @@ pytest -q tests/test_first_party_arm64_release.py
 ```
 
 Use `--expected-source-sha <full-sha>` when validating a bundle for install.
-The artifact contract, output semantics, license scope, installer transaction,
-and reproducibility limits live in
-[`HANDOFF-first-party-arm64-artifacts.md`](HANDOFF-first-party-arm64-artifacts.md).
 
 ---
 
@@ -410,8 +402,7 @@ in scope:
 
 **Default thresholds: 0.5 / 0.3 / 0.1.** These match production
 (`jasper/wake.py` default 0.5) and the wake-events DB near-miss floor
-(0.10, per [`HANDOFF-wake-telemetry.md`](HANDOFF-wake-telemetry.md)).
-Don't invent new threshold tiers without checking against these.
+(0.10). Don't invent new threshold tiers without checking against these.
 
 `_offline_wake_count.py` is the underscore-prefixed Python helper
 called by `wake-rate-test.sh`. `score-baseline-wakeword.py` is a
@@ -432,8 +423,7 @@ repo venv on a laptop. `--help` still works without either.
 Production wake-event capture is in [`jasper/wake_events.py`](../jasper/wake_events.py)
 — writes to SQLite at `/var/lib/jasper/wake-events/wake-events.sqlite3`
 with per-event WAVs (4 s pre + 2 s post wake fire, both AEC ON and
-AEC OFF legs). See [`HANDOFF-wake-telemetry.md`](HANDOFF-wake-telemetry.md)
-for the schema + funnel design.
+AEC OFF legs).
 
 | Tool | Purpose |
 |---|---|
@@ -491,9 +481,7 @@ gate before Phase 0a/0c work.
 
 For deeper signal-quality analysis — artifacts, tears/clicks, AGC pumping,
 clipping, cross-leg event coincidence, and review prioritization — use the
-[Wake-corpus quality analyzer](#wake-corpus-quality-analyzer) below; its
-methodology + metric definitions live in
-[`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md). Extend the
+[Wake-corpus quality analyzer](#wake-corpus-quality-analyzer) below. Extend the
 quick corpus audit above only when a new check belongs in the fast integrity
 gate rather than the deeper analyzer.
 
@@ -526,8 +514,6 @@ LiveKit/openWakeWord training. The exporter:
   `rejections.jsonl` instead of silently training on them.
 
 It does not resample, segment, score, extract openWakeWord features, or train.
-Those later stages are owned by
-[`HANDOFF-custom-wakeword-training.md`](HANDOFF-custom-wakeword-training.md).
 
 ---
 
@@ -772,8 +758,7 @@ ring. There is nothing to certify — see
 ssh pi@jts.local 'jq "{host_streaming, source_age_ms_p50, source_age_ms_p95, source_age_ms_p99}" /run/jasper-usbmic/status.json'
 ```
 
-The measured scope is `bridge_emit_to_alsa_write`, canonical in
-[`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
+The measured scope is `bridge_emit_to_alsa_write`.
 It is **not** physical mic→host end-to-end latency: XVF/PortAudio capture time,
 gadget fill, USB transport, and the host audio stack are separate terms.
 
@@ -787,8 +772,6 @@ plays real impulses through the USB route and reports what they measured. It
 is an on-demand diagnostic and grades nothing — latency is monitored live on
 `/system` and adapted at runtime, never certified
 ([ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md)).
-See [`docs/HANDOFF-usb-low-latency.md`](HANDOFF-usb-low-latency.md) for the
-full quick/promotion end-to-end walkthrough and current route status.
 
 **Architecture in one paragraph.** A host (Mac/Windows, no special
 software) plays a generated click-track WAV into the JTS USB audio device.
@@ -802,9 +785,7 @@ is the only ingress tap: the old `jasper-usbsink-audio` bridge tap on
 `127.0.0.1:8781` is gone. The harness arms it automatically — `--tap-transport
 auto` (default) reads fan-in `STATUS` and always resolves to the fan-in tap
 (there is no usbsink bridge tap to fall back to); force it explicitly with
-`--tap-transport fanin`. See
-[`docs/HANDOFF-usb-low-latency.md`](HANDOFF-usb-low-latency.md) "Harness support
-(`--tap-transport`)". This harness separately reads
+`--tap-transport fanin`. This harness separately reads
 the AEC bridge's always-on `raw0` leg on localhost UDP `:9879` (an
 unprocessed XVF3800 room-mic capture — a corpus-only leg per
 `jasper.wake_legs`, consumed here but never added as a wake-detection input)
@@ -1007,7 +988,7 @@ track/music straight through a throwaway `snapclient`, **bypassing**
 CamillaDSP's `volume_limit: 0.0` ceiling, and its leader-side client can
 contend with `jasper-outputd` for the DAC. Run it with the JTS audio daemons
 stopped (or on bring-up hardware), and set a conservative volume before the
-first sweep. See [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §8. The S0
+first sweep. The S0
 bench is not in that class — it drives the DACs outside outputd, but its
 throwaway CamillaDSP keeps `volume_limit: 0.0`, negative-only gains, and a
 protective Layer-A high-pass. It still needs exclusive DAC ownership, so
@@ -1030,7 +1011,7 @@ Live Pi state without modifying anything:
 | [`scripts/pi-system-soak.sh`](../scripts/pi-system-soak.sh) | Convenience wrapper for a bounded `jasper-system-soak` run on the active Pi; writes a versioned JSON resource artifact. |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, volume routing, wake/turn boundaries) |
-| [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. Rationale: [`HANDOFF-airplay.md`](HANDOFF-airplay.md). |
+| [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |
 | `jasper-correction-bundle inspect <session> --recompute` | Validate a copied room-correction bundle, summarize confidence/runtime evidence, and replay raw captures into derived curves |
 | `jasper-correction-bundle export <session> --output <dir>` | Write REW-friendly `.frd` / `.txt` curves and impulse-response WAVs from a room-correction bundle |

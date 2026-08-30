@@ -17,8 +17,7 @@
 #
 # Output: logs/xvf-interrogate-<serial>-<host>[-<label>]-<utc>.txt
 #
-# What it captures (covers every hypothesis lane in
-# docs/HANDOFF-xvf3800.md §7):
+# What it captures:
 #   1. USB identity + iSerial (lsusb)
 #   2. USB topology + negotiated speed (lsusb -t) — hypothesis 7.1
 #   3. Full USB descriptor (lsusb -v)

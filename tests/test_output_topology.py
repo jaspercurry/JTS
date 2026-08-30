@@ -1063,7 +1063,7 @@ def test_save_and_load_output_topology_round_trips(tmp_path: Path) -> None:
     ] == "DAC output 3"
 
 
-# --- gap 1: pure-data pairing intent (docs/HANDOFF-distributed-active.md) -----
+# --- gap 1: pure-data pairing intent ------------------------------------------
 #
 # Slice 1 invariants 2 and 7 (topology layer): the pairing field round-trips and
 # defaults to solo (absent == solo, non-breaking), and it records design intent

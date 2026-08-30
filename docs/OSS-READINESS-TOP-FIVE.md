@@ -7,8 +7,7 @@ Last reviewed: 2026-05-27
 > there. This file is kept for its contributor-facing "files to know" reference
 > and the original top-five framing, but its *priority list is stale*: the
 > headline privilege-separation items below have since shipped (all five Tier-A
-> daemons now run non-root — see
-> [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)).
+> daemons now run non-root).
 
 This was the living, ordered worklist for bringing JTS from "excellent
 personal project" to "credible open-source appliance project." The
@@ -191,7 +190,7 @@ their head.
 | `deploy/install.sh` | Root install path for packages, systemd units, env migrations, source builds, audio topology, provenance-bearing downloads, and Pi runtime state. Small mistakes here affect fresh installs and deploys. Dry-run/plan mode now reports the major install surfaces without requiring root or mutating the host. | Keep the plan current when install surfaces change; good future slices are env-key merge support or more machine-derived provenance helpers. | Rewriting the installer before the existing idempotent steps have test coverage. |
 | `jasper/control/server.py` | LAN control plane for state, source selection, volume, restart/reboot, AEC toggles, cues, and dashboard integration. Security-sensitive and easy to grow accidentally. | Group route helpers and security checks when adding related endpoints; keep host/origin/body-size behavior centralized. | Mixing product UI restructuring with control-plane auth or privilege changes in one PR. |
 | `jasper/web/*_setup.py` wizards | The stdlib HTTP pattern is intentional, but page wrappers, CSRF/form handling, restart plumbing, and env-file persistence recur across many files. `correction_setup.py` and `wifi_setup.py` are especially large because they mix UI and domain logic. | Extract small shared helpers only when touching a second wizard for the same reason; move domain logic into subsystem modules when it already has tests. | A broad web-framework migration or generic wizard abstraction before repeated pain is clear. |
-| `jasper/voice/{gemini_session.py,openai_session.py,grok_session.py}` | Provider-specific protocol handling is real, but supervisor scaffolding, state logging, escalation cues, and reconnect mechanics overlap. | Share narrow primitives in `jasper/voice/_supervisor.py` after a provider change proves the duplication is active maintenance cost. | Sharing the provider loop bodies; `HANDOFF-voice-providers.md` explicitly rejects that. |
+| `jasper/voice/{gemini_session.py,openai_session.py,grok_session.py}` | Provider-specific protocol handling is real, but supervisor scaffolding, state logging, escalation cues, and reconnect mechanics overlap. | Share narrow primitives in `jasper/voice/_supervisor.py` after a provider change proves the duplication is active maintenance cost. | Sharing the provider loop bodies — the provider-agnostic abstraction deliberately stops above that layer. |
 | `deploy/bin/jasper-aec-reconcile` plus mic/doctor constants | Bash policy duplicates hardware facts also known to Python mic and doctor modules. This is easy to drift during AEC or XVF3800 work. | Add sync tests or move a small, stable piece of policy into Python when touching AEC install/reconcile behavior. | Porting the whole reconciler just for aesthetics. |
 | `jasper/cli/doctor/` | Broad observability package with many subsystem checks. It is valuable, but tends to accumulate one-off parsing and policy. | Factor shared check/result helpers only when adding related checks; keep new checks fail-soft and actionable. | Hiding operational detail behind abstractions that make incidents harder to debug. |
 

@@ -106,7 +106,7 @@ def status_payload() -> dict[str, Any]:
     )
     payload["configured"] = state.corner_hz is not None
 
-    # Bass Extension (docs/HANDOFF-bass-extension-plan.md §9) is a separate,
+    # Bass Extension is a separate,
     # not-yet-household-launched feature that also lives on this tab. Its own
     # summary is already fail-soft (never raises), but guard the import + call
     # here too so a future change to that module can never take this

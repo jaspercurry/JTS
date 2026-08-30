@@ -9,8 +9,7 @@
 # =============================================================================
 #
 # This is a *throwaway measurement deliverable*, NOT product. It exists to
-# answer ONE question from docs/HANDOFF-distributed-active.md "Multi-Pi
-# validation":
+# answer ONE question:
 #
 #     Does a WIRELESS ACTIVE FOLLOWER stay sample-locked when the active
 #     follower's NEW seam — snapclient -> ALSA loopback -> crossover-only
@@ -24,8 +23,7 @@
 # CamillaDSP re-entry, and the rate_adjust(no-resampler) capture-from-loopback
 # clock seam against the DAC clock.
 #
-# THE CLOCK CONTRACT under test (docs/HANDOFF-distributed-active.md
-# "Clock domain + fail-closed"):
+# THE CLOCK CONTRACT under test:
 #   * real DAC      = camilla PLAYBACK = clock master
 #   * snd-aloop     = camilla CAPTURE  = slaved (snapclient writes it)
 #   * enable_rate_adjust=true, NO resampler  (HEnquist bit-perfect loopback:

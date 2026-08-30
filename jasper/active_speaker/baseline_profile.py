@@ -409,7 +409,7 @@ def _source_payload(
     # altogether). `pairing_intent` is commission-time design intent that, by
     # contract, drives no config (the multiroom reconciler resolves the runtime
     # role from grouping.env, not from this field — see
-    # output_topology.py and docs/HANDOFF-distributed-active.md gap 1), so it is
+    # output_topology.py), so it is
     # excluded: toggling it must not force a needless baseline recompile, and
     # excluding it keeps the fingerprint stable across the field's introduction.
     # The "pairing field never changes the cache" contract is pinned by
@@ -2013,9 +2013,9 @@ def build_baseline_profile_candidate(
     own defaults, so a candidate on a box that is not armed is byte-identical.
     An explicit value still wins for the one caller that owns its own capture
     lane: the multiroom reconciler passes the grouping ring for a wireless
-    follower (gap 1 of ``docs/HANDOFF-distributed-active.md``). The
-    graph shape — crossover, per-driver limiters, tweeter high-pass, 0 dB
-    ceiling — is unaffected; only the capture source line changes.
+    follower. The graph shape — crossover, per-driver limiters, tweeter
+    high-pass, 0 dB ceiling — is unaffected; only the capture source line
+    changes.
 
     ``driver_domain`` switches the emit to the **driver-domain-only** graph
     (``emit_active_speaker_driver_domain_config``, Slice 2): a wireless active
