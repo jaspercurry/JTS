@@ -746,6 +746,60 @@ def bank_position_cycle(dest: Path, *, staged: int, trail: Trail) -> None:
     )
 
 
+def summarise_spec(block: Mapping[str, Any], trail: Trail) -> None:
+    """Print the round's own flatness verdicts, band by band.
+
+    Read off ``round_receipt.spec`` — the gauge the spec axis already
+    computed for this round — so this print and the decision it accompanies
+    cannot state different numbers. Nothing is derived here.
+
+    It rides beside the candidate rather than inside it because it answers
+    the other question: the candidate says what WOULD be applied, and this
+    says what the last graded round MEASURED. A driver chaining rounds needs
+    the tilt and the worst band to decide whether to run another one, and
+    reading them out of ``state.json`` by hand is how a round gets chained on
+    a number nobody looked at.
+    """
+    receipt = block.get("round_receipt")
+    spec = receipt.get("spec") if isinstance(receipt, Mapping) else None
+    if not isinstance(spec, Mapping):
+        return
+    graded = spec.get("graded_band_hz")
+    print("\n=== flatness (last graded round) ===")
+    print(
+        f"  passed = {spec.get('passed')}"
+        f"   worst = {_render(spec.get('max_db'))} dB"
+        f" @ {_render(spec.get('max_hz'))} Hz"
+        f"   graded = {_render(graded)} Hz"
+    )
+    for band in spec.get("bands") or ():
+        if not isinstance(band, Mapping):
+            continue
+        print(
+            f"  {_render(band.get('graded_lo_hz'))}-"
+            f"{_render(band.get('graded_hi_hz'))} Hz"
+            f"  passed={band.get('passed')}"
+            f"  max={_render(band.get('max_deviation_db'))} dB"
+            f" @ {_render(band.get('max_deviation_hz'))} Hz"
+            f"  tol=+/-{_render(band.get('tolerance_db'))} dB"
+        )
+    tilt = spec.get("tilt")
+    if isinstance(tilt, Mapping) and tilt.get("evaluable"):
+        print(
+            f"  tilt = {_render(tilt.get('step_db'))} dB"
+            f"   high {_render(tilt.get('high_band_hz'))} Hz"
+            f"   low {_render(tilt.get('low_band_hz'))} Hz"
+        )
+    trail.emit(
+        "flatness",
+        passed=spec.get("passed"),
+        worst_db=spec.get("max_db"),
+        worst_hz=spec.get("max_hz"),
+        tilt_db=tilt.get("step_db") if isinstance(tilt, Mapping) else None,
+        graded_band_hz=graded,
+    )
+
+
 def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
     """Print the live candidate the round just produced.
 
@@ -761,6 +815,7 @@ def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
     with none of the siblings that tool needs.
     """
     block = wizard.v2_block()
+    summarise_spec(block, trail)
     candidate = block.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         trail.emit("candidate", ok=False, detail="no candidate is published yet")

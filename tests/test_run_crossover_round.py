@@ -1079,6 +1079,76 @@ def test_the_banks_own_exit_contract_decides_the_round(
     assert any(r["step"] == "candidate" for r in _trail(trail)) is summarised
 
 
+def test_the_rounds_flatness_verdicts_reach_the_operator_and_the_trail(
+    checkout, tmp_path
+):
+    """The round prints WHAT IT MEASURED, not only what it would apply.
+
+    The candidate block answers "what would go on the speaker"; a driver
+    deciding whether to run another round is asking the other question, and
+    before this it had to read ``state.json`` by hand to answer it. Asserted
+    on the trail's structured row rather than on the printed sentence: the
+    prose is for the operator, the row is the contract.
+    """
+    spec = {
+        "passed": False, "max_db": -4.85, "max_hz": 11480.0,
+        "graded_band_hz": [357.14, 20000.0],
+        "bands": [
+            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "graded_lo_hz": 357.14,
+             "graded_hi_hz": 2000.0, "tolerance_db": 1.5, "passed": True,
+             "max_deviation_db": 1.02, "max_deviation_hz": 412.0},
+            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "graded_lo_hz": 8000.0,
+             "graded_hi_hz": 20000.0, "tolerance_db": 2.5, "passed": False,
+             "max_deviation_db": -4.85, "max_deviation_hz": 11480.0},
+        ],
+        "tilt": {"step_db": 2.37, "high_band_hz": [250.0, 2000.0],
+                 "low_band_hz": [8000.0, 16000.0], "n_bands": 2,
+                 "evaluable": True},
+    }
+    server = _Wizard(after_open={
+        "phase": "review", "session_id": "after", "candidate": CANDIDATE,
+        "round_receipt": {"adoption": "keep_for_iteration", "spec": spec},
+    })
+    trail = tmp_path / "trail.jsonl"
+    with _serving(server):
+        proc, _, _ = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+             "--trail", str(trail)],
+        )
+
+    assert proc.returncode == 0, proc.stderr
+    row = next(r for r in _trail(trail) if r["step"] == "flatness")
+    assert row["passed"] is False
+    assert row["worst_db"] == -4.85
+    assert row["worst_hz"] == 11480.0
+    assert row["tilt_db"] == 2.37
+    # The graded span, because the top band no longer ends where its name says.
+    assert row["graded_band_hz"] == [357.14, 20000.0]
+    # Every band reaches the operator, with the frequency of its worst bin —
+    # the numbers a next round is aimed with.
+    assert "8000.0-20000.0 Hz" in proc.stdout
+    assert "11480.0 Hz" in proc.stdout
+
+
+def test_a_round_with_no_graded_spec_prints_no_flatness_block(checkout, tmp_path):
+    """No report is not a report of zero: the block is absent, not empty."""
+    server = _Wizard(after_open={
+        "phase": "review", "session_id": "after", "candidate": CANDIDATE,
+        "round_receipt": {"adoption": "keep", "spec": None},
+    })
+    trail = tmp_path / "trail.jsonl"
+    with _serving(server):
+        proc, _, _ = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+             "--trail", str(trail)],
+        )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not any(r["step"] == "flatness" for r in _trail(trail))
+
+
 def test_a_failing_arm_walk_stops_the_round_and_keeps_its_own_name(
     checkout, wizard, tmp_path
 ):

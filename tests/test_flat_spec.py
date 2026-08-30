@@ -75,8 +75,10 @@ _FREQS_HZ.flags.writeable = False
 
 # Index groupings mirroring SPEC_BANDS / REFERENCE_BAND_HZ membership on
 # _FREQS_HZ, precomputed by hand once here so individual tests don't need
-# to re-derive the membership rule themselves.
-_REF_IDX = list(range(0, 8))
+# to re-derive the membership rule themselves. REFERENCE_BAND_HZ is now
+# exactly band1 (250-2000 Hz, the low-mid band alone), so _REF_IDX mirrors
+# _BAND1_IDX rather than spanning band1+band2 as it did pre-#1857-anchor.
+_REF_IDX = list(range(0, 4))
 _BAND1_IDX = list(range(0, 4))
 _BAND2_IDX = list(range(4, 8))
 _BAND3_IDX = list(range(8, 12))
@@ -122,7 +124,7 @@ def test_module_constants_match_pinned_contract():
         (2000.0, 8000.0, 2.0),
         (8000.0, 16000.0, 2.5),
     )
-    assert REFERENCE_BAND_HZ == (250.0, 8000.0)
+    assert REFERENCE_BAND_HZ == (250.0, 2000.0)
     assert BEST_EFFORT_ABOVE_HZ == 16000.0
 
 
@@ -142,8 +144,8 @@ def test_reference_two_bin_power_mean_is_pinned_not_linear_average():
     called out in the module docstring; a regression to linear averaging
     must fail this assertion loudly.
     """
-    freqs_hz = np.array([1000.0, 4000.0, 10000.0])  # 1000/4000 -> reference band
-    spec_smoothed_db = np.array([0.0, 10.0, 0.0])
+    freqs_hz = np.array([1000.0, 1500.0, 4000.0, 10000.0])  # 1000/1500 -> reference band
+    spec_smoothed_db = np.array([0.0, 10.0, 0.0, 0.0])
 
     report = evaluate_flat_spec(freqs_hz, spec_smoothed_db)
 
@@ -157,22 +159,22 @@ def test_reference_two_bin_power_mean_is_pinned_not_linear_average():
 
 def test_exclusion_inside_reference_band_changes_reference_as_hand_computed():
     db = _flat_db(0.0)
-    db[4] = 40.0  # 2000 Hz, inside REFERENCE_BAND_HZ -- a huge outlier
+    db[2] = 40.0  # 1000 Hz, inside REFERENCE_BAND_HZ -- a huge outlier
 
     report_included = evaluate_flat_spec(_FREQS_HZ, db)
 
     exclusion_mask = np.zeros(_FREQS_HZ.shape, dtype=bool)
-    exclusion_mask[4] = True
+    exclusion_mask[2] = True
     report_excluded = evaluate_flat_spec(_FREQS_HZ, db, exclusion_mask)
 
     values = db.tolist()
     expected_included = _hand_power_mean_db([values[i] for i in _REF_IDX])
-    expected_excluded = _hand_power_mean_db([values[i] for i in _REF_IDX if i != 4])
+    expected_excluded = _hand_power_mean_db([values[i] for i in _REF_IDX if i != 2])
 
     assert report_included.reference_db == pytest.approx(expected_included, abs=1e-9)
     assert report_excluded.reference_db == pytest.approx(expected_excluded, abs=1e-9)
     # The excluded run drops the 40 dB outlier from the reference-band
-    # computation entirely -- the remaining 7 bins are all 0 dB.
+    # computation entirely -- the remaining 3 bins are all 0 dB.
     assert report_excluded.reference_db == 0.0
     # And confirms the outlier really did move the reference when it was
     # NOT excluded -- exclusion changed the outcome, not a no-op.
@@ -263,18 +265,15 @@ def test_max_deviation_keeps_the_sign_of_a_dip():
 
 
 def test_dip_confined_to_band2_fails_only_that_band():
-    """A -2.2 dB dip in the 2-8 kHz band, against that band's +/-2.0 dB
-    tolerance, reads as an obvious fail at first glance -- but the dipped
-    bin is itself one of the 8 reference-band bins, so it also pulls the
-    power-mean reference down slightly, which *shrinks* its own apparent
-    deviation to ~1.979 dB (hand-verified while writing this test) --
-    just under 2.0 dB, so a -2.2 dB dip on this exact fixture actually
-    PASSES. That razor's-edge outcome is too fragile to pin reliably (it
-    depends on the exact reference bin count), so this test uses a
-    decisively larger -3.5 dB dip instead -- confirmed well clear of the
-    tolerance boundary in both directions: an unambiguous fail for band2,
-    with band1/band3 an unambiguous pass from the small reference-level
-    shift alone.
+    """A -3.5 dB dip in the 2-8 kHz band (band2), against that band's
+    +/-2.0 dB tolerance -- an unambiguous fail for band2 alone.
+
+    REFERENCE_BAND_HZ is now band1 (250-2000 Hz) alone, so a dip confined to
+    band2 never touches the reference-band bins at all: band1/band3 pass
+    from their own untouched 0 dB bins, with no reference-level shift in
+    play (unlike the pre-#1857-anchor days, when band2 was itself inside
+    the pooled reference and a dip there would shrink its own apparent
+    deviation slightly).
     """
     db = _flat_db(0.0)
     db[6] = -3.5  # 5000 Hz, inside band2 (2000-8000 Hz)
@@ -327,8 +326,9 @@ def test_boundary_bin_at_2000hz_lands_in_second_band():
     assert band2.max_deviation_db == pytest.approx(expected_band2_max, abs=1e-9)
 
     # The 5.0 dB spike sits at 2000 Hz -- it must land in band2, not band1.
-    # abs(), because band1's own deviation is NEGATIVE here: the spike lifts
-    # the shared reference, so band1's flat 0 dB bins read slightly quiet.
+    # REFERENCE_BAND_HZ is band1 alone now, so a spike confined to band2
+    # never touches the reference: band1's own bins read exactly 0 dB,
+    # undisturbed.
     assert abs(band1.max_deviation_db) < 1.5
     assert band1.passed is True
     assert band2.max_deviation_db > 2.0
@@ -429,6 +429,10 @@ def test_to_dict_round_trip_stability_keys_and_types():
         # `reference_db` was pooled over once that floor applied.
         "trusted_floor_hz",
         "reference_band_hz",
+        # The ceiling's mirror of the floor pair above, and the whole span
+        # the table graded.
+        "trusted_ceiling_hz",
+        "graded_band_hz",
     }
     assert type(d["reference_db"]) is float
     assert type(d["overall_passed"]) is bool
@@ -441,6 +445,11 @@ def test_to_dict_round_trip_stability_keys_and_types():
     assert d["trusted_floor_hz"] is None
     assert d["reference_band_hz"] == list(REFERENCE_BAND_HZ)
     assert all(type(v) is float for v in d["reference_band_hz"])
+    # No ceiling supplied either, so the graded span runs the module's own
+    # nominal bottom-to-best-effort range.
+    assert d["trusted_ceiling_hz"] is None
+    assert d["graded_band_hz"] == [SPEC_BANDS[0][0], BEST_EFFORT_ABOVE_HZ]
+    assert all(type(v) is float for v in d["graded_band_hz"])
 
     assert isinstance(d["bands"], list)
     assert len(d["bands"]) == len(SPEC_BANDS)
@@ -462,8 +471,9 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "level_deviation_db",
             "max_ripple_db",
             "max_ripple_hz",
-            # #2551: the edge these numbers came from, beside the nominal one.
+            # #2551: the edges these numbers came from, beside the nominal ones.
             "graded_lo_hz",
+            "graded_hi_hz",
             # #2599: whether that edge is where the reported extremum landed,
             # making it a lower bound on the band's real worst deviation.
             "max_at_graded_edge",
@@ -479,6 +489,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "max_ripple_db",
             "max_ripple_hz",
             "graded_lo_hz",
+            "graded_hi_hz",
         ):
             assert type(band_dict[key]) is float, key
         for key in ("n_bins", "n_excluded"):
@@ -528,21 +539,23 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     """
     import dataclasses
 
-    assert len(dataclasses.fields(BandResult)) == 15
-    assert len(dataclasses.fields(FlatSpecReport)) == 8
+    assert len(dataclasses.fields(BandResult)) == 16
+    assert len(dataclasses.fields(FlatSpecReport)) == 10
 
     band = BandResult(
         f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
         max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
         n_bins=10, n_excluded=1, evaluable=True, passed=False,
         level_deviation_db=0.5, max_ripple_db=-1.5, max_ripple_hz=160.0,
-        graded_lo_hz=110.0, max_at_graded_edge=True,
+        graded_lo_hz=110.0, graded_hi_hz=190.0, max_at_graded_edge=True,
     )
     report = FlatSpecReport(
         reference_db=-20.0, bands=(band,), overall_passed=False,
         excluded_intervals=((300.0, 310.0),), best_effort_above_hz=16000.0,
         smoothing_fraction=6, trusted_floor_hz=142.86,
         reference_band_hz=(250.0, 8000.0),
+        trusted_ceiling_hz=15000.0,
+        graded_band_hz=(142.86, 15000.0),
     )
     assert FlatSpecReport.from_dict(report.to_dict()) == report
 
@@ -691,12 +704,14 @@ def test_the_most_bands_that_can_be_unevaluable_at_once_is_two():
     """The degenerate end of the same rule, and the structural reason the
     reference band is the one case that still raises.
 
-    ``REFERENCE_BAND_HZ`` spans exactly band1 union band2, so a mask that
-    left *all three* spec bands unevaluable would also leave the reference
-    band with zero non-excluded bins -- and with no reference level there is
-    nothing to compute a deviation against anywhere. Two unevaluable bands
-    is therefore the worst survivable case, and it survives: the one band
-    that kept a bin still reports, and the overall verdict is False.
+    ``REFERENCE_BAND_HZ`` is now exactly band1 (250-2000 Hz), so a mask that
+    empties band1 always empties the reference band too -- and with no
+    reference level there is nothing to compute a deviation against
+    anywhere, so that raises before a report is ever produced. Band2 and
+    band3 carry no such protection and can both go empty at once, which is
+    therefore the worst case that still survives as a report: the one band
+    that kept a bin (band1, which is also the reference) still reports, and
+    the overall verdict is False.
     """
     exclusion_mask = np.zeros(_FREQS_HZ.shape, dtype=bool)
     exclusion_mask[:12] = True  # every bin in all three spec bands
@@ -711,7 +726,7 @@ def test_the_most_bands_that_can_be_unevaluable_at_once_is_two():
     # Take that last bin away and there is no reference at all -- raise.
     exclusion_mask[0] = True
     with pytest.raises(
-        ValueError, match=r"reference band 250\.0-8000\.0 Hz has zero non-excluded bins"
+        ValueError, match=r"reference band 250\.0-2000\.0 Hz has zero non-excluded bins"
     ):
         evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0), exclusion_mask)
 
@@ -782,7 +797,7 @@ def test_reference_band_with_no_coverage_raises_value_error():
     freqs_hz = np.array([9000.0, 10000.0, 12000.0, 15000.0])  # all >= 8000 Hz
     spec_smoothed_db = np.zeros(freqs_hz.shape)
     with pytest.raises(
-        ValueError, match=r"reference band 250\.0-8000\.0 Hz has zero non-excluded bins"
+        ValueError, match=r"reference band 250\.0-2000\.0 Hz has zero non-excluded bins"
     ):
         evaluate_flat_spec(freqs_hz, spec_smoothed_db)
 
@@ -807,10 +822,10 @@ def test_non_finite_spec_db_raise_value_error():
 #
 # `_FREQS_HZ`'s band-1 bins are 300 / 600 / 1000 / 1500 Hz, so a 700 Hz floor
 # splits that band cleanly in half — two bins below it, two above — and the
-# reference band (indices 0-7) loses exactly the same two.
+# reference band (indices 0-3, now exactly band1) loses exactly the same two.
 _CLAMP_FLOOR_HZ = 700.0
 _CLAMPED_BAND1_IDX = [2, 3]
-_CLAMPED_REF_IDX = list(range(2, 8))
+_CLAMPED_REF_IDX = list(range(2, 4))
 
 
 def test_the_trusted_floor_raises_every_bands_lower_edge():
@@ -882,33 +897,41 @@ def test_the_trusted_floor_raises_the_reference_bands_lower_edge_too():
     )
 
 
-def test_a_band_wholly_below_the_trusted_floor_is_unevaluable_never_failed():
+def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():
     """#2551 item 1's honesty half. No evidence is not a failure.
 
-    ``graded_lo_hz >= f_hi_hz`` is the tell that separates this from "the
-    axis never reached this band" — that case reports the nominal edge."""
+    ``graded_lo_hz >= graded_hi_hz`` is the tell that separates this from
+    "the axis never reached this band" — that case reports the nominal edge.
+
+    Read through the CEILING rather than the floor, because the floor can no
+    longer reach this state: the reference band is ``SPEC_BANDS[0]`` exactly,
+    so a floor high enough to swallow the low band swallows the frame with
+    it and the evaluator raises instead of reporting (pinned by
+    ``test_a_floor_at_or_above_the_reference_band_top_raises``). The claim is
+    about a clamp swallowing a band, not about which clamp did it."""
     report = evaluate_flat_spec(
-        _FREQS_HZ, _flat_db(0.0), trusted_floor_hz=2000.0,
+        _FREQS_HZ, _flat_db(0.0), trusted_ceiling_hz=8000.0,
     )
-    low = report.bands[0]
-    assert low.f_lo_hz == 250.0
-    assert low.graded_lo_hz == 2000.0
-    assert low.graded_lo_hz >= low.f_hi_hz
-    assert low.evaluable is False
-    assert low.passed is None          # never False
-    assert low.max_deviation_db is None
-    assert low.rms_deviation_db is None
-    assert low.n_bins == 0
-    assert low.n_excluded == 0
+    top = report.bands[2]
+    assert top.f_hi_hz == 16000.0
+    assert top.graded_hi_hz == 8000.0
+    assert top.graded_lo_hz is not None and top.graded_lo_hz >= top.graded_hi_hz
+    assert top.evaluable is False
+    assert top.passed is None          # never False
+    assert top.max_deviation_db is None
+    assert top.rms_deviation_db is None
+    assert top.n_bins == 0
+    assert top.n_excluded == 0
     # ...and an unevaluable band still cannot be mistaken for a clean one.
     assert report.overall_passed is False
-    assert all(b.evaluable for b in report.bands[1:])
+    assert all(b.evaluable for b in report.bands[:2])
 
-    # Contrast: no-coverage-on-the-axis reports the NOMINAL edge, because
-    # nothing clamped it.
+    # Contrast: no-coverage-on-the-axis reports the NOMINAL edges, because
+    # nothing clamped them.
     sparse = evaluate_flat_spec(_FREQS_HZ[:8], _flat_db(0.0)[:8])
     assert sparse.bands[2].evaluable is False
     assert sparse.bands[2].graded_lo_hz == sparse.bands[2].f_lo_hz
+    assert sparse.bands[2].graded_hi_hz == sparse.bands[2].f_hi_hz
 
 
 def test_a_band_failing_above_the_trusted_floor_still_fails():
@@ -954,9 +977,88 @@ def test_a_floor_at_or_above_the_reference_band_top_raises():
     The wiring layer's own fail-soft turns this into an unavailable cloud
     block; it is not a crash path."""
     with pytest.raises(
-        ValueError, match=r"reference band 8000\.0-8000\.0 Hz has zero non-excluded"
+        ValueError, match=r"reference band 2000\.0-2000\.0 Hz has zero non-excluded"
     ):
-        evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0), trusted_floor_hz=8000.0)
+        evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0), trusted_floor_hz=2000.0)
+
+
+@pytest.mark.parametrize("ceiling_hz", [20000.0, 12000.0])
+def test_the_top_scored_band_and_best_effort_both_end_at_the_ceiling(ceiling_hz):
+    """The session's trusted ceiling IS where grading stops.
+
+    ``SPEC_BANDS[-1]``'s upper edge and the best-effort boundary are one
+    number, so they move together — up on a microphone trusted past the
+    nominal 16 kHz and down on one trusted below it. Two ceilings, one above
+    the nominal edge and one below, because a clamp that only ever narrowed
+    would leave the whole 16-20 kHz gap ungraded on the tier that motivated
+    this.
+    """
+    report = evaluate_flat_spec(
+        _FREQS_HZ, _flat_db(0.0), trusted_ceiling_hz=ceiling_hz,
+    )
+    top = report.bands[-1]
+
+    assert top.f_hi_hz == 16000.0            # the NOMINAL row is still named
+    assert top.graded_hi_hz == ceiling_hz
+    assert report.best_effort_above_hz == ceiling_hz
+    assert report.graded_band_hz == (250.0, ceiling_hz)
+    assert report.trusted_ceiling_hz == ceiling_hz
+    # Bins between the nominal edge and a higher ceiling are GRADED now, and
+    # bins at or above the ceiling still are not.
+    assert all(
+        (f < ceiling_hz) == bool(top.graded_lo_hz <= f < top.graded_hi_hz)
+        for f in _FREQS_HZ[_FREQS_HZ >= 8000.0]
+    )
+    # The lower bands are untouched: nothing here widens 250-2000 Hz.
+    assert [(b.f_lo_hz, b.graded_hi_hz) for b in report.bands[:2]] == [
+        (250.0, 2000.0), (2000.0, 8000.0),
+    ]
+
+
+def test_no_ceiling_grades_the_nominal_table_exactly_as_before():
+    """The default is the pre-clamp behaviour, bit for bit — an absent
+    ceiling is "not stated", never a ceiling of zero and never a widening."""
+    stated = evaluate_flat_spec(
+        _FREQS_HZ, _flat_db(0.0), trusted_ceiling_hz=BEST_EFFORT_ABOVE_HZ,
+    )
+    absent = evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0))
+
+    assert absent.trusted_ceiling_hz is None
+    assert absent.best_effort_above_hz == BEST_EFFORT_ABOVE_HZ
+    assert [b.graded_hi_hz for b in absent.bands] == [
+        b.graded_hi_hz for b in stated.bands
+    ]
+    assert absent.to_dict()["bands"] == stated.to_dict()["bands"]
+
+
+def test_the_reference_cannot_be_moved_by_a_band_above_it():
+    """The low-mid anchor's whole point: an elevation confined to 2-8 kHz is
+    charged to 2-8 kHz and to nothing else.
+
+    Under the pre-ruling 250 Hz-8 kHz frame this same curve lifted the
+    reference and split the elevation three ways — the elevated band read
+    HALF its real size while two untouched bands read a deficit that was not
+    there. Asserted as attribution (which band carries the number), not as
+    prose about the frame.
+    """
+    hot = _flat_db(0.0)
+    for index in _BAND2_IDX:
+        hot[index] = 1.0
+
+    flat_report = evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0))
+    hot_report = evaluate_flat_spec(_FREQS_HZ, hot)
+
+    assert hot_report.reference_db == pytest.approx(
+        flat_report.reference_db, abs=1e-12
+    )
+    assert [b.max_deviation_db for b in hot_report.bands] == pytest.approx(
+        [0.0, 1.0, 0.0], abs=1e-12
+    )
+    assert [b.level_deviation_db for b in hot_report.bands] == pytest.approx(
+        [0.0, 1.0, 0.0], abs=1e-12
+    )
+    # ...and the elevation does not push an untouched band out of tolerance.
+    assert [b.passed for b in hot_report.bands] == [True, True, True]
 
 
 # --------------------------------------------------------------------------- #
@@ -1095,16 +1197,16 @@ def test_convergence_residual_ignores_the_best_effort_region():
 def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
     """The S0 reading, and the reason the counts are part of the record.
 
-    Measured 2026-07-26 on the S0 main leg's ten-position combined spec
-    curve (1/3-octave, the curve the plan grades). Three maskings of the
-    SAME curve -- the speaker never changed:
+    Measured on the S0 main leg's ten-position combined spec curve
+    (1/3-octave, the curve the plan grades). Three maskings of the SAME
+    curve -- the speaker never changed:
 
       mask                     residual    bins    excluded
-      none                     4.6141 dB   10752          0
-      power-vs-median screen   4.6696 dB   10616        136
-      screen + null registry   3.8031 dB    7678       3074
+      none                     6.4961 dB   10752          0
+      power-vs-median screen   6.8226 dB   10616        136
+      screen + null registry   5.7705 dB    7678       3074
 
-    Adding the registry drops the residual by 0.87 dB while removing 2938
+    Adding the registry drops the residual by 1.05 dB while removing 2938
     bins from the denominator. Read alone that looks like convergence; read
     with the counts it is visibly the 8-16 kHz band losing 54 % of its bins.
     A loop that watched only ``rms_db`` would call that progress.
@@ -1115,6 +1217,16 @@ def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
     which is what this test is for: the residual still falls by ~0.9 dB while
     the denominator loses ~2900 bins, so the drop is still the mask growing
     rather than the speaker improving.
+
+    RE-PINNED AGAIN when ``REFERENCE_BAND_HZ`` narrowed from 250 Hz-8 kHz to
+    250 Hz-2 kHz, the low-mid band alone (#1857): all three rows rose,
+    because the reference no longer sits among the whole graded span --
+    only the low-mid band -- so the other two bands now read further from
+    it. The BIN COUNTS in every row are exactly what they were:
+    ``REFERENCE_BAND_HZ`` picks which bins define the zero, not which bins
+    are in a spec band. The registry's drop is now ~1.05 dB rather than
+    ~0.87 dB, and the lesson holds just as hard -- the denominator still
+    loses the same ~2900 bins.
 
     The last row is also the exactness check: the reassembled figure matches
     a direct from-the-arrays recomputation to 1e-12 relative.
@@ -1132,19 +1244,19 @@ def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
             evaluate_flat_spec(freqs, spec, mask)
         )
 
-    assert readings["none"].rms_db == pytest.approx(4.6141, abs=0.002)
+    assert readings["none"].rms_db == pytest.approx(6.4961, abs=0.002)
     assert readings["none"].n_bins == 10_752
     assert readings["none"].n_excluded == 0
 
-    assert readings["screen"].rms_db == pytest.approx(4.6696, abs=0.002)
+    assert readings["screen"].rms_db == pytest.approx(6.8226, abs=0.002)
     assert readings["screen"].n_bins == 10_616
     assert readings["screen"].n_excluded == 136
 
     both = readings["screen_plus_registry"]
-    assert both.rms_db == pytest.approx(3.8031, abs=0.002)
+    assert both.rms_db == pytest.approx(5.7705, abs=0.002)
     assert both.n_bins == 7678
     assert both.n_excluded == 3074
-    assert readings["screen"].rms_db - both.rms_db == pytest.approx(0.87, abs=0.02)
+    assert readings["screen"].rms_db - both.rms_db == pytest.approx(1.05, abs=0.02)
 
     # Exactness of the per-band reassembly, against the arrays directly.
     mask = combined.excluded | registry.excluded
@@ -1190,10 +1302,20 @@ _ROUND3_FLOOR_HZ = 357.1425
 def _rising_into_the_floor_db() -> np.ndarray:
     """A curve whose LF rise keeps climbing below the trusted floor, so the
     worst GRADED bin is the lowest graded bin and the true extremum is not
-    graded at all."""
+    graded at all.
+
+    280/329 Hz are sized so that, self-referenced against band1 alone (the
+    band this rise lives in, and -- since #1857's anchor ruling -- also
+    REFERENCE_BAND_HZ itself), 280 Hz remains the single worst-deviation bin
+    of the whole (untruncated) band even after its own bump pulls the
+    band's power-mean level up. That property is exercised by
+    ``test_an_untruncated_bands_lowest_bin_is_not_an_edge_extremum``; the
+    floor-truncated tests below never see these two bins at all, so this
+    choice does not affect them.
+    """
     db = np.zeros_like(_EDGE_FREQS_HZ)
-    db[0] = 5.6   # 280 Hz -- ungraded
-    db[1] = 5.1   # 329 Hz -- ungraded, and the curve's real maximum region
+    db[0] = 10.3  # 280 Hz -- ungraded
+    db[1] = 4.6   # 329 Hz -- ungraded, and the curve's real maximum region
     db[2] = 4.5   # 358 Hz -- the FIRST graded bin, and the reported extremum
     db[3] = 3.0   # 420 Hz
     return db
@@ -1230,13 +1352,18 @@ def test_an_extremum_inside_a_truncated_band_is_not_disclosed_as_an_edge():
     extremum ALSO sits on the cut edge -- otherwise the graded span contains
     its own worst bin and there is nothing an unseen remainder could add."""
     db = _rising_into_the_floor_db()
-    db[4] = 6.0  # 600 Hz -- well inside the graded span, and now the worst
+    db[4] = 6.0  # 600 Hz -- well inside the graded span
     report = evaluate_flat_spec(
         _EDGE_FREQS_HZ, db, trusted_floor_hz=_ROUND3_FLOOR_HZ,
     )
     low = report.bands[0]
     assert low.graded_lo_hz == pytest.approx(_ROUND3_FLOOR_HZ)
-    assert low.max_deviation_hz == 600.0
+    # Not 600 Hz: band1 is now the reference band itself, so the 600 Hz bump
+    # pulls the graded span's own power-mean level up enough that the flat
+    # 1000 Hz bin -- quiet relative to that raised level -- reads as a
+    # bigger deviation than the bump. Either way the worst bin sits inside
+    # the graded span, not on its cut edge, which is the thing under test.
+    assert low.max_deviation_hz == 1000.0
     assert low.max_at_graded_edge is False
 
 
@@ -1254,11 +1381,17 @@ def test_an_untruncated_bands_lowest_bin_is_not_an_edge_extremum():
 
 def test_an_unevaluable_band_states_no_edge_verdict():
     """No bins, no extremum, so no claim about where one sat -- `None`, never
-    a fabricated `False`, exactly like every other metric on the band."""
+    a fabricated `False`, exactly like every other metric on the band.
+
+    Emptied by the ceiling rather than the floor, for the reason
+    ``test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed``
+    states: a floor that empties a band now empties the frame with it and
+    raises. ``max_at_graded_edge`` is a FLOOR-truncation disclosure either
+    way, and an unevaluable band makes no claim about it."""
     report = evaluate_flat_spec(
-        _EDGE_FREQS_HZ, _rising_into_the_floor_db(), trusted_floor_hz=2500.0,
+        _EDGE_FREQS_HZ, _rising_into_the_floor_db(), trusted_ceiling_hz=8000.0,
     )
-    low = report.bands[0]
-    assert low.evaluable is False
-    assert low.max_at_graded_edge is None
-    assert report.to_dict()["bands"][0]["max_at_graded_edge"] is None
+    top = report.bands[2]
+    assert top.evaluable is False
+    assert top.max_at_graded_edge is None
+    assert report.to_dict()["bands"][2]["max_at_graded_edge"] is None

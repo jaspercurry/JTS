@@ -558,6 +558,48 @@ def test_a_band_out_of_tolerance_fails():
     assert verdict.reason == SPEC_BAND_OUT_OF_TOLERANCE
 
 
+def test_the_spec_verdict_carries_every_band_and_the_span_it_graded():
+    """The evidence a driver reads to decide whether to run another round.
+
+    The gauge names ONE band; a round that has to choose what to fix needs
+    all of them, each with the frequency of its worst bin and the edges it
+    was actually graded between — the top band's no longer equals its
+    nominal one. Disclosure: the verdict itself is unchanged by the presence
+    of these keys, which the STATUS assertions above and below pin.
+    """
+    freqs = np.geomspace(200.0, 24000.0, 600)
+    curve = np.where((freqs >= 2000.0) & (freqs < 8000.0), 1.0, 0.0)
+    report = evaluate_flat_spec(
+        freqs, curve, trusted_floor_hz=357.14, trusted_ceiling_hz=20000.0,
+    )
+
+    evidence = evaluate_spec(report).evidence
+
+    assert evidence["graded_band_hz"] == [357.14, 20000.0]
+    assert evidence["trusted_ceiling_hz"] == 20000.0
+    assert [
+        (b["f_lo_hz"], b["f_hi_hz"], b["graded_lo_hz"], b["graded_hi_hz"], b["passed"])
+        for b in evidence["bands"]
+    ] == [
+        (250.0, 2000.0, 357.14, 2000.0, True),
+        (2000.0, 8000.0, 2000.0, 8000.0, True),
+        # Nominal 16 kHz, graded to the microphone's own 20 kHz.
+        (8000.0, 16000.0, 8000.0, 20000.0, True),
+    ]
+    # Only the elevated band carries the elevation — the frame is the low-mid
+    # band, which no part of a 2-8 kHz bulge is pooled into.
+    deviations = [b["max_deviation_db"] for b in evidence["bands"]]
+    assert deviations == pytest.approx([0.0, 1.0, 0.0], abs=1e-9)
+    assert all(
+        b["max_deviation_hz"] is not None and b["graded_lo_hz"] is not None
+        for b in evidence["bands"]
+    )
+    # ...and the frame-free reading names WHICH two bands disagree.
+    assert evidence["tilt"]["step_db"] == pytest.approx(1.0, abs=1e-9)
+    assert evidence["tilt"]["high_band_hz"] == [2000.0, 8000.0]
+    assert evidence["tilt"]["low_band_hz"] == [250.0, 2000.0]
+
+
 def test_no_report_at_all_is_unevaluable():
     verdict = evaluate_spec(None)
     assert verdict.status is SpecStatus.UNEVALUABLE
@@ -1270,18 +1312,22 @@ def _report_with_two_failing_bands():
         types.SimpleNamespace(
             f_lo_hz=20.0, f_hi_hz=250.0, tolerance_db=3.0, evaluable=False,
             passed=None, max_deviation_db=None, max_deviation_hz=None,
+            graded_lo_hz=20.0, graded_hi_hz=250.0,
         ),
         types.SimpleNamespace(
             f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5, evaluable=True,
             passed=False, max_deviation_db=4.70, max_deviation_hz=331.8,
+            graded_lo_hz=250.0, graded_hi_hz=2000.0,
         ),
         types.SimpleNamespace(
             f_lo_hz=2000.0, f_hi_hz=8000.0, tolerance_db=2.0, evaluable=True,
             passed=True, max_deviation_db=0.4, max_deviation_hz=4000.0,
+            graded_lo_hz=2000.0, graded_hi_hz=8000.0,
         ),
         types.SimpleNamespace(
             f_lo_hz=8000.0, f_hi_hz=16000.0, tolerance_db=2.0, evaluable=True,
             passed=False, max_deviation_db=-2.63, max_deviation_hz=14072.0,
+            graded_lo_hz=8000.0, graded_hi_hz=20000.0,
         ),
     ))
 

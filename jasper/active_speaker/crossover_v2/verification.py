@@ -230,6 +230,7 @@ __all__ = [
     "flatness_objectives",
     "identity_mismatch",
     "pooled_residual",
+    "spec_band_rows",
     "verification_result",
 ]
 
@@ -702,7 +703,7 @@ def evaluate_region_benefit(
     """The benefit claim again, restricted to the crossover blend region.
 
     **Why this exists.** :func:`evaluate_benefit` pools its residual across all
-    three ``SPEC_BANDS`` — 250 Hz to 16 kHz. A win confined to a two-octave
+    three ``SPEC_BANDS`` — 250 Hz to the graded ceiling. A win confined to a two-octave
     blend region is diluted across that whole span and lands inside the margin,
     so a correction that worked reads as ``residual_within_margin``. That is
     not a broken axis; it is a correct verdict about the wrong question. This
@@ -726,7 +727,7 @@ def evaluate_region_benefit(
     re-routes ``evaluate_flat_spec``'s own centering: its reference level comes
     from ``REFERENCE_BAND_HZ`` intersected with what survives, so a
     region-masked evaluation is referenced to the REGION's surviving bins
-    rather than to 250 Hz–8 kHz. For a SHAPE claim about a region that is the
+    rather than to the low-mid band. For a SHAPE claim about a region that is the
     right frame — it matches the VERIFY absolute claim's own mean-removal, and
     it makes the verdict blind to a level change, which is the trim's fact and
     not this one's. It is also why the blend SOLVER does not use this framing:
@@ -814,6 +815,14 @@ def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
     if report is None:
         return Verdict(SpecStatus.UNEVALUABLE, SPEC_NO_REPORT, {})
     evidence = spec_flatness_gauge(report).to_dict()
+    # The gauge names ONE band — whichever read furthest from the frame. A
+    # driver deciding whether to run another round needs all of them, and the
+    # graded span they were read over, or it cannot tell a band that is one
+    # round from failing from one that is already out. Same rows the quality
+    # axis's misses come from, so the two cannot disagree.
+    evidence["bands"] = spec_band_rows(report)
+    evidence["graded_band_hz"] = list(report.graded_band_hz)
+    evidence["trusted_ceiling_hz"] = report.trusted_ceiling_hz
     if report.overall_passed:
         return Verdict(SpecStatus.PASSED, SPEC_IN_TOLERANCE, evidence)
     if any(band.evaluable and band.passed is False for band in report.bands):
@@ -1463,26 +1472,43 @@ def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
     return "" if seam_rollback_deferral(probe) else verdict
 
 
-def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
-    """Each evaluable band that measured out of tolerance, as a next-round target.
+def spec_band_rows(report: FlatSpecReport | None) -> list[dict[str, Any]]:
+    """Every evaluable band's own verdict and its worst bin.
 
     Per-band rather than "spec failed", because the receipt is what the NEXT
     round reads and "250-2000 Hz missed by 0.8 dB at 331.8 Hz" is an
     instruction where "spec failed" is only a mood. Lifted from the report's own
     :class:`~jasper.active_speaker.flat_spec.BandResult` fields — nothing here
     re-grades a band or recomputes a deviation.
+
+    Carries the GRADED edges beside the nominal ones because the two now
+    differ at the top: a session whose microphone is trusted to 20 kHz grades
+    its top band to 20 kHz, and a row printing only ``f_hi_hz`` would say
+    16 kHz. A band that could not be graded is absent rather than present with
+    ``None`` metrics — an unevaluable band is not a target.
+
+    :func:`_failing_spec_bands` is this list filtered to the misses, so the
+    quality axis's evidence and the spec verdict's cannot describe one round's
+    bands two different ways.
     """
 
     if report is None:
         return []
     bands: list[dict[str, Any]] = []
     for band in report.bands:
-        if not (band.evaluable and band.passed is False):
+        if not band.evaluable:
             continue
         bands.append({
             "f_lo_hz": float(band.f_lo_hz),
             "f_hi_hz": float(band.f_hi_hz),
+            "graded_lo_hz": (
+                None if band.graded_lo_hz is None else float(band.graded_lo_hz)
+            ),
+            "graded_hi_hz": (
+                None if band.graded_hi_hz is None else float(band.graded_hi_hz)
+            ),
             "tolerance_db": float(band.tolerance_db),
+            "passed": band.passed,
             "max_deviation_db": (
                 None if band.max_deviation_db is None
                 else float(band.max_deviation_db)
@@ -1493,6 +1519,13 @@ def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
             ),
         })
     return bands
+
+
+def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
+    """:func:`spec_band_rows` filtered to the bands that measured out of
+    tolerance — the quality axis's evidence, which names only the misses."""
+
+    return [row for row in spec_band_rows(report) if row["passed"] is False]
 
 
 # --------------------------------------------------------------------------

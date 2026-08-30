@@ -299,6 +299,7 @@ def _own_reference_db(position: PositionCurve, report: FlatSpecReport) -> float:
         _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
         smoothing_fraction=position.smoothing_fraction,
         trusted_floor_hz=report.trusted_floor_hz,
+        trusted_ceiling_hz=report.trusted_ceiling_hz,
     )
     return float(graded.reference_db)
 
@@ -370,6 +371,7 @@ def _frozen_assert(
                 _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
                 smoothing_fraction=position.smoothing_fraction,
                 trusted_floor_hz=report.trusted_floor_hz,
+                trusted_ceiling_hz=report.trusted_ceiling_hz,
             )
         if got.reference_db != frozen_refs[seat]:
             raise RoundViewsError(

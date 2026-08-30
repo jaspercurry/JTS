@@ -623,18 +623,26 @@ def test_the_loop_converges_on_the_underlying_defect():
 
     ``B_{N+1} = B_N − k·d_{N+1}`` with ``d_{N+1} = u + B_N`` has the fixed
     point ``B* = −u`` and contracts by ``(1 − k)`` each round. Asserted as a
-    monotone approach rather than as an exact value, because the prescription
-    is refit to biquads every round and the refit is not the identity.
+    monotone approach to that fixed point rather than as an exact value,
+    because the prescription is refit to biquads every round and the refit is
+    not the identity — the floor below is that refit's own residual.
+
+    **The fixed point is asserted; the per-round RATE is not.** ``k`` is how
+    much of the region's deviation the round reads, and that depends on how
+    much of the defect sits inside ``REFERENCE_BAND_HZ``: a defect the frame
+    is pooled over is partly charged to the frame instead of to the region,
+    so the loop reads less of it per round and takes more rounds. This
+    fixture's bell sits at 1500 Hz, inside the frame, which is the slow case
+    — and it still lands on the same floor. Pinning a rate would pin the
+    frame, which is a separate ruling.
     """
 
-    residuals = _series(5, incumbent_accounted=True)
+    residuals = _series(9, incumbent_accounted=True)
 
     assert residuals == sorted(residuals, reverse=True), (
         f"not monotone: {residuals}"
     )
-    assert residuals[-1] < residuals[0] * 0.1, (
-        f"too slow to be convergence: {residuals}"
-    )
+    assert residuals[-1] < 0.05, f"did not reach the refit floor: {residuals}"
 
 
 def test_the_absolute_re_derive_this_replaces_does_not_converge():
@@ -651,8 +659,8 @@ def test_the_absolute_re_derive_this_replaces_does_not_converge():
     right.
     """
 
-    naive = _series(5, incumbent_accounted=False)
-    shipped = _series(5, incumbent_accounted=True)
+    naive = _series(9, incumbent_accounted=False)
+    shipped = _series(9, incumbent_accounted=True)
 
     assert naive[1] > naive[0], "the naive form's second round made it worse"
     assert naive != sorted(naive, reverse=True), (
@@ -1121,15 +1129,16 @@ def _defect_series(defect_q: float, rounds: int, *, stop: bool) -> list[float]:
 
 
 @pytest.mark.parametrize(
-    ("defect_q", "settles_at"), [(3.0, 0.3439), (4.0, 0.7325), (6.0, 1.0341)],
+    ("defect_q", "settles_at"), [(3.0, 0.3439), (4.0, 0.7320), (6.0, 1.0094)],
 )
 def test_a_defect_narrower_than_the_filter_stops_instead_of_wandering(
     defect_q, settles_at,
 ):
     """A ``Q = 2`` cut cannot match a narrower defect, so each round's fit
     over-corrects the shoulders and the over-correction becomes next round's
-    defect. Unstopped, that limit-cycles — and at ``Q = 4`` it ends worse than
-    round 1 (0.496 → 0.814 over six rounds, the panel's own measurement).
+    defect. Unstopped, that limit-cycles — at ``Q = 4`` the unstopped series
+    alternates 0.493 ↔ 0.732 forever and never settles, while the stopped one
+    holds 0.732.
 
     **The settle point is pinned to its value, not bounded.** A ``<= max(the
     unstopped series)`` assertion is satisfied by almost any behaviour,
@@ -1138,7 +1147,7 @@ def test_a_defect_narrower_than_the_filter_stops_instead_of_wandering(
     rule actually produces, they are the ones the module docstring quotes, and
     a change to the stop moves them.
 
-    Note ``Q = 6``: it settles at 1.034, ABOVE the 0.767 the unstopped
+    Note ``Q = 6``: it settles at 1.009, ABOVE the 0.767 the unstopped
     alternation touches. That is the honest worst case and is asserted rather
     than avoided — the stop buys a stable value there, not a better one.
     """

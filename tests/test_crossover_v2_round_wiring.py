@@ -1102,6 +1102,9 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     # back exactly as the host persists it.
     assert identity["round_ordinal"] == 1
     assert "objectives" in identity
+    # This round's cloud pipeline was made to fail, so there is no spec report
+    # — and the key says so rather than fabricating an empty verdict.
+    assert identity["spec"] is None
     assert coordinator.series_position_from_state(
         {"round_receipt": identity}
     ).ordinal == 2
@@ -1828,6 +1831,21 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}
     assert receipt["fingerprint"] == json_fingerprint(core)
     assert identity["receipt_fingerprint"] == receipt["fingerprint"]
+    # …and the round's own flatness verdicts ride the same durable record the
+    # objectives do, not only the tilt/ripple pair. A driver chaining rounds
+    # decides from this block, and "tilt = 2.4 dB" with no band, no frequency
+    # and no graded span is a number nobody can act on.
+    spec = identity["spec"]
+    assert isinstance(spec, dict)
+    assert {"max_db", "max_hz", "graded_band_hz", "passed", "tilt"} <= set(spec)
+    assert isinstance(spec["bands"], list) and spec["bands"]
+    assert {"f_lo_hz", "f_hi_hz", "graded_lo_hz", "graded_hi_hz", "passed",
+            "tolerance_db", "max_deviation_db", "max_deviation_hz"} == set(
+        spec["bands"][0]
+    )
+    assert {"step_db", "high_band_hz", "low_band_hz"} <= set(spec["tilt"])
+    # The same numbers the axis decided on, not a second reading of them.
+    assert spec["max_db"] == evaluation.spec.evidence["max_db"]
 
 
 def test_the_full_tier_restores_a_measured_regression_at_the_cloud_close(

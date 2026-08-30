@@ -3319,11 +3319,19 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
                         "reference_db": -27.27,
                         "bands": [
                             {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
-                             "max_deviation_db": 1.02, "tolerance_db": 1.5},
+                             "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
+                             "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
+                             "tolerance_db": 1.5},
                             {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
-                             "max_deviation_db": -1.41, "tolerance_db": 2.0},
+                             "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
+                             "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
+                             "tolerance_db": 2.0},
+                            # The top band graded past its NOMINAL 16 kHz edge:
+                            # this session's microphone is trusted to 20 kHz.
                             {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
-                             "max_deviation_db": -4.85, "tolerance_db": 2.5},
+                             "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
+                             "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
+                             "tolerance_db": 2.5},
                         ],
                     },
                     "flatness": {
@@ -3365,13 +3373,24 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     # (flat-linearization PR-5 N-3 / PR-7): `/state` is what a chart reads,
     # and per-band numbers missing from the only projection a page sees is
     # the pressure that grows a second derivation downstream.
+    #
+    # ``max_deviation_hz`` and the GRADED edges ride along for the same
+    # reason: a dB with no frequency names no defect to fix, and the top
+    # band's graded edge no longer equals its nominal one -- a row printing
+    # only ``f_hi_hz`` here would say 16 kHz about a band graded to 20.
     assert measure["spec_bands"] == [
         {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
-         "max_deviation_db": 1.02, "tolerance_db": 1.5},
+         "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
+         "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
+         "tolerance_db": 1.5},
         {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
-         "max_deviation_db": -1.41, "tolerance_db": 2.0},
+         "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
+         "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
+         "tolerance_db": 2.0},
         {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
-         "max_deviation_db": -4.85, "tolerance_db": 2.5},
+         "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
+         "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
+         "tolerance_db": 2.5},
     ]
     # PR-7: the report-level reference the tolerance corridor is centered on
     # rides the entry too, copied verbatim like everything else here.
