@@ -425,17 +425,27 @@ class SessionExcitation:
         inversion and the candidate delay under test live there. It never plays
         the production graph.
         """
-        binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
-        gain = back_off_gain(
-            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
-            self.session_volume_db,
-            binding_cap,
-        )
+        # PER ROLE, like MEASURE, because the confirm is a two-channel program
+        # whose segments each carry their real driver: each branch is clamped to
+        # its OWN cap rather than every branch to the most restrictive one. The
+        # acoustic sum happens in the air, not in a channel, so no driver ever
+        # receives more than its own channel carries.
+        gains = {
+            rb.role: back_off_gain(
+                BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
+                self.session_volume_db,
+                self.caps_dbfs.get(rb.role, 0.0),
+            )
+            for rb in self.roles
+        }
         return build_null_confirm_program(
             self.fc_hz,
-            gain_db=gain,
+            self.roles,
+            gains_db=gains,
             downstream_gain_db=self.session_volume_db,
-            leading_pilot_gains_db=self.pilot_gains(gain),
+            leading_pilot_gains_db=self.pilot_gains(
+                gains[self.leading_pilot_role]
+            ),
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_NULL_CONFIRM),
         )
 

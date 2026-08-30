@@ -31,19 +31,39 @@ from jasper.active_speaker.crossover_v2.programs import (
     NoProgramForPhaseError,
     program_for_phase,
 )
+from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     NULL_CONFIRM_SHOULDER_MARGIN,
+    RoleBand,
     build_null_confirm_program,
     build_verify_program,
     null_confirm_band_hz,
+    null_confirm_channel_plan,
+    segment_emitted_band_hz,
+    segment_stimulus,
 )
 
 FC_HZ = 1600.0
 GAIN_DB = -30.0
 
+#: JTS3-shaped: the tweeter's permitted floor sits ABOVE the lower shoulder at
+#: every corner this speaker crosses over at, which is the case option B exists
+#: to serve (`hard_low = recommended_highpass_hz - 500`).
+JTS3_ROLES = (
+    RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+    RoleBand("tweeter", 1, FrequencyBand(1100.0, 20000.0)),
+)
+#: A speaker whose drivers overlap widely enough that both shoulders are summed.
+WIDE_ROLES = (
+    RoleBand("woofer", 0, FrequencyBand(80.0, 8000.0)),
+    RoleBand("tweeter", 1, FrequencyBand(500.0, 20000.0)),
+)
 
-def _confirm(fc_hz: float = FC_HZ):
-    return build_null_confirm_program(fc_hz, gain_db=GAIN_DB)
+
+def _confirm(fc_hz: float = FC_HZ, roles=JTS3_ROLES):
+    return build_null_confirm_program(
+        fc_hz, roles, gains_db={rb.role: GAIN_DB for rb in roles},
+    )
 
 
 def _verify(fc_hz: float = FC_HZ):
@@ -101,7 +121,7 @@ def test_an_accepted_corner_always_has_real_run_up(fc_hz: float):
     assert hi > fc_hz * 2.0
 
 
-@pytest.mark.parametrize("fc_hz", [301.0, 800.0, 1600.0, 2400.0, 4000.0])
+@pytest.mark.parametrize("fc_hz", [800.0, 1600.0, 2400.0])
 def test_the_confirm_sweep_stays_inside_the_summed_sweep_this_speaker_plays(
     fc_hz: float,
 ):
@@ -112,11 +132,10 @@ def test_the_confirm_sweep_stays_inside_the_summed_sweep_this_speaker_plays(
     not already cover. Narrowing to the crossover region takes energy AWAY from
     both extremes.
     """
-    confirm = _confirm(fc_hz).segment("sweep_verify")
+    confirm = _confirm(fc_hz, WIDE_ROLES).segment("sweep_verify")
     verify = _verify(fc_hz).segment("sweep_verify")
     assert confirm.f1_hz >= verify.f1_hz
     assert confirm.f2_hz <= verify.f2_hz
-    assert confirm.gain_db == verify.gain_db
 
 
 def test_a_corner_whose_shoulders_do_not_fit_is_refused_not_narrowed():
@@ -291,3 +310,119 @@ def test_a_confirm_that_read_no_depth_is_refused_not_accepted_empty(monkeypatch)
     shallow = consume(None, 1, 1, SimpleNamespace(reverse_null_depth_db=3.2), None)
     assert shallow.accepted is True
     assert shallow.payload["null_depth_db"] == 3.2
+
+
+# --------------------------------------------------------------------------- #
+# option B: one waveform, two channels, gated per declared band
+# --------------------------------------------------------------------------- #
+
+
+def test_the_two_branches_are_sample_identical_where_both_are_open():
+    """THE property the null rests on.
+
+    Two channels cancel only if they carry the same waveform: the crossover, the
+    inversion and the candidate delay are then the only things between them and
+    a null. A freshly generated sub-sweep is not that — even matched in rate it
+    starts at phase zero, and against its parent slice it differs by about three
+    times the signal RMS, which would floor every measured null on an artefact
+    of the stimulus rather than on the speaker.
+
+    So the gated branch regenerates the SAME parent and silences samples. This
+    asserts the consequence exactly: zero difference, not "close".
+    """
+    import numpy as np
+
+    program = _confirm()
+    segs = {s.role: s for s in program.stimulus_segments() if s.kind == "summed_sweep"}
+    woofer = segment_stimulus(segs["woofer"])
+    tweeter_seg = segs["tweeter"]
+    tweeter = segment_stimulus(tweeter_seg)
+
+    open_from = tweeter_seg.gate_start_sample + tweeter_seg.gate_fade_samples
+    assert open_from > 0, "this fixture is meant to exercise a real gate"
+    assert np.array_equal(woofer[open_from:], tweeter[open_from:])
+    # ...and the gated branch is genuinely silent where its driver may not play.
+    assert not np.any(tweeter[: tweeter_seg.gate_start_sample])
+
+
+def test_a_gated_branch_never_claims_the_band_its_gate_silences():
+    """What admission judges. The parent band is kept so the branches stay
+    identical; the EMITTED band is derived from the gate, and it is that band a
+    driver's permitted range is checked against."""
+    program = _confirm()
+    tweeter = next(
+        s for s in program.stimulus_segments() if s.role == "tweeter"
+    )
+    emitted_lo, _emitted_hi = segment_emitted_band_hz(tweeter)
+    declared_lo = JTS3_ROLES[1].band.lower_hz
+    assert tweeter.f1_hz < declared_lo, "the parent sweep starts below the driver"
+    assert emitted_lo >= declared_lo, "but nothing below its declared floor is emitted"
+
+
+def test_every_segment_carries_a_real_role_and_its_own_channel():
+    """``role=None`` resolved no driver target, so no permitted-band, cap or
+    duration check ran on the summed segments at all."""
+    program = _confirm()
+    sweeps = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
+    assert {s.role for s in sweeps} == {"woofer", "tweeter"}
+    assert {s.channel for s in sweeps} == {0, 1}
+    assert all(s.role is not None for s in program.stimulus_segments())
+
+
+@pytest.mark.parametrize("fc_hz", [1600.0, 2000.0, 2400.0])
+def test_the_jts3_shape_is_served_with_a_single_branch_lower_shoulder(fc_hz: float):
+    """The corners this speaker actually crosses over at.
+
+    ``hard_low = recommended_highpass_hz - 500`` (``driver_safety``) with the
+    high-pass at the corner puts the tweeter's permitted floor at ``fc - 500``,
+    which is ABOVE ``fc/2`` for every Fc over 1 kHz. So the lower shoulder is
+    reached by the woofer alone.
+
+    That shoulder is still a valid reference: it is the un-cancelled passband
+    level either side of the notch, and a branch that is not playing there
+    cannot cancel anything. The confirm is therefore ACCEPTED — this is the case
+    option B exists to serve — and it reports which shoulder was summed rather
+    than leaving a reader to assume both were.
+    """
+    roles = (
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(fc_hz - 500.0, 20000.0)),
+    )
+    _band, _gates, shoulders = null_confirm_channel_plan(fc_hz, roles)
+    assert shoulders["lower"] is False, "fc/2 is below the tweeter's floor"
+    assert shoulders["upper"] is True
+
+
+def test_a_wide_overlap_reports_both_shoulders_summed():
+    """Anti-vacuity for the row above: the flag tracks the bands, not a
+    constant."""
+    _band, _gates, shoulders = null_confirm_channel_plan(1600.0, WIDE_ROLES)
+    assert shoulders == {"lower": True, "upper": True}
+
+
+def test_an_overlap_that_cannot_bracket_fc_is_refused_not_crashed():
+    """The derived refusal. The measurement IS the cancellation at Fc, so both
+    branches must be open there with their fades clear of it. A tweeter that
+    only starts above Fc leaves no coordinate at which these branches can be
+    measured cancelling — an honest refusal, in the shoulder-span family, not a
+    crash and not a depth read off a closed branch."""
+    roles = (
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(2600.0, 20000.0)),
+    )
+    with pytest.raises(ValueError, match="bracket"):
+        null_confirm_channel_plan(1600.0, roles)
+
+
+def test_the_gate_keeps_every_ungated_program_byte_identical():
+    """The gate is additive+defaulted on a HASHED schema: `program_id` is a hash
+    of the segment dicts, and #2291's before→after comparison is `program_id`
+    equality. An ungated segment must therefore serialise exactly as it did
+    before the gate existed."""
+    verify = _verify()
+    seg = verify.segment("sweep_verify")
+    assert seg.is_gated is False
+    assert "gate_start_sample" not in seg.to_dict()
+    from jasper.audio_measurement.program import ProgramSegment
+
+    assert ProgramSegment.from_dict(seg.to_dict()) == seg

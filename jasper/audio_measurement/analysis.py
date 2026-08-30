@@ -39,6 +39,17 @@ def crossover_null_depth_db(freqs, mag_db, crossover_fc_hz: float) -> float:
     guard). Shared measurement math lives below the boundary and consumers
     import down; two spellings of this subtraction would be two null depths,
     and the walk that grades them could not tell which it had.
+
+    **A shoulder may be SINGLE-BRANCH, and that is still a valid reference.** On
+    a real 2-way the tweeter's permitted floor sits above `Fc/2`, so a delay
+    confirmation's lower shoulder is reached by the woofer alone
+    (`program.null_confirm_channel_plan` gates each branch to its declared band
+    and reports which shoulders were summed). The reference this subtraction
+    wants is the UN-CANCELLED passband level either side of the notch, and a
+    branch that is not playing at a shoulder cannot cancel anything there — so a
+    single-branch shoulder measures exactly what the metric asks of it. What it
+    is NOT is a level comparable across speakers, which is why the confirm banks
+    which shoulders were summed rather than leaving a reader to assume both.
     """
     at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
     lower_shoulder = float(np.interp(crossover_fc_hz / 2.0, freqs, mag_db))
