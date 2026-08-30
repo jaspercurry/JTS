@@ -81,6 +81,7 @@ from .runner import (
     ReferenceSweepCapture,
     Stop,
     TargetPlan,
+    candidate_artifact_tag,
 )
 from .sink import BundleSink
 
@@ -772,7 +773,7 @@ class BenchRoleExecutor:
         )
         minima = self._padding_minima(live_active_config_raw)
         padded = stimulus.pad_stimulus_wav(generator_wav, minima=minima)
-        setting_tag = f"transfer-{candidate_setting_dbfs:g}"
+        setting_tag = f"transfer-{candidate_artifact_tag(candidate_setting_dbfs)}"
         stimulus_identity = sink.write_bytes(
             f"{self.target.target_id}/{setting_tag}-padded.wav",
             padded.wav_bytes,
@@ -1066,6 +1067,7 @@ class BenchRoleExecutor:
             sink=sink,
         )
         stop.check()
+        setting_tag = candidate_artifact_tag(candidate_setting_dbfs)
         sweep_request = self.requests["sweep_transparency"]
         sustain_request = self.requests["sustain_stress"]
         sweep_played, sweep_padded, sweep_padded_identity = await self._prepare_and_play(
@@ -1075,7 +1077,7 @@ class BenchRoleExecutor:
             live_active_config_raw=raw,
             sink=sink,
             stop=stop,
-            tag=f"candidate-{candidate_setting_dbfs:g}-sweep_transparency",
+            tag=f"candidate-{setting_tag}-sweep_transparency",
             reference=reference,
         )
         sustain_played, sustain_padded, sustain_padded_identity = await self._prepare_and_play(
@@ -1085,7 +1087,7 @@ class BenchRoleExecutor:
             live_active_config_raw=raw,
             sink=sink,
             stop=stop,
-            tag=f"candidate-{candidate_setting_dbfs:g}-sustain_stress",
+            tag=f"candidate-{setting_tag}-sustain_stress",
         )
         if (
             sweep_played.transparency_analysis is None
@@ -1135,7 +1137,7 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> CandidateMeasurements:
-        setting_tag = f"{candidate_setting_dbfs:g}"
+        setting_tag = candidate_artifact_tag(candidate_setting_dbfs)
         sweep_played = cast(PlayedStimulus, capture.sweep_render_inputs["played"])
         sustain_played = cast(PlayedStimulus, capture.sustain_render_inputs["played"])
         sweep_raw = cast(str, capture.sweep_render_inputs["live_active_config_raw"])

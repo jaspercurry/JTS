@@ -1135,15 +1135,15 @@ async def test_finish_role_computes_bounds_from_each_channels_own_render(
 
 _SWEEP_QUIET_DBFS = -40.0
 _SWEEP_LOUD_DBFS = -20.0
+_NEAR_CANDIDATE_SETTINGS = (-6.0000002, -6.0000001)
 
 
 def _round_trip_render_config(binary_path, config_path, *, output_path, bounds, fader_db):
     """One quiet-then-loud step, broadcast to all 4 playback channels, safe
     under both the -1 dBFS owner clip_limit and the conservative margin's -4
     dBFS digital-clamp ceiling. Discovery measures its LOUD half
-    (_SWEEP_LOUD_DBFS) as the pre-limiter peak, which becomes the single
-    candidate's clip_limit setting — so the digital_transfer_probe's
-    post_limiter render for that SAME setting must be the reference
+    with two near-equal owner-channel peaks during discovery. For each
+    candidate, the digital_transfer_probe's post-limiter render must be the reference
     soft-clip transform of its own pre-limiter shape (never the identical,
     untransformed step my _finish_role callers use), or the isolated
     transfer verdict correctly fails."""
@@ -1155,8 +1155,13 @@ def _round_trip_render_config(binary_path, config_path, *, output_path, bounds, 
         [np.full(half, quiet), np.full(_FAKE_RENDER_FRAMES - half, loud)]
     ).astype(np.float64)
     if "transfer-" in str(output_path) and "post_limiter" in str(output_path):
-        mono = render.reference_soft_clip(mono, clip_limit_dbfs=_SWEEP_LOUD_DBFS)
+        rendered = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+        clip_limit_dbfs = rendered["filters"][LIMITER_NAME]["parameters"]["clip_limit"]
+        mono = render.reference_soft_clip(mono, clip_limit_dbfs=clip_limit_dbfs)
     frame = np.tile(mono[:, None], (1, 4)).astype("<f8")
+    if "discovery-" in str(output_path):
+        for channel, setting in zip(OWNER_CHANNELS, _NEAR_CANDIDATE_SETTINGS):
+            frame[half:, channel] = 10 ** (setting / 20.0)
     data = frame.tobytes()
     output_path.write_bytes(data)
     return render.RenderInvocation(
@@ -1190,29 +1195,32 @@ async def test_bench_role_executor_full_round_trip_through_produce_limiter_thres
         activation, "_prove_active_graph", lambda config, proof: proof.expected_clip_limit_dbfs
     )
 
-    # Every play() call across discovery (x2), the reference sweep (x1), and
-    # the candidate pass (x2) needs its own canned PlayedStimulus. The sweep
+    # Every play() call across discovery and both candidate passes needs its
+    # own canned PlayedStimulus. Each candidate sweep
     # candidate play must carry transparency_analysis/verdict (frozen
     # schema requirement checked by run_candidate). The reference sweep and
     # the candidate sweep must share the SAME admission SHA — the frozen
     # protocol requires "the executor plays the same admitted request in
     # both phases" (ReferenceSweepCapture's docstring); the producer refuses
     # as inconsistent otherwise.
-    shared_sweep_admission = _artifact("shared-sweep-admission")
+    shared_sweep_admissions = [_artifact(f"shared-sweep-admission-{i}") for i in range(2)]
     responses = [
         _played_stimulus(label="disc-sweep"),  # discovery: sweep_transparency
         _played_stimulus(label="disc-sustain"),  # discovery: sustain_stress
-        _played_stimulus(
-            label="ref-sweep", admission=shared_sweep_admission
-        ),  # reference sweep (phase 1)
-        _played_stimulus(
-            label="cand-sweep",
-            admission=shared_sweep_admission,
-            transparency_analysis=_artifact("transp-analysis"),
-            transparency_verdict="pass",
-        ),  # candidate: sweep_transparency
-        _played_stimulus(label="cand-sustain"),  # candidate: sustain_stress
     ]
+    for index, admission in enumerate(shared_sweep_admissions):
+        responses.extend(
+            [
+                _played_stimulus(label=f"ref-sweep-{index}", admission=admission),
+                _played_stimulus(
+                    label=f"cand-sweep-{index}",
+                    admission=admission,
+                    transparency_analysis=_artifact(f"transp-analysis-{index}"),
+                    transparency_verdict="fail" if index == 0 else "pass",
+                ),
+                _played_stimulus(label=f"cand-sustain-{index}"),
+            ]
+        )
     play_and_capture = RecordingPlayAndCapture(responses)
 
     # snapshot_predecessor fingerprint-matches get_active_config_raw()
@@ -1315,15 +1323,27 @@ async def test_bench_role_executor_full_round_trip_through_produce_limiter_thres
     # "refused" disposition nested in candidates_least_to_most_permissive.
     assert result["disposition"] == "evaluated", result
     candidates = result["candidates_least_to_most_permissive"]
-    assert len(candidates) == 1
-    assert candidates[0]["disposition"] == "accepted"
-    # The candidate's setting is exactly the discovered pre-limiter peak —
-    # the LOUD half of the synthetic quiet/loud step.
-    assert candidates[0]["limiter_threshold_dbfs"] == pytest.approx(_SWEEP_LOUD_DBFS)
+    assert len(candidates) == 2
+    assert [candidate["disposition"] for candidate in candidates] == [
+        "limiter_transparency_failed",
+        "accepted",
+    ]
+    settings = [candidate["limiter_threshold_dbfs"] for candidate in candidates]
+    assert settings == pytest.approx(_NEAR_CANDIDATE_SETTINGS)
+    expected_paths = {
+        f"{prefix}_{setting!r}.json"
+        for setting in settings
+        for prefix in ("reference_activation", "candidate_activation", "candidate_restoration")
+    } | {
+        f"candidate-{setting!r}-{role}-padded.wav"
+        for setting in settings
+        for role in ("sweep_transparency", "sustain_stress")
+    }
+    assert expected_paths <= {path.name for path in (sink.bundle_dir / TARGET_ID).iterdir()}
 
     produced = produce_limiter_thresholds(emitted, required_context=context)
     assert isinstance(produced, LimiterThresholdSet), produced
-    assert produced.targets[0].limiter_threshold_dbfs == pytest.approx(_SWEEP_LOUD_DBFS)
+    assert produced.targets[0].limiter_threshold_dbfs == pytest.approx(settings[1])
 
     # Sanity: the sweep record really did go through build_sweep_record (the
     # runner composes it from the executor's _finish_role dict), and its
