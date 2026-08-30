@@ -108,7 +108,7 @@ Modules:
     uncorrectable comb is excluded with its delay and reflection ratio
     recorded as the reason.
   - :mod:`~jasper.audio_measurement.frame_ledger` — end-to-end frame
-    accounting for the phone-mic capture chain, which the gate above reconciles.
+    accounting for the phone-mic capture chain.
   - :mod:`~jasper.audio_measurement.timeline_slip` — detection of one discrete
     step in a capture's own clock.
   - :mod:`~jasper.audio_measurement.frame_fit` — the FRAME between two
