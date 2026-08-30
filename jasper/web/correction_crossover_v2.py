@@ -2506,8 +2506,7 @@ def _bankable(value: Any) -> Any:
     ``MALFORMED`` refusal — and the retention seam fail-softs, which would
     lose the WHOLE take record over one unmeasurable diagnostic. Since the
     point of carrying these blocks is to stop losing data, an unmeasurable
-    number becomes ``null``. Same answer, same reason, as
-    ``commissioning_capture_producer._finite_json_evidence``.
+    number becomes ``null``.
 
     **Keys are never dropped, only their values nulled**, and that is the whole
     difference between a scrub and a lie. ``analysis_diagnostic_summary``

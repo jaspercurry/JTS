@@ -662,13 +662,13 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     :data:`DEFAULT_F2_HZ` 20 kHz, :data:`DEFAULT_DURATION_S` 6 s) reads
     sub_bass -11.57 dB, bass -1.57, upper_bass +2.44, transition +4.09,
     mid +1.76, treble -7.62 against the law. Those figures hold for that shape
-    only. The LIVE summed-crossover sweep is much narrower — bounded to one
+    only. The summed-crossover sweep was much narrower — bounded to one
     octave either side of the crossover, clamped to
     :data:`~jasper.active_speaker.test_signal_plan.MIN_DRIVER_TEST_FREQUENCY_HZ`
     and
     :data:`~jasper.active_speaker.test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ`
-    (``commissioning_capture_producer``'s ``_prepare_sweep``) — and was NOT
-    characterised band-by-band, so those per-band figures do not describe it.
+    — and was NOT characterised band-by-band, so those per-band figures do not
+    describe it.
 
     *What actually drives it: capture LAYOUT, not sweep range or duration.*
     Holding the sweep fixed and varying only the leading quiet from 0 to 20 s
@@ -686,16 +686,23 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
       raw-WAV ``POST /crossover/driver-capture`` route, which W5b removed. It
       is absent from ``jasper.web.correction_setup``'s route allowlist and
       pinned at 404 by ``test_web_correction_setup``'s route-inventory test.
-    * :func:`analyze_summed_crossover` — live, but its sole production
-      caller (``commissioning_capture_producer``'s
-      ``analyze_summed_crossover`` call) always passes ``ambient_duration_s``
-      and passes NEITHER ``noise_band_report`` NOR ``noise_floor_dbfs``. That
-      builds the paired ambient report, stamped ``domain="deconvolved"``, so
-      the capture side is measured by ``snr_policy.magnitude_band_levels``
-      instead. Reaching this function needs ``paired_ambient is None`` AND
-      one of those two kwargs set; with neither set the SNR block is skipped
-      entirely. Pinned by
-      ``test_summed_production_shape_never_reads_the_hann_capture_band_levels``.
+    * :func:`analyze_summed_crossover` — no longer reached from any live
+      path. Its one production caller was the commissioning capture producer,
+      deleted by ADR-0197. One reference survives —
+      ``commissioning_capture.record_summed_acoustic_capture``'s ``analyze``
+      default argument — but that function has no production caller either
+      (tests and an ``active_speaker.__init__`` re-export only), so binding
+      the default never calls it. While the producer existed it always passed
+      ``ambient_duration_s`` and passed NEITHER ``noise_band_report`` NOR
+      ``noise_floor_dbfs``, which builds the paired ambient report, stamped
+      ``domain="deconvolved"``, so the capture side is measured by
+      ``snr_policy.magnitude_band_levels`` instead. Reaching this function
+      needs ``paired_ambient is None`` AND one of those two kwargs set; with
+      neither set the SNR block is skipped entirely. That shape stays pinned
+      by
+      ``test_summed_production_shape_never_reads_the_hann_capture_band_levels``,
+      which now guards the shape a rebuilt caller must keep rather than one
+      any live path takes.
 
     *Reviving either caller re-arms this immediately.* Adding a
     driver-capture upload route, or passing ``noise_band_report`` /

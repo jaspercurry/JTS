@@ -1273,9 +1273,9 @@ def test_summed_production_shape_never_reads_the_hann_capture_band_levels(
     This pins the reachability claim recorded in ``_capture_band_levels``'s
     docstring, which is the whole reason that function was left on the Hann
     default rather than mirroring #1847's ``window="rectangular"`` fix.
-    ``commissioning_capture_producer``'s ``analyze_summed_crossover`` call —
-    the only production caller — always supplies ``ambient_duration_s`` and
-    supplies NEITHER ``noise_band_report`` NOR ``noise_floor_dbfs``. That
+    The commissioning capture producer — the only production caller until
+    ADR-0197 deleted it — always supplied ``ambient_duration_s`` and
+    supplied NEITHER ``noise_band_report`` NOR ``noise_floor_dbfs``. That
     builds the paired ambient report, which is stamped ``domain=
     "deconvolved"``, so the capture side is measured by
     ``snr_policy.magnitude_band_levels`` on the deconvolved magnitude instead.

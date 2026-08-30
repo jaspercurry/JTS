@@ -1026,13 +1026,14 @@ sweep** — 162 cases across six crossover frequencies, three ambient spectra,
 three capture levels, two seeds, plus a 54-case adversarial corner.
 
 **8 s is the CEILING, not "the production length", and the distinction is
-load-bearing.** The summed sweep runs for
-`min(SUMMED_SWEEP_DURATION_S, maximum_duration_s)`
-(`commissioning_capture_producer._bounded_sweep_meta`), where
-`maximum_duration_s` is the minimum across BOTH adjacent drivers'
-operator-declared `max_sweep_duration_s`, then decremented until it fits.
-`MAX_TWEETER_SWEEP_DURATION_S = 4.0`, so a real two-way runs a **4 s** summed
-sweep — between the two lengths measured here, covered by neither.
+load-bearing.** The summed sweep ran for
+`min(SUMMED_SWEEP_DURATION_S, maximum_duration_s)`, where `maximum_duration_s`
+is the minimum across BOTH adjacent drivers' operator-declared
+`max_sweep_duration_s`, then decremented until it fits.
+`MAX_TWEETER_SWEEP_DURATION_S = 4.0`, so a real two-way ran a **4 s** summed
+sweep — between the two lengths measured here, covered by neither. The
+producer that ran it is deleted (ADR-0197); these figures describe the hazard
+a rebuilt summed capture inherits, not a live path.
 
 That matters because duration controls the SIGN: the raw substitute gets no
 sweep processing gain while the deconvolved side does, so the substitution
