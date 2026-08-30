@@ -30,7 +30,7 @@ let state = {
   effective: "off",
   available: true,
   parked: false,
-  powered: false,
+  powered: null,
   discoverable: false,
   discovering: false,
 };
@@ -62,7 +62,7 @@ async function fetchState(force = false) {
           ...state,
           available: false,
           effective: 'unavailable',
-          powered: false,
+          powered: null,
           discoverable: false,
           discovering: false,
           error: payload.error || `Bluetooth state request failed (${r.status})`,
@@ -78,7 +78,7 @@ async function fetchState(force = false) {
         ...state,
         available: false,
         effective: 'unavailable',
-        powered: false,
+        powered: null,
         discoverable: false,
         discovering: false,
       };
@@ -115,8 +115,12 @@ function renderToggles() {
     hint = state.degradedReason || (state.desired
       ? 'Set to on, but the Bluetooth radio is not ready.'
       : 'Set to off, but the Bluetooth radio is still active.');
+  } else if (state.powered === false) {
+    hint = 'Off — turn Bluetooth on to manage devices.';
+  } else if (state.powered === true) {
+    hint = `On — adapter ${state.adapter || 'hci0'}`;
   } else {
-    hint = state.powered ? `On — adapter ${state.adapter || 'hci0'}` : 'Off';
+    hint = 'Bluetooth radio state unknown.';
   }
   if (!unavailable && !parked && state.discovering) hint += ' · scanning…';
   document.getElementById('bt-hint').textContent = hint;
@@ -356,10 +360,8 @@ function renderDevices() {
 
 function deviceRow(d) {
   const isPaired = !!d.paired;
-  const mutationDisabled = mutationInFlight ? ' disabled' : '';
-  const radioActionDisabled = (
-    mutationInFlight || state.available === false || state.parked
-    || !state.desired || !state.powered
+  const disabled = action => deviceActionDisabled(
+    action, state, mutationInFlight,
   ) ? ' disabled' : '';
   const canRemoveUnpaired = !isPaired && (
     !!d.connected || !!d.trusted || !!d.servicesResolved
@@ -390,13 +392,13 @@ function deviceRow(d) {
   let actions = '';
   if (isPaired) {
     actions = d.connected
-      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}"${mutationDisabled}>Disconnect</button>`
-      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}"${radioActionDisabled}>Connect</button>`;
-    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${mutationDisabled}>Forget</button>`;
+      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}"${disabled('disconnect')}>Disconnect</button>`
+      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}"${disabled('connect')}>Connect</button>`;
+    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Forget</button>`;
   } else {
-    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}"${radioActionDisabled}>Pair</button>`;
+    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}"${disabled('pair')}>Pair</button>`;
     if (canRemoveUnpaired) {
-      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${mutationDisabled}>Remove</button>`;
+      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Remove</button>`;
     }
   }
   // Metrics. Render each label only when bluez actually has a value
@@ -446,6 +448,15 @@ function deviceRow(d) {
       <div class="actions">${actions}</div>
     </div>
   `;
+}
+
+function deviceActionDisabled(action, currentState, mutationPending) {
+  if (mutationPending) return true;
+  if (action === 'disconnect' || action === 'forget') {
+    return currentState.powered === false;
+  }
+  return currentState.available === false || currentState.parked
+    || !currentState.desired || currentState.powered !== true;
 }
 
 function rssiBars(rssi) {

@@ -13,7 +13,11 @@ from dbus_next.errors import DBusError
 
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.engine import BluetoothEngine, _format_dbus_error
-from jasper.bluetooth.models import BluetoothDevice, UUID_HOGP
+from jasper.bluetooth.models import (
+    BluetoothActionResult,
+    BluetoothDevice,
+    UUID_HOGP,
+)
 
 from ._async_wait import wait_signalled
 
@@ -282,10 +286,39 @@ async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     reasons: list[str] = []
     engine = _engine(reasons)
 
-    ok, msg = await engine.connect("CA:AC:04:04:09:D7")
+    result = await engine.connect("CA:AC:04:04:09:D7")
 
-    assert (ok, msg) == (True, "connected")
+    assert result == BluetoothActionResult(True, "connected")
     assert reasons == ["bluetooth-connect"]
+
+
+@pytest.mark.parametrize("action", ("connect", "disconnect", "forget"))
+@pytest.mark.parametrize("detail", ("Resource Not Ready", "controller asleep"))
+async def test_device_action_preserves_bluez_not_ready_type(
+    monkeypatch,
+    action: str,
+    detail: str,
+):
+    engine = _engine([])
+
+    async def reject(*_args) -> None:
+        raise DBusError("org.bluez.Error.NotReady", detail)
+
+    if action in {"connect", "disconnect"}:
+        bus = engine._bus
+        assert isinstance(bus, _FakeBus)
+        setattr(bus.proxy.device, f"call_{action}", reject)
+    else:
+        monkeypatch.setattr("jasper.bluetooth.adapter.remove_device", reject)
+
+    result = await getattr(engine, action)("CA:AC:04:04:09:D7")
+
+    assert result == BluetoothActionResult(
+        False,
+        "Turn Bluetooth on to manage devices.",
+        "adapter_not_ready",
+    )
+    assert detail not in result.message
 
 
 async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
@@ -296,14 +329,14 @@ async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
     engine = _engine(reasons)
 
     async def remove_device(_mac: str, _adapter: str):
-        return True, "forgotten"
+        return None
 
     monkeypatch.setattr("jasper.bluetooth.adapter.remove_device", remove_device)
 
     caplog.set_level(logging.INFO, logger="jasper.bluetooth.engine")
-    ok, msg = await engine.forget("CA:AC:04:04:09:D7")
+    result = await engine.forget("CA:AC:04:04:09:D7")
 
-    assert (ok, msg) == (True, "forgotten")
+    assert result == BluetoothActionResult(True, "removed")
     assert reasons == ["bluetooth-forget"]
     assert "event=bluetooth.device_forget" in caplog.text
     assert "address=CA:AC:04:04:09:D7" in caplog.text
@@ -565,7 +598,10 @@ async def test_connect_recovers_shared_bus_after_scan_start_cleanup_failure(
 
     assert first_bus.disconnected is True
     assert engine._bus is None
-    assert await engine.connect("CA:AC:04:04:09:D7") == (True, "connected")
+    assert await engine.connect("CA:AC:04:04:09:D7") == BluetoothActionResult(
+        True,
+        "connected",
+    )
     assert engine._bus is replacement_bus
     assert engine._bus_recovery_required is False
     assert replacement_bus.device_proxy is not None
@@ -627,7 +663,7 @@ async def test_concurrent_device_operations_share_one_recovered_bus(monkeypatch)
     assert engine._bus is replacement_bus
     assert engine._bus_recovery_required is False
     assert any(event["stage"] == "ready" for event in pair_events)
-    assert connect_result == (True, "connected")
+    assert connect_result == BluetoothActionResult(True, "connected")
 
 
 async def test_scan_request_recovers_bus_after_fail_closed_release(monkeypatch):
@@ -785,7 +821,7 @@ async def test_device_operations_surface_shared_bus_recovery_failure(
             ),
         }
     ]
-    expected = (
+    expected = BluetoothActionResult(
         False,
         "Bluetooth controller recovery failed: "
         "BlueZ bus recovery failed: system bus unavailable",

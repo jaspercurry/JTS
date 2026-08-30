@@ -72,6 +72,7 @@ from ..bluetooth.adapter import (
     state as adapter_state,
 )
 from ..bluetooth.engine import BluetoothEngine
+from ..bluetooth.models import ADAPTER_NOT_READY_CODE, BluetoothActionResult
 from ..log_event import log_event
 from ..local_sources import local_source_lifecycle
 from ..music_sources import Source
@@ -152,7 +153,7 @@ def _unit_available(unit: str) -> bool:
 def _effective_bluetooth_state(
     *,
     desired: bool,
-    powered: bool,
+    powered: bool | None,
     parked: bool = False,
     availability: BluetoothAvailability | None = None,
     unit_snapshot: UnitSnapshot | None = None,
@@ -174,8 +175,10 @@ def _effective_bluetooth_state(
     if desired:
         if any_soft_blocked is True:
             reasons.append("the radio is RF-killed")
-        if not powered:
+        if powered is False:
             reasons.append("BlueZ reports the adapter powered off")
+        elif powered is None:
+            reasons.append("BlueZ adapter state is unavailable")
         inactive = [unit for unit, running in active.items() if not running]
         if inactive:
             reasons.append(f"required services are inactive: {', '.join(inactive)}")
@@ -184,8 +187,10 @@ def _effective_bluetooth_state(
         still_active = [unit for unit, running in active.items() if running]
         if still_active:
             reasons.append(f"services are still active: {', '.join(still_active)}")
-        if powered:
+        if powered is True:
             reasons.append("BlueZ still reports the adapter powered on")
+        elif powered is None:
+            reasons.append("BlueZ adapter state is unavailable")
         if fully_soft_blocked is False:
             reasons.append("the radio is not RF-killed")
         effective = "off" if not reasons else "degraded"
@@ -204,7 +209,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     except RuntimeError as exc:
         return ({
             "error": str(exc),
-            "powered": False,
+            "powered": None,
             "desired": False,
             "effective": "unavailable",
             "available": False,
@@ -224,7 +229,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     except (DBusError, OSError, RuntimeError, asyncio.TimeoutError) as exc:
         effective, degraded_reason = _effective_bluetooth_state(
             desired=desired,
-            powered=False,
+            powered=None,
             parked=parked,
             availability=availability,
             unit_snapshot=unit_snapshot,
@@ -233,7 +238,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             effective = "unavailable"
         payload: dict[str, Any] = {
             "error": str(exc),
-            "powered": False,
+            "powered": None,
             "desired": desired,
             "effective": effective,
             "available": availability.available,
@@ -473,6 +478,22 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             send_json_response(self, payload, status=status)
 
+        def _send_device_action(self, result: BluetoothActionResult) -> None:
+            if result.ok:
+                self._send_json({"ok": True, "message": result.message})
+                return
+            payload = {"error": result.message}
+            if result.code is not None:
+                payload["code"] = result.code
+            self._send_json(
+                payload,
+                status=(
+                    HTTPStatus.CONFLICT
+                    if result.code == ADAPTER_NOT_READY_CODE
+                    else HTTPStatus.BAD_GATEWAY
+                ),
+            )
+
         def _read_json(self) -> dict[str, Any]:
             try:
                 return read_json_object(self, max_bytes=1_000_000)
@@ -656,34 +677,25 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     self._send_json({"ok": True})
                     return
                 if path == "/connect":
-                    ok, msg = _dispatch().run(
+                    result = _dispatch().run(
                         _dispatch().engine.connect(mac),
                         timeout_sec=MUTATION_TIMEOUT_SEC,
                     )
-                    if not ok:
-                        self._send_json({"error": msg}, status=502)
-                        return
-                    self._send_json({"ok": True, "message": msg})
+                    self._send_device_action(result)
                     return
                 if path == "/disconnect":
-                    ok, msg = _dispatch().run(
+                    result = _dispatch().run(
                         _dispatch().engine.disconnect(mac),
                         timeout_sec=MUTATION_TIMEOUT_SEC,
                     )
-                    if not ok:
-                        self._send_json({"error": msg}, status=502)
-                        return
-                    self._send_json({"ok": True, "message": msg})
+                    self._send_device_action(result)
                     return
                 if path == "/forget":
-                    ok, msg = _dispatch().run(
+                    result = _dispatch().run(
                         _dispatch().engine.forget(mac),
                         timeout_sec=MUTATION_TIMEOUT_SEC,
                     )
-                    if not ok:
-                        self._send_json({"error": msg}, status=502)
-                        return
-                    self._send_json({"ok": True, "message": msg})
+                    self._send_device_action(result)
                     return
             except Exception as e:  # noqa: BLE001
                 logger.exception("POST %s failed", path)

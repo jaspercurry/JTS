@@ -125,18 +125,6 @@ def test_unavailable_and_parked_state_gate_activation_without_trapping_off():
     assert "Bluetooth state unavailable." in js
 
 
-def test_unavailable_state_keeps_disconnect_and_forget_available():
-    js = _MODULE_JS.read_text()
-    assert "const mutationDisabled = mutationInFlight ? ' disabled' : '';" in js
-    assert "const radioActionDisabled = (" in js
-    assert 'data-action="disconnect"' in js
-    assert 'data-action="forget"' in js
-    assert "${mutationDisabled}>Disconnect</button>" in js
-    assert "${mutationDisabled}>Forget</button>" in js
-    assert "${radioActionDisabled}>Connect</button>" in js
-    assert "${radioActionDisabled}>Pair</button>" in js
-
-
 def test_failed_power_apply_uses_authoritative_state_readback():
     js = _MODULE_JS.read_text()
     assert "data.state && typeof data.state === 'object'" in js
@@ -170,9 +158,9 @@ def test_desired_on_adapter_degraded_message_is_actionable():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not on PATH")
-def test_scan_toggle_browser_module_handles_success_and_failures():
+def test_bluetooth_browser_modules_handle_scan_and_device_action_states():
     proc = subprocess.run(
-        [_NODE, str(_SCAN_HARNESS), str(_SCAN_JS)],
+        [_NODE, str(_SCAN_HARNESS), str(_SCAN_JS), str(_MODULE_JS)],
         capture_output=True,
         text=True,
         timeout=30,

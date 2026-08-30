@@ -33,6 +33,7 @@ from unittest import mock
 
 import pytest
 
+from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
 from tests._web_test_helpers import make_real_handler
 
@@ -205,15 +206,15 @@ class _FakeEngine:
 
     async def connect(self, mac):
         self.calls.append(("connect", mac))
-        return True, "connected"
+        return BluetoothActionResult(True, "connected")
 
     async def disconnect(self, mac):
         self.calls.append(("disconnect", mac))
-        return True, "disconnected"
+        return BluetoothActionResult(True, "disconnected")
 
     async def forget(self, mac):
         self.calls.append(("forget", mac))
-        return True, "forgotten"
+        return BluetoothActionResult(True, "forgotten")
 
 
 class _FakeDispatcher:
@@ -1023,6 +1024,41 @@ def test_unavailable_adapter_still_allows_shutdown_and_cleanup(
         request_intent.assert_not_called()
 
 
+@pytest.mark.parametrize("action", ("connect", "disconnect", "forget"))
+def test_device_not_ready_is_a_structured_conflict(monkeypatch, action):
+    token = "n" * 64
+    fake = _FakeDispatcher()
+
+    async def not_ready(mac):
+        fake.engine.calls.append((action, mac))
+        return adapter_not_ready_result()
+
+    setattr(fake.engine, action, not_ready)
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "source_intent_enabled",
+        mock.Mock(return_value=True),
+    )
+    h = _make_request(
+        f"/{action}",
+        body=b'{"mac":"AA:BB:CC:DD:EE:FF"}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+
+    h.do_POST()
+
+    assert h.status == int(http.HTTPStatus.CONFLICT)
+    payload = json.loads(h.wfile.getvalue())
+    assert payload == {
+        "error": "Turn Bluetooth on to manage devices.",
+        "code": "adapter_not_ready",
+    }
+    assert fake.engine.calls == [(action, "AA:BB:CC:DD:EE:FF")]
+
+
 @pytest.mark.parametrize("value", (False, True))
 def test_power_route_delegates_exact_boolean_to_shared_source_intent(
     monkeypatch,
@@ -1282,13 +1318,12 @@ def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("desired", "effective"),
-    ((False, "off"), (True, "degraded")),
+    "desired",
+    (False, True),
 )
 def test_get_state_preserves_desired_intent_when_adapter_read_fails(
     monkeypatch,
     desired,
-    effective,
 ):
     fake = _FakeDispatcher()
 
@@ -1318,16 +1353,15 @@ def test_get_state_preserves_desired_intent_when_adapter_read_fails(
     assert h.status == int(http.HTTPStatus.OK)
     expected = {
         "error": "BlueZ unavailable",
-        "powered": False,
+        "powered": None,
         "desired": desired,
-        "effective": effective,
+        "effective": "degraded",
         "available": True,
         "parked": False,
         "discoverable": False,
         "discovering": False,
+        "degradedReason": "BlueZ adapter state is unavailable",
     }
-    if desired:
-        expected["degradedReason"] = "BlueZ reports the adapter powered off"
     assert json.loads(h.wfile.getvalue()) == expected
     assert fake.run_calls == 1
 

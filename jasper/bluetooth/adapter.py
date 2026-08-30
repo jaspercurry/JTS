@@ -17,7 +17,6 @@ from typing import Any
 
 from dbus_next import BusType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
-from dbus_next.errors import DBusError  # type: ignore
 
 from ..log_event import log_event
 
@@ -215,15 +214,11 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
 
 async def remove_device(
     mac: str, adapter: str = DEFAULT_ADAPTER,
-) -> tuple[bool, str]:
-    """Remove a known BlueZ device. Returns (ok, message)."""
+) -> None:
+    """Remove a known BlueZ device."""
     async with _system_bus() as bus:
         a, _ = await _adapter(bus, adapter)
         dev_path = (
             f"/org/bluez/{adapter}/dev_{mac.upper().replace(':', '_')}"
         )
-        try:
-            await a.call_remove_device(dev_path)
-            return True, "removed"
-        except DBusError as e:
-            return False, str(e)
+        await a.call_remove_device(dev_path)

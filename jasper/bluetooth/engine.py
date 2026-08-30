@@ -32,7 +32,11 @@ from dbus_next.errors import DBusError  # type: ignore
 from jasper.log_event import log_event
 
 from .handlers import REGISTRY, pick
-from .models import BluetoothDevice
+from .models import (
+    BluetoothActionResult,
+    BluetoothDevice,
+    adapter_not_ready_result,
+)
 from .roles import RoleStore
 from .scan import DeviceObserver
 
@@ -85,8 +89,8 @@ def _stop_discovery_already_idle(err: DBusError) -> bool:
 
 class BluetoothEngine:
     """Owns the bus connection + observer. Singleton on the
-    daemon; exposes pair / connect / disconnect / forget as async
-    generators yielding status events."""
+    daemon. Pair streams progress events; connect, disconnect, and forget
+    return one structured result."""
 
     def __init__(
         self,
@@ -526,16 +530,19 @@ class BluetoothEngine:
         if not reconciled:
             await self._reconcile_accessories("bluetooth-pair")
 
-    async def connect(self, mac: str) -> tuple[bool, str]:
-        """Reconnect a paired device. Returns (ok, message)."""
+    async def connect(self, mac: str) -> BluetoothActionResult:
+        """Reconnect a paired device."""
         try:
             await self._recover_bus_if_required()
         except SCAN_OPERATION_ERRORS as error:
-            return False, f"Bluetooth controller recovery failed: {error}"
+            return BluetoothActionResult(
+                False,
+                f"Bluetooth controller recovery failed: {error}",
+            )
         bus = self._bus
         dev = self._observer.get_by_mac(mac)
         if dev is None or bus is None:
-            return False, "device not found"
+            return BluetoothActionResult(False, "device not found")
         try:
             intro = await bus.introspect(BLUEZ_BUS, dev.path)
             iface = bus.get_proxy_object(
@@ -545,20 +552,26 @@ class BluetoothEngine:
             ).get_interface("org.bluez.Device1")
             await iface.call_connect()
             if not await self._reconcile_accessories("bluetooth-connect"):
-                return True, "connected; optional accessory refresh will retry at boot"
-            return True, "connected"
+                return BluetoothActionResult(
+                    True,
+                    "connected; optional accessory refresh will retry at boot",
+                )
+            return BluetoothActionResult(True, "connected")
         except DBusError as e:
-            return False, _format_dbus_error(e)
+            return _device_action_error(e)
 
-    async def disconnect(self, mac: str) -> tuple[bool, str]:
+    async def disconnect(self, mac: str) -> BluetoothActionResult:
         try:
             await self._recover_bus_if_required()
         except SCAN_OPERATION_ERRORS as error:
-            return False, f"Bluetooth controller recovery failed: {error}"
+            return BluetoothActionResult(
+                False,
+                f"Bluetooth controller recovery failed: {error}",
+            )
         bus = self._bus
         dev = self._observer.get_by_mac(mac)
         if dev is None or bus is None:
-            return False, "device not found"
+            return BluetoothActionResult(False, "device not found")
         try:
             intro = await bus.introspect(BLUEZ_BUS, dev.path)
             iface = bus.get_proxy_object(
@@ -567,11 +580,11 @@ class BluetoothEngine:
                 intro,
             ).get_interface("org.bluez.Device1")
             await iface.call_disconnect()
-            return True, "disconnected"
+            return BluetoothActionResult(True, "disconnected")
         except DBusError as e:
-            return False, _format_dbus_error(e)
+            return _device_action_error(e)
 
-    async def forget(self, mac: str) -> tuple[bool, str]:
+    async def forget(self, mac: str) -> BluetoothActionResult:
         """Remove a known device from bluez.
 
         This clears pair/link-key state for paired devices and also removes
@@ -580,20 +593,27 @@ class BluetoothEngine:
         """
         from .adapter import remove_device
 
-        ok, msg = await remove_device(mac, self._adapter)
+        try:
+            await remove_device(mac, self._adapter)
+            result = BluetoothActionResult(True, "removed")
+        except DBusError as error:
+            result = _device_action_error(error)
         log_event(
             logger,
             "bluetooth.device_forget",
             address=mac,
-            ok=ok,
-            message=msg,
-            level=logging.INFO if ok else logging.WARNING,
+            ok=result.ok,
+            message=result.message,
+            level=logging.INFO if result.ok else logging.WARNING,
         )
-        if ok:
+        if result.ok:
             self._roles.remove(mac)
             if not await self._reconcile_accessories("bluetooth-forget"):
-                return True, f"{msg}; optional accessory refresh will retry at boot"
-        return ok, msg
+                return BluetoothActionResult(
+                    True,
+                    f"{result.message}; optional accessory refresh will retry at boot",
+                )
+        return result
 
     # ---------- internals ----------
 
@@ -664,6 +684,12 @@ def _format_dbus_error(err: BaseException) -> str:
     if "InProgress" in name:
         return "Bluetooth is busy. Try again in a moment."
     return msg or "Unknown bluetooth error."
+
+
+def _device_action_error(err: DBusError) -> BluetoothActionResult:
+    if err.type == "org.bluez.Error.NotReady":
+        return adapter_not_ready_result()
+    return BluetoothActionResult(False, _format_dbus_error(err))
 
 
 __all__ = ["BluetoothEngine", "REGISTRY"]

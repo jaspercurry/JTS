@@ -5,6 +5,12 @@
 import { loadEsm } from "./_loader.mjs";
 
 const { toggleScanRequest } = await loadEsm(process.argv[2]);
+const { deviceActionDisabled } = await loadEsm(process.argv[3], {
+  stripImports: true,
+  guardNoImports: true,
+  truncateBefore: "// -------- pair flow --------",
+  exportNames: ["deviceActionDisabled"],
+});
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -91,6 +97,44 @@ function harness(overrides = {}) {
   assert(h.alerts[0] === "Network error talking to the Bluetooth backend.",
     "network failure copy drifted");
   assert(h.refreshes === 1, "network failure should refresh current state");
+}
+
+{
+  const poweredOff = {
+    powered: false, desired: false, available: true, parked: false,
+  };
+  for (const action of ["disconnect", "forget", "connect", "pair"]) {
+    assert(deviceActionDisabled(action, poweredOff, false),
+      `${action} must be disabled while adapter power is known off`);
+  }
+
+  const ready = {
+    powered: true, desired: true, available: true, parked: false,
+  };
+  for (const action of ["disconnect", "forget", "connect", "pair"]) {
+    assert(!deviceActionDisabled(action, ready, false),
+      `${action} must be enabled when the adapter is ready`);
+  }
+
+  const degradedButPowered = {
+    powered: true, desired: true, available: false, parked: false,
+  };
+  assert(!deviceActionDisabled("disconnect", degradedButPowered, false),
+    "generic unavailability must not trap disconnect cleanup");
+  assert(!deviceActionDisabled("forget", degradedButPowered, false),
+    "generic unavailability must not trap forget cleanup");
+  assert(deviceActionDisabled("connect", degradedButPowered, false),
+    "generic unavailability must still block connect activation");
+  assert(deviceActionDisabled("pair", degradedButPowered, false),
+    "generic unavailability must still block pair activation");
+
+  const startupState = {
+    powered: null, desired: false, available: true, parked: false,
+  };
+  assert(!deviceActionDisabled("forget", startupState, false),
+    "startup must keep cleanup available until adapter power is known");
+  assert(deviceActionDisabled("forget", degradedButPowered, true),
+    "an active mutation must block every device action");
 }
 
 console.log(JSON.stringify({ ok: true }));
