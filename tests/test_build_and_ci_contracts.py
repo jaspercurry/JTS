@@ -11,9 +11,13 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
-TESTS_WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
+WORKFLOWS = ROOT / ".github" / "workflows"
+TESTS_WORKFLOW = WORKFLOWS / "tests.yml"
 
 
 def _pyproject() -> dict:
@@ -46,8 +50,6 @@ def _commit_all(repo: Path, message: str) -> None:
 
 
 def _dependabot() -> dict:
-    import yaml
-
     return yaml.safe_load(
         (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     )
@@ -285,7 +287,7 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
         "uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0"
     )
 
-    assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in workflow
+    assert "astral-sh/setup-uv@" in workflow
     assert 'version: "0.11.14"' in workflow
     assert sync in workflow
     assert openwakeword in workflow
@@ -301,6 +303,83 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
     assert "scikit-learn>=1,<2" not in workflow
     assert "uv pip install --python .venv/bin/python requests" not in workflow
     assert "pip install -e '.[full,dev]'" not in workflow
+
+
+def _workflow_action_refs(
+    node: object, path: tuple[str, ...] = ()
+) -> list[str]:
+    refs: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            is_job_action = len(path) == 2 and path[0] == "jobs"
+            is_step_action = (
+                len(path) == 4
+                and path[0] == "jobs"
+                and path[2:] == ("steps", "[]")
+            )
+            if key == "uses" and (is_job_action or is_step_action):
+                refs.append(value if isinstance(value, str) else repr(value))
+            else:
+                refs.extend(_workflow_action_refs(value, (*path, str(key))))
+    elif isinstance(node, list):
+        for value in node:
+            refs.extend(_workflow_action_refs(value, (*path, "[]")))
+    return refs
+
+
+@pytest.mark.parametrize(
+    ("workflow", "expected"),
+    [
+        (
+            'jobs:\n  check:\n    steps:\n      - "uses": owner/action@v1\n',
+            ["owner/action@v1"],
+        ),
+        (
+            "jobs: {check: {steps: [{uses: owner/action@v1}]}}\n",
+            ["owner/action@v1"],
+        ),
+        (
+            'jobs:\n  check:\n    uses: "owner/action@' + "a" * 40 + '"\n',
+            ["owner/action@" + "a" * 40],
+        ),
+        (
+            "jobs:\n  check:\n    env: {uses: plain-value}\n    steps:\n"
+            "      - run: |\n          echo 'uses: owner/action@v1'\n",
+            [],
+        ),
+    ],
+    ids=["quoted-key", "flow-mapping", "quoted-value", "run-block"],
+)
+def test_workflow_action_refs_follow_yaml_structure(
+    workflow: str, expected: list[str]
+) -> None:
+    assert _workflow_action_refs(yaml.safe_load(workflow)) == expected
+
+
+def test_workflow_actions_are_sha_pinned() -> None:
+    """Third-party actions must resolve to an immutable commit SHA.
+
+    A tag (`@v9`) is mutable upstream, so a compromised re-tag would reach
+    CI with no diff here. The SHA VALUE is Dependabot's to move: restating
+    one in a test made every `setup-uv` bump fail on the assertion rather
+    than on anything real (#2713), so this pins the shape, not the value.
+    """
+    unpinned: list[str] = []
+    workflow_paths = (*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml"))
+    for path in sorted(workflow_paths):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for ref in _workflow_action_refs(workflow):
+            # `./…` is an in-repo action; it carries no upstream supply chain.
+            if ref.startswith("./"):
+                continue
+            _, _, rev = ref.rpartition("@")
+            if len(rev) != 40 or any(char not in "0123456789abcdef" for char in rev):
+                unpinned.append(f"{path.name}: {ref}")
+
+    assert not unpinned, (
+        "workflow actions must be pinned to a 40-hex commit SHA, not a tag:\n  "
+        + "\n  ".join(unpinned)
+    )
 
 
 def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
