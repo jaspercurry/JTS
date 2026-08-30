@@ -602,6 +602,89 @@ def test_transport_coherence_error_is_not_disguised_as_audio_is_ready() -> None:
     assert _ROUTE_DISCONNECTED not in health["signal_path"]["detail"]
 
 
+def _sample_coherence_park(
+    monkeypatch,
+    *,
+    outputd: dict | None = None,
+    transport_park_state: dict | None = None,
+) -> dict:
+    from jasper.control import transport_park
+
+    monkeypatch.setattr(
+        transport_park,
+        "snapshot",
+        lambda: transport_park_state or {"status": "clear", "parks": []},
+    )
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: outputd if outputd is not None else _outputd(),
+        mux_probe=lambda: {"sources": {}},
+        route_probe=lambda: _route(transport={
+            "coherence_errors": [_ROUTE_DISCONNECTED],
+            "capability_gap": None,
+        }),
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    return sampler.snapshot()
+
+
+def test_transport_coherence_error_is_a_current_incident(monkeypatch) -> None:
+    health = _sample_coherence_park(monkeypatch)
+
+    assert health["current_incident"]["key"] == "path.transport_parked"
+    assert health["current_incident"]["title"] == health["signal_path"]["headline"]
+    assert health["current_incident"]["likely_area"] == "Shared processing path"
+
+
+@pytest.mark.parametrize(
+    ("outputd", "park_state", "current_key", "generic_present"),
+    [
+        (
+            _outputd(progress_age_ms=30_000),
+            None,
+            "path.outputd_watchdog_stale",
+            True,
+        ),
+        (
+            None,
+            {
+                "status": "parked",
+                "parks": [{"park_class": "mono_full_range"}],
+            },
+            "path.transport_park.mono_full_range",
+            False,
+        ),
+        (
+            _outputd(progress_age_ms=30_000),
+            {
+                "status": "parked",
+                "parks": [{"park_class": "mono_full_range"}],
+            },
+            "path.outputd_watchdog_stale",
+            False,
+        ),
+    ],
+)
+def test_specific_incident_outranks_or_replaces_the_coherence_park(
+    monkeypatch,
+    outputd,
+    park_state,
+    current_key,
+    generic_present,
+) -> None:
+    health = _sample_coherence_park(
+        monkeypatch,
+        outputd=outputd,
+        transport_park_state=park_state,
+    )
+
+    assert health["current_incident"]["key"] == current_key
+    keys = {issue["key"] for issue in health["issues"]}
+    assert ("path.transport_parked" in keys) is generic_present
+
+
 def test_parked_status_is_the_value_the_dashboard_alerts_on() -> None:
     """The household's parked surface is keyed to this status string.
 
@@ -4028,6 +4111,12 @@ def _every_incident_row() -> list[dict]:
                             service_states,
                             intents,
                             activity_unknown=True,
+                            coherence_park=(
+                                snapshot["signal_path"]
+                                if snapshot["signal_path"].get("code")
+                                == "transport_parked"
+                                else None
+                            ),
                             undeclared_hardware=None,
                             transport_park=park,
                         ))
@@ -4061,6 +4150,7 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
         "path.transport_park.mono_full_range",
         "path.transport_park.passive_stereo_composite",
         "path.transport_park.roleful_active_endpoint_unconverged",
+        "path.transport_parked",
         "path.camilla_stopped",
         "path.fanin_unavailable",
         "path.fanin_watchdog_stale",

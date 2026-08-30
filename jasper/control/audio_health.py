@@ -635,9 +635,6 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     transport-coherence check, which fails on the same fact and prints every
     error with its remedy.
 
-    Presentation only: :class:`AudioHealthSampler` deliberately feeds
-    :func:`_state_issues` the raw signal path, so a warn-level issue keeps its
-    own incident row instead of being swallowed by the standing reason.
     """
     transport = _mapping(route.get("transport"))
     errors = [
@@ -1187,17 +1184,27 @@ def _state_issues(
     source_intents: Mapping[str, bool] | None = None,
     *,
     activity_unknown: bool = False,
+    coherence_park: Mapping[str, Any] | None = None,
     undeclared_hardware: Mapping[str, Any] | None = None,
     transport_park: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    park_state = _mapping(transport_park)
+    if coherence_park is not None and park_state.get("status") != "parked":
+        issues.append(_issue(
+            "path.transport_parked",
+            scope="path",
+            impact="continuity",
+            severity="issue",
+            title=str(coherence_park.get("headline")),
+            detail=str(coherence_park.get("detail")),
+        ))
     # ADR-0178's named transport parks, one row per class so the household
     # card and the operator both see EVERY tracked issue this box waits on
     # rather than a first-match verdict. Ahead of the live-daemon rows and
     # outside the warmup gate: a park is structural, it is true at boot, and
     # a restart never clears it. Only a LIVE park (ring-only) is a household
     # incident — see :func:`_transport_park_signal`.
-    park_state = _mapping(transport_park)
     if park_state.get("status") == "parked":
         for park in park_state.get("parks") or []:
             if not isinstance(park, Mapping):
@@ -1840,7 +1847,7 @@ def _likely_area(issue: Mapping[str, Any]) -> str:
     key = str(issue.get("key") or "")
     if key.startswith("path.outputd"):
         return "Final output stage"
-    if key.startswith("path.fanin") or key.startswith("path.camilla"):
+    if key.startswith(("path.fanin", "path.camilla", "path.transport")):
         return "Shared processing path"
     if key.startswith("airplay"):
         return "AirPlay transport and synchronization"
@@ -1981,11 +1988,15 @@ def _present_incident(
 def _incident_priority(
     issue: Mapping[str, Any],
     active_source: str | None,
-) -> tuple[int, int, float]:
+) -> tuple[int, int, int, float]:
     relevant = _incident_is_relevant(issue, active_source)
+    key = str(issue.get("key") or "")
     return (
         1 if relevant else 0,
         1 if issue.get("severity") == "issue" else 0,
+        0
+        if key == "path.transport_parked" or key.startswith("path.transport_park.")
+        else 1,
         _timestamp(issue.get("last_seen_at"), 0.0),
     )
 
@@ -2532,6 +2543,7 @@ class AudioHealthSampler:
             self._service_states,
             intents,
             activity_unknown=activity_unknown,
+            coherence_park=_parked_signal(_mapping(self._route)),
             undeclared_hardware=undeclared_hardware,
             transport_park=self._transport_park,
         )
