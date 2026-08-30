@@ -279,8 +279,11 @@ def _believed_offset(reading: Any) -> float | None:
 
     if not getattr(reading, "acknowledged", False):
         return None
+    raw_degrees = getattr(reading, "degrees", None)
+    if raw_degrees is None:
+        return None
     try:
-        degrees = float(getattr(reading, "degrees", None))
+        degrees = float(raw_degrees)
     except (TypeError, ValueError):
         return None
     return degrees if math.isfinite(degrees) else None
@@ -391,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands.add_parser(
         "hotplug-stop",
-        help=argparse.SUPPRESS,
+        help="internal udev add-hook: probe and stop the matching turntable",
     )
     commands.add_parser("stop", help="send the vendor stop request")
     return parser
@@ -748,12 +751,12 @@ def run(
             else:
                 raise AssertionError(f"unhandled command: {args.command}")
 
-    payload: dict[str, Any] = {"ok": ok, "result": result}
+    response: dict[str, Any] = {"ok": ok, "result": result}
     if power_status is not None:
-        payload["power"] = _power_payload(power_status, args.allow_power_risk)
+        response["power"] = _power_payload(power_status, args.allow_power_risk)
     if retried:
-        payload["retried"] = True
-    _emit(payload, compact=args.json)
+        response["retried"] = True
+    _emit(response, compact=args.json)
     return 0 if ok else 1
 
 
