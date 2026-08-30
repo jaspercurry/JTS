@@ -23,7 +23,7 @@
 // Mirrors capture_host_stop_lifecycle_test.mjs's import-stripping harness.
 
 import assert from "node:assert/strict";
-import { loadEsm, repoPath } from "./_loader.mjs";
+import { loadCapturePage } from "./_capture_page_module.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 // --- Minimal-but-faithful-enough document stub -------------------------------
@@ -173,15 +173,7 @@ function makeRecorder() {
 }
 
 function loadModule() {
-  return loadEsm(repoPath("capture-page/js/main.js"), {
-    stripImports: true,
-    guardNoImports: true,
-    rewrite: [[
-      /^const PAGE_VERSION_URL = .*;$/m,
-      'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-    ]],
-    prelude: injected,
-  });
+  return loadCapturePage({ dependencySource: injected });
 }
 
 let passed = 0;
@@ -492,9 +484,26 @@ async function testPreToneLadderNeverClaimsTheToneEarly() {
     client,
   });
 
-  const prelude = "Listen for three beeps, then stay quiet — the tone follows.";
+  const expectedBeepCount = Number(
+    process.env.JTS_EXPECTED_COURTESY_BEEP_COUNT,
+  );
+  assert.ok(Number.isInteger(expectedBeepCount));
+  const prelude = statusHistory.find((line) => /^Listen for \w+ beeps,/.test(line));
+  assert.ok(prelude, `missing the prelude line: ${JSON.stringify(statusHistory)}`);
+  const numberWords = new Map([
+    ["one", 1],
+    ["two", 2],
+    ["three", 3],
+    ["four", 4],
+    ["five", 5],
+  ]);
+  const announcedCount = numberWords.get(/^Listen for (\w+) beeps,/.exec(prelude)[1]);
+  assert.equal(
+    announcedCount,
+    expectedBeepCount,
+    "the phone guidance matches the Pi's composed courtesy-tone beep count",
+  );
   const tone = "Playing the measurement tone…";
-  assert.ok(statusHistory.includes(prelude), `missing the prelude line: ${JSON.stringify(statusHistory)}`);
   assert.ok(statusHistory.includes(tone), "the tone still gets its own line");
   assert.ok(
     statusHistory.indexOf(prelude) < statusHistory.indexOf(tone),

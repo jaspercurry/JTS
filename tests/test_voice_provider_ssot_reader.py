@@ -2,109 +2,95 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guard: only jasper-voice may read JASPER_VOICE_PROVIDER from the env.
+"""Keep process-environment reads behind the startup configuration boundary."""
 
-AGENTS.md ("Reading the active provider in code — one reader, never
-`os.environ`"): surfaces that display or aggregate the active provider
-but are not jasper-voice (jasper-control's /state, the /system/
-dashboard, wizards) MUST resolve it through
-jasper.voice.provider_state (read_active_provider /
-read_active_provider_and_model), which re-read the SSOT file
-(/var/lib/jasper/voice_provider.env) fresh on every call. Long-lived
-daemons load their env once at start and are NOT restarted on a
-provider switch, so an os.environ read goes stale — that was the
-"/system/ still shows the old provider after switching" bug.
-
-The one legitimate env read is `Config.from_env` in jasper/config.py:
-jasper-voice itself IS restarted on every switch, so its os.environ is
-always fresh. (jasper/voice/provider_state.py reads the key out of the
-*parsed SSOT file* mapping, not os.environ — not an env read, so the
-patterns below deliberately don't match plain `env.get(...)`.)
-
-Scope: direct env reads (`os.environ.get/[...]`, `os.getenv`, the
-`_env*` config helpers) of the exact key. JASPER_VOICE_PROVIDER_FILE /
-_IDS_FILE are different keys (path overrides) and stay out of scope.
-
-The allowlist is two-sided: a file losing its allowed read (or growing
-a second one) fails, so the list can't go stale silently.
-"""
 from __future__ import annotations
 
 import ast
-import io
-import re
-import tokenize
 from pathlib import Path
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "jasper"
 
 
-def code_only(source: str) -> str:
-    """Return `source` with comments and standalone string expressions
-    (docstrings and bare prose strings) blanked out, so a guard regex
-    only sees executable code. A docstring *describing* the forbidden
-    pattern (provider_state.py's does, deliberately) must not trip the
-    guard that bans the pattern."""
-    lines = source.splitlines()
-    dead: set[int] = set()  # 0-based line indexes to blank
-    for node in ast.walk(ast.parse(source)):
-        if (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ):
-            dead.update(range(node.lineno - 1, node.end_lineno))
-    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-        if tok.type == tokenize.COMMENT:
-            lines[tok.start[0] - 1] = lines[tok.start[0] - 1][: tok.start[1]]
-    return "\n".join("" if i in dead else line for i, line in enumerate(lines))
-
-# Direct env reads of the provider key. `(?!_)` keeps the related path
-# keys (JASPER_VOICE_PROVIDER_FILE, JASPER_VOICE_PROVIDER_IDS_FILE)
-# out of scope.
-_ENV_READ = re.compile(
-    r"(?:os\.environ\.get\(|os\.getenv\(|os\.environ\[|_env[a-z_]*\()"
-    r"\s*['\"]JASPER_VOICE_PROVIDER(?!_)['\"]"
-)
-
-# repo-relative file -> exact number of permitted env reads.
-# jasper/config.py: Config.from_env, the jasper-voice daemon's single
-# parse point (fresh on every switch because the daemon restarts).
-_ALLOWED = {
-    "jasper/config.py": 1,
-}
+def _is_provider_key(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value == "JASPER_VOICE_PROVIDER"
 
 
-def _read_counts() -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for py in sorted(PKG.rglob("*.py")):
-        n = len(_ENV_READ.findall(code_only(py.read_text(encoding="utf-8"))))
-        if n:
-            counts[str(py.relative_to(ROOT))] = n
-    return counts
-
-
-def test_only_config_reads_provider_from_environ():
-    counts = _read_counts()
-    violations = {f: n for f, n in counts.items() if f not in _ALLOWED}
-    assert not violations, (
-        f"direct os.environ read(s) of JASPER_VOICE_PROVIDER outside the "
-        f"allowlist: {violations}. Long-lived daemons are not restarted on "
-        "a provider switch, so os.environ goes stale — resolve the active "
-        "provider through jasper.voice.provider_state.read_active_provider() "
-        "instead (see AGENTS.md 'one reader, never os.environ')."
+def _is_process_environment(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+        and node.attr == "environ"
     )
 
 
-def test_allowlist_is_not_stale():
-    counts = _read_counts()
-    for f, expected in _ALLOWED.items():
-        actual = counts.get(f, 0)
-        assert actual == expected, (
-            f"{f} has {actual} direct JASPER_VOICE_PROVIDER env read(s), "
-            f"allowlist says {expected}. If the read moved or multiplied, "
-            "update _ALLOWED in this test deliberately — extra reads in "
-            "config.py are still one-per-daemon-start and must be reasoned "
-            "about, and a removed read means the allowlist entry is dead."
+class _ProviderReadVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.scope: list[str] = []
+        self.reads: list[tuple[str, int]] = []
+
+    def _record(self, node: ast.AST) -> None:
+        self.reads.append((".".join(self.scope), node.lineno))
+
+    def _visit_scope(
+        self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._visit_scope(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_scope(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_scope(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if _is_process_environment(node.value) and _is_provider_key(node.slice):
+            self._record(node)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if not node.args:
+            self.generic_visit(node)
+            return
+        function = node.func
+        direct_os_read = isinstance(function, ast.Attribute) and (
+            (
+                isinstance(function.value, ast.Name)
+                and function.value.id == "os"
+                and function.attr == "getenv"
+            )
+            or (_is_process_environment(function.value) and function.attr == "get")
         )
+        config_helper_read = isinstance(function, ast.Name) and function.id.startswith(
+            "_env"
+        )
+        if (direct_os_read or config_helper_read) and _is_provider_key(node.args[0]):
+            self._record(node)
+        self.generic_visit(node)
+
+
+def _direct_process_env_reads(path: Path) -> list[tuple[str, int]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    visitor = _ProviderReadVisitor()
+    visitor.visit(tree)
+    return visitor.reads
+
+
+def test_only_startup_config_reads_provider_from_process_environment() -> None:
+    readers: dict[str, list[tuple[str, int]]] = {}
+    for path in sorted(PKG.rglob("*.py")):
+        reads = _direct_process_env_reads(path)
+        if reads:
+            readers[str(path.relative_to(ROOT))] = reads
+    assert set(readers) == {"jasper/config.py"}
+    config_reads = readers["jasper/config.py"]
+    assert len(config_reads) == 1
+    assert config_reads[0][0] == "Config.from_env"

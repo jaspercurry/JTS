@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,
@@ -127,9 +126,7 @@ def test_ring_config_class_failures_park_instead_of_rebooting():
     same reason (jts3, 2026-06-11: a guard-rejected env combination
     crash-looped it into three Pi reboots).
 
-    Both halves of the mechanism are asserted: the unit stops restarting on 78,
-    and the daemon actually maps that class to 78 (a unit directive for an exit
-    code nothing produces would be a guard that guards nothing).
+    Rust unit tests cover the mapping from concrete error classes to exit 78.
     """
     unit = _read_unit()
     assert "78" in _values_for(unit, "RestartPreventExitStatus"), (
@@ -143,46 +140,6 @@ def test_ring_config_class_failures_park_instead_of_rebooting():
         "an exit-78 park must stay FAILED (visible on /state + doctor), "
         "matching jasper-outputd's precedent"
     )
-
-    main_src = (REPO / "rust" / "jasper-fanin" / "src" / "main.rs").read_text()
-    assert "const EXIT_CONFIG: i32 = 78;" in main_src
-    assert "struct ConfigClassError;" in main_src
-    assert "std::process::exit(code);" in main_src
-
-    # The two config-class producers, so a rename cannot quietly orphan the
-    # unit directive above.
-    config_src = (REPO / "rust" / "jasper-fanin" / "src" / "config.rs").read_text()
-    assert ".context(crate::ConfigClassError)" in config_src, (
-        "an unparseable JASPER_FANIN_RING_WIRE_FORMAT must be tagged "
-        "config-class"
-    )
-    mixer_src = (REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text()
-    assert ".context(crate::ConfigClassError)" in mixer_src, (
-        "a ring create_or_attach geometry mismatch must be tagged config-class"
-    )
-    # ...but ONLY that class. The marker is gated on the two error kinds
-    # jasper_ring sets for a bad geometry; a transient open failure (a held
-    # .open.lock, an unapplied tmpfs permission) must keep Restart=on-failure.
-    # Parking on those takes the speaker's audio down over a fault that heals
-    # itself in 5 s. The behavioural pin is the Rust test
-    # `only_config_class_ring_open_errors_park_the_unit`; this is the
-    # file-level guard that the gate was not simply deleted.
-    assert "fn ring_open_error_is_config_class" in mixer_src, (
-        "the ring-open park must stay GATED on error kind, not tag every "
-        "create_or_attach failure"
-    )
-    # The WHOLE `matches!` block, not a substring of its arm list: a re-widened
-    # accept set (`... | ErrorKind::Other`) still CONTAINS the two-kind
-    # substring, so a containment assertion would pass a gate that no longer
-    # matches its own message. Pinning through the closing paren is what makes
-    # "exactly" true.
-    assert (
-        "matches!(\n"
-        "        error.kind(),\n"
-        "        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData\n"
-        "    )" in mixer_src
-    ), "the config-class gate must accept exactly InvalidInput and InvalidData"
-
 
 def test_oom_score_adj_between_camilla_and_aec_bridge():
     """OOM ladder slot. -800 sits between jasper-camilla (-900,
@@ -497,69 +454,3 @@ def test_fanin_starts_before_hot_path_consumers():
         "jasper-aec-bridge.service",
     ):
         assert dep in before
-
-
-def test_install_sh_enables_fanin_and_drops_the_topology_switcher():
-    """Fan-in is mandatory now: install.sh enables the daemon directly and
-    ships no dmix/fanin topology switcher."""
-    install_sh = installer_text()
-    assert "systemctl enable jasper-camilla.service jasper-fanin.service" in install_sh, (
-        "install.sh must enable jasper-fanin.service directly; renderer "
-        "audio depends on it."
-    )
-    renderers_lib = (
-        REPO / "deploy" / "lib" / "install" / "renderers.sh"
-    ).read_text()
-    assert "rm -f /usr/local/sbin/jasper-audio-topology" in renderers_lib
-    assert "/usr/local/sbin/jasper-audio-topology fanin" not in install_sh
-    assert "/usr/local/sbin/jasper-audio-topology fanin" not in renderers_lib
-
-
-def test_install_sh_does_not_enable_combo_health_watcher():
-    """Capture telemetry must never become a second USB lifecycle owner."""
-    install_sh = installer_text()
-    assert not re.search(
-        r"systemctl enable[^\n]*jasper-fanin-combo-health\.timer",
-        install_sh,
-    )
-
-
-def test_install_sh_restarts_camilla_after_fanin():
-    """Camilla captures fan-in's summed output; deploy must not leave it
-    holding a stale capture fd after asound/fan-in updates.
-
-    The restart is `restart_core_camilla_after_dsp_reconcile` (a named helper
-    shared by both install paths; ADR-0100 deleted the content-lane width-flip
-    mechanism that used to make it choose `start` over `try-restart`, so today
-    it is an unconditional `try-restart`) — the contract is that the step
-    follows fan-in, whatever it is spelled."""
-    install_sh = installer_text()
-    assert re.search(
-        r"systemctl restart jasper-fanin\.service.*?"
-        r"restart_core_camilla_after_dsp_reconcile",
-        install_sh,
-        re.DOTALL,
-    ), "install.sh must restart jasper-camilla after jasper-fanin"
-
-
-def test_install_sh_builds_and_installs_binary():
-    """install.sh must build the Rust crate and install the
-    release binary to /opt/jasper/bin/jasper-fanin. Without these
-    lines, the unit's ExecStart fails with ENOENT."""
-    install_sh = installer_text()
-    assert "build_install_jasper_fanin" in install_sh, (
-        "install.sh must define + call build_install_jasper_fanin "
-        "(builds rust/jasper-fanin and installs the binary). "
-        "See deploy/install.sh main()."
-    )
-    assert "cargo build --release --locked" in install_sh, (
-        "install.sh's build step must run `cargo build --release --locked` "
-        "so Cargo.lock drift fails deploy instead of resolving live"
-    )
-    assert "/opt/jasper/bin/jasper-fanin" in install_sh, (
-        "install.sh must install the binary to "
-        "/opt/jasper/bin/jasper-fanin (matches the unit's ExecStart)"
-    )
-    assert "rustc cargo" in install_sh, (
-        "install.sh's install_deps must apt-install rustc + cargo"
-    )

@@ -5,10 +5,8 @@
 // Behavioral harness for three run-19 field-telemetry defects fixed in
 // capture-page/js/main.js:
 //
-//   (a) mic-picker persistence: covered by string assertions in
-//       tests/test_capture_page_js.py (renderMicChoice/buildMicPicker are
-//       not exported; the fix is "this exact destructive write no longer
-//       exists", which a string test pins directly and precisely).
+//   (a) mic-picker persistence and repeated boot cleanup: exercised through
+//       the real boot boundary in capture_boot_contract_test.mjs.
 //   (b) the raw "signal is aborted without reason." AbortSignal leak ->
 //       friendly copy (isRelayConnectivityAbort, exercised here through
 //       onStart's status history).
@@ -20,7 +18,7 @@
 // Mirrors capture_host_stop_lifecycle_test.mjs's import-stripping harness.
 
 import assert from "node:assert/strict";
-import { loadEsm, repoPath } from "./_loader.mjs";
+import { loadCapturePage } from "./_capture_page_module.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 function makeNode(tag) {
@@ -160,15 +158,7 @@ const buildAmbientStatsEvent = () => ({});
 `;
 
 function loadModule() {
-  return loadEsm(repoPath("capture-page/js/main.js"), {
-    stripImports: true,
-    guardNoImports: true,
-    rewrite: [[
-      /^const PAGE_VERSION_URL = .*;$/m,
-      'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-    ]],
-    prelude: injected,
-  });
+  return loadCapturePage({ dependencySource: injected });
 }
 
 let passed = 0;

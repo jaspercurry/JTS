@@ -20,66 +20,11 @@
 // imports, inject the browser globals it reaches for, import as a data: URL.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
+import { loadCapturePage } from "./_capture_page_module.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const raw = readFileSync(resolve(here, "../../capture-page/js/main.js"), "utf8");
-const withoutImports = raw
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']+["'];\s*/gm, "")
-  .replace(/^import\s+[^;\n]+\s+from\s+["'][^"']+["'];\s*/gm, "")
-  .replace(
-    /^const PAGE_VERSION_URL = .*;$/m,
-    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-  );
-if (/^import\s/m.test(withoutImports)) {
-  throw new Error("unhandled import in main.js — update the harness strip rule");
-}
-
-// The names main.js's stripped imports would have provided. Only the ones its
-// module-level code touches need real values; the honesty-layer derivations
-// touch none of them.
-const injected = `
-const renderScreen = () => ({ buttons: [], levelMeters: [], acknowledgement: null });
-const acceptedAcknowledgement = () => null;
-const setText = (node, text) => { node.textContent = typeof text === "string" ? text : ""; };
-const RELAY_BASE = "https://relay.test";
-class RelayClient {}
-const parseFragment = () => ({});
-const verifySpecMac = async () => true;
-const signPhoneEvent = async (event) => event;
-const isSupportedCaptureProtocol = () => true;
-const createMonoRecorder = async () => ({});
-const rmsToDbfs = () => -60;
-const float32ToWavBlob = () => ({});
-const verifyRealizedConstraints = () => ({});
-const constraintDecision = () => ({ action: "accept" });
-const requestWakeLock = async () => null;
-const releaseWakeLock = () => {};
-const watchVisibilityAbort = () => () => {};
-const buildAmbientStatsEvent = () => ({});
-const createLevelEventBatcher = () => ({});
-const loadStoredSetup = () => null;
-const storeSetup = () => {};
-const clearStoredSetup = () => {};
-const safeReturnUrl = () => "";
-const CALIBRATION_MODELS = [];
-const importContentKey = async () => ({});
-const encryptWav = async () => ({});
-const withinUploadCap = () => true;
-`;
-
-async function loadModule() {
-  const dataUrl =
-    "data:text/javascript;base64," +
-    Buffer.from(injected + withoutImports, "utf8").toString("base64");
-  return import(dataUrl);
-}
-
-const mod = await loadModule();
+const mod = await loadCapturePage();
 
 function specWith(extra = {}) {
   return {

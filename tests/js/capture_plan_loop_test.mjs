@@ -25,18 +25,17 @@
 // would refuse it.
 
 import assert from "node:assert/strict";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadEsm, repoPath } from "./_loader.mjs";
+import { loadCapturePage } from "./_capture_page_module.mjs";
 
 import { RelayClient } from "../../capture-page/js/relay-client.js";
 // The household sentences the auto-retake renders (#2557 phase B), imported
 // rather than retyped: a second copy of the copy is a copy that can drift, and
 // the wording itself is pinned next door in capture_integrity_test.mjs.
-import {
+import * as captureIntegrity from "../../capture-page/js/capture-integrity.js";
+const {
   AUTO_RETAKE_MESSAGE,
   AUTO_RETAKE_SPENT_NOTE,
-} from "../../capture-page/js/capture-integrity.js";
+} = captureIntegrity;
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 // The EXACT rejection a real relay timeout raises, produced by driving the REAL
@@ -333,27 +332,7 @@ function makeRecorder() {
   return recorder;
 }
 
-// #2151's per-take integrity accounting is injected as the REAL module rather
-// than a stub — it is pure (no DOM, no network) and stubbing it would make this
-// harness blind to the wire field it exists to carry. Absolute file: URL because
-// the module under test is loaded from a data: URL, where a relative specifier
-// has nothing to resolve against.
-const here = dirname(fileURLToPath(import.meta.url));
-const CAPTURE_INTEGRITY_URL = pathToFileURL(
-  resolve(here, "../../capture-page/js/capture-integrity.js"),
-).href;
-
 const injected = `
-import {
-  createIntegrityWatch,
-  summarizeCaptureIntegrity,
-  witnessedZeroFillSplice,
-  AUTO_RETAKE_MESSAGE,
-  AUTO_RETAKE_SPENT_NOTE,
-  AUTO_RETAKE_ZERO_FILL_REASON,
-  INTEGRITY_LOST_FOCUS_MESSAGE,
-  INTEGRITY_LOST_FOCUS_NOTE,
-} from ${JSON.stringify(CAPTURE_INTEGRITY_URL)};
 const acceptedAcknowledgement = (spec, refs) => (
   spec && spec.acknowledgement
     ? { schema_version: 1, id: spec.acknowledgement.id, binding_id: spec.acknowledgement.binding_id, accepted: true }
@@ -448,20 +427,9 @@ const withinUploadCap = () => true;
 `;
 
 function loadModule() {
-  return loadEsm(repoPath("capture-page/js/main.js"), {
-    stripImports: true,
-    guardNoImports: true,
-    rewrite: [
-      [
-        /^const PAGE_VERSION_URL = .*;$/m,
-        'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-      ],
-      [
-        "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;",
-        "const CAPTURE_RESULT_WAIT_BUDGET_MS = 25;",
-      ],
-    ],
-    prelude: injected,
+  return loadCapturePage({
+    dependencySource: injected,
+    dependencies: captureIntegrity,
   });
 }
 
@@ -681,6 +649,7 @@ function planSpec({ target = 3, maxAttempts = 4, entries = null } = {}) {
     kind: "crossover_sweep",
     sample_rate_hz: 48000,
     duration_ms: 20000,
+    result_wait_s: 0.025,
     post_roll_ms: 0,
     constraints: {},
     validity: { clean_capture: "refuse" },
@@ -4499,7 +4468,11 @@ async function testContinueSignalsThenWaitsForTheSetToClose() {
   await fire(primaryButton(ctx));
   staleRetake = actionButtons(ctx.screenEl)[1];
   await fire(primaryButton(ctx)); // Continue
-  assert.match(statusHistory[retakeAnswerAt], /Too late to redo that spot/);
+  assert.equal(
+    statusHistory[retakeAnswerAt],
+    process.env.JTS_EXPECTED_RETAKE_TOO_LATE_MESSAGE,
+    "the page and Pi give the household the same late-retake answer",
+  );
   assert.ok(
     !statusHistory
       .slice(retakeAnswerAt + 1)

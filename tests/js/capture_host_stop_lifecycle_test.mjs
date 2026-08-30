@@ -7,7 +7,7 @@
 // block still closes the recorder that owns the mic graph.
 
 import assert from "node:assert/strict";
-import { loadEsm, repoPath } from "./_loader.mjs";
+import { loadCapturePage } from "./_capture_page_module.mjs";
 
 const recorder = {
   capturedChannelCount: 1,
@@ -72,15 +72,7 @@ globalThis.document = {
     return statusEl;
   },
 };
-const { onStart } = await loadEsm(repoPath("capture-page/js/main.js"), {
-  stripImports: true,
-  guardNoImports: true,
-  rewrite: [[
-    /^const PAGE_VERSION_URL = .*;$/m,
-    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-  ]],
-  prelude: injected,
-});
+const { onStart } = await loadCapturePage({ dependencySource: injected });
 
 const posted = [];
 await onStart({

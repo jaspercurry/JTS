@@ -29,9 +29,7 @@ signals is present:
   3. the payload expands a shell variable named like a value carrier
      (same word list), e.g. ``-v out="$quoted"``.
 
-Guard style mirrors tests/test_reconciler_constants_match_python.py:
-static text analysis only, failure message names file:line and the
-sanctioned replacement.
+The failure names the file, line, and sanctioned replacement.
 """
 from __future__ import annotations
 

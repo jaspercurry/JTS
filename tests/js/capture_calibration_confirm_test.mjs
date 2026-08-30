@@ -22,7 +22,7 @@
 // Mirrors capture_plan_loop_test.mjs's strip-and-inject + DOM-stub harness.
 
 import assert from "node:assert/strict";
-import { loadEsm, repoPath } from "./_loader.mjs";
+import { loadCapturePage } from "./_capture_page_module.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 const injected = `
@@ -71,23 +71,8 @@ const storeBoundSetup = () => true;
 const refreshBoundSetup = () => true;
 `;
 
-// Module state (setupState, storedHintFailed) is per-instance; a unique
-// cache-buster per load gives each behavioral test a fresh module (data:
-// URL imports are cached by exact URL).
-let loadCount = 0;
 function loadModule() {
-  loadCount += 1;
-  return loadEsm(repoPath("capture-page/js/main.js"), {
-    stripImports: true,
-    guardNoImports: true,
-    rewrite: [[
-      /^const PAGE_VERSION_URL = .*;$/m,
-      'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-    ]],
-    // The cache-bust comment's position doesn't matter (it's inert) — only
-    // prelude's given a hook to append to, so it rides at the front.
-    prelude: `${injected}// cache-bust ${loadCount}\n`,
-  });
+  return loadCapturePage({ dependencySource: injected });
 }
 
 // --- DOM stub (mirrors capture_plan_loop_test.mjs) ----------------------------
@@ -341,6 +326,48 @@ async function testConfirmSubmitsStoredPayloadShape() {
   // The flow advanced past calibration — the validated stored setup lands
   // on the position-count screen exactly like a picker-validated one.
   assert.equal(headingText(screenEl), "Listening positions");
+  ok();
+}
+
+async function testUploadSubmitsOnlyThePhoneOwnedCalibrationFields() {
+  statusHistory.length = 0;
+  const { renderCalibration } = await loadModule();
+  const statusEl = installDom();
+  const client = makeSetupClient();
+  const screenEl = makeScreenEl();
+  const ctx = {
+    spec: specWithHint({ resolvable: undefined }),
+    client,
+    screenEl,
+  };
+
+  renderCalibration(screenEl, ctx);
+  const root = { children: screenEl.children };
+  const mode = findNodeById(root, "calibration-mode");
+  mode.value = "upload";
+  mode._listeners.change[0]();
+
+  const file = findNodeById(root, "calibration-file");
+  file.files = [{
+    name: "household-mic.cal",
+    size: 8,
+    async text() {
+      return "20 -1\n";
+    },
+  }];
+  globalThis.document.getElementById = (id) => (
+    id === "status" ? statusEl : findNodeById(root, id)
+  );
+
+  const continueButton = buttonLabeled(screenEl, "Continue");
+  await continueButton._listeners.click[0]();
+
+  assert.equal(client.posted.length, 1);
+  assert.deepEqual(client.posted[0].setup.calibration, {
+    mode: "upload",
+    filename: "household-mic.cal",
+    content: "20 -1\n",
+  });
   ok();
 }
 
@@ -626,6 +653,7 @@ const tests = [
   testUnknownModeOrMissingCalibrationIdIsRejected,
   testModelLabelResolutionAndFallbacks,
   testConfirmSubmitsStoredPayloadShape,
+  testUploadSubmitsOnlyThePhoneOwnedCalibrationFields,
   testHintWithoutResolvableRendersTodaysPicker,
   testPiSuppliedCalibrationLabelRendersAsInertText,
   testStoredRejectionFallsBackToPickerWithPlainSentence,
