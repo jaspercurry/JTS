@@ -334,6 +334,36 @@ def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_commissioning_disclosure(monkeypatch):
+    """Clear the per-process "last receipt denial disclosed" memo.
+
+    ``commissioning_verification._LAST_DISCLOSED`` exists so a polled reader
+    logs the TRANSITION and not the repeat (ADR-0196). It is process state, and
+    a test process has no daemon boundary: any earlier test that reads an
+    un-vouched receipt leaves its ``(reason, cause)`` seated, and the next test
+    to disclose the SAME pair gets DEBUG where it expected WARNING.
+
+    Reproduced: with a preceding read of an unconfigured record seating
+    ``("active_commissioning_receipt_absent", "lifecycle is not verified")``,
+    ``test_two_reads_of_one_denial_disclose_once`` counts 0 warnings instead
+    of 1. It passes today only because the tests around it happen to disclose
+    a different pair first.
+
+    Cleared before each test so nothing is inherited; ``monkeypatch`` puts the
+    process back at teardown so nothing is handed forward.
+
+    Looked up in ``sys.modules`` rather than imported: the memo lives in the
+    module object, so a process that never imported it has nothing seated.
+    Importing here would pull ``commissioning_verification`` (and numpy
+    behind it) into every test process, including the python-policy CI job's
+    thin, numpy-less environment.
+    """
+    mod = sys.modules.get("jasper.active_speaker.commissioning_verification")
+    if mod is not None:
+        monkeypatch.setattr(mod, "_LAST_DISCLOSED", None)
+
+
 def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
     """Seat a real ``VolumeOwner`` over one (set, get) fader pair.
 
