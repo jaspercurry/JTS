@@ -1034,11 +1034,6 @@ mod tests {
 
     #[test]
     fn arm_body_overrides_all_fields() {
-        // Keep this JSON on ONE line: the panic-freedom guard
-        // (tests/test_rust_runtime_panic_freedom.py) counts braces with a
-        // lexer that does not understand Rust raw-string literals, so a
-        // multi-line raw string here leaks a `}` into the #[cfg(test)] span
-        // count and misclassifies the rest of the module as runtime code.
         let body = r#"{"threshold":0.4,"hysteresis":0.1,"refractory_ms":300,"max_events":10,"auto_disarm_min":5,"path":"/run/jasper-fanin/x.jsonl"}"#;
         let cfg = TapConfig::from_arm_body(body).unwrap();
         assert!((cfg.threshold - 0.4).abs() < 1e-9);
