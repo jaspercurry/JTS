@@ -122,12 +122,20 @@ def _load(take: Path) -> Mapping[str, Any]:
 
 
 def _scan(artifacts_dir: Path) -> list[tuple[Any, ...]]:
-    """Every banked take under ``artifacts_dir``, as rows."""
+    """Every banked take under ``artifacts_dir``, as rows sorted by path.
+
+    Sorted on the relative path STRING (``r[0]``) after every row is built,
+    not on ``Path`` object order: ``BANKED_TAKE_GLOB`` has a wildcard
+    directory segment, and when one session directory's name is a
+    ``.``/``-``-extended prefix of another's, ``Path`` comparison (component-
+    by-component) disagrees with plain string order on which sorts first.
+    """
     rows = []
-    for take in sorted(Path(artifacts_dir).glob(BANKED_TAKE_GLOB)):
+    for take in Path(artifacts_dir).glob(BANKED_TAKE_GLOB):
         row = _row(take.relative_to(artifacts_dir).as_posix(), _load(take))
         if row is not None:
             rows.append(row)
+    rows.sort(key=lambda r: r[0])
     return rows
 
 
@@ -158,7 +166,8 @@ def bundle_measurements(
 
     Ordered by ``path`` and not by ``captured_at``: the timestamp is the
     record's own and can be absent, where the path is the take's key —
-    :func:`_scan` already walks in that order.
+    :func:`_scan`'s sort key IS that path string, not ``Path`` object order,
+    which can disagree with it.
 
     The rows SELECT; the take files still DECIDE. Every caller re-reads the
     file it was pointed at through its own accept rule.
