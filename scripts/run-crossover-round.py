@@ -800,6 +800,66 @@ def summarise_spec(block: Mapping[str, Any], trail: Trail) -> None:
     )
 
 
+def summarise_controllability(block: Mapping[str, Any], trail: Trail) -> None:
+    """Print where commands realize as commanded, across the banked rounds.
+
+    Read off ``controllability`` — the ledger the speaker already aggregated
+    over its own banked receipts — so this print and the evidence behind it
+    cannot state different numbers. Nothing is derived here.
+
+    It answers the question ``flatness`` above cannot, because that block is
+    one round: not "how flat is it now" but "in which bands do our commands
+    land where we aim them, and in which bands has that answer been moving".
+    A driver placing the next experiment wants the second, and ``ratio`` is
+    the fraction of commanded depth that arrived — 1.0 is full delivery.
+    """
+    ledger = block.get("controllability")
+    if not isinstance(ledger, Mapping):
+        return
+    bands = [b for b in ledger.get("bands") or () if isinstance(b, Mapping)]
+    if not bands:
+        return
+    n_rounds = ledger.get("n_rounds")
+    plural = "" if n_rounds == 1 else "s"
+    print(
+        f"\n=== controllability ({_render(n_rounds)} banked round{plural}) ==="
+    )
+    for band in bands:
+        realization = band.get("realization")
+        realization = realization if isinstance(realization, Mapping) else {}
+        spec = band.get("spec") if isinstance(band.get("spec"), Mapping) else {}
+        mean = realization.get("ratio_mean")
+        sigma = realization.get("ratio_sigma")
+        # No ratio, no ratio clause. Printing "ratio=None +/-None" spends the
+        # widest column on the one row that has nothing to put in it, and
+        # invites the reader to see a zero where the ledger reports an absence.
+        depth = "" if mean is None else f"  ratio={_render(mean)}"
+        if depth and sigma is not None:
+            depth += f" +/-{_render(sigma)}"
+        # Printed only when the measurement did NOT span the whole band. A
+        # partial span is the thing a reader must not miss; a full one is the
+        # expectation and needs no column.
+        coverage = realization.get("coverage")
+        if depth and isinstance(coverage, (int, float)) and coverage < 0.995:
+            depth += f" over {round(coverage * 100)}% of band"
+        print(
+            f"  {_render(band.get('f_lo_hz'))}-{_render(band.get('f_hi_hz'))} Hz"
+            f"  {band.get('confidence')}{depth}"
+            f"  n={_render(realization.get('n_rounds'))}"
+            f"  spec={_render(spec.get('passed'))}p/"
+            f"{_render(spec.get('failed'))}f/"
+            f"{_render(spec.get('undisclosed'))}?"
+        )
+    trail.emit(
+        "controllability",
+        n_rounds=ledger.get("n_rounds"),
+        # The whole per-band table, not a hand-picked scalar off it: the
+        # ledger's claim IS the shape across bands, and a trail row carrying
+        # one band's number would pin the wrong thing.
+        bands=bands,
+    )
+
+
 def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
     """Print the live candidate the round just produced.
 
@@ -816,6 +876,7 @@ def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
     """
     block = wizard.v2_block()
     summarise_spec(block, trail)
+    summarise_controllability(block, trail)
     candidate = block.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         trail.emit("candidate", ok=False, detail="no candidate is published yet")

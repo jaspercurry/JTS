@@ -23,10 +23,12 @@ at module scope in both directions.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2 import durable_state as _durable
+from jasper.log_event import log_event
 from jasper.web import correction_crossover_v2 as _host
 
 
@@ -677,9 +679,50 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # absent-vs-empty distinction and stays where it belongs, in the
         # bundle artifact.
         "findings": _household_findings_status(state),
+        # The across-rounds view no single receipt can carry: per spec band,
+        # how much of what was commanded arrived, over how many banked rounds,
+        # and how much those rounds disagreed. Read from the banked receipts
+        # rather than this state file because it is HISTORY — the durable
+        # state holds only the last round, and the whole claim here is about
+        # the several before it.
+        #
+        # Disclosure. Nothing reads it back: no adoption row, refusal or
+        # prescription consumes a confidence label, and this module writes
+        # nothing.
+        "controllability": _controllability_status(),
     }
     block["post_apply_grade"] = _host._post_apply_grade(block)
     return block
+
+
+def _controllability_status() -> dict[str, Any] | None:
+    """The per-band controllability ledger, or ``None`` when it cannot be read.
+
+    ``None`` rather than an empty document, and the distinction is the usual
+    one: a box with banked rounds that measured nothing still publishes a full
+    band axis of ``unobserved`` rows, so ``None`` here means the LEDGER was
+    unavailable, never that the speaker is uncontrollable.
+
+    Guarded because this is the one entry on this block that touches the
+    bundle store. The caller's own handler turns any raise into a dropped
+    ``crossover_v2`` key for the whole poll, and a history view is never worth
+    that: an unreadable bundle root costs this key alone.
+    """
+
+    from jasper.active_speaker.controllability_ledger import (
+        read_controllability_ledger,
+    )
+
+    try:
+        return read_controllability_ledger().to_dict()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        log_event(
+            _host.logger,
+            "correction.controllability_ledger_unavailable",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return None
 
 
 def _household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str, Any]]:

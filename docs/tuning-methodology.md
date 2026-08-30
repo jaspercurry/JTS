@@ -250,8 +250,13 @@ division of labour.
 (`classify_delta_probe`) grades realized against commanded — `matched`,
 `model_error`, `level_dependent_shortfall` and five more. **Trust it over any
 static cap**, and let its history accumulate: `model_error_store` banks a
-bounded history of realized − predicted per verify, and **that history is the
-controllability map for this speaker**. The classification bar DISCLOSES rather
+bounded history of realized − predicted per verify — how wrong the PREDICTION
+was, pooled. For how much of what was COMMANDED actually arrived, **per band
+and across rounds**, read the controllability ledger
+(`jasper.active_speaker.controllability_ledger`, published on `/state` and
+printed by the round CLI). Two different questions, and neither answers the
+other: a speaker whose grade is predicted perfectly can still be a speaker
+whose commands land at 60% in one band. The classification bar DISCLOSES rather
 than refuses — filters no verdict backs are counted
 (`prescription.unvouched_filters`), not blocked. What still refuses is what a
 filter COSTS: the per-filter and composed caps, the declared band, and a boost's

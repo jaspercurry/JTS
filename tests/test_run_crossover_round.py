@@ -1131,6 +1131,78 @@ def test_the_rounds_flatness_verdicts_reach_the_operator_and_the_trail(
     assert "11480.0 Hz" in proc.stdout
 
 
+def test_the_controllability_ledger_reaches_the_operator_and_the_trail(
+    checkout, tmp_path
+):
+    """Where commands realize as commanded, across the banked rounds.
+
+    The flatness block answers "how flat is it now" for ONE round; this
+    answers "in which bands do our commands land where we aim them", which is
+    what a driver placing the next experiment is asking. Asserted on the
+    trail's structured row — the prose is for the operator, the row is the
+    contract.
+    """
+    ledger = {
+        "n_rounds": 4,
+        "bands": [
+            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "tolerance_db": 1.5,
+             "confidence": "consistent",
+             "realization": {"n_rounds": 4, "ratio_mean": 0.61,
+                             "ratio_sigma": 0.03, "coverage": 0.356},
+             "spec": {"n_rounds": 4, "passed": 3, "failed": 0,
+                      "undisclosed": 1}},
+            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "tolerance_db": 2.5,
+             "confidence": "unobserved",
+             "realization": {"n_rounds": 0, "ratio_mean": None,
+                             "ratio_sigma": None, "coverage": None},
+             "spec": {"n_rounds": 4, "passed": 1, "failed": 3,
+                      "undisclosed": 0}},
+        ],
+    }
+    server = _Wizard(after_open={
+        "phase": "review", "session_id": "after", "candidate": CANDIDATE,
+        "controllability": ledger,
+    })
+    trail = tmp_path / "trail.jsonl"
+    with _serving(server):
+        proc, _, _ = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+             "--trail", str(trail)],
+        )
+
+    assert proc.returncode == 0, proc.stderr
+    row = next(r for r in _trail(trail) if r["step"] == "controllability")
+    assert row["n_rounds"] == 4
+    # The whole table, because the ledger's claim IS the shape across bands.
+    assert row["bands"] == ledger["bands"]
+    # The unobserved band reaches the operator as unobserved, never as a zero.
+    assert "8000.0-16000.0 Hz" in proc.stdout
+    assert "unobserved" in proc.stdout
+    # A ratio measured over a third of its band says so where it is read.
+    assert "over 36% of band" in proc.stdout
+
+
+def test_a_round_with_no_ledger_prints_no_controllability_block(
+    checkout, tmp_path
+):
+    """No history is not a history of zero: the block is absent, not empty."""
+    server = _Wizard(after_open={
+        "phase": "review", "session_id": "after", "candidate": CANDIDATE,
+        "controllability": None,
+    })
+    trail = tmp_path / "trail.jsonl"
+    with _serving(server):
+        proc, _, _ = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+             "--trail", str(trail)],
+        )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not any(r["step"] == "controllability" for r in _trail(trail))
+
+
 def test_a_round_with_no_graded_spec_prints_no_flatness_block(checkout, tmp_path):
     """No report is not a report of zero: the block is absent, not empty."""
     server = _Wizard(after_open={
