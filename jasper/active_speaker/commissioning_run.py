@@ -2126,13 +2126,11 @@ class CommissioningRunStore:
     def snapshot(self) -> dict[str, Any]:
         """Return a detached, fully validated snapshot without logging.
 
-        LOCK-FREE, deliberately. :meth:`_write` publishes through
+        LOCK-FREE, deliberately: :meth:`_write` publishes through
         ``atomic_write_text``/``os.replace``, so a reader sees the whole
-        previous record or the whole new one and never a torn one — the
-        exclusive lock bought a pure read nothing, while taking it made that
-        read need WRITE access to the sibling lock file and CREATE it when
-        absent. A root-run status poll therefore published a root-owned lock
-        that no service account could open again. See ADR-0196.
+        previous record or the whole new one and never a torn one. Taking the
+        advisory lock here would make a pure read need WRITE access to the
+        sibling lock file, and CREATE it when absent. See ADR-0196.
 
         A missing record is still "no run", answered by :meth:`_read`'s own
         ``FileNotFoundError`` arm rather than by an ``exists()`` probe, so a
