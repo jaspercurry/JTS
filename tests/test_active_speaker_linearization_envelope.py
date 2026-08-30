@@ -1254,8 +1254,7 @@ def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
     margin got THINNER, 0.29 -> 0.26 dB, which is the direction that matters
     for a guard whose whole job is that this limit stays above the cut cap.
 
-    (The 4-dp figure quoted in ``position_stability_limit``'s own docstring is
-    12.2579 dB -- that is the corpus's real bands. This test drives one
+    (The corpus's real bands produce 12.2579 dB. This test drives one
     synthetic band from the 4-dp rounded constant above and gets 12.2581 dB.
     Same measurement, two roundings, well inside this test's own 0.01 dB
     tolerance; both are stated so the pair cannot read as a contradiction.)
@@ -1353,7 +1352,7 @@ def test_compose_envelope_spatial_exclusion_hard_zeroes_and_names_itself():
     smoothing window -- an interval that removes a null must not also remove
     correction depth from the ordinary response beside it. Applied before,
     the half-octave window at these frequencies would have bled several dB
-    outward (see ``compose_envelope``'s docstring for the S0 numbers).
+    outward.
     """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
@@ -1410,8 +1409,7 @@ def test_compose_envelope_requires_band_spread_and_n_positions_together():
 
 
 def test_default_grid_step_pins_the_coarseness_the_edge_rule_is_about():
-    """``_interval_mask``'s docstring quotes these two numbers as the reason
-    a partial-coverage rule is needed at all."""
+    """Pins the grid coarseness that makes a partial-coverage rule necessary."""
     grid = DEFAULT_ENVELOPE_GRID_HZ
     step_pct = float(grid[1] / grid[0] - 1.0) * 100.0
     assert step_pct == pytest.approx(2.8354, abs=0.0002)
@@ -1502,9 +1500,8 @@ def test_s0_position_stability_calibration_populations(s0_main_captures):
 
     Measured 2026-07-26, five S0 cloud groupings at ``reference`` tier, over
     the seven octave bands inside ``DEFAULT_ENVELOPE_GRID_HZ``'s 150 Hz
-    floor. Each row is (N, sigma range, standard-error range, limit range) --
-    the same rows the docstring prints, so the table cannot drift from the
-    measurement.
+    floor. Each row is (N, sigma range, standard-error range, limit range),
+    and the assertions below pin the calibration to the measurement.
 
     RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote, which
     re-gates ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02
@@ -1711,10 +1708,9 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     realized_db = _realized_correction_db(fit, grid)
 
     # The two rasterization rules, on this registry: cell-overlap excludes
-    # three more envelope bins than point-containment would -- the figure
-    # ``_interval_mask``'s docstring quotes. The 14 point-contained bins are
-    # what every "inside a null" assertion below is measured over, so the
-    # claims hold under the WEAKER rule too.
+    # three more envelope bins than point-containment. The 14 point-contained
+    # bins are what every "inside a null" assertion below is measured over,
+    # so the claims hold under the WEAKER rule too.
     inside = np.zeros_like(grid, dtype=bool)
     for f_lo, f_hi in intervals:
         inside |= (grid >= f_lo) & (grid <= f_hi)
@@ -1972,4 +1968,3 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
             shipped_db, abs=0.02
         )
         assert float(counterfactual[i]) == pytest.approx(pre_smoothing_db, abs=0.02)
-
