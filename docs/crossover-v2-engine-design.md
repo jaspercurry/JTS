@@ -53,7 +53,7 @@ calls it *internal to* `measure`: that distinction is about **vocabulary** — t
 front end and the LLM never name a play transaction — not about who owns the
 object. Playing audio is a side effect, and side effects are injected.
 
-None of the four **protocols** is `@runtime_checkable`, deliberately: a runtime
+None of the three **protocols** is `@runtime_checkable`, deliberately: a runtime
 `isinstance` against a `Protocol` compares method *names* only, so an object with
 a `run` of the wrong signature would pass and the check would buy confidence it
 cannot deliver. They are satisfied by shape, checked by mypy and by the call
@@ -65,7 +65,7 @@ ends drive the same verb; a caller reaching `session.seams.graph.patch(…)`
 or `session.seams.records.bank(…)` would be doing engine work outside the
 engine, and the second would bank a record the session never counts in
 `banked_record_ids`. The field is public because construction and testing need
-it. Wave 2 lands the enforcement pin, when there is a front end to point it at.
+it.
 
 **All four seams are `async`, and so is the machinery behind every one.**
 `MeasurementSessionGraph`'s three verbs, `VolumeOwner`'s `acquire_level` /
@@ -549,4 +549,3 @@ owner — and a moved claim is only as fresh as its last pass in that log.
 
 Last verified: 2026-08-26 — the authored sections against the tree; the moved
 sections carry their prior readings unchanged.
-

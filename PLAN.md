@@ -23,6 +23,8 @@ belongs in Git, issues, pull requests, and
 
 - Remove any duplicate tuning state or dead path exposed by the hardware run
   after its active consumer has moved.
+- Keep the most recently active renderer resumable for a bounded time after it
+  pauses; the transport toggle currently loses that source and cannot resume it.
 - Continue bass-extension commissioning only after the parked plan's limiter
   evidence and hardware gates are satisfied. See
   [ADR-0018](docs/adr/0018-bass-extension-stays-parked.md).

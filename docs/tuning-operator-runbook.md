@@ -10,13 +10,13 @@
 > | Question | Owner |
 > |---|---|
 > | What may I try? What stops me? Who decides? | [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) |
-> | How is the engine built? Session shape, the five seams, the contracts and invariants a refactor must preserve, the file map | [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) |
+> | How is the engine built? Session shape, the four seams, the contracts and invariants a refactor must preserve, the file map | [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) |
 > | Where is the program going? What is funded, deleted, pinned? | [`tuning-master-plan.md`](tuning-master-plan.md) |
 > | Why is it like this? Bench results, decision archaeology, the failure taxonomy, the W6 gotcha catalog | [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md) |
 > | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md) |
 > | **How do I actually drive it tonight?** | this file |
 >
-> Read the doctrine once per session. Read this whenever you forget a verb.
+> Read the doctrine once per session. Read this whenever you forget a workflow step.
 > Module docstrings own design prose; this file links to them and does not
 > restate them.
 

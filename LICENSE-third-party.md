@@ -80,5 +80,5 @@ contains them.
   redistribution terms cannot be cleared.
 - Add an automated dependency inventory for Python, Rust, firmware, and
   OS-package transitive dependencies before publishing binary images.
-- Keep this file listed in README's documentation map so future
+- Keep this file listed in the [documentation index](docs/README.md) so future
   attribution fixes land in one canonical place.

@@ -21,7 +21,7 @@ state are authoritative when prose conflicts with either.
 - [Testing and measurement tools](testing-tooling.md)
 - [Design language](design-language.md)
 - [Multi-user Spotify](multi-user-spotify.md)
-- [Streambox bring-up](dumb-endpoint-bringup.md)
+- [Third-party license notices](../LICENSE-third-party.md)
 - [Documentation impact map](doc-map.toml)
 
 ADRs are append-only. They own durable decisions and their reasons. Current
@@ -38,9 +38,11 @@ Read these current sources in order:
 5. [Room-correction product contract](room-correction-information-design.md)
 6. [Tuning layers](active-speaker-tuning-layers-design.md)
 
-The production tuning session exposes `open`, `measure`, and `close`.
-Doors-and-banks tools own analysis, recommendations, and saved accounting over
-banked evidence; [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md)
+The production tuning session uses `open` and `close` for its lifetime and
+exposes `measure` as its one tuning operation. Its four `EngineSeams` fields
+own the graph, volume claim, records, and playback transaction. Doors-and-banks
+tools analyze banked evidence, recommend the next action, and persist their own
+accounting; [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md)
 records that boundary. Apply remains an explicit operator action followed by
 verification.
 

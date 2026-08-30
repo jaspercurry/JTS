@@ -1,8 +1,9 @@
 # JTS — Staff Engineering Review for Google OSS Ownership
 
 > **Status: historical review.** Snapshot from 2026-05-26 / PR #335.
-> **Superseded by [REVIEW-2026-06-04-deep-dive.md](REVIEW-2026-06-04-deep-dive.md)**
-> (the current assessment — this snapshot predates the
+> **Superseded by the later historical snapshot
+> [REVIEW-2026-06-04-deep-dive.md](REVIEW-2026-06-04-deep-dive.md).** This
+> snapshot predates the
 > `active_speaker`/`output_topology`/DAC8x subsystem, the supply-chain
 > provenance rework, the `http_security` guard, and the canonical-UI
 > migration). Preserved as a point-in-time OSS-readiness assessment, not
@@ -16,10 +17,9 @@
 > [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md), issue/PR templates,
 > pytest CI, many wizard CSRF helpers, and [CLAUDE.md](../CLAUDE.md) as a
 > thin import shim. This update intentionally leaves the original review
-> body intact; treat stale claims below as review history. Current
-> open work is tracked in the living
-> [OSS readiness top five](OSS-READINESS-TOP-FIVE.md), with attribution
-> details in [LICENSE-third-party.md](../LICENSE-third-party.md).
+> body intact; treat stale claims and its proposed backlog below as review
+> history. Current work is in [PLAN.md](../PLAN.md), with attribution details
+> in [LICENSE-third-party.md](../LICENSE-third-party.md).
 
 *A hypothetical assessment, written as if a Google staff software engineer
 were evaluating this repository for the company to take on open-source

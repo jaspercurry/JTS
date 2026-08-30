@@ -3385,6 +3385,6 @@ the replacement named in the row. If you do a forensic
 investigation that uses a `/tmp/` script you'll likely want again,
 promote it to `scripts/_analyze_*.py` AND add an entry above.
 
-The doc is in the [README.md](../README.md) documentation map and
+The doc is in the [documentation index](README.md) and
 referenced from [CLAUDE.md](../CLAUDE.md) so an AI agent picking up
 the codebase sees it before writing a duplicate.

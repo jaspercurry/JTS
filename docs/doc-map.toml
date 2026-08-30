@@ -824,8 +824,8 @@ docs = [
   # failure catalog and the honesty rules. Scan it when a declared input, a
   # verdict vocabulary, or a correction-envelope term changes.
   "docs/tuning-methodology.md",
-  # The engine's architecture and contracts: the four verbs, TuningSession and
-  # its five seams, the session-scoped measurement graph, the volume owner's
+  # The engine's architecture and contracts: TuningSession's open/measure/close
+  # lifecycle and four seams, the session-scoped measurement graph, the volume owner's
   # ranked claims, the playback transaction, the invariants a refactor must
   # preserve, and the file map. Scan it when a seam, an invariant, or the
   # session's shape changes.
@@ -840,7 +840,7 @@ requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
   "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
-  "The v2 crossover commission session (excitation program or phase state machine) changes — scan tuning-operator-runbook.md. The session volume plan or the v2 apply/verify/restore endpoints change — scan crossover-v2-engine-design.md (volume owner; invariants 3, 7, 7a, 8).",
+  "The v2 crossover commission session (lifecycle, measure operation, excitation program, or phase state machine) changes — scan tuning-operator-runbook.md and crossover-v2-engine-design.md. The session volume plan or the v2 apply/verify/restore endpoints change — scan crossover-v2-engine-design.md (volume owner; invariants 3, 7, 7a, 8).",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
