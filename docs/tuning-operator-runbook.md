@@ -545,6 +545,29 @@ measured crossover; it carries an `expected_candidate_fingerprint` **freshness
 guard — not a selector**. Measurement-time activation of any graph goes through
 `program_playback.play_program`. No third mechanism exists; do not build one.
 
+**The other apply door goes the other way — to the basic profile.** `POST
+/sound/setup/active-speaker/baseline-profile/save-and-apply`, the button the
+`/sound/setup/` commissioning wizard offers as "Save active profile" on a
+speaker with no profile yet and as "Replace with basic profile" once one is
+applied, is the route BACK to the basic state: it compiles the crossover you chose in the
+wizard plus per-driver trim, delay and polarity, and **no linearization and no
+blend**. It applies with no measured candidate — a measured crossover still
+comes only from `handle_v2_apply` above. The apply is **durable**: it persists
+the applied record and publishes the canonical config, and CamillaDSP's own
+statefile keeps the running path across a restart. Nothing refuses it while a
+measured tune is live.
+
+**It replaces the live Layer A, and it says what it derived.** Every
+linearization filter and any blend correction the measured profile was carrying
+is gone from the graph — the door emits what it compiles, not a merge. It also
+takes the tuning owner back to `manual`, which is a different room-correction
+authority than a measured apply leaves behind. The per-driver trim is measured
+where a measurement backs it and derived from the sensitivity gap where none
+does; the door discloses which, and the sensitivity case is a `warning` issue,
+`driver_gain_derived_from_sensitivity` — an interim trim to confirm against
+measurement, not a tuned one. Read the disclosures on the apply response before
+deciding this is what you wanted.
+
 **Republish is same-corner only.** `handle_v2_republish` refuses with
 `sound_design_revision_unavailable` when the banked candidate does not hold the
 corner the speaker already declares. Compare candidates that vary linearization
