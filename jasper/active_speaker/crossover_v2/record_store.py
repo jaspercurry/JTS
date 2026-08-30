@@ -31,10 +31,7 @@ and a receipt owe — comes with them. **Fail-soft is the only thing the fold
 leaves at the caller**, in a named wrapper (``correction_crossover_v2``'s
 ``bank_take`` binding is the shape), never here and never a flag, so a
 publisher that must not fail quietly and one that deliberately fail-softs stay
-visibly different in the code that calls them. The one exception is the
-measurement index :meth:`BankedRecordStore._index` notes a take in — it is
-derived from the bytes this store just wrote and rebuildable from them, so a
-failure there is logged rather than raised over a bank that succeeded.
+visibly different in the code that calls them.
 
 **Every banked record carries its own ``take_id``.** The store requires it and
 never re-derives one: a geometry retake reuses its position id, so the position
@@ -45,8 +42,6 @@ on one write-once path.
 from __future__ import annotations
 
 import asyncio
-import logging
-import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -58,7 +53,6 @@ from jasper.attribution.session_identity import (
     stamp_session_identity,
 )
 from jasper.attribution.storage import findings_relative_path
-from jasper.log_event import log_event
 
 from ..commissioning_evidence_store import (
     EVIDENCE_ROOT,
@@ -74,15 +68,12 @@ from .contracts import (
     POSITION_EVIDENCE_KIND,
     ROUND_RECEIPT_KIND,
 )
-from .record_index import index_path, record_measurement
 
 __all__ = [
     "CHECK_EVIDENCE_KIND",
     "CLOUD_EVIDENCE_KIND",
     "BankedRecordStore",
 ]
-
-logger = logging.getLogger(__name__)
 
 #: The two artifact discriminators that exist only as bare literals in
 #: ``jasper.web.correction_crossover_v2``'s publisher bindings. Named here
@@ -397,27 +388,6 @@ class BankedRecordStore:
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if route.verify is not None:
             route.verify(record, self.evidence.reopen_json_artifact(artifact))
-        self._index(relative, payload)
-
-    def _index(self, relative: str, payload: Mapping[str, Any]) -> None:
-        """Note a banked take in the little measurement database.
-
-        **The only contained failure in this store**, because it is the only
-        write that runs AFTER the record is durably on disk: raising here
-        would report a bank that succeeded as one that did not, and the
-        caller's fail-soft would drop the take from ``record_ids`` while its
-        bytes sit in the bundle. The index is derived, and
-        :func:`~.record_index.rebuild` recovers it from those same bytes.
-        """
-        try:
-            record_measurement(
-                index_path(self.evidence.bundle_dir), relative, payload,
-            )
-        except (OSError, sqlite3.Error):
-            log_event(
-                logger, "correction.crossover_v2_record_index_write_failed",
-                level=logging.WARNING, record_id=relative, exc_info=True,
-            )
 
     def _save_next(self, state: dict[str, Any]) -> Mapping[str, Any]:
         """Write the state one persist further on than the file already is."""

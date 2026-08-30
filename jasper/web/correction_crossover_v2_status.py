@@ -687,8 +687,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # the several before it.
         #
         # Disclosure. Nothing reads it back: no adoption row, refusal or
-        # prescription consumes a confidence label, and this module writes
-        # nothing.
+        # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
     block["post_apply_grade"] = _host._post_apply_grade(block)
@@ -696,12 +695,16 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
 
 
 def _controllability_status() -> dict[str, Any] | None:
-    """The per-band controllability ledger, or ``None`` when it cannot be read.
+    """The raw per-round controllability rows, or ``None`` when unreadable.
 
     ``None`` rather than an empty document, and the distinction is the usual
-    one: a box with banked rounds that measured nothing still publishes a full
-    band axis of ``unobserved`` rows, so ``None`` here means the LEDGER was
+    one: a box with banked rounds that measured nothing still publishes those
+    rounds with empty band rows, so ``None`` here means the LEDGER was
     unavailable, never that the speaker is uncontrollable.
+
+    Passed through as banked (ADR-0198). Pooling these rows into a mean, a
+    spread or a label is the reader's, so this publishes the numbers and
+    computes none of them.
 
     Guarded because this is the one entry on this block that touches the
     bundle store. The caller's own handler turns any raise into a dropped
@@ -720,7 +723,7 @@ def _controllability_status() -> dict[str, Any] | None:
             read_controllability_ledger,
         )
 
-        return read_controllability_ledger().to_dict()
+        return read_controllability_ledger()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         log_event(
             _host.logger,

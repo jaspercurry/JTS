@@ -67,9 +67,9 @@ def _bank(
 ) -> Path:
     """A bundle carrying one banked take, at the path the store writes.
 
-    No index file: `bundle_measurements` rescans the corpus when the table does
-    not account for every take on disk, which is the arm a hand-built fixture
-    exercises and the one a round with a stale index takes too.
+    No index file needed: `bundle_measurements` always rescans the corpus from
+    the take files on disk, which is what a hand-built fixture like this one
+    relies on.
     """
 
     positions = (

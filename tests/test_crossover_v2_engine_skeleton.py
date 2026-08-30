@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import pytest
 
@@ -41,12 +41,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REGIME_NEAR_FIELD,
     REGIME_REFERENCE_AXIS,
 )
-from jasper.active_speaker.crossover_v2.harmonic_evidence import (
-    PROGRAM_NOT_REPRODUCIBLE,
-    STATE_UNREADABLE,
-    HarmonicEvidenceRefused,
-    rebuild_measure_program,
-)
 from jasper.active_speaker.crossover_v2.measure_spec import (
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
@@ -54,13 +48,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     VERTICAL_AXIS_NOT_IMPLEMENTED,
     MeasureSpec,
     inverted_roles_for,
-    stub_for_code,
     stubbed_capabilities,
-)
-from jasper.active_speaker.crossover_v2.prior_bank import (
-    CapturePose,
-    PriorBank,
-    pose_of,
 )
 from jasper.active_speaker.crossover_v2.playback_transaction import (
     PLAYBACK_STAGES,
@@ -79,11 +67,6 @@ from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
 from jasper.active_speaker.crossover_v2.spatial import take_id_for
 
 from tests._async_wait import wait_signalled
-
-#: Crossover bands for ``rebuild_measure_program``, whose VALUES are not this
-#: file's subject: the two save pins below turn on WHICH refusal the reader
-#: reaches, and it reads the state's keys before it ever reaches a band.
-_REBUILD_BANDS_HZ = {"woofer": (40.0, 1800.0), "tweeter": (1500.0, 20000.0)}
 
 
 # --------------------------------------------------------------------------- #
@@ -233,20 +216,8 @@ class _Play:
         )
 
 
-@dataclass
-class _Recommender:
-    asked: list[tuple[str, ...]] = field(default_factory=list)
-
-    async def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
-        self.asked.append(tuple(record_ids))
-        return {"asked": len(record_ids)}
-
-
 def _session(
-    prior: PriorBank | None = None,
     *,
-    gain_plan_db: Mapping[str, float] | None = None,
-    candidate_program_id: str = "",
     level_match_trims_db: Mapping[str, float] | None = None,
     **overrides: Any,
 ) -> tuple[TuningSession, dict[str, Any]]:
@@ -255,16 +226,12 @@ def _session(
         "volume": _Volume(),
         "records": _Records(),
         "play": _Play(),
-        "recommend": _Recommender(),
     }
     parts.update(overrides)
     session = TuningSession(
         session_id="s1",
         seams=EngineSeams(**parts),
         measurement_level_db=-20.0,
-        prior=prior,
-        gain_plan_db=gain_plan_db or {},
-        candidate_program_id=candidate_program_id,
         level_match_trims_db=level_match_trims_db or {},
     )
     return session, parts
@@ -685,9 +652,9 @@ async def test_a_cancel_mid_walk_still_accounts_for_what_already_banked():
     walk to end.
 
     A record written to the store but missing from ``banked_record_ids`` is
-    evidence on disk the session denies taking — ``save`` would omit it, and a
-    later ``PriorBank`` reading that state would grade against a bank one
-    capture short of what the speaker actually measured.
+    evidence on disk the session denies taking — a gap that would leave
+    anything counting on ``banked_record_ids`` one capture short of what the
+    speaker actually measured.
     """
     events: list[str] = []
     play = _PausingPlay(events=events, pause_before=2)
@@ -978,7 +945,7 @@ async def test_the_pose_prompt_reaches_both_the_transaction_and_the_record():
 
 
 async def test_a_banked_record_names_the_capture_the_transaction_wrote():
-    """Without this, ``analyze`` reads records that reach no audio.
+    """Without this, an offline reader reads records that reach no audio.
 
     A bundle-relative capture path is NOT derivable from anything else on the
     record: ``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex, so the
@@ -1188,29 +1155,9 @@ async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
     assert banked["position_axis"] == POSITION_AXIS_VERTICAL
     assert banked["vertical_deg"] == 22
     assert banked["position_deg"] is None
-    assert [stub.code for stub in outcome.disclosures] == [
-        VERTICAL_AXIS_NOT_IMPLEMENTED
-    ]
-    assert outcome.disclosures[0].captured is True
 
 
-async def test_a_banked_hole_that_captured_nothing_re_renders_as_what_it_was():
-    """S12 honesty across builds: a bank says what its own session could do.
-
-    ``CapabilityStub.aborted`` used to be reachable at measure time, when a
-    stub could stop the stimulus. No shipped stub does any more — every hole
-    banks its capture — so the rendering survives for the one path that still
-    reaches it: re-reading a bank written when one of them did not.
-    """
-    assert stub_for_code(
-        VERTICAL_AXIS_NOT_IMPLEMENTED, captured=False,
-    ).captured is False
-    assert stub_for_code(
-        VERTICAL_AXIS_NOT_IMPLEMENTED, captured=True,
-    ).captured is True
-
-
-async def test_a_stub_whose_capture_still_happens_measures_and_discloses():
+async def test_a_stub_whose_capture_still_happens_measures_and_banks():
     """R-3: the near-field capture ships, and the splice is what is owed."""
     session, parts = _session()
 
@@ -1221,10 +1168,6 @@ async def test_a_stub_whose_capture_still_happens_measures_and_discloses():
 
     assert len(outcome.record_ids) == 1
     assert parts["records"].banked[0]["regime"] == REGIME_NEAR_FIELD
-    assert [stub.code for stub in outcome.disclosures] == [
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
-    ]
-    assert outcome.disclosures[0].captured is True
 
 
 async def test_the_outcome_carries_the_spec_it_answers():
@@ -1240,66 +1183,8 @@ async def test_the_outcome_carries_the_spec_it_answers():
     assert outcome.spec is spec
 
 
-async def test_analyze_reports_the_holes_and_needs_no_open_session():
-    """Ruling S3: a banked session is re-analyzable offline, forever."""
-    session, _ = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-
-    outcome = await session.analyze()
-
-    assert not session.is_open
-    assert [stub.code for stub in outcome.disclosures] == [
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
-    ]
-    # Per record, because that is the shape: this bank's one record reached no
-    # capture, so it produced nothing and every unit says why.
-    assert all(produced == {} for produced in outcome.results.values())
-    assert all(skips for skips in outcome.skipped.values())
-
-
-async def test_analyze_names_each_hole_once_however_many_specs_hit_it():
-    """A ten-position near-field walk owes the splice once, not ten times."""
-    session, _ = _session()
-
-    async with session:
-        for _ in range(3):
-            await session.measure(MeasureSpec(
-                kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-            ))
-
-    assert [stub.code for stub in (await session.analyze()).disclosures] == [
-        NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
-    ]
-
-
-async def test_a_hole_that_already_banked_evidence_is_not_downgraded():
-    """The reverse never happens: banked evidence does not stop existing."""
-    session, _ = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            regime=REGIME_NEAR_FIELD,
-            position_axis=POSITION_AXIS_VERTICAL,
-        ))
-
-    near_field = [
-        s for s in (await session.analyze()).disclosures
-        if s.code == NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
-    ]
-    assert len(near_field) == 1
-    assert near_field[0].captured is True
-
-
 async def test_a_banked_record_can_be_read_back_by_its_id():
-    """The read door is what makes ``analyze`` an offline verb (ruling S3)."""
+    """The read door is what makes an offline reader possible (ruling S3)."""
     session, parts = _session()
 
     async with session:
@@ -1312,408 +1197,6 @@ async def test_a_banked_record_can_be_read_back_by_its_id():
     assert record is not None
     assert record["position_deg"] == 22
     assert await parts["records"].read("rec-99") is None
-
-
-async def test_recommend_asks_the_prescriber_over_everything_banked():
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_CANDIDATE, positions=(0, 22),
-        ))
-
-    outcome = await session.recommend()
-
-    assert parts["recommend"].asked == [("rec-1", "rec-2")]
-    assert outcome.record_ids == ("rec-1", "rec-2")
-    assert outcome.recommendation == {"asked": 2}
-
-
-async def test_save_persists_the_session_state_over_the_records_measure_banked():
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-
-    outcome = await session.save()
-
-    assert outcome.state_id == "state-1"
-    assert outcome.record_ids == ("rec-1",)
-    state = parts["records"].persisted[0]
-    assert state["session_id"] == "s1"
-    assert state["graph_fingerprint"] == "graph-abc"
-    assert state["record_ids"] == ("rec-1",)
-    # A disclosure travels as its code AND whether the capture happened: those
-    # are two different facts to whatever reads the bank back.
-    assert state["disclosures"] == (
-        {"code": NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "captured": True},
-    )
-
-
-async def test_the_saved_state_satisfies_the_program_rebuilds_own_inputs():
-    """Pinned against the real reader, not against a spelling of its keys.
-
-    Every harmonic offset derives from the sweep the MEASURE program carries,
-    so a state that cannot rebuild that program is a session whose distortion
-    can never be re-analyzed however complete its captures. The two inputs
-    ``rebuild_measure_program`` reads were written by no ``save``, and their
-    absence reaches it as :data:`STATE_UNREADABLE` — the same refusal a corrupt
-    bank gets.
-
-    Told, the state gets PAST that gate: what refuses now is the id proof
-    itself, which is the reader doing its job on a program this test never
-    composed.
-    """
-    session, parts = _session(
-        gain_plan_db={"woofer": -6.0, "tweeter": -3.5},
-        candidate_program_id="prog-9",
-    )
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-    await session.save()
-
-    state = parts["records"].persisted[0]
-    with pytest.raises(HarmonicEvidenceRefused) as refused:
-        rebuild_measure_program(state, _REBUILD_BANDS_HZ)
-    assert refused.value.reason == PROGRAM_NOT_REPRODUCIBLE
-
-
-async def test_a_session_told_no_program_still_says_so_under_the_readers_names():
-    """The keys are written empty, never omitted.
-
-    ``rebuild_measure_program`` answers a missing input with a structured
-    refusal naming WHICH one, and an absent key and an empty one reach it
-    identically — so writing them empty keeps one spelling of the document and
-    lets the reader's own vocabulary report the hole.
-    """
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-    await session.save()
-
-    state = parts["records"].persisted[0]
-    assert state["gain_plan_db"] == {}
-    assert state["candidate"] == {"program_id": ""}
-    with pytest.raises(HarmonicEvidenceRefused) as refused:
-        rebuild_measure_program(state, _REBUILD_BANDS_HZ)
-    assert refused.value.reason == STATE_UNREADABLE
-    assert refused.value.evidence["missing"] == "candidate.program_id"
-
-
-# --------------------------------------------------------------------------- #
-# rebuilding a session over a previous bank
-# --------------------------------------------------------------------------- #
-
-
-async def _banked(records: _Records, *specs: MeasureSpec) -> tuple[str, TuningSession]:
-    """Run a whole session over ``records``; return its state id and the session."""
-    session, _parts = _session(records=records)
-    async with session:
-        for spec in specs:
-            await session.measure(spec)
-    return (await session.save()).state_id, session
-
-
-def _pose(record: Mapping[str, Any]) -> CapturePose:
-    return CapturePose(
-        position_axis=record["position_axis"],
-        position_deg=record["position_deg"],
-        stimulus_dbfs=record["stimulus_dbfs"],
-        vertical_deg=record["vertical_deg"],
-    )
-
-
-@pytest.mark.parametrize(
-    "banked",
-    [{}, {"vertical_deg": None}, {"vertical_deg": True}, {"vertical_deg": 7.6}],
-    ids=["absent", "null", "not-a-number", "not-whole"],
-)
-def test_a_record_that_states_no_elevation_reads_back_at_mark_height(banked):
-    """A bundle banked before the field existed pairs exactly as it always did.
-
-    0 is a recovery here rather than a guess: nothing could state any other
-    elevation when those bundles were written, so every capture in one was
-    taken at mark height. The pose must therefore compare EQUAL to a capture
-    banked today at the same bearing — otherwise reading an old bank would
-    orphan every baseline in it.
-
-    A value this tree cannot have written reads the same way rather than being
-    coerced into a neighbouring pose: ``true`` must not become 1° up, and 7.6
-    must not become 7 — ``PositionGeometry`` refuses both, so a reader that
-    accepted them would disagree with the writer about what the bank holds.
-    """
-    old = pose_of({"position_axis": "horizontal", "position_deg": 22, **banked})
-
-    assert old.vertical_deg == 0
-    assert old == pose_of({
-        "position_axis": "horizontal", "position_deg": 22, "vertical_deg": 0,
-    })
-    assert old != pose_of({
-        "position_axis": "horizontal", "position_deg": 22, "vertical_deg": 7,
-    })
-
-
-async def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
-    """The round trip, which is the type's whole contract.
-
-    Every field is asserted against the session that wrote it or against the
-    store's own record list — never against a literal — so this cannot pass by
-    agreeing with a constant the writer never produced.
-    """
-    records = _Records()
-    state_id, wrote = await _banked(
-        records,
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
-    )
-
-    bank = await PriorBank.read(records, state_id)
-
-    assert bank is not None
-    assert bank.state_id == state_id
-    assert bank.session_id == wrote.session_id
-    assert bank.measurement_level_db == wrote.measurement_level_db
-    assert bank.graph_fingerprint == wrote.graph_fingerprint
-    assert bank.record_ids == wrote.banked_record_ids
-    assert bank.disclosures == (await wrote.analyze()).disclosures
-    assert bank.disclosures == (
-        stub_for_code(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, captured=True),
-    )
-
-
-async def test_a_state_id_the_store_cannot_resolve_reads_as_no_prior():
-    """A missing bank is a fact to disclose, never an exception (ruling S10).
-
-    The state file this replaces is overwritten every persist, so "the prior
-    round's state is gone" is an ordinary outcome and not a corruption.
-    """
-    assert await PriorBank.read(_Records(), "state-99") is None
-
-
-async def test_a_pose_measured_twice_resolves_to_the_later_baseline():
-    """A retake supersedes the attempt it followed.
-
-    "Immediately before apply" is what makes the before→after bracket honest,
-    so when one pose carries two baselines the nearer one wins. This is a
-    tiebreak WITHIN a pose and never across poses — see the walk below.
-    """
-    records = _Records()
-    state_id, _wrote = await _banked(
-        records,
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
-        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(22,)),
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
-    )
-
-    bank = await PriorBank.read(records, state_id)
-
-    assert bank is not None
-    assert bank.baseline_for(_pose(records.banked[0])) == "rec-3"
-
-
-async def test_a_pose_the_prior_never_baselined_has_no_before():
-    """A round with no comparable "before" says so; it does not promote one.
-
-    Neither a candidate capture at the same pose nor a baseline at a different
-    one is this capture's comparand.
-    """
-    records = _Records()
-    state_id, _wrote = await _banked(
-        records,
-        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(22,)),
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(-22,)),
-    )
-
-    bank = await PriorBank.read(records, state_id)
-
-    assert bank is not None
-    assert bank.baseline_for(_pose(records.banked[0])) == ""
-
-
-async def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
-    """The whole reason the comparand is resolved per capture and not per bank.
-
-    A prior that walked three poses in ONE ``measure`` call banked three
-    "befores". A bank-wide answer would stamp the LAST pose's baseline onto
-    every capture — so a verify at −22° would be differenced against a baseline
-    measured at +22°, and the verdict would report the room's off-axis
-    behaviour as the correction's effect.
-    """
-    records = _Records()
-    prior_id, _wrote = await _banked(records, MeasureSpec(
-        kind=MEASURE_KIND_BASELINE, positions=(-22, 0, 22),
-    ))
-    before_at = {r["position_deg"]: f"rec-{i}"
-                 for i, r in enumerate(records.banked, start=1)}
-    assert len(before_at) == 3
-
-    session, parts = _session(
-        records=records, prior=await PriorBank.read(records, prior_id),
-    )
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_VERIFY, positions=(-22, 0, 22), candidate_id="c1",
-        ))
-
-    after = parts["records"].banked[3:]
-    assert [r["position_deg"] for r in after] == [-22, 0, 22]
-    assert [r["baseline_record_id"] for r in after] == [
-        before_at[-22], before_at[0], before_at[22],
-    ]
-
-
-async def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
-    """The same rule on the axis a level ladder moves along.
-
-    One bearing, several stimulus levels. Pairing across rungs would difference
-    a quiet capture against a loud one and call the difference a correction —
-    which is why the rung is part of the pose rather than a field the match
-    ignores.
-    """
-    records = _Records()
-    prior_id, _wrote = await _banked(records, MeasureSpec(
-        kind=MEASURE_KIND_BASELINE, level_ladder_dbfs=(-20.0, -12.0),
-    ))
-    before_at = {r["stimulus_dbfs"]: f"rec-{i}"
-                 for i, r in enumerate(records.banked, start=1)}
-    assert len(before_at) == 2
-
-    session, parts = _session(
-        records=records, prior=await PriorBank.read(records, prior_id),
-    )
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_VERIFY, level_ladder_dbfs=(-20.0, -12.0),
-        ))
-
-    after = parts["records"].banked[2:]
-    assert [r["stimulus_dbfs"] for r in after] == [-20.0, -12.0]
-    assert [r["baseline_record_id"] for r in after] == [
-        before_at[-20.0], before_at[-12.0],
-    ]
-
-
-async def test_every_capture_names_the_before_it_will_be_graded_against():
-    """One hop from a capture to its comparand, so a verdict re-runs offline.
-
-    Ruling S3's return on banking complete records is that any future analysis
-    can grade a banked session. An analysis that had to find the session state
-    first, and re-derive which record was the "before", would be re-deriving
-    the pairing rather than reading it.
-    """
-    records = _Records()
-    prior_id, _wrote = await _banked(records, MeasureSpec(kind=MEASURE_KIND_BASELINE))
-    bank = await PriorBank.read(records, prior_id)
-
-    session, parts = _session(prior=bank)
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY, candidate_id="c1"))
-
-    banked = parts["records"].banked[0]
-    assert banked["baseline_record_id"] == "rec-1"
-    assert banked["candidate_id"] == "c1"
-
-
-async def test_a_session_with_no_prior_still_banks_and_says_the_before_is_empty():
-    """MS-14's shape applied to the comparand: refuse to CLAIM, never to work.
-
-    A first-ever round has no "before". That is an honest fact about the
-    capture, and the capture is still evidence.
-    """
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY))
-
-    assert parts["records"].banked[0]["baseline_record_id"] == ""
-
-
-async def test_analyze_reports_the_priors_holes_before_its_own_and_each_once():
-    """A round's evidence is both sides of it, so both sides' holes are named.
-
-    Prior first because it happened first, and a hole both sides hit is one
-    hole — the reader is being told what the round cannot claim, not how many
-    sessions tripped over it.
-    """
-    records = _Records()
-    prior_id, _wrote = await _banked(
-        records,
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL),
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
-    )
-
-    session, _parts = _session(records=records, prior=await PriorBank.read(records, prior_id))
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_VERIFY, regime=REGIME_NEAR_FIELD,
-        ))
-
-    codes = [stub.code for stub in (await session.analyze()).disclosures]
-
-    assert codes == [
-        VERTICAL_AXIS_NOT_IMPLEMENTED, NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
-    ]
-
-
-async def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does():
-    """The merge keeps the best news, across banks as well as within one.
-
-    The prior banked nothing for its near-field spec — the shape a bank
-    written before every hole started capturing has on disk. This session's
-    near-field spec ran and banked. Reporting the aborted rendering would tell
-    ``analyze`` there is no evidence waiting when there is.
-    """
-    records = _Records()
-    prior_id = await records.persist({"record_ids": (), "disclosures": [
-        {"code": NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "captured": False},
-        {"code": VERTICAL_AXIS_NOT_IMPLEMENTED, "captured": False},
-    ]})
-    bank = await PriorBank.read(records, prior_id)
-    assert [s.captured for s in bank.disclosures] == [False, False]
-
-    session, _parts = _session(records=records, prior=bank)
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_VERIFY, regime=REGIME_NEAR_FIELD,
-        ))
-
-    near_field = [
-        s for s in (await session.analyze()).disclosures
-        if s.code == NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
-    ]
-    assert len(near_field) == 1
-    assert near_field[0].captured is True
-
-
-@pytest.mark.parametrize(
-    "disclosures",
-    [
-        None,
-        "near_field_splice_not_implemented",
-        [{"code": "a_hole_a_later_build_named", "captured": True}],
-        [["near_field_splice_not_implemented", True]],
-        [{}],
-    ],
-    ids=["absent", "not-a-list", "unknown-code", "not-a-mapping", "empty"],
-)
-async def test_a_banked_disclosure_this_build_cannot_describe_is_dropped(disclosures):
-    """Rendering a hole this build has no words for would say nothing to a person.
-
-    The bank still carries the raw code for whoever wrote it; what is dropped
-    is the pretence that this build can explain it.
-    """
-    records = _Records()
-    state_id = await records.persist({"record_ids": (), "disclosures": disclosures})
-
-    assert (await PriorBank.read(records, state_id)).disclosures == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -1840,7 +1323,6 @@ async def test_an_inverted_capture_plays_and_banks_like_any_other():
     assert len(outcome.record_ids) == 1
     # R-1 ships: an inverted take plays, banks, AND is analysed, so it owes no
     # disclosure. The stub row it used to carry is gone from the registry.
-    assert [stub.code for stub in outcome.disclosures] == []
 
 
 async def test_the_named_branch_reaches_the_graph_that_stimulus_installs():
@@ -2039,7 +1521,7 @@ async def test_a_banked_inverted_record_says_which_branch_was_flipped():
 
 
 async def test_an_inverted_record_reads_back_like_any_other_take():
-    """R-1's analyze half is owed, not blocked: the bank is readable today."""
+    """R-1's offline half is owed, not blocked: the bank is readable today."""
     session, parts = _session()
 
     async with session:

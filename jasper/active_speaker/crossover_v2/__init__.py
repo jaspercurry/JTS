@@ -85,7 +85,7 @@ session over three lifetimes and ruling S1's four verbs, which both front ends
 call and neither extends:
 
 * :mod:`.session` — one tuning session: the three lifetimes it opens once, and
-  ``measure`` · ``analyze`` · ``recommend`` · ``save`` over them.
+  ``measure`` over them.
 * :mod:`.session_seams` — what that session needs from outside itself: the
   session graph, the volume claim, the record store, and the play transaction.
 * :mod:`.session_graph` — the graph seam filled: one measurement graph installed
@@ -104,24 +104,16 @@ call and neither extends:
   flow's phase words: the one place those two vocabularies meet.
 * :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for
   the mic-only regimes the engine has not built yet (ruling S12).
-* :mod:`.prior_bank` — a previous session's bank, read back: the "before" a
-  candidate check grades against, and what that bank already disclosed.
 * :mod:`.delay_landscape` — the inter-driver delay, computed then confirmed:
   the two banked transfers complex-summed across ``null_walk``'s whole grid to
   propose a coordinate without playing a note, and the grader that decides
   whether the acoustic confirmation agreed with it.
-* :mod:`.analysis_units` — what ``analyze`` can run: sixteen named analyses,
-  the ``ProgramAnalysis`` fields each owns, and the gate that names the input a
-  bank would have to carry for it to run at all.
-* :mod:`.analysis_walk` — that table walked over a bank: what one record
-  carries, one call into the analysis layer, each admitted unit's own fields
-  projected out, and a named reason for every unit the bank could not feed.
 * :mod:`.record_store` — the record seam filled: one durable writer over the
   write-once evidence bundle and the session's own state file, and the kind
   table that says where each banked artifact lands.
-* :mod:`.record_index` — the little measurement database: seven columns over
-  the banked takes so a reader can ask for one instead of globbing a
-  directory. Derived, rebuilt by rescanning on every read, never an authority.
+* :mod:`.record_index` — selecting banked takes: seven columns rescanned from
+  the take files on every read, so a reader can ask for one instead of globbing
+  a directory. No file, no authority — the takes decide.
 
 Offline evaluation, deliberately not a search:
 
