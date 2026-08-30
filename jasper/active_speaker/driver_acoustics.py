@@ -1200,8 +1200,6 @@ def analyze_summed_crossover(
     ``near_validity_floor`` record the (non-excluding) advisory state for a
     usable result.
     """
-    import numpy as np
-
     if crossover_fc_hz <= 0:
         raise DriverAcousticsError(
             f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
@@ -1300,11 +1298,9 @@ def analyze_summed_crossover(
         above_validity_floor = True
         near_validity_floor = False
 
-    at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
-    lower_shoulder = float(np.interp(lower_shoulder_hz, freqs, mag_db))
-    upper_shoulder = float(np.interp(crossover_fc_hz * 2.0, freqs, mag_db))
-    shoulder_mean = (lower_shoulder + upper_shoulder) / 2.0
-    null_depth = shoulder_mean - at_fc
+    from jasper.audio_measurement.analysis import crossover_null_depth_db
+
+    null_depth = crossover_null_depth_db(freqs, mag_db, crossover_fc_hz)
 
     deep = null_depth >= null_threshold_db
     if expect_null:

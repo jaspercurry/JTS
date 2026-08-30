@@ -9,7 +9,7 @@ Four behaviours, and nothing about the table's prose:
   1. **The names are a vocabulary.** Unique, and the derived set is derived.
   2. **The fields partition the produced class.** Every unit field is a real
      ``ProgramAnalysis`` field, no field belongs to two units, and the union is
-     the twenty produced ones — which is what makes "fifteen units" a count of
+     the twenty-one produced ones — which is what makes "sixteen units" a count of
      something rather than an assertion.
   3. **Every gate is total.** Over a generated grid of programs and priors, no
      gate raises and every gate answers with a code or ``""``. A gate that
@@ -189,6 +189,7 @@ PRODUCED_FIELDS = frozenset(
         "pilot_snr_ok",
         "pilots",
         "predicted_sum",
+        "reverse_null_depth_db",
         "summed_response",
         "summed_ripple_db",
         "verify_absolute",
@@ -212,7 +213,7 @@ UNOWNED_FIELDS = frozenset(
 
 
 def test_the_units_partition_the_produced_program_analysis_fields():
-    """Fifteen units over twenty fields, asserted by identity, not by count.
+    """Sixteen units over twenty-one fields, asserted by identity, not by count.
 
     The union is exactly the *produced* class of the ``ProgramAnalysis`` field
     census. The six fields that copy an input, project another field, or are a
@@ -263,7 +264,7 @@ def test_every_unit_runs_on_some_bank():
     It takes TWO banks, not one, and that is the point rather than a weakness:
     the level-check units and the sweep units are mutually exclusive by content,
     because the only phase whose analyzer binds `ambient_report` and `gain_plan`
-    is the one that carries no sweep. A single bank running all fifteen would
+    is the one that carries no sweep. A single bank running all sixteen would
     mean the separator was not doing its job.
     """
     everything = tuple(
@@ -288,7 +289,7 @@ def test_every_unit_runs_on_some_bank():
         ran |= {unit.name for unit in ANALYSIS_UNITS if not unit.gate(inputs)}
     assert ran == ANALYSIS_NAMES
 
-    # And neither bank alone reaches all fifteen — the exclusion is real.
+    # And neither bank alone reaches all sixteen — the exclusion is real.
     for inputs in (sweeps, level_check):
         assert any(unit.gate(inputs) for unit in ANALYSIS_UNITS)
 
@@ -305,7 +306,7 @@ def test_an_empty_bank_skips_every_gated_unit_and_names_the_missing_input():
         for unit in ANALYSIS_UNITS
         if unit.gate(inputs)
     ]
-    assert len(skips) == 12  # the three total units still run
+    assert len(skips) == 13  # the three total units still run
     assert all(skip.missing for skip in skips)
     assert tuple(f.name for f in dataclasses.fields(AnalysisSkip)) == (
         "name",

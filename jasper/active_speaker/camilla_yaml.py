@@ -2761,6 +2761,7 @@ def _commissioning_driver_filter_chain(
     *,
     filter_mode: str,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    measurement_delay_roles: frozenset[str] = frozenset(),
 ) -> list[str]:
     """The startup chain minus the per-role mute.
 
@@ -2769,9 +2770,19 @@ def _commissioning_driver_filter_chain(
     per-output mute layer is applied in the pipeline instead. Bring-up retains
     the dedicated tweeter high-pass; automatic response measurement removes
     only that extra filter so it measures the applied crossover shoulder.
+
+    ``measurement_delay_roles`` is the reverse-null delay sweep's lane (R-1):
+    the named roles carry a ``Delay`` filter at the head of the chain. Position
+    is free — a pure delay is LTI and commutes with every other stage here, so
+    it changes no magnitude wherever it sits — and the head is chosen because
+    this chain has nothing upstream of the protection worth preceding. (The
+    applied chains place their own delay AFTER the crossover; the two orderings
+    are equivalent, not a match.) Empty for every other caller, which keeps
+    their chains byte-identical.
     """
     if protection_sections_by_role is not None:
         return [
+            *([_driver_delay_name(role)] if role in measurement_delay_roles else []),
             *(
                 _program_protection_name(role, index)
                 for index, _section in enumerate(protection_sections_by_role[role])
@@ -2793,9 +2804,53 @@ def _emit_commissioning_filter_definitions(
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    measurement_delays_us: Mapping[str, float] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
+    # R-1's delay lane. Definitions only for the roles the caller named, so an
+    # ordinary program emits exactly the filters it always did.
+    #
+    # ONE `fmt` pass over the raw microsecond value and no intermediate
+    # rounding: `_emit_delay_filter` formats through `jasper.camilla_emit.fmt`,
+    # which IS `delay_graph.quantized_delay_ms`'s implementation, so the value
+    # a proof recomputes from the same `delay_us` matches by construction.
+    # Pre-quantizing here would be the second pass that module forbids.
+    delays = dict(measurement_delays_us or {})
+    if delays:
+        if protection_sections_by_role is None:
+            # The unprotected shape already defines a zero Delay filter for
+            # every role below, so a named delay would emit a duplicate mapping
+            # key whose later zero wins on parse -- a capture that plays with no
+            # delay and banks as a delayed take. Refuse rather than emit a
+            # graph whose YAML disagrees with the request.
+            raise ActiveSpeakerConfigError(
+                "a measurement delay needs the protected-neutral program shape; "
+                "the unprotected shape carries its own zeroed delay lane"
+            )
+        known = set(required_driver_roles(preset.way_count))
+        unknown = sorted(set(delays) - known)
+        if unknown:
+            # An unreferenced Delay filter would leave the capture undelayed
+            # while its graph fingerprint claimed otherwise.
+            raise ActiveSpeakerConfigError(
+                f"measurement delays name roles this preset has no branch for: "
+                f"{unknown}"
+            )
+        for role, delay_us in sorted(delays.items()):
+            value = float(delay_us)
+            if not math.isfinite(value):
+                # Caught here because a non-finite value emits `delay: .nan`,
+                # which parses back as a float and would read as a bound
+                # question rather than a nonsense one. The RANGE is the shared
+                # proof's (`_assert_measurement_delays_bound`), not a second
+                # copy here.
+                raise ActiveSpeakerConfigError(
+                    f"measurement delay for {role!r} is not finite: {delay_us!r}"
+                )
+            lines.extend(_emit_delay_filter(
+                _driver_delay_name(role), delay_ms=value / 1000.0,
+            ))
     for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
         lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),
@@ -2870,6 +2925,7 @@ def _emit_commissioning_pipeline(
     *,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    measurement_delay_roles: frozenset[str] = frozenset(),
 ) -> str:
     lines = [
         "  - type: Filter",
@@ -2886,6 +2942,7 @@ def _emit_commissioning_pipeline(
                 role,
                 filter_mode=filter_mode,
                 protection_sections_by_role=protection_sections_by_role,
+                measurement_delay_roles=measurement_delay_roles,
             )
         )
         lines.extend([
@@ -3391,6 +3448,54 @@ def _assert_pipeline_references_closed(
     )
 
 
+def _assert_measurement_delays_bound(
+    yaml_text: str,
+    measurement_delays_us: Mapping[str, float] | None,
+    *,
+    role_channels: Mapping[str, int],
+    preset: ActiveSpeakerPreset,
+) -> None:
+    """Prove each requested delay actually landed, through the shared proof.
+
+    :func:`~jasper.audio_measurement.delay_graph.prove_static_delay_binding` is
+    the tree's one answer to "does this graph carry that delay": it checks the
+    value through the same quantizer a later proof would, that the filter
+    occurs in EXACTLY ONE pipeline step wired to exactly the role's channels,
+    the 20 ms DSP bound, and ``devices.volume_limit``. Consuming it here rather
+    than re-checking those things by hand is what keeps one answer to the
+    question — and it is structural, so it catches an orphan filter or a
+    duplicate definition that a value check alone would miss.
+    """
+    if not measurement_delays_us:
+        return
+    import yaml as yaml_lib
+
+    from jasper.audio_measurement.delay_graph import prove_static_delay_binding
+    from jasper.audio_measurement.null_walk import NullWalkError
+
+    parsed = yaml_lib.safe_load(yaml_text)
+    if not isinstance(parsed, dict):
+        raise ActiveSpeakerConfigError("emitted program graph did not parse")
+    for role, delay_us in sorted(measurement_delays_us.items()):
+        channels = tuple(sorted(_channels_for_role(preset, role) or ()))
+        if not channels:
+            channels = (int(role_channels[role]),)
+        try:
+            prove_static_delay_binding(
+                parsed,
+                delay_filter_name=_driver_delay_name(role),
+                channels=channels,
+                delay_us=float(delay_us),
+            )
+        except NullWalkError as exc:
+            # The proof's whole error family: `DelayGraphProofError` carries the
+            # typed failure code and subclasses this.
+            raise ActiveSpeakerConfigError(
+                f"the emitted program graph does not carry the requested "
+                f"{role!r} measurement delay: {exc}"
+            ) from exc
+
+
 def _assert_program_graph_proven(
     yaml_text: str,
     preset: ActiveSpeakerPreset,
@@ -3480,6 +3585,7 @@ def emit_active_speaker_program_config(
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
     enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     inverted_roles: Sequence[str] = (),
+    measurement_delays_us: Mapping[str, float] | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -3505,6 +3611,25 @@ def emit_active_speaker_program_config(
     it. Level-neutral: see :func:`_emit_role_routed_mixer` for why no peak
     moves, and note that the tweeter protection high-pass, the per-driver
     limiter and the ``volume_limit`` ceiling below are unreachable from it.
+
+    ``measurement_delays_us`` is R-1's other half — the delay sweep's candidate
+    coordinate, one non-negative microsecond value per named role. **Scoped
+    exactly like** ``inverted_roles``, and for the same reason: it is a
+    parameter of this measurement emitter and of nothing else. The applied and
+    baseline emitters take their per-driver delay from the profile's
+    ``corrections`` (:func:`_emit_baseline_driver_definitions`) and cannot
+    reach this argument, so a swept coordinate can never leak into a graph a
+    household plays. ``None`` or empty emits no ``Delay`` filter and no chain
+    entry, which keeps every existing program byte-identical. Values reach the
+    YAML through a single :func:`~jasper.camilla_emit.fmt` pass — the same
+    formatter :func:`~jasper.audio_measurement.delay_graph.quantized_delay_ms`
+    is implemented as — so a proof that recomputes the expected value from the
+    same ``delay_us`` agrees exactly, with no intermediate rounding to disagree
+    about.
+    Delays ride ahead of the protection sections. A pure delay commutes with
+    every stage in this chain, so the position changes no magnitude; it is a
+    readability choice, not an equivalence claim about the applied chain, which
+    places its own delay after the crossover.
 
     Two fail-closed gates run before the graph can leave this function: a
     build-time proof that the selected tweeter HP satisfies the declared floor, and
@@ -3622,6 +3747,7 @@ def emit_active_speaker_program_config(
         audible_gain_db=0.0,
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
+        measurement_delays_us=measurement_delays_us,
     )
     mixer_yaml = _emit_role_routed_mixer(
         preset, role_channels,
@@ -3632,12 +3758,45 @@ def emit_active_speaker_program_config(
         preset,
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
+        measurement_delay_roles=frozenset(measurement_delays_us or ()),
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# role_channels={dict(sorted(role_channels.items()))}",
         f"# program_channels={program_channels}",
         f"# filter_mode={filter_mode}",
+        # Beside `inverted_roles` below and for its reason: the graph SAYS which
+        # coordinate it carries, so a record naming it by fingerprint can be
+        # read without reconstructing the Delay filter body.
+        #
+        # Emitted ONLY when there is a coordinate. An unconditional line would
+        # change the bytes -- and so the fingerprint -- of every CHECK and
+        # MEASURE graph in the tree, which is exactly the byte-identity this
+        # parameter is scoped to protect. Its absence is unambiguous.
+        *(
+            [
+                "# measurement_delays_us="
+                + repr(dict(sorted(measurement_delays_us.items())))
+            ]
+            if measurement_delays_us
+            else []
+        ),
+        # Beside `inverted_roles` below and for its reason: the graph SAYS which
+        # coordinate it carries, so a record naming it by fingerprint can be
+        # read without reconstructing the Delay filter body.
+        #
+        # Emitted ONLY when there is a coordinate. An unconditional line would
+        # change the bytes -- and so the fingerprint -- of every CHECK and
+        # MEASURE graph in the tree, which is exactly the byte-identity this
+        # parameter is scoped to protect. Its absence is unambiguous.
+        *(
+            [
+                "# measurement_delays_us="
+                + repr(dict(sorted(measurement_delays_us.items())))
+            ]
+            if measurement_delays_us
+            else []
+        ),
     ]
     if inverted_roles:
         # Emitted only when a branch is actually flipped, so every non-inverted
@@ -3696,6 +3855,9 @@ pipeline:
     _assert_program_graph_proven(
         yaml, preset, min_corner_hz=protective_hp_min_corner_hz,
         tweeter_hp_name=tweeter_hp_name,
+    )
+    _assert_measurement_delays_bound(
+        yaml, measurement_delays_us, role_channels=role_channels, preset=preset,
     )
 
     if out_path is not None:

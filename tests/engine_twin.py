@@ -123,10 +123,14 @@ class FakeGraph:
     patches: list[Mapping[str, Any]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
+    measurement_delays: list = field(default_factory=list)
 
-    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
+    async def install(
+        self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
+    ) -> str:
         self.installs += 1
         self.inverted_roles.append(tuple(inverted_roles))
+        self.measurement_delays.append(dict(measurement_delays_us or {}))
         if self.install_raises:
             raise GraphInstallFailed("twin graph install failed")
         return self.fingerprint

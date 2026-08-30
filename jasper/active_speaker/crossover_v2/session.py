@@ -65,6 +65,7 @@ from .measure_spec import (
     CapabilityStub,
     MeasureSpec,
     inverted_roles_for,
+    measurement_delays_for,
     stubbed_capabilities,
 )
 from .playback_transaction import PlaybackOutcome
@@ -277,7 +278,7 @@ class AnalyzeOutcome:
     **Read an empty ``results[id]`` as "every gate said no for that capture",
     never as "nothing is wired to run yet".** That is the flip the walker made,
     and it is safe to read that way only because ``skipped`` arrived with it: an
-    empty ``results[id]`` beside a populated ``skipped[id]`` is fifteen units
+    empty ``results[id]`` beside a populated ``skipped[id]`` is sixteen units
     naming the first input that capture could not reach, which is a different
     and much more useful fact than silence. Empty *mappings* — no keys at all —
     mean the bank held no records.
@@ -587,8 +588,8 @@ class TuningSession:
         input that was missing — which is the whole difference between this and
         ``_crossover_region_null_registry``'s defect, where the detector *"did
         not return 'unknown,' it was never asked."* Where the capture itself is
-        out of reach, all fifteen carry **the first input the walk could not
-        reach**, not fifteen different ones: the checks are ordered, so a bank
+        out of reach, all sixteen carry **the first input the walk could not
+        reach**, not sixteen different ones: the checks are ordered, so a bank
         missing both its driver bands and its capture bytes reports
         ``no_driver_bands`` and never mentions the bytes.
 
@@ -878,7 +879,8 @@ class TuningSession:
         provenance true of the stimulus it actually played.
         """
         self._graph_fingerprint = await self.seams.graph.install(
-            inverted_roles_for(spec)
+            inverted_roles_for(spec),
+            measurement_delays_for(spec),
         )
         proven_level_db = await self._proven_level()
         outcome: PlaybackOutcome = await self.seams.play.run(

@@ -19,10 +19,15 @@ Two verbs, both offline:
     separate from measuring so a banked sweep can be re-graded without replaying
     a single tone.
 
-Neither verb opens a device, a socket, or a CamillaDSP connection. The live
-walk itself is :func:`jasper.active_speaker.delay_sweep.run_delay_sweep`, whose
-side effects are injected by its host — see that module's docstring for why the
-capture seam is the session's admitted one and not a private player.
+Neither verb opens a device, a socket, or a CamillaDSP connection.
+
+**These verbs grade a full measured sweep, which is no longer how a delay is
+found.** The method of record is compute-then-confirm
+(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`): the coordinate is
+proposed from banked transfers with no audio at all, and confirmed by three
+acoustic takes staged through ``jasper-angle-capture``. These verbs remain
+useful for grading a sweep somebody already banked; they are not the path a new
+measurement takes.
 
 Applying a graded delay is NOT this tool's job. The prescription door owns that,
 with its own lobe gate and its own receipts.

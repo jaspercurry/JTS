@@ -60,10 +60,15 @@ class FakeCam:
 def _graph(cam, *, tmp_path, emits=None):
     emitted = emits if emits is not None else []
 
-    def _emit(inverted_roles: tuple[str, ...] = ()) -> str:
-        # One distinct text per polarity variant, the way the real emitter
-        # produces one: the flipped mixer is different bytes.
-        text = GRAPH if not inverted_roles else f"{GRAPH}inverted: {inverted_roles}\n"
+    def _emit(inverted_roles=(), measurement_delays_us=None) -> str:
+        # One distinct text per measurement variant, the way the real emitter
+        # produces one: a flipped mixer is different bytes, and so is a Delay
+        # filter carrying a different coordinate.
+        text = GRAPH
+        if inverted_roles:
+            text += f"inverted: {inverted_roles}\n"
+        if measurement_delays_us:
+            text += f"delays: {sorted(measurement_delays_us.items())}\n"
         emitted.append(text)
         return text
 
@@ -400,6 +405,35 @@ def test_a_polarity_variant_is_its_own_graph_with_its_own_fingerprint(tmp_path):
 
     assert normal and flipped and normal != flipped
     assert len(graph.emitted) == 2, "one emit per variant"
+
+
+def test_a_delay_coordinate_is_its_own_graph_with_its_own_fingerprint(tmp_path):
+    """R-1's other half. The confirmation plays three coordinates in a row, so a
+    cache keyed on polarity alone would hand the second one the first's graph
+    and measure a delay nobody asked for — under a fingerprint naming the wrong
+    coordinate."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    first = asyncio.run(graph.install(("tweeter",), {"tweeter": 100.0}))
+    second = asyncio.run(graph.install(("tweeter",), {"tweeter": 200.0}))
+    flipped_only = asyncio.run(graph.install(("tweeter",)))
+
+    assert len({first, second, flipped_only}) == 3
+    assert len(graph.emitted) == 3, "one emit per delay variant"
+
+
+def test_the_same_coordinate_twice_is_emitted_once(tmp_path):
+    """The variant cache still does its job: repeats of one coordinate cost a
+    liveness proof, not a re-emit."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    first = asyncio.run(graph.install(("tweeter",), {"tweeter": 100.0}))
+    again = asyncio.run(graph.install(("tweeter",), {"tweeter": 100.0}))
+
+    assert first == again
+    assert len(graph.emitted) == 1
 
 
 def test_each_variant_is_emitted_at_most_once_however_many_stimuli(tmp_path):

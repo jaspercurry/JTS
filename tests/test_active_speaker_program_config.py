@@ -454,3 +454,179 @@ def test_build_and_prove_refuses_pre_split_hp_graph():
     )
     with pytest.raises(ActiveSpeakerConfigError, match="provably high-pass"):
         _assert_program_graph_proven(doctored, preset, min_corner_hz=400.0)
+
+
+# --------------------------------------------------------------------------- #
+# R-1's delay lane — measurement emitter ONLY
+# --------------------------------------------------------------------------- #
+
+
+def _program(**kwargs):
+    return yaml_lib.safe_load(emit_active_speaker_program_config(
+        _preset("mono"),
+        role_channels=ROLE_CHANNELS,
+        playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        **kwargs,
+    ))
+
+
+def test_no_delay_asked_for_emits_the_graph_it_always_did():
+    # The scoping guarantee that matters most: this emitter is shared with
+    # CHECK and MEASURE, so a caller that names no delay must get byte-identical
+    # output. `None` and `{}` are the same "no" as omitting the argument.
+    baseline = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+    )
+    for empty in (None, {}):
+        assert emit_active_speaker_program_config(
+            _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_confirmed_protection(),
+            measurement_delays_us=empty,
+        ) == baseline
+
+
+def test_a_named_role_carries_a_delay_filter_at_the_head_of_its_chain():
+    from jasper.active_speaker.camilla_yaml import driver_delay_name
+    from jasper.audio_measurement.delay_graph import quantized_delay_ms
+
+    # A coordinate whose two plausible recipes DISAGREE: fmt(us/1000) rounds to
+    # 4 decimal places of ms (0.2502) where a raw divide keeps 0.25015006948647.
+    # A round number here would pass under either recipe and pin nothing.
+    delay_us = 250.15006948647
+    assert quantized_delay_ms(delay_us) != delay_us / 1000.0
+
+    parsed = _program(measurement_delays_us={"tweeter": delay_us})
+    name = driver_delay_name("tweeter")
+
+    spec = parsed["filters"][name]
+    assert spec["type"] == "Delay"
+    assert spec["parameters"]["unit"] == "ms"
+    # Folded through the ONE quantizer, so the graph proof that recomputes the
+    # expected value from the same delay_us agrees exactly.
+    assert spec["parameters"]["delay"] == quantized_delay_ms(delay_us)
+
+    chain = next(
+        step["names"] for step in parsed["pipeline"]
+        if step.get("type") == "Filter" and name in (step.get("names") or ())
+    )
+    # Head of the chain. A pure delay commutes with every stage here, so this
+    # pins the emitter's choice rather than an acoustic requirement.
+    assert chain[0] == name
+
+
+def test_only_the_named_role_is_touched():
+    from jasper.active_speaker.camilla_yaml import driver_delay_name
+
+    parsed = _program(measurement_delays_us={"tweeter": 250.0})
+    assert driver_delay_name("woofer") not in parsed["filters"]
+    for step in parsed["pipeline"]:
+        assert driver_delay_name("woofer") not in (step.get("names") or ())
+
+
+def test_the_delay_lane_cannot_reach_a_graph_a_household_plays():
+    # The scoping mechanism is that the parameter exists on THIS emitter and
+    # nowhere else: the applied/baseline emitter takes its per-driver delay from
+    # the profile's corrections and has no argument a sweep could pass.
+    import inspect
+
+    from jasper.active_speaker import camilla_yaml
+
+    emitters = {
+        name: getattr(camilla_yaml, name)
+        for name in dir(camilla_yaml)
+        if name.startswith("emit_active_speaker_")
+        and callable(getattr(camilla_yaml, name))
+    }
+    assert "emit_active_speaker_program_config" in emitters
+    for name, emitter in emitters.items():
+        has_knob = "measurement_delays_us" in inspect.signature(emitter).parameters
+        assert has_knob == (name == "emit_active_speaker_program_config"), name
+
+
+def test_the_delay_lane_does_not_move_the_ceiling_or_the_limiter():
+    plain = _program()
+    delayed = _program(measurement_delays_us={"tweeter": 250.0})
+    assert delayed["devices"]["volume_limit"] == plain["devices"]["volume_limit"] == 0.0
+    assert delayed["filters"][_driver_limiter_name("tweeter")] == (
+        plain["filters"][_driver_limiter_name("tweeter")]
+    )
+
+
+def test_a_delayed_program_still_passes_the_emitter_s_own_proofs():
+    # The build-time protective-floor and tweeter-guard proofs run inside every
+    # emit and raise on failure, so a graph that comes back at all has passed
+    # them. A delay lane is not a way past them, on either branch.
+    text = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_delays_us={"tweeter": 250.0, "woofer": 0.0},
+    )
+    view = view_from_emitted_text(text)
+    assert not unprotected_tweeter_outputs(
+        view, tweeter_channels={ROLE_CHANNELS["tweeter"]}
+    )
+
+
+def test_a_delay_on_an_unprotected_low_crossover_is_still_refused():
+    # The protective-floor gate refuses this preset with or without a delay.
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_program_config(
+            _low_fc_preset(), role_channels=ROLE_CHANNELS,
+            playback_device=ACTIVE_PCM,
+            measurement_delays_us={"tweeter": 250.0},
+        )
+
+
+def test_the_emitter_fails_closed_on_a_delay_it_cannot_honour():
+    # The emitter proves its tweeter guard and bounds its ceilings; the delay
+    # lane fails closed the same way rather than emitting a graph whose YAML
+    # disagrees with what was asked for.
+    protection = _confirmed_protection()
+    for bad in (
+        {"midrange": 250.0},              # no such branch on a 2-way preset
+        {"tweeter": -1.0},                # negative delay
+        {"tweeter": float("inf")},        # non-finite
+        {"tweeter": 10_000_000.0},        # past the DSP ceiling
+    ):
+        with pytest.raises(ActiveSpeakerConfigError):
+            emit_active_speaker_program_config(
+                _preset("mono"), role_channels=ROLE_CHANNELS,
+                playback_device=ACTIVE_PCM,
+                protection_sections_by_role=protection,
+                measurement_delays_us=bad,
+            )
+
+
+def test_a_delay_on_the_unprotected_shape_is_refused_not_silently_zeroed():
+    # That shape defines its own zeroed delay lane for every role, so a named
+    # delay would emit a duplicate mapping key whose later zero wins on parse:
+    # a capture that plays undelayed and banks as a delayed take.
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_program_config(
+            _preset("mono"), role_channels=ROLE_CHANNELS,
+            playback_device=ACTIVE_PCM,
+            protection_sections_by_role=None,
+            measurement_delays_us={"tweeter": 250.0},
+        )
+
+
+def test_the_graph_says_which_delay_coordinate_it_carries():
+    # Beside `# inverted_roles=`, and for its reason: a record names the graph
+    # by fingerprint, and a reader must be able to see which coordinate that
+    # fingerprint stands for without reconstructing the Delay filter body.
+    text = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+        measurement_delays_us={"tweeter": 250.0},
+    )
+    assert "# measurement_delays_us={'tweeter': 250.0}" in text
+
+    # And absent entirely when there is no coordinate: an unconditional line
+    # would change the fingerprint of every CHECK and MEASURE graph in the tree.
+    plain = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+    )
+    assert "measurement_delays_us" not in plain

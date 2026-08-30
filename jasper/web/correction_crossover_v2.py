@@ -2116,6 +2116,7 @@ def _take_staged_angle_walk(
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_POLARITY_NEEDS_WIRED,
+        WALK_DELAY_NOT_ACCEPTED,
         WALK_POLARITY_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
@@ -2187,9 +2188,19 @@ def _take_staged_angle_walk(
             kind=MEASURE_KIND_CANDIDATE,
             polarity=request.polarity,
             inverted_role=request.inverted_role,
+            delayed_role=request.delayed_role,
+            delay_us=request.delay_us,
         )
     except ValueError as exc:
-        raise refused(WALK_POLARITY_NOT_ACCEPTED, str(exc)) from exc
+        # Attributed by which half the request STATED, never by re-judging
+        # validity here — that rule has one owner and a second copy drifts. A
+        # request stating a delay reads as a delay refusal; the detail is the
+        # spec's own sentence either way, so it always names the real field.
+        stated_delay = bool(request.delayed_role or request.delay_us)
+        raise refused(
+            WALK_DELAY_NOT_ACCEPTED if stated_delay else WALK_POLARITY_NOT_ACCEPTED,
+            str(exc),
+        ) from exc
     if inverted_roles_for(measure_spec) and capture_source != SOURCE_WIRED:
         # Asked through the ONE translation rather than by re-reading the
         # polarity word, so "does anything ride flipped" keeps a single owner.
@@ -2207,6 +2218,8 @@ def _take_staged_angle_walk(
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
         polarity=request.polarity,
         inverted_role=request.inverted_role,
+        delayed_role=request.delayed_role,
+        delay_us=request.delay_us,
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
     )
     return prompts, LATERAL_CONSUMER_FORWARD_MODEL, measure_spec
@@ -3625,10 +3638,14 @@ def bind_production_play(
         config_dir if config_dir is not None else str(DEFAULT_CAMILLA_CONFIG_DIR)
     )
 
-    def _emit_program_graph(inverted_roles: tuple[str, ...] = ()) -> str:
-        """The session's ONE measurement-graph emit, per polarity variant.
+    def _emit_program_graph(
+        inverted_roles: tuple[str, ...] = (),
+        measurement_delays_us: Mapping[str, float] | None = None,
+    ) -> str:
+        """The session's ONE measurement-graph emit, per measurement variant.
 
-        Every argument here but ``inverted_roles`` is a bind-time closure
+        Every argument here but ``inverted_roles`` and ``measurement_delays_us``
+        is a bind-time closure
         variable, which is the fact that makes the graph session-scoped rather
         than per-stimulus: the old per-capture site emitted these same bytes
         for every stimulus. ``inverted_roles`` is R-1's reverse-null flip and
@@ -3674,6 +3691,7 @@ def bind_production_play(
             queuelimit=devices.queuelimit,
             enable_rate_adjust=devices.enable_rate_adjust,
             inverted_roles=inverted_roles,
+            measurement_delays_us=measurement_delays_us,
         )
 
     session_graph = MeasurementSessionGraph(

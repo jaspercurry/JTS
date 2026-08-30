@@ -129,6 +129,7 @@ __all__ = [
     "WALK_OVER_RELAY_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
+    "WALK_DELAY_NOT_ACCEPTED",
     "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_POLARITY_NEEDS_WIRED",
     "WALK_REFUSAL_REASONS",
@@ -308,6 +309,10 @@ class AngleCaptureRequest:
     request stated in degrees reads back in degrees for whoever is holding the
     microphone (see :func:`pose_at_angle`).
 
+    ``delayed_role`` and ``delay_us`` are R-1's other half — the confirmation
+    coordinate the DISPOSE step plays. Walk-level for the same reason the
+    polarity pair is, and carried the same way: never judged here.
+
     ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
     because the reverse-null is **one act at one place**
     (``docs/REFACTOR-TUNING-2026-08.md`` §1: design-axis-only, where the
@@ -327,6 +332,8 @@ class AngleCaptureRequest:
     mover: str = MOVER_HUMAN
     polarity: str = POLARITY_NORMAL
     inverted_role: str = ""
+    delayed_role: str = ""
+    delay_us: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -670,6 +677,15 @@ WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 #: already uses.
 WALK_POLARITY_NEEDS_WIRED = "walk_polarity_needs_wired"
 
+#: The walk's ``(delayed_role, delay_us)`` pair is not one
+#: :class:`~.crossover_v2.measure_spec.MeasureSpec` accepts — an unknown branch,
+#: a half-stated pair, or a coordinate past the DSP ceiling. Its own slug rather
+#: than :data:`WALK_POLARITY_NOT_ACCEPTED` because an operator reading
+#: ``reason=`` should learn WHICH half of R-1 was refused; the detail stays the
+#: spec's own sentence either way. Attributed by which half the request STATED,
+#: never by re-judging validity here.
+WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -678,6 +694,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
     WALK_POLARITY_NOT_ACCEPTED,
+    WALK_DELAY_NOT_ACCEPTED,
     WALK_POLARITY_NEEDS_WIRED,
 })
 
