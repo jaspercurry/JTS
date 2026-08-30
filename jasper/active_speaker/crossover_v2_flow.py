@@ -477,6 +477,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
     REASON_REGISTRY,
+    REASON_SNR_FLOOR,
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
@@ -2482,11 +2483,13 @@ class CrossoverV2Session:
         # — a position does not open a session). Held for the same reason as the
         # other three: ``program_for_phase`` answers by identity.
         self._cloud_program = self._excitation.cloud_program()
-        # The DISPOSE half's stimulus: the same min-cap clamp, band-limited to
-        # the crossover shoulders. Held beside the other four for the identity
-        # reason, and composed unconditionally because — unlike MEASURE — it
-        # depends on no gain solve, only on the declared corner.
-        self._null_confirm_program = self._excitation.null_confirm_program()
+        # The DISPOSE half's stimulus is composed LAZILY, unlike the four above.
+        # It is the one composer that can refuse on the declared corner alone
+        # (`null_confirm_band_hz` raises when the shoulders cannot get run-up
+        # inside the summed envelope), so composing it here would let a corner
+        # this session never confirms abort CHECK, MEASURE and VERIFY too.
+        # Cached on first use so `program_for_phase` still answers by identity.
+        self._null_confirm_program: ExcitationProgram | None = None
 
         # Per-SLOT attempt bookkeeping + the last failure reason. A slot is the
         # phase for a single-capture phase and the ``phase:index`` pair inside a
@@ -3141,6 +3144,30 @@ class CrossoverV2Session:
 
     def _entry_baseline_priors(self) -> MeasurementPriors:
         return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
+
+    def _null_confirm_program_or_refuse(self) -> ExcitationProgram:
+        """The confirm's stimulus, composed on FIRST USE and then held.
+
+        Lazy because this is the one composer that can refuse on the declared
+        corner alone: ``null_confirm_band_hz`` raises when the shoulders cannot
+        get run-up inside the summed envelope (a corner at or above 10 kHz, or
+        at or below 300 Hz). Composed at ``__init__`` that refusal would abort
+        CHECK, MEASURE and VERIFY for a session that never asked to confirm
+        anything.
+
+        Held after the first call so ``program_for_phase`` keeps answering by
+        IDENTITY, and the ``ValueError`` is translated into the flow's own
+        error type — every caller in this stack handles that one, and none
+        handles a bare ``ValueError``.
+        """
+        if self._null_confirm_program is None:
+            try:
+                self._null_confirm_program = self._excitation.null_confirm_program()
+            except ValueError as exc:
+                raise CrossoverV2FlowError(
+                    f"this session cannot compose a delay confirmation: {exc}"
+                ) from exc
+        return self._null_confirm_program
 
     # --- journey delegation --------------------------------------------------
 
@@ -4137,7 +4164,13 @@ class CrossoverV2Session:
                 measure=self._measure_program,
                 verify=self._verify_program,
                 cloud=self._cloud_program,
-                null_confirm=self._null_confirm_program,
+                # Composed only when it is the phase being asked for, so a
+                # corner this session cannot confirm costs the other phases
+                # nothing.
+                null_confirm=(
+                    self._null_confirm_program_or_refuse()
+                    if phase == PHASE_NULL_CONFIRM else None
+                ),
             )
         except _programs.NoProgramForPhaseError as exc:
             # The flow's own error type is what every caller (and the relay
@@ -7061,10 +7094,23 @@ class CrossoverV2Session:
         capture here for reading shallow would throw away the evidence that
         grader exists to weigh.
 
+        **A capture with no depth is REFUSED, never accepted empty.**
         ``reverse_null_depth_db`` is ``None`` when the capture did not span both
-        shoulders or sat under the gate's validity floor; that is carried
-        through as absent rather than as a zero, because "no depth" and "no
-        cancellation" are different findings.
+        shoulders or sat under the gate's validity floor — which is to say the
+        one number this phase exists to produce could not be read. Accepting it
+        would bank a confirmation take carrying no confirmation, and the offline
+        grader would report `confirmation_missing` for a capture the session had
+        already called good. It routes to the shipped retriable
+        :data:`REASON_SNR_FLOOR`, whose copy ("the room is too loud, or the
+        microphone is too far away") names the usual cause and spends the slot's
+        ordinary retry budget.
+
+        Note the asymmetry with a SHALLOW null, which is accepted: a shallow
+        depth is a RESULT (the model breaking at this band, or a branch level
+        gap) and
+        :func:`~jasper.active_speaker.crossover_v2.delay_landscape.confirmation_verdict`
+        is the one grader of it. No depth at all is not a result; it is a
+        capture that failed to measure.
         """
         screen = _spatial.entry_baseline_screens(
             analysis,
@@ -7077,10 +7123,11 @@ class CrossoverV2Session:
                 _screen_refusal_code(screen.kind),
                 payload=dict(screen.integrity_payload or {}),
             )
-        payload: dict[str, Any] = {}
-        if analysis.reverse_null_depth_db is not None:
-            payload["null_depth_db"] = float(analysis.reverse_null_depth_db)
-        return PhaseVerdict(True, payload=payload)
+        if analysis.reverse_null_depth_db is None:
+            return PhaseVerdict(False, REASON_SNR_FLOOR)
+        return PhaseVerdict(
+            True, payload={"null_depth_db": float(analysis.reverse_null_depth_db)},
+        )
 
     def _consume_entry_baseline(
         self,
