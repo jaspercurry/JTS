@@ -60,8 +60,19 @@ WIDE_ROLES = (
 )
 
 
-def _confirm(fc_hz: float = FC_HZ, roles=JTS3_ROLES):
-    return build_null_confirm_program(fc_hz, roles, gain_db=GAIN_DB)
+#: The per-role duration limits admission will judge each segment against.
+#: Handed to every composer call here for the reason the composer requires
+#: them: composing at the nominal length is what admission refuses on a real
+#: 2-way, so a fixture that omitted them would be testing a program the box
+#: would never play.
+LIMITS_S = {"woofer": 6.0, "tweeter": 4.0}
+
+
+def _confirm(fc_hz: float = FC_HZ, roles=JTS3_ROLES, limits=None):
+    return build_null_confirm_program(
+        fc_hz, roles, gain_db=GAIN_DB,
+        sweep_duration_limits_s=LIMITS_S if limits is None else limits,
+    )
 
 
 def _verify(fc_hz: float = FC_HZ):
@@ -299,11 +310,22 @@ def test_a_confirm_that_read_no_depth_is_refused_not_accepted_empty(monkeypatch)
     monkeypatch.setattr(flow, "_stimulus_locate_ok", lambda analysis: True)
 
     consume = flow.CrossoverV2Session._consume_null_confirm
-    # `self` is reached only for the shoulder derivation, so a stub carrying the
-    # session's corner and roles is the whole dependency.
+    # `self` is reached only for the shoulder derivation, which reads the
+    # COMPOSED stimulus so the open edges describe the sweep that actually
+    # played.
+    program = _confirm()
     session = SimpleNamespace(
-        _fc_hz=FC_HZ, _excitation=SimpleNamespace(roles=JTS3_ROLES),
+        _fc_hz=FC_HZ,
+        _excitation=SimpleNamespace(roles=JTS3_ROLES),
+        _null_confirm_program_or_refuse=lambda: program,
     )
+    # The derivation itself is the session's, exercised unbound against that
+    # stub — so this pins the real function rather than a re-implementation.
+    session._null_confirm_shoulders = (
+        lambda: flow.CrossoverV2Session._null_confirm_shoulders(session)
+    )
+    banked: list[tuple] = []
+    session._bank_phase_capture = lambda *a: banked.append(a)
 
     missing = consume(session, 1, 1, SimpleNamespace(reverse_null_depth_db=None), None)
     assert missing.accepted is False
@@ -317,6 +339,11 @@ def test_a_confirm_that_read_no_depth_is_refused_not_accepted_empty(monkeypatch)
     # On this JTS3-shaped fixture the lower one is the woofer alone, and a
     # reader of the depth cannot tell that unless it is carried.
     assert shallow.payload["shoulder_summed"] == {"lower": False, "upper": True}
+    # ...and an accepted confirm BANKS, or the depth would live on the verdict
+    # alone — which reaches the phone and nothing else, leaving the offline
+    # grader to report `confirmation_missing` for a take that succeeded.
+    assert len(banked) == 1
+    assert not [b for b in banked[:0]]
 
 
 # --------------------------------------------------------------------------- #
@@ -517,7 +544,9 @@ def test_a_channel_gating_at_its_upper_edge_stays_identical_below_it():
         RoleBand("woofer", 0, FrequencyBand(150.0, 3000.0)),
         RoleBand("tweeter", 1, FrequencyBand(500.0, 20000.0)),
     )
-    program = build_null_confirm_program(1600.0, roles, gain_db=GAIN_DB)
+    program = build_null_confirm_program(
+        1600.0, roles, gain_db=GAIN_DB, sweep_duration_limits_s=LIMITS_S,
+    )
     sweeps = {
         s.role: s for s in program.stimulus_segments() if s.kind == "summed_sweep"
     }

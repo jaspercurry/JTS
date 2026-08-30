@@ -188,6 +188,8 @@ from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2 import verification as _verification
 from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
+    PHASE_PROVENANCE_CONFIGURED_COMPOSED,
+    PHASE_PROVENANCE_PROTECTION_RETAINED,
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
     REFERENCE_MARK_DESIGN_AXIS as _REFERENCE_MARK_DESIGN_AXIS,
 )
@@ -3171,6 +3173,42 @@ class CrossoverV2Session:
     def _null_confirm_priors(self) -> MeasurementPriors:
         return _priors.null_confirm_priors(fc_hz=self._fc_hz)
 
+    def _null_confirm_shoulders(self) -> dict[str, bool] | None:
+        """Which shoulders the confirm's own stimulus leaves both branches open at.
+
+        Derived from the length the composed program ACTUALLY plays, not from
+        the composer's nominal: the gate edges are sample offsets into the parent
+        sweep, so a plan re-derived at a different duration describes open edges
+        the box never swept. The two answers differ by a fraction of a percent
+        today, which is precisely the kind of drift that is invisible until it
+        is being read as evidence.
+
+        ``None`` means the plan could not be built at all -- a corner whose
+        shoulders do not fit, or bands that cannot bracket Fc -- and the capture
+        keeps its depth with the provenance disclosed as unknown rather than
+        silently claiming both shoulders were summed.
+        """
+        from jasper.audio_measurement.program import (
+            PROGRAM_SAMPLE_RATE_HZ,
+            null_confirm_channel_plan,
+        )
+
+        try:
+            sweep = self._null_confirm_program_or_refuse().segment("sweep_verify")
+        except (CrossoverV2FlowError, KeyError):
+            # Only "there is no confirm stimulus to describe". A narrower catch
+            # than the ValueError/AttributeError it replaced: those swallowed a
+            # renamed segment or a moved attribute into a permanent, silent
+            # `shoulder_summed=None`, which reads as "we could not tell" forever
+            # rather than as the defect it would be.
+            return None
+        _band, _gates, shoulders = null_confirm_channel_plan(
+            self._fc_hz,
+            self._excitation.roles,
+            sweep_s=sweep.n_samples / PROGRAM_SAMPLE_RATE_HZ,
+        )
+        return shoulders
+
     # --- journey delegation --------------------------------------------------
 
     @property
@@ -4781,10 +4819,47 @@ class CrossoverV2Session:
                     baseline_fingerprint=(
                         baseline.graph_fingerprint if baseline is not None else ""
                     ),
+                    # WHICH composition the curves above came through. Read off
+                    # the analysis that produced them rather than re-reasoned
+                    # from the phase: MEASURE divides protection out and
+                    # multiplies the configured crossover in, LATERAL does not,
+                    # and until this landed nothing on disk said which a curve
+                    # had been through -- so an offline consumer summing two of
+                    # them could not tell whether they were comparable.
+                    phase_provenance=(
+                        PHASE_PROVENANCE_CONFIGURED_COMPOSED
+                        if analysis.configured_path_composed
+                        else PHASE_PROVENANCE_PROTECTION_RETAINED
+                    ),
+                    **self._confirm_claim_fields(phase, analysis),
                 ),
                 **self._capture_stamp(result),
             ),
         )
+
+    def _confirm_claim_fields(
+        self, phase: str, analysis: ProgramAnalysis,
+    ) -> dict[str, Any]:
+        """What a DELAY CONFIRMATION take adds, and nothing on any other phase.
+
+        The depth and the reference it was read against are the confirmation's
+        whole product, and they are analysis-time facts -- the engine's own
+        record is written at play time, before any of this exists, which is why
+        they land here rather than beside the coordinate.
+
+        The COORDINATE is not here, deliberately: it is a play-time fact and the
+        engine's own take record stamps it from the graph it installed
+        (``session._record``'s ``played_delay_us``). Re-deriving it in this
+        record would be a second answer to "which coordinate played", and the
+        two could disagree — which is exactly the failure the engine's own
+        comment about reading trims off what INSTALLED exists to prevent.
+        """
+        if phase != PHASE_NULL_CONFIRM:
+            return {}
+        return {
+            "null_depth_db": analysis.reverse_null_depth_db,
+            "shoulder_summed": self._null_confirm_shoulders(),
+        }
 
     def _capture_stamp(self, result: Any) -> dict[str, Any]:
         """The four facts every banked take states about its OWN capture.
@@ -7086,6 +7161,7 @@ class CrossoverV2Session:
         attempt: int,
         analysis: ProgramAnalysis,
         result: Any,
+        phase_of: str = PHASE_NULL_CONFIRM,
     ) -> PhaseVerdict:
         """The DISPOSE half's capture: screen it, then report the depth it read.
 
@@ -7135,20 +7211,8 @@ class CrossoverV2Session:
         # tweeter's permitted floor sits above `fc/2`, so the lower shoulder is
         # the woofer alone -- a valid un-cancelled reference, but not the same
         # kind of reference as a summed one, and a reader of a banked depth
-        # cannot tell which they have unless it is said. Derived through the
-        # composer's own plan rather than re-reasoned here.
-        shoulder_summed: dict[str, bool] | None = None
-        try:
-            from jasper.audio_measurement.program import null_confirm_channel_plan
-
-            _band, _gates, shoulder_summed = null_confirm_channel_plan(
-                self._fc_hz, self._excitation.roles,
-            )
-        except (ValueError, AttributeError):
-            # The plan already refused at compose time if it could not be built;
-            # a capture that played anyway is still worth its depth, so this
-            # discloses "unknown" rather than dropping the reading.
-            shoulder_summed = None
+        # cannot tell which they have unless it is said.
+        shoulder_summed = self._null_confirm_shoulders()
         if analysis.reverse_null_depth_db is None:
             # Imported at call scope: this name is one the flow deliberately
             # does not re-export, so its consumers reach the owner directly
@@ -7158,13 +7222,20 @@ class CrossoverV2Session:
             )
 
             return PhaseVerdict(False, REASON_SNR_FLOOR)
-        return PhaseVerdict(
+        verdict = PhaseVerdict(
             True,
             payload={
                 "null_depth_db": float(analysis.reverse_null_depth_db),
                 "shoulder_summed": shoulder_summed,
             },
         )
+        # Banked on an ACCEPTED verdict only, the rule every other retained kind
+        # follows. Without this the depth lived on the verdict alone -- which
+        # reaches the phone and nothing else -- and the offline grader would
+        # report `confirmation_missing` for a confirmation that had been taken,
+        # accepted, and thrown away.
+        self._bank_phase_capture(phase_of, index, attempt, analysis, result)
+        return verdict
 
     def _consume_entry_baseline(
         self,

@@ -3925,6 +3925,24 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
+    elif phase == PHASE_NULL_CONFIRM:
+        # Its own arm rather than MEASURE's, because the two ask the household
+        # for different things: MEASURE sweeps the drivers one at a time, a
+        # confirm plays BOTH at once and deliberately cancels them, so the room
+        # hears something quieter and stranger and the copy must not promise the
+        # usual sound. Without this arm a live confirm falls through to whichever
+        # phase's screen the chain reaches next -- a household told the wrong
+        # thing about what their speaker is doing.
+        env = _envelope(
+            screen="measure", active_step="measure",
+            verdict=(
+                "Keep the microphone still — JTS is checking the timing between "
+                "the two drivers. This one sounds quieter than the other sweeps; "
+                "that is the check working. It continues automatically."
+            ),
+            next_action=None,
+            status=status,
+        )
     elif phase == PHASE_CLOUD_MEASURE:
         # Same wizard screen as MEASURE: the household is still measuring, and
         # the phone (not this page) is where the per-position instructions

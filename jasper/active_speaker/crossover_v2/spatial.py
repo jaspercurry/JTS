@@ -981,6 +981,30 @@ class TakeClaim:
     #: this existed reads back as.
     level_matched: bool = False
     level_match_trims_db: Mapping[str, float] | None = None
+    #: The delay coordinate this take's graph carried, as the executable
+    #: ``(role, microseconds)`` pair that was installed. Beside ``polarity`` and
+    #: ``level_matched`` because it is the same class of fact -- what the
+    #: MEASUREMENT BRANCH was doing -- and it is the one that makes a
+    #: confirmation gradeable: ``confirmation_verdict`` keys measured depths by
+    #: the coordinate they were played at, so a take without this is a depth
+    #: nothing can place. Unsigned: which branch counts as "positive" is
+    #: ``NullWalkSpec``'s question, and a record that pre-signed it would be a
+    #: second opinion about the sign frame.
+    delayed_role: str = ""
+    played_delay_us: float | None = None
+    #: What a delay confirmation MEASURED, and against which reference. The
+    #: depth is the notch at Fc below the shoulders either side;
+    #: ``shoulder_summed`` says whether each shoulder had both branches open
+    #: there, because on a real 2-way the lower one is the woofer alone and a
+    #: reader of the depth cannot tell that unless it is said.
+    null_depth_db: float | None = None
+    shoulder_summed: Mapping[str, bool] | None = None
+    #: Which composition the banked curves came through -- the configured path
+    #: composed (``M*C/P``), or the protection phase retained. MEASURE divides
+    #: protection out and multiplies the configured crossover in; LATERAL does
+    #: not, and until now nothing on disk said which a curve had been through,
+    #: so an offline consumer summing them could not tell.
+    phase_provenance: str = ""
     level_db: float | None = None
     stimulus_dbfs: float | None = None
     incident: str = ""
@@ -1060,6 +1084,31 @@ def _take_identity(
             if claim.level_matched and claim.level_match_trims_db
             else {}
         ),
+        # Every one of these four on the same terms: present only when the take
+        # HAS the fact, so a record banked before they existed reads back
+        # identically and no schema version moves. Absence is "not this kind of
+        # take", never a zero -- a depth of 0 dB is a measured flat sum and a
+        # coordinate of 0 us is a real coordinate, so defaulting either would
+        # invent evidence.
+        **(
+            {
+                "delayed_role": claim.delayed_role,
+                "played_delay_us": float(claim.played_delay_us),
+            }
+            if claim.played_delay_us is not None and claim.delayed_role
+            else {}
+        ),
+        **(
+            {"null_depth_db": float(claim.null_depth_db)}
+            if claim.null_depth_db is not None
+            else {}
+        ),
+        **(
+            {"shoulder_summed": dict(claim.shoulder_summed)}
+            if claim.shoulder_summed is not None
+            else {}
+        ),
+        **({"phase_provenance": claim.phase_provenance} if claim.phase_provenance else {}),
         "level_db": claim.level_db,
         "stimulus_dbfs": claim.stimulus_dbfs,
         "incident": claim.incident,

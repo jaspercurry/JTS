@@ -1512,6 +1512,17 @@ BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 #: on-disk format and its readers drift apart.
 MEASURE_KIND_KEY = "measure_kind"
 
+#: Which composition a banked curve came through. MEASURE divides the driver's
+#: protection filter out and multiplies the CONFIGURED crossover in (§4.2's
+#: ``M*C/P``); LATERAL keeps the protection phase as measured. The flag existed
+#: only in memory (``ProgramAnalysis.configured_path_composed``) while every
+#: offline consumer read from disk, so a reader summing two curves could not
+#: tell whether they were the same quantity. Banked additively: a record
+#: without the key is one written before this existed, which is "unknown"
+#: rather than either value.
+PHASE_PROVENANCE_CONFIGURED_COMPOSED = "configured_path_composed"
+PHASE_PROVENANCE_PROTECTION_RETAINED = "protection_phase_retained"
+
 #: The two capture regimes. Owner: `driver_acoustics.CAPTURE_GEOMETRIES`.
 REGIME_NEAR_FIELD = "near_field"
 REGIME_REFERENCE_AXIS = "reference_axis"

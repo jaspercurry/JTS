@@ -1674,8 +1674,16 @@ def null_confirm_sweep_duration_s(
     if not limits:
         return nominal_s
     binding = min(limits)
-    if nominal_s <= binding:
-        return nominal_s
+    # Compare the REALIZED length, never the request. A sweep does not run for
+    # the duration it was asked for: the kernel rounds to the nearest
+    # phase-closing length, which can round UP past the limit. Returning the
+    # nominal because "6.0 <= 6.0" is the same compose-then-refuse failure as
+    # composing at the nominal outright -- #2921's own sharp edge, and the
+    # reason `build_measure_program`'s fit compares `meta.duration_s` rather
+    # than its input.
+    realized = _sweep_meta(f1_hz, f2_hz, nominal_s, BASE_STIMULUS_PEAK_DBFS)
+    if realized.duration_s <= binding:
+        return realized.duration_s
     try:
         return phase_closing_duration_s(
             f1_hz, f2_hz, at_or_below_s=binding,
@@ -1791,6 +1799,7 @@ def build_null_confirm_program(
     guard_s: float = DEFAULT_VERIFY_GUARD_S,
     sweep_s: float | None = None,
     sweep_duration_limits_s: Mapping[str, float] | None = None,
+    # (validated below: required unless sweep_s is stated outright)
     tail_s: float = DEFAULT_VERIFY_TAIL_S,
     downstream_gain_db: float = 0.0,
     leading_pilot_gains_db: tuple[float, float] | None = None,
@@ -1847,6 +1856,17 @@ def build_null_confirm_program(
     """
     role_bands = _validate_roles(roles)
     if sweep_s is None:
+        if sweep_duration_limits_s is None:
+            # Refused rather than defaulted, on the same terms as `sweep_s`
+            # itself: a caller that omits both is asking for the nominal 6 s,
+            # which a real 2-way's tweeter clamp refuses at admission every
+            # time. Silence there would restore exactly the trap this argument
+            # exists to close.
+            raise ValueError(
+                "a null confirm needs its roles' sweep duration limits (or an "
+                "explicit sweep_s); composing at the nominal length is what "
+                "admission refuses on every real 2-way"
+            )
         probe_band = null_confirm_band_hz(fc_hz)
         sweep_s = null_confirm_sweep_duration_s(
             probe_band[0], probe_band[1], role_bands, sweep_duration_limits_s,

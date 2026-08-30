@@ -695,6 +695,13 @@ class TuningSession:
         # from the flag: the record then states the trims the stimulus actually
         # played through rather than a second answer to the same question.
         applied_trims = level_trims_for(spec, self.level_match_trims_db)
+        # The delay coordinate this take's graph ACTUALLY carried, read through
+        # the same ONE translation `install` was handed rather than off the
+        # spec's words -- the level-match precedent below, for its reason. It is
+        # what makes a confirmation gradeable at all: `confirmation_verdict`
+        # keys measured depths BY the coordinate they were played at, and until
+        # a take recorded one there was nothing to key.
+        applied_delays = measurement_delays_for(spec)
         return {
             "session_id": self.session_id,
             "take_id": take_id,
@@ -723,6 +730,23 @@ class TuningSession:
             **(
                 {"level_match_trims_db": applied_trims}
                 if applied_trims
+                else {}
+            ),
+            # The coordinate, as the executable (role, microseconds) PAIR the
+            # graph installed -- not as a signed walk coordinate. The sign frame
+            # belongs to `NullWalkSpec` (which branch is "positive" is its
+            # question), and a record that pre-signed the number would be a
+            # second opinion about it. The grade verb re-signs through
+            # `dsp_candidate`'s own frame.
+            #
+            # Absent on every take that named no delay, so no schema moves and a
+            # record banked before this reads back exactly as it did.
+            **(
+                {
+                    "delayed_role": next(iter(applied_delays)),
+                    "played_delay_us": float(next(iter(applied_delays.values()))),
+                }
+                if applied_delays
                 else {}
             ),
             "graph_fingerprint": self._graph_fingerprint,

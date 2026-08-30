@@ -242,8 +242,13 @@ a candidate delay in the measurement graph and **that emitter only**. Offline,
 `jasper-delay-sweep propose <bundle> --fc-hz N` reads that round's per-driver
 curves through the measurement index, prints the computed optimum, and hands
 back the `jasper-angle-capture stage` lines that confirm it. It opens no device
-and plays nothing. Grading the confirmation is not wired: no banked take
-records the delay coordinate it was played at.
+and plays nothing. `jasper-delay-sweep grade <bundle> --fc-hz N` is the other
+end: it reads the banked confirmation takes, keys each measured null depth by
+the delay coordinate the graph actually carried, and puts the pair to
+`confirmation_verdict`. A take now records that coordinate — `played_delay_us`
+with the `delayed_role` it was installed on, unsigned, because the sign frame
+is the walk spec's — alongside the depth it measured, which shoulders that
+depth was referenced against, and which composition its curves came through.
 
 **Price orders the queue; it never empties it.** A delay the confirmation
 resolved is a measured physical error, so it gets applied — through the

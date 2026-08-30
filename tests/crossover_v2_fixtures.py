@@ -495,7 +495,18 @@ class FakeSeams:
             # program_and_get_no_tracking_prior).
             self.analyzed.append((phase, program.phase, result, priors, geometry))
             factory = {
-                "check": self.check, "measure": self.measure, "verify": self.verify,
+                "check": self.check,
+                "measure": self.measure,
+                "verify": self.verify,
+                # A delay confirmation is a summed sweep read for its null
+                # depth, so it analyses through VERIFY's factory -- the same
+                # reuse the production dispatch makes, where
+                # `_analyze_verify` serves both stimulus phases so there is one
+                # null-depth definition rather than two. Registered here rather
+                # than left to KeyError because a confirm reaching FakeSeams is
+                # the first thing that breaks otherwise, and the break would
+                # look like a fixture bug rather than the missing row it is.
+                "null_confirm": self.verify,
             }[program.phase]
             return factory(program)
 

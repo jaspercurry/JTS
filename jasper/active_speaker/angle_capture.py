@@ -838,14 +838,33 @@ def session_lateral_walk(
     """
     from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
+    # The two regimes a session walk can play. `per_driver` replays the
+    # anchor's MEASURE object at every pose; `null_confirm` plays the delay
+    # confirmation, which reaches the same engine MEASURE leg by its own kind
+    # (`measurement_phase.PHASE_BY_MEASURE_KIND`) and so is driveable at a pose
+    # for the same reason. `summed` is still refused: it has no engine kind, so
+    # it would fall to the flow leg and measure the standing production graph.
+    #
+    # Without `null_confirm` here the PROPOSE door dead-ends: every line
+    # `jasper-delay-sweep propose` prints carries `--regime null_confirm`, and
+    # staging one would be refused by the seam that is supposed to run it.
+    walkable = {REGIME_PER_DRIVER, REGIME_NULL_CONFIRM}
     off_regime = sorted({
-        stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER
+        stop.regime for stop in request.stops if stop.regime not in walkable
     })
     if off_regime:
         raise LateralWalkRefused(
             WALK_REGIME_UNSUPPORTED,
-            f"a session walk plays the {REGIME_PER_DRIVER} program at every "
-            f"pose, so it cannot take {', '.join(off_regime)} stops",
+            "a session walk plays a routed program at every pose, so it "
+            f"cannot take {', '.join(off_regime)} stops",
+        )
+    # ...and it plays ONE of them: a mixed walk would ask the engine for two
+    # different stimuli at one index.
+    if len({stop.regime for stop in request.stops}) != 1:
+        raise LateralWalkRefused(
+            WALK_REGIME_UNSUPPORTED,
+            "a session walk plays one program at every pose, so its stops "
+            "cannot mix regimes",
         )
     if request.externally_positioned != externally_positioned:
         raise LateralWalkRefused(

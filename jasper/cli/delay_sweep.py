@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator door onto the inter-driver reverse-null delay: the PROPOSE half.
+"""Operator door onto the inter-driver reverse-null delay: compute, then grade.
 
-One verb, offline:
+Two verbs, both offline:
 
 ``propose``
     Read a banked round's per-driver curves, complex-sum them across the whole
@@ -12,11 +12,17 @@ One verb, offline:
     playing. **No audio plays and no device is opened** — an existing MEASURE
     bank answers this today.
 
+``grade``
+    Read the banked confirmation takes back, key each measured null depth by
+    the delay coordinate its graph actually carried, and put the pair to
+    :func:`~jasper.active_speaker.crossover_v2.delay_landscape.confirmation_verdict`.
+    Prints the verdict, the prescribable delay when there is one, and the
+    ready-to-run alignment-prescription line. **No audio plays here either.**
+
 The method of record is compute-then-confirm
-(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`). This is its first
-step; the second is staging the printed coordinates with
-``jasper-angle-capture stage --delayed-role R --delay-us N``, which
-``propose`` prints ready to run.
+(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`). ``propose`` is its
+first step and prints the ``jasper-angle-capture stage`` lines that play the
+coordinates; ``grade`` is the third, after those takes are banked.
 
 **A refusal is an output, not an error.** Banked curves that do not span both
 crossover shoulders cannot support a null at Fc, and the sentence saying so is
@@ -41,9 +47,11 @@ from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLES,
     POLARITY_INVERTED,
 )
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_NULL_CONFIRM
 from jasper.active_speaker.crossover_v2.delay_landscape import (
     DelayLandscapeError,
     compute_landscape,
+    confirmation_verdict,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
@@ -61,6 +69,7 @@ EXIT_INPUT = 2
 REFUSE_NO_ROUND = "delay_propose_no_round"
 REFUSE_NO_CURVES = "delay_propose_no_banked_curves"
 REFUSE_LANDSCAPE = "delay_propose_landscape_unsupported"
+REFUSE_NO_CONFIRMATIONS = "delay_grade_no_confirmation_takes"
 
 
 def _spec_from_args(args: argparse.Namespace) -> Any:
@@ -165,6 +174,129 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _confirmed_depths(
+    bundle_dir: Path, spec: Any, *, position_deg: int,
+) -> tuple[dict[float, float], list[dict[str, Any]]]:
+    """Every banked confirmation take, keyed by the coordinate it PLAYED.
+
+    The key is re-signed here, through ``spec``'s own frame: a take banks the
+    executable ``(delayed_role, played_delay_us)`` pair its graph installed,
+    because which branch counts as "positive" is the walk spec's question and a
+    record that pre-signed the number would be a second opinion about it. This
+    inverts ``dsp_candidate`` using the same spec that produced it.
+
+    A take carrying no ``played_delay_us`` is skipped, not defaulted to zero: a
+    record banked before the coordinate was stamped does not describe a zero
+    delay, it describes an unknown one, and grading it as 0 us would put a
+    measurement at a coordinate nothing played.
+    """
+    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
+    depths: dict[float, float] = {}
+    read: list[dict[str, Any]] = []
+    for row in bundle_measurements(
+        bundle_dir, kind=MEASURE_KIND_NULL_CONFIRM, position_deg=position_deg,
+    ):
+        try:
+            record = json.loads((artifacts / row.path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, Mapping):
+            continue
+        depth = record.get("null_depth_db")
+        played = record.get("played_delay_us")
+        role = record.get("delayed_role")
+        if depth is None or played is None:
+            continue
+        signed = float(played)
+        if role and role == spec.negative_delay_target:
+            signed = -signed
+        depths[signed] = float(depth)
+        read.append({
+            "take": row.path,
+            "coordinate_us": signed,
+            "null_depth_db": float(depth),
+            "shoulder_summed": record.get("shoulder_summed"),
+            "phase_provenance": record.get("phase_provenance"),
+        })
+    return depths, read
+
+
+def _cmd_grade(args: argparse.Namespace) -> int:
+    bundle_dir = Path(args.bundle_dir)
+    spec = _spec_from_args(args)
+    lower_role = spec.negative_delay_target
+    upper_role = spec.positive_delay_target
+
+    round_dir, why = round_artifact_dir(bundle_dir)
+    if round_dir is None:
+        return _refused(REFUSE_NO_ROUND, f"{bundle_dir}: {why}")
+
+    found = _curve_pair(
+        bundle_dir, phase=args.phase, position_deg=args.position_deg,
+        roles=(lower_role, upper_role),
+    )
+    if found is None:
+        return _refused(
+            REFUSE_NO_CURVES,
+            f"{bundle_dir}: no {args.phase} take at {args.position_deg} deg "
+            f"carries curves for both {lower_role!r} and {upper_role!r}",
+        )
+    lower_curve, upper_curve, take_path = found
+    try:
+        landscape = compute_landscape(
+            lower_curve, upper_curve, spec=spec, inverted_role=args.inverted_role,
+        )
+    except DelayLandscapeError as exc:
+        # Verbatim, like propose: the module that decided owns the sentence.
+        return _refused(REFUSE_LANDSCAPE, str(exc))
+
+    measured, read = _confirmed_depths(
+        bundle_dir, spec, position_deg=args.position_deg,
+    )
+    if not measured:
+        return _refused(
+            REFUSE_NO_CONFIRMATIONS,
+            f"{bundle_dir}: no banked {MEASURE_KIND_NULL_CONFIRM} take at "
+            f"{args.position_deg} deg records both a null depth and the delay "
+            "coordinate it was played at; stage the lines `propose` printed",
+        )
+
+    verdict = confirmation_verdict(landscape, measured)
+    prescribable = verdict.get("prescribable_delay_us")
+    print(json.dumps({
+        "status": "graded",
+        "take_path": take_path,
+        "confirmations": sorted(read, key=lambda r: r["coordinate_us"]),
+        "verdict": verdict,
+        # Only a verdict the measurement supports hands out a line to run.
+        "apply_with": (
+            None if prescribable is None
+            else _prescription_command(landscape, prescribable, args)
+        ),
+    }, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
+def _prescription_command(
+    landscape: Any, delay_us: float, args: argparse.Namespace,
+) -> str:
+    """The alignment-prescription key that APPLIES a confirmed delay.
+
+    A session-open key rather than a prescriber verb, and its fields are the
+    ones the door declares (`docs/tuning-methodology.md` §4): the sign frame is
+    ``(D_woofer - D_tweeter)``, so a positive number delays the tweeter, and
+    ``basis_delay_us`` is what the computation proposed before the room
+    answered.
+    """
+    basis = landscape.best_coordinate_us
+    return (
+        "--alignment-prescription "
+        f'\'{{"delay_us": {delay_us:g}, "basis_delay_us": {basis:g}, '
+        f'"basis_artifacts": ["{args.bundle_dir}"], '
+        f'"basis_note": "confirmed acoustically at {args.position_deg} deg"}}\''
+    )
+
+
 def _stage_command(candidate: Any, args: argparse.Namespace) -> str:
     """The ``jasper-angle-capture stage`` line that plays one coordinate.
 
@@ -216,7 +348,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    child = sub.add_parser("propose")
+    for verb, func in (("propose", _cmd_propose), ("grade", _cmd_grade)):
+        child = _add_selector_parser(sub, verb)
+        child.set_defaults(func=func)
+    return parser
+
+
+def _add_selector_parser(sub: Any, verb: str) -> argparse.ArgumentParser:
+    """The selectors both verbs share, declared once.
+
+    ``grade`` reads the SAME round, corner and bearing ``propose`` computed
+    from -- it has to, because it grades a measurement against that
+    computation's landscape. Two copies of this block would let the two verbs
+    describe different speakers.
+    """
+    child = sub.add_parser(verb)
     child.add_argument(
         "bundle_dir",
         help="a commissioning bundle directory (the one holding info.json "
@@ -249,8 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="the bearing whose take is read; the reverse null is a "
              "design-axis act",
     )
-    child.set_defaults(func=_cmd_propose)
-    return parser
+    return child
 
 
 def main(argv: Sequence[str] | None = None) -> int:
