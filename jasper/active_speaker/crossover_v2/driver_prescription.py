@@ -1796,18 +1796,18 @@ def _parse_pinned_trim(
                 role=role,
                 document_names=sorted(named),
             )
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-        ):
+        # This module's own reader, consumed rather than re-written: it refuses
+        # ``bool`` (``True`` would read as +1 dB), refuses a string, and survives
+        # an arbitrary-precision int whose ``float()`` raises — which is a legal
+        # JSON number and would otherwise escape this gate as an OverflowError.
+        db = _finite_or_none(value)
+        if db is None:
             _refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db[{role!r}] must be a finite number of dB, got "
                 f"{value!r}",
                 role=role,
             )
-        db = float(value)
         if db > 0.0 or db < MAX_ATTENUATION_DB:
             _refuse(
                 TRIM_PIN_MALFORMED,
