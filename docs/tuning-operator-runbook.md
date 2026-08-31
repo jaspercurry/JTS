@@ -438,10 +438,11 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|agreement\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability, per-seat agreement, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
+| `jasper-forward-model predict\|verify-delta` | Predict a candidate's summed response from banked per-driver solos. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/forward_model.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 <!-- END GENERATED TOOL MENU -->

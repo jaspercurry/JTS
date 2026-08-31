@@ -60,6 +60,10 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory (plays nothing)"
+
 REFUSE_CANDIDATE = "forward_model_unreadable_candidate"
 REFUSE_NO_DELTA = "forward_model_no_verify_delta"
 

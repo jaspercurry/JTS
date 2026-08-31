@@ -503,7 +503,11 @@ lens on the same round: they reward broad smoothness the flat ±dB table cannot
 see, on the on-axis curve and the pooled horizontal window both. They inform
 and never gate — the band table is the acceptance lineage. When the
 single-axis number flatters a round and the pooled number does not, the
-single-axis one is the one fitting artifacts.
+single-axis one is the one fitting artifacts. The pooled window reads from
+SUMMED captures banked at bearings, which a per-driver-only lateral walk does
+not produce — walk `both_at` stops (per-driver AND summed at each angle, one
+mic move) and the pooled lens lights up; until then it reports absent-with-
+reason, never a fabricated number.
 
 ## 8. VOICING
 
