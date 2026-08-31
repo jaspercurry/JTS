@@ -74,6 +74,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_UNAVAILABLE,
 )
 from jasper.active_speaker.crossover_v2.attempt_grading import (
+    ATTEMPT_REASON_NO_FLOOR,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
 )
 from jasper.active_speaker.crossover_v2.journey import (
@@ -584,6 +585,52 @@ def test_glitched_verify_reaches_loop_as_stop_evidence():
         INTEGRITY_CHECK_SWEEP_HEARD,
         INTEGRITY_CHECK_SWEEP_SCHEDULE,
     ]
+
+
+def test_no_floor_records_ungraded_and_a_floor_never_outranks_evidence():
+    """The two grading-arm combinations nothing else drives (#2033 order).
+
+    Row 1: a comparable capture on a speaker with no adopted floor is
+    recorded UNGRADED — the no-floor status, not a refusal and not a claim.
+    Row 2: a non-comparable capture on a speaker that HAS a floor still
+    answers as a capture problem: the floor's presence must not promote
+    grading past the evidence refusal. A mutation fusing the two conditions
+    (refuse only when non-comparable AND floorless) survives every other
+    case in the suite and fails only on this pair.
+    """
+    fakes = FakeSeams()
+    c = _conductor(
+        fakes,
+        index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        tuning_attempt_id="candidate-a",
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    decision = c.last_attempt_decision
+    assert decision["reason"] == ATTEMPT_REASON_NO_FLOOR
+    assert decision["decision"] is None
+    assert decision["improved"] is None
+    assert decision["floor"] is None
+    assert decision["basis_attempt_ids"] == ["candidate-a"]
+    # Ungraded is recorded, not dropped: the attempt still enters history.
+    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+
+    integrity = CaptureIntegrity(checks=(
+        IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL),
+    ))
+    floored_fakes = FakeSeams()
+    floored_fakes.verify = lambda program: _verify_analysis(
+        program, integrity=integrity,
+    )
+    floored = _verify_only_conductor(
+        floored_fakes, tuning_attempt_id="candidate-b",
+    )
+    assert _run_phase(floored, 1, 1)["accepted"] is False
+    decision = floored.last_attempt_decision
+    assert decision["decision"] == STOP_EVIDENCE
+    assert decision["reason"] == REASON_ATTEMPT_NOT_COMPARABLE
+    assert floored.attempt_history == ()
 
 
 def test_live_seam_refuses_improvement_when_verify_denominator_shrinks():
