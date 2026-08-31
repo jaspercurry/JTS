@@ -616,7 +616,15 @@ priors measured.
     columns; a hardware-free test pins that every tuning `jasper-*` entry
     point in `pyproject.toml` appears in the menu; one front-door
     paragraph states the reading order for a fresh driving LLM (runbook →
-    methodology → doctrine). (S)
+    methodology → doctrine). Widened 2026-08-31 for the discovery gap:
+    `jasper-crossover-prescriber status` (the runbook's own "Orient"
+    step) prints the reading-order pointer, and the three operator docs
+    (methodology, runbook, doctrine) install onto the box — the #2882
+    "installed runbook" direction, taken now for all three — so an LLM
+    whose only surface is SSH on the speaker still finds the front door.
+    Each tuning CLI's `--help` carries its full I/O contract (the
+    tools-teach-at-the-surface pattern); per-tool depth lives there and
+    in the runbook's menu row, never in new per-tool documents. (S–M)
 6.5 Accuracy beside precision: one packet summary block juxtaposing the
     round's measured repeat floor (random) against the standing systematic
     bounds (mic-cal tier, position sensitivity, gate leakage), building on
@@ -675,7 +683,12 @@ priors measured.
     orientation honestly (provenance, not a new identity axis — #2880's
     elevation work stays where it is). Verification for the
     recommissioning campaign per ADR-0203. (S, protocol + provenance
-    label)
+    label) **Deferred to V2 by owner ruling 2026-08-31** alongside the
+    guided web flow's elevation prompts (#2880/#2881 family): the
+    recommissioning campaign runs with the vertical axis
+    disclosed-unsampled per the methodology's §3d rule, and the driving
+    LLM's job is to surface the options (sideways protocol now, guided
+    elevation later) to the owner, never to silently skip the axis.
 6.13 Audibility-weighted co-metrics: NBD and SM (Olive 2004, 1/20-octave
     smoothing via the shared smoother) on the banked on-axis curve AND
     the pooled horizontal window (0/±7/±22° average, named
