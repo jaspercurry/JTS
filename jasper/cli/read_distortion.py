@@ -63,6 +63,10 @@ EXIT_ROUND_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_WRITE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory"
+
 #: The shipped MEASURE driver bands, as the flow composes them today.
 #:
 #: Defaults rather than constants: a round measured with different bands is read
@@ -88,12 +92,39 @@ def _band(text: str) -> tuple[float, float]:
     return lo, hi
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-read-distortion",
         description=(
             "Read H2/H3 out of a banked round's MEASURE captures, relative to "
             "the fundamental, at the drive each capture used."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - with a --state from a DIFFERENT round than bundle_dir --\n"
+            "    the drive level comes out wrong with NO refusal (see\n"
+            "    --state's own help); always pass the state belonging to\n"
+            "    THIS round\n"
+            "  - without a readable --applied-profile -- the round is\n"
+            "    refused rather than read, because that is where the\n"
+            "    crossover corner is read from\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-read-distortion captures/.../session-1/round-3 \\\n"
+            "      --dumps captures/.../round-3/dumps.json \\\n"
+            "      --state captures/.../round-3/flow_state.json\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  read; the reading is filed and a summary printed\n"
+            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or\n"
+            "     --state could not be read\n"
+            "  2  EXIT_REFUSED -- the reading itself was refused (e.g. no\n"
+            "     --applied-profile, or it named a corner this round did\n"
+            "     not measure through); \"refused: <reason>\" on stderr,\n"
+            "     and as JSON with --json\n"
+            "  3  EXIT_WRITE_FAILED -- read, but the reading could not be\n"
+            "     written"
         ),
     )
     parser.add_argument(
@@ -179,7 +210,7 @@ def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
 
     round_dir, why = round_artifact_dir(args.bundle_dir)
     if round_dir is None:

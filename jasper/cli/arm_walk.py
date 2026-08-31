@@ -73,6 +73,11 @@ def _angles(raw: str) -> tuple[int, ...]:
         ) from exc
 
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "measured"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-arm-walk",
@@ -80,6 +85,32 @@ def build_parser() -> argparse.ArgumentParser:
             "Serve a crossover-v2 measurement session's position gate with the "
             "lab turntable arm: poll, move, settle, report the microphone in "
             "place. Parks the arm at 0 deg on every exit."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - no walk is staged yet -- jasper-angle-capture stage one\n"
+            "    first, or this exits EXIT_WALK_NOT_STAGED with nothing moved\n"
+            "  - the rig's travel path is not physically clear --\n"
+            "    --attest-rig-clear is an attestation, not a safety check\n"
+            "    this tool can verify for you\n"
+            "  - a human is moving the mic by hand this session -- that is\n"
+            "    --mover human on jasper-angle-capture, not this tool\n"
+            "\n"
+            "EXAMPLE\n"
+            "  sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \\\n"
+            "      --attest-rig-clear --hostname jts3.local \\\n"
+            "      --expect-angles 7,-7,22,-22 --complete-after 5 \\\n"
+            "      --trail /tmp/walk.jsonl\n"
+            "\n"
+            "EXIT CODES\n"
+            "  Prints \"arm walk finished: <name> (rc <code>)\" on stderr on\n"
+            "  every exit. 0 = ok; every other value is a named refusal or\n"
+            "  stall code from EXIT_NAMES\n"
+            "  (jasper/active_speaker/arm_walk.py -- the authoritative table,\n"
+            "  since this CLI only re-prints codes that module owns), e.g.\n"
+            "  walk_not_staged, walk_not_taken, stuck, session_stopped.\n"
+            "  129/130/143 = parked after SIGHUP/SIGINT/SIGTERM."
         ),
     )
     parser.add_argument(

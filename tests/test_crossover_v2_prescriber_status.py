@@ -171,6 +171,56 @@ def test_the_report_prints_one_line_per_state_and_the_next_actions(tmp_path, cap
     assert out.strip(), "the report is this verb's whole product"
 
 
+def test_the_report_leads_with_the_reading_order(tmp_path, capsys):
+    """Tier 0's front door (ADR-0204): read in order, before the state report."""
+    session, _ = _speaker_dirs(tmp_path)
+
+    _, out = _report([str(session)], capsys)
+
+    lines = out.splitlines()
+    assert lines[0] == "read in order:"
+    order = [line for line in lines if "tuning-methodology.md" in line
+             or "tuning-operator-runbook.md" in line
+             or "measurement-loop-doctrine.md" in line]
+    assert len(order) == 3
+    assert lines.index(order[0]) < lines.index(order[1]) < lines.index(order[2])
+    assert out.index("read in order:") < out.index("speaker:")
+
+
+def test_the_reading_order_is_json_silent(tmp_path, capsys):
+    """The JSON contract (W3-a/b, `_STATUS_DOCUMENT_KEYS`) is untouched --
+    this is a human-report addition only."""
+    session, _ = _speaker_dirs(tmp_path)
+
+    _, payload = _status([str(session)], capsys)
+
+    assert set(payload) == _STATUS_DOCUMENT_KEYS
+
+
+def test_the_reading_order_prefers_the_on_box_install_when_present(
+    tmp_path, capsys, monkeypatch
+):
+    """Repo path by default (no /opt/jasper/docs here); the installed path
+    once deploy/lib/install/python-runtime.sh's install_jasper() has put one
+    there (commit 2's destination) -- never both, never neither."""
+    session, _ = _speaker_dirs(tmp_path)
+
+    _, before = _report([str(session)], capsys)
+    assert "docs/tuning-methodology.md" in before
+    assert "/opt/jasper/docs/tuning-methodology.md" not in before
+
+    installed = tmp_path / "installed-docs"
+    installed.mkdir()
+    (installed / "tuning-methodology.md").write_text("x")
+    monkeypatch.setattr(cli, "_INSTALLED_DOCS_DIR", installed)
+
+    _, after = _report([str(session)], capsys)
+    assert str(installed / "tuning-methodology.md") in after
+    # The other two docs were not seeded into the fake install dir, so they
+    # still fall back -- each doc's own existence decides, not the others'.
+    assert "docs/tuning-operator-runbook.md" in after
+
+
 def test_the_json_and_the_report_say_the_same_sentence(tmp_path, capsys):
     """One wording per fact. Two would let the terminal and the pipe disagree."""
     session, _ = _speaker_dirs(tmp_path)

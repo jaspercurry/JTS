@@ -74,13 +74,43 @@ EXIT_ROUND_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_WRITE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory"
 
-def _build_parser() -> argparse.ArgumentParser:
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-classify-features",
         description=(
             "Classify a banked round's features as minimum-phase driver "
             "defects, interference, or the room — controls first."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - before a round has banked captures -- this reads\n"
+            "    already-banked evidence, it takes no measurement itself\n"
+            "  - to classify one specific dip you already suspect -- --at\n"
+            "    repeats to name frequencies explicitly; omitted, features\n"
+            "    are DETECTED from the round's own pooled response, which\n"
+            "    may not surface a small one\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-classify-features captures/.../session-1/round-3 \\\n"
+            "      --dumps captures/.../round-3/dumps.json\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  classified; the verdict is filed and a summary printed\n"
+            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or the\n"
+            "     round shape itself could not be read -- the message names\n"
+            "     which, and for the commonest cause (no admissible round\n"
+            "     shape) names the two directory shapes this tool accepts\n"
+            "  2  EXIT_REFUSED -- classification itself was refused (e.g.\n"
+            "     no captures to classify); \"refused: <reason> (...)\" on\n"
+            "     stderr, and as JSON with --json\n"
+            "  3  EXIT_WRITE_FAILED -- classified, but the verdict could\n"
+            "     not be written to --out or the default artifact path"
         ),
     )
     parser.add_argument(
@@ -159,7 +189,7 @@ def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
 
     round_dir, why = round_artifact_dir(args.bundle_dir)
     if round_dir is None:
