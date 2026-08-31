@@ -24,14 +24,14 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 REPS="${REPS:-20}"
 GAP_SEC="${GAP_SEC:-4}"
 PHRASE="${PHRASE:-Jarvis}"
 SLUG=$(echo "$PHRASE" | tr '[:upper:] ' '[:lower:]-')
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCAL_PY="$REPO_ROOT/scripts/_make_wake_test_track.py"
 OUT_LOCAL="$REPO_ROOT/logs/wake-test-track/${SLUG}"
 REMOTE_OUT="/tmp/wake-test-track-${SLUG}"

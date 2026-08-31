@@ -26,8 +26,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 MIC_DEVICE="${MIC_DEVICE:-hw:CARD=Array,DEV=0}"
 MIC_CHANNELS="${MIC_CHANNELS:-6}"
 CAPTURE_SECONDS="${CAPTURE_SECONDS:-2.2}"

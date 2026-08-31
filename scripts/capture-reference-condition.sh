@@ -48,6 +48,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
+
 if [[ $# -lt 1 ]]; then
     cat >&2 <<USAGE
 Usage: $0 <condition> [seconds]
@@ -69,10 +73,6 @@ case "$DURATION" in
     ''|*[!0-9]*) echo "duration must be a positive integer (seconds)" >&2; exit 2 ;;
 esac
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
-
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_LOCAL="${REPO_ROOT}/reference-conditions/${CONDITION}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_REMOTE="/tmp/jts-refcap-${CONDITION}-${TS}"
