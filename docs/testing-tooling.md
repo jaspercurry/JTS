@@ -2794,18 +2794,23 @@ weaker (the datasheet sensitivity gap, an operator pin, a preserved manual
 crossover) CLEARS the record instead, so the artifact only ever describes a
 level match the speaker is actually playing.
 
-**Where it sits, and why there.** Commissioning runs *rough config at `/sound`
--> measured auto-trim -> seat-level -> crossover candidates -> driver
-linearization -> room correction*, and the auto-trim's position is load-bearing
-rather than conventional. Every step downstream is graded against a level the
-step before it established: a crossover candidate is judged on how the two
-branches sum, and a linearization target is a shape relative to a level, so
-both inherit whatever level error the drivers started with. Seat-level in
-particular derives its safe ceiling from the DECLARED sensitivities — the very
-numbers the trim step is there to correct — which is why the trim runs before
-it rather than after. On 2026-08-23 a compression driver rated on a different
-horn seeded a −10.8 dB trim nobody had measured, and seat-level then refused
-4.2 dB short of its target on a ceiling built from that declaration.
+**Where it sits, and why it is not a step at all.** Commissioning runs *rough
+config at `/sound` -> seat-level -> crossover candidates -> driver
+linearization -> room correction*. There is no separate auto-trim stage
+between rough config and seat-level any more: the apply itself banks the
+trim, but only when the profile it just applied is a MEASURED crossover
+candidate — which is necessarily downstream of seat-level, never before it.
+Crossover candidates and driver linearization still inherit whatever level
+error the drivers started with — a candidate is judged on how the two
+branches sum, and a linearization target is a shape relative to a level — so
+the trim still matters for THOSE steps. Seat-level's ceiling does not wait
+for it: on 2026-08-23 a compression driver rated on a different horn seeded a
+−10.8 dB trim nobody had measured, and seat-level then refused 4.2 dB short
+of its target on a ceiling built from that declaration. The fix was not to
+run the trim earlier — there is no earlier step left to run it in — it was to
+stop letting declared per-driver figures bind seat-level's ceiling at all:
+see [Seat-SPL leveling](#seat-spl-leveling)'s "have not since 2026-08-23",
+where those figures are now disclosed rather than enforced.
 
 **It mints no estimator, and no solver.** The trim is whatever the applied
 profile resolved — a crossover-v2 measured candidate's own

@@ -72,10 +72,11 @@ from .driver_base_trim import (
     BANK_WRITE_FAILED,
     BANK_WRITE_REFUSED,
     REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
+    STATUS_ABSENT,
     DriverBaseTrimError,
     banked_base_trims,
     clear_base_trim,
-    write_base_trim,
+    write_base_trim_if_changed,
 )
 from .driver_pad import effective_sensitivity_db
 from .level_trim import (
@@ -568,7 +569,14 @@ def _measured_level_trims(
         if isinstance(crossover_preview, Mapping) and crossover_preview
         else None
     )
-    base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
+    if declaration_fingerprint is None:
+        # No declaration to key a banked record against, and `banked_base_trims`
+        # treats that exactly like a caller with no declaration at all -- a
+        # guaranteed non-match. Skip the state-file open+read+parse behind it
+        # rather than pay for an answer that is already known.
+        base_trims, base_trim_meta = {}, {"status": STATUS_ABSENT}
+    else:
+        base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
     if base_trims:
         # The banked record names the speaker groups it levelled, and the ledger
         # reports them under the SAME keys the guided path uses: readiness
@@ -3432,7 +3440,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             return
         trims_db[str(role)] = gain
     try:
-        record = write_base_trim(
+        record = write_base_trim_if_changed(
             trims_db=trims_db,
             roles=sorted(trims_db),
             speaker_group_ids=readiness.get("measured_group_ids") or [],

@@ -491,36 +491,6 @@ def resolve_mic_sensitivity(
     return parse_calibration_sensitivity(source[1]) if source is not None else None
 
 
-def resolve_mic_curve(
-    *,
-    calibration_file: str | Path | None = None,
-    mic_serial: str | None = None,
-    mic_provider: str = "minidsp",
-    mic_model: str = "minidsp_umik2",
-) -> tuple[CalibrationCurve, str] | None:
-    """``(response curve, its sign convention)`` for this mic, or ``None``.
-
-    The sibling of :func:`resolve_mic_sensitivity`, and separate for the same
-    reason its parser is: one file carries two facts, and a mic whose file has a
-    ``Sens Factor`` but no usable rows still has an absolute reference. The
-    convention travels WITH the curve because a curve applied under the other
-    one is applied with its sign flipped — the 2026-07-27 defect.
-    """
-    source = _resolve_calibration_source(
-        calibration_file=calibration_file,
-        mic_serial=mic_serial,
-        mic_provider=mic_provider,
-        mic_model=mic_model,
-    )
-    if source is None:
-        return None
-    _path, text, convention = source
-    try:
-        return parse_calibration_text(text, sign_convention=convention), convention
-    except ValueError:
-        return None
-
-
 def apply_calibration_curve(
     freqs_hz: np.ndarray,
     magnitude_db: np.ndarray,
