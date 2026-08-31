@@ -116,6 +116,11 @@ def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
     assert landscape["kind"] == "jts_inter_driver_delay_landscape"
     # Two or three: the optimum and its immediate neighbours.
     assert 2 <= len(landscape["confirmation_coordinates_us"]) <= 3
+    # The span every printed depth was read at rides with them, and an operator
+    # reading the coordinate by hand gets it beside the answer.
+    assert landscape["shoulders"]["used_hz"] == [FC_HZ / 2.0, FC_HZ * 2.0]
+    assert landscape["shoulders"]["lower_clamped"] is False
+    assert err.strip()
 
 
 def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> None:

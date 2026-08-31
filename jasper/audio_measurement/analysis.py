@@ -17,20 +17,139 @@ small.
 """
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
+#: The canonical shoulders, as multiples of Fc (one octave either side). THE
+#: one statement of the span: consumers multiply Fc by these rather than
+#: restating them, so moving the canon is this line.
+CANONICAL_SHOULDER_RATIOS: tuple[float, float] = (0.5, 2.0)
 
-def crossover_null_depth_db(freqs, mag_db, crossover_fc_hz: float) -> float:
+#: Samples a shoulder read needs strictly either side of Fc. Two, because
+#: :func:`numpy.interp` interpolates between two and repeats a lone one — with
+#: one sample on a side the subtraction below is that sample minus itself.
+MIN_SHOULDER_SAMPLES = 2
+
+
+@dataclass(frozen=True)
+class ShoulderSpan:
+    """Where a null depth's shoulders were read, and how far in they were forced.
+
+    Two banked per-driver curves overlap only where both drivers were swept,
+    and a real 2-way overlaps by less than the canonical two octaves (the
+    reference speaker's is 1.32). The span is the canonical one clamped into
+    that overlap.
+
+    **A clamped depth is not the same quantity as a full-span one:** shoulders
+    inside the crossover's own rolloff sit below the passband either side of
+    it, so the subtraction reads smaller than a canonical read of the same sum.
+    That is what these fields exist to say.
+    """
+
+    crossover_fc_hz: float
+    overlap_hz: tuple[float, float]
+    used_hz: tuple[float, float]
+    samples_below_fc: int
+    samples_above_fc: int
+
+    @property
+    def canonical_hz(self) -> tuple[float, float]:
+        return (
+            self.crossover_fc_hz * CANONICAL_SHOULDER_RATIOS[0],
+            self.crossover_fc_hz * CANONICAL_SHOULDER_RATIOS[1],
+        )
+
+    @property
+    def lower_clamped(self) -> bool:
+        return self.used_hz[0] > self.canonical_hz[0]
+
+    @property
+    def upper_clamped(self) -> bool:
+        return self.used_hz[1] < self.canonical_hz[1]
+
+    @property
+    def used_octaves(self) -> float:
+        lower, upper = self.used_hz
+        if not lower > 0.0 or not upper > lower:
+            return 0.0
+        return math.log2(upper / lower)
+
+    @property
+    def usable(self) -> bool:
+        """Whether a shoulder can be placed either side of Fc at all.
+
+        Not a quality bar — narrowness is disclosed, not refused. This is the
+        floor below which there is nothing to read.
+        """
+
+        return (
+            self.used_hz[0] < self.crossover_fc_hz < self.used_hz[1]
+            and self.samples_below_fc >= MIN_SHOULDER_SAMPLES
+            and self.samples_above_fc >= MIN_SHOULDER_SAMPLES
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "crossover_fc_hz": self.crossover_fc_hz,
+            "overlap_hz": list(self.overlap_hz),
+            "canonical_hz": list(self.canonical_hz),
+            "used_hz": list(self.used_hz),
+            "used_octaves": self.used_octaves,
+            "lower_clamped": self.lower_clamped,
+            "upper_clamped": self.upper_clamped,
+            "samples_below_fc": self.samples_below_fc,
+            "samples_above_fc": self.samples_above_fc,
+        }
+
+
+def shoulder_span(
+    freqs, *, crossover_fc_hz: float, overlap_hz: tuple[float, float]
+) -> ShoulderSpan:
+    """Derive the shoulders a null depth can honestly be read at.
+
+    ``overlap_hz`` is the band both branches carry evidence over; ``freqs`` is
+    the grid the depth will be read on. One owner, beside the subtraction that
+    consumes it, so a computed proposal and an acoustic confirm place their
+    shoulders by the same rule.
+    """
+
+    lower_ratio, upper_ratio = CANONICAL_SHOULDER_RATIOS
+    grid = np.asarray(freqs, dtype=float)
+    return ShoulderSpan(
+        crossover_fc_hz=float(crossover_fc_hz),
+        overlap_hz=(float(overlap_hz[0]), float(overlap_hz[1])),
+        used_hz=(
+            max(crossover_fc_hz * lower_ratio, float(overlap_hz[0])),
+            min(crossover_fc_hz * upper_ratio, float(overlap_hz[1])),
+        ),
+        samples_below_fc=int(np.count_nonzero(grid < crossover_fc_hz)),
+        samples_above_fc=int(np.count_nonzero(grid > crossover_fc_hz)),
+    )
+
+
+def crossover_null_depth_db(
+    freqs,
+    mag_db,
+    crossover_fc_hz: float,
+    *,
+    shoulders_hz: tuple[float, float] | None = None,
+) -> float:
     """How deep the notch at Fc sits below the passband either side of it.
 
-    THE definition of null depth in this repo: the mean of the one-octave
-    shoulders (Fc/2 and 2*Fc) minus the level at Fc, read off an already
-    calibrated, already gated magnitude curve. Positive is a notch; a flat sum
-    reads near zero.
+    THE definition of null depth in this repo: the mean of the two shoulders
+    minus the level at Fc, read off an already calibrated, already gated
+    magnitude curve. Positive is a notch; a flat sum reads near zero.
+
+    The shoulders are :data:`CANONICAL_SHOULDER_RATIOS` times Fc unless the
+    caller states narrower ones with ``shoulders_hz``, from
+    :func:`shoulder_span`. Stating them beats letting :func:`numpy.interp` clamp
+    at the grid edge: the number is the same either way, but only one of the two
+    says which frequencies it read, and a clamped read has to be disclosed.
 
     Homed here rather than beside its acoustic caller because both consumers
     live ABOVE this package: `active_speaker.driver_acoustics` reads it off a
@@ -40,9 +159,17 @@ def crossover_null_depth_db(freqs, mag_db, crossover_fc_hz: float) -> float:
     import down; two spellings of this subtraction would be two null depths,
     and the walk that grades them could not tell which it had.
     """
+    lower_hz, upper_hz = (
+        (
+            crossover_fc_hz * CANONICAL_SHOULDER_RATIOS[0],
+            crossover_fc_hz * CANONICAL_SHOULDER_RATIOS[1],
+        )
+        if shoulders_hz is None
+        else (float(shoulders_hz[0]), float(shoulders_hz[1]))
+    )
     at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
-    lower_shoulder = float(np.interp(crossover_fc_hz / 2.0, freqs, mag_db))
-    upper_shoulder = float(np.interp(crossover_fc_hz * 2.0, freqs, mag_db))
+    lower_shoulder = float(np.interp(lower_hz, freqs, mag_db))
+    upper_shoulder = float(np.interp(upper_hz, freqs, mag_db))
     return (lower_shoulder + upper_shoulder) / 2.0 - at_fc
 
 
