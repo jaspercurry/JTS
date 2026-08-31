@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import os
+import stat
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -813,6 +814,26 @@ def issue_protection_evidence(
     )
 
 
+def _matches_published_stimulus(
+    target: Path, *, sha256_hex: str, byte_size: int
+) -> bool:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(target, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != byte_size:
+            return False
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == sha256_hex
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def persist_synchronized_stimulus_once(
     authority_dir: Path,
     *,
@@ -821,7 +842,24 @@ def persist_synchronized_stimulus_once(
 ) -> GeneratedExcitationWav:
     relative_path = f"stimuli/{generation.admission_id}.wav"
     target = authority_dir / relative_path
-    target.parent.mkdir(mode=0o750, exist_ok=True)
+    created = False
+    try:
+        target.parent.mkdir(mode=0o750)
+        created = True
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise ActiveCommissioningAdmissionError(
+            f"could not create stimulus directory: {exc}"
+        ) from exc
+    try:
+        os.chmod(target.parent, 0o750)
+        if created:
+            fsync_directory(authority_dir)
+    except OSError as exc:
+        raise ActiveCommissioningAdmissionError(
+            f"could not persist stimulus directory: {exc}"
+        ) from exc
     signal, generated_meta = synchronized_swept_sine(
         f1=meta.f1,
         f2=meta.f2,
@@ -833,31 +871,57 @@ def persist_synchronized_stimulus_once(
         raise ActiveCommissioningAdmissionError(
             "generated sweep metadata changed after admission"
         )
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            prefix=".stimulus-", suffix=".wav", dir=target.parent, delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-        write_sweep_wav(temporary, signal, meta.sample_rate)
-        os.chmod(temporary, 0o640)
-        os.link(temporary, target)
-        with target.open("rb") as handle:
-            os.fsync(handle.fileno())
-        fsync_directory(target.parent)
-    except FileExistsError as exc:
-        raise ActiveCommissioningAdmissionError(
-            "one-shot stimulus path already exists"
-        ) from exc
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
     digest = hashlib.sha256()
     byte_size = 0
-    with target.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(64 * 1024), b""):
-            digest.update(chunk)
-            byte_size += len(chunk)
+    descriptor = -1
+    temporary = ""
+    published = False
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".stimulus-", suffix=".wav", dir=target.parent
+        )
+        with os.fdopen(descriptor, "w+b") as handle:
+            descriptor = -1
+            write_sweep_wav(handle, signal, meta.sample_rate)
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o640)
+            os.fsync(handle.fileno())
+            handle.seek(0)
+            for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                digest.update(chunk)
+                byte_size += len(chunk)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if not _matches_published_stimulus(
+                target, sha256_hex=digest.hexdigest(), byte_size=byte_size
+            ):
+                raise ActiveCommissioningAdmissionError(
+                    "one-shot stimulus path already exists"
+                ) from None
+        published = True
+        os.unlink(temporary)
+        temporary = ""
+        fsync_directory(target.parent)
+    except OSError as exc:
+        if published:
+            raise ActiveCommissioningAdmissionError(
+                "stimulus publish outcome is unknown after path publication"
+            ) from exc
+        raise ActiveCommissioningAdmissionError(
+            f"could not persist stimulus: {exc}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
     artifact = ArtifactIdentity(
         bundle_kind=generation.authority.bundle_kind,
         bundle_id=generation.authority.bundle_id,
