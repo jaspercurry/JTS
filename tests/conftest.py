@@ -371,7 +371,13 @@ _CORRECTION_SETUP_CLAIMS = ("_AUTOLEVEL_CLAIM", "_LEVEL_MATCH_CLAIM")
 
 @pytest.fixture(autouse=True)
 def _isolate_correction_volume_claims(monkeypatch):
-    """Keep request-spanning correction claims from leaking between tests."""
+    """Clear the correction host's two module-scoped volume claims.
+
+    They span requests in production by design. A claim seated by a test that
+    never restores makes the NEXT test's level-match door take its release
+    branch and report success without writing — production is correct; tests
+    must not share the process. See issue #3361.
+    """
     mod = sys.modules.get("jasper.web.correction_setup")
     if mod is None:
         return
@@ -381,7 +387,14 @@ def _isolate_correction_volume_claims(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_jasper_logger_level():
-    """Restore the process-global Jasper logger level after each test."""
+    """Restore the process-global ``jasper`` logger level after each test.
+
+    Several sites move it and none restore it. The level decides whether a
+    record is CREATED, so a leaked one doubles the count any "journalled
+    exactly once" test reads — one owner behind an opened level gate, not two
+    emitters; production is correct; tests must not share the process. See
+    issue #3361.
+    """
     logger = logging.getLogger("jasper")
     level = logger.level
     try:
