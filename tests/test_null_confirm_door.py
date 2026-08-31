@@ -390,6 +390,30 @@ def test_an_inverted_row_names_the_flipped_branch():
     assert in_phase["inverted_role"] is None
 
 
+def test_a_genuine_zero_depth_banks_as_zero():
+    """0.0 dB is a REAL reading — "the branches did not cancel" — and the most
+    important one the polarity proof can return. It must survive the guard
+    below, which is why that guard tests for ``None`` and not falsiness."""
+    assert _row(depth_db=0.0, span=_span())["depth_db"] == 0.0
+
+
+def test_a_measured_row_cannot_be_banked_without_a_depth():
+    """A missing depth must CRASH, never bank as 0.0.
+
+    ``depth_db or 0.0`` would turn an absent measurement into a legal,
+    plausible reading a grader cannot tell from a real one — the one failure
+    mode that corrupts the bank silently rather than loudly. Unreachable today
+    (the refusal arm returns first, `_depth` returns a float), so this pins the
+    shape rather than a live path: the row builder's signature still admits
+    ``None`` for the refusal arm's sake, and this is what stops that leaking
+    into the measured arm.
+    """
+    with pytest.raises(ValueError):
+        _row(depth_db=None, span=_span())
+    with pytest.raises(ValueError):
+        _row(depth_db=-14.0, span=None)
+
+
 def test_a_refused_row_says_why_and_claims_no_depth():
     row = _row(
         refusal=null_door.NullDoorRefused(

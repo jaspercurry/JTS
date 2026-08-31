@@ -567,7 +567,19 @@ def _row(
         row["clamped_hi"] = None
         return row
     row["status"] = "measured"
-    row["depth_db"] = round(float(depth_db or 0.0), 2)
+    # Never `depth_db or 0.0`. A measured row with no depth is a defect, and
+    # 0.0 dB is the WORST way to say so: it is a legal, plausible reading ("no
+    # null formed") that a grader cannot tell from a real one. Unreachable
+    # today -- the refusal arm returned above and `_depth` returns a float
+    # unconditionally -- so this is the loud failure the neighbouring
+    # `span.used_hz` reads already give, spelled out because the signature
+    # still admits ``None`` for the refusal arm's sake.
+    if depth_db is None or span is None:
+        raise ValueError(
+            "a measured null row needs both a depth and the shoulders it was "
+            "read at; pass refusal= instead"
+        )
+    row["depth_db"] = round(float(depth_db), 2)
     row["shoulders_used"] = [span.used_hz[0], span.used_hz[1]]
     row["shoulders_canonical"] = [span.canonical_hz[0], span.canonical_hz[1]]
     row["clamped_lo"] = span.lower_clamped
