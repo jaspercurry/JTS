@@ -578,8 +578,9 @@ class RoundPoseCurve:
     (Wave 4a / ruling S3) through the same reader :mod:`.delay_landscape` and
     ``jasper-delay-sweep`` already use to reconstruct a transfer function --
     never a raw lateral WAV, and never a second tree-walker over the bundle
-    (house ruling R11). ``band_hz`` is the role's own driven sweep band, the
-    same field :func:`~.delay_landscape._curve` reads to bound itself.
+    (house ruling R11). ``band_hz`` is the role's own driven sweep band,
+    parsed by the shared :func:`~.position_cycle.parse_curve_magnitude` —
+    the same step the delay-sweep reader layers phase onto.
     """
 
     pose_id: str
@@ -612,7 +613,7 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     walk" from "a walk that measured nothing usable" apart from a directory
     error.
     """
-    from .position_cycle import read_take_curves
+    from .position_cycle import parse_curve_magnitude, read_take_curves
     from .record_index import bundle_measurements
 
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
@@ -624,25 +625,12 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
         pose_id = Path(row.path).stem
         for curve in curves:
             role = curve.get("role")
-            freqs = curve.get("freqs_hz")
-            magnitude = curve.get("magnitude_db")
-            band = curve.get("band_hz")
-            if not (
-                isinstance(role, str)
-                and isinstance(freqs, list)
-                and isinstance(magnitude, list)
-                and isinstance(band, (list, tuple))
-                and len(band) == 2
-            ):
+            if not isinstance(role, str):
                 continue
-            try:
-                freqs_arr = np.asarray([float(v) for v in freqs], dtype=np.float64)
-                mag_arr = np.asarray([float(v) for v in magnitude], dtype=np.float64)
-                band_tuple = (float(band[0]), float(band[1]))
-            except (TypeError, ValueError):
+            parsed = parse_curve_magnitude(curve)
+            if parsed is None:
                 continue
-            if freqs_arr.size == 0 or freqs_arr.size != mag_arr.size:
-                continue
+            freqs_arr, mag_arr, band_tuple = parsed
             out.append(
                 RoundPoseCurve(
                     pose_id=pose_id,
@@ -1422,14 +1410,10 @@ def _gate_invariance(
             )
             for fc in features:
                 sizes[key][fc].append(read_feature(curve, grid, fc))
-                band = (grid >= fc * 2**-CENTRE_SEARCH_OCT) & (
-                    grid <= fc * 2**CENTRE_SEARCH_OCT
+                _, centre_hz = _extremum_reading(
+                    curve, grid, fc, pooled_db[f"{fc:.0f}"] < 0
                 )
-                window = curve[band]
-                apex = int(
-                    np.argmin(window) if pooled_db[f"{fc:.0f}"] < 0 else np.argmax(window)
-                )
-                centres[key][fc].append(float(grid[band][apex]))
+                centres[key][fc].append(centre_hz)
 
     table: dict[str, Any] = {}
     for fc in features:
@@ -1586,6 +1570,25 @@ def _subsample_delay_us(
 _POSE_MIN_CENTRE_SAMPLES = 3
 
 
+def _centre_search_mask(freqs: np.ndarray, fc: float) -> np.ndarray:
+    return (freqs >= fc * 2**-CENTRE_SEARCH_OCT) & (freqs <= fc * 2**CENTRE_SEARCH_OCT)
+
+
+def _extremum_reading(
+    values: np.ndarray, freqs: np.ndarray, fc: float, is_dip: bool
+) -> tuple[float, float]:
+    """The extremum inside ``fc``'s centre-search window: (value, centre_hz).
+
+    The one implementation of "where is this feature's centre" — the gate
+    ladder and the pose-persistence read call it alike, so the same feature
+    can never grow two centres.
+    """
+    search = _centre_search_mask(freqs, fc)
+    window = values[search]
+    apex = int(np.argmin(window) if is_dip else np.argmax(window))
+    return float(window[apex]), float(freqs[search][apex])
+
+
 def _pose_reading(
     curve: RoundPoseCurve, detrended: np.ndarray, fc: float, is_dip: bool
 ) -> dict[str, Any]:
@@ -1617,31 +1620,11 @@ def _pose_reading(
     }
     if not (curve.band_hz[0] <= lo and hi <= curve.band_hz[1]):
         return base
-    search = (curve.freqs_hz >= fc * 2**-CENTRE_SEARCH_OCT) & (
-        curve.freqs_hz <= fc * 2**CENTRE_SEARCH_OCT
-    )
+    search = _centre_search_mask(curve.freqs_hz, fc)
     if int(np.count_nonzero(search)) < _POSE_MIN_CENTRE_SAMPLES:
         return base
-    window = detrended[search]
-    apex = int(np.argmin(window) if is_dip else np.argmax(window))
-    return {
-        **base,
-        "resolved": True,
-        "pooled_db": float(window[apex]),
-        "centre_hz": float(curve.freqs_hz[search][apex]),
-    }
-
-
-def _pose_persistence_rows(
-    pose_curves: Sequence[RoundPoseCurve],
-    detrended_curves: Sequence[np.ndarray],
-    fc: float,
-    is_dip: bool,
-) -> list[dict[str, Any]]:
-    return [
-        _pose_reading(curve, detrended, fc, is_dip)
-        for curve, detrended in zip(pose_curves, detrended_curves)
-    ]
+    pooled, centre = _extremum_reading(detrended, curve.freqs_hz, fc, is_dip)
+    return {**base, "resolved": True, "pooled_db": pooled, "centre_hz": centre}
 
 
 def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
@@ -1768,12 +1751,6 @@ def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any
         "noise_floor_db": noise_floor_db,
         "below_floor": bool(below_floor),
         "time_to_neg20_db_ms": time_ms,
-    }
-
-
-def _decay_block(host: _DecayHost, fc: float) -> dict[str, Any]:
-    return {
-        name: _decay_read(host, band) for name, band in _decay_bands_hz(fc).items()
     }
 
 
@@ -2114,10 +2091,14 @@ def classify_round(
             gates_ms=ladder,
         )
         row["gate_rungs"] = _gate_rungs(gate_table[key])
-        row["pose_persistence"] = _pose_persistence_rows(
-            pose_curves, pose_detrended, fc, pooled_db[key] < 0
-        )
-        row["decay"] = _decay_block(decay_host, fc)
+        row["pose_persistence"] = [
+            _pose_reading(curve, detrended, fc, pooled_db[key] < 0)
+            for curve, detrended in zip(pose_curves, pose_detrended)
+        ]
+        row["decay"] = {
+            name: _decay_read(decay_host, band)
+            for name, band in _decay_bands_hz(fc).items()
+        }
         rows.append(row)
 
     return {

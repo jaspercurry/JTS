@@ -73,6 +73,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
@@ -270,6 +272,46 @@ def read_take_curves(path: Path, *, phase: str) -> list[Mapping[str, Any]] | Non
     if not isinstance(curves, list) or not curves:
         return None
     return [curve for curve in curves if isinstance(curve, Mapping)] or None
+
+
+def parse_curve_magnitude(
+    curve: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray, tuple[float, float]] | None:
+    """One banked curve's magnitude subset, coerced and validated, or ``None``.
+
+    The shared step under every consumer of
+    :func:`~.spatial.pose_curve_record`'s banked shape (ruling S3):
+    ``freqs_hz`` and ``magnitude_db`` as equal-length float arrays with
+    finite frequencies, and ``band_hz`` as an ordered ``(lo, hi)`` — falling
+    back to the grid extent when the curve declares none. ``None`` when the
+    mapping cannot supply that subset. A consumer's stricter requirement
+    (phase, a role check, raising instead of skipping) layers on top; this is
+    the one place "what a banked magnitude curve means" is decided, so the
+    delay-sweep reader and the feature classifier cannot drift apart on it.
+    """
+    try:
+        freqs = np.asarray([float(hz) for hz in curve["freqs_hz"]], dtype=float)
+        magnitude = np.asarray(
+            [float(db) for db in curve["magnitude_db"]], dtype=float
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (freqs.size and freqs.size == magnitude.size):
+        return None
+    if not np.all(np.isfinite(freqs)):
+        return None
+    band = curve.get("band_hz")
+    if (
+        isinstance(band, (list, tuple))
+        and len(band) == 2
+        and all(isinstance(edge, (int, float)) for edge in band)
+    ):
+        swept = (float(band[0]), float(band[1]))
+    else:
+        swept = (float(freqs[0]), float(freqs[-1]))
+    if not swept[0] < swept[1]:
+        return None
+    return freqs, magnitude, swept
 
 
 def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:

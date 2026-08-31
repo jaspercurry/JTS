@@ -128,7 +128,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="MS",
-        dest="gates_ms",
         help=(
             "add this gate to the invariance ladder, repeatable. Rungs above "
             "the primary window are legal -- they re-admit reflections, so "
@@ -205,11 +204,6 @@ def main(argv: list[str] | None = None) -> int:
             session_id=session_id,
             walk_logs=tuple(args.walk_logs),
         )
-        # Omitted when unset, rather than defaulted here to GATE_LADDER_MS:
-        # the shipped ladder stays classify_round's own default, one place.
-        gates_kwargs: dict[str, Any] = (
-            {"gates_ms": tuple(args.gates_ms)} if args.gates_ms else {}
-        )
         # Best-effort and always attempted: a round with no lateral walk
         # returns empty rather than raising, and classify_round reports that
         # as its own NOT-RUN fact rather than needing a flag to ask for it.
@@ -218,8 +212,8 @@ def main(argv: list[str] | None = None) -> int:
             captures,
             at=args.at,
             gate_ms=args.gate_ms,
+            gates_ms=tuple(args.gates_ms) if args.gates_ms else GATE_LADDER_MS,
             pose_curves=pose_curves,
-            **gates_kwargs,
         )
     except FeatureClassificationRefused as refusal:
         # The directory actually read, named explicitly: a refusal whose
