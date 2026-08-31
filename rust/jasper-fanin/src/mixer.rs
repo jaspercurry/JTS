@@ -66,7 +66,7 @@ use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 // the ALSA owner and avoids a local metric copy.
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
-use crate::config::{Config, RingWireFormat, RING_SLOT_FRAMES};
+use crate::config::{Config, RingWireFormat, MEASUREMENT_LANE, RING_SLOT_FRAMES};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -1427,8 +1427,8 @@ pub struct Input {
     ring_obs: Option<ring_capture::RingLaneObservability>,
     /// Per-lane WAKE FADE-IN state (issue #3443). Held by every lane and usable
     /// at both lane scales, because it runs over this lane's rendered period —
-    /// the one thing all four read arms produce. Inert on the measurement lane;
-    /// [`wake_ramp::LaneWakeRamp::for_lane`] owns that decision.
+    /// the one thing all four read arms produce. Tracked before the selection
+    /// gate and applied after it; inert on [`MEASUREMENT_LANE`].
     wake_ramp: LaneWakeRamp,
 }
 
@@ -1908,27 +1908,6 @@ impl Mixer {
             // RMS_DBFS_FLOOR. `active` is the exact slice this lane contributes
             // to the sum (0 when it read nothing), reused by the mix below.
             let active = frames * (CHANNELS as usize);
-            // 3a1. WAKE FADE-IN (issue #3443): shape an onset that lands after a
-            // long stretch of digital zero, so a sender resuming mid-waveform
-            // cannot hand the crossover a full-scale step. Runs for EVERY lane,
-            // at both lane scales, BEFORE the selection gate below — the
-            // zero-run tracker follows what the lane CAPTURES, so a de-selected
-            // lane keeps tracking rather than freezing a stale run and arming on
-            // the first period mux passes it. Ahead of the meter, so the level
-            // reported is the level contributed. Only the read side is touched;
-            // the TTS/cue path enters post-sum and never passes here.
-            let woke = if input.read_buf_wide.is_empty() {
-                input
-                    .wake_ramp
-                    .observe(&mut input.read_buf[..active], self.period_frames)
-            } else {
-                input
-                    .wake_ramp
-                    .observe(&mut input.read_buf_wide[..active], self.period_frames)
-            };
-            if woke {
-                info!("event=fanin.lane_wake_ramp lane={}", input.label);
-            }
             // Read the level off whichever buffer actually holds this lane's
             // period. The two RMS functions report the SAME dBFS for the same
             // signal (they differ only in the full-scale normalizer), so mux's
@@ -1942,6 +1921,28 @@ impl Mixer {
             input
                 .rms_dbfs_x100
                 .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
+            // 3a3. WAKE FADE-IN, tracking half (issue #3443). Read-only, and
+            // deliberately for EVERY lane regardless of selection: silence is a
+            // property of what the lane CAPTURES, so the run has to be counted
+            // on the same periods the lane reads. Nothing is shaped here — the
+            // meter above must keep reporting a de-selected lane's TRUE level,
+            // and the window itself belongs to the periods that reach the sum
+            // (applied after the gate below). One INFO line per arming: the
+            // state machine cannot re-arm without another ARM_SILENCE_MS of
+            // silence, so this is bounded far below the throttled hot-path logs
+            // this daemon already emits inline (`record_drain_entry`).
+            let woke = if input.read_buf_wide.is_empty() {
+                input
+                    .wake_ramp
+                    .observe(&input.read_buf[..active], self.period_frames)
+            } else {
+                input
+                    .wake_ramp
+                    .observe(&input.read_buf_wide[..active], self.period_frames)
+            };
+            if woke {
+                info!("event=fanin.lane_wake_ramp label={}", input.label);
+            }
             // 3b. Advance the DEFAULT-OFF post-lock cushion decay one render
             // period on this lane's resampler (if armed). Done AFTER the render
             // so the tick sees this period's fresh lock state, and independent of
@@ -1966,6 +1967,17 @@ impl Mixer {
                 input.muted.load(Ordering::Relaxed),
             ) {
                 continue;
+            }
+            // 3c. WAKE FADE-IN, application half (issue #3443). Only a period
+            // that actually ENTERS the sum spends the window, so a lane that
+            // woke while mux still had it out keeps its ramp owed until `SELECT`
+            // lands (mux arbitrates at 1 Hz). Spending it on discarded periods
+            // instead would leave the sum opening on the very step this exists
+            // to remove. A silent period holds the window rather than eating it.
+            if input.read_buf_wide.is_empty() {
+                input.wake_ramp.apply(&mut input.read_buf[..active]);
+            } else {
+                input.wake_ramp.apply(&mut input.read_buf_wide[..active]);
             }
             // Only sum the samples we actually got (`active`, computed above for
             // the per-lane RMS). `read_input` zero-pads the tail of
@@ -2638,7 +2650,7 @@ fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
 }
 
 fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
-    selected_input == -1 || selected_input == input_index as i32 || label == "correction"
+    selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
 
 /// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter

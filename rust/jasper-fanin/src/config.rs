@@ -52,6 +52,16 @@ pub const RING_SHM_DIR: &str = "/dev/shm/jts-ring";
 /// hops. Mirrored in Python by `jasper.renderer_lanes.RENDERER_RING_PREFIX`.
 pub const RENDERER_RING_PREFIX: &str = "lane-";
 
+/// Label of the measurement / diagnostic injection lane — the one lane that
+/// carries stimuli rather than program.
+///
+/// Two behaviours key off this identity and must agree about it: the lane is
+/// always mixed regardless of selection, so diagnostics keep working when the
+/// household has pinned a source ([`crate::mixer`]'s selection gate), and its
+/// stimuli are never onset-shaped, because the measurement loop deconvolves
+/// against the signal it believes it played (`mixer::wake_ramp`).
+pub const MEASUREMENT_LANE: &str = "correction";
+
 /// The ring file a renderer-ingress lane reads, derived from the fan-in lane
 /// LABEL — the one identity fan-in already has for that lane. This is the whole
 /// path rule; there is no env override, so the reader's path and the conf.d
@@ -644,7 +654,13 @@ impl Config {
         );
         let input_renderers = env_list(
             "JASPER_FANIN_INPUT_RENDERERS",
-            &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
+            &[
+                "spotify",
+                "airplay",
+                "bluealsa",
+                "usbsink",
+                MEASUREMENT_LANE,
+            ],
         );
         if input_pcms.len() != input_renderers.len() {
             anyhow::bail!(
