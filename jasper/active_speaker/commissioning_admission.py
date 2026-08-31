@@ -28,6 +28,7 @@ from typing import Any
 
 import yaml
 
+from jasper.atomic_io import fsync_directory
 from jasper.audio_measurement.admitted_playback import (
     PLAYBACK_READMISSION_REFUSED_MESSAGE,
     CurrentPlaybackAdmissionInputs,
@@ -843,11 +844,7 @@ def persist_synchronized_stimulus_once(
         os.link(temporary, target)
         with target.open("rb") as handle:
             os.fsync(handle.fileno())
-        directory_fd = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        fsync_directory(target.parent)
     except FileExistsError as exc:
         raise ActiveCommissioningAdmissionError(
             "one-shot stimulus path already exists"

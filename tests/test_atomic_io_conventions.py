@@ -35,12 +35,11 @@ _JASPER = _REPO / "jasper"
 # (preserving each writer's published mode), EXCEPT where noted.
 _ALLOWLIST = {
     # Deliberately different — KEEP. Its parent-directory fsync is
-    # fail-soft: ANY OSError logs at DEBUG and the write still succeeds
-    # (pinned by test_wifi_guardian_persistence's fsync-failure test),
-    # because a degraded rename-durability beats failing the wizard's
-    # connect. atomic_write_text(durable=True) tolerates only
-    # EINVAL/ENOTSUP/EOPNOTSUPP and re-raises the rest, so converging
-    # would change this writer's observable failure mode.
+    # fail-soft: any error logs at DEBUG and the write still succeeds (pinned by
+    # test_wifi_guardian_persistence's fsync-failure test), because a
+    # degraded rename-durability beats failing the wizard's connect.
+    # atomic_write_text(durable=True) tolerates unsupported filesystems but
+    # re-raises real faults, so converging would change this failure mode.
     "jasper/wifi_guardian_persistence.py",
     # Plain burn-down candidate (no fsync; text/JSON with an explicit
     # chmod) — an exact fit for atomic_write_text(mode=...). Sits in the

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 from dataclasses import replace
 from pathlib import Path
@@ -839,7 +840,7 @@ def test_directory_fsync_failure_after_link_is_outcome_unknown(
 
     store = _open_store(tmp_path)
     store.publish_raw_artifact("first.bin", b"first")
-    real_fsync = evidence_store._fsync_directory
+    real_fsync = evidence_store.fsync_directory
     artifact_dir_calls = 0
 
     def fail_final_artifact_dir_fsync(path: Path) -> None:
@@ -847,12 +848,12 @@ def test_directory_fsync_failure_after_link_is_outcome_unknown(
         if path.name == "artifacts":
             artifact_dir_calls += 1
             if artifact_dir_calls == 2:
-                raise OSError("simulated directory fsync failure")
+                raise OSError(errno.EINVAL, "directory fsync unsupported")
         real_fsync(path)
 
     monkeypatch.setattr(
         evidence_store,
-        "_fsync_directory",
+        "fsync_directory",
         fail_final_artifact_dir_fsync,
     )
     with pytest.raises(CommissioningEvidenceStoreError) as raised:
@@ -880,7 +881,7 @@ def test_identical_link_race_unlinks_temp_before_final_directory_fsync(
     raced = False
     events: list[str] = []
     real_unlink = evidence_store.os.unlink
-    real_fsync = evidence_store._fsync_directory
+    real_fsync = evidence_store.fsync_directory
 
     def race_link(_source: str, target: Path) -> None:
         nonlocal raced
@@ -900,7 +901,7 @@ def test_identical_link_race_unlinks_temp_before_final_directory_fsync(
 
     monkeypatch.setattr(evidence_store.os, "link", race_link)
     monkeypatch.setattr(evidence_store.os, "unlink", record_unlink)
-    monkeypatch.setattr(evidence_store, "_fsync_directory", record_fsync)
+    monkeypatch.setattr(evidence_store, "fsync_directory", record_fsync)
 
     artifact = store.publish_raw_artifact("race.bin", payload)
 

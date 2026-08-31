@@ -306,7 +306,7 @@ def test_new_authority_and_role_directories_fsync_their_parent_entries(
     from jasper.audio_measurement import excitation_artifacts
 
     synced: list[Path] = []
-    real_fsync_directory = excitation_artifacts._fsync_directory
+    real_fsync_directory = excitation_artifacts.fsync_directory
 
     def record_fsync(path: Path) -> None:
         synced.append(Path(path))
@@ -314,7 +314,7 @@ def test_new_authority_and_role_directories_fsync_their_parent_entries(
 
     monkeypatch.setattr(
         excitation_artifacts,
-        "_fsync_directory",
+        "fsync_directory",
         record_fsync,
     )
     authority, _generation_artifact = _generation(tmp_path)
@@ -332,7 +332,7 @@ def test_marker_prepublish_failure_durably_removes_empty_authority(
     from jasper.audio_measurement import excitation_artifacts
 
     synced: list[Path] = []
-    real_fsync_directory = excitation_artifacts._fsync_directory
+    real_fsync_directory = excitation_artifacts.fsync_directory
 
     def record_fsync(path: Path) -> None:
         synced.append(Path(path))
@@ -343,7 +343,7 @@ def test_marker_prepublish_failure_durably_removes_empty_authority(
 
     monkeypatch.setattr(
         excitation_artifacts,
-        "_fsync_directory",
+        "fsync_directory",
         record_fsync,
     )
     monkeypatch.setattr(excitation_artifacts.os, "link", fail_link)
@@ -360,7 +360,7 @@ def test_marker_cleanup_sync_failure_reports_unknown_outcome(
 ) -> None:
     from jasper.audio_measurement import excitation_artifacts
 
-    real_fsync_directory = excitation_artifacts._fsync_directory
+    real_fsync_directory = excitation_artifacts.fsync_directory
     parent_syncs = 0
 
     def fail_cleanup_parent_sync(path: Path) -> None:
@@ -376,7 +376,7 @@ def test_marker_cleanup_sync_failure_reports_unknown_outcome(
 
     monkeypatch.setattr(
         excitation_artifacts,
-        "_fsync_directory",
+        "fsync_directory",
         fail_cleanup_parent_sync,
     )
     monkeypatch.setattr(excitation_artifacts.os, "link", fail_link)
