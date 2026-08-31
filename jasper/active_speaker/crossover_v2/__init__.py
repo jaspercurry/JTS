@@ -111,6 +111,10 @@ call and neither extends:
   the two banked transfers complex-summed across ``null_walk``'s whole grid to
   propose a coordinate without playing a note, and the grader that decides
   whether the acoustic confirmation agreed with it.
+* :mod:`.forward_model` — what the speaker would measure for a candidate
+  nothing has played: a round's two banked solos summed through one
+  candidate's filters, trims, delay and polarity, offline, and the
+  predicted-vs-measured delta where the round also banked a VERIFY sum.
 * :mod:`.record_store` — the record seam filled: one durable writer over the
   write-once evidence bundle and the session's own state file, and the kind
   table that says where each banked artifact lands.

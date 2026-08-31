@@ -23,11 +23,13 @@ from typing import Any
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2.forward_model import SummationCandidate
 from jasper.active_speaker.crossover_v2.round_views import (
     ENTRY_STATE_UNREADABLE,
     RoundViewsError,
     agreement_table,
     entry_state_grade,
+    forward_model_verify_delta,
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
@@ -361,6 +363,102 @@ def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
     result = verify_pose_curve(load_banked_round(round_dir))
 
     assert result.curve is None
+    assert result.reason
+
+
+def _bank_driver_solos(round_dir: Path, *, position_deg: int = 0) -> Path:
+    """Two per-driver solos on one MEASURE take, in the banked curve shape.
+
+    Written through ``spatial.pose_curve_record`` rather than hand-typed, for
+    this suite's standing reason: a drift in what the walk banks must fail here
+    instead of leaving the fixture agreeing with nothing that ships.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.spatial import (
+        LateralPoseCurve,
+        pose_curve_record,
+    )
+
+    relay_dir = (
+        round_dir / "bundle" / "sess1"
+        / "evidence/v1/artifacts/crossover_v2" / "cap1"
+    )
+    positions = relay_dir / "positions"
+    positions.mkdir(parents=True, exist_ok=True)
+    curves = [
+        pose_curve_record(LateralPoseCurve(
+            role=role,
+            freqs_hz=GRID,
+            complex_tf=np.full(GRID.shape, 0.5, dtype=complex),
+            band_hz=(float(GRID[0]), float(GRID[-1])),
+        ))
+        for role in ("woofer", "tweeter")
+    ]
+    path = positions / "p0_a01.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND,
+        "phase": PHASE_MEASURE, "take_id": "p0_a01",
+        "position_deg": position_deg, "curves": curves,
+    }))
+    return path
+
+
+def test_forward_model_verify_delta_compares_the_two_halves_a_round_carries(
+    tmp_path,
+):
+    """A round carrying BOTH a prediction basis and a measured VERIFY sum gets
+    the delta as an additive field.
+
+    The two banked solos are flat and equal, so the in-phase prediction is
+    exactly ``+6.02 dB`` above either — and the measured curve here is flat
+    too, so the whole difference is LEVEL and the shape delta is zero. That
+    makes this a pin on the wiring (basis found, prediction composed, measured
+    curve read, delta computed) rather than on the arithmetic, which
+    ``test_crossover_v2_forward_model`` pins closed-form.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    _bank_verify_measured(round_dir)
+    _bank_driver_solos(round_dir)
+
+    result = forward_model_verify_delta(
+        load_banked_round(round_dir), SummationCandidate(),
+    )
+
+    assert result.reason == ""
+    assert result.delta is not None
+    assert result.delta["max_abs_db"] == pytest.approx(0.0, abs=1e-9)
+    assert result.delta["compared_points"] > 0
+    assert result.delta["take_path"].endswith("positions/p0_a01.json")
+
+
+@pytest.mark.parametrize(
+    ("bank_verify", "bank_solos"),
+    [
+        pytest.param(False, True, id="no_measured_verify_sum"),
+        pytest.param(True, False, id="no_prediction_basis"),
+    ],
+)
+def test_forward_model_verify_delta_names_the_half_the_round_is_missing(
+    tmp_path, bank_verify, bank_solos,
+):
+    """Either half absent answers the same shape as every other view here: no
+    delta, WITH a reason, and never a raise."""
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    if bank_verify:
+        _bank_verify_measured(round_dir)
+    if bank_solos:
+        _bank_driver_solos(round_dir)
+
+    result = forward_model_verify_delta(
+        load_banked_round(round_dir), SummationCandidate(),
+    )
+
+    assert result.delta is None
     assert result.reason
 
 

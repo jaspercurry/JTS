@@ -267,9 +267,11 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
         DelayLandscapeError,
         compute_landscape,
     )
-    from jasper.cli.delay_sweep import _curve_pair
+    from jasper.active_speaker.crossover_v2.position_cycle import (
+        read_pose_curve_pair,
+    )
 
-    found = _curve_pair(
+    found = read_pose_curve_pair(
         Path(args.bundle_dir),
         phase=args.phase,
         position_deg=args.position,
