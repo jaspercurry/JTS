@@ -424,9 +424,12 @@ def spec_from_args(args: argparse.Namespace) -> Any:
 
 #: The flags that describe ONE take. ``--specs`` describes several, so the two
 #: together would be two sources of truth for one spec — refused rather than
-#: merged, which is the shape a silent precedence rule hides.
-_PER_TAKE_FLAGS = ("polarity", "delayed_role", "level_matched", "candidate_id",
-                   "position")
+#: merged, which is the shape a silent precedence rule hides. ``--kind``,
+#: ``--axis``, ``--vertical-deg`` and ``--regime`` stay off this list on
+#: purpose: they are the shared defaults a file entry may omit.
+_PER_TAKE_FLAGS = ("position", "prompt", "polarity", "inverted_role",
+                   "delayed_role", "delay_us", "level_matched", "level_dbfs",
+                   "candidate_id")
 
 
 def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -1178,11 +1181,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "a JSON list of MeasureSpec mappings to measure against ONE "
             "microphone placement — a preset IS a saved MeasureSpec, so the "
-            "file needs no vocabulary of its own. The flags above supply the "
-            "defaults an entry does not name; the per-take flags "
-            "(--position/--polarity/--delayed-role/--level-matched/"
-            "--candidate-id) are refused beside it, and every entry needs its "
-            "own candidate id once it sets a variant axis"
+            "file needs no vocabulary of its own. --kind/--axis/--vertical-deg/"
+            "--regime supply the defaults an entry does not name; every other "
+            "per-take flag above is refused beside it, and every entry needs "
+            "its own candidate id once it sets a variant axis"
         ),
     )
     parser.add_argument(

@@ -526,9 +526,13 @@ def _specs_file(tmp_path: Path, entries: list[dict[str, Any]]) -> str:
     "flag",
     [
         ["--position", "0"],
+        ["--prompt", "stand at the mark"],
         ["--polarity", POLARITY_INVERTED, "--inverted-role", "tweeter"],
+        ["--inverted-role", "tweeter"],
         ["--delayed-role", "woofer", "--delay-us", "120"],
+        ["--delay-us", "120"],
         ["--level-matched"],
+        ["--level-dbfs", "-12"],
         ["--candidate-id", "null_a1"],
     ],
 )
