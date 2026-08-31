@@ -209,7 +209,8 @@ def test_the_reading_order_prefers_the_on_box_install_when_present(
 
     monkeypatch.chdir(tmp_path)
     _, before = _report([str(session)], capsys)
-    assert cli._REPO_DOCS_DIR.is_absolute()
+    # Structural: a parents[N] shift after a file move fails here directly.
+    assert (cli._REPO_DOCS_DIR / "tuning-methodology.md").is_file()
     assert str(cli._REPO_DOCS_DIR / "tuning-methodology.md") in before
     assert "/opt/jasper/docs/tuning-methodology.md" not in before
 
