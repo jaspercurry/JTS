@@ -259,6 +259,58 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     assert row["excess_loss_vs_null"]["3"] < -row["gate_slack"]["3"]
 
 
+#: A custom ladder that deliberately reaches past SEARCH_T_MAX_MS (7 ms):
+#: ticket 6.1 requires those rungs to be legal, not clamped or refused, since
+#: they re-admit reflections and make convergence vs fan-out readable.
+_WIDE_LADDER_MS = (3.0, 5.0, 7.0, 9.0, 11.0)
+
+
+def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
+    """6.1: every commanded rung, including ones past SEARCH_T_MAX_MS, is a fact.
+
+    ``_gate_invariance`` already built this table internally and only its
+    DERIVED columns (``excess_loss_vs_null``, ``centre_shift_oct``,
+    ``gate_slack``) ever reached a row -- the raw per-rung depth/centre never
+    did. A caller who commands a wider ladder must get every rung's own
+    reading back, additively, with nothing clamped at the shipped ceiling.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    artifact = fx.classify_round(captures, at=[RESONANCE_HZ], gates_ms=_WIDE_LADDER_MS)
+    assert artifact["measurement"]["gate_ladder_ms"] == list(_WIDE_LADDER_MS)
+    row = artifact["rows"][0]
+    rungs = row["gate_rungs"]
+    assert set(rungs) == {f"{g:.0f}" for g in _WIDE_LADDER_MS}
+    for entry in rungs.values():
+        assert isinstance(entry["pooled_db"], float)
+        assert isinstance(entry["centre_hz"], float)
+        assert isinstance(entry["resolved"], bool)
+    # The primary rung (11 ms, the ladder's own max) has nothing to compare
+    # itself to, so the DERIVED per-gate maps exclude it -- the raw rung
+    # table above still reports it, which is the additive fact this ticket
+    # is about.
+    assert "11" not in row["excess_loss_vs_null"]
+    assert "11" in rungs
+
+
+def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
+    """6.1: ``--gates-ms`` is not merely parsed -- it reaches classify_round."""
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    code = cli.main([
+        str(bundle), "--dumps", str(dumps),
+        "--at", str(RESONANCE_HZ),
+        "--gates-ms", "3", "--gates-ms", "9", "--gates-ms", "11",
+    ])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert banked["measurement"]["gate_ladder_ms"] == [3.0, 7.0, 9.0, 11.0]
+    assert set(banked["rows"][0]["gate_rungs"]) == {"3", "7", "9", "11"}
+
+
 def _composed(**overrides):
     """One row through the composer, from a cell that is stable by default.
 

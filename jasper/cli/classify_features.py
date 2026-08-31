@@ -62,6 +62,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
+    GATE_LADDER_MS,
     FeatureClassificationRefused,
     classify_round,
     load_round_captures,
@@ -119,6 +120,20 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_GATE_MS,
         help=f"primary analysis window (default {DEFAULT_GATE_MS:g})",
+    )
+    parser.add_argument(
+        "--gates-ms",
+        type=float,
+        action="append",
+        default=None,
+        metavar="MS",
+        dest="gates_ms",
+        help=(
+            "add this gate to the invariance ladder, repeatable. Rungs above "
+            "the primary window are legal -- they re-admit reflections, so "
+            "convergence vs fan-out across the ladder is readable. Omitted, "
+            f"the shipped ladder is used ({', '.join(f'{g:g}' for g in GATE_LADDER_MS)} ms)"
+        ),
     )
     parser.add_argument(
         "--out",
@@ -189,7 +204,14 @@ def main(argv: list[str] | None = None) -> int:
             session_id=session_id,
             walk_logs=tuple(args.walk_logs),
         )
-        artifact = classify_round(captures, at=args.at, gate_ms=args.gate_ms)
+        # Omitted when unset, rather than defaulted here to GATE_LADDER_MS:
+        # the shipped ladder stays classify_round's own default, one place.
+        gates_kwargs: dict[str, Any] = (
+            {"gates_ms": tuple(args.gates_ms)} if args.gates_ms else {}
+        )
+        artifact = classify_round(
+            captures, at=args.at, gate_ms=args.gate_ms, **gates_kwargs
+        )
     except FeatureClassificationRefused as refusal:
         # The directory actually read, named explicitly: a refusal whose
         # own detail can be misread as describing a directory with zero

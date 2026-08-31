@@ -1584,6 +1584,24 @@ def _compose(
     }
 
 
+def _gate_rungs(cell: Mapping[str, Any]) -> dict[str, Any]:
+    """Every commanded gate's own depth/centre, additive to the composed row.
+
+    ``_compose`` only carries what a rung MOVED against, so it excludes the
+    primary key -- there is nothing to compare the primary to. A reader
+    auditing the ladder itself, rather than the STABLE/MOVED call, needs
+    every rung including the primary, which is what this publishes.
+    """
+    return {
+        gate_key: {
+            "pooled_db": entry["db_mean"],
+            "centre_hz": entry["centre_hz_mean"],
+            "resolved": entry["resolved"],
+        }
+        for gate_key, entry in cell.items()
+    }
+
+
 def classify_round(
     captures: Sequence[RoundCapture],
     *,
@@ -1741,21 +1759,23 @@ def classify_round(
     )
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
 
-    rows = [
-        _compose(
+    rows = []
+    for fc in features:
+        key = f"{fc:.0f}"
+        row = _compose(
             fc,
-            egd_rows[f"{fc:.0f}"],
-            gate_table[f"{fc:.0f}"],
-            controls["C4_pair"]["at"][f"{fc:.0f}"],
-            pooled_db[f"{fc:.0f}"],
-            null_model[f"{fc:.0f}"]["matched"]["q"],
+            egd_rows[key],
+            gate_table[key],
+            controls["C4_pair"]["at"][key],
+            pooled_db[key],
+            null_model[key]["matched"]["q"],
             controls_ok=controls_ok,
             timing_available=bool(timing["available"]),
             primary_key=primary_key,
             gates_ms=ladder,
         )
-        for fc in features
-    ]
+        row["gate_rungs"] = _gate_rungs(gate_table[key])
+        rows.append(row)
 
     return {
         "schema": CLASSIFICATION_SCHEMA_VERSION,
