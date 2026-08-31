@@ -71,6 +71,8 @@ order — so this list is what exists, not a plan:
   document a reader can answer from.
 * :mod:`.harmonic_evidence` — H2/H3 read out of one round's banked MEASURE
   captures, and filed.
+* :mod:`.ring_projection` — a banked round re-projected into the capture-ring
+  layout those two readers open, out of WAVs and records the bundle already has.
 * :mod:`.feature_classifier` — what KIND of feature is that, measured from a
   round's own banked captures.
 * :mod:`.feature_classification` — what KIND of feature is that, read from a
