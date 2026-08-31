@@ -99,6 +99,33 @@ def build_parser() -> argparse.ArgumentParser:
             "Read H2/H3 out of a banked round's MEASURE captures, relative to "
             "the fundamental, at the drive each capture used."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - with a --state from a DIFFERENT round than bundle_dir --\n"
+            "    the drive level comes out wrong with NO refusal (see\n"
+            "    --state's own help); always pass the state belonging to\n"
+            "    THIS round\n"
+            "  - without a readable --applied-profile -- the round is\n"
+            "    refused rather than read, because that is where the\n"
+            "    crossover corner is read from\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-read-distortion captures/.../session-1/round-3 \\\n"
+            "      --dumps captures/.../round-3/dumps.json \\\n"
+            "      --state captures/.../round-3/flow_state.json\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  read; the reading is filed and a summary printed\n"
+            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or\n"
+            "     --state could not be read\n"
+            "  2  EXIT_REFUSED -- the reading itself was refused (e.g. no\n"
+            "     --applied-profile, or it named a corner this round did\n"
+            "     not measure through); \"refused: <reason>\" on stderr,\n"
+            "     and as JSON with --json\n"
+            "  3  EXIT_WRITE_FAILED -- read, but the reading could not be\n"
+            "     written"
+        ),
     )
     parser.add_argument(
         "bundle_dir",

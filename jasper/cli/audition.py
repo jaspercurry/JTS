@@ -207,6 +207,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-audition",
         description="Play this speaker at a reduced DSP layer, then put it back",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "PURPOSE\n"
+            "  Listen with the measured driver correction removed (start),\n"
+            "  then put it back (stop), for an A/B against the applied\n"
+            "  graph. Runtime only -- the durable graph on disk is never\n"
+            "  touched (ADR-0193), so killing the process outright is safe:\n"
+            "  nothing durable moved, and any CamillaDSP restart reverts.\n"
+            "\n"
+            "WHEN NOT TO USE\n"
+            "  - unattended -- start BLOCKS, holding the reduced layer\n"
+            "    until you stop it, Ctrl-C it, or it times out; a caller\n"
+            "    that forks it and walks away needs its own timeout\n"
+            "    budget, this tool will not impose one for you\n"
+            "  - to change what the speaker plays durably -- that is a\n"
+            "    prescription through the doors, applied and re-measured;\n"
+            "    this only swaps the RUNTIME graph back and forth\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-audition start --layer baseline   # correction off\n"
+            "  jasper-audition stop                     # from a 2nd shell\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  the speaker ends this call on its full (applied) graph --\n"
+            "     start after a clean stop, or stop/status themselves\n"
+            "  1  AuditionRefused (start already running elsewhere,\n"
+            "     CamillaDSP unreachable, ...), or start ended WITHOUT the\n"
+            "     full graph restored (a second start superseded this\n"
+            "     one); \"refused (<reason>): <detail>\" on stderr, and as\n"
+            "     JSON with --json. status/stop always exit 0 -- read the\n"
+            "     printed layer, not the code, for their outcome"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

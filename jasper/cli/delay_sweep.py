@@ -239,6 +239,35 @@ def build_parser() -> argparse.ArgumentParser:
             "Propose an inter-driver delay from banked curves. Computes only; "
             "plays nothing."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "PURPOSE\n"
+            "  Complex-sum a banked round's per-driver curves across the\n"
+            "  delay grid and print the computed optimum plus the\n"
+            "  jasper-angle-capture stage lines that confirm it.\n"
+            "\n"
+            "WHEN NOT TO USE\n"
+            "  - to actually confirm a delay acoustically -- pipe this\n"
+            "    command's \"confirm_with\" lines into jasper-angle-capture\n"
+            "    stage, then run jasper-null; propose only says where the\n"
+            "    null SHOULD be, it plays nothing itself\n"
+            "  - on a round with no per-driver curves at the requested\n"
+            "    --phase and --position-deg -- refused by name\n"
+            "    (REFUSE_NO_CURVES) rather than guessed\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-delay-sweep propose captures/.../session-1/round-3 \\\n"
+            "      --fc-hz 1800\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  EXIT_OK -- proposed; the optimum and confirm_with lines\n"
+            "     are printed\n"
+            "  1  EXIT_REFUSED -- no round at bundle_dir, no matching\n"
+            "     curves, or the landscape could not carry a null at Fc;\n"
+            "     \"refused (<reason>): <detail>\" on stderr, and as the\n"
+            "     JSON \"status\": \"refused\"\n"
+            "  2  EXIT_INPUT -- the bundle could not be read (OSError)"
+        ),
     )
     parser.add_argument("--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)

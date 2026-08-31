@@ -1196,6 +1196,37 @@ def build_parser() -> argparse.ArgumentParser:
             "Emit one crossover round's evidence packet, read a prescription "
             "back through the strict gate, and say where this speaker stands."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - to actually MEASURE anything -- this tool never opens a\n"
+            "    session or plays a sound; scripts/run-crossover-round.py or\n"
+            "    the guided web flow does that\n"
+            "  - to skip propose and go straight to stage -- stage runs the\n"
+            "    SAME gate propose does, so skipping propose only delays\n"
+            "    finding out about a refusal, it does not avoid the gate\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-crossover-prescriber packet captures/.../session-1 \\\n"
+            "      > packet.json\n"
+            "  jasper-crossover-prescriber propose captures/.../session-1 \\\n"
+            "      --prescription my_prescription.json\n"
+            "  jasper-crossover-prescriber stage captures/.../session-1 \\\n"
+            "      --prescription my_prescription.json --state flow_state.json\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
+            "     read the evidence, even a partial one\n"
+            "  1  EXIT_EVIDENCE_UNREADABLE -- the bundle, --state,\n"
+            "     --drivers, or --applied-profile could not be read\n"
+            "  2  EXIT_REFUSED -- propose's or stage's gate refused the\n"
+            "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
+            "     and as JSON with --json\n"
+            "  3  EXIT_STAGE_FAILED -- stage's own write to the spool\n"
+            "     failed -- a filesystem problem, distinct from a refused\n"
+            "     prescription: 2 means fix the prescription, 3 means fix\n"
+            "     the speaker's filesystem"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

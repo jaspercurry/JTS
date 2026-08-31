@@ -337,6 +337,29 @@ def build_parser() -> argparse.ArgumentParser:
             "repeatability, per-seat agreement, and the shared frequency "
             "view — over banked rounds."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - frozen/repeat need MULTIPLE round directories (a baseline\n"
+            "    plus a target, or two-or-more rounds); entry/per-seat/\n"
+            "    agreement grade a single round\n"
+            "  - to classify a feature's likely CAUSE -- that is\n"
+            "    jasper-classify-features; this tool grades curves, not\n"
+            "    defects\n"
+            "\n"
+            "EXAMPLES\n"
+            "  jasper-round-views frequency captures/.../session-1/round-3\n"
+            "  jasper-round-views frozen captures/.../baseline captures/.../round-3\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  EXIT_OK -- graded; printed, or written to --out. entry can\n"
+            "     print \"entry-state: NOT GRADED — <reason>\" on stderr and\n"
+            "     still exit 0 -- \"not gradeable yet\" is a valid verdict,\n"
+            "     not a failure, so check the printed line rather than only\n"
+            "     the code if that distinction matters to your caller\n"
+            "  1  EXIT_ERROR -- the round or session source could not be\n"
+            "     read or built into a view; \"error: <detail>\" on stderr"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
