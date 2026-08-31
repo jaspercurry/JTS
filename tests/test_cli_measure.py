@@ -224,11 +224,7 @@ def _declaration() -> BoxDeclaration:
 
 
 #: What the wired half's own minter puts on an answer, in its shape.
-#: The wired minter's report shape, minus any frame count: this double does not
-#: encode the capture the way the minter does, and a claimed count that
-#: disagreed with the bytes would make the frame ledger report a loss that
-#: belongs to the double rather than to the door.
-CAPTURE_INTEGRITY = {"zero_run_count": 0, "xruns": 0}
+CAPTURE_INTEGRITY = {"encoded_frames": 192000, "zero_run_count": 0, "xruns": 0}
 CAPTURE_DEVICE = {"label": "UMIK-2 (card1)", "wired": True, "channel_selected": 0}
 CAPTURE_SETUP = {"calibration": {"mode": "stored", "calibration_id": "cal-1"}}
 
@@ -240,37 +236,6 @@ class _Answer:
     setup = CAPTURE_SETUP
 
 
-def _driver_ir(seed: int = 3):
-    """A short decaying impulse response — a speaker, near enough to analyse."""
-    import numpy as np
-
-    rng = np.random.default_rng(seed)
-    ir = rng.normal(0.0, 1.0, 256) * np.exp(-np.arange(256) / 40.0)
-    ir[0] += 1.0
-    return ir / np.max(np.abs(ir))
-
-
-def _synthesize(program):
-    """The capture the room would have made of ``program``, offset and coloured.
-
-    The same shape ``test_capture_frame_ledger`` synthesises: render the
-    program's own PCM, convolve one driver IR through it, and start it late.
-    Real enough for the analyser to locate every segment and deconvolve a
-    transfer function, which is what makes the crunch assertion mean something.
-    """
-    import numpy as np
-    from scipy.signal import fftconvolve
-
-    from jasper.audio_measurement.program import render_program_pcm
-
-    pcm = render_program_pcm(program)
-    mono = pcm.sum(axis=1) if pcm.ndim > 1 else pcm
-    body = fftconvolve(mono, _driver_ir())[: mono.size]
-    out = np.zeros(3_000 + body.size)
-    out[3_000:] = body * 0.4
-    return out
-
-
 class _Capture:
     """The host's capture half, minus the microphone.
 
@@ -279,33 +244,16 @@ class _Capture:
     bundle-relative path so the banked record carries a real pointer.
     ``take_answer`` is take-and-CLEAR like the real one, which is what the
     record annotation relies on.
-
-    It writes a REAL capture WAV, 32-bit like the wired minter's, because the
-    door crunches the bytes it just placed: a double that wrote nothing would
-    let the crunch fail soft and the curve assertion would pass on an empty
-    list forever.
     """
 
-    def __init__(self, bundle_dir: Path) -> None:
-        self.bundle_dir = Path(bundle_dir)
+    def __init__(self) -> None:
         self.arounds = 0
         self._pending: list[_Answer] = []
 
     async def around(self, play, *, program) -> str:
-        import numpy as np
-        from scipy.io import wavfile
-
         self._pending.clear()
         self.arounds += 1
         await play()
-        path = self.bundle_dir / CAPTURE_RELPATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        captured = _synthesize(program)
-        wavfile.write(
-            path,
-            int(program.sample_rate_hz),
-            (np.clip(captured, -1.0, 1.0) * (2**31 - 1)).astype(np.int32),
-        )
         self._pending.append(_Answer())
         return CAPTURE_RELPATH
 
@@ -329,53 +277,29 @@ def speaker(tmp_path, monkeypatch):
         async def __aexit__(self, *exc: Any) -> bool:
             return False
 
-    captures: dict[str, Any] = {}
-    played = measure._PlayedProgram()
     entry = tmp_path / "entry.yml"
     entry.write_text("devices: {}\n", encoding="utf-8")
     cam = FakeCam(entry)
-    played_programs: list[Any] = []
+    played: list[Any] = []
+    capture = _Capture()
 
     async def _play_program(program, **_seams: Any) -> Any:
         # The seam under the seam: everything above it — the door, the plan's
         # readiness assertion, the graph install, the capture roll and the bank
         # — is the production path.
-        played_programs.append(program)
+        played.append(program)
         return object()
 
-    def _measure_program():
-        """A REAL per-driver MEASURE program — the crunch analyses its schedule."""
-        from jasper.audio_measurement.excitation_admission import FrequencyBand
-        from jasper.audio_measurement.program import RoleBand, build_measure_program
-
-        return build_measure_program(
-            {"woofer": -11.0, "tweeter": -13.0},
-            [
-                RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-                RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
-            ],
-            sweep_durations={"woofer": 1.0, "tweeter": 0.8},
-            leading_pilot_gains_db=(-22.0, -12.0),
-            pilot_duration_s=0.5,
-        )
-
-    program = _measure_program()
-
     async def _compose(**_kwargs: Any) -> ProgramForStimulus:
-        played.program = program
-        return ProgramForStimulus(program=program, seams={})
+        return ProgramForStimulus(program=object(), seams={})
 
     real_open_bundle = bundles.open_bundle
 
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
-    monkeypatch.setattr(measure, "_PlayedProgram", lambda: played)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
-    monkeypatch.setattr(
-        wired, "WiredStimulusCapture",
-        lambda **kw: captures.setdefault("one", _Capture(kw["bundle_dir"])),
-    )
+    monkeypatch.setattr(wired, "WiredStimulusCapture", lambda **kw: capture)
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
         lambda **kw: object(),
@@ -408,7 +332,7 @@ def speaker(tmp_path, monkeypatch):
         )
     )
     try:
-        yield {"cam": cam, "played": played_programs, "captures": captures}
+        yield {"cam": cam, "played": played, "capture": capture}
     finally:
         install_volume_owner(None)
 
@@ -429,11 +353,11 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
     assert code == EXIT_OK
     assert payload["status"] == "measured"
     assert len(payload["record_ids"]) == 1
-    assert payload["graph_fingerprint"]
     assert len(payload["specs"]) == 1
+    assert payload["specs"][0]["graph_fingerprint"]
     assert [s["position_deg"] for s in payload["specs"][0]["stimuli"]] == [0]
     assert [s["incident"] for s in payload["specs"][0]["stimuli"]] == [""]
-    assert speaker["captures"]["one"].arounds == 1
+    assert speaker["capture"].arounds == 1
     assert len(speaker["played"]) == 1
     # Given back: the entry graph is what the DSP last loaded, and the fader is
     # off the measurement level.
@@ -630,19 +554,20 @@ def test_specs_and_the_per_take_flags_are_refused_together(tmp_path, flag):
         {"positions": [30]},
         {"vertical_deg": 15},
         {"position_axis": "vertical", "positions": []},
+        {"positions": [0], "pose_prompts": ["stand by the couch"]},
     ],
 )
 def test_a_batch_whose_specs_disagree_about_the_pose_is_refused_at_parse(
     tmp_path, second,
 ):
-    """The WHOLE pose, not just the bearing — axis and elevation are pose too.
+    """The WHOLE pose — bearing, prompts, axis and elevation are all placement.
 
     A batch exists because the microphone move is the expensive part, so every
-    spec in it measures the SAME placement. A file mixing bearings is B3 arriving
-    through a file; one mixing elevations is the same defect stood on its end,
-    and nothing between two specs raises the microphone either.
+    spec in it measures the SAME placement, and nothing between two specs moves
+    or raises the microphone. A differing prompt is a differing placement too:
+    the prompt is what the mover was told.
     """
-    entries = [{"positions": [0]}, {"positions": [0], **second}]
+    entries = [{"positions": [0]}, {**second}]
 
     with pytest.raises(MeasureFlagError) as caught:
         specs_from_args(build_parser().parse_args(
@@ -652,17 +577,59 @@ def test_a_batch_whose_specs_disagree_about_the_pose_is_refused_at_parse(
     assert caught.value.reason == REFUSE_SPECS_MIXED_POSE
 
 
-def test_every_spec_in_the_file_needs_its_own_candidate_id(tmp_path):
-    """C3 holds per ENTRY: the file is preset vocabulary, not an exemption.
+def test_an_omitted_bearing_and_an_explicit_zero_are_one_design_axis_pose(
+    tmp_path,
+):
+    """``positions: []`` and ``positions: [0]`` must not read as two placements.
 
-    The second entry is a variant with no label, which is the take that would
-    bank unfindable — and in a batch it would sit beside a labelled sibling it
-    could never be told apart from.
+    MeasureSpec's own contract: both spell the design axis. A set keyed on the
+    raw tuples would refuse a file whose entries mean the same pose.
+    """
+    entries = [{"positions": []}, {"positions": [0]}]
+
+    specs = specs_from_args(build_parser().parse_args(
+        ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+    ))
+
+    assert len(specs) == 2
+
+
+def test_a_file_entry_that_names_two_bearings_is_refused(tmp_path):
+    """One entry, one placement — the flag rule holds through the file.
+
+    ``positions: [0, 30]`` in one entry would play two stimuli from wherever
+    the microphone already is and bank a pose nothing moved to, exactly what a
+    second ``--position`` is refused for.
+    """
+    entries = [{"positions": [0, 30]}]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+        ))
+
+    assert caught.value.reason == REFUSE_ONE_POSITION_PER_RUN
+
+
+@pytest.mark.parametrize(
+    "unlabelled",
+    [
+        {},
+        # Whitespace only: trimmed at parse, so it cannot pass as a truthy label.
+        {"candidate_id": "   "},
+    ],
+)
+def test_every_spec_in_the_file_needs_its_own_candidate_id(tmp_path, unlabelled):
+    """The candidate-id rule holds per ENTRY, and a blank label is no label.
+
+    The second entry is a variant with no usable label, which is the take that
+    would bank unfindable — and in a batch it would sit beside a labelled
+    sibling it could never be told apart from.
     """
     entries = [
         {"candidate_id": "null_a1", "polarity": POLARITY_INVERTED,
          "inverted_role": "tweeter"},
-        {"polarity": POLARITY_INVERTED, "inverted_role": "woofer"},
+        {"polarity": POLARITY_INVERTED, "inverted_role": "woofer", **unlabelled},
     ]
 
     with pytest.raises(MeasureFlagError) as caught:
@@ -671,6 +638,38 @@ def test_every_spec_in_the_file_needs_its_own_candidate_id(tmp_path):
         ))
 
     assert caught.value.reason == REFUSE_CANDIDATE_ID_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"positions": 30},
+        {"positions": "030"},
+        {"pose_prompts": "one prompt"},
+        {"pose_prompts": [7]},
+        {"level_matched": "false"},
+        {"candidate_id": 7},
+        {"delayed_role": "woofer", "delay_us": True},
+        {"delayed_role": "woofer", "delay_us": "120"},
+        {"level_ladder_dbfs": ["-12"]},
+        {"level_ladder_dbfs": [float("nan")]},
+    ],
+)
+def test_a_file_entry_with_untyped_fields_is_refused_at_parse(tmp_path, entry):
+    """Raw JSON gets argparse's typing, as the same typed refusal.
+
+    Each of these is a value no flag could ever produce — a bare string where
+    an array belongs, a truthy string for a boolean, a numeric label, a
+    non-finite rung — and each once crashed outside the typed refusal or flowed
+    through as a silently different measurement.
+    """
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE,
+             "--specs", _specs_file(tmp_path, [entry])]
+        ))
+
+    assert caught.value.reason == REFUSE_SPEC_INVALID
 
 
 def test_a_batch_measures_every_spec_against_one_open_session(
@@ -702,6 +701,11 @@ def test_a_batch_measures_every_spec_against_one_open_session(
     ]
     assert len(payload["record_ids"]) == 3
     assert all(s["record_ids"] for s in payload["specs"])
+    # Three specs, three VARIANT graphs: the fingerprint is per spec, and one
+    # value could not name them all.
+    fingerprints = [s["graph_fingerprint"] for s in payload["specs"]]
+    assert all(fingerprints)
+    assert len(set(fingerprints)) == 3
     # ONE session: the entry graph is restored once, at the end.
     cam = speaker["cam"]
     entry = cam.entry_path.read_text()
@@ -788,38 +792,57 @@ def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
     assert payload["status"] == "partial"
     assert payload["reason"] == REFUSE_GRAPH_LOST
     assert payload["stopped_at"]["candidate_id"] == "second"
+    assert payload["stopped_at"]["index"] == 1
     assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
     assert len(payload["record_ids"]) == 1
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
-def test_a_banked_take_carries_the_curves_it_was_crunched_into(speaker, capsys):
-    """Capture and analysis are ONE act — a take arrives already crunched.
+def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
+    speaker, monkeypatch, tmp_path, capsys,
+):
+    """The bank stopped taking writes: later specs would play and keep nothing.
 
-    There is no point measuring what nobody turns into numbers: a take banked as
-    a WAV reference alone makes every later reader re-derive what the box
-    already knew, and ruling S3's whole return on banking the complex response
-    is that the bank can be re-analysed by an analysis that did not exist when
-    it was captured.
-
-    Asserted on the banked BYTES and on the CONTENT, not merely the key: an
-    empty ``curves`` list is what a failed crunch banks, so a test that only
-    checked the key was present would pass forever against a door that had
-    stopped crunching. Both magnitude and phase are required — phase is the half
-    a later alignment read cannot recompute from a magnitude trace.
+    A store failure lands AFTER earlier specs banked, so a traceback would exit
+    with no JSON while their takes sit on disk unnamed. It aborts through the
+    same partial payload the other session-scoped failures use — one shape,
+    with the banked ids and the zero-based index of the spec in flight.
     """
-    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+        CommissioningEvidenceStoreError,
+        CommissioningEvidenceStoreErrorCode,
+    )
+
+    real_publish = CommissioningEvidenceStore.publish_json_artifact
+    banked: list[str] = []
+
+    def _publish(self, relative_path, payload):
+        if banked:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.PERSIST_FAILED,
+                "the bundle volume went away",
+            )
+        banked.append(relative_path)
+        return real_publish(self, relative_path, payload)
+
+    monkeypatch.setattr(
+        CommissioningEvidenceStore, "publish_json_artifact", _publish,
+    )
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(
+            tmp_path, [{"candidate_id": "first"}, {"candidate_id": "second"}],
+        ),
+    ])
 
     payload = json.loads(capsys.readouterr().out)
-    assert code == EXIT_OK
-    banked = json.loads(
-        (Path(payload["bundle_dir"]) / ARTIFACTS / payload["record_ids"][0])
-        .read_text()
-    )
-    curves = banked["curves"]
-    assert curves, "the take banked no curve — it was measured and not crunched"
-    assert {curve["role"] for curve in curves} == {"woofer", "tweeter"}
-    for curve in curves:
-        assert curve["magnitude_db"], f"{curve['role']} banked no magnitude"
-        assert curve["phase_deg"], f"{curve['role']} banked no phase"
-        assert len(curve["magnitude_db"]) == len(curve["phase_deg"])
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "partial"
+    assert payload["reason"] == measure.REFUSE_STORE_LOST
+    assert payload["stopped_at"]["index"] == 1
+    assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
+    assert len(payload["record_ids"]) == 1
+    # Still given back: a partial result is not a stranded speaker.
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
