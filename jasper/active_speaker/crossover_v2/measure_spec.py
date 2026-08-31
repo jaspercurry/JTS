@@ -117,19 +117,6 @@ class CapabilityStub:
     captured: bool
     message: str
 
-    def aborted(self) -> "CapabilityStub":
-        """The same hole, re-rendered for a call that captured nothing.
-
-        A spec can trip two stubs at once — one whose capture still ships and
-        one that stops the stimulus dead. When the second wins, the first must
-        stop claiming *"capture banked"*, or the disclosure lies about evidence
-        that does not exist. That is ruling S12's honesty clause turned on the
-        disclosure itself.
-        """
-        if not self.captured:
-            return self
-        return _stub(self.code, _ROWS[self.code], captured=False)
-
 
 @dataclass(frozen=True)
 class _StubRow:
@@ -141,21 +128,18 @@ class _StubRow:
     captured: bool
 
 
-def _stub(code: str, row: _StubRow, *, captured: bool) -> CapabilityStub:
+def _stub(code: str, row: _StubRow) -> CapabilityStub:
     """One stub in the wording shape ruling S12 fixes.
 
     The canonical example the ruling quotes renders from this function exactly,
     which is why the sentence is composed rather than stored: a second stub
     written by hand would drift out of the shape by its second line.
-
-    ``captured`` is a parameter rather than ``row.captured`` because
-    :meth:`CapabilityStub.aborted` re-renders a row as having captured nothing.
     """
-    banked = "capture banked" if captured else "nothing captured"
+    banked = "capture banked" if row.captured else "nothing captured"
     return CapabilityStub(
         code=code,
         instrument=row.instrument,
-        captured=captured,
+        captured=row.captured,
         message=(
             f"{row.capability} not implemented; {banked}, "
             f"{row.owed} pending {row.instrument}"
@@ -163,9 +147,8 @@ def _stub(code: str, row: _StubRow, *, captured: bool) -> CapabilityStub:
     )
 
 
-#: One row per named hole. Kept as data so :meth:`CapabilityStub.aborted` can
-#: re-render a stub without a second copy of any phrase — and so a fifth stub
-#: joins the engine's vocabulary by adding a row here and nowhere else.
+#: One row per named hole. Kept as data so a fifth stub joins the engine's
+#: vocabulary by adding a row here and nowhere else.
 _ROWS: dict[str, _StubRow] = {
     NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: _StubRow(
         "near-field splice", "splice", "R-3", captured=True,
@@ -180,10 +163,7 @@ _ROWS: dict[str, _StubRow] = {
 
 #: Built once at import. Each stub is a frozen value that depends on nothing
 #: but its code, so rebuilding one per ``measure`` call bought nothing.
-_STUBS = {
-    code: _stub(code, row, captured=row.captured)
-    for code, row in _ROWS.items()
-}
+_STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 
 #: Every code :func:`stubbed_capabilities` can return, so a caller can CHECK a
 #: code rather than trust it, and so a reader can count the holes. Derived from
