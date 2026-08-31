@@ -1200,4 +1200,4 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 
     summary = capsys.readouterr().err
     assert "1 unevaluable" in summary
-    assert "0 failing" in summary
+    assert "0 outside target" in summary
