@@ -3192,8 +3192,6 @@ def bind_position_retention(
     records = BankedRecordStore(
         evidence=store,
         relay_session_id=relay_session_id,
-        load_state=load_v2_state,
-        save_state=save_v2_state,
     )
 
     def bank_take(result: Any, metadata: Mapping[str, Any]) -> str:
@@ -5684,8 +5682,8 @@ def bind_v2_engine_seams(
       first production path. A missing owner is a registration defect refused
       as household copy, because the route's 500 arm renders an unmapped
       exception's string on the wizard's status line.
-    * **The record store.** ``BankedRecordStore`` over this host's durable
-      state I/O. F9, answered by W1-c and left un-bridged on purpose: ``bank``
+    * **The record store.** ``BankedRecordStore`` over this session's evidence
+      bundle. F9, answered by W1-c and left un-bridged on purpose: ``bank``
       returns a store-relative PATH while the shipped flow publishers write
       artifact FINGERPRINTS into ``refs`` — and they still do. W1-d's index is
       the first reader that will want the path.
@@ -5705,8 +5703,6 @@ def bind_v2_engine_seams(
         records=BankedRecordStore(
             evidence=evidence_store,
             relay_session_id=relay_session_id,
-            load_state=load_v2_state,
-            save_state=save_v2_state,
         ),
         volume_claim=claim,
         session_volume_plan=session_volume_plan(),

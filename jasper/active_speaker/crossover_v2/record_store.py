@@ -2,15 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The record seam filled: where a session's evidence and its state land.
+"""The record seam filled: where a session's evidence lands.
 
-:class:`~.session_seams.RecordStore` declares four methods over two different
-durable things, and they need two different backends. ``bank``/``read`` go to
-the write-once commissioning evidence bundle — a path that takes different
-bytes twice is a ``PATH_CONFLICT`` refusal, which is exactly right for a
-capture. ``persist``/``read_state`` overwrite one file every time, because the
-session's own state is a replacement rather than an addition. One backend for
-both would refuse the second persist.
+:class:`~.session_seams.RecordStore` declares one method, and it goes to the
+write-once commissioning evidence bundle — a path that takes different bytes
+twice is a ``PATH_CONFLICT`` refusal, which is exactly right for a capture.
 
 **This is the writer that already exists, not a second one.** Every path here
 is the one a ``V2FlowSeams`` publisher writes today, so the readers that glob
@@ -18,11 +14,12 @@ the bundle — ``position_cycle``, ``evidence_packet``, ``candidate_bank`` —
 find the same files whichever writer produced them. The kind table below is
 the whole map.
 
-**The id IS the store-relative path.** ``read`` resolves ids handed back from a
-*previous* session's ``record_ids``, so a counter would need a second index to
-rebuild the ordering; a path resolves itself. The engine never parses one — it
-travels ``bank``'s return into ``record_ids`` and back into ``read``
-untouched — so it stays opaque in the sense the protocol means.
+**The id IS the store-relative path.** A counter would need a second index to
+rebuild the ordering; a path resolves itself against the bundle, which is what
+lets a later reader fetch a record this store never hands back (ADR-0198: the
+reading is the doors-and-banks tools', over the files). The engine never parses
+one — it travels ``bank``'s return into ``record_ids`` untouched — so it stays
+opaque in the sense the protocol means.
 
 **Strict, on purpose.** ``CommissioningEvidenceStoreError`` and ``OSError``
 propagate unwrapped, and every check the shipped publishers ran at the write —
@@ -48,19 +45,12 @@ from typing import Any, Callable, Mapping
 from jasper.attribution.findings import FINDING_SET_SCHEMA
 from jasper.attribution.session_identity import (
     ALIAS_RELAY_SESSION_ID,
-    SESSION_IDENTITY_KEY,
     SessionIdentity,
     stamp_session_identity,
 )
 from jasper.attribution.storage import findings_relative_path
 
-from ..commissioning_evidence_store import (
-    EVIDENCE_ROOT,
-    CommissioningEvidenceStore,
-    CommissioningEvidenceStoreError,
-    CommissioningEvidenceStoreErrorCode,
-    is_missing,
-)
+from ..commissioning_evidence_store import CommissioningEvidenceStore
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
 from .contracts import (
     MEASURE_KIND_KEY,
@@ -82,19 +72,11 @@ __all__ = [
 CHECK_EVIDENCE_KIND = "jts_crossover_v2_check_evidence"
 CLOUD_EVIDENCE_KIND = "jts_crossover_v2_cloud_evidence"
 
-#: The keys the STORE owns on an enveloped record — written by :meth:`bank`
-#: and taken back off by ``read``, so the round trip is field-for-field. A
-#: record that arrives already carrying one is refused rather than
-#: overwritten: the strip is only exact while the store is the sole author.
+#: The keys the STORE owns on an enveloped record, written by :meth:`bank`. A
+#: record that arrives already carrying one is refused rather than overwritten,
+#: so a reader can tell the store's keys from its author's.
 _SCHEMA_VERSION = 1
 _ENVELOPE_KEYS = ("schema_version", "relay_session_id")
-
-#: The persist counter the store writes into the durable state, so
-#: :meth:`BankedRecordStore.read_state` can ask the FILE whether it is still
-#: the document an id named. A counter the store held in memory could not
-#: answer that after a restart, and a count derived from the state's own
-#: contents mints one id for two persists that banked nothing between them.
-_PERSIST_ORDINAL_KEY = "persist_ordinal"
 
 
 @dataclass(frozen=True)
@@ -249,7 +231,7 @@ def _discriminator(record: Mapping[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class BankedRecordStore:
-    """:class:`~.session_seams.RecordStore` over the bundle and the state file.
+    """:class:`~.session_seams.RecordStore` over the evidence bundle.
 
     ``relay_session_id`` and not the bundle id: the bundle id is canonical
     identity, but every reader globs
@@ -257,18 +239,10 @@ class BankedRecordStore:
     ``evidence_packet.round_artifact_dir`` reports that directory's name AS the
     relay id. A store minting its directory from ``record["session_id"]`` files
     the record where nothing looks for it.
-
-    ``load_state``/``save_state`` are injected because the host owns where the
-    state lives, how atomically and how durably — the split
-    :mod:`.durable_state` already states, and the reason this module can be the
-    engine's record store without a web host. In production they are
-    ``correction_crossover_v2``'s ``load_v2_state``/``save_v2_state``.
     """
 
     evidence: CommissioningEvidenceStore
     relay_session_id: str
-    load_state: Callable[[], Mapping[str, Any] | None]
-    save_state: Callable[[Mapping[str, Any]], None]
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         """Write one record; return the id that finds it again.
@@ -290,40 +264,6 @@ class BankedRecordStore:
             self._publish, relative, payload, record, route,
         )
         return relative
-
-    async def read(self, record_id: str) -> Mapping[str, Any] | None:
-        """One banked record by id, or ``None`` when the store has no such id.
-
-        ``None`` and never a raise for an absent or unreadable path: a missing
-        record is a fact an offline ``analyze`` discloses, not an exception
-        that strands the run.
-        """
-        document = await asyncio.to_thread(self._reopen, record_id)
-        return None if document is None else _unwrap(document)
-
-    async def persist(self, state: Mapping[str, Any]) -> str:
-        """Write the session's durable state; return the id that finds it.
-
-        Not durable, deliberately. This runs once per consumed capture, and an
-        fsync per capture buys nothing the next capture's write does not redo;
-        ``save_v2_state``'s own #2291 rule enumerates the three writes that do
-        qualify and this is not one of them.
-        """
-        document = await asyncio.to_thread(self._save_next, dict(state))
-        return _state_id(document)
-
-    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
-        """One persisted session state by id, or ``None`` when there is none.
-
-        The file is overwritten every persist, so a state id can outlive the
-        state it named. That is an ordinary ``None`` rather than a refusal
-        (ruling S10): load the file and answer only when it would still mint
-        the id it was handed.
-        """
-        document = await asyncio.to_thread(self.load_state)
-        if document is None or _state_id(document) != state_id:
-            return None
-        return document
 
     # --------------------------------------------------------------- internals
 
@@ -388,74 +328,3 @@ class BankedRecordStore:
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if route.verify is not None:
             route.verify(record, self.evidence.reopen_json_artifact(artifact))
-
-    def _save_next(self, state: dict[str, Any]) -> Mapping[str, Any]:
-        """Write the state one persist further on than the file already is."""
-        state[_PERSIST_ORDINAL_KEY] = _ordinal(self.load_state() or {}) + 1
-        self.save_state(state)
-        return state
-
-    def _reopen(self, record_id: str) -> Mapping[str, Any] | None:
-        try:
-            artifact = self.evidence.identify_artifact(
-                f"{EVIDENCE_ROOT}/artifacts/{record_id}"
-            )
-            return self.evidence.reopen_json_artifact(artifact)
-        except CommissioningEvidenceStoreError as exc:
-            # An id that is not a path the store can even name is the same
-            # answer as a path it has nothing at: no such record.
-            unnamed = CommissioningEvidenceStoreErrorCode.INVALID_PATH
-            if is_missing(exc) or exc.code == unnamed:
-                return None
-            raise
-
-
-def _unwrap(document: Mapping[str, Any]) -> Mapping[str, Any]:
-    """``bank``'s envelope taken back off, so a round trip is field-for-field.
-
-    Only the keys the STORE wrote come off — the envelope pair, the measure
-    kind, and the identity stamp. ``bank`` refuses a record that already
-    carried one of them, which is what makes "the store wrote it" an
-    invariant rather than a guess a reader has to make from the bytes.
-    """
-    route = _ROUTES.get(str(document.get("kind") or document.get("schema") or ""))
-    if route is None or not route.enveloped:
-        return document
-    owned = {*_ENVELOPE_KEYS, MEASURE_KIND_KEY}
-    if route.stamp_identity:
-        owned.add(SESSION_IDENTITY_KEY)
-    record = {
-        key: value for key, value in document.items() if key not in owned
-    }
-    measure_kind = document.get(MEASURE_KIND_KEY)
-    if measure_kind is not None:
-        record["kind"] = measure_kind
-    return record
-
-
-def _ordinal(document: Mapping[str, Any]) -> int:
-    """The persist counter this document carries, or ``0`` when it carries none.
-
-    ``bool`` is excluded deliberately, and is why this is validated rather than
-    read: it is an ``int`` subclass, so a ``True`` in the counter's key would
-    otherwise read as persist 1 and hand the second persist the first one's id.
-    """
-    ordinal = document.get(_PERSIST_ORDINAL_KEY)
-    if isinstance(ordinal, int) and not isinstance(ordinal, bool):
-        return ordinal
-    return 0
-
-
-def _state_id(document: Mapping[str, Any]) -> str:
-    """``state-{session_id}-{n}`` — a pure function of the document.
-
-    Pure because :meth:`BankedRecordStore.read_state` has to ask whether the
-    file on disk is still the one an id named, and an id the store held in
-    memory could not answer that after a restart. ``n`` is the persist counter
-    the store writes into the document, and a true counter rather than
-    anything derived from the state's contents: two persists that banked
-    nothing between them are still two persists, and a derived count would
-    mint one id for both — handing back the newer document under the older
-    id, which is the one thing this id exists to detect.
-    """
-    return f"state-{document.get('session_id') or ''}-{_ordinal(document)}"
