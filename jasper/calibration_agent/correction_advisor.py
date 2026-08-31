@@ -17,11 +17,11 @@ Two jobs, one agent, one target (revision plan §3.4):
 
 * **Propose** (:func:`propose`) — the confirm-gated proposer. The model
   proposes a bounded correction filter set and/or a target move; every
-  correction proposal is validated (:mod:`.response`), then SIMULATED
-  and rejected-if-it-would-ring (:mod:`.proposal_sim`) before it is ever
-  offered for apply, and judged by the same P4 acceptance evaluator any
-  correction faces. Preference/taste suggestions are phrased as
-  questions. This is the *preference* loop where taste is subjective.
+  correction proposal is validated against the strategy caps
+  (:mod:`.response`), then SIMULATED (:mod:`.proposal_sim`) so the
+  household sees what it is predicted to do before confirming the apply.
+  Preference/taste suggestions are phrased as questions. This is the
+  *preference* loop where taste is subjective.
 
 The packet is built from a live :class:`jasper.correction.session.MeasurementSession`
 via :func:`build_correction_advisor_context`, reusing the redaction
@@ -535,10 +535,9 @@ def propose(
 
     The model may propose bounded correction / target moves; every
     correction proposal is validated + deterministically simulated
-    (:mod:`.proposal_sim`) and judged by P4's acceptance evaluator.
-    NOTHING is applied here — proposals that survive are returned with
-    their simulation verdict for the endpoint to surface for user
-    confirmation.
+    (:mod:`.proposal_sim`). NOTHING is applied here — proposals are
+    returned with what the simulation predicts, for the endpoint to
+    surface for user confirmation.
     """
     context = build_correction_advisor_context(session)
     packet = _advisor_packet_for_model(context)
@@ -644,7 +643,10 @@ def _review_correction_peq(session: Any, action: dict[str, Any]) -> dict[str, An
     )
     return {
         "type": response.ACTION_PROPOSE_CORRECTION_PEQ,
-        "applicable": sim.accepted,
+        # Unlike a target move, this kind HAS an apply path: /propose/apply
+        # takes it behind the user's confirm. The simulation below is
+        # disclosure the household reads before confirming, not a veto.
+        "applicable": True,
         "requires_user_confirmation": True,
         "correction_peqs": peqs,
         "rationale": action.get("rationale"),

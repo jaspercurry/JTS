@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, five subcommands — each a thin argparse wrapper over
+One console script, six subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. This module reads banked round directories (the
 tree ``scripts/bank-crossover-round.sh`` produces), calls the product view,
@@ -15,6 +15,13 @@ already keeps for its own JSON output.
 
 Subcommands:
 
+* ``entry <round-dir>`` — grade the state the round ENTERED on, from the
+  entry-baseline take it banked, through the shipped flat-spec evaluator.
+  The one table nothing else prints: a fresh box's declarations-derived
+  config is the first round's entry state, and until this door it could only
+  be graded by hand. Writes ``<round-dir>/entry_state_grade.json``. A round
+  that banked no gradeable take says so with a named reason and still exits
+  ``0`` — that is an answer, not an unreadable round.
 * ``frozen <baseline-dir> <target-dir>`` — grade ``target`` shipped AND
   frozen to ``baseline``'s per-position reference levels. Writes
   ``<target-dir>/frozen_reference.json``.
@@ -50,6 +57,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     RoundViewsError,
     agreement_table,
     default_agreement_lo_hz,
+    entry_state_grade,
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
@@ -101,6 +109,47 @@ def _write_json(payload: Any, out: str | None, default_path: Path) -> Path | Non
     target = Path(out) if out else default_path
     target.write_text(text + "\n")
     return target
+
+
+def _cmd_entry(args: argparse.Namespace) -> int:
+    try:
+        banked = load_banked_round(Path(args.round_dir))
+        grade = entry_state_grade(banked)
+    except _ROUND_READ_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    written = _write_json(
+        grade.to_dict(), args.out, Path(args.round_dir) / "entry_state_grade.json"
+    )
+    report = grade.report
+    # ``report is None`` IS ``not available`` — the two move together on
+    # ``EntryStateGrade`` — and testing the report narrows it for the summary
+    # below without a second, unfalsifiable assertion that they agree.
+    if report is None:
+        # Exit 0, not 1: "this round banked no gradeable entry baseline" is an
+        # ANSWER — the one this door exists to give instead of an operator's
+        # hand-rolled evaluation — not a failure to read the round. Exit 1 is
+        # reserved for a round directory that could not be read at all.
+        print(f"entry-state: NOT GRADED — {grade.reason}", file=sys.stderr)
+        return EXIT_OK
+    # `is False` / `is None`, never a bare truthiness test, for exactly the
+    # reason `_cmd_agreement` states below: an UNEVALUABLE band (no
+    # non-excluded bin survived) is not a failing one, and collapsing them
+    # would report a band nobody could measure as one that measured badly.
+    n_failed = sum(1 for band in report.bands if band.passed is False)
+    n_unevaluable = sum(1 for band in report.bands if band.passed is None)
+    ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal
+    epoch = "?" if grade.round_ordinal_epoch is None else grade.round_ordinal_epoch
+    print(
+        f"entry-state: {len(report.bands)} band(s), {n_failed} failing, "
+        f"{n_unevaluable} unevaluable; "
+        f"overall_passed={report.overall_passed} "
+        f"round={ordinal} epoch={epoch} "
+        f"graph={grade.graph_fingerprint or '(not recorded)'}"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
 
 
 def _cmd_frozen(args: argparse.Namespace) -> int:
@@ -279,12 +328,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-round-views",
         description=(
-            "The round-grading comparison views: frozen-reference grading, "
-            "per-seat curves, session-to-session repeatability, per-seat "
-            "agreement, and the shared frequency view — over banked rounds."
+            "The round-grading comparison views: entry-state grading, "
+            "frozen-reference grading, per-seat curves, session-to-session "
+            "repeatability, per-seat agreement, and the shared frequency "
+            "view — over banked rounds."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
+    entry.add_argument("round_dir", help="banked round directory")
+    entry.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    entry.set_defaults(func=_cmd_entry)
 
     frozen = sub.add_parser("frozen", help="grade a round shipped and frozen to a baseline's reference")
     frozen.add_argument("baseline_dir", help="banked round directory to freeze the reference from")

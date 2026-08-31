@@ -1001,6 +1001,9 @@ def test_a_packet_with_no_declared_band_refuses_rather_than_inventing_one(tmp_pa
         _gate(packet, _document([_cut()], packet))
 
     assert excinfo.value.reason == dp.PASSBAND_UNAVAILABLE
+    # F-7: this refusal used to read like a speaker-data problem when the
+    # ordinary cause is a missing/unreadable --drivers evidence source.
+    assert "--drivers" in excinfo.value.detail
 
 
 def test_the_per_role_filter_count_is_the_branchs_own_ceiling(packet, tmp_path):
@@ -1074,6 +1077,21 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
         _gate(packet, _document([_cut()], packet, **over))
 
     assert excinfo.value.reason == reason
+
+
+def test_a_packet_mismatch_discloses_which_evidence_this_side_had(packet):
+    """F-7: a laptop-built and a Pi-built packet of the same round can
+    disagree on fingerprint because the evidence INPUTS differed, not
+    because either build is wrong. The refusal says so, in structured
+    fields a caller can act on rather than a bare pair of hashes.
+    """
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut()], packet, packet_fingerprint="not-this-round"))
+
+    assert excinfo.value.reason == dp.DRIVER_PRESCRIPTION_PACKET_MISMATCH
+    assert excinfo.value.evidence["packet_is_evidence_present"] == {
+        "drivers": True, "classification": True, "incumbent_linearization": False,
+    }
 
 
 @pytest.mark.parametrize("over_by", [1, 800])
@@ -3745,10 +3763,12 @@ def _cli_stage(tmp_path: Path, rows: list[dict[str, Any]]) -> int:
     draft.write_text(json.dumps(_draft()))
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"round_receipt": {"round_ordinal": 3}}))
-    # The packet the CLI itself will build, from the same three inputs — a
-    # document written against any other one refuses on the fingerprint.
+    # The packet the CLI itself will build, from the same inputs — a document
+    # written against any other one refuses on the fingerprint. No explicit
+    # --applied-profile below, so this matches the CLI's own true default.
     packet = build_crossover_evidence_packet(
-        session, state_path=state, driver_draft_path=draft
+        session, state_path=state, driver_draft_path=draft,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
     )
     document = tmp_path / "prescription.json"
     document.write_bytes(json.dumps(_document([_cut()], packet)).encode())
@@ -4009,7 +4029,11 @@ def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
     )
     draft_path = tmp_path / "draft.json"
     draft_path.write_text(json.dumps(_draft()))
-    packet = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+    # No explicit --applied-profile below, so this matches the CLI's default.
+    packet = build_crossover_evidence_packet(
+        session, driver_draft_path=draft_path,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(_document([_cut()], packet)))
 
@@ -4025,11 +4049,25 @@ def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
 
 
 def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
-    tmp_path, capsys
+    tmp_path, capsys, monkeypatch
 ):
-    """The packet's honesty rule reaching the operator: no band, named refusal."""
+    """The packet's honesty rule reaching the operator: no band, named refusal.
+
+    ``--drivers``/``--applied-profile`` are real argparse defaults now (F-7),
+    so this speaker's own on-disk state at those paths — not just "the flag
+    was typed" — decides whether evidence is read. Redirected to files that
+    are never written, so the refusal is deterministic on any machine.
+    """
+    monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", tmp_path / "no-drivers.json")
+    monkeypatch.setattr(
+        cli, "_APPLIED_PROFILE_DEFAULT_PATH", tmp_path / "no-applied-profile.json"
+    )
     session, _ = _bundle(tmp_path / "bundle")
-    packet = build_crossover_evidence_packet(session)
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(_document([_cut()], packet)))
 
@@ -4580,7 +4618,11 @@ def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(tmp_path, capsy
     )
     draft_path = tmp_path / "draft.json"
     draft_path.write_text(json.dumps(_draft()))
-    packet = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+    # No explicit --applied-profile below, so this matches the CLI's default.
+    packet = build_crossover_evidence_packet(
+        session, driver_draft_path=draft_path,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
 
     def _propose(document: dict[str, Any]) -> str:
         path = tmp_path / "p.json"

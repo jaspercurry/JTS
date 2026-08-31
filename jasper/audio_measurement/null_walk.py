@@ -148,8 +148,8 @@ def geometry_seed_us(
     Both signed differences are ``negative target minus positive target``.
     A positive result therefore means the positive target needs that much DSP
     delay; a negative result means the negative target needs its absolute
-    value. This estimate only bounds the walk; :func:`select_delay` emits the
-    final measured candidate.
+    value. This estimate only bounds the walk; :func:`select_scheduled_delay`
+    emits the final measured candidate.
     """
 
     path = _finite(signed_path_difference_m, field="signed_path_difference_m")
@@ -723,41 +723,6 @@ def summarize_candidate(
         "repeatable": repeatable,
         "issues": issues,
     }
-
-
-def select_delay(
-    spec: NullWalkSpec,
-    evidence_by_delay: Mapping[Any, Sequence[Mapping[str, Any]]],
-) -> dict[str, Any]:
-    """Select the deepest repeatable null inside ``spec``'s physical bound.
-
-    Ties choose the smallest movement from the geometry estimate, then the
-    numerically smaller delay.  The result never derives a delay from a capture
-    arrival time: only the exact candidate value applied by the DSP is emitted.
-    """
-
-    allowed = spec.candidate_delays_us()
-    summarized: list[dict[str, Any]] = []
-    evidence: dict[float, Sequence[Mapping[str, Any]]] = {}
-    for raw_delay, captures in evidence_by_delay.items():
-        delay = _finite(raw_delay, field="delay_us")
-        if not any(
-            math.isclose(delay, candidate, abs_tol=1e-6) for candidate in allowed
-        ):
-            raise NullWalkError("evidence delay is outside the bounded candidate grid")
-        evidence[delay] = captures
-    for candidate in allowed:
-        captures = next(
-            (
-                rows
-                for delay, rows in evidence.items()
-                if math.isclose(delay, candidate, abs_tol=1e-6)
-            ),
-            (),
-        )
-        summarized.append(summarize_candidate(spec, candidate, captures))
-
-    return _select_summarized_delay(spec, summarized)
 
 
 def _select_summarized_delay(

@@ -1629,6 +1629,17 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # and cleared by ``observe_restore`` once the anchor it names is no
     # longer live.
     "round_anchor",
+    # Deliberate widening (B5). How many times the round ORDINAL sequence has
+    # been reset. Both doors that replace durable state wholesale while leaving
+    # a measured graph on the speaker — the republish and Start-Over's applied
+    # branch — drop ``round_receipt`` below, which is that sequence's only
+    # memory, so the next round is ordinal 1 again on an already-tuned speaker.
+    # It crosses this boundary for a sharper version of ``pre_apply_profile``'s
+    # reason: the conductor cannot contribute it (only those two doors write
+    # it), and it has to outlive the very session they mint — a session-scoped
+    # marker would be erased by the first persist after the reset, which is
+    # exactly the round it exists to label. Disclosure only; nothing gates on it.
+    "round_ordinal_epoch",
     # Deliberate widening (#2291 Phase 3c). WHERE this round's receipt landed —
     # round id plus the bundle artifact's fingerprint — so the next round can
     # resolve the previous one by identity rather than scanning bundles. It

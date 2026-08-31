@@ -249,10 +249,10 @@ def test_propose_live_fixture_simulates_and_marks_applicable():
     assert "room_correction" in kinds
 
     corr = next(p for p in out["proposals"] if p["kind"] == "room_correction")
-    # A bounded extra cut on the remaining 62 Hz residual must
-    # simulate-accept on this room and stay confirm-gated.
+    # A bounded extra cut on the remaining 62 Hz residual simulates clean
+    # on this room and stays confirm-gated.
     assert corr["applicable"] is True
-    assert corr["simulation"]["accepted"] is True
+    assert corr["simulation"]["issues"] == []
     assert corr["requires_user_confirmation"] is True
 
 
@@ -277,9 +277,9 @@ def test_propose_multikind_fixture_renders_every_kind():
     assert "preference_question" in kinds
 
     corr = next(p for p in out["proposals"] if p["kind"] == "room_correction")
-    # The fixture's -7.5 dB cut at 62 Hz should simulate-accept on this room.
+    # The fixture's -7.5 dB cut at 62 Hz simulates clean on this room.
     assert corr["applicable"] is True
-    assert corr["simulation"]["accepted"] is True
+    assert corr["simulation"]["issues"] == []
     assert corr["requires_user_confirmation"] is True
 
     pref = next(p for p in out["proposals"] if p["kind"] == "preference_question")
@@ -291,10 +291,13 @@ def test_propose_multikind_fixture_renders_every_kind():
     assert "requires_user_confirmation" not in pref
 
 
-def test_propose_rejects_ringing_correction_via_simulation():
-    # A model that proposes a ringing boost: validation may pass bounds
-    # (if cuts_only allowed a boost), but the simulation rejects it. Here
-    # we drive the reviewer directly with a validated ring proposal.
+def test_propose_discloses_a_ringing_correction_without_withholding_apply():
+    """A model that proposes a ringing boost: validation may pass bounds
+    (if cuts_only allowed a boost), and the simulation DISCLOSES the ring
+    note while the proposal stays offerable behind the user's confirm.
+
+    **Mutation guard.** Re-deriving ``applicable`` from a sim verdict
+    flips it back to False and fails the first assertion."""
     sess = _fake_session()
     ctx = ca.build_correction_advisor_context(sess)
     validation = {
@@ -308,7 +311,7 @@ def test_propose_rejects_ringing_correction_via_simulation():
         }],
     }
     reviewed = ca._review_actions(sess, ctx, validation)
-    assert reviewed[0]["applicable"] is False
+    assert reviewed[0]["applicable"] is True
     assert any(
         i["code"] == "boost_would_ring"
         for i in reviewed[0]["simulation"]["issues"]

@@ -424,7 +424,7 @@ class RelayCapacityUnavailable(ValueError):
     FOREGROUND, inside ``register_session``, before a session exists at all —
     the same position every other start-time refusal occupies
     (``_require_relay_base``, the already-in-progress guard,
-    ``CrossoverV2Refused``, ``ServerOwnedNextStepMismatch``), all of which are
+    ``CrossoverV2Refused``), all of which are
     ``ValueError`` so ``correction_setup``'s dispatcher answers a clean 400
     carrying the message rather than a 500 with a traceback. The message names
     the cause AND the operator action, so the 400 body is the whole answer.

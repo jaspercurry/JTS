@@ -23,9 +23,8 @@ SOLVER_MARGIN_DB = 6.0
 
 # Target mic peak for the bounded clip correction (W2.2, hardware run 18):
 # once a sweep has ACTUALLY clipped the mic, a tone-derived gain estimate is
-# proven wrong for this driver's hottest band. CrossoverLevelLease
-# (record_solve_correction, trigger="clip") de-escalates toward this peak
-# using the clipped attempt's OWN measured mic reading, because a
+# proven wrong for this driver's hottest band. A clip de-escalation aims at
+# this peak using the clipped attempt's OWN measured mic reading, because a
 # clipped/clamped reading is a floor on the true peak, not the true peak
 # itself.
 MIC_TARGET_PEAK_DBFS = -12.0

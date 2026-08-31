@@ -29,8 +29,6 @@ from jasper.active_speaker.commissioning_run import (
 )
 from jasper.active_speaker.capture_geometry import comparison_set_valid
 from jasper.active_speaker.crossover_level_run import (
-    CrossoverLevelRunError,
-    CrossoverLevelRunPhase,
     PHONE_TRANSPORT_GRACE_S,
     state_path as _level_run_state_path,
 )
@@ -41,13 +39,8 @@ from jasper.active_speaker.volume_latch import (
 )
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
-from jasper.transition_log import TransitionLog, os_fault_cause
 
 logger = logging.getLogger(__name__)
-# One incident, not one per ~1.5 s poll: disclose a persistent level-run read
-# fault on its transition and once an hour after, never on every repeat. Keyed
-# by the record path so a different file's fault is its own event. ADR-0196.
-_LEVEL_RUN_DISCLOSURE = TransitionLog(reminder_sec=3600.0)
 # The emergency floor + readback tolerance are owned by the shared volume_latch
 # leaf so this per-step lease and the session-scoped SessionVolumePlan cannot
 # drift. Re-exported at the historical names for this module's importers.
@@ -60,43 +53,8 @@ _DEFAULT_VOLUME_SAFETY_STATE_PATH = Path(
 _VOLUME_READBACK_TOLERANCE_DB = READBACK_TOLERANCE_DB
 CamillaFactory = Callable[[], Any]
 
-# Bounded correction (W2.2/W2.3): at most this many signed adjustment writes
-# (clip de-escalations, SNR-shortfall escalations from a rejected attempt, or
-# -- since W2.3 -- a completed-but-insufficient finalization, combined) per
-# target per comparison set -- see CrossoverLevelLease.record_solve_correction.
-# A rejection (or completion) past this bound is a typed refusal
-# (level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE), never a third
-# guessed level. W2.3: the budget now survives a level re-lock for the same
-# target -- including the between-set level-check restart while it has not
-# shown a pre-flight refusal (only a successful/sufficient finalization, a
-# changed relay mic identity, a restart that WAS showing a refusal -- W2.4,
-# hardware run 20, subsumes the exhausted-budget case -- or a true full
-# reset clears it early) -- see
-# CrossoverLevelLease.invalidate_comparison_context and
-# _clear_solve_correction_state.
-_MAX_SOLVE_CORRECTION_WRITES = 2
-
-
-def _current_relay_device_key(input_device: Mapping[str, Any] | None) -> str:
-    """The relay mic identity backing W2.3's device-fingerprint clearing.
-
-    Mirrors :func:`jasper.web.correction_setup._relay_device_key` exactly --
-    imported lazily (rather than duplicated) to avoid a module-level import
-    cycle, since ``correction_setup`` imports this module too.
-    """
-
-    from jasper.web.correction_setup import _relay_device_key
-
-    return _relay_device_key(
-        dict(input_device) if isinstance(input_device, Mapping) else None
-    )
-
 
 if TYPE_CHECKING:
-    from jasper.active_speaker.crossover_level_run import (
-        CrossoverLevelRunClaim,
-        CrossoverLevelRunFailure,
-    )
     from jasper.audio_measurement.ramp import MeasurementRamp
     from jasper.correction.level_match import LevelMatchOutcome, LevelMatchSession
 
@@ -209,41 +167,6 @@ class CrossoverLevelLease:
         self.noise_floor_db = None
         self.mic_calibration = None
         self.input_device = None
-        # The pre-flight solve refusal that used to reach the envelope. Its
-        # only writer was the closed-loop level solver, deleted with the
-        # sweep-lease path it alone served, so this stays None; the readers
-        # (_target_refusal_pending, level_match_snapshot) are kept until the
-        # snapshot key retires on its own.
-        self._solve_refusal: dict[str, Any] | None = None
-        # ONE signed adjustment per target, added to the solve's assumed
-        # ambient dBFS: an SNR-shortfall rejection writes +shortfall_db
-        # (louder assumed room -> louder solve); a CLIP rejection writes a
-        # de-escalation (quieter assumed room -> quieter solve) sized from
-        # the clipped capture's OWN measured evidence. See
-        # record_solve_correction.
-        self._solve_adjustment_db: dict[str, float] = {}
-        # How many corrections have been written for this target in the
-        # current comparison set. Bounded at _MAX_SOLVE_CORRECTION_WRITES --
-        # a further rejection after the bound is a typed refusal
-        # (measurement_window_unreachable), not a third guessed level.
-        self._solve_correction_writes: dict[str, int] = {}
-        # W2.2: the driver's OWN measured chain gain (mic peak minus that
-        # attempt's effective sweep peak), replacing the level-match tone's
-        # single-frequency gain_map_db for the solver's mic-clip ceiling --
-        # see record_measured_gain. Updated by ANY capture (accepted or
-        # rejected); padded by CLIP_UNDERESTIMATE_ALLOWANCE_DB when the
-        # capture it came from clipped.
-        self._solve_measured_gain_db: dict[str, float] = {}
-        # The measured peak dBFS backing _solve_measured_gain_db, kept only
-        # for the measurement_window_unreachable refusal's observability
-        # fields (never fed back into the gain math).
-        self._solve_measured_peak_dbfs: dict[str, float] = {}
-        # W2.3: the relay mic identity (_relay_device_key(self.input_device))
-        # in effect the last time this target's correction state was
-        # written. A signed adjustment models a specific microphone's/room's
-        # physics at a specific position; it is only valid for THAT mic. See
-        # _reconcile_solve_correction_device.
-        self._solve_correction_device_key: dict[str, str] = {}
         # Interim fixed-position repeats are process-local and scoped by both
         # the immutable comparison set and driver target.  Nothing from one
         # level/profile context can be paired with another.
@@ -515,99 +438,6 @@ class CrossoverLevelLease:
         safety_timeout_s = self._ramp_config_for_geometry(geometry).safety_timeout
         return math.ceil((safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0)
 
-    def claim_level_match_run(
-        self,
-        *,
-        topology_id: str,
-        protected_profile_fingerprint: str,
-        target: Mapping[str, Any],
-    ) -> CrossoverLevelRunClaim:
-        """Claim one exact Active run before Room opens relay transport."""
-
-        from jasper.active_speaker.crossover_level_run import build_level_run_request
-
-        geometry = str(target.get("geometry") or "")
-        request = build_level_run_request(
-            topology_id=topology_id,
-            protected_profile_fingerprint=protected_profile_fingerprint,
-            target_id=str(target.get("target_id") or ""),
-            target_fingerprint=str(target.get("target_fingerprint") or ""),
-            geometry=geometry,
-            ramp=self._ramp_config_for_geometry(geometry),
-        )
-        return self._level_run_store.claim(request)
-
-    def claim_level_run_owner(self) -> dict[str, Any] | None:
-        """Retire a prior process's unfinished run at service startup."""
-
-        return self._level_run_store.claim_owner()
-
-    def mark_level_run_phone_armed(self, run_id: str) -> bool:
-        return self._level_run_store.mark_phone_armed(run_id)
-
-    def mark_level_run_phone_timeout(self, run_id: str) -> bool:
-        return self._level_run_store.mark_phone_timeout(run_id)
-
-    def mark_level_run_succeeded(self, run_id: str) -> bool:
-        with self._level_result_lock:
-            current = self._level_run_store.snapshot()
-            if current is None or current.get("run_id") != run_id:
-                return self._level_run_store.succeed(run_id)
-            if current.get("phase") not in {
-                CrossoverLevelRunPhase.AWAITING_PHONE.value,
-                CrossoverLevelRunPhase.RUNNING.value,
-            }:
-                return self._level_run_store.succeed(run_id)
-            geometry = str(current.get("geometry") or "")
-            if geometry not in self._outcomes:
-                raise CrossoverLevelRunError(
-                    "successful crossover level run has no process-local result"
-                )
-            return self._level_run_store.succeed(run_id)
-
-    def mark_level_run_failed(
-        self, run_id: str, *, reason: CrossoverLevelRunFailure
-    ) -> bool:
-        return self._level_run_store.fail(run_id, reason=reason)
-
-    def level_run_snapshot(self) -> dict[str, Any] | None:
-        """Return a fail-soft public projection while claims remain fail-closed."""
-
-        from jasper.active_speaker.crossover_level_run import (
-            SCHEMA_VERSION,
-            CrossoverLevelRunError,
-        )
-
-        record = str(self._level_run_store.path or "")
-        try:
-            snapshot = self._level_run_store.snapshot()
-        except (OSError, CrossoverLevelRunError, ValueError) as exc:
-            # The browser polls this every ~1.5s for a whole tuning round, so a
-            # machine fault that persists -- a record no account can read -- is
-            # one incident, not hundreds. The transition (and a slow reminder)
-            # is the event; the repeat is not. ``snapshot`` is lock-free, so
-            # the faulting file is the RECORD, and the errno+path is the one
-            # sentence that ends the incident. See ADR-0196 and jasper.
-            # transition_log, the shared gate output_topology also uses.
-            cause = os_fault_cause(exc)
-            if _LEVEL_RUN_DISCLOSURE.should_log(record, cause):
-                log_event(
-                    logger,
-                    "correction.crossover_level_run_unavailable",
-                    level=logging.ERROR,
-                    reason=type(exc).__name__,
-                    cause=cause,
-                    path=record,
-                )
-            return {
-                "schema_version": SCHEMA_VERSION,
-                "phase": "failed",
-                "terminal_reason": "state_unavailable",
-                "late_success": False,
-            }
-        _LEVEL_RUN_DISCLOSURE.cleared(record)
-        return snapshot
-
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
         from jasper.correction.level_match import LevelMatchSession
 
@@ -724,171 +554,7 @@ class CrossoverLevelLease:
             self._outcomes[geometry] = outcome
             if outcome.locked:
                 self.context_id = context_id
-            # A fresh ramp result changes the solver's inputs (gain_map_db,
-            # cap_db, noise_floor_dbfs) for this geometry, so the STORED
-            # PER-SWEEP SOLVE and any pre-flight refusal computed against the
-            # old inputs are stale -- both get recomputed from scratch on the
-            # next solve.
-            #
-            # W2.3 (hardware run 19, replaces #1552-S2's "a re-lock clears
-            # the correction" rule): the bounded correction itself is
-            # deliberately NOT cleared here anymore. Two full woofer repeat
-            # sets at the tester's stationary desk placement measured
-            # near-identical solve inputs before and after the household
-            # restarted the level check (set 1 solved -26.25 dB effective,
-            # set 2 solved -27.9 dB -- QUIETER, because the fresh ambient
-            # baseline happened to read lower) -- a fresh ramp re-measures
-            # the ROOM's ambient, not the mic-placement/leakage physics the
-            # correction is compensating for, so clearing it here just
-            # replayed the same doomed level again. The correction now
-            # persists per (target, relay mic identity) across re-locks --
-            # see _reconcile_solve_correction_device -- and is cleared only
-            # by a successful, sufficient finalization
-            # (clear_solve_correction), a changed mic identity, a
-            # between-set restart that WAS showing a pre-flight refusal for
-            # that target (W2.4, hardware run 20 -- subsumes the old
-            # exhausted-budget-only rule; see _target_refusal_pending), or a
-            # true full reset (both via invalidate_comparison_context -- see
-            # its docstring).
-            self._solve_refusal = None
         return outcome
-
-    def _clear_solve_correction_state(self, target_id: str) -> None:
-        """Drop one target's bounded-correction state (W2.3).
-
-        Shared by the set-completion (clear_solve_correction),
-        device-fingerprint-change (_reconcile_solve_correction_device),
-        refusal-pending between-set restart, and true-full-reset (both in
-        invalidate_comparison_context) clearing points so the lifecycles can
-        never drift apart. A fresh ramp re-lock for the same geometry is
-        deliberately NOT one of these points as of W2.3 -- see the comment
-        in run_for_geometry.
-        """
-
-        self._solve_adjustment_db.pop(target_id, None)
-        self._solve_correction_writes.pop(target_id, None)
-        self._solve_measured_gain_db.pop(target_id, None)
-        self._solve_measured_peak_dbfs.pop(target_id, None)
-        self._solve_correction_device_key.pop(target_id, None)
-
-    def _correction_budget_exhausted(self, target_id: str) -> bool:
-        """Whether ``target_id`` has burned its bounded correction budget.
-
-        The single predicate behind the snapshot surfaced to the envelope
-        (``level_match_snapshot``'s ``solve_correction`` block) and the
-        between-set clearing rule in ``invalidate_comparison_context``, so
-        the two can never disagree about what "exhausted" means.
-        """
-
-        return self._solve_correction_writes.get(target_id, 0) > _MAX_SOLVE_CORRECTION_WRITES
-
-    def _target_refusal_pending(self, target_id: str) -> bool:
-        """Whether ``target_id`` is currently showing a pre-flight refusal.
-
-        W2.4 (hardware run 20, 2026-07-17, jts3): the between-set restart's
-        (``invalidate_comparison_context``'s) reader of TWO stored facts --
-        ``self._solve_refusal`` and the ``_correction_budget_exhausted``
-        write count. It is now the SOLE reader of them: an envelope-side
-        re-derivation from ``level_match_snapshot()``'s ``solve_refusal`` /
-        ``solve_correction.exhausted`` projections used to exist, was never
-        called by any production path, and was deleted along with the parity
-        regression that pinned the two readers in agreement. Its verdict
-        across the representative states is still pinned, by
-        ``test_refusal_pending_predicate_across_the_three_stored_states``
-        in tests/test_correction_crossover_backend_level_solve.py. True on
-        EITHER of the two ways a refusal reaches the household:
-
-        * the bounded correction budget is exhausted
-          (``_correction_budget_exhausted``) -- this is the only live arm,
-          and it is what a completion-time write that exhausts the budget
-          without any new sweep trips;
-        * ``self._solve_refusal`` names this target. This arm caught a
-          genuine ``room_too_noisy_for_safe_measurement`` refusal at a
-          budget that is NOT yet exhausted (run 20: writes=1, one write
-          below the bound) -- the gap the exhausted-only W2.3 rule missed.
-          Its writer was the pre-flight solve, deleted with the sweep-lease
-          path, so the arm reads False until a pre-flight refusal has a
-          writer again.
-
-        ``self._solve_refusal`` is single-valued by design: the guided flow
-        solves one driver at a time (sequential per-driver measurement), so
-        at most one target's pre-flight refusal is live when the restart
-        runs. In a hypothetical state where a second target's refusal had
-        been shown and then overwritten, that target would preserve its
-        correction through one restart, re-refuse on its next solve, and
-        clear on the following restart -- self-healing in one extra bounded
-        round, never latching.
-
-        Run 20's defect: a refusal at writes=1 is NOT exhausted, so the old
-        rule preserved the correction across the restart the refusal
-        screen's own "Redo the quick level check" action offers. The fresh
-        solve after that restart used the SAME preserved adjustment against
-        a freshly re-measured (near-identical) room and refused again,
-        identically, in ~5 seconds with no pre-roll and no tone -- the
-        household followed the instruction and got the same dead end,
-        because nothing about the correction had changed to make the next
-        solve different. Clearing on ANY shown refusal means the next
-        attempt after a restart always plays real audio and re-measures
-        reality: the household relocking cleanly is itself new evidence the
-        solver has never seen.
-        """
-
-        if self._correction_budget_exhausted(target_id):
-            return True
-        refusal = self._solve_refusal
-        return isinstance(refusal, Mapping) and str(
-            refusal.get("target_id") or ""
-        ) == target_id
-
-    def _reconcile_solve_correction_device(self, target_id: str) -> None:
-        """Drop ``target_id``'s bounded-correction state on a mic swap (W2.3).
-
-        A signed adjustment and a measured-gain clip ceiling both model a
-        SPECIFIC microphone's physics at a specific position -- see
-        ``record_solve_correction``. They now persist across level re-locks
-        AND across the between-set restart
-        (``invalidate_comparison_context(preserve_solve_corrections=True)``),
-        so a mic swap needs its OWN clearing trigger: without this, stale
-        corrections written against one phone's mic would silently carry
-        over to a different mic plugged in later.
-
-        Called before every correction write (``record_solve_correction``,
-        ``record_measured_gain``) so no two writes can observe different
-        device state. Only a KNOWN prior
-        key (non-empty) that no longer matches the current one clears --
-        an unknown current key (``self.input_device`` not yet populated,
-        e.g. immediately after ``invalidate_comparison_context`` before the
-        phone reconnects) is never treated as a change.
-        """
-
-        current_key = _current_relay_device_key(self.input_device)
-        stored_key = self._solve_correction_device_key.get(target_id, "")
-        if stored_key and current_key and stored_key != current_key:
-            self._clear_solve_correction_state(target_id)
-        if current_key:
-            self._solve_correction_device_key[target_id] = current_key
-
-    def _solve_correction_snapshot(self) -> dict[str, dict[str, Any]]:
-        """Per-target bounded-correction state for ``level_match_snapshot``.
-
-        The envelope (``jasper.active_speaker.crossover_envelope``) reads
-        this to render honest terminal copy: whether a completed-but-
-        insufficient finalization actually escalated the next attempt
-        (``writes > 0``), and whether the budget is now exhausted (the very
-        next solve will pre-flight refuse) so the placement-lever refusal
-        copy can surface immediately rather than after one more dead-end
-        "restart the level check" round trip.
-        """
-
-        target_ids = set(self._solve_correction_writes) | set(self._solve_adjustment_db)
-        return {
-            target_id: {
-                "writes": self._solve_correction_writes.get(target_id, 0),
-                "adjustment_db": self._solve_adjustment_db.get(target_id, 0.0),
-                "exhausted": self._correction_budget_exhausted(target_id),
-            }
-            for target_id in target_ids
-        }
 
     async def cancel_level_match(self) -> bool:
         """Ask the retained crossover ramp to stop through its safe restore."""
@@ -898,56 +564,8 @@ class CrossoverLevelLease:
             return False
         return await running.cancel()
 
-    def invalidate_comparison_context(
-        self, *, preserve_solve_corrections: bool = False
-    ) -> None:
-        """Drop a prior lock/setup before a newly acquired level run begins.
-
-        ``preserve_solve_corrections=False`` (the default) is the lease's
-        TRUE FULL RESET: everything clears, including every target's
-        bounded-correction state.
-
-        ``preserve_solve_corrections=True`` is the BETWEEN-SET RESTART
-        (W2.3, hardware run 19; discriminator revised W2.4, hardware run 20)
-        -- the household's only mechanical path out of both the
-        completed-insufficient terminal and the placement refusal is
-        restarting the level check, and both restarts arrive through the
-        SAME endpoint/body (``_handle_crossover_relay_level_match``'s
-        non-continuing branch, the single production caller passing this
-        flag). The two are distinguished by STORED STATE, never by request
-        shape, via ``_target_refusal_pending``, the sole reader of the TWO
-        stored facts (``self._solve_refusal`` and the
-        ``_correction_budget_exhausted`` write count); its verdict about
-        "was a refusal shown" is pinned by
-        ``test_refusal_pending_predicate_across_the_three_stored_states``:
-
-        * a target with NO pre-flight refusal pending keeps its signed
-          adjustment, write count, measured gain/peak, and mic identity
-          binding -- this is the completed-insufficient path (every attempt
-          accepted, aggregate SNR still short; no pre-flight solve ever
-          refused). The terminal promised "JTS will play the next
-          measurement louder", and run 19 proved a re-lock reproduces
-          near-identical solve inputs, so wiping the correction here would
-          silently replay the same doomed level;
-        * a target with a pre-flight refusal pending -- EITHER
-          ``room_too_noisy_for_safe_measurement`` from a genuine solve
-          refusal (any write count, not only exhausted) OR the synthesized
-          ``measurement_window_unreachable`` once the budget is exhausted
-          -- clears completely: the restart is a fresh evaluation, so the
-          refusal cannot latch (no deadlock), and if the physics truly
-          didn't change the machinery re-converges to the refusal within
-          the bounded write budget instead of looping on one identical
-          solve with no audio ever played. Run 20 (hardware, jts3): a
-          ``room_too_noisy`` refusal at writes=1 (budget NOT exhausted)
-          was preserved under the old exhausted-only rule, so the restart
-          the refusal screen itself offers played the SAME preserved
-          adjustment against a freshly re-measured room and refused again
-          in ~5 seconds, no pre-roll, no tone -- a dead loop with an honest
-          instruction that lied. Clearing here instead means every restart
-          after a refusal re-measures reality (a fresh baseline solve),
-          which converges or honestly oscillates with real measurements,
-          never a canned replay.
-        """
+    def invalidate_comparison_context(self) -> None:
+        """Drop a prior lock/setup before a newly acquired level run begins."""
 
         self.assert_volume_safety_resolved()
         from jasper.correction.level_match import LevelLockStore
@@ -955,20 +573,6 @@ class CrossoverLevelLease:
         with self._level_result_lock:
             if self._running is not None:
                 raise RuntimeError("cannot invalidate a running crossover level match")
-            preserved_targets: list[str] = []
-            cleared_refused_targets: list[str] = []
-            if preserve_solve_corrections:
-                correction_targets = (
-                    set(self._solve_correction_writes)
-                    | set(self._solve_adjustment_db)
-                    | set(self._solve_measured_gain_db)
-                )
-                for target_id in sorted(correction_targets):
-                    if self._target_refusal_pending(target_id):
-                        self._clear_solve_correction_state(target_id)
-                        cleared_refused_targets.append(target_id)
-                    else:
-                        preserved_targets.append(target_id)
             self._level_run_store.invalidate_succeeded_result()
             self.level_lock_store = LevelLockStore()
             self._last = None
@@ -983,224 +587,10 @@ class CrossoverLevelLease:
             self._repeat_sessions = {}
             self._repeat_failures = {}
             self._durable_repeat_progress = {}
-            self._solve_refusal = None
-            if not preserve_solve_corrections:
-                self._solve_adjustment_db = {}
-                self._solve_correction_writes = {}
-                self._solve_measured_gain_db = {}
-                self._solve_measured_peak_dbfs = {}
-                self._solve_correction_device_key = {}
         log_event(
             logger,
             "correction.crossover_level_context_invalidated",
-            preserve_solve_corrections=preserve_solve_corrections,
-            preserved_correction_targets=",".join(preserved_targets),
-            cleared_refused_targets=",".join(cleared_refused_targets),
         )
-
-    def _target_id_for(self, speaker_group_id: str, role: str) -> str | None:
-        for target_id, target in self._targets.items():
-            if (
-                str(target.get("speaker_group_id") or "") == speaker_group_id
-                and str(target.get("role") or "").lower() == role.lower()
-            ):
-                return target_id
-        return None
-
-    def record_solve_correction(
-        self,
-        speaker_group_id: str,
-        role: str,
-        *,
-        trigger: str,
-        shortfall_db: float | None = None,
-        measured_mic_peak_dbfs: float | None = None,
-    ) -> None:
-        """ONE signed per-target correction (W2.2, generalizes W2.1 item 4).
-
-        ``trigger="snr_shortfall"`` (unchanged W2.1 behavior): a driver
-        capture's OWN measured worst-band SNR still missed despite the
-        solve -- raise the solver's assumed ambient by exactly the measured
-        shortfall so the next solve asks for more headroom.
-
-        ``trigger="completed_insufficient"`` (W2.3, hardware run 19): a
-        repeat set can finalize with EVERY individual attempt accepted (each
-        one's topology-overlap region was clean, so the per-attempt
-        rejection path in ``jasper.web.correction_crossover_backend``'s
-        ``record_driver_capture`` never fires) yet the aggregate worst-band
-        SNR still reads "insufficient" -- a different band, unrelated to the
-        overlap trim, stayed under the floor. Same math as
-        ``"snr_shortfall"`` (``shortfall_db`` raises the assumed ambient),
-        just a different origin: the completion path
-        (``jasper.web.correction_crossover_backend.record_driver_capture``)
-        computes ``shortfall_db`` from the required threshold
-        ``level_solver.driver_solve_requirement_db`` returns, minus the
-        finalized capture's measured worst-band SNR -- not the bare per-band
-        acceptance floor those bands were gated against.
-
-        ``trigger="clip"`` (W2.2, hardware run 18): a driver capture
-        clipped the mic even though the solve predicted a safe level --
-        de-escalate the solver's assumed ambient using the clipped
-        capture's OWN measured mic peak (``measured_mic_peak_dbfs``),
-        targeting ``level_solver.MIC_TARGET_PEAK_DBFS`` with
-        ``level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB`` of slack for the
-        clipped reading's own unreliability (a clamped/clipped reading
-        understates the true acoustic peak).
-
-        Bounded at ``_MAX_SOLVE_CORRECTION_WRITES`` writes per target,
-        persisted per (target, relay mic identity) -- see
-        ``_reconcile_solve_correction_device`` -- across level re-locks and
-        comparison-set invalidation (W2.3). A further clip, shortfall, or
-        completed-insufficient finalization past the bound does NOT write a
-        third guessed level; it marks the target exhausted
-        (``_correction_budget_exhausted``) instead of replaying a doomed
-        sweep a third time.
-        """
-
-        from jasper.audio_measurement import level_solver
-
-        target_id = self._target_id_for(speaker_group_id, role)
-        if target_id is None:
-            return
-        self._reconcile_solve_correction_device(target_id)
-        if trigger in ("snr_shortfall", "completed_insufficient"):
-            if (
-                shortfall_db is None
-                or not math.isfinite(shortfall_db)
-                or shortfall_db <= 0.0
-            ):
-                return
-            delta_db = float(shortfall_db)
-        elif trigger == "clip":
-            if measured_mic_peak_dbfs is None or not math.isfinite(
-                measured_mic_peak_dbfs
-            ):
-                return
-            drop_db = (
-                (float(measured_mic_peak_dbfs) - level_solver.MIC_TARGET_PEAK_DBFS)
-                + level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB
-            )
-            if drop_db <= 0.0:
-                return
-            delta_db = -drop_db
-        else:
-            raise ValueError(f"unsupported solve-correction trigger: {trigger!r}")
-
-        writes = self._solve_correction_writes.get(target_id, 0)
-        if writes >= _MAX_SOLVE_CORRECTION_WRITES:
-            self._solve_correction_writes[target_id] = writes + 1
-            log_event(
-                logger,
-                "measurement.level_solve_correction_exhausted",
-                target_id=target_id,
-                role=role,
-                trigger=trigger,
-                writes=writes,
-            )
-            return
-        self._solve_adjustment_db[target_id] = (
-            self._solve_adjustment_db.get(target_id, 0.0) + delta_db
-        )
-        self._solve_correction_writes[target_id] = writes + 1
-        log_event(
-            logger,
-            "measurement.level_solve_corrected",
-            target_id=target_id,
-            role=role,
-            trigger=trigger,
-            adjustment_db=f"{delta_db:+.1f}",
-            total_adjustment_db=f"{self._solve_adjustment_db[target_id]:+.1f}",
-            writes=writes + 1,
-        )
-
-    def record_measured_gain(
-        self,
-        speaker_group_id: str,
-        role: str,
-        *,
-        measured_mic_peak_dbfs: float,
-        effective_peak_dbfs: float,
-        clipped: bool,
-    ) -> None:
-        """Store this driver's OWN measured chain gain (W2.2 item 2).
-
-        Fires for ANY capture -- accepted or rejected -- once a real sweep
-        has played through this driver: its full-band measured behavior is
-        a better basis for the solver's mic-clip ceiling than the
-        level-match ramp's single-frequency lock tone (hardware run 18: a
-        250 Hz tone underestimated a woofer sweep's hottest band). When the
-        capture that produced this reading clipped, the reading itself
-        understates the true peak, so
-        ``level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB`` is folded into the
-        stored gain so every later use inherits the same conservatism. Not
-        bounded by the correction-write limit -- this is better
-        information, not a guessed retry -- and always overwrites with the
-        latest reading.
-
-        ``effective_peak_dbfs`` is ``DriverSweepGeneratorPlan.effective_peak_dbfs``
-        for the attempt that produced ``measured_mic_peak_dbfs`` (sweep
-        amplitude + commissioning_gain_db + main_volume_db -- the excitation
-        ledger's own field, e.g. ``raw["excitation"]["effective_peak_dbfs"]``).
-        ``gain_map_db``'s own established convention (see
-        ``predicted_mic_peak_dbfs`` in ``jasper.audio_measurement.level_solver``)
-        is measured relative to ``commissioning_gain_db + main_volume_db``
-        WITHOUT the sweep amplitude term -- the sweep/tone amplitudes cancel
-        because both are pinned at the same constant today. This method
-        converts by subtracting that constant so the stored gain sits on
-        the same footing as the tone-derived ``gain_map_db`` it replaces.
-        """
-
-        if not math.isfinite(measured_mic_peak_dbfs) or not math.isfinite(
-            effective_peak_dbfs
-        ):
-            return
-        target_id = self._target_id_for(speaker_group_id, role)
-        if target_id is None:
-            return
-        self._reconcile_solve_correction_device(target_id)
-        from jasper.active_speaker.commissioning_admission import (
-            ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
-        )
-        from jasper.audio_measurement import level_solver
-
-        chosen_sum = float(effective_peak_dbfs) - ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS
-        allowance = level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB if clipped else 0.0
-        gain_db = float(measured_mic_peak_dbfs) - chosen_sum + allowance
-        self._solve_measured_gain_db[target_id] = gain_db
-        self._solve_measured_peak_dbfs[target_id] = float(measured_mic_peak_dbfs)
-        log_event(
-            logger,
-            "measurement.level_solve_measured_gain",
-            target_id=target_id,
-            role=role,
-            measured_gain_db=f"{gain_db:.1f}",
-            measured_mic_peak_dbfs=f"{float(measured_mic_peak_dbfs):.1f}",
-            effective_peak_dbfs=f"{float(effective_peak_dbfs):.1f}",
-            clipped=clipped,
-        )
-
-    def clear_solve_correction(self, speaker_group_id: str, role: str) -> None:
-        """Drop one target's bounded-correction state (W2.3 set completion).
-
-        Called ONLY once a driver's repeat set finalizes with a SUFFICIENT
-        aggregate verdict -- see the caller
-        (``jasper.web.correction_crossover_backend.record_driver_capture``)
-        -- so a LATER, unrelated measurement of the SAME target starts with
-        a clean correction budget. As of W2.3 this does NOT fire for a
-        completed-but-insufficient finalization (that instead WRITES a
-        correction via ``record_solve_correction``'s
-        ``"completed_insufficient"`` trigger) or for a terminal refusal
-        (insufficient accepted repeats) -- both leave the correction in
-        place, since hardware run 19 showed the physical problem that caused
-        them is very likely still there on the next attempt. Mirrors the
-        other clearing points -- device-fingerprint change,
-        refusal-pending between-set restart, true full reset (see
-        _clear_solve_correction_state).
-        """
-
-        target_id = self._target_id_for(speaker_group_id, role)
-        if target_id is not None:
-            self._clear_solve_correction_state(target_id)
 
     def driver_sweep_locked_main_volume_db(
         self,
@@ -1292,8 +682,9 @@ class CrossoverLevelLease:
         item: Mapping[str, Any],
         attempt: int | None = None,
     ) -> list[dict[str, Any]]:
-        # ``attempt`` is the RAW durable reservation number (record_driver_capture
-        # passes reservation_attempt), so a set that survived refunded transport
+        # ``attempt`` is the RAW durable reservation number
+        # (``web_measurement.record_driver_capture`` passes
+        # reservation_attempt), so a set that survived refunded transport
         # failures reaches its third accept at an attempt up to MAX_RESERVATIONS —
         # the audible measurement budget still caps the number of stored (audio-
         # emitting) items at MAX_ATTEMPTS.
@@ -1341,10 +732,6 @@ class CrossoverLevelLease:
         with self._repeat_lock:
             failure = self._repeat_failures.get(target_id)
             return dict(failure) if failure is not None else None
-
-    def active_repeat_bindings(self) -> set[tuple[str, str]]:
-        with self._repeat_lock:
-            return set(self._repeat_sessions)
 
     def set_durable_repeat_progress(self, payload: Mapping[str, Any]) -> None:
         from jasper.active_speaker.crossover_eligibility import (
@@ -1655,24 +1042,12 @@ class CrossoverLevelLease:
             "unresolved_volume_safety": self.unresolved_volume_safety,
             "missing_targets": missing,
             "next_target": self._targets.get(missing[0]) if missing else None,
-            # The most recent PRE-FLIGHT solve refusal. Its writer went with
-            # the sweep-lease path, so this projects None; the key stays
-            # until it retires with its readers.
-            "solve_refusal": self._solve_refusal,
-            # W2.3: per-target bounded-correction state (writes, cumulative
-            # adjustment_db, and whether the budget is exhausted) -- lets the
-            # envelope render honest completed-insufficient copy and surface
-            # the placement-lever refusal immediately once the budget is
-            # exhausted, without waiting for one more solve attempt to
-            # populate solve_refusal. See _solve_correction_snapshot.
-            "solve_correction": self._solve_correction_snapshot(),
             "ready": bool(
                 self._targets
                 and not missing
                 and context_valid
                 and self._volume_safety_state is None
             ),
-            "run": self.level_run_snapshot(),
             "repeats": self.repeat_snapshot(),
         }
 
@@ -1773,12 +1148,6 @@ def reset_measurement_journey() -> dict[str, Any]:
         "error_ids": error_ids,
         "kept_ids": kept_ids,
     }
-
-
-def claim_level_run_owner() -> dict[str, Any] | None:
-    """Service-lifecycle adapter for the Room-owned web entry point."""
-
-    return _LEVEL_LEASE.claim_level_run_owner()
 
 
 def claim_commissioning_run_owner() -> CommissioningRunHandle | None:
@@ -2379,279 +1748,3 @@ async def play_summed_capture_sweep(
         group_id=raw.get("speaker_group_id"),
     )
     return payload
-
-
-def record_driver_capture(
-    raw: Mapping[str, Any],
-    wav_bytes: bytes,
-    *,
-    placement_proof: Mapping[str, Any] | None = None,
-    admission_handoff: Mapping[str, Any] | None = None,
-    preset: Any = None,
-    repeat_store: Any = None,
-) -> dict[str, Any]:
-    """Analyze one secure browser WAV and record per-driver evidence."""
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-
-    def record_authoritative(**inputs: Any) -> Mapping[str, Any]:
-        from jasper.active_speaker.baseline_profile import (
-            load_applied_baseline_profile_state,
-        )
-        from jasper.active_speaker.bundles import sessions_dir
-        from jasper.active_speaker.commissioning_evidence_store import (
-            CommissioningEvidenceStore,
-        )
-        from jasper.active_speaker.commissioning_isolated_producer import (
-            promote_isolated_driver_capture,
-        )
-
-        run = _COMMISSIONING_RUN_STORE.current_handle()
-        comparison_set = inputs.get("comparison_set")
-        if (
-            run is None
-            or not isinstance(comparison_set, Mapping)
-            or run.session_id != comparison_set.get("bundle_session_id")
-            or run.session_fingerprint != comparison_set.get("fingerprint")
-        ):
-            raise ValueError(
-                "fixed-axis capture has no current exact commissioning run"
-            )
-        applied = load_applied_baseline_profile_state()
-        if not isinstance(applied, Mapping):
-            raise ValueError(
-                "fixed-axis capture has no protected applied profile authority"
-            )
-        evidence_store = CommissioningEvidenceStore.open(
-            sessions_dir() / run.session_id,
-            expected_session_id=run.session_id,
-        )
-        return promote_isolated_driver_capture(
-            **inputs,
-            applied_profile=applied,
-            run=run,
-            run_store=_COMMISSIONING_RUN_STORE,
-            evidence_store=evidence_store,
-        )
-
-    transaction = getattr(repeat_store, "repeat_transaction", None)
-    if callable(transaction):
-        with transaction():
-            payload = web_measurement.record_driver_capture(
-                raw,
-                wav_bytes,
-                placement_proof=placement_proof,
-                admission_handoff=admission_handoff,
-                preset=preset,
-                repeat_store=repeat_store,
-                authoritative_recorder=(
-                    record_authoritative if admission_handoff is not None else None
-                ),
-            )
-    else:
-        payload = web_measurement.record_driver_capture(
-            raw,
-            wav_bytes,
-            placement_proof=placement_proof,
-            admission_handoff=admission_handoff,
-            preset=preset,
-            repeat_store=repeat_store,
-            authoritative_recorder=(
-                record_authoritative if admission_handoff is not None else None
-            ),
-        )
-    log_event(
-        logger,
-        "correction.crossover_driver_capture",
-        status="recorded" if payload.get("recorded") else "not_recorded",
-        group_id=raw.get("speaker_group_id"),
-        role=raw.get("role"),
-        placement_policy=(placement_proof or {}).get("policy_id"),
-        authoritative_status=(payload.get("authoritative_evidence") or {}).get(
-            "status"
-        ),
-    )
-    # Bounded correction (W2.1/W2.2): the solve predicted a safe level would
-    # clear the SNR requirement, but this attempt's OWN measured verdict
-    # still rejected it -- either a clip (the tone-derived gain_map
-    # underestimated the driver's hottest band -- hardware run 18) or a
-    # measured SNR shortfall
-    # (the fallback ambient guess, or a per-band evidence event, undershot
-    # the real room). record_solve_correction writes ONE signed adjustment
-    # per rejection, bounded at _MAX_SOLVE_CORRECTION_WRITES; a rejection
-    # past the bound becomes the solver's typed refusal on its own next
-    # solve attempt, not a third guessed level.
-    group_id = str(raw.get("speaker_group_id") or "")
-    role = str(raw.get("role") or "").lower()
-    repeat_progress = payload.get("repeat_progress")
-    latest_rejection = (
-        repeat_progress.get("latest_rejection")
-        if isinstance(repeat_progress, Mapping)
-        else None
-    )
-    if isinstance(latest_rejection, Mapping):
-        if bool(latest_rejection.get("clipping")):
-            peak = latest_rejection.get("peak_dbfs")
-            if (
-                not isinstance(peak, (int, float))
-                or isinstance(peak, bool)
-                or not math.isfinite(peak)
-            ):
-                # A clipped capture with no usable peak level -- conservative
-                # measured value per the module docstring's clip contract.
-                peak = 0.0
-            _LEVEL_LEASE.record_solve_correction(
-                group_id,
-                role,
-                trigger="clip",
-                measured_mic_peak_dbfs=float(peak),
-            )
-        else:
-            shortfall = latest_rejection.get("snr_shortfall_db")
-            if isinstance(shortfall, (int, float)) and not isinstance(shortfall, bool):
-                _LEVEL_LEASE.record_solve_correction(
-                    group_id,
-                    role,
-                    trigger="snr_shortfall",
-                    shortfall_db=float(shortfall),
-                )
-
-    # W2.2 item 2: any capture (accepted or rejected) that carries a
-    # measured mic peak and the attempt's own played effective sum refines
-    # the solver's mic-clip ceiling for this target going forward.
-    evidence = _extract_level_evidence(payload)
-    if evidence is not None:
-        measured_peak_dbfs, effective_peak_dbfs, clipping = evidence
-        _LEVEL_LEASE.record_measured_gain(
-            group_id,
-            role,
-            measured_mic_peak_dbfs=measured_peak_dbfs,
-            effective_peak_dbfs=effective_peak_dbfs,
-            clipped=clipping,
-        )
-
-    # Completion-time correction (W2.3, hardware run 19): a repeat set can
-    # FINALIZE (every attempt individually accepted -- the rejection path
-    # above never fires) yet the winner capture's own aggregate worst-band
-    # SNR still reads "insufficient". Run 19 measured this exactly: two full
-    # woofer repeat sets, all 3 attempts accepted=true each time, per-attempt
-    # snr_verdict=insufficient (13.7/14.2/13.2 dB, then 16.3/13.4/7.8 dB) --
-    # ZERO level_solve_corrected events, because #1552 only wired the
-    # rejection path. Extract the finalized winner's measured worst-band SNR
-    # from its own acoustic.snr block (jasper.audio_measurement.snr_policy
-    # .band_snr_verdicts' output, via record_driver_acoustic_capture ->
-    # DriverAcousticResult.to_dict() -> _finalize_driver_repeat_set's
-    # payload) and, when insufficient, correct by the solver's OWN required
-    # threshold (floor + margin, from level_solver.driver_solve_requirement_db)
-    # minus what was measured -- not the bare per-band acceptance floor those
-    # individual bands were gated against.
-    aggregate_verdict, worst_band_snr_db = _completion_aggregate_snr(payload)
-    if (
-        payload.get("recorded") is True
-        and aggregate_verdict == "insufficient"
-        and worst_band_snr_db is not None
-    ):
-        from jasper.audio_measurement import level_solver
-        from jasper.audio_measurement.quality_model import DRIVER as DRIVER_QUALITY_MODEL
-
-        required_db = level_solver.driver_solve_requirement_db(DRIVER_QUALITY_MODEL)
-        _LEVEL_LEASE.record_solve_correction(
-            group_id,
-            role,
-            trigger="completed_insufficient",
-            shortfall_db=required_db - worst_band_snr_db,
-        )
-
-    # Set completion (W2.2/W2.3): once the repeat set finalizes with a
-    # SUFFICIENT aggregate verdict for this target, clear its bounded-
-    # correction state. A completed-but-insufficient finalization (handled
-    # above -- it WRITES a correction instead) and a terminal refusal
-    # (insufficient accepted repeats) do NOT clear: run 19 showed a re-lock
-    # reproduces near-identical solve inputs, so the physical problem behind
-    # either outcome is very likely still there on the next attempt -- see
-    # CrossoverLevelLease.clear_solve_correction / record_solve_correction.
-    if payload.get("recorded") is True and aggregate_verdict != "insufficient":
-        _LEVEL_LEASE.clear_solve_correction(group_id, role)
-    return payload
-
-
-def _completion_aggregate_snr(
-    payload: Mapping[str, Any],
-) -> tuple[str | None, float | None]:
-    """(verdict, worst_relevant estimated_snr_db) for a FINALIZED capture's
-    own ``acoustic.snr`` block -- the winner repeat's aggregate SNR verdict,
-    distinct from any single attempt's ``repeat_progress.latest_rejection``
-    admission_result. ``(None, None)`` when the block is missing or
-    malformed (legacy/test payloads without an ``acoustic.snr`` block, or a
-    non-finalized payload) -- the caller treats a ``None`` verdict as "not
-    insufficient" so set completion still clears normally.
-    """
-
-    acoustic = payload.get("acoustic")
-    if not isinstance(acoustic, Mapping):
-        return None, None
-    snr = acoustic.get("snr")
-    if not isinstance(snr, Mapping):
-        return None, None
-    verdict = snr.get("verdict")
-    verdict = verdict if isinstance(verdict, str) else None
-    worst_relevant = snr.get("worst_relevant")
-    snr_db: float | None = None
-    if isinstance(worst_relevant, Mapping):
-        candidate = worst_relevant.get("estimated_snr_db")
-        if (
-            isinstance(candidate, (int, float))
-            and not isinstance(candidate, bool)
-            and math.isfinite(candidate)
-        ):
-            snr_db = float(candidate)
-    return verdict, snr_db
-
-
-def _extract_level_evidence(
-    payload: Mapping[str, Any],
-) -> tuple[float, float, bool] | None:
-    """(measured_mic_peak_dbfs, effective_peak_dbfs, clipping) for whichever
-    capture ``record_driver_capture`` just recorded -- the just-rejected
-    attempt (``repeat_progress.latest_rejection``) or the finalized accepted
-    repeat (top-level ``acoustic``/``excitation``) -- or ``None`` when
-    either figure is unavailable.
-    """
-
-    repeat_progress = payload.get("repeat_progress")
-    latest_rejection = (
-        repeat_progress.get("latest_rejection")
-        if isinstance(repeat_progress, Mapping)
-        else None
-    )
-    clipping = False
-    if isinstance(latest_rejection, Mapping):
-        peak = latest_rejection.get("peak_dbfs")
-        effective = latest_rejection.get("effective_peak_dbfs")
-        clipping = bool(latest_rejection.get("clipping"))
-    elif payload.get("recorded") is True:
-        acoustic = payload.get("acoustic")
-        excitation = payload.get("excitation")
-        acoustic = acoustic if isinstance(acoustic, Mapping) else {}
-        excitation = excitation if isinstance(excitation, Mapping) else {}
-        peak = acoustic.get("peak_dbfs")
-        effective = excitation.get("effective_peak_dbfs")
-        clipping = bool(acoustic.get("mic_clipping"))
-    else:
-        return None
-    if clipping and (
-        not isinstance(peak, (int, float))
-        or isinstance(peak, bool)
-        or not math.isfinite(peak)
-    ):
-        peak = 0.0
-    if (
-        not isinstance(peak, (int, float))
-        or isinstance(peak, bool)
-        or not math.isfinite(peak)
-        or not isinstance(effective, (int, float))
-        or isinstance(effective, bool)
-        or not math.isfinite(effective)
-    ):
-        return None
-    return float(peak), float(effective), clipping

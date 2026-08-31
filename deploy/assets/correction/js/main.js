@@ -1925,11 +1925,11 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     }
   }
 
-  // Render each proposal as its own card. A room-correction proposal that
-  // passed the deterministic simulation shows an Apply button (which
-  // confirms, then POSTs /propose/apply — the server re-simulates before
-  // applying). A rejected one shows why. A preference/target move is
-  // phrased as a question (taste, not a correction claim).
+  // Render each proposal as its own card. A room-correction proposal shows
+  // what the deterministic simulation predicts, any notes it raised, and an
+  // Apply button (which confirms, then POSTs /propose/apply). A
+  // preference/target move is phrased as a question (taste, not a
+  // correction claim).
   function renderTuningProposals(proposals) {
     if (!tuningProposals) return;
     tuningProposals.innerHTML = '';
@@ -1946,7 +1946,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
 
   function buildCorrectionProposalCard(p) {
     var card = document.createElement('div');
-    card.className = 'tuning-proposal' + (p.applicable ? '' : ' tuning-proposal--rejected');
+    card.className = 'tuning-proposal';
     if (p.rationale) {
       var rat = document.createElement('p');
       rat.className = 'tuning-proposal-rationale';
@@ -1958,30 +1958,30 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     filters.textContent = describeFilters(p.correction_peqs || []);
     card.appendChild(filters);
     // Predicted improvement from the deterministic simulation (server number).
-    var acc = p.simulation && p.simulation.acceptance;
-    if (acc && typeof acc.overall_rms_delta_db === 'number') {
+    var delta = p.simulation && p.simulation.predicted_rms_delta_db;
+    if (typeof delta === 'number') {
       var detail = document.createElement('p');
       detail.className = 'tuning-proposal-detail';
-      detail.textContent = 'Simulated: ' + acc.verdict
-        + ' (predicted ' + acc.overall_rms_delta_db.toFixed(1) + ' dB RMS change vs target).';
+      detail.textContent = 'Predicted: ' + Math.abs(delta).toFixed(1) + ' dB '
+        + (delta >= 0 ? 'closer to' : 'further from') + ' your target.';
       card.appendChild(detail);
     }
-    if (p.applicable) {
-      var applyBtn = document.createElement('button');
-      applyBtn.type = 'button';
-      applyBtn.className = 'btn btn--primary';
-      applyBtn.textContent = 'Apply this correction';
-      applyBtn.addEventListener('click', function () { applyCorrectionProposal(p, applyBtn); });
-      card.appendChild(applyBtn);
-    } else {
+    // Disclosure, not a veto: the household reads the notes and decides.
+    var notes = (p.simulation && p.simulation.issues) || [];
+    if (notes.length) {
       var why = document.createElement('p');
       why.className = 'tuning-proposal-detail';
-      var issues = (p.simulation && p.simulation.issues) || [];
-      why.textContent = issues.length
-        ? ('Not offered — ' + issues.map(function (i) { return i.message || i.code; }).join('; '))
-        : 'Not offered — the simulation did not accept this.';
+      why.textContent = 'Worth knowing — ' + notes.map(function (i) {
+        return i.message || i.code;
+      }).join('; ');
       card.appendChild(why);
     }
+    var applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'btn btn--primary';
+    applyBtn.textContent = 'Apply this correction';
+    applyBtn.addEventListener('click', function () { applyCorrectionProposal(p, applyBtn); });
+    card.appendChild(applyBtn);
     return card;
   }
 

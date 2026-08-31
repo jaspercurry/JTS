@@ -1733,10 +1733,10 @@ persistence once that trusted Active callback supplies the fresh values.
 
 ### Wave 1 evidence, lifecycle, and Room handoff contracts
 
-The shared `ArtifactIdentity`, `CaptureIdentity`, and `ReplayIdentity` values
-bind exact feature-owned artifacts, raw captures, replay inputs, and algorithm
-versions. They do not move files, migrate either existing bundle format, decide
-capture quality, or turn a forensic bundle into authority. Room and Active keep
+The shared `ArtifactIdentity` and `CaptureIdentity` values bind exact
+feature-owned artifacts and raw captures. They do not move files, migrate
+either existing bundle format, decide capture quality, or turn a forensic
+bundle into authority. Room and Active keep
 owning their bundles and verdicts.
 
 Active's lifecycle has nine explicit states: `unconfigured`, `protected`,
