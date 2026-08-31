@@ -3817,6 +3817,10 @@ def bind_production_play(
         bind_program_playback_seams,
         confirm_graph_is_live,
     )
+    from jasper.active_speaker.measurement_emit import (
+        MeasurementGraphProfile,
+        emit_measurement_graph,
+    )
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.program import write_program_wav
     from jasper.dsp_apply import dsp_writer_lock
@@ -3825,72 +3829,22 @@ def bind_production_play(
         config_dir if config_dir is not None else str(DEFAULT_CAMILLA_CONFIG_DIR)
     )
 
-    def _emit_program_graph(
-        inverted_roles: tuple[str, ...] = (),
-        measurement_delays_us: Mapping[str, float] | None = None,
-        level_trims_db: Mapping[str, float] | None = None,
-    ) -> str:
-        """The session's ONE measurement-graph emit, per measurement variant.
-
-        Every argument here but the three VARIANT axes — ``inverted_roles``,
-        ``measurement_delays_us`` and ``level_trims_db`` — is a bind-time
-        closure variable, which is the fact that makes the graph session-scoped
-        rather than per-stimulus: the old per-capture site emitted these same
-        bytes for every stimulus. The three are what a measurement chooses —
-        empty on every normal capture, which keeps that emit byte-identical to
-        what it was.
-
-        ``level_trims_db`` arrives RESOLVED. This closure applies the numbers
-        it is handed and never asks the evidence question itself: that question
-        has one owner (``baseline_profile.measured_level_trims``) and is asked
-        once, at session open, where a box with no evidence can still refuse
-        the walk instead of silently measuring unmatched branches.
-
-        BOTH HALVES OF THE DEVICE BLOCK, DERIVED TOGETHER (issue #2450).
-        ``playback_device`` is already marker-aware — on an armed box
-        ``resolve_active_playback_device`` answers the ACTIVE RING — but naming
-        only the sink left the emitter to default its capture lane to the
-        snd-aloop tap, which under ``shm_ring`` fan-in has stopped feeding:
-        Stage 1's per-driver sweeps would excite the ring while CamillaDSP
-        captured a device nobody writes. Digital silence, every daemon healthy,
-        and no gate to catch it — the capture-channel check compares 2 == 2 and
-        the arm's width gate only holds ring-NAMED lanes to the wire.
-        ``active_emit_devices`` is the one place that answers for a ring PCM, so
-        this site asks it rather than learning the ring; on every unarmed box it
-        returns today's literals and this emit is byte-identical.
-
-        EVERY field it derives is forwarded. A subset is the same defect one
-        level up (#2343/#2359/#2363's family), which is why
-        ``test_every_emit_devices_field_reaches_the_emitter`` walks
-        ``dataclasses.fields`` at this site too — and it matters MORE at session
-        scope, where a half-derived block would poison every stimulus rather
-        than one.
-        """
-        from jasper.active_speaker.camilla_yaml import (
-            active_emit_devices,
-            emit_active_speaker_program_config,
-        )
-
-        devices = active_emit_devices(playback_device, topology=topology)
-        return emit_active_speaker_program_config(
-            preset,
-            role_channels=dict(role_channels),
-            playback_device=playback_device,
-            protection_sections_by_role=protection_sections_by_role,
-            capture_device=devices.capture_device,
-            capture_format=devices.capture_format,
-            playback_format=devices.playback_format,
-            chunksize=devices.chunksize,
-            target_level=devices.target_level,
-            queuelimit=devices.queuelimit,
-            enable_rate_adjust=devices.enable_rate_adjust,
-            inverted_roles=inverted_roles,
-            measurement_delays_us=measurement_delays_us,
-            measurement_level_trims_db=level_trims_db,
-        )
-
+    # The emit is NOT web vocabulary — a preset, a topology, a role→channel map,
+    # a sink and the confirmed protection — so it lives in
+    # ``active_speaker.measurement_emit``, where an operator door reaches the
+    # same one without importing this host. The five closure variables became
+    # its snapshot; the three VARIANT axes stay the call's.
     session_graph = MeasurementSessionGraph(
-        emit=_emit_program_graph,
+        emit=functools.partial(
+            emit_measurement_graph,
+            MeasurementGraphProfile(
+                preset=preset,
+                topology=topology,
+                role_channels=role_channels,
+                playback_device=playback_device,
+                protection_sections_by_role=protection_sections_by_role,
+            ),
+        ),
         cam_factory=camilla_factory,
         writer_lock=lambda: dsp_writer_lock(
             resolved_config_dir, source="crossover_v2_session_graph"

@@ -145,6 +145,7 @@ def bundle_measurements(
     kind: str | None = None,
     phase: str | None = None,
     position_deg: int | None = None,
+    candidate_id: str | None = None,
 ) -> tuple[Measurement, ...]:
     """One bundle's takes, matching every filter — the offline reader's door.
 
@@ -153,12 +154,16 @@ def bundle_measurements(
     reconcile. It costs nothing these callers were not already paying: each
     of them opens every selected take anyway.
 
-    Three filter axes and not seven: these are the three the banked corpus is
+    Four filter axes and not seven: these are the ones the banked corpus is
     actually asked for — ``position_cycle``'s ``takes_by_position`` and its
-    kind listing, and the phase every take reader selects on
+    kind listing, the phase every take reader selects on
     (:func:`~.position_cycle.read_lateral_take` and its entry-baseline
-    sibling). Every column is on :class:`Measurement`, so a reader that needs
-    to select by another one adds the axis when it exists rather than before.
+    sibling), and ``candidate_id``, which arrived with the ``jasper-measure``
+    door: that door refuses to bank a variant take without one precisely so the
+    variants can be selected apart afterwards, and a label nothing can select
+    by would be decoration. Every column is on :class:`Measurement`, so a
+    reader that needs to select by another one adds the axis when it exists
+    rather than before.
 
     ``phase`` is what a take IS — the walk pose, the entry baseline, a CHECK —
     where ``kind`` is what it MEASURES (baseline / candidate / verify). Two
@@ -179,4 +184,5 @@ def bundle_measurements(
         if (kind is None or row.kind == kind)
         and (phase is None or row.phase == phase)
         and (position_deg is None or row.position_deg == position_deg)
+        and (candidate_id is None or row.candidate_id == candidate_id)
     )

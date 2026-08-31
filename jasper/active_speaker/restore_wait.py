@@ -16,14 +16,21 @@ a fader ends up stranded at measurement level (ADR-0179).
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Coroutine
+from typing import Any, Coroutine, TypeVar
 
 __all__ = ["await_restore_task_resilient", "resilient_restore"]
 
+#: What the shielded operation answers with. Generic because the idiom is about
+#: CANCELLATION, not about a payload — the graph restores that named this module
+#: answer a report dict, and a give-back that answers nothing needs the same
+#: shield for the same reason. Pinning it to one payload type would have made
+#: the second caller write a fourth copy of the loop below.
+_Restored = TypeVar("_Restored")
+
 
 async def await_restore_task_resilient(
-    restore_task: asyncio.Task[dict[str, Any]],
-) -> dict[str, Any]:
+    restore_task: "asyncio.Task[_Restored]",
+) -> _Restored:
     """Await one graph restoration before propagating caller cancellation."""
     cancellation: asyncio.CancelledError | None = None
     while True:
@@ -40,8 +47,8 @@ async def await_restore_task_resilient(
 
 
 async def resilient_restore(
-    operation: Coroutine[Any, Any, dict[str, Any]],
-) -> dict[str, Any]:
+    operation: "Coroutine[Any, Any, _Restored]",
+) -> _Restored:
     """Run one restore coroutine to completion before propagating cancellation.
 
     :func:`await_restore_task_resilient` takes a Task, so every caller was
