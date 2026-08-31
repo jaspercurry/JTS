@@ -17,9 +17,12 @@ gen-wav OUT.wav
     0.5 s on/off toggle bursts of 10 kHz (10 s), then white noise (4 s).
 
 gen-click OUT.wav
-    Write a 48 kHz stereo S16 marker WAV for `latency`: silence, then
+    Write a 48 kHz stereo S16 marker WAV for `latency`: silence, an
+    inaudible -80 dBFS pilot tone that wakes the lane so fan-in's onset
+    ramp cannot swallow the marker (see CLICK_PILOT_S), then
     jasper.route_latency.click_track's own ~5 ms raised-cosine 2 kHz burst
-    (its default -12 dBFS), then silence.
+    (its default -12 dBFS), then silence. The pilot is carved out of the
+    lead, so the click's offset in the WAV is unchanged.
 
 capture SECONDS OUT.raw
     Capture outputd's post-DSP reference tap (127.0.0.1:9891 UDP, S16LE
@@ -91,12 +94,19 @@ latency LANE_PCM [--repeats N]
     rust/jasper-outputd/src/main.rs's publish loop).
 
     CAVEAT: the reported number measures from aplay's own process-start
-    through the WAV's fixed leading silence, the DSP pipe, and tap
+    through the WAV's fixed lead (silence + pilot), the DSP pipe, and tap
     arrival -- it does NOT include this tool's own ssh/sudo/READY-wait
     overhead, all of which happens before the timestamp is taken. It is
     for BEFORE/AFTER comparison on one box, never an absolute number
     compared across boxes or lanes. Prints each repeat plus the median,
     min and max (default 5 repeats).
+
+    LANE CHOICE: on a RENDERER lane (spotify/airplay/bluealsa/usbsink)
+    fan-in applies its wake fade-in to the lane's first onset, which the
+    pilot absorbs -- the click itself is unshaped, but the lane is not
+    bit-transparent for the first 10 ms of the file. The `correction`
+    lane is exempt from that ramp by construction, so prefer it when the
+    absolute shape of what reaches the tap matters.
 
 Every remote temp path (sniffer, click WAV, capture file) is suffixed
 with a short per-invocation id; on exit (including Ctrl-C) this tool
@@ -188,6 +198,21 @@ PROBE_SECTIONS: tuple[tuple[str, float], ...] = (
 
 CLICK_LEAD_SILENCE_S = 0.5
 CLICK_TRAIL_SILENCE_S = 0.5
+# The lead is not all silence: its last CLICK_PILOT_S carry an inaudible pilot
+# tone, so the click arrives on a lane that is already awake. jasper-fanin
+# shapes a renderer lane's first onset after >=1.5 s of digital zero with a
+# 10 ms raised-cosine window (issue #3443); a bare click landing inside that
+# window is attenuated to ~0.05 peak -- under impulse_detect's 0.2 threshold --
+# and the measurement cannot find its own marker. The pilot breaks the lane's
+# zero-run and spends the window on itself, leaving the click untouched. It sits
+# INSIDE the existing lead rather than extending it, so the click's offset in
+# the WAV -- which this tool's reported number includes -- does not move.
+# -80 dBFS is inaudible and ~3 LSB at S16: non-zero, which is all that is
+# required. 1 kHz (48 samples per cycle at 48 kHz) so no render period can
+# quantize to all-zero and re-arm the ramp mid-pilot.
+CLICK_PILOT_S = 0.4
+CLICK_PILOT_DBFS = -80.0
+CLICK_PILOT_HZ = 1_000.0
 
 SILENCE_RMS_DBFS = -70.0
 THD_N_BAND_HZ = (2_000.0, 20_000.0)
@@ -440,14 +465,20 @@ def build_probe_signal(rate: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def build_click_signal(rate: int) -> np.ndarray:
-    """CLICK_LEAD_SILENCE_S of silence, then click_track's own ~5 ms
-    raised-cosine 2 kHz burst (its default -12 dBFS -- a full-scale
-    impulse under-detects after USB/DSP losses and risks driver/DAC
-    strain; see click_track's module docstring), then trailing silence."""
+    """CLICK_LEAD_SILENCE_S of lead -- silence, then a CLICK_PILOT_S
+    inaudible pilot tone that wakes the lane (see CLICK_PILOT_S) -- then
+    click_track's own ~5 ms raised-cosine 2 kHz burst (its default -12
+    dBFS -- a full-scale impulse under-detects after USB/DSP losses and
+    risks driver/DAC strain; see click_track's module docstring), then
+    trailing silence. The click's offset stays CLICK_LEAD_SILENCE_S: the
+    pilot is carved out of the lead, never added to it."""
     click = np.asarray(click_samples(), dtype=np.float64) / 32768.0
     lead = int(round(CLICK_LEAD_SILENCE_S * rate))
+    pilot = min(int(round(CLICK_PILOT_S * rate)), lead)
     trail = int(round(CLICK_TRAIL_SILENCE_S * rate))
     mono = np.zeros(lead + click.size + trail, dtype=np.float64)
+    t = np.arange(pilot) / rate
+    mono[lead - pilot:lead] = _amp_db(CLICK_PILOT_DBFS) * np.sin(2 * np.pi * CLICK_PILOT_HZ * t)
     mono[lead:lead + click.size] = click
     return np.column_stack([mono, mono])
 
@@ -968,8 +999,8 @@ def cmd_latency(args: argparse.Namespace) -> int:
     )
     print(
         "caveat: this measures from aplay's own process-start (stamped on "
-        "the box right before exec) through the WAV's fixed leading "
-        "silence, the DSP pipe, and tap arrival -- it does NOT include "
+        "the box right before exec) through the WAV's fixed lead (silence "
+        "+ pilot), the DSP pipe, and tap arrival -- it does NOT include "
         "this tool's own ssh/sudo/READY-wait overhead, all of which "
         "happens before that timestamp is taken. Use it for BEFORE/AFTER "
         "comparison on this box, never as an absolute number compared "

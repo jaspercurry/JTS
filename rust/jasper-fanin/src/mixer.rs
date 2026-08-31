@@ -48,6 +48,7 @@
 
 mod direct_capture;
 mod ring_capture;
+mod wake_ramp;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
@@ -65,7 +66,7 @@ use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 // the ALSA owner and avoids a local metric copy.
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
-use crate::config::{Config, RingWireFormat, RING_SLOT_FRAMES};
+use crate::config::{Config, RingWireFormat, MEASUREMENT_LANE, RING_SLOT_FRAMES};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -76,6 +77,7 @@ use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
+use wake_ramp::LaneWakeRamp;
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
@@ -1423,6 +1425,11 @@ pub struct Input {
     /// `ring{}` block from it. `None` (and absent from STATUS) for every other
     /// lane — the same optional-block idiom as `direct_obs` and `resampler`.
     ring_obs: Option<ring_capture::RingLaneObservability>,
+    /// Per-lane WAKE FADE-IN state (issue #3443). Held by every lane and usable
+    /// at both lane scales, because it runs over this lane's rendered period —
+    /// the one thing all four read arms produce. Tracked before the selection
+    /// gate and applied after it; inert on [`MEASUREMENT_LANE`].
+    wake_ramp: LaneWakeRamp,
 }
 
 impl Mixer {
@@ -1914,6 +1921,28 @@ impl Mixer {
             input
                 .rms_dbfs_x100
                 .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
+            // 3a3. WAKE FADE-IN, tracking half (issue #3443). Read-only, and
+            // deliberately for EVERY lane regardless of selection: silence is a
+            // property of what the lane CAPTURES, so the run has to be counted
+            // on the same periods the lane reads. Nothing is shaped here — the
+            // meter above must keep reporting a de-selected lane's TRUE level,
+            // and the window itself belongs to the periods that reach the sum
+            // (applied after the gate below). One INFO line per arming: the
+            // state machine cannot re-arm without another ARM_SILENCE_MS of
+            // silence, so this is bounded far below the throttled hot-path logs
+            // this daemon already emits inline (`record_drain_entry`).
+            let woke = if input.read_buf_wide.is_empty() {
+                input
+                    .wake_ramp
+                    .observe(&input.read_buf[..active], self.period_frames)
+            } else {
+                input
+                    .wake_ramp
+                    .observe(&input.read_buf_wide[..active], self.period_frames)
+            };
+            if woke {
+                info!("event=fanin.lane_wake_ramp label={}", input.label);
+            }
             // 3b. Advance the DEFAULT-OFF post-lock cushion decay one render
             // period on this lane's resampler (if armed). Done AFTER the render
             // so the tick sees this period's fresh lock state, and independent of
@@ -1938,6 +1967,17 @@ impl Mixer {
                 input.muted.load(Ordering::Relaxed),
             ) {
                 continue;
+            }
+            // 3c. WAKE FADE-IN, application half (issue #3443). Only a period
+            // that actually ENTERS the sum spends the window, so a lane that
+            // woke while mux still had it out keeps its ramp owed until `SELECT`
+            // lands (mux arbitrates at 1 Hz). Spending it on discarded periods
+            // instead would leave the sum opening on the very step this exists
+            // to remove. A silent period holds the window rather than eating it.
+            if input.read_buf_wide.is_empty() {
+                input.wake_ramp.apply(&mut input.read_buf[..active]);
+            } else {
+                input.wake_ramp.apply(&mut input.read_buf_wide[..active]);
             }
             // Only sum the samples we actually got (`active`, computed above for
             // the per-lane RMS). `read_input` zero-pads the tail of
@@ -2610,7 +2650,7 @@ fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
 }
 
 fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
-    selected_input == -1 || selected_input == input_index as i32 || label == "correction"
+    selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
 
 /// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter
@@ -2842,6 +2882,7 @@ fn open_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: None,
+        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
     })
 }
 
@@ -2985,6 +3026,7 @@ fn open_direct_input(
             drain_stats: DrainStats::new(),
         }),
         ring_obs: None,
+        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
     }
 }
 
