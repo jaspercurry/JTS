@@ -127,6 +127,7 @@ async def measurement_door(
     config_dir: str | Path | None = None,
     volume_state_path: str | Path | None = None,
     wall_clock_ceiling_s: float | None = None,
+    gate_owner: str | None = None,
 ) -> AsyncIterator[OpenMeasurementDoor]:
     """Hold this speaker for one measurement session, and give it back.
 
@@ -137,6 +138,15 @@ async def measurement_door(
     :data:`~..staging.DEFAULT_CAMILLA_CONFIG_DIR` every sibling DSP writer locks
     against. A different directory is a different lock identity and would not
     serialize against them at all.
+
+    ``gate_owner`` is this door's identity on the mux diagnostic gate.
+    ``mux.FANIN_TEST_OWNERS`` is a CLOSED allowlist, so an owner missing from it
+    is refused the gate, the correction lane never carries, and the door
+    measures silence with every daemon healthy — which is why a caller states
+    its own rather than inheriting one. ``None`` keeps
+    ``coordinator.MEASUREMENT_GATE_OWNER``, the wizard's, so every existing
+    caller is unchanged; ``seat_level_ramp`` and the doctor's AEC probe each
+    pass their own for the same reason a CLI door should.
 
     Raises :class:`MeasurementDoorRefused` before yielding when the door cannot
     open, and leaves the speaker as it found it on every such path.
@@ -176,7 +186,11 @@ async def measurement_door(
 
     # The window wraps the open, because the latch's first write is a fader
     # write like any other — the shape `seat_level_ramp` already keeps.
-    async with coordinator.measurement_window():
+    async with coordinator.measurement_window(
+        gate_owner=(
+            coordinator.MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner
+        )
+    ):
         # A leftover ACTIVE record past its own wall-clock ceiling is a crashed
         # run, not a live one: `live_measurement_session` deliberately lets it
         # through (a crash must not be permanently un-openable), and `plan.open`

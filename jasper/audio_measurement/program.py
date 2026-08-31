@@ -299,6 +299,21 @@ DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = 20_000.0
 
+# How far past each crossover shoulder the null-confirm sweep reaches. The null
+# depth is read at Fc/2 and 2*Fc (`analysis.crossover_null_depth_db`) and
+# `np.interp` CLAMPS outside the data, so a sweep stopping exactly on a shoulder
+# would have that shoulder read off its own edge bin. 1.25x either side is
+# roughly a THIRD of an octave (2**(1/3) = 1.26), which puts both read points
+# inside measured data with room for the analysis grid's own spacing.
+NULL_CONFIRM_SHOULDER_MARGIN = 1.25
+
+#: The gate's fade, in seconds. Long enough that a gate edge inside a running
+#: sweep does not step the waveform (a step radiates a click across the WHOLE
+#: band, which on a tweeter is exactly the out-of-band energy the gate exists to
+#: withhold), short enough that the frequency span it costs stays small next to
+#: the octave either side of Fc the depth is read over.
+NULL_CONFIRM_GATE_FADE_S = 0.010
+
 # The leading VERIFY pilot pair's OWN band (W6.7 ruling 2) — deliberately NOT
 # the summed sweep's full band. The sweep spans the crossover overlap on
 # purpose (it needs to see the interference notch there), but a pilot chirp
@@ -378,6 +393,28 @@ class ProgramSegment:
     ``None``. ``gain_db`` is the digital gain applied to the unit-peak
     stimulus; ``effective_peak_dbfs`` is ``gain_db + downstream_gain_db`` — the
     admission INPUT (session volume + graph gain fold in downstream, in Wave 2).
+
+    **The gate** (``gate_start_sample`` / ``gate_end_sample`` /
+    ``gate_fade_samples``) silences part of an otherwise ordinary sweep WITHOUT
+    changing the waveform that remains. It exists for one caller and one
+    physical reason: a null confirm needs two channels that cancel, and two
+    channels cancel only if they are sample-identical where they overlap. A
+    freshly generated sub-sweep is NOT that — even matched in rate it starts at
+    phase zero, and measured against its parent slice it differs by roughly
+    three times the signal RMS. So the second channel regenerates the SAME
+    ``(f1_hz, f2_hz, n_samples, gain_db)`` parent and silences the samples where
+    its driver may not be driven.
+
+    ``f1_hz``/``f2_hz`` therefore stay the PARENT sweep's band, which is what
+    keeps regeneration deterministic and the two channels identical. The band a
+    gated segment actually EMITS is narrower, derived by
+    :func:`segment_emitted_band_hz`, and that is what admission judges against a
+    driver's permitted band.
+
+    Defaults are "no gate", and :meth:`to_dict` omits the keys entirely then, so
+    every program composed before this existed keeps its exact bytes and its
+    exact ``program_id`` (which is a hash OF that dict, and #2291's before→after
+    comparison is ``program_id`` equality).
     """
 
     segment_id: str
@@ -390,6 +427,9 @@ class ProgramSegment:
     f2_hz: float | None
     gain_db: float
     effective_peak_dbfs: float
+    gate_start_sample: int = 0
+    gate_end_sample: int | None = None
+    gate_fade_samples: int = 0
 
     def __post_init__(self) -> None:
         if self.kind not in (KNOWN_AUDIBLE_KINDS | {KIND_SILENCE}):
@@ -403,9 +443,31 @@ class ProgramSegment:
             raise ValueError("a stimulus segment must carry f1_hz and f2_hz")
         if is_stimulus and self.channel is None:
             raise ValueError("a stimulus segment must carry a channel")
+        gate_end = (
+            self.n_samples if self.gate_end_sample is None else self.gate_end_sample
+        )
+        if type(self.gate_start_sample) is not int or self.gate_start_sample < 0:
+            raise ValueError("gate_start_sample must be a non-negative integer")
+        if type(gate_end) is not int or gate_end > self.n_samples:
+            raise ValueError("gate_end_sample must not exceed n_samples")
+        if gate_end <= self.gate_start_sample:
+            raise ValueError("a gate must leave at least one sample audible")
+        if type(self.gate_fade_samples) is not int or self.gate_fade_samples < 0:
+            raise ValueError("gate_fade_samples must be a non-negative integer")
+        if 2 * self.gate_fade_samples > gate_end - self.gate_start_sample:
+            raise ValueError("the gate's fades do not fit inside its open window")
+
+    @property
+    def is_gated(self) -> bool:
+        """Does this segment silence part of its own sweep?"""
+        return (
+            self.gate_start_sample != 0
+            or self.gate_end_sample is not None
+            or self.gate_fade_samples != 0
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "segment_id": self.segment_id,
             "kind": self.kind,
             "role": self.role,
@@ -417,6 +479,14 @@ class ProgramSegment:
             "gain_db": self.gain_db,
             "effective_peak_dbfs": self.effective_peak_dbfs,
         }
+        # Omitted when there is no gate, so an ungated segment's dict -- and so
+        # its program's `program_id`, which is a hash of exactly this -- is
+        # byte-identical to what it was before the gate existed.
+        if self.is_gated:
+            payload["gate_start_sample"] = self.gate_start_sample
+            payload["gate_end_sample"] = self.gate_end_sample
+            payload["gate_fade_samples"] = self.gate_fade_samples
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ProgramSegment":
@@ -424,7 +494,13 @@ class ProgramSegment:
             "segment_id", "kind", "role", "channel", "start_sample",
             "n_samples", "f1_hz", "f2_hz", "gain_db", "effective_peak_dbfs",
         }
-        if not isinstance(value, Mapping) or set(value) != required:
+        gate_keys = {"gate_start_sample", "gate_end_sample", "gate_fade_samples"}
+        if not isinstance(value, Mapping):
+            raise ValueError("program segment schema is invalid")
+        # The gate keys travel as a SET or not at all: a dict carrying some of
+        # them describes a gate nobody can reconstruct.
+        present = set(value)
+        if present != required and present != required | gate_keys:
             raise ValueError("program segment schema is invalid")
         channel = value["channel"]
         return cls(
@@ -438,6 +514,12 @@ class ProgramSegment:
             f2_hz=None if value["f2_hz"] is None else float(value["f2_hz"]),
             gain_db=float(value["gain_db"]),
             effective_peak_dbfs=float(value["effective_peak_dbfs"]),
+            gate_start_sample=int(value.get("gate_start_sample", 0)),
+            gate_end_sample=(
+                None if value.get("gate_end_sample") is None
+                else int(value["gate_end_sample"])
+            ),
+            gate_fade_samples=int(value.get("gate_fade_samples", 0)),
         )
 
 
@@ -1408,7 +1490,9 @@ def build_verify_program(
     level guard here, exactly like the summed sweep itself.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
-        raise ValueError("fc_hz must be finite and positive")
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
+        )
     f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
     f2_hz = VERIFY_F_HI_HZ
     if not f1_hz < f2_hz:
@@ -1477,6 +1561,406 @@ def build_verify_program(
     return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
 
 
+#: Why a null confirm could not be composed. The REASON is the contract a
+#: grader keys on; the message beside it is operator copy and may be reworded.
+#: Four distinct facts, four slugs -- collapsing them onto one would make every
+#: unbuildable corner look the same to anything reading the banked rows.
+NULL_REFUSE_FC_INVALID = "null_confirm_fc_invalid"
+NULL_REFUSE_NO_SHOULDER_RUN_UP = "null_confirm_no_shoulder_run_up"
+NULL_REFUSE_ROLE_BAND_DISJOINT = "null_confirm_role_band_disjoint"
+NULL_REFUSE_OVERLAP_EXCLUDES_FC = "null_confirm_overlap_excludes_fc"
+NULL_REFUSE_DURATION_UNCLOSEABLE = "null_confirm_duration_uncloseable"
+NULL_REFUSE_LIMITS_INCOMPLETE = "null_confirm_limits_incomplete"
+
+
+class NullConfirmUnavailable(ValueError):
+    """This speaker has no confirmable null at the requested corner.
+
+    A ``ValueError`` subclass so every existing caller's ``except ValueError``
+    still catches it, carrying ``reason`` for callers that must tell the cases
+    apart. Same shape as ``delay_landscape.DelayLandscapeError``.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def null_confirm_band_hz(
+    fc_hz: float,
+    *,
+    shoulder_margin: float = NULL_CONFIRM_SHOULDER_MARGIN,
+) -> tuple[float, float]:
+    """The band a null confirm sweeps: both shoulders, inside VERIFY's envelope.
+
+    Derived, never declared. The confirm exists to read
+    :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`, which
+    interpolates at ``Fc/2``, ``Fc`` and ``2*Fc`` — so the sweep must span both
+    shoulders, with :data:`NULL_CONFIRM_SHOULDER_MARGIN` of run-up either side
+    so neither shoulder is read off an edge bin.
+
+    **Why this is not intersected with the per-driver declared bands.** A summed
+    stimulus does not reach either driver as composed: it enters the measurement
+    graph, whose configured crossover and protection filters are what band-limit
+    each branch. Intersecting the shoulder window with both DECLARED bands would
+    treat the mono signal as if it arrived at both drivers unfiltered, and it
+    refuses the ordinary case rather than a dangerous one — a 2-way tweeter
+    declares down to about Fc, so the lower shoulder ``Fc/2`` sits below its
+    declared floor on essentially every real speaker. ``build_verify_program``,
+    the shipped summed sweep, intersects nothing for exactly this reason.
+
+    **The safety argument is containment.** The returned band is clamped to
+    VERIFY's own envelope — the same ``min(VERIFY_F_LO_HZ, fc/2)`` low edge and
+    the same :data:`VERIFY_F_HI_HZ` ceiling — so a confirm sweep is always a
+    frequency SUBSET of the summed sweep this speaker already plays, at a level
+    its caller clamps to the most restrictive driver cap. Narrowing to the
+    crossover region takes energy AWAY from both extremes: the woofer sees less
+    low-frequency content than VERIFY gives it and the tweeter less HF.
+
+    **This asserts; it does not re-judge.** A corner whose shoulders fall outside
+    that envelope has no confirmable null, and the PROPOSE door already refused
+    it upstream on the banked curves (``delay_landscape._shoulders``'s "does not
+    bracket Fc"). Reaching here having failed that test is a caller defect, so it
+    raises rather than quietly returning a depth read off two clamped edge bins.
+    """
+    if not (fc_hz > 0) or not math.isfinite(fc_hz):
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
+        )
+    if not shoulder_margin >= 1.0:
+        raise ValueError("shoulder_margin must be at least 1.0")
+    lower_shoulder_hz = fc_hz / 2.0
+    upper_shoulder_hz = fc_hz * 2.0
+    # VERIFY's own edges, spelled the way build_verify_program spells them, so
+    # the containment claim above is checkable rather than asserted.
+    lo = max(lower_shoulder_hz / shoulder_margin, min(VERIFY_F_LO_HZ, fc_hz / 2.0))
+    hi = min(upper_shoulder_hz * shoulder_margin, VERIFY_F_HI_HZ)
+    # STRICT on both sides, and that IS the guard rather than a style choice. A
+    # band whose edge lands exactly ON a shoulder still reads that shoulder off
+    # its own edge bin -- `np.interp` clamps there, so the number is an endpoint
+    # wearing a measurement's clothes, which is the one thing this function
+    # exists to refuse. Non-strict bounds made the low arm dead for every
+    # fc <= 300 (VERIFY's floor is `min(150, fc/2)`, so `lo` lands on `fc/2`
+    # exactly) and the high arm dead for 8k <= fc <= 10k (the 20 kHz ceiling
+    # binds at or below `2*fc`) -- precisely the corners with no run-up to give.
+    if lo >= lower_shoulder_hz or hi <= upper_shoulder_hz:
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_NO_SHOULDER_RUN_UP,
+            f"a null confirm at fc={fc_hz:g} Hz needs run-up PAST the shoulders "
+            f"[{lower_shoulder_hz:g},{upper_shoulder_hz:g}] Hz, and the summed "
+            f"sweep envelope only reaches [{lo:g},{hi:g}] Hz; a shoulder read at "
+            "the band edge is a clamped endpoint, not a measurement",
+        )
+    return lo, hi
+
+
+def null_confirm_sweep_duration_s(
+    f1_hz: float,
+    f2_hz: float,
+    roles: Sequence[RoleBand],
+    sweep_duration_limits_s: Mapping[str, float] | None,
+    *,
+    nominal_s: float = DEFAULT_VERIFY_SWEEP_S,
+) -> float:
+    """How long the confirm's parent sweep may run.
+
+    ONE sweep serves both branches, so it has to fit the TIGHTEST of their
+    limits -- and it is judged against exactly that number: admission compares
+    each segment's realized duration against its own role's
+    ``effective_sweep_duration_limit_s``, which folds in the code-side per-role
+    protocol duration (a tweeter is clamped to
+    ``test_signal_plan.MAX_TWEETER_SWEEP_DURATION_S``). Composing at the nominal
+    6 s and hoping is the #2921 failure ``build_measure_program`` was already
+    fixed for: deterministic ``program_segment_outside_limits`` on every real
+    2-way, refused after the program was built.
+
+    The limits are HANDED IN (resolved from ``excitation_safety_plan``), never
+    re-derived here -- a composer holding its own copy of that ``min`` drifts
+    from the gate by one edit and then refuses programs it just built.
+
+    Returns the longest phase-closing duration at or below the binding limit,
+    or the nominal when nothing binds.
+    """
+    if not sweep_duration_limits_s:
+        return nominal_s
+    # A PARTIAL mapping is refused rather than honoured for the roles it covers.
+    # `min` over a subset leaves every unlisted role unconstrained, so the
+    # composer would fit the sweep to the drivers it knows about and hand the
+    # rest a duration nothing checked -- which admission then refuses per role,
+    # after the program is built. Unreachable through the door (the context
+    # fills every role or the session refuses), and refused anyway: the cost of
+    # being wrong here is a tweeter driven past its protocol duration.
+    missing = sorted(rb.role for rb in roles if rb.role not in sweep_duration_limits_s)
+    if missing:
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_LIMITS_INCOMPLETE,
+            f"sweep duration limits cover only part of the confirm's roles; "
+            f"{', '.join(missing)} would be fitted to no limit at all",
+        )
+    binding = min(float(sweep_duration_limits_s[rb.role]) for rb in roles)
+    # Compare the REALIZED length, never the request. A sweep does not run for
+    # the duration it was asked for: the kernel rounds to the nearest
+    # phase-closing length, which can round UP past the limit. Returning the
+    # nominal because "6.0 <= 6.0" is the same compose-then-refuse failure as
+    # composing at the nominal outright -- #2921's own sharp edge, and the
+    # reason `build_measure_program`'s fit compares `meta.duration_s` rather
+    # than its input.
+    realized = _sweep_meta(f1_hz, f2_hz, nominal_s, BASE_STIMULUS_PEAK_DBFS)
+    if realized.duration_s <= binding:
+        return realized.duration_s
+    try:
+        return phase_closing_duration_s(
+            f1_hz, f2_hz, at_or_below_s=binding,
+            sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+        )
+    except ValueError as exc:
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_DURATION_UNCLOSEABLE,
+            f"a null confirm over [{f1_hz:g},{f2_hz:g}] Hz cannot close its "
+            f"phase within the {binding:g} s limit its drivers allow",
+        ) from exc
+
+
+@dataclass(frozen=True)
+class NullConfirmPlan:
+    """The shared sweep band, each role's gate, and the two-branch overlap.
+
+    ``overlap_hz`` is the band over which EVERY branch is open at full
+    amplitude, fades excluded. It is the confirm's answer to the question
+    ``delay_landscape`` answers from two declared curve bands: where both
+    branches carry evidence, and therefore where a null depth's shoulders may
+    honestly be placed (:func:`~jasper.audio_measurement.analysis.shoulder_span`
+    clamps the canonical span into it).
+    """
+
+    band_hz: tuple[float, float]
+    gates_by_role: Mapping[str, tuple[int, int | None]]
+    overlap_hz: tuple[float, float]
+
+
+def null_confirm_channel_plan(
+    fc_hz: float,
+    roles: Sequence[RoleBand],
+    *,
+    sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
+    fade_s: float = NULL_CONFIRM_GATE_FADE_S,
+) -> NullConfirmPlan:
+    """The shared sweep band, each role's gate, and where both branches are open.
+
+    Every driver plays the SAME parent sweep; each role's gate silences the part
+    of it that role may not be driven over. That is what lets two channels
+    cancel: they are sample-identical wherever both are open, so the crossover,
+    the inversion and the candidate delay are the only things standing between
+    them and a null.
+
+    ``gates_by_role`` is ``(gate_start_sample, gate_end_sample)`` per role,
+    derived by inverting the sweep law at that role's DECLARED band edges. A
+    role whose declared band already covers the parent gets ``(0, None)``.
+
+    **Refuses when the two-channel overlap cannot bracket Fc.** The whole
+    measurement is the cancellation AT Fc, so both drivers must be open there
+    with the fades clear of it —
+    :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`
+    interpolates exactly at ``Fc``, and a read taken inside a fade ramp, or
+    outside the overlap altogether, is not a cancellation measurement. The
+    margin is DERIVED from the fade width mapped through the sweep law, never
+    declared.
+    """
+    roles = _validate_roles(roles)
+    f1_hz, f2_hz = null_confirm_band_hz(fc_hz)
+    meta = _sweep_meta(f1_hz, f2_hz, sweep_s, BASE_STIMULUS_PEAK_DBFS)
+    n = meta.n_samples
+    fade_n = _seconds_to_samples(fade_s, PROGRAM_SAMPLE_RATE_HZ)
+    span = math.log(f2_hz / f1_hz)
+
+    def _sample_at(freq: float, *, inward: str) -> int:
+        """The sample index for one frequency, rounded INTO the declared band.
+
+        `round()` here is a safety bug once the emitted band includes the fade
+        ramps: rounding a low edge DOWN opens the gate a fraction of a sample
+        early, so the band the segment claims starts just below the driver's
+        declared floor and `is_subset_of` refuses a program that is physically
+        fine. Ceil the opening edge and floor the closing one and the gate is
+        conservatively inside the declaration by construction, in the direction
+        that protects the driver either way.
+        """
+        exact = n * math.log(freq / f1_hz) / span
+        return math.ceil(exact) if inward == "up" else math.floor(exact)
+
+    gates: dict[str, tuple[int, int | None]] = {}
+    open_lo: dict[str, float] = {}
+    open_hi: dict[str, float] = {}
+    for rb in roles:
+        lo_edge = max(f1_hz, float(rb.band.lower_hz))
+        hi_edge = min(f2_hz, float(rb.band.upper_hz))
+        if not lo_edge < hi_edge:
+            raise NullConfirmUnavailable(
+                NULL_REFUSE_ROLE_BAND_DISJOINT,
+                f"the {rb.role}'s declared band "
+                f"[{rb.band.lower_hz:g},{rb.band.upper_hz:g}] Hz does not "
+                f"intersect the confirm sweep [{f1_hz:g},{f2_hz:g}] Hz",
+            )
+        start = _sample_at(lo_edge, inward="up") if lo_edge > f1_hz else 0
+        end = _sample_at(hi_edge, inward="down") if hi_edge < f2_hz else None
+        gates[rb.role] = (start, end)
+        # The FULL-AMPLITUDE window, fades excluded at both ends.
+        stop = n if end is None else end
+        # Fades only exist where the gate actually cuts, so only those edges
+        # cost frequency span.
+        open_lo[rb.role] = f1_hz * math.exp(
+            span * (start + (fade_n if start else 0)) / n
+        )
+        open_hi[rb.role] = f1_hz * math.exp(
+            span * (stop - (fade_n if end is not None else 0)) / n
+        )
+
+    overlap_lo = max(open_lo.values())
+    overlap_hi = min(open_hi.values())
+    if not overlap_lo < fc_hz < overlap_hi:
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_OVERLAP_EXCLUDES_FC,
+            f"the declared driver bands leave every branch open only over "
+            f"[{overlap_lo:g},{overlap_hi:g}] Hz, which does not bracket "
+            f"fc={fc_hz:g} Hz with the gate fades clear of it; there is no "
+            "coordinate at which these branches can be measured cancelling",
+        )
+    return NullConfirmPlan(
+        band_hz=(f1_hz, f2_hz),
+        gates_by_role=gates,
+        overlap_hz=(overlap_lo, overlap_hi),
+    )
+
+
+def build_null_confirm_program(
+    fc_hz: float,
+    roles: Sequence[RoleBand],
+    *,
+    gain_db: float,
+    guard_s: float = DEFAULT_VERIFY_GUARD_S,
+    sweep_s: float | None = None,
+    sweep_duration_limits_s: Mapping[str, float] | None = None,
+    tail_s: float = DEFAULT_VERIFY_TAIL_S,
+    downstream_gain_db: float = 0.0,
+    fade_s: float = NULL_CONFIRM_GATE_FADE_S,
+) -> tuple[ExcitationProgram, NullConfirmPlan]:
+    """The acoustic null confirm's stimulus: ONE sweep, played on BOTH branches.
+
+    **Two channels, one waveform.** Every role's segment regenerates the same
+    parent ``(f1, f2, n_samples)`` sweep and differs only in its GATE, so the
+    branches are sample-identical wherever both are open. That identity is the
+    measurement: the crossover, the inversion and the candidate delay in the
+    measurement graph are then the only things between the two branches and a
+    null, and the sum happens acoustically, in the air, which is what a null test
+    IS. It is not a mono program — the routed measurement graph never sums (every
+    dest has exactly one source), so a mono stimulus aimed at it would either
+    fail into the 2-channel substream or be plug-duplicated unchecked.
+
+    **Each segment carries its REAL role**, so admission resolves that driver's
+    target and checks the segment against its permitted band, its ``cap_dbfs``
+    and its duration limit — the band by way of :func:`segment_emitted_band_hz`,
+    which accounts for the gate rather than trusting the parent's
+    ``f1_hz``/``f2_hz``. A ``role=None`` summed segment would resolve no target
+    at all, so none of those checks would run.
+
+    **It composes under** :data:`PROGRAM_PHASE_MEASURE`, which is a statement
+    about the protection boundary and not a label. MEASURE is one of the two
+    ROUTED phases: it loads the measurement graph, rides ``play_program``, and is
+    therefore already admitted segment-by-segment against each driver's declared
+    caps. Riding it means this stimulus moves no gate — the alternative, a phase
+    of its own, would have to be added to ``_validate_program``'s admitted set,
+    which is a widening of the admission boundary that buys this instrument
+    nothing it does not already have.
+
+    **``gain_db`` is ONE level for both branches**, and that is not an economy --
+    it is the same identity requirement. The gain is baked into each waveform, so
+    two branches at different gains are not the same waveform and cannot cancel:
+    on the shipped caps (0.0 / -65.0 dBFS) they land 33 dB apart and the deepest
+    available null is about -0.2 dB, which every confirmation would read as "no
+    null" no matter how right the delay was. **It is REQUIRED, with no default**:
+    the caller must clamp it to the MOST RESTRICTIVE role cap, so it satisfies
+    every role's cap by construction and admission still checks it per role. A
+    default here would let a caller silently compose above a driver's ceiling and
+    find out at admission.
+
+    **Branch LEVELING is the measurement graph's job**, never the stimulus's:
+    the level-match trims are attenuation-only per-driver gains inside the
+    graph, applied after this program is composed, and they are what brings two
+    branches of differing sensitivity to equal acoustic output so a null can
+    form.
+
+    ``sweep_s`` defaults to the longest phase-closing duration the roles' own
+    limits allow (:func:`null_confirm_sweep_duration_s`); pass it only to
+    override in a test. Returns the program beside the
+    :class:`NullConfirmPlan` it was composed from, because the depth read needs
+    that plan's ``overlap_hz`` and re-deriving it would be a second opinion
+    about where both branches were open.
+    """
+    role_bands = _validate_roles(roles)
+    if sweep_s is None:
+        if sweep_duration_limits_s is None:
+            # Refused rather than defaulted, on the same terms as `sweep_s`
+            # itself: a caller that omits both is asking for the nominal 6 s,
+            # which a real 2-way's tweeter clamp refuses at admission every
+            # time. Silence there would restore exactly the trap this argument
+            # exists to close.
+            raise ValueError(
+                "a null confirm needs its roles' sweep duration limits (or an "
+                "explicit sweep_s); composing at the nominal length is what "
+                "admission refuses on every real 2-way"
+            )
+        probe_band = null_confirm_band_hz(fc_hz)
+        sweep_s = null_confirm_sweep_duration_s(
+            probe_band[0], probe_band[1], role_bands, sweep_duration_limits_s,
+        )
+    plan = null_confirm_channel_plan(
+        fc_hz, role_bands, sweep_s=sweep_s, fade_s=fade_s,
+    )
+    f1_hz, f2_hz = plan.band_hz
+    fade_n = _seconds_to_samples(fade_s, PROGRAM_SAMPLE_RATE_HZ)
+
+    segments: list[ProgramSegment] = []
+    guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
+    segments.append(_silence("guard", 0, guard_n))
+    cursor = guard_n
+
+    sweep_at = cursor
+    sweep_n = 0
+    for rb in role_bands:
+        start, end = plan.gates_by_role[rb.role]
+        seg = _stimulus(
+            segment_id=f"sweep_null_{rb.role}",
+            kind=KIND_SUMMED_SWEEP,
+            role=rb.role,
+            channel=rb.channel,
+            start=sweep_at,
+            f1_hz=f1_hz,
+            f2_hz=f2_hz,
+            duration_s=sweep_s,
+            # ONE gain for every branch -- see this function's docstring. A
+            # per-role clamp here would bake different amplitudes into the two
+            # waveforms and destroy the identity the null is measured by.
+            gain_db=gain_db,
+            downstream_gain_db=downstream_gain_db,
+        )
+        if not (start == 0 and end is None):
+            seg = replace(
+                seg,
+                gate_start_sample=start,
+                gate_end_sample=end,
+                gate_fade_samples=fade_n,
+            )
+        segments.append(seg)
+        sweep_n = max(sweep_n, seg.n_samples)
+    cursor = sweep_at + sweep_n
+
+    tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
+    segments.append(_silence("tail", cursor, tail_n))
+    cursor += tail_n
+
+    channels = 1 + max(rb.channel for rb in role_bands)
+    return _finalize(PROGRAM_PHASE_MEASURE, channels, segments, cursor), plan
+
+
 def segment_stimulus(segment: ProgramSegment):
     """Regenerate the exact float32 mono stimulus for one stimulus segment.
 
@@ -1504,7 +1988,94 @@ def segment_stimulus(segment: ProgramSegment):
             f"segment {segment.segment_id!r} stimulus reconstruction produced "
             f"{meta.n_samples} samples, schedule says {segment.n_samples}"
         )
-    return np.asarray(sweep, dtype=np.float32)
+    out = np.asarray(sweep, dtype=np.float32)
+    if not segment.is_gated:
+        return out
+    # The gate silences samples; it never regenerates. What survives is the
+    # PARENT waveform sample-for-sample, which is the whole reason the gate
+    # exists -- see ProgramSegment's docstring.
+    out = out.copy()
+    start = segment.gate_start_sample
+    end = (
+        segment.n_samples if segment.gate_end_sample is None
+        else segment.gate_end_sample
+    )
+    out[:start] = 0.0
+    out[end:] = 0.0
+    fade = segment.gate_fade_samples
+    if fade:
+        # Raised cosine, so a gate edge inside a running sweep does not step the
+        # waveform and radiate a click across the whole band -- which on a
+        # tweeter is exactly the out-of-band energy the gate exists to withhold.
+        #
+        # A fade is applied ONLY where the gate actually cuts. A segment whose
+        # window runs to the sweep's own end has no edge there, and fading it
+        # anyway would attenuate the last samples of one branch and not the
+        # other -- destroying the sample-identity the two channels cancel by,
+        # which is the one property this whole construction exists to hold.
+        ramp = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade, endpoint=False)))
+        if start > 0:
+            out[start:start + fade] *= ramp.astype(np.float32)
+        if segment.gate_end_sample is not None:
+            out[end - fade:end] *= ramp[::-1].astype(np.float32)
+    return out
+
+
+def segment_sweep_frequency_at(segment: ProgramSegment, sample: int) -> float:
+    """The parent sweep's instantaneous frequency at one sample offset.
+
+    The exponential sweep law ``f(t) = f1 * (f2/f1)**(t/T)`` inverted onto
+    sample indices, which is what makes a TIME gate expressible as a band claim:
+    silencing samples ``[0, g)`` withholds exactly the frequencies below
+    ``f(g)``.
+    """
+    if segment.f1_hz is None or segment.f2_hz is None:
+        raise ValueError("only a stimulus segment sweeps")
+    if segment.n_samples <= 0:
+        raise ValueError("a segment spans no samples")
+    frac = min(max(sample / segment.n_samples, 0.0), 1.0)
+    return float(segment.f1_hz) * (
+        float(segment.f2_hz) / float(segment.f1_hz)
+    ) ** frac
+
+
+def segment_emitted_band_hz(segment: ProgramSegment) -> tuple[float, float]:
+    """The SAFETY band: every frequency a gated segment puts on its driver.
+
+    An ungated segment emits its whole ``[f1_hz, f2_hz]``. A gated one emits
+    every frequency its open window sweeps through **including both fade
+    ramps**, because a fade is attenuated, not silent -- energy at those
+    frequencies does reach the driver, and a permitted-band check must account
+    for it. Excluding them (the shape this function shipped with) under-reports
+    the emitted band by a fade width at each cut edge, which is the wrong
+    direction for a driver-cap question.
+
+    **Two bands, deliberately, and this is the wider one.** The narrower
+    FULL-AMPLITUDE band -- fades excluded -- is a MEASUREMENT quantity: it is
+    where both branches play at equal level and therefore where a null depth's
+    shoulders may honestly sit, and it lives on
+    :class:`NullConfirmPlan.overlap_hz`. Reusing one band for both questions
+    forces a choice between under-reporting what the driver hears and
+    over-claiming where a null can be read; they are different questions, so
+    they get different numbers.
+
+    This is what admission judges against a driver's permitted band, rather than
+    ``f1_hz``/``f2_hz``, which are the parent sweep's -- a gated channel
+    regenerates the parent so the two channels stay identical where they
+    overlap, and its declared band would otherwise claim frequencies the gate
+    silences.
+    """
+    if not segment.is_gated:
+        assert segment.f1_hz is not None and segment.f2_hz is not None
+        return float(segment.f1_hz), float(segment.f2_hz)
+    end = (
+        segment.n_samples if segment.gate_end_sample is None
+        else segment.gate_end_sample
+    )
+    return (
+        segment_sweep_frequency_at(segment, segment.gate_start_sample),
+        segment_sweep_frequency_at(segment, end),
+    )
 
 
 def render_program_pcm(program: ExcitationProgram):

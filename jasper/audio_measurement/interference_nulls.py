@@ -898,6 +898,31 @@ def null_depth_ceiling_db(r: float) -> float:
     return float(20.0 * np.log10((1.0 + r) / (1.0 - r)))
 
 
+def branch_gap_null_depth_ceiling_db(gap_db: float) -> float:
+    """Deepest null two branches ``gap_db`` apart in level can cut, summed.
+
+    ``-20*log10(1 - 10**(-gap/20))`` — the residual of ``|1 - 10**(-gap/20)|``
+    when the quieter branch is inverted against the louder one. Distinct from
+    :func:`null_depth_ceiling_db`, which is about one sound and a delayed COPY
+    of it at ratio ``r``: this is about two SOURCES whose levels differ, and it
+    is the bound a reverse-null confirmation is read against. A pair 10 dB apart
+    cannot cancel deeper than about 3.3 dB however right the delay is, so a
+    confirm run on unmatched branches measures its own level mismatch and calls
+    it an alignment verdict.
+
+    Disclosure, never a refusal: the number rides every null row beside the
+    depth so a reader can tell a shallow null from a capped one. ``gap_db`` at
+    or below 0 (a matched pair) returns ``inf`` — nothing bounds it — and a gap
+    large enough that the quieter branch contributes nothing saturates at 0.0.
+    """
+    if gap_db <= 0.0:
+        return float("inf")
+    residual = 1.0 - 10.0 ** (-float(gap_db) / 20.0)
+    if residual <= 0.0:
+        return 0.0
+    return float(-20.0 * np.log10(residual))
+
+
 def reflection_ratio_from_depth(depth_db: float) -> float:
     """Invert :func:`null_depth_ceiling_db`: the ``r`` a null this deep implies.
 

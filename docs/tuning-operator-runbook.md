@@ -450,6 +450,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-classify-features` | classify a round's features; file the verdict | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | read a round's H2/H3 out of its banked MEASURE captures; file the reading | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | complex-sum a banked round's per-driver curves across the delay grid; print the computed optimum and the stage lines that confirm it | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
+| `jasper-null` | play the summed reverse null and bank one self-contained JSON row per coordinate under `<bundle>/null_runs/`. Usually reached for at §1a's polarity proof and §4's acoustic confirm, where the computed delay landscape gets disposed by air — `propose` says where the null should be, this says whether the room agrees. It grades nothing: the row carries the depth beside the shoulders it was read at, whether those were clamped, the trims in the graph and the branch-gap ceiling they imply, so comparing rows is the whole grading step. Facts the tool enforces: one bearing per invocation, because nothing here prompts a mover and a second would play from the same placement; `--delays` defaults to the propose door's own confirmation coordinates and a value off that grid is refused, because a coordinate nobody proposed names a graph nobody modelled; and a corner with no confirmable null is refused at compose time under four named reasons — an unusable Fc, no run-up past the shoulders, a driver whose declared band misses the sweep, and a two-branch overlap that does not bracket Fc — which are four different problems and are not collapsed into one | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | listen to the applied graph with the measured driver correction removed, then put it back | mutating (runtime only; the durable graph is untouched — [ADR-0193](adr/0193-the-audition-door-is-a-runtime-only-swap.md)) | `jasper/cli/audition.py` |
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
@@ -483,8 +484,9 @@ probe and the stopping rule all live in the plan's **"Measurement program
 constants"** section, their single source of truth; ticket 3.7 turns them into
 code.
 
-**The delay lane is two acts, and the second is not optional.**
-`jasper-delay-sweep propose` reads and prints; the alignment door applies. A
+**The delay lane is three acts, and the middle one is not optional.**
+`jasper-delay-sweep propose` reads and prints; `jasper-null` plays the
+coordinates it printed and banks a row for each; the alignment door applies. A
 delay the confirmation resolved gets prescribed — its size decides only where in
 the round's queue the work sits, never whether the work happens (methodology
 §4). Before grading a confirmation, check what the graph will actually play: the

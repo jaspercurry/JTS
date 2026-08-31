@@ -1117,3 +1117,91 @@ def analyze_driver_capture(
         gating=gating_block,
         capture_geometry=capture_geometry,
     )
+
+
+@dataclass(frozen=True)
+class SummedCaptureCurve:
+    """One summed capture's calibrated magnitude, and whether it may be read.
+
+    The capture half of a reverse-null measurement, and deliberately ONLY that
+    half: the subtraction that turns this curve into a null depth lives in
+    :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`, and
+    where its shoulders sit in
+    :func:`~jasper.audio_measurement.analysis.shoulder_span`. Three owners, one
+    each — which is what lets a computed proposal and an acoustic confirm read
+    the same quantity without either of them holding a second copy of it.
+    """
+
+    freqs: Any
+    magnitude_db: Any
+    gating: dict[str, Any] | None
+    above_validity_floor: bool | None
+    near_validity_floor: bool
+
+
+def summed_capture_curve(
+    captured_wav: str | Path,
+    sweep_meta: Mapping[str, Any],
+    *,
+    crossover_fc_hz: float,
+    capture_geometry: str,
+    has_mic_calibration: bool = False,
+    calibration: "CalibrationCurve | None" = None,
+    ambient_duration_s: float | None = None,
+) -> SummedCaptureCurve | None:
+    """A summed capture as a magnitude curve, or ``None`` when it cannot be read.
+
+    ``None`` means the capture decides nothing and the caller must say so rather
+    than report a number: either it failed quality gating (deconvolving a
+    clipped, short or wrong-rate capture fabricates a curve), or a
+    ``reference_axis`` capture's low-frequency validity floor sits above
+    ``crossover_fc_hz / 2`` — the lower shoulder — so the room, not the
+    crossover, would be supplying the reference.
+
+    **This is the narrow seam #3390's deletion left room for, not its revival.**
+    ``analyze_summed_crossover`` was deleted as a zero-caller analyzer and the
+    reasoning was right; what it bundled was a capture pipeline AND a
+    threshold-and-verdict layer (``expect_null``, ``null_threshold_db``, the SNR
+    depth cap). A door that banks rows for something else to grade needs the
+    first and must not carry the second — a verdict computed here would be a
+    second opinion about a call this repo makes elsewhere. So the pipeline gets
+    a public name and the verdicts stay deleted.
+
+    ``capture_geometry`` is REQUIRED, on the same terms the deleted analyzer
+    required it: the two geometries analyse a capture differently enough (a
+    gated versus an ungated impulse response, and so a different curve and a
+    different floor) that there is no answer that is right when the caller has
+    not thought about it.
+    """
+    if not (crossover_fc_hz > 0):
+        raise DriverAcousticsError(
+            f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
+        )
+    report, freqs, mag_db, gating_block, _ambient = _capture_to_magnitude(
+        captured_wav,
+        sweep_meta,
+        has_mic_calibration=has_mic_calibration,
+        calibration=calibration,
+        capture_geometry=capture_geometry,
+        ambient_duration_s=ambient_duration_s,
+    )
+    if freqs is None or mag_db is None:
+        return None
+    validity_known, floor_hz = _validity_floor(capture_geometry, gating_block)
+    if not validity_known:
+        return None
+    lower_shoulder_hz = crossover_fc_hz / 2.0
+    near = False
+    if floor_hz is not None:
+        if crossover_fc_hz < floor_hz or lower_shoulder_hz < floor_hz:
+            return None
+        from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
+
+        near = floor_hz <= lower_shoulder_hz < NEAR_FLOOR_RATIO * floor_hz
+    return SummedCaptureCurve(
+        freqs=freqs,
+        magnitude_db=mag_db,
+        gating=gating_block,
+        above_validity_floor=True,
+        near_validity_floor=near,
+    )
