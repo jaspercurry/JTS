@@ -814,6 +814,99 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
 
 
 # --------------------------------------------------------------------------- #
+# 6.3: narrow-band decay, from the IRs this instrument already deconvolves
+# --------------------------------------------------------------------------- #
+
+#: Tolerance the injected-ring control's recovered time must land within,
+#: relative to the ring's own analytically known time-to-neg20dB
+#: (``tau * ln(10)``). Loose enough to absorb the FFT band mask's own
+#: passband ripple; tight enough that a broken envelope read could not pass
+#: by luck -- a clean impulse (no injected ring at all) reads roughly 20x
+#: faster than this control's expected time, at the same centre band.
+_DECAY_CONTROL_REL_TOL = 0.25
+_DECAY_RESONANCE_TAU_S = 0.02
+
+
+def _decaying_sinusoid_ir(
+    fc: float, tau_s: float, *, peak: int = 200, seconds: float = 0.6
+) -> np.ndarray:
+    """An impulse plus a decaying sinusoid of analytically KNOWN ring time.
+
+    Time-to-``DECAY_TARGET_DROP_DB`` of ``exp(-t/tau)`` is exactly
+    ``tau * ln(10^(DECAY_TARGET_DROP_DB/20))`` -- ``tau * ln(10)`` at the
+    shipped 20 dB target -- which is the known answer the control below
+    grades :func:`fx._decay_read` against.
+    """
+    n = int(seconds * SR)
+    ir = np.zeros(n)
+    ir[peak] = 1.0
+    t = np.arange(n - peak) / SR
+    ir[peak:] += 0.5 * np.exp(-t / tau_s) * np.sin(2 * np.pi * fc * t)
+    return ir
+
+
+def test_decay_recovers_an_injected_rings_known_time():
+    """The campaign's own known-answer control, mirroring the EGD controls'
+    style: inject a ring of a KNOWN time constant and read it back within
+    tolerance.
+    """
+    ir = _decaying_sinusoid_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S)
+    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
+    result = fx._decay_read(ir, SR, band)
+    expected_ms = _DECAY_RESONANCE_TAU_S * math.log(10) * 1000.0
+    assert result["below_floor"] is False
+    assert result["time_to_neg20_db_ms"] == pytest.approx(
+        expected_ms, rel=_DECAY_CONTROL_REL_TOL
+    )
+
+
+def test_decay_reads_fast_on_a_clean_impulse():
+    """Negative control: no injected ring, so the band-limited impulse's own
+    bandwidth-bound ring-down must read far faster than a real resonance —
+    the "6-10 ms just outside" half of the campaign's own contrast.
+    """
+    ir = np.zeros(int(0.6 * SR))
+    ir[200] = 1.0
+    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
+    result = fx._decay_read(ir, SR, band)
+    assert result["below_floor"] is False
+    assert result["time_to_neg20_db_ms"] is not None
+    assert result["time_to_neg20_db_ms"] < 10.0
+
+
+def test_decay_reports_below_floor_for_a_steady_tone():
+    """An undamped sinusoid never decays, so the -20 dB point is
+    unreachable above its own tail — reported as ``below_floor``, never a
+    fabricated time.
+    """
+    n = int(0.6 * SR)
+    t = np.arange(n) / SR
+    ir = 0.5 * np.sin(2 * np.pi * RESONANCE_HZ * t)
+    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
+    result = fx._decay_read(ir, SR, band)
+    assert result["below_floor"] is True
+    assert result["time_to_neg20_db_ms"] is None
+
+
+def test_the_artifact_carries_the_decay_field_with_units(peak_artifact):
+    """Facts only, and the field names carry their own units."""
+    assert (
+        peak_artifact["thresholds"]["decay_target_drop_db"] == fx.DECAY_TARGET_DROP_DB
+    )
+    decay = peak_artifact["rows"][0]["decay"]
+    assert set(decay) == {"center", "flank_lo", "flank_hi"}
+    for band in decay.values():
+        assert set(band) == {
+            "band_hz", "noise_floor_db", "below_floor", "time_to_neg20_db_ms",
+        }
+        assert isinstance(band["noise_floor_db"], float)
+        assert isinstance(band["below_floor"], bool)
+        assert band["time_to_neg20_db_ms"] is None or isinstance(
+            band["time_to_neg20_db_ms"], float
+        )
+
+
+# --------------------------------------------------------------------------- #
 # the pieces the verdicts rest on
 # --------------------------------------------------------------------------- #
 

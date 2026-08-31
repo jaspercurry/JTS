@@ -85,7 +85,11 @@ from jasper.audio_measurement.deconv import (
     magnitude_response,
     regularized_deconvolution_full,
 )
-from jasper.audio_measurement.gating import SEARCH_T_MAX_MS, f_trusted_floor_hz
+from jasper.audio_measurement.gating import (
+    SEARCH_T_MAX_MS,
+    analytic_envelope,
+    f_trusted_floor_hz,
+)
 from jasper.audio_measurement.quality_model import TrustLevel
 
 from .feature_classification import (
@@ -343,6 +347,28 @@ CONTROL_ALLPASS_RATIO_BAND = (0.85, 1.15)
 #: multiple of the worst false positive above. Without it the two verdicts
 #: would be a coin toss dressed as a threshold.
 CONTROL_SEPARATION_MARGIN = 5.0
+
+# --- narrow-band decay ------------------------------------------------------- #
+
+#: The drop time-to-decay is measured against. Named once so the field
+#: (``time_to_neg20_db_ms``) and the reachability test (``below_floor``) read
+#: the same number back rather than one of them drifting from the other.
+DECAY_TARGET_DROP_DB = 20.0
+
+#: How far beyond a feature's own +/-``FEATURE_HALF_OCT`` skirts a flanking
+#: decay band's matching skirt sits. One third-octave: the flanking reads
+#: exist to show whether extended ringing is peculiar to the resonance or is
+#: the room's tail everywhere nearby — the campaign's own ~48 ms on the
+#: 898 Hz ridge against ~6-10 ms a third-octave outside it (same room, same
+#: capture). Each flank is the SAME width as the centre band, not narrower.
+DECAY_FLANK_SKIRT_OFFSET_OCT = 1.0 / 3.0
+
+#: Fraction of a band-limited envelope's own tail read for its noise floor.
+#: The IRs this reads are the full deconvolved capture, not a gated
+#: fragment, so any decay this instrument could report has long since
+#: finished by the last fifth of it; late enough to be floor, wide enough
+#: that a handful of samples cannot set it.
+DECAY_NOISE_FLOOR_TAIL_FRACTION = 0.2
 
 
 # --------------------------------------------------------------------------- #
@@ -1625,6 +1651,96 @@ def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# narrow-band decay -- from the IRs this instrument already deconvolved
+# --------------------------------------------------------------------------- #
+
+
+def _decay_bands_hz(fc: float) -> dict[str, tuple[float, float]]:
+    """The centre band and its two flanks, every one ``FEATURE_HALF_OCT`` wide.
+
+    The centre band is the feature's own -- :func:`read_feature`'s band,
+    restated so a magnitude read and a decay read agree on what "the
+    feature's own band" means. Each flank is the SAME width, its own inner
+    edge :data:`DECAY_FLANK_SKIRT_OFFSET_OCT` beyond the centre band's
+    matching skirt, never narrower.
+    """
+    half = FEATURE_HALF_OCT
+    far = 3 * half + DECAY_FLANK_SKIRT_OFFSET_OCT
+    near = half + DECAY_FLANK_SKIRT_OFFSET_OCT
+    return {
+        "center": (fc * 2**-half, fc * 2**half),
+        "flank_lo": (fc * 2**-far, fc * 2**-near),
+        "flank_hi": (fc * 2**near, fc * 2**far),
+    }
+
+
+def _band_limited_envelope(
+    ir: np.ndarray, sample_rate: int, band_hz: tuple[float, float]
+) -> np.ndarray:
+    """The analytic envelope of ``ir`` restricted to ``band_hz``.
+
+    An FFT-domain brick-wall mask, zero outside the band: the IR here is the
+    module's own reflection-free deconvolution, already long and clean, so
+    no taper is needed to keep the result well-behaved.
+    :func:`~jasper.audio_measurement.gating.analytic_envelope` is REUSED, not
+    duplicated — the same Hilbert-magnitude envelope the gating half of this
+    package already reads a ring-down with.
+    """
+    n = ir.size
+    spectrum = np.fft.rfft(ir)
+    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    band_limited = np.fft.irfft(spectrum * mask, n=n)
+    return analytic_envelope(band_limited)
+
+
+def _decay_read(
+    ir: np.ndarray, sample_rate: int, band_hz: tuple[float, float]
+) -> dict[str, Any]:
+    """Time-to-``DECAY_TARGET_DROP_DB`` in one band, or an honest non-answer.
+
+    ``noise_floor_db`` is the envelope's own late-tail level, dB relative to
+    THIS band's own peak, so it is directly comparable to
+    :data:`DECAY_TARGET_DROP_DB`. ``below_floor`` is a property of that
+    number alone — the target drop is not resolvable above the floor,
+    independent of whether a search happens to cross it.
+    ``time_to_neg20_db_ms`` is ``None`` whenever ``below_floor`` is true OR
+    the envelope never reaches the target within the IR's own length —
+    never a fabricated time.
+    """
+    envelope = _band_limited_envelope(ir, sample_rate, band_hz)
+    peak_idx = int(np.argmax(envelope))
+    peak_level = float(envelope[peak_idx])
+    tail_start = int(envelope.size * (1.0 - DECAY_NOISE_FLOOR_TAIL_FRACTION))
+    tail = envelope[tail_start:]
+    floor_level = float(np.median(tail)) if tail.size else 0.0
+    noise_floor_db = 20.0 * math.log10(
+        max(floor_level, 1e-300) / max(peak_level, 1e-300)
+    )
+    below_floor = noise_floor_db > -DECAY_TARGET_DROP_DB
+    target_level = peak_level * 10 ** (-DECAY_TARGET_DROP_DB / 20.0)
+    crossings = np.flatnonzero(envelope[peak_idx:] <= target_level)
+    time_ms = (
+        float(crossings[0] / sample_rate * 1000.0)
+        if not below_floor and crossings.size
+        else None
+    )
+    return {
+        "band_hz": [float(band_hz[0]), float(band_hz[1])],
+        "noise_floor_db": noise_floor_db,
+        "below_floor": bool(below_floor),
+        "time_to_neg20_db_ms": time_ms,
+    }
+
+
+def _decay_block(ir: np.ndarray, sample_rate: int, fc: float) -> dict[str, Any]:
+    return {
+        name: _decay_read(ir, sample_rate, band)
+        for name, band in _decay_bands_hz(fc).items()
+    }
+
+
 def _compose(
     fc: float,
     egd: Mapping[str, Any],
@@ -1958,6 +2074,7 @@ def classify_round(
         row["pose_persistence"] = _pose_persistence_rows(
             pose_curves, fc, pooled_db[key] < 0
         )
+        row["decay"] = _decay_block(irs[host_index], sample_rate, fc)
         rows.append(row)
 
     return {
@@ -1973,6 +2090,7 @@ def classify_round(
             "feature_min_departure_db": FEATURE_MIN_DEPARTURE_DB,
             "feature_min_separation_oct": FEATURE_MIN_SEPARATION_OCT,
             "max_features": MAX_FEATURES,
+            "decay_target_drop_db": DECAY_TARGET_DROP_DB,
         },
         "measurement": {
             "sample_rate": sample_rate,
