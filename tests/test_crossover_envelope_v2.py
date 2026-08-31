@@ -18,7 +18,7 @@ flight); an alignment rejection reaches MEASURE itself
 the ``measure`` step) instead of nudging a still-available Apply button; and
 ``done`` is now the RESULT screen — plain outcome first, the
 measured numbers in ``candidate_review`` for the wizard's collapsed expert
-disclosure, Undo as the primary action.
+disclosure, the way back to the previous tuning beside the forward actions.
 """
 from __future__ import annotations
 
@@ -67,6 +67,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_APPLY_FAILED,
     REASON_CLIPPED,
     REASON_CHANNEL_MAP_MISMATCH,
+    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
     REASON_DELAY_IMPLAUSIBLE,
     REASON_NOISY_ROOM_LINEARITY,
@@ -78,7 +79,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
-    TEMPLATE_VERIFY_FAIL,
     reason_message,
     verify_inconclusive_cause,
     verify_inconclusive_message,
@@ -615,17 +615,13 @@ def test_verify_phase_express_discloses_before_tuning_flatness_from_measure_clou
 
 
 def test_done_is_the_result_screen_plain_outcome_first():
-    # ``can_undo=True``: this test asserts the verdict PROMISES undo, which
-    # since #1863 is true only of a speaker that has something to restore.
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        can_undo=True,
     ))
     assert env["screen"] == "done"
     assert set(_step_statuses(env).values()) == {"done"}
     assert env["progress"] == {"position": 5, "total": 5}
     assert "tuned" in env["verdict_text"].lower()
-    assert "undo" in env["verdict_text"].lower()
     assert any(n["code"] == "crossover_v2_verified" for n in env["nudges"])
 
 
@@ -887,12 +883,11 @@ def test_done_headline_states_an_out_of_spec_result_in_primary_copy():
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={"outcome": "pass", "claims": _shipped_claims()},
-        candidate=_candidate_summary(), applied=True, can_undo=True,
+        candidate=_candidate_summary(), applied=True,
         cloud=_cloud_verify_spec(False),
     ))
     verdict = env["verdict_text"].lower()
     assert "further from flat" in verdict
-    assert "undo" in verdict
     # The badge stops claiming more than the evidence, and says which
     # instrument passed rather than dropping the distinction.
     codes = {n["code"] for n in env["nudges"]}
@@ -1291,19 +1286,11 @@ def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
 
 
 def _round_done_env(**receipt):
-    # ``can_undo=True`` holds this helper's subject — what a ROUND offers —
-    # steady against #1863's gate. With nothing to restore the done screen
-    # promotes the head of its alternates to primary, which on an iterating
-    # round is ``round_remeasure`` itself; these tests ask where the round's
-    # own button IS, so they pin the ordinary have-an-undo screen. The
-    # first-ever-apply converse has its own test
-    # (test_a_first_ever_apply_on_an_iterating_round_leads_with_another_bite).
     return build_crossover_envelope_v2(_status(
         phase="done",
         verify={"outcome": "pass"},
         candidate=_candidate_summary(),
         round_receipt={"round_id": "s1", **receipt},
-        can_undo=True,
     ))
 
 
@@ -1394,24 +1381,22 @@ def test_a_round_that_promises_another_bite_offers_the_button_to_take_it(row):
     """Copy that names an action the screen does not carry is #2641's shape.
 
     Both iterating rows tell the household "measuring again is how that gets
-    closer", and this screen's only exits were Undo and Room correction — so
-    the sentence pointed at nothing. The action is the same re-measure the
-    review screen mints, not a second way in.
+    closer", and this screen's only other exit was Room correction — so the
+    sentence pointed at nothing. The action is the same re-measure the review
+    screen mints, not a second way in — and on an iterating round it leads
+    the screen: the head of the recommendedness-ordered list is promoted to
+    the primary.
     """
 
     env = _round_done_env(adoption="keep_for_iteration", row=row, reason="r")
-    action = next(
-        a for a in env["alternate_actions"] if a["id"] == "round_remeasure"
-    )
+    action = env["next_action"]
 
+    assert action["id"] == "round_remeasure"
     assert action["label"] == "Try again with what we learned"
     assert action["endpoint"] == "/correction/crossover/v2/session"
     # An EMPTY body: the tier is the lapsed session's, resolved server-side.
     # A literal here would be the #2639 demotion with extra steps.
     assert action["body"] == {}
-    # Offered first — on a round that says another bite is coming, taking it
-    # is the recommended next step.
-    assert env["alternate_actions"][0]["id"] == "round_remeasure"
 
 
 @pytest.mark.parametrize(
@@ -1635,7 +1620,7 @@ def test_a_failed_spatial_grade_caps_the_result_badge_and_the_primary_copy():
     claim, not a second opinion about what was measured.
     """
     status = _status(
-        phase="done", tier="full", applied=True, can_undo=True,
+        phase="done", tier="full", applied=True,
         candidate=_candidate_summary(),
         verify={
             "outcome": "pass",
@@ -1665,7 +1650,6 @@ def test_a_failed_spatial_grade_caps_the_result_badge_and_the_primary_copy():
     verdict = env["verdict_text"].lower()
     assert "further from flat" in verdict
     assert "reached the target" not in verdict
-    assert "undo" in verdict
     # The numbers still ride the disclosure — the claim moved, not the data.
     assert any("1650 Hz" in line for line in env["expert_details"])
 
@@ -1784,17 +1768,14 @@ def test_done_headline_says_so_when_the_result_was_never_graded():
 
     Surfaced rather than auto-restored — the work order allowed either, and a
     missing grade says nothing about the correction itself (the commonest way
-    to reach it is a household closing the phone after the apply). Undo is
-    already the primary button; what was missing was being told."""
+    to reach it is a household closing the phone after the apply)."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={}, candidate=_candidate_summary(),
         post_apply_grade={"state": "unverified", "graded": False},
-        can_undo=True,
     ))
     verdict = env["verdict_text"].lower()
     assert "unverified" in verdict
     assert "re-verify" in verdict
-    assert env["next_action"]["id"] == "verify_undo"
 
 
 def test_done_headline_trusts_a_graded_result():
@@ -1805,43 +1786,20 @@ def test_done_headline_trusts_a_graded_result():
     assert "unverified" not in env["verdict_text"].lower()
 
 
-def test_done_gives_undo_the_primary_action_and_continue_as_alternate():
-    """Undo prominent (owner ruling): the PRIMARY button is Undo, not
-    Continue — the household's safety net is the most visible thing on the
-    screen, not an afterthought. Requires actual restore evidence (#1863) —
-    see test_done_promotes_continue_when_theres_nothing_to_undo for the
-    first-ever-apply converse."""
+def test_done_promotes_the_recommended_next_step_to_primary():
+    """The done screen leads with a forward action, never a click-to-fail one.
+
+    The head of the recommendedness-ordered alternates is promoted — on a
+    round that is NOT iterating that head is room correction. The iterating
+    case has its own test below, because the head differs there and the
+    promotion deliberately inherits the list's ordering rather than naming
+    one action."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        can_undo=True,
-    ))
-    action = env["next_action"]
-    assert action["id"] == "verify_undo"
-    assert action["endpoint"] == "/correction/crossover/v2/restore"
-    alternates = {a["id"]: a for a in env["alternate_actions"]}
-    assert alternates["room"]["href"] == "/correction/room/"
-    assert "run_full_measurement" not in alternates
-
-
-def test_done_promotes_continue_when_theres_nothing_to_undo():
-    """#1863: a first-ever apply on this speaker never stashed a
-    pre_apply_profile, so handle_v2_restore refuses Undo outright ("there's
-    no earlier one to restore"). The done screen must not make that a
-    click-to-fail primary button — it promotes the head of its alternates
-    instead, and Undo does not appear at all.
-
-    On a round that is NOT iterating that head is room correction. The
-    iterating case has its own test below, because the head differs there and
-    the promotion deliberately inherits the list's ordering rather than
-    naming one action."""
-    env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        can_undo=False,
     ))
     action = env["next_action"]
     assert action["id"] == "room"
     assert action["href"] == "/correction/room/"
-    assert not any(a["id"] == "verify_undo" for a in env["alternate_actions"])
 
 
 _DONE_VERDICT_VARIANTS = {
@@ -1863,80 +1821,47 @@ _DONE_VERDICT_VARIANTS = {
 
 
 @pytest.mark.parametrize("variant", sorted(_DONE_VERDICT_VARIANTS))
-def test_no_done_verdict_promises_undo_when_there_is_nothing_to_restore(variant):
-    """#1863 review SF1: the gate removed the CONTROL, not the promise.
+def test_no_done_verdict_names_undo(variant):
+    """The Undo verb left the wizard (owner ruling): no verdict, no button.
 
-    A first-ever apply is the most ordinary case there is — the success screen
-    most new speakers ever see — and until this fix it read "If it sounds
-    worse than before, you can undo." beside no Undo button, with the old
-    remedy (press it, read the endpoint's honest refusal) gone. Swept across
-    every done verdict rather than the one branch that prompted the finding:
-    the swap is a string replacement, so a branch whose wording drifts would
-    silently keep its promise, and that failure looks exactly like coverage.
+    Swept across every done verdict rather than one branch: a branch that
+    quietly re-grew the promise or the ``verify_undo`` action would pass a
+    single-screen pin while shipping a control the flow no longer has.
     """
     env = build_crossover_envelope_v2(_status(
         phase="done", applied=True, verify={"outcome": "pass"},
-        candidate=_candidate_summary(), can_undo=False,
+        candidate=_candidate_summary(),
         **_DONE_VERDICT_VARIANTS[variant],
     ))
     assert env["screen"] == "done"
     assert "undo" not in env["verdict_text"].lower(), env["verdict_text"]
-    assert not any(a["id"] == "verify_undo" for a in env["alternate_actions"])
-    assert env["next_action"]["id"] != "verify_undo"
+    actions = [env["next_action"], *env["alternate_actions"]]
+    assert not any(a["id"] == "verify_undo" for a in actions)
 
 
-@pytest.mark.parametrize("variant", sorted(_DONE_VERDICT_VARIANTS))
-def test_done_verdicts_keep_their_undo_promise_when_undo_is_real(variant):
-    """The other half: a speaker WITH a stored previous sound is unchanged.
+def test_a_session_restart_on_an_applied_speaker_still_discloses_the_apply():
+    """The applied-override's addendum survives the Undo removal.
 
-    Without this control the swap above could pass by deleting the promise
-    unconditionally, which would be the same defect pointed the other way —
-    a household that really can undo, never told so.
-    """
-    env = build_crossover_envelope_v2(_status(
-        phase="done", applied=True, verify={"outcome": "pass"},
-        candidate=_candidate_summary(), can_undo=True,
-        **_DONE_VERDICT_VARIANTS[variant],
-    ))
-    assert env["screen"] == "done"
-    # `inconclusive` is the one variant whose copy never named Undo; every
-    # other keeps the promise verbatim, and Undo leads the screen.
-    if variant != "inconclusive":
-        assert "undo" in env["verdict_text"].lower(), env["verdict_text"]
-    assert env["next_action"]["id"] == "verify_undo"
-
-
-def test_a_session_restart_on_an_applied_speaker_stops_promising_a_gated_undo():
-    """The same mint outside the done screen (#1863 review SF1).
-
-    `_failure_envelope`'s applied-override appends "if it sounds worse than
-    before, you can undo" to a session-restart message, and `_verify_fail_
-    envelope` gates that button on `_can_undo` — so this sentence had the same
-    defect as the done verdict and is fixed by the same owner.
+    The registry's session-restart copy assumes nothing was applied; the
+    envelope must still tell the household the crossover landed, without
+    promising a control the flow no longer has.
     """
     restart = {"code": REASON_RELAY_TIMEOUT}
-    without = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=False, failure=restart,
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True, failure=restart,
     ))
-    assert "undo" not in without["verdict_text"].lower(), without["verdict_text"]
-    assert "no stored previous sound" in without["verdict_text"]
-
-    with_undo = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True, failure=restart,
-    ))
-    assert "you can undo" in with_undo["verdict_text"]
+    assert "The crossover was already applied." in env["verdict_text"]
+    assert "undo" not in env["verdict_text"].lower()
 
 
-def test_a_first_ever_apply_on_an_iterating_round_leads_with_another_bite():
+def test_an_iterating_round_leads_with_another_bite():
     """The promotion takes the HEAD of ``alternate_actions``, not "room".
 
     That list is already ordered by recommendedness, and an iterating round
     puts ``round_remeasure`` at position 0 precisely because "taking another
-    bite is the recommended next step" there. So on a first-ever apply — no
-    Undo to lead with — the screen leads with the round's own button rather
-    than sending the household to a different subsystem while this one still
-    has a bite left. Pins the two halves that could silently diverge: which
-    action is promoted, and that it is no longer duplicated below.
+    bite is the recommended next step" there. Pins the two halves that could
+    silently diverge: which action is promoted, and that it is no longer
+    duplicated below.
     """
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
@@ -1944,13 +1869,11 @@ def test_a_first_ever_apply_on_an_iterating_round_leads_with_another_bite():
             "round_id": "s1", "adoption": "keep_for_iteration",
             "row": "row6_trusted_safe_passed_reachable", "reason": "r",
         },
-        can_undo=False,
     ))
     assert env["next_action"]["id"] == "round_remeasure"
     assert env["next_action"]["label"] == "Try again with what we learned"
     ids = [a["id"] for a in env["alternate_actions"]]
     assert "round_remeasure" not in ids   # promoted, never offered twice
-    assert "verify_undo" not in ids
     assert ids[0] == "room"
 
 
@@ -1961,17 +1884,15 @@ def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
     env = build_crossover_envelope_v2(_status(
         phase="done", tier="express",
         verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        can_undo=True,
     ))
     assert env["screen"] == "done"
     verdict = env["verdict_text"].lower()
     assert "confirmed at the mark" in verdict
     assert "full measurement" in verdict
     assert env["tier"] == "express"
-    # Undo stays the primary action (owner ruling) even on the express path.
-    assert env["next_action"]["id"] == "verify_undo"
+    assert env["next_action"]["id"] == "room"
     alternates = {a["id"]: a for a in env["alternate_actions"]}
-    assert alternates["room"]["href"] == "/correction/room/"
+    assert "run_full_measurement" in alternates
     upgrade = alternates["run_full_measurement"]
     assert upgrade["endpoint"] == "/correction/crossover/v2/session"
     assert upgrade["body"] == {"tier": "full"}
@@ -1981,7 +1902,6 @@ def test_done_full_tier_has_no_upgrade_action_and_reports_its_own_tier():
     env = build_crossover_envelope_v2(_status(
         phase="done", tier="full",
         verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        can_undo=True,
     ))
     alternates = {a["id"]: a for a in env["alternate_actions"]}
     assert "run_full_measurement" not in alternates
@@ -2665,49 +2585,41 @@ def test_user_stopped_renders_session_restart_with_honest_copy():
 
 
 def test_verify_fail_one_default_screen():
-    """§5.2: one default ("Try again") + Undo; the explicit trio behind the
-    expert disclosure."""
+    """§5.2: one default ("Try again") + the way back when a prior candidate
+    exists; the explicit trio behind the expert disclosure."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
-        can_undo=True,
+        previous_candidate_fingerprint="b" * 64,
     ))
     assert env["screen"] == "verify_fail"
     assert env["next_action"]["label"] == "Try again"
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
     expert = [a for a in env["alternate_actions"] if a.get("expert")]
     assert [a["id"] for a in expert] == ["verify_remeasure"]
-    # The applied graph stays in force — undo routes through the existing
-    # apply-rollback path.
-    undo = next(a for a in env["alternate_actions"] if a["id"] == "verify_undo")
-    assert undo["endpoint"] == "/correction/crossover/v2/restore"
-    # W6.12: Undo and Re-measure must survive the JS action-row's relay-in-
-    # flight gate (a real window right after a failed capture, before the
-    # phone side has fully wound down) — the same show_during_relay escape
-    # hatch W6.10 gave the review screen's Apply. "Try again" starts a brand
-    # new relay session, so it deliberately does NOT carry the flag.
+    # W6.12: the way back and Re-measure must survive the JS action-row's
+    # relay-in-flight gate (a real window right after a failed capture,
+    # before the phone side has fully wound down) — the same show_during_relay
+    # escape hatch W6.10 gave the review screen's Apply. "Try again" starts a
+    # brand new relay session, so it deliberately does NOT carry the flag.
+    way_back = next(
+        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
+    )
     remeasure = next(
         a for a in env["alternate_actions"] if a["id"] == "verify_remeasure"
     )
-    assert undo["show_during_relay"] is True
+    assert way_back["show_during_relay"] is True
     assert remeasure["show_during_relay"] is True
     assert "show_during_relay" not in env["next_action"]
 
 
-def test_verify_fail_offers_no_undo_on_a_first_ever_apply():
-    """#1863 control for the verify_fail screen: a first-ever apply has no
-    pre_apply_profile, so handle_v2_restore refuses Undo outright. The
-    screen must not offer the button at all — "Try again" and "Re-measure"
-    are still there; only Undo drops out."""
+def test_verify_fail_on_a_first_ever_apply_keeps_its_forward_actions():
+    """A first-ever apply has no prior banked candidate, so no way back is
+    minted — "Try again" and "Re-measure" are still there."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
-        can_undo=False,
     ))
     assert env["screen"] == "verify_fail"
     assert env["next_action"]["label"] == "Try again"
-    ids = [a["id"] for a in env["alternate_actions"]]
-    assert "verify_undo" not in ids
-    assert ids == ["verify_remeasure"]
+    assert [a["id"] for a in env["alternate_actions"]] == ["verify_remeasure"]
 
 
 def test_verify_fail_folds_tracking_numbers_behind_expert_details():
@@ -3229,14 +3141,9 @@ def test_the_done_screen_says_nothing_when_no_blend_correction_is_coming():
 
 def test_verify_fail_screen_names_the_crossover_region_finding():
     """Same disclosure on the failure screen, where the household chooses."""
-    # ``can_undo=True``: this test's subject is the finding's disclosure, and
-    # its last assertion is the #1924 control/copy match — which only holds on
-    # a screen that HAS an Undo. The first-ever-apply case is
-    # test_verify_fail_copy_drops_its_undo_promise_on_a_first_ever_apply.
     env = build_crossover_envelope_v2(_status(
         phase="verify",
         failure={"code": "verify_crossover_region"},
-        can_undo=True,
         verify={
             "outcome": "fail", "graded_band_hz": [2000.0, 4000.0],
             "claims": _R18_CLAIMS_FAIL,
@@ -3249,14 +3156,13 @@ def test_verify_fail_screen_names_the_crossover_region_finding():
     )
     text = env["nudges"][0]["text"]
     assert "didn't blend as designed" in text
-    # The copy names levers that EXIST on this screen and change the outcome —
-    # never a dead one. It deliberately omits "try again": that re-checks the
-    # same applied graph, and this defect is deterministic.
-    assert "Re-measure to fit it again, or undo" in text
+    # The copy names the lever that EXISTS on this screen and changes the
+    # outcome — never a dead one. It deliberately omits "try again": that
+    # re-checks the same applied graph, and this defect is deterministic.
+    assert "Re-measure to fit it again." in text
     assert "Try again" not in text
     assert env["next_action"]["id"] == "verify_retry"  # still offered, not sold
-    assert {a["id"] for a in env["alternate_actions"]} == {
-        "verify_undo", "verify_remeasure"}
+    assert {a["id"] for a in env["alternate_actions"]} == {"verify_remeasure"}
 
 
 def test_a_passing_crossover_region_is_disclosed_not_silent():
@@ -3795,16 +3701,14 @@ def test_the_done_screen_names_the_cause_of_its_own_path(
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={"outcome": "inconclusive", "code": code, "gate": gate},
-        candidate=_candidate_summary(), can_undo=True,
+        candidate=_candidate_summary(),
         post_apply_grade={"state": "inconclusive", "graded": False},
     ))
     verdict = env["verdict_text"]
     assert env["screen"] == "done"
     assert "could not tell either way" in verdict
     assert expected_fragment in verdict
-    assert verdict.endswith(
-        "Re-verify to try again, or undo to restore the previous sound."
-    )
+    assert verdict.endswith("Re-verify to try again.")
     assert verify_inconclusive_cause(
         code, gate["reflection_measured"],
     ) == expected_fragment
@@ -3820,14 +3724,13 @@ def test_the_done_screen_names_no_cause_a_legacy_record_cannot_support():
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={"outcome": "inconclusive"},
-        candidate=_candidate_summary(), can_undo=True,
+        candidate=_candidate_summary(),
         post_apply_grade={"state": "inconclusive", "graded": False},
     ))
     verdict = env["verdict_text"]
     assert verdict == (
         "Your speaker is tuned, but the check that confirms it could not tell "
-        "either way. Re-verify to try again, or undo to restore the previous "
-        "sound."
+        "either way. Re-verify to try again."
     )
     assert "reflection" not in verdict
     assert "—" not in verdict
@@ -4013,17 +3916,14 @@ def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():
     """Measurement-honesty gate G3 (crossover_v2_flow._verify_verdict): a
     THIRD, distinct reason code alongside verify_out_of_tolerance/
     verify_inconclusive, rendered through the exact same one-default
-    ("Try again") + Undo screen shape — with its own copy naming the
-    actual cause (the mic chain moved, not the speaker)."""
+    ("Try again") screen shape — with its own copy naming the actual cause
+    (the mic chain moved, not the speaker)."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", failure={"code": REASON_VERIFY_LEVEL_SHIFT},
-        can_undo=True,
     ))
     assert env["screen"] == "verify_fail"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
     assert env["next_action"]["label"] == "Try again"
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
 
 
 def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
@@ -4034,17 +3934,14 @@ def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
     verdict in one capture and must not be discredited."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", failure={"code": REASON_VERIFY_LEVEL_SHIFT},
-        can_undo=True,
     ))
     verdict = env["verdict_text"]
     assert "Try again" in verdict
     assert "re-measure" in verdict
-    assert "undo" in verdict
     assert "re-verify" not in verdict.lower()
     assert env["next_action"]["label"] == "Try again"
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Re-measure" in labels
-    assert "Undo (restore previous sound)" in labels
 
 
 # --- #1873: the wizard drops a retry its own copy has just ruled out ----------
@@ -4058,14 +3955,11 @@ def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     re-checks the SAME applied graph.
 
     So the primary becomes Re-measure — the lever that CAN change the outcome,
-    by fitting a new crossover — and Undo stays beside it. Both were already on
-    this screen; what changes is which one the screen steers towards, and that
-    the dead one is gone.
-
-    ``can_undo=True`` because "Undo stays beside it" is this test's own claim,
-    and #1863 makes that conditional on there being something to restore."""
+    by fitting a new crossover — and the way back stays beside it when a
+    prior banked candidate exists. What changes is which action the screen
+    steers towards, and that the dead one is gone."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True,
+        phase="verify", applied=True,
         failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
     ))
     assert env["screen"] == "verify_fail"
@@ -4083,126 +3977,57 @@ def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     # which is the wanted behaviour for a verdict that ends the session.
     assert env["next_action"]["show_during_relay"] is True
     ids = [a["id"] for a in env["alternate_actions"]]
-    assert "verify_undo" in ids
     # …and not offered twice.
     assert "verify_remeasure" not in ids
     assert "verify_retry" not in ids
 
 
 def test_deterministic_mismatch_copy_matches_the_controls_on_its_own_screen():
-    """The #1924 rule, applied to the new code: every control the sentence names
-    is on this screen, and the sentence does not name one that is not. It must
-    not say "Try again" — that button is gone precisely because this verdict
-    says it cannot help.
-
-    ``can_undo=True``: the sentence names Undo, so the #1924 match this test
-    asserts is only claimable on a screen that has one. The first-ever-apply
-    case, where #1863 removes the control, is
-    test_verify_fail_copy_drops_its_undo_promise_on_a_first_ever_apply — the
-    sentence drops the clause there rather than pointing at nothing."""
+    """The #1924 rule: every control the sentence names is on this screen, and
+    the sentence does not name one that is not. It must not say "Try again" —
+    that button is gone precisely because this verdict says it cannot help."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True,
+        phase="verify", applied=True,
         failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
     ))
     verdict = env["verdict_text"]
-    assert "Undo" in verdict
-    assert "re-measure" in verdict
+    assert "Re-measure" in verdict
     assert "Try again" not in verdict
     assert "Re-measure" in env["next_action"]["label"]
-    assert "Undo (restore previous sound)" in _labels(env)
 
 
-def test_verify_fail_copy_drops_its_undo_promise_on_a_first_ever_apply():
-    """#2849 item 1, the converse of the two tests around it.
-
-    #1863 hides the Undo control on a speaker with nothing to restore to, and
-    until now the four TEMPLATE_VERIFY_FAIL sentences kept naming it anyway —
-    #1924's rule ("every control the sentence names is on this screen")
-    pointing the other way, on a first-ever apply, which is the most ordinary
-    case there is. The clause is dropped, not replaced: nothing here is new
-    household copy, and each sentence keeps the lever that DOES exist.
-    """
-    remaining_lever = {
-        REASON_VERIFY_OUT_OF_TOLERANCE: "Try again.",
-        REASON_VERIFY_CROSSOVER_REGION: "Re-measure to fit it again.",
-        REASON_VERIFY_LEVEL_SHIFT: "Try again — if it repeats, re-measure.",
-        REASON_VERIFY_DETERMINISTIC_MISMATCH: "Re-measure to fit the crossover again.",
-    }
-    for code, lever in remaining_lever.items():
-        gated = build_crossover_envelope_v2(_status(
-            phase="verify", applied=True, can_undo=False,
-            failure={"code": code},
-        ))["verdict_text"]
-        offered = build_crossover_envelope_v2(_status(
-            phase="verify", applied=True, can_undo=True,
-            failure={"code": code},
-        ))["verdict_text"]
-
-        assert "undo" not in gated.lower(), (code, gated)
-        assert lever in gated, (code, gated)
-        # ...and the screen with a real Undo is untouched, which is what makes
-        # the assertion above a CHANGE rather than copy that never said it.
-        assert "undo" in offered.lower(), (code, offered)
-        assert not any("Undo" in label for label in _labels(
-            build_crossover_envelope_v2(_status(
-                phase="verify", applied=True, can_undo=False,
-                failure={"code": code},
-            ))
-        ))
-
-
-def test_every_undo_naming_verify_fail_sentence_is_covered_by_the_drop():
-    """The fragment table is matched by TEXT, so a sentence can silently escape
-    it. Enumerated from the registry rather than from the four codes this
-    landed for: a future ``verify_fail`` row that promises Undo has to be
-    covered too, and this is what tells its author so."""
-    promising = {
-        code: spec for code, spec in REASON_REGISTRY.items()
-        if spec.template == TEMPLATE_VERIFY_FAIL and "undo" in spec.message.lower()
-    }
-    assert len(promising) == 4, sorted(promising)
-    for code, spec in promising.items():
-        dropped = reason_message(code, spec, can_undo=False)
-        assert dropped != spec.message, code
-        assert "undo" not in dropped.lower(), (code, dropped)
-        # Not established is not "no button": the registry rendering stands.
-        assert reason_message(code, spec) == spec.message, code
-        assert reason_message(code, spec, can_undo=True) == spec.message, code
-
-    # ...and it touches NOTHING else. The drop is applied to every code rather
-    # than gated on the template, which is only safe if the fragments are this
-    # specific — a claim about the whole registry, so it is counted over the
-    # whole registry rather than over the four rows it was written for.
-    # ``correction_rollback_failed`` also names Undo and is deliberately among
-    # the untouched: it answers that question itself, on a different fact.
-    assert [
-        code for code, spec in REASON_REGISTRY.items()
-        if spec.template != TEMPLATE_VERIFY_FAIL
-        and reason_message(code, spec, can_undo=False) != reason_message(code, spec)
-    ] == []
+def test_no_registry_sentence_names_undo():
+    """The Undo verb left the wizard (owner ruling): no reason copy may point
+    a household at a control the flow no longer has. Counted over the whole
+    registry — banners, messages, and the anchor-branched
+    ``correction_rollback_failed`` renderings — so a future row that re-grows
+    the promise fails here rather than shipping."""
+    for code, spec in REASON_REGISTRY.items():
+        for text in (
+            spec.message, spec.banner,
+            reason_message(code, spec),
+            reason_message(code, spec, rollback_anchor_available=True),
+            reason_message(code, spec, rollback_anchor_available=False),
+        ):
+            assert "undo" not in text.lower(), (code, text)
 
 
 def test_a_retriable_verify_fail_code_keeps_its_try_again():
     """The regression guard on the swap above. Every OTHER verify_fail code is
-    retriable and its retry is a real lever, so the shipped screen — "Try again"
-    primary, Undo + expert Re-measure alternates — is untouched."""
+    retriable and its retry is a real lever, so the shipped screen — "Try
+    again" primary, expert Re-measure alternate — is untouched."""
     for code in (
         REASON_VERIFY_OUT_OF_TOLERANCE, REASON_VERIFY_INCONCLUSIVE,
         REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_CROSSOVER_REGION,
     ):
-        # ``can_undo=True`` is what "the shipped screen … Undo + expert
-        # Re-measure alternates" means after #1863: the shape is untouched on
-        # a speaker that HAS an earlier profile.
-        # test_verify_fail_offers_no_undo_on_a_first_ever_apply is the converse.
         env = build_crossover_envelope_v2(_status(
-            phase="verify", applied=True, can_undo=True,
+            phase="verify", applied=True,
             failure={"code": code},
         ))
         assert env["screen"] == "verify_fail", code
         assert env["next_action"]["id"] == "verify_retry", code
         alternates = {a["id"]: a for a in env["alternate_actions"]}
         assert alternates["verify_remeasure"]["expert"] is True, code
-        assert "verify_undo" in alternates, code
 
 
 def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_retry():
@@ -4298,8 +4123,8 @@ def test_unknown_failure_code_still_renders_a_retry_screen():
 
 def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     """The run-7 hardware bug: an agc_behavioral_fail during VERIFY (post-
-    apply) rendered fix_and_retry and displaced the verify_fail screen's Undo
-    affordance. REASON_AGC_BEHAVIORAL_FAIL's OWN registry template is
+    apply) rendered fix_and_retry and displaced the verify_fail screen's
+    route out. REASON_AGC_BEHAVIORAL_FAIL's OWN registry template is
     fix_and_retry (correct for CHECK/MEASURE, where nothing is applied yet);
     once the crossover is durably applied, the same code must render
     verify_fail instead. ``applied=True`` here is the REAL state fact a
@@ -4307,15 +4132,16 @@ def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     (see test_applied_true_forces_verify_fail_regardless_of_phase for the
     adversarial-review case where phase and applied disagree)."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True,
+        phase="verify", applied=True,
+        previous_candidate_fingerprint="b" * 64,
         failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
     ))
     assert env["screen"] == "verify_fail"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_AGC_BEHAVIORAL_FAIL].message
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
-    undo = next(a for a in env["alternate_actions"] if a["id"] == "verify_undo")
-    assert undo["endpoint"] == "/correction/crossover/v2/restore"
+    way_back = next(
+        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
+    )
+    assert way_back["endpoint"] == "/correction/crossover/v2/republish"
 
 
 def test_check_phase_agc_failure_still_renders_its_normal_template():
@@ -4331,7 +4157,7 @@ def test_check_phase_agc_failure_still_renders_its_normal_template():
 def test_verify_phase_relay_timeout_also_renders_verify_fail():
     """A non-agc code (REASON_RELAY_TIMEOUT's own template is
     session_restart) gets the same applied override -- ANY failure code
-    surfacing once genuinely applied is entitled to the Undo affordance."""
+    surfacing once genuinely applied is entitled to the route out."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, failure={"code": REASON_RELAY_TIMEOUT},
     ))
@@ -4340,12 +4166,13 @@ def test_verify_phase_relay_timeout_also_renders_verify_fail():
 
 def test_verify_phase_unknown_code_renders_verify_fail_too():
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True,
+        phase="verify", applied=True,
+        previous_candidate_fingerprint="b" * 64,
         failure={"code": "some_future_code"},
     ))
     assert env["screen"] == "verify_fail"
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
+    ids = [a["id"] for a in env["alternate_actions"]]
+    assert "republish_previous" in ids
 
 
 def test_applied_true_forces_verify_fail_regardless_of_phase():
@@ -4361,13 +4188,14 @@ def test_applied_true_forces_verify_fail_regardless_of_phase():
     on the RAW ``applied`` state fact catches this even when phase says
     "check" and active_step says "microphone_check"."""
     env = build_crossover_envelope_v2(_status(
-        phase="check", applied=True, can_undo=True,
+        phase="check", applied=True,
+        previous_candidate_fingerprint="b" * 64,
         failure={"code": REASON_USER_STOPPED},
     ))
     assert env["screen"] == "verify_fail"
     assert "already applied" in env["verdict_text"].lower()
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
+    ids = [a["id"] for a in env["alternate_actions"]]
+    assert "republish_previous" in ids
 
 
 def test_applied_false_with_verify_phase_does_not_force_verify_fail():
@@ -4525,40 +4353,6 @@ def test_aged_failure_fixture_would_paint_a_chart_without_the_fix():
     assert "6.66" in repr(env)
 
 
-def test_aged_failure_keeps_undo_reachable_while_applied():
-    """W6.7 ruling 3 is not weakened by the resume: the household is entitled
-    to Undo the moment something is live on the speaker, and an aged failure
-    does not make the applied graph any less live."""
-    env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
-    ))
-    undo = [a for a in env["alternate_actions"] if a["id"] == "verify_undo"]
-    assert len(undo) == 1
-    # The v2-aware restore path, not the legacy one that 500s here.
-    assert undo[0]["endpoint"] == "/correction/crossover/v2/restore"
-
-
-def test_aged_failure_offers_no_undo_on_a_first_ever_apply():
-    """#1863 control: applied AND live is not sufficient on its own — a
-    first-ever apply is still applied (the graph is genuinely live) but has
-    no pre_apply_profile, so Undo must not appear on the resume either."""
-    env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=False,
-    ))
-    assert not any(a["id"] == "verify_undo" for a in env["alternate_actions"])
-
-
-def test_aged_failure_offers_no_undo_when_nothing_was_applied():
-    """The converse (done-screen rule D6): Undo restores what an apply
-    changed, so a session that died before applying must not offer to
-    "restore" a speaker that was never changed."""
-    env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="check", applied=False,
-    ))
-    assert env["screen"] == "microphone_check"
-    assert not any("Undo" in label for label in _labels(env))
-
-
 _WAY_BACK_FP = "b" * 64
 
 
@@ -4567,22 +4361,23 @@ _WAY_BACK_FP = "b" * 64
     [
         ("done", _status(
             phase="done", applied=True, verify={"outcome": "pass"},
-            candidate=_candidate_summary(), can_undo=True,
+            candidate=_candidate_summary(),
             previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
         ("verify_fail", _status(
             phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
-            can_undo=True, previous_candidate_fingerprint=_WAY_BACK_FP,
+            previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
         ("microphone_check", _aged_status(
-            REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
+            REASON_RELAY_TIMEOUT, phase="verify", applied=True,
             previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
     ],
     ids=["done", "verify_fail", "aged_entry"],
 )
-def test_every_undo_screen_offers_the_banked_way_back(screen, status):
-    """Each screen that offers Undo also offers the banked-candidate way back.
+def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
+    """The done funnel, verify_fail, and the aged resume all carry the way
+    back when a prior banked candidate exists.
 
     The action carries the PRIOR candidate's fingerprint in its own body, so
     the tap needs no client-side knowledge — the JS POSTs endpoint+body
@@ -4597,23 +4392,21 @@ def test_every_undo_screen_offers_the_banked_way_back(screen, status):
     assert len(way_back) == 1
     assert way_back[0]["endpoint"] == "/correction/crossover/v2/republish"
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
-    # Survives the JS relay-in-flight gate for _undo_action's W6.12 reason: a
-    # get-me-out affordance must stay visible while a failed capture's relay
-    # is still winding down.
+    # Survives the JS relay-in-flight gate (W6.12): a get-me-out affordance
+    # must stay visible while a failed capture's relay is still winding down.
     assert way_back[0]["show_during_relay"] is True
 
 
 @pytest.mark.parametrize("screen_status", [
     _status(
         phase="done", applied=True, verify={"outcome": "pass"},
-        candidate=_candidate_summary(), can_undo=True,
+        candidate=_candidate_summary(),
     ),
     _status(
         phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
-        can_undo=True,
     ),
     _aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
+        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
     ),
 ], ids=["done", "verify_fail", "aged_entry"])
 def test_no_way_back_is_minted_without_a_prior_candidate_fingerprint(screen_status):
@@ -4621,8 +4414,7 @@ def test_no_way_back_is_minted_without_a_prior_candidate_fingerprint(screen_stat
 
     A first-ever apply, and a prior profile that was not a measured-candidate
     apply, both leave ``previous_candidate_fingerprint`` unset — republish
-    could only refuse, so the action must not appear at all (#1863's rule,
-    pointed at the new affordance)."""
+    could only refuse, so the action must not appear at all."""
     env = build_crossover_envelope_v2(screen_status)
     assert not any(
         a["id"] == "republish_previous" for a in env["alternate_actions"]
@@ -4633,13 +4425,17 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     """IA over copy (#1941 design principle 1), pinned over the FULL envelope.
 
     The resume is not a new screen: it is the same entry screen a clean start
-    renders, differing only by one quiet history nudge and — because something
-    is applied — Undo. An earlier revision of this test hand-listed six keys
-    to compare and so let `cloud` / `cloud_chart` / `tier` diverge unnoticed;
-    comparing every key means a third diverging key can never pass again."""
+    renders, differing only by one quiet history nudge and — because a prior
+    banked candidate exists — the way back. An earlier revision of this test
+    hand-listed six keys to compare and so let `cloud` / `cloud_chart` /
+    `tier` diverge unnoticed; comparing every key means a third diverging key
+    can never pass again."""
     clean = build_crossover_envelope_v2(_status(phase="check"))
     aged = build_crossover_envelope_v2(
-        _stale_measurement_status(REASON_RELAY_TIMEOUT, phase="verify", can_undo=True),
+        _stale_measurement_status(
+            REASON_RELAY_TIMEOUT, phase="verify",
+            previous_candidate_fingerprint=_WAY_BACK_FP,
+        ),
     )
     diverged = {
         key for key in set(clean) | set(aged)
@@ -4647,7 +4443,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     }
     assert diverged == {"alternate_actions", "nudges"}, (
         f"aged resume diverges from a clean start in {sorted(diverged)}; only "
-        "the history nudge and the Undo action may differ"
+        "the history nudge and the way-back action may differ"
     )
     # And the two intended deltas are exactly what they claim to be.
     assert clean["nudges"] == []
@@ -4655,38 +4451,47 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     assert [a for a in aged["alternate_actions"]
             if a not in clean["alternate_actions"]] == [
         {
-            "id": "verify_undo",
-            "label": "Undo (restore previous sound)",
-            "endpoint": "/correction/crossover/v2/restore",
-            "body": {},
+            "id": "republish_previous",
+            "label": "Go back to the previous tuning",
+            "endpoint": "/correction/crossover/v2/republish",
+            "body": {"fingerprint": _WAY_BACK_FP},
             "show_during_relay": True,
         },
     ]
 
 
-def test_undo_action_never_shares_mutable_state_between_envelopes():
+def test_way_back_action_never_shares_mutable_state_between_envelopes():
     """The action carries a mutable ``body``. If it came from one module-level
     dict copied shallowly, every envelope this process ever served would share
     that dict — one mutation would poison the daemon for its whole life."""
     first = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
+        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
-    undo = [a for a in first["alternate_actions"] if a["id"] == "verify_undo"][0]
-    undo["body"]["poisoned"] = True
+    way_back = [
+        a for a in first["alternate_actions"] if a["id"] == "republish_previous"
+    ][0]
+    way_back["body"]["poisoned"] = True
 
     second = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
+        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     assert [a for a in second["alternate_actions"]
-            if a["id"] == "verify_undo"][0]["body"] == {}
+            if a["id"] == "republish_previous"][0]["body"] == {
+        "fingerprint": _WAY_BACK_FP,
+    }
     # The live verify-fail screen shares the same factory, so it is covered
     # by the same guarantee.
     live = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True,
+        phase="verify", applied=True,
+        previous_candidate_fingerprint=_WAY_BACK_FP,
         failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
     ))
     assert [a for a in live["alternate_actions"]
-            if a["id"] == "verify_undo"][0]["body"] == {}
+            if a["id"] == "republish_previous"][0]["body"] == {
+        "fingerprint": _WAY_BACK_FP,
+    }
 
 
 def test_aged_failure_note_is_one_quiet_dated_line():
@@ -4740,99 +4545,15 @@ def test_aged_failure_note_dates_a_previous_year_explicitly():
 # --- B2: a reason whose copy is durable state, not a session outcome ---------
 
 
-def test_rollback_failed_keeps_its_fact_and_its_instruction_when_aged():
-    """`correction_rollback_failed` says the speaker is STILL playing a tuning
-    JTS measured as faulty, and that Undo is what fixes it. That is true today
-    and true tomorrow. Aging it into a generic "it couldn't continue" would
-    leave the household on the faulty correction with the reason to press Undo
-    deleted — so this row keeps its fact and its instruction inside the dated
-    history treatment."""
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_CORRECTION_ROLLBACK_FAILED,
-    )
-
-    env = build_crossover_envelope_v2(
-        _stale_measurement_status(
-            REASON_CORRECTION_ROLLBACK_FAILED, phase="verify", can_undo=True,
-        ),
-    )
-    # Still the entry screen — exempt from the generic COPY, not from aging.
-    assert env["screen"] == "microphone_check"
-    note = _history_note(env)
-    assert "still applied" in note
-    assert "Undo restores it" in note
-    assert "it didn't finish" not in note
-    # And the button the sentence names is actually on the screen.
-    assert any("Undo" in label for label in _labels(env))
-
-
-def test_the_aged_nudge_takes_the_no_anchor_row_when_undo_is_gated():
-    """#2849 item 2 — the disagreeing direction, which nothing covered.
-
-    The nudge picked its row off the failure record's
-    ``rollback_anchor_available`` while the button beside it gates on
-    ``can_undo``. Two facts, and until now nothing made them agree: a record
-    that says nothing (absent flag — a legacy pre-#2291 state) over a speaker
-    with no ``pre_apply_profile`` took the row ending "Undo restores it" onto
-    a screen with no Undo. A promise is only honest when BOTH allow it.
-
-    The record here is deliberately silent rather than ``False``: a ``False``
-    already took the no-anchor row before this change, so it could not tell
-    the fix from the shipped behaviour.
-    """
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_CORRECTION_ROLLBACK_FAILED,
-    )
-
-    env = build_crossover_envelope_v2(
-        _stale_measurement_status(
-            REASON_CORRECTION_ROLLBACK_FAILED, phase="verify", can_undo=False,
-        ),
-    )
-    note = _history_note(env)
-    assert "rollback_anchor_available" not in str(env)  # the record says nothing
-    assert "Undo restores it" not in note
-    assert "no previous sound it can safely put back" in note
-    assert not any("Undo" in label for label in _labels(env))
-
-
-def test_rollback_failed_falls_back_to_the_generic_note_when_nothing_is_applied():
-    """The exemption is gated on the state still corroborating the claim.
-    "The newer tuning is still applied" is not a sentence to print over a
-    durable state that says nothing is applied — that would be the #1942
-    defect wearing the fix's clothes."""
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_CORRECTION_ROLLBACK_FAILED,
-    )
-
-    env = build_crossover_envelope_v2(_aged_status(
-        REASON_CORRECTION_ROLLBACK_FAILED, phase="check", applied=False,
-    ))
-    note = _history_note(env)
-    assert "still applied" not in note
-    # Falls back to its TEMPLATE's generic clause (hard_stop), like any other.
-    assert note.endswith("— it couldn't continue.")
-
-
-def test_only_audited_durable_state_codes_are_exempt():
-    """The exemption list is a considered audit of the whole registry, not a
-    place things drift into. A new exempt row is a copy decision that needs
-    its own reasoning — see _DURABLE_STATE_FACTS for the line and the three
-    shapes deliberately left off it."""
-    from jasper.active_speaker.crossover_envelope_v2 import _DURABLE_STATE_FACTS
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_CORRECTION_ROLLBACK_FAILED,
-    )
-
-    assert set(_DURABLE_STATE_FACTS) == {REASON_CORRECTION_ROLLBACK_FAILED}
-    assert set(_DURABLE_STATE_FACTS) <= set(REASON_REGISTRY)
-
-
 @pytest.mark.parametrize("code,expected", [
     (REASON_VERIFY_OUT_OF_TOLERANCE, "it wasn't confirmed"),
     (REASON_RELAY_TIMEOUT, "it stopped before finishing"),
     (REASON_USER_STOPPED, "it stopped before finishing"),
     (REASON_CHANNEL_MAP_MISMATCH, "it couldn't continue"),
+    # The one code that used to keep a durable-fact sentence through aging;
+    # the exemption left with the Undo machinery, so it ages like any other
+    # hard_stop and the way-back action beside the note is the remedy.
+    (REASON_CORRECTION_ROLLBACK_FAILED, "it couldn't continue"),
     (REASON_CLIPPED, "it didn't finish"),
     ("some_future_code", "it didn't finish"),
 ])
@@ -4847,18 +4568,13 @@ def test_aged_failure_note_states_the_shape_not_the_live_instruction(code, expec
         assert spec.message not in note
 
 
-@pytest.mark.parametrize("applied", [False, True])
 @pytest.mark.parametrize("code", sorted(REASON_REGISTRY))
-def test_every_registry_code_ages_into_a_household_readable_note(code, applied):
+def test_every_registry_code_ages_into_a_household_readable_note(code):
     """No reason code can age into a bare slug, an empty line, an unterminated
     sentence, or copy that names hardware the flow does not talk about (#1941
-    R4: the actor is the microphone; household copy never says "phone").
-
-    Both `applied` values, because that flag selects between the generic
-    reason clause and a `_DURABLE_STATE_FACTS` row's own sentence — every
-    code has to read well down both branches."""
+    R4: the actor is the microphone; household copy never says "phone")."""
     env = build_crossover_envelope_v2(
-        _aged_status(code, age_s=_WEEK_S, phase="measure", applied=applied),
+        _aged_status(code, age_s=_WEEK_S, phase="measure"),
     )
     assert env["screen"] == "microphone_check"
     note = _history_note(env)
@@ -4874,9 +4590,9 @@ def test_failure_without_a_timestamp_reads_as_aged():
     """Migration, fail-honest. Every failure written before #1942 is undated,
     and the state file's schema version is deliberately NOT bumped for the new
     key (a bump makes load_v2_state reject every deployed Pi's file, which
-    would discard pre_apply_profile and take Undo with it). Undated means "we
-    cannot say this is current", so it renders as history — and says "earlier"
-    rather than inventing a date."""
+    would discard pre_apply_profile and the way back with it). Undated means
+    "we cannot say this is current", so it renders as history — and says
+    "earlier" rather than inventing a date."""
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -4885,7 +4601,6 @@ def test_failure_without_a_timestamp_reads_as_aged():
         "crossover_v2": {
             "phase": "verify",
             "applied": True,
-            "can_undo": True,
             "failure": {"code": REASON_VERIFY_OUT_OF_TOLERANCE},
             "verify": _PRIOR_SESSION_EVIDENCE,
         },
@@ -4895,7 +4610,6 @@ def test_failure_without_a_timestamp_reads_as_aged():
     assert _history_note(env) == (
         "Your last measurement ended earlier — it wasn't confirmed."
     )
-    assert any("Undo" in label for label in _labels(env))
 
 
 @pytest.mark.parametrize("stamp", [
@@ -4935,14 +4649,15 @@ def test_fresh_failure_still_renders_todays_terminal_screen_exactly():
     the case the recency check must leave completely alone."""
     fresh = {"code": REASON_RELAY_TIMEOUT, "at": time.time()}
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, can_undo=True, failure=fresh,
+        phase="verify", applied=True, failure=fresh,
+        previous_candidate_fingerprint=_WAY_BACK_FP,
         verify=_PRIOR_SESSION_EVIDENCE,
     ))
     assert env["screen"] == "verify_fail"
     assert env["next_action"]["id"] == "verify_retry"
-    assert _labels(env) == ["Undo (restore previous sound)", "Re-measure"]
+    assert _labels(env) == ["Go back to the previous tuning", "Re-measure"]
     # The applied-override addendum and this session's own numbers, intact.
-    assert "you can undo" in env["verdict_text"]
+    assert "The crossover was already applied." in env["verdict_text"]
     assert "level error 3.82 dB (limit 1.5 dB)" in env["expert_details"]
 
 
@@ -6102,7 +5817,9 @@ def test_a_missed_round_at_the_cap_offers_no_fourth_bite(case, ordinal, offered)
 
     env = _round_done_env(**receipt)
 
-    ids = {a["id"] for a in env["alternate_actions"]}
+    # Anywhere on the action row: an iterating round's re-measure is promoted
+    # to the primary, so both slots count as "offered".
+    ids = {a["id"] for a in [env["next_action"], *env["alternate_actions"]]}
     assert ("round_remeasure" in ids) is offered, case
     # The CAVEAT stays either way — the round did miss something, and saying so
     # is honest whether or not another round is on offer.

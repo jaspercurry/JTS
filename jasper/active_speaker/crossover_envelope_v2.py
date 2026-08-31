@@ -31,7 +31,7 @@ household's explicit POST now. Read
 it rather than this paragraph. This module's
 ``"applying"`` screen is the brief machine-paced in-flight state; the ``"done"``
 screen is the RESULT screen — plain-language outcome first, numbers in a
-collapsed expert disclosure, Undo prominent.
+collapsed expert disclosure, the way back to the previous tuning beside it.
 
 The v2-specific state the backend threads onto the status lives under
 ``status["crossover_v2"]`` (phase / failure / verify / candidate /
@@ -85,7 +85,6 @@ from .crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from .crossover_v2.refusal_copy import (
-    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_REGISTRY,
     ReasonSpec,
     TEMPLATE_HARD_STOP,
@@ -579,7 +578,7 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     # The claim's OWN band, printed WITH the number (R18 hearing-safety
     # review): this line lands under ``checked …`` — the TRACKING band — and
     # the dip can sit outside that one, reading as out-of-band noise on the
-    # screen where Re-measure vs Undo is chosen. Two claims, two bands, said.
+    # screen where the next step is chosen. Two claims, two bands, said.
     band = absolute.get("band_hz")
     pair = band if isinstance(band, (list, tuple)) and len(band) == 2 else (None, None)
     lo, hi = _finite(pair[0]), _finite(pair[1])
@@ -1588,9 +1587,9 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     newer measurement replaces it. Deleting on decline would make an accidental
     tap cost ten captures to undo.
 
-    **No Undo anywhere on this screen (D6).** Undo restores what an apply
-    replaced, and stage 1 replaced nothing — offering it here would invite a
-    household to "restore" a speaker that was never changed.
+    **No way back anywhere on this screen (D6).** The way back restores what
+    an apply replaced, and stage 1 replaced nothing — offering it here would
+    invite a household to "restore" a speaker that was never changed.
     """
     v2 = _v2(status)
     candidate = _mapping(v2.get("candidate"))
@@ -1903,8 +1902,8 @@ def _done_nudges(
             "code": "crossover_v2_level_mismatch",
             "severity": "warn",
             # No hardware noun and no instruction to act: this is a statement
-            # about what the check could and could not confirm. The household's
-            # Undo button is already the primary action on this screen.
+            # about what the check could and could not confirm. The way back
+            # to the previous tuning is already offered on this screen.
             #
             # REASON-AWARE since #2537. The verdict alone stopped being enough
             # when #2533 split it in two: a level the quiet bins measured
@@ -2032,8 +2031,8 @@ def _frequency_label(hz: float) -> str:
 #:
 #: Deliberately register-matched to the caveats above: no hardware noun, no
 #: instruction to act, and a statement about what this round did and did not
-#: reach. The Undo button is already the primary action on this screen for a
-#: household that dislikes the result.
+#: reach. The way back to the previous tuning is already offered on this
+#: screen for a household that dislikes the result.
 KEEP_FOR_ITERATION_TEXT = (
     "This is the best sound measured so far, and it is what the speaker is "
     "playing. Some of what was measured is still off target — measuring again "
@@ -2974,60 +2973,6 @@ def _entry_envelope(
     )
 
 
-# The Undo affordance, in ONE place (issue #1942). Two screens owe it to the
-# household — the live VERIFY-fail screen and the aged-failure entry screen —
-# and W6.7 ruling 3 is that Undo is owed *the moment something is live on the
-# speaker*, so the two must never drift into offering different routes out.
-# Refined by #1863: "live on the speaker" is necessary but not sufficient —
-# there must also be an earlier profile to go BACK to. Both screens, and the
-# done screen, ask :func:`_can_undo` rather than ``applied``.
-#
-# Rides the v2-aware restore path (jasper.web.correction_crossover_v2.
-# handle_v2_restore), which reloads the pre-candidate applied profile
-# ``handle_v2_apply`` stashed at apply time and clears the durable v2
-# applied/candidate/failure state on success — the legacy
-# ``/crossover/restore`` expects a PENDING commissioning-run candidate apply
-# that a v2 apply never creates, and 500s here instead (W6 run-8 Blocker Q).
-#
-# OPEN CHECKLIST ITEM (W6.7 gate N2), unchanged by #1942 and deliberately not
-# widened by it: a session reset that clears durable v2 state while the applied
-# graph is still live still loses this affordance, because no failure record
-# survives for either screen to render from. #1942 keeps Undo reachable on both
-# of ITS paths; closing N2 means offering Undo on a clean-state entry screen,
-# which is a different decision about a screen this issue leaves untouched.
-# A FACTORY, not a shared constant: the action carries a mutable ``body`` and
-# every caller hands its result to an envelope a caller may edit. A module-level
-# dict copied with ``dict(...)`` would share that one ``body`` by reference
-# across every envelope this process ever serves, so a single mutation would
-# poison the module for the life of the daemon. Cheap to build; never shared.
-def _undo_action() -> dict[str, Any]:
-    return {
-        "id": "verify_undo",
-        "label": "Undo (restore previous sound)",
-        "endpoint": "/correction/crossover/v2/restore",
-        "body": {},
-        "show_during_relay": True,
-    }
-
-
-# Issue #1863: ``applied`` says something is LIVE, not that there is an earlier
-# profile to bring BACK. ``crossover_v2_status_block`` is the one writer of
-# ``can_undo``, deriving it from the same evidence handle_v2_restore checks; this
-# reads that fact rather than re-deriving it.
-#
-# THE Undo fact for this layer, and for the copy selector below it. The button
-# is conditional on it (#1863) and so is every sentence that names the button:
-# the promises this layer mints go through :func:`_honest_about_undo`, and the
-# four TEMPLATE_VERIFY_FAIL registry sentences through
-# ``crossover_v2.refusal_copy.reason_message``, which takes it as ``can_undo``
-# (#2849) — one failure narrated the same way on every surface that holds the
-# fact. Deliberately NOT ``rollback_anchor_available``: that is what the ROUND
-# recorded about its own anchor, and on a first-ever apply nothing writes it at
-# all, so it cannot answer "is the button on this screen".
-def _can_undo(status: Mapping[str, Any]) -> bool:
-    return bool(_v2(status).get("can_undo"))
-
-
 # The banked-candidate way back: republish the candidate that was live before
 # the last apply, so the household can bring the previous tuning back through
 # the ORDINARY path (republish -> review -> apply; the operator runbook's
@@ -3040,9 +2985,10 @@ def _can_undo(status: Mapping[str, Any]) -> bool:
 # prior profile that was not a measured-candidate apply — because republish can
 # only reach candidates the bank holds. The fingerprint is a pointer, never a
 # promise: the bank verifies on POST, and a pruned or corrupted artifact gets
-# the endpoint's own typed refusal. A factory rather than a shared constant for
-# `_undo_action`'s reason — the mutable ``body`` must never be shared across
-# envelopes.
+# the endpoint's own typed refusal. A factory rather than a shared constant:
+# the action carries a mutable ``body`` and every caller hands its result to
+# an envelope a caller may edit, so a module-level dict would share one
+# ``body`` across every envelope this process ever serves.
 def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
     fingerprint = _v2(status).get("previous_candidate_fingerprint")
     if not isinstance(fingerprint, str) or not fingerprint:
@@ -3055,68 +3001,6 @@ def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
         "show_during_relay": True,
     }]
 
-
-#: This layer's Undo promises, and what each becomes when there is nothing to
-#: restore. The REPLACEMENTS are not new copy: they are
-#: ``correction_rollback_failed_message``'s no-anchor arm and
-#: ``_DURABLE_STATE_FACTS_NO_ANCHOR`` minus their failure preamble ("the newer
-#: tuning is still applied"), which would read as an alarm on a screen that
-#: just said the speaker is tuned. Same facts, same two remedies, same voice.
-#:
-#: FIVE shapes, not the one that prompted the finding: a grep for the obvious
-#: wording ("you can undo") finds three, and a sweep across every done variant
-#: surfaced the other two ("or undo to restore the previous sound", "or undo if
-#: it sounds worse than before"). Matched as fragments, so each covers its
-#: several call sites. Only sentences MINTED HERE are listed — the four
-#: TEMPLATE_VERIFY_FAIL registry sentences belong to
-#: ``crossover_v2.refusal_copy.reason_message``, which narrates one failure
-#: across surfaces this layer cannot see; it drops their Undo clause itself,
-#: off the same ``can_undo`` this table is gated on (#2849).
-_UNDO_PROMISE_SWAPS = (
-    (
-        "If it sounds worse than before, you can undo.",
-        "This was its first measured crossover, so it has no stored previous "
-        "sound to go back to — clear the tuning from the Sound page to "
-        "remove it.",
-    ),
-    (
-        "if it sounds worse than before, you can undo.",
-        "this was the speaker's first measured crossover, so it has no "
-        "stored previous sound to go back to.",
-    ),
-    (
-        "or undo to restore the previous sound.",
-        "or clear the tuning from the Sound page — this speaker has no "
-        "stored previous sound to go back to.",
-    ),
-    (
-        "or undo if it sounds worse than before.",
-        "or clear the tuning from the Sound page — this speaker has no "
-        "stored previous sound to go back to.",
-    ),
-    (
-        "use Undo if this audition is still applied.",
-        "clear the tuning from the Sound page if this audition is still "
-        "applied — this speaker has no stored previous sound to go back to.",
-    ),
-)
-
-
-def _honest_about_undo(text: str, status: Mapping[str, Any]) -> str:
-    """Strip this layer's Undo promises when the button is not being offered.
-
-    #1863 gated the CONTROL; without this the same screens kept promising it,
-    which is #1924's rule ("every control the sentence names is on this
-    screen") pointing the other way — and worse than before the gate, because
-    the household could at least press the old button and read the endpoint's
-    honest refusal. A first-ever apply is the most ordinary case there is, so
-    this is the success screen most new speakers actually see.
-    """
-    if _can_undo(status):
-        return text
-    for promise, replacement in _UNDO_PROMISE_SWAPS:
-        text = text.replace(promise, replacement)
-    return text
 
 # --- failure recency (issue #1942) -------------------------------------------
 
@@ -3164,60 +3048,6 @@ _FAILURE_HISTORY_REASONS = {
 # than a guess: all of them ended a measurement that did not finish.
 _FAILURE_HISTORY_REASON_DEFAULT = "it didn't finish"
 
-# EXEMPT from the generic reason clause above: codes whose copy states a
-# durable fact about the speaker RIGHT NOW rather than an outcome of a session
-# that is over. Aging one of these into "it didn't finish" would delete a fact
-# that is still true and an instruction the household still has to act on.
-#
-# The line, and why only one row is on it (registry audited in full, 2026-07-30
-# — the audit is in the PR body): the fact must describe a change **JTS itself
-# made and did not undo**, so it cannot silently become false while nobody is
-# looking. `correction_rollback_failed` qualifies — the delta probe found the
-# correction faulty, failed to roll it back, and the speaker is STILL playing
-# it until somebody presses Undo (which clears this state).
-#
-# Three shapes deliberately NOT on this list:
-#   * the sibling rollback rows (`correction_model_error`,
-#     `correction_level_shortfall`, `correction_spatially_costly`) say "the
-#     previous sound has been put back" — durable and still true, but it
-#     reports a COMPLETED restoration with no action pending, so the generic
-#     note loses a reassurance, not a remedy;
-#   * the `program_profile_*` family states configuration JTS RE-CHECKS every
-#     session, so it can silently become false — replaying it as current is
-#     the #1942 defect itself, and the live `_setup_ready` gate above the
-#     failure branch already catches a genuinely unready setup;
-#   * `volume_unresolved` is already exempt STRUCTURALLY and by the better
-#     mechanism — the `needs_recovery` branch outranks the failure branch
-#     entirely, so a live state fact wins over the stale record without any
-#     help from this list.
-_DURABLE_STATE_FACTS = {
-    REASON_CORRECTION_ROLLBACK_FAILED: (
-        "JTS could not put the previous sound back, so the newer tuning is "
-        "still applied — Undo restores it"
-    ),
-}
-
-#: The same row, for the arm with no Undo to point at (#2291). Split rather
-#: than parameterized because the two differ in their remedy, not their
-#: wording: one has an Undo to point at and the other does not, and pointing
-#: the second at Undo sends a household to a control that refuses on the very
-#: fact that put them here. Selected when EITHER
-#: ``_failure_rollback_anchor_available`` or :func:`_can_undo` says no (#2849).
-#:
-#: States no CAUSE, in one voice with
-#: ``refusal_copy.correction_rollback_failed_message``'s matching arm, which
-#: carries the reasoning (#2859): the two facts behind this row cover four
-#: named refusals between them, and "this speaker has no stored previous
-#: sound" — what this said until then — is true of only some of them.
-_DURABLE_STATE_FACTS_NO_ANCHOR = {
-    REASON_CORRECTION_ROLLBACK_FAILED: (
-        "the newer tuning is still applied and JTS has no previous sound it "
-        "can safely put back — measure again, or clear the tuning from the "
-        "Sound page"
-    ),
-}
-
-
 def _record_is_fresh(record: Mapping[str, Any]) -> bool:
     """Is this persisted record the moment the household is in RIGHT NOW?
 
@@ -3230,7 +3060,7 @@ def _record_is_fresh(record: Mapping[str, Any]) -> bool:
     False. That is the migration story and it is the fail-honest direction:
     the state file's schema version is deliberately NOT bumped for this key
     (a bump makes ``load_v2_state`` reject every deployed Pi's file, which
-    would discard ``pre_apply_profile`` and take Undo with it), so legacy
+    would discard ``pre_apply_profile`` and the way back with it), so legacy
     records simply arrive undated. Undated means "we cannot say this is
     current", and the flow must never assert currency it cannot support.
 
@@ -3284,42 +3114,13 @@ def _record_when_phrase(record: Mapping[str, Any]) -> str:
         return "earlier"
 
 
-def _failure_history_note(
-    code: str, failure: Mapping[str, Any], *, applied: bool, can_undo: bool,
-) -> str:
+def _failure_history_note(code: str, failure: Mapping[str, Any]) -> str:
     """The aged failure's ONE quiet line: what happened, and when.
 
     Dated because an undated outcome presented on a resume is exactly the
     defect (#1942: last session's numbers read as this session's verdict).
-
-    A ``_DURABLE_STATE_FACTS`` code keeps its own fact and instruction instead
-    of the generic reason clause — those sentences are still true, and the
-    household still has to act on them. The exemption is additionally gated on
-    ``applied``, because every fact on that list is a statement that something
-    JTS applied is still live: if the durable state no longer says so, the
-    claim is not corroborated and this falls back to the generic note rather
-    than asserting a change the state cannot confirm.
     """
     when = _record_when_phrase(failure)
-    # #2291: the no-anchor arm gets its own row. Read off the record rather
-    # than re-derived, because the anchor can change between the round and the
-    # resume, and this line describes the round.
-    #
-    # ...and #2849: EITHER fact takes that row, because the row above ends
-    # "Undo restores it" and the button beside this nudge is gated on
-    # ``can_undo``, not on the record. Two facts, and the promise is only
-    # honest when both allow it — so a disagreement resolves toward the arm
-    # that promises nothing.
-    anchor = failure.get("rollback_anchor_available")
-    durable = (
-        _DURABLE_STATE_FACTS_NO_ANCHOR.get(code)
-        if anchor is False or not can_undo
-        else _DURABLE_STATE_FACTS.get(code)
-    )
-    if durable is not None and applied:
-        # Two sentences, not a third em-dash clause: the fact is the point
-        # here, so it gets its own sentence rather than a subordinate one.
-        return f"Your last measurement ended {when}. {durable[0].upper()}{durable[1:]}."
     spec = REASON_REGISTRY.get(code)
     reason = (
         _FAILURE_HISTORY_REASONS.get(spec.template, _FAILURE_HISTORY_REASON_DEFAULT)
@@ -3387,8 +3188,7 @@ def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def _aged_failure_envelope(
-    code: str, failure: Mapping[str, Any], status: Mapping[str, Any], *,
-    applied: bool,
+    code: str, failure: Mapping[str, Any], status: Mapping[str, Any],
 ) -> dict[str, Any]:
     """A failure that outlived its session: the ENTRY screen plus history.
 
@@ -3414,28 +3214,21 @@ def _aged_failure_envelope(
       are nulled below. ``None`` is not a special aged-only value: it is what
       the ``tier`` key's own contract already calls unknown, and this screen
       genuinely HAS no session.
-    * **Undo survives, when there is one to offer.** W6.7 ruling 3 entitles the
-      household to Undo whenever something is live — which presumes an earlier
-      profile to restore, and a first-ever apply has none (#1863). The live
-      path and this one both gate on :func:`_can_undo`, never ``applied``.
-    * **Uniform across templates, except where the copy is durable.** A stale
-      ``hard_stop`` gets the same treatment as a stale ``verify_fail``,
-      because "act on this now" is equally untrue of both. If the blocking
-      condition still holds, the next session refuses again and the household
-      reads a FRESH verdict — strictly better than acting on a day-old one
-      that may already be fixed. The exception is a reason whose copy states
-      a durable fact rather than a session outcome; see
-      ``_DURABLE_STATE_FACTS``.
+    * **The way back survives, when there is one to offer.** A resume with a
+      prior banked candidate keeps the same route out the live screens carry —
+      :func:`_way_back_action`, present exactly when the pre-apply stash names
+      a candidate the bank can republish.
+    * **Uniform across templates.** A stale ``hard_stop`` gets the same
+      treatment as a stale ``verify_fail``, because "act on this now" is
+      equally untrue of both. If the blocking condition still holds, the next
+      session refuses again and the household reads a FRESH verdict —
+      strictly better than acting on a day-old one that may already be fixed.
     """
     next_action, alternate_actions = _tier_choice_actions(status)
     env = _entry_envelope(
         status,
         next_action=next_action,
-        alternate_actions=[
-            *alternate_actions,
-            *([_undo_action()] if _can_undo(status) else []),
-            *_way_back_action(status),
-        ],
+        alternate_actions=[*alternate_actions, *_way_back_action(status)],
         nudges=[{
             "code": code,
             # ``info``, never ``warn``: this is history, not a problem the
@@ -3443,9 +3236,7 @@ def _aged_failure_envelope(
             # styles the two differently (crossover/main.js renderNudges), so
             # the quiet presentation needs no page change.
             "severity": "info",
-            "text": _failure_history_note(
-                code, failure, applied=applied, can_undo=_can_undo(status),
-            ),
+            "text": _failure_history_note(code, failure),
         }],
     )
     # The dead session's measurement payloads. Nulled AFTER the build rather
@@ -3463,15 +3254,15 @@ def _aged_failure_envelope(
 def _verify_fail_envelope(
     code: str, message: str, status: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """The VERIFY-fail screen (§5.2): one default "Try again" + "Undo".
+    """The VERIFY-fail screen (§5.2): one default "Try again" + the way back.
 
     Shared by ``REASON_VERIFY_OUT_OF_TOLERANCE`` / ``REASON_VERIFY_INCONCLUSIVE``
     (whose own REASON_REGISTRY template is already ``verify_fail``) AND the
     VERIFY-phase override in :func:`_failure_envelope` (W6.7 ruling 3) for any
     OTHER code surfacing once the candidate is applied — the household is
-    entitled to the Undo affordance the moment something is live on the
-    speaker AND there is actually something to restore it from (issue
-    #1863 — see :func:`_can_undo`), regardless of which check failed.
+    entitled to a route out the moment something is live on the speaker, and
+    the route is :func:`_way_back_action` (present when a prior banked
+    candidate exists), regardless of which check failed.
 
     **A code no retry can clear does not get a "Try again" (#1873).** For every
     other code on this screen the primary is honest: "Try again" opens a fresh
@@ -3483,9 +3274,9 @@ def _verify_fail_envelope(
     exactly that: they took it, repeatedly, until the relay session expired.
     So such a code promotes **Re-measure** —
     the lever that CAN change the outcome, by fitting a new crossover rather
-    than re-checking the applied one — to the primary, and Undo stays beside it.
-    The screen's action set is otherwise unchanged; what is removed is the one
-    button whose own copy has just said it will not help.
+    than re-checking the applied one — to the primary, and the way back stays
+    beside it. The screen's action set is otherwise unchanged; what is removed
+    is the one button whose own copy has just said it will not help.
 
     Keyed on the code's OWN registry row — its template AND its budget — never
     on the code itself, so a future non-retriable verify-fail row inherits this
@@ -3500,7 +3291,7 @@ def _verify_fail_envelope(
     mean re-running it is pointless. A code with no registry row at all makes no
     claim either way and keeps the retry.
 
-    ``verify_undo`` and ``verify_remeasure`` carry ``show_during_relay``
+    ``republish_previous`` and ``verify_remeasure`` carry ``show_during_relay``
     (W6.12, the same seam W6.10 added for the review screen's Apply): the
     JS action-row renderer's relay-in-flight gate otherwise blanket-clears
     EVERY alternate action while the relay object is still transitioning
@@ -3510,11 +3301,11 @@ def _verify_fail_envelope(
     guess "hit Stop" to make them reappear. ``verify_retry`` (the primary
     "Try again") deliberately keeps NO such flag: it starts a brand-new
     relay session, and doing that while the prior one is still tearing down
-    is exactly the race the gate exists to prevent — Undo and Re-measure are
-    the "get me out of this" affordances that must stay reachable
-    regardless — "regardless" of the RELAY gate, that is, not a claim both are
-    always offered (#1863 omits Undo with nothing to restore; #1873 omits a
-    promoted Re-measure from the alternates).
+    is exactly the race the gate exists to prevent — the way back and
+    Re-measure are the "get me out of this" affordances that must stay
+    reachable regardless — "regardless" of the RELAY gate, that is, not a
+    claim both are always offered (the way back needs a prior banked
+    candidate; #1873 omits a promoted Re-measure from the alternates).
     """
     remeasure = {
         "id": "verify_remeasure",
@@ -3556,19 +3347,14 @@ def _verify_fail_envelope(
             # is the same rule ``TEMPLATE_SESSION_RESTART`` follows with
             # ``advertise_relay=False``. Without the flag the relay-in-flight
             # gate would hide this primary in that window and leave the
-            # household with Undo alone — or, since #1863, with NOTHING at all
-            # on a first-ever apply, where there is no Undo to fall back to.
-            # Either way: the affordance being promoted, gone at exactly the
-            # moment it is needed.
+            # household with the way back alone — or with NOTHING at all on a
+            # first-ever apply, where there is no prior candidate to fall back
+            # to. Either way: the affordance being promoted, gone at exactly
+            # the moment it is needed.
             **{k: v for k, v in remeasure.items() if k != "expert"},
             "label": "Re-measure this speaker",
         },
         alternate_actions=[
-            # Shared with the aged-failure entry screen — see ``_undo_action``
-            # for the restore-path rationale and the open W6.7 N2 item.
-            # Omitted entirely (not merely disabled) when there is nothing to
-            # restore (#1863) — a first-ever apply has no earlier profile.
-            *([_undo_action()] if _can_undo(status) else []),
             *_way_back_action(status),
             *([remeasure] if retriable else []),
         ],
@@ -3618,9 +3404,9 @@ def _failure_rollback_anchor_available(status: Mapping[str, Any]) -> bool | None
     """Which ``correction_rollback_failed`` arm the record describes (#2291).
 
     ``True`` a restore was attempted against a real anchor and did not
-    complete, so Undo is still a remedy. ``False`` there was never an anchor,
-    so Undo refuses on the very predicate that produced this failure and the
-    copy must not point at it. ``None`` is the third state, read for
+    complete, so a stored previous sound exists. ``False`` there was never an
+    anchor — no previous sound to point the copy at. ``None`` is the third
+    state, read for
     :func:`_failure_pilot_heard`'s reason: a code the question does not apply
     to, and every state file written before this shipped, simply do not say.
     """
@@ -3662,7 +3448,6 @@ def _reason_message(
         pilot_heard=_failure_pilot_heard(status),
         reflection_measured=_verify_gate_reflection_measured(status),
         rollback_anchor_available=_failure_rollback_anchor_available(status),
-        can_undo=_can_undo(status),
     )
 
 
@@ -3677,10 +3462,10 @@ def _failure_envelope(
     state fact), ANY failure code renders through the ``verify_fail``
     template regardless of REASON_REGISTRY's own owning template.
     fix_and_retry / hard_stop / session_restart / silent_auto_retry all hide
-    the Undo affordance the household is entitled to the moment something is
-    live on the speaker (the run-7 hardware bug: an ``agc_behavioral_fail``
+    the route out the household is entitled to the moment something is live
+    on the speaker (the run-7 hardware bug: an ``agc_behavioral_fail``
     during VERIFY rendered ``fix_and_retry`` and displaced the VERIFY-fail
-    screen's Undo action). REASON_REGISTRY stays the single copy source —
+    screen's way-back action). REASON_REGISTRY stays the single copy source —
     only the template choice is overridden here, EXCEPT the copy addendum
     just below.
 
@@ -3731,13 +3516,10 @@ def _failure_envelope(
     message = _reason_message(code, spec, status)
     if applied and spec.template != TEMPLATE_VERIFY_FAIL:
         if spec.template == TEMPLATE_SESSION_RESTART:
-            # Minted here, not in the registry, so it is this layer's to keep
-            # honest when the button is gated away (#1863 review SF1).
-            message = _honest_about_undo(
-                f"{message} The crossover was already applied — if it sounds "
-                "worse than before, you can undo.",
-                status,
-            )
+            # The registry copy assumes nothing was applied ("start over…");
+            # this addendum keeps the household from believing nothing
+            # changed when it did.
+            message = f"{message} The crossover was already applied."
         return _verify_fail_envelope(code, message, status)
     template = spec.template
     if template == TEMPLATE_SILENT_AUTO_RETRY:
@@ -3793,8 +3575,8 @@ def _failure_envelope(
         )
     if template == TEMPLATE_VERIFY_FAIL:
         # One default — "Try again" (internally re-verify once, then re-measure)
-        # — plus "Undo (restore previous sound)"; the explicit trio lives behind
-        # the expert disclosure (§5.2).
+        # — plus the way back; the explicit trio lives behind the expert
+        # disclosure (§5.2).
         return _verify_fail_envelope(code, message, status)
     # TEMPLATE_FIX_AND_RETRY (the default decision screen).
     nudges = [{"code": code, "severity": "warn", "text": message}]
@@ -3919,9 +3701,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 failure_code, status, active_step, applied=applied,
             )
         else:
-            env = _aged_failure_envelope(
-                failure_code, failure, status, applied=applied,
-            )
+            env = _aged_failure_envelope(failure_code, failure, status)
         log_event(
             logger, "correction.crossover_v2_envelope_serve",
             screen=env["screen"], phase=phase, failure=failure_code,
@@ -4075,9 +3855,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # The RESULT screen (owner ruling, 2026-07-20): plain-language outcome
         # first — no numbers, no jargon — with the measured numbers folded
         # into the SAME collapsed "Technical details" disclosure the former
-        # review screen used (_candidate_review_payload), and Undo given the
-        # PRIMARY button so the household's safety net is the most visible
-        # thing on the screen, not an afterthought behind an "expert" toggle.
+        # review screen used (_candidate_review_payload). The way back to the
+        # previous tuning rides the alternate list when a prior banked
+        # candidate exists.
         verify = _mapping(v2.get("verify"))
         candidate = _mapping(v2.get("candidate"))
         is_express = str(v2.get("tier") or "") == TIER_EXPRESS
@@ -4090,11 +3870,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # handful of prompted spots around the mark, never every point in
         # the room.
         done_verdict = (
-            "Your speaker is tuned and confirmed at the mark. If it sounds "
-            "worse than before, you can undo. Run a Full measurement for "
-            "the result checked at several spots around the mark."
+            "Your speaker is tuned and confirmed at the mark. Run a Full "
+            "measurement for the result checked at several spots around "
+            "the mark."
             if is_express
-            else "Your speaker is tuned. If it sounds worse than before, you can undo."
+            else "Your speaker is tuned."
         )
         # PR-L4 item 7: the spec verdict gets a VOTE, on the primary copy.
         #
@@ -4135,8 +3915,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         if spec_passed is False:
             done_verdict = (
                 "Your speaker is tuned, but the result still measures further "
-                "from flat than the target in at least one band. If it sounds "
-                "worse than before, you can undo."
+                "from flat than the target in at least one band."
             )
         elif spatial == "unmeasurable":
             # The group closed and the gauge could not grade it. Distinct from
@@ -4145,8 +3924,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # at a retry of a step that died.
             done_verdict = (
                 "Your speaker is tuned, but the check that measures how flat "
-                "it is could not read enough of the sound to say either way. "
-                "If it sounds worse than before, you can undo."
+                "it is could not read enough of the sound to say either way."
             )
         # PR-L4 item 4: applied implies graded, and when it does not, the
         # household is TOLD rather than restored behind their back. See
@@ -4183,7 +3961,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 done_verdict = (
                     "Your speaker is tuned, but the check that confirms it "
                     f"could not tell either way{because}. Re-verify to try "
-                    "again, or undo to restore the previous sound."
+                    "again."
                 )
             elif grade_state == "failed":
                 # The check ran, completed, and did not pass — reachable here
@@ -4193,14 +3971,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 done_verdict = (
                     "Your speaker is tuned, but the check that confirms it did "
                     "not match its prediction, so this result is unconfirmed. "
-                    "Re-verify to try again, or undo to restore the previous "
-                    "sound."
+                    "Re-verify to try again."
                 )
             else:
                 done_verdict = (
                     "Your speaker is tuned, but the check that confirms it "
-                    "never finished, so this result is unverified. Re-verify to "
-                    "confirm it, or undo to restore the previous sound."
+                    "never finished, so this result is unverified. Re-verify "
+                    "to confirm it."
                 )
         elif grade.get("complete") is False:
             # #2098: the local check PASSED and it is a real result — it is
@@ -4214,8 +3991,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             done_verdict = (
                 "Your speaker is tuned and confirmed at the mark, but the "
                 "wider check across several spots has not produced a result "
-                "— that part is unproven. Measure again to finish it, or "
-                "undo if it sounds worse than before."
+                "— that part is unproven. Measure again to finish it."
             )
         result_outcome = str(grade.get("outcome") or "")
         # **A failed spatial grade caps this claim whatever the result code
@@ -4249,12 +4025,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         }:
             result_copy = {
                 RESULT_VERIFIED_TARGET: (
-                    "The measured result reached the target and matched its prediction. "
-                    "If it sounds worse than before, you can undo."
+                    "The measured result reached the target and matched its "
+                    "prediction."
                 ),
                 RESULT_KEEP_PREVIOUS: (
-                    "This result should not replace the previous sound. This report changed "
-                    "nothing automatically; use Undo if this audition is still applied."
+                    "This result should not replace the previous sound. This "
+                    "report changed nothing automatically — go back to the "
+                    "previous tuning if this audition is still applied."
                 ),
                 RESULT_INCONCLUSIVE: (
                     "There is not enough complete evidence to grade this result. Valid saved "
@@ -4292,13 +4069,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 # only the household-facing sentence changes.
                 done_verdict = (
                     f"This matched its prediction, but it still misses the "
-                    f"target{miss_text}. "
-                    "If it sounds worse than before, you can undo."
+                    f"target{miss_text}."
                 )
-        # Every branch above may have promised Undo; the button is gated ~40
-        # lines below. One funnel, so no branch can be added that quietly
-        # promises it again (#1863 review SF1).
-        done_verdict = _honest_about_undo(done_verdict, status)
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:
             done_verdict = f"{done_verdict} {attempt_sentence}"
@@ -4311,7 +4083,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         ]
         # The two iterating rows PROMISE another round in their own copy
         # ("measuring again is how that gets closer") and, until now, offered
-        # no way to take it: this screen's only exits were Undo and Room
+        # no way to take it: this screen's only other exit was Room
         # correction. A screen that names an action and does not carry it is
         # the same defect as #2641's inert Keep button, one screen over.
         #
@@ -4339,24 +4111,14 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # not the recommended next step, and the promotion below inherits this
         # list's ordering — the head must stay a forward action.
         alternate_actions.extend(_way_back_action(status))
-        # #1863: Undo leads this screen only when there is something to
-        # restore; otherwise it would be a guaranteed-400 primary, so the head
-        # of ``alternate_actions`` is promoted instead. The HEAD rather than a
-        # named action: the branches above already order that list by
+        # The HEAD of ``alternate_actions`` is promoted to the primary rather
+        # than a named action: the branches above already order that list by
         # recommendedness (``round_remeasure`` first on an iterating round,
         # room correction otherwise), so promoting the head inherits that
         # decision instead of making a competing one. Never empty — the room
         # action seeds it and the branches only insert/append; an edit that
         # makes room conditional owes this line a fallback.
-        if _can_undo(status):
-            next_action = {
-                "id": "verify_undo",
-                "label": "Undo (restore previous sound)",
-                "endpoint": "/correction/crossover/v2/restore",
-                "body": {},
-            }
-        else:
-            next_action, *alternate_actions = alternate_actions
+        next_action, *alternate_actions = alternate_actions
         env = _envelope(
             screen="done", active_step="verify",
             verdict=done_verdict,

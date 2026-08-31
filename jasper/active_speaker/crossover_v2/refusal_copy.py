@@ -751,8 +751,9 @@ class ReasonSpec:
     # (issue #1820). Consulted by that template ONLY, because it is the one
     # screen whose default action is a generic destination ("Back to speaker
     # setup", ``/sound/``) rather than a semantically load-bearing control —
-    # verify_fail owns Undo, session_restart owns Start over, fix_and_retry
-    # owns Try again, and none of those may be replaced by copy data. A
+    # verify_fail owns Try again, session_restart owns Start over,
+    # fix_and_retry owns Try again, and none of those may be replaced by copy
+    # data. A
     # hard-stop reason that knows the exact control which clears it declares
     # that control here so the household lands ON it instead of on the page
     # that contains it. Shape is the ``next_action`` mapping the envelope
@@ -1027,7 +1028,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2,
         RetryableReasonCopy(
             "The result didn't quite match the prediction.",
-            "Try again, or undo to restore the previous sound.",
+            "Try again.",
         ),
     ),
     # #1873. Budget 0 — the ONE verify_fail row that is not retriable, and the
@@ -1038,18 +1039,15 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     #
     # Order of the sentence is the order the household needs it: the finding
     # first (this is what your speaker does), then WHY the obvious button is
-    # gone, then the two levers that can actually change the outcome. Both are
-    # already on this screen — ``_verify_fail_envelope``'s Undo and Re-measure —
-    # and for a non-retriable code that envelope promotes Re-measure to the
+    # gone, then the lever that can actually change the outcome — for a
+    # non-retriable code ``_verify_fail_envelope`` promotes Re-measure to the
     # primary rather than offering a "Try again" this row has just ruled out.
-    # Naming two actions follows ``verify_crossover_region``'s precedent: when
-    # neither lever dominates, listing one would be picking for the household.
     REASON_VERIFY_DETERMINISTIC_MISMATCH: ReasonSpec(
         REASON_VERIFY_DETERMINISTIC_MISMATCH, TEMPLATE_VERIFY_FAIL, 0, "",
         "JTS checked twice and measured the same difference both times, so "
         "this is what your speaker actually does — not a bad measurement, and "
-        "another try lands in the same place. Undo to restore the previous "
-        "sound, or re-measure to fit the crossover again.",
+        "another try lands in the same place. Re-measure to fit the crossover "
+        "again.",
     ),
     REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
         REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,
@@ -1060,7 +1058,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # that is a near-dead lever. It names the two that change the outcome.
         RetryableReasonCopy(
             "The two drivers didn't blend as designed where they hand over.",
-            "Re-measure to fit it again, or undo to restore the previous sound.",
+            "Re-measure to fit it again.",
         ),
     ),
     REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
@@ -1097,13 +1095,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         #   in one capture.
         #
         # The old ending ("re-verify to try again") commanded the retry, which
-        # is the phone's dead end. Naming only Re-measure/Undo would have been
-        # the mirror-image error: it discredits a wizard button that works, and
+        # is the phone's dead end. Naming only Re-measure would have been the
+        # mirror-image error: it discredits a wizard button that works, and
         # the screen's visible primary IS "Try again". So the sentence states
         # the fact, CONTEXTUALIZES the retry rather than commanding or
         # dismissing it, and names the escalation conditionally — "if it
         # repeats" is honest on the wizard (it will not) and on the phone (it
-        # may). Both escalations are already on the verify-fail screen.
+        # may). Re-measure is already on the verify-fail screen.
         #
         # NOT an owner ruling: #1924's body offers remedies explicitly labelled
         # "not decisions", and the issue carries no ruling comment. This
@@ -1112,8 +1110,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         RetryableReasonCopy(
             "The microphone's levels changed between measurements, so this "
             "check couldn't settle.",
-            "Try again — if it repeats, re-measure, or undo to restore the "
-            "previous sound.",
+            "Try again — if it repeats, re-measure.",
         ),
     ),
     REASON_DELAY_IMPLAUSIBLE: _retriable_reason(
@@ -1275,17 +1272,17 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     # it would let each keep its own remedy ("move the speaker away from
     # walls"), but that remedy is the SECOND thing this household needs: the
     # first is that a correction they are listening to right now was found
-    # faulty and is still applied, and the action is Undo in all three cases.
-    # Three near-duplicate rows for a state that should be rare is registry
-    # bloat, and the specific finding is on the verdict itself
+    # faulty and is still applied, and the route out is the same in all three
+    # cases. Three near-duplicate rows for a state that should be rare is
+    # registry bloat, and the specific finding is on the verdict itself
     # (``delta_probe.verdict``, in the payload and the journal) for whoever
-    # needs it after the undo.
+    # needs it afterwards.
     REASON_CORRECTION_ROLLBACK_FAILED: ReasonSpec(
         REASON_CORRECTION_ROLLBACK_FAILED, TEMPLATE_HARD_STOP, 0, "",
         "JTS checked the tuning against what your speaker actually did, and "
         "they did not match — but it could not put the previous sound back on "
-        "its own, so the new tuning is STILL APPLIED. Tap Undo on the speaker "
-        "page to restore the previous sound.",
+        "its own, so the new tuning is STILL APPLIED. Go back to the previous "
+        "tuning, or measure again.",
     ),
 }
 
@@ -1354,13 +1351,13 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     """``correction_rollback_failed``'s sentence, branched on the anchor.
 
     One code, two situations, and until #2291 one sentence — which pointed the
-    wrong half at a control that cannot help it.
+    wrong half at a remedy that cannot help it.
 
     * **A restore was attempted and did not complete** (``True``/``None``):
-      there IS a stored previous sound, the automatic attempt failed, and Undo
-      is a real remedy the household can press. Unchanged copy.
-    * **Undo cannot run** (``False``): the household's remedy is the same two
-      levers either way, and this arm names them instead of Undo.
+      there IS a stored previous sound, the automatic attempt failed, and
+      going back to the previous tuning is a real remedy.
+    * **No stored previous sound** (``False``): this arm names the two levers
+      that remain instead of a way back that does not exist.
 
     **This arm states no CAUSE, and that is #2859's finding** (it used to end
     "this was its first measured crossover"). ``False`` is not one situation:
@@ -1378,9 +1375,9 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     that names all four — the same repair ``verify_inconclusive`` had (#1974),
     where copy asserted a cause its verdict had never consulted.
 
-    ``None`` takes the Undo arm deliberately: an unestablished fact must not
-    invent the more alarming claim ("nothing to go back to") about a speaker
-    that may well have a perfectly good anchor.
+    ``None`` takes the way-back arm deliberately: an unestablished fact must
+    not invent the more alarming claim ("nothing to go back to") about a
+    speaker that may well have a perfectly good anchor.
     """
     if rollback_anchor_available is False:
         return (
@@ -1392,35 +1389,9 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     return (
         "JTS checked the tuning against what your speaker actually did, and "
         "they did not match — but it could not put the previous sound back, "
-        "so the newer tuning is STILL APPLIED. Tap Undo to restore the "
-        "previous sound."
+        "so the newer tuning is STILL APPLIED. Go back to the previous "
+        "tuning, or measure again."
     )
-
-
-#: The registry's Undo promises, and what each sentence says once the control
-#: is not on the screen. NOT new household copy, deliberately: each replacement
-#: is the same sentence MINUS the clause naming a control that is not there,
-#: which is #1924's rule ("every control the sentence names is on this screen")
-#: pointing the way it already points on the done screen — where
-#: ``crossover_envelope_v2._UNDO_PROMISE_SWAPS`` does exactly this for the
-#: promises THAT layer mints. Two entries cover the four TEMPLATE_VERIFY_FAIL
-#: sentences because three of them end the same way; the fourth leads with Undo
-#: and so has to name its whole action clause. Fragments, so a future row that
-#: makes the same promise inherits the drop without an edit here.
-_UNDO_PROMISE_DROPS = (
-    (", or undo to restore the previous sound.", "."),
-    (
-        "Undo to restore the previous sound, or re-measure to fit the "
-        "crossover again.",
-        "Re-measure to fit the crossover again.",
-    ),
-)
-
-
-def _without_undo_promise(message: str) -> str:
-    for promise, replacement in _UNDO_PROMISE_DROPS:
-        message = message.replace(promise, replacement)
-    return message
 
 
 def reason_message(
@@ -1430,7 +1401,6 @@ def reason_message(
     pilot_heard: bool | None = None,
     reflection_measured: bool | None = None,
     rollback_anchor_available: bool | None = None,
-    can_undo: bool | None = None,
 ) -> str:
     """The household sentence for ``code``, given what the capture measured.
 
@@ -1465,34 +1435,22 @@ def reason_message(
     Facts are keyword-only and each defaults to "not established", so a caller
     holding none of them gets the registry's own renderings — the same answer
     reading ``REASON_REGISTRY`` by hand would give.
-
-    ``can_undo`` is the SCREEN's live fact — is the Undo control being offered
-    — and it is a different question from ``rollback_anchor_available``, which
-    is what the ROUND recorded about its own anchor when it failed (#2849).
-    Copy that names a button must agree with the button, so the four
-    ``TEMPLATE_VERIFY_FAIL`` sentences that point at Undo drop that clause
-    when it is not there. Keyed on this fact and not on the anchor precisely
-    because the reported case is a first-ever apply, where no anchor flag is
-    written onto the failure record at all (it is stamped only by the round
-    refusal that needs it) and the record therefore says nothing — while
-    ``can_undo`` is ``False``, which is why #1863 hides the control.
     """
     if code == REASON_LOCATE_FAILED:
         message = locate_failed_message(pilot_heard)
     elif code == REASON_VERIFY_INCONCLUSIVE:
         message = verify_inconclusive_message(reflection_measured)
     elif code == REASON_CORRECTION_ROLLBACK_FAILED:
-        # Returns EARLY, alone among the codes: this one already answers the
-        # Undo question, and it answers it on the round's recorded anchor
-        # because its whole subject is a restore that was tried and failed.
-        # Re-deciding it here on the screen's live fact would give one failure
-        # two accounts, which is the gap this selector exists to close.
-        return correction_rollback_failed_message(rollback_anchor_available)
+        # Answered on the round's recorded anchor because its whole subject is
+        # a restore that was tried and failed. Re-deciding it here on a live
+        # fact would give one failure two accounts, which is the gap this
+        # selector exists to close.
+        message = correction_rollback_failed_message(rollback_anchor_available)
     else:
         # ``or spec.banner`` for the silent-auto-retry codes, whose household
         # text IS the banner and whose ``message`` is empty by construction.
         message = spec.message or spec.banner
-    return _without_undo_promise(message) if can_undo is False else message
+    return message
 
 
 def reason_diagnosis(

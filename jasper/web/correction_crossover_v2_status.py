@@ -646,13 +646,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
-        # Issue #1863: whether the v2-aware Undo (handle_v2_restore) actually
-        # has something to restore, so the envelope layer can stop offering a
-        # button the endpoint is guaranteed to refuse. ASKED of the rule's
-        # owner rather than transcribed here — see
-        # :func:`restore_anchor_static_prefix_refusal` for why this reader
-        # takes the static prefix and not the full five-gate resolver.
-        "can_undo": _host.restore_anchor_static_prefix_refusal(state) is None,
         # The banked-candidate way back: the fingerprint of the measured
         # candidate the pre-apply stash was built from, or ``None`` (a
         # first-ever apply, or a prior profile that was not a measured-

@@ -670,13 +670,10 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
             "applied": True,
-            # "Undo stays available throughout" is this test's claim, and
-            # since #1863 that takes a real restore target as well as a live
-            # graph — ``applied`` alone no longer offers the button, because
-            # a first-ever apply has nothing to restore and the endpoint
-            # refuses. Set explicitly so the screen under test is the one
-            # the docstring describes.
-            "can_undo": True,
+            # "The way back stays available throughout" is this test's claim,
+            # and that takes a prior banked candidate — set explicitly so the
+            # screen under test is the one the docstring describes.
+            "previous_candidate_fingerprint": "b" * 64,
             # Stamped now: only a failure the household is currently looking
             # at renders its terminal screen (#1942).
             "failure": {
@@ -686,12 +683,12 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
         },
     })
     assert env["screen"] == "verify_fail"
-    # The household still reads the honest reason and still has Undo.
+    # The household still reads the honest reason and still has the way back.
     assert env["verdict_text"] == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )
-    labels = [action["label"] for action in env["alternate_actions"]]
-    assert any("Undo" in label for label in labels)
+    ids = [action["id"] for action in env["alternate_actions"]]
+    assert "republish_previous" in ids
     # The retry the screen offers posts the verify route, which is exactly the
     # route the pre-flight guards — so the 400-body action is what keeps this
     # combination from being a loop.
