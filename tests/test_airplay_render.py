@@ -125,6 +125,14 @@ def _render(
     result = subprocess.run(
         ["bash", str(SCRIPT)],
         env=env,
+        # cwd=REPO (not pytest's own cwd): the script's ring-conf-parsed
+        # tier shells into `python -` and imports jasper.ring_assets, which
+        # resolves via the interpreter's own site-packages in production
+        # (the runtime venv) but via the empty-string sys.path[0]-as-cwd
+        # rule for the bare-python3 fallback this test environment uses —
+        # pinning cwd here keeps that resolution independent of wherever
+        # the test suite itself happens to be invoked from.
+        cwd=str(REPO),
         check=True,
         capture_output=True,
         text=True,
@@ -466,11 +474,73 @@ def test_airplay_renderer_pins_ring_topology_offset_formula(tmp_path: Path):
     assert f"audio_backend_latency_offset_in_seconds = {expected:.6f};" in rendered
 
 
+_PARSED_TIER_CAMILLA = """
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 2048
+"""
+
+
 def test_airplay_renderer_ring_conf_geometry_propagates(tmp_path: Path):
     """A ring retune (different period_frames/n_slots in the shipped ALSA
-    ring conf) must change the derived offset — the geometry is parsed from
-    deploy/alsa/conf.d/60-jts-ring.conf at render time, never hardcoded
-    blind, so a future retune needs no code change here.
+    ring conf) must change the derived offset — the geometry is parsed via
+    jasper.ring_assets at render time, never hardcoded blind, so a future
+    retune needs no code change here. No live STATUS on either socket, so
+    both terms fall through to this parsed tier.
+
+    period_frames is CONSISTENT across both blocks (256): the real conf.d
+    shares one period value fleet-wide (jasper.ring_assets.
+    ring_conf_period_frames scans every block for a single shared value),
+    so a fixture with two different period_frames would be a torn conf.d
+    the parser correctly refuses, not a valid retune — that shape is
+    test_airplay_renderer_torn_ring_conf_falls_back_to_default below.
+    n_slots MAY legitimately differ per block (Ring A's is retuned to 3;
+    Ring B's own n_slots is irrelevant since Ring B's term never multiplies
+    by it — see DEFAULT_RING_B_LATENCY_FRAMES's comment in the script).
+    """
+    ring_conf = textwrap.dedent(
+        """
+        pcm.jts_ring_capture {
+            type jts_ring
+            path "/dev/shm/jts-ring/program.ring"
+            period_frames 256
+            n_slots 3
+            format S32_LE
+        }
+
+        pcm.jts_ring_playback {
+            type jts_ring
+            path "/dev/shm/jts-ring/content.ring"
+            period_frames 256
+            n_slots 2
+            format S32_LE
+        }
+        """
+    ).lstrip()
+
+    rendered, result = _render(
+        tmp_path,
+        _PARSED_TIER_CAMILLA,
+        ring_alsa_conf_content=ring_conf,
+    )
+
+    assert "ring_a tier=parsed frames=768" in result.stderr
+    assert "ring_b tier=parsed frames=256" in result.stderr
+    # Ring A retuned to 256x3=768; Ring B retuned to one slot at 256.
+    # Camilla 2048 + outputd DAC default 3072 unchanged.
+    # Total = 768 + 2048 + 256 + 3072 = 6144 / 48000 = 0.128000.
+    assert "audio_backend_latency_offset_in_seconds = -0.128000;" in rendered
+
+
+def test_airplay_renderer_torn_ring_conf_falls_back_to_default(tmp_path: Path):
+    """A conf.d whose blocks disagree on period_frames (a torn file — a
+    half-applied retune, or hand edit) must never be silently picked from;
+    jasper.ring_assets.ring_conf_period_frames reports indeterminate for
+    it, so both Ring A and Ring B fall all the way through to their
+    DEFAULT_RING_A/B_LATENCY_FRAMES tier — the same total as no conf.d at
+    all, never a guess built from mismatched blocks.
     """
     ring_conf = textwrap.dedent(
         """
@@ -492,19 +562,105 @@ def test_airplay_renderer_ring_conf_geometry_propagates(tmp_path: Path):
         """
     ).lstrip()
 
-    rendered, _ = _render(
+    rendered, result = _render(
         tmp_path,
-        """
-        devices:
-          samplerate: 48000
-          chunksize: 1024
-          queuelimit: 4
-          target_level: 2048
-        """,
+        _PARSED_TIER_CAMILLA,
         ring_alsa_conf_content=ring_conf,
     )
 
-    # Ring A retuned to 256x3=768; Ring B retuned to one slot at 64.
-    # Camilla 2048 + outputd DAC default 3072 unchanged.
-    # Total = 768 + 2048 + 64 + 3072 = 5952 / 48000 = 0.124000.
-    assert "audio_backend_latency_offset_in_seconds = -0.124000;" in rendered
+    assert "ring_a tier=default frames=256" in result.stderr
+    assert "ring_b tier=default frames=128" in result.stderr
+    # Identical total to test_airplay_solo_offset_unchanged_without_grouping_env
+    # (which supplies no ring conf.d at all): 256 + 2048 + 128 + 3072 = 5504.
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
+
+
+def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
+    """Ring A's SECOND tier: fanin STATUS output.ring.occupancy (live
+    write_seq-read_seq depth) times output.period_frames, used when the
+    ALSA-delay field (output.snd_pcm_delay_frames — correct on a loopback
+    box) is absent, which is the ring topology's normal case (ADR-0100
+    left no playback PCM there for shairport's own snd_pcm_delay() either).
+    """
+    with JsonStatusSocket(
+        {"output": {"period_frames": 100, "ring": {"occupancy": 3}}},
+        name="fanin.sock",
+    ) as fanin_status:
+        rendered, result = _render(
+            tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
+        )
+
+    assert "ring_a tier=live-status basis=ring-occupancy" in result.stderr
+    # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
+    # DAC default 3072 = 3548 / 48000... actually 300+2048+128+3072=5548.
+    assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered
+
+
+def test_airplay_renderer_alsa_delay_beats_ring_occupancy_for_ring_a(
+    tmp_path: Path,
+):
+    """When fanin STATUS offers BOTH fields (only possible on a genuinely
+    mixed/transitional STATUS shape), the real ALSA delay wins over the
+    occupancy-derived figure — tier order matters, not just tier presence.
+    On a real loopback box output.ring is simply absent, so this pins the
+    PRECEDENCE the two-field case must resolve, not a shape that occurs on
+    a real ring or loopback box today.
+    """
+    with JsonStatusSocket(
+        {
+            "output": {
+                "snd_pcm_delay_frames": 777,
+                "period_frames": 128,
+                "ring": {"occupancy": 2},
+            }
+        },
+        name="fanin.sock",
+    ) as fanin_status:
+        rendered, result = _render(
+            tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
+        )
+
+    assert "ring_a tier=live-status basis=alsa-delay frames=777" in result.stderr
+    # 777 (ALSA delay, NOT the occupancy-derived 2*128=256) + Camilla 2048 +
+    # Ring B default 128 + outputd DAC default 3072 = 6025 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.125521;" in rendered
+
+
+def test_airplay_renderer_prefers_live_ring_b_occupancy(tmp_path: Path):
+    """Ring B's live tier: outputd STATUS shm_ring.occupancy (live
+    write_seq-read_seq depth, refreshed every DAC period) times
+    shm_ring.slot_frames — the true currently-queued frame count, not just
+    a static capacity/floor estimate.
+    """
+    with JsonStatusSocket(
+        {"shm_ring": {"occupancy": 1, "slot_frames": 200}},
+        name="outputd.sock",
+    ) as outputd_status:
+        rendered, result = _render(
+            tmp_path, _PARSED_TIER_CAMILLA, outputd_status_socket=outputd_status
+        )
+
+    assert "ring_b tier=live-status occupancy=1 slot_frames=200" in result.stderr
+    # Ring A default 256 + Camilla 2048 + Ring B live 1*200=200 + outputd
+    # DAC default 3072 (same payload has no "dac" key) = 5576 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.116167;" in rendered
+
+
+def test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets():
+    """DEFAULT_RING_A_LATENCY_FRAMES / DEFAULT_RING_B_LATENCY_FRAMES (the
+    script's own last-tier constants, 256 / 128) must equal what
+    jasper.ring_assets — the production authority — actually parses from
+    the real shipped deploy/alsa/conf.d/60-jts-ring.conf TODAY, so a ring
+    retune that moves the shipped file and forgets these two bash
+    constants is caught here rather than silently drifting.
+    """
+    from jasper import ring_assets
+    from tests.test_ring_assets import SHIPPED_RING_CONF
+
+    conf = str(SHIPPED_RING_CONF)
+    period = ring_assets.ring_conf_period_frames(conf)
+    ring_a_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, conf)
+
+    assert period is not None and ring_a_slots is not None
+    assert period * ring_a_slots == 256  # DEFAULT_RING_A_LATENCY_FRAMES
+    assert period == 128  # DEFAULT_RING_B_LATENCY_FRAMES (one slot, no x n_slots)

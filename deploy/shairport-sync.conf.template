@@ -50,27 +50,35 @@ general = {
     resync_threshold_in_seconds = 0.2;
     // The fixed downstream delay the lane's own snd_pcm_delay() cannot
     // see, so video and multi-room sync stay honest. Computed at every
-    // render by jasper-apply-airplay-mode, never a constant:
+    // render by jasper-apply-airplay-mode, never a constant. Full ledger
+    // and empirical validation path: ADR-0200.
     //   -( (ring_a_frames + camilla_frames + ring_b_frames + outputd_frames)
     //      / samplerate + bonded_extra_sec )
-    // ring_a_frames — jasper-fanin STATUS output.snd_pcm_delay_frames,
-    //   else Ring A's (fan-in -> CamillaDSP) full slot capacity —
-    //   period_frames x n_slots, parsed from the shipped
-    //   deploy/alsa/conf.d/60-jts-ring.conf. Fan-in reaches CamillaDSP over
-    //   SHM (ADR-0100), which has no ALSA delay to sample, so a ring box
-    //   always takes the parsed value. Ring A runs pinned full in steady
-    //   state (STATUS full_waits/published ratio ~1.0), which is why the
-    //   full capacity, not just one slot, is counted.
+    // ring_a_frames — Ring A (fan-in -> CamillaDSP), richest evidence
+    //   first: jasper-fanin STATUS output.snd_pcm_delay_frames (the real
+    //   ALSA queue depth — correct on a loopback box); else
+    //   output.ring.occupancy x output.period_frames (the ring's LIVE
+    //   fill, refreshed every render period — what a ring box actually
+    //   uses, since fan-in reaches CamillaDSP over SHM with no ALSA delay
+    //   to sample, ADR-0100); else a jasper.ring_assets parse of the
+    //   shipped deploy/alsa/conf.d/60-jts-ring.conf (period_frames x
+    //   n_slots); else a hardcoded default matching that same file. Ring A
+    //   runs pinned full in steady state (STATUS full_waits/published
+    //   ratio ~1.0), which is why its parsed/default tiers count the full
+    //   slot capacity, not just one slot.
     // camilla_frames — max(target_level - chunksize, 0) + chunksize, from
     //   the ACTIVE CamillaDSP config's samplerate/chunksize/target_level:
     //   Camilla holds at least one full chunk, plus any extra fill
     //   target_level asks for above that baseline.
-    // ring_b_frames — Ring B's (CamillaDSP -> outputd) one-slot floor —
-    //   period_frames alone, parsed from the same ring conf. Downstream of
-    //   both shairport's private lane and CamillaDSP, so shairport's own
-    //   snd_pcm_delay() cannot see it either. No live STATUS path for this
-    //   one, and no pinned-full evidence either, so only the proven
-    //   one-slot minimum is counted (unlike Ring A above).
+    // ring_b_frames — Ring B (CamillaDSP -> outputd): jasper-outputd
+    //   STATUS shm_ring.occupancy x shm_ring.slot_frames (live fill,
+    //   refreshed every DAC period) when the ring is configured; else the
+    //   same jasper.ring_assets parse's period_frames ALONE — the one-slot
+    //   floor, not x n_slots, because (unlike Ring A) there is no
+    //   pinned-full evidence for Ring B, so only the proven minimum is
+    //   charged; else a hardcoded default. Downstream of both shairport's
+    //   private lane and CamillaDSP, so shairport's own snd_pcm_delay()
+    //   cannot see it either.
     // outputd_frames — jasper-outputd STATUS dac.snd_pcm_delay_frames,
     //   else JASPER_OUTPUTD_DAC_BUFFER_FRAMES. The live delay can exceed
     //   the requested buffer, so it wins when offered.

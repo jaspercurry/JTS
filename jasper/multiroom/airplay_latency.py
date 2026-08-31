@@ -73,15 +73,23 @@ AIRPLAY_FRAME_RATE_HZ = 44100
 # (Ring A + CamillaDSP + Ring B + outputd). On the shipped ring topology's
 # only checked-in config (deploy/camilladsp/outputd-cutover.yml: chunksize
 # = target_level = 128) the derived solo offset is ~-0.0158 s
-# (256 + 128 + 128 + a live outputd DAC delay of ~248 frames, all / 48000);
-# 0.150 is the documented round-number estimate the tight-regime threshold
-# uses, comfortably above that. First-order on purpose — this surface flags
-# the regime, it does not re-derive the offset. GROUND TRUTH for the real
+# (256 + 128 + 128 + a live outputd DAC delay of ~248 frames, all / 48000).
+# 0.160 is a documented round-number estimate, deliberately NOT that
+# per-box figure: it bounds the WORST CASE across every term's own
+# last-tier fallback default (deploy/bin/jasper-apply-airplay-mode's
+# DEFAULT_RING_A_LATENCY_FRAMES=256, DEFAULT_RING_B_LATENCY_FRAMES=128,
+# DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072) at the large chunksize/target_level
+# shape tests/test_airplay_render.py already exercises (chunksize=1024,
+# target_level=4096): (256 + 4096 + 128 + 3072) / 48000 = 0.157333 s. 0.160
+# rounds that up with a hair of headroom. First-order on purpose — this
+# surface flags the regime, it does not re-derive the offset, and it is the
+# UNDER-warn direction that matters: a bound below the true worst case would
+# silently pass a leader that is actually tight. GROUND TRUTH for the real
 # per-box value: derive_audio_backend_latency_offset in
 # deploy/bin/jasper-apply-airplay-mode (a live sum of Ring A/Camilla/Ring
 # B/outputd frames). Re-check this constant if those pipeline buffer
 # defaults change materially.
-PIPELINE_FIXED_DELAY_SEC = 0.150
+PIPELINE_FIXED_DELAY_SEC = 0.160
 # shairport's own desired output backend buffer
 # (audio_backend_buffer_desired_length_in_seconds in
 # deploy/shairport-sync.conf.template) — it sits ALONGSIDE the offset inside

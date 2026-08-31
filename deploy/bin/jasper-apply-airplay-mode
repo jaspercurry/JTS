@@ -10,16 +10,17 @@
 #   - AirPlay device name based on JASPER_SPEAKER_NAME (in
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
-#     CamillaDSP config's samplerate/chunksize/target_level, jasper-fanin's
-#     live output delay (else Ring A's slot capacity, parsed from the
-#     shipped ALSA ring conf), the CamillaDSP->outputd Ring B queue (also
-#     parsed from that conf), and jasper-outputd's live DAC delay (else
-#     JASPER_OUTPUTD_DAC_BUFFER_FRAMES); AND, only while this speaker is an
-#     active bonded leader, the Snapcast round-trip playout buffer
-#     (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC, written by
-#     jasper-grouping-reconcile). Absent on solo/follower => unchanged. The
-#     formula is restated once, beside the placeholder in
-#     deploy/shairport-sync.conf.template.
+#     CamillaDSP config's samplerate/chunksize/target_level, Ring A
+#     (fan-in -> CamillaDSP) and Ring B (CamillaDSP -> outputd), and
+#     jasper-outputd's live DAC delay (else JASPER_OUTPUTD_DAC_BUFFER_FRAMES);
+#     AND, only while this speaker is an active bonded leader, the Snapcast
+#     round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
+#     written by jasper-grouping-reconcile). Absent on solo/follower
+#     => unchanged. The formula is restated once, beside the placeholder
+#     in deploy/shairport-sync.conf.template. Full derivation: ADR-0200.
+#     Ring A/B each prefer live daemon STATUS, then a jasper.ring_assets
+#     parse of the shipped ALSA ring conf, then a hardcoded default — see
+#     ring_a_latency_frames / ring_b_latency_frames below.
 #   - output_device from the renderer-lane map (U3/P6d):
 #     /var/lib/jasper/renderer_lanes.env's JASPER_SHAIRPORT_DEVICE line,
 #     written by `jasper-audio-config renderer-lanes` — shairport_ring_lane
@@ -47,13 +48,14 @@
 #                                 Default: /var/lib/camilladsp/outputd-statefile.yml.
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
 #                                   Default: /etc/camilladsp/outputd-cutover.yml.
-#   JASPER_RING_ALSA_CONF       — the shipped ALSA ring conf declaring Ring
-#                                 A/B's period_frames + n_slots (installed
-#                                 verbatim from
-#                                 deploy/alsa/conf.d/60-jts-ring.conf),
-#                                 parsed for the ring-geometry latency terms
-#                                 below so a future ring retune propagates
-#                                 without a code change.
+#   JASPER_RING_ALSA_CONF       — the shipped ALSA ring conf
+#                                 (deploy/alsa/conf.d/60-jts-ring.conf,
+#                                 installed verbatim), consulted only as
+#                                 Ring A/B's PARSED fallback tier (via
+#                                 jasper.ring_assets) when neither daemon's
+#                                 live STATUS is available. Not read
+#                                 directly by this script — see
+#                                 ring_conf_parsed_frames.
 #                                 Default: /etc/alsa/conf.d/60-jts-ring.conf.
 #   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
 #                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES,
@@ -78,6 +80,10 @@
 #                                 output_device note above). Absent =>
 #                                 shairport_substream.
 #                                 Default: /var/lib/jasper/renderer_lanes.env.
+#   JASPER_STATUS_PYTHON        — interpreter used for both the daemon
+#                                 STATUS reads and the jasper.ring_assets
+#                                 parse. Default: /opt/jasper/.venv/bin/python
+#                                 if present, else python3 on PATH.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -92,9 +98,8 @@ JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
-# Shipped ALSA ring conf (deploy/alsa/conf.d/60-jts-ring.conf, installed
-# verbatim) declaring Ring A/B's period_frames + n_slots — the single
-# source of truth for the ring-queue latency terms below.
+# Ring A/B's PARSED fallback source (jasper.ring_assets), consulted only
+# when neither daemon's live STATUS answers — see ring_conf_parsed_frames.
 RING_ALSA_CONF="${JASPER_RING_ALSA_CONF:-/etc/alsa/conf.d/60-jts-ring.conf}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 # Reconciler-owned env file (jasper-grouping-reconcile) carrying the
@@ -107,14 +112,17 @@ RENDERER_LANES_FILE="${JASPER_RENDERER_LANES_ENV:-/var/lib/jasper/renderer_lanes
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
-# Ring A/B slot-geometry fallback, used only if RING_ALSA_CONF itself is
-# unreadable (e.g. a non-ring topology, or a box that predates
-# ring-platform.sh). Matches the shipped 60-jts-ring.conf defaults:
-# period_frames 128, n_slots 2. Ring A counts the full 2-slot capacity —
-# it runs pinned full in steady state (STATUS full_waits/published ratio
-# ~1.0, rust/jasper-fanin/src/config.rs's RING_SLOT_FRAMES/ring_slots) —
-# while Ring B counts only the one-slot floor: there is no equivalent
-# pinned-full evidence for it, so only the proven minimum is charged.
+# Ring A/B slot-geometry LAST-TIER fallback, reached only when both live
+# STATUS and the jasper.ring_assets parse (see ring_conf_parsed_frames) are
+# unavailable. Matches the shipped 60-jts-ring.conf: period_frames 128,
+# n_slots 2. Ring A counts the full 2-slot capacity — it runs pinned full
+# in steady state (STATUS full_waits/published ratio ~1.0,
+# rust/jasper-fanin/src/config.rs's RING_SLOT_FRAMES/ring_slots) — while
+# Ring B counts only the one-slot floor: there is no equivalent pinned-full
+# evidence for it, so only the proven minimum is charged.
+# test_ring_a/b_default_matches_shipped_conf_via_ring_assets pins these
+# equal to a fresh jasper.ring_assets parse of the real shipped file, so a
+# retune that moves the conf and forgets these constants fails loud.
 DEFAULT_RING_A_LATENCY_FRAMES=256
 DEFAULT_RING_B_LATENCY_FRAMES=128
 
@@ -134,7 +142,7 @@ camilla_config_path() {
                     print
                     exit
                 }
-            ' "$CAMILLA_STATEFILE"
+            ' "$CAMILLA_STATEFILE" || true
         )"
     fi
 
@@ -172,37 +180,6 @@ camilla_devices_int() {
     ' "$config"
 }
 
-ring_conf_pcm_int() {
-    local pcm_name="$1"
-    local key="$2"
-    # ALSA's own conf syntax is `key value` (space separated, no colon) —
-    # distinct from CamillaDSP's YAML that camilla_devices_int above parses.
-    [[ -r "$RING_ALSA_CONF" ]] || return 0
-    awk -v pcm="$pcm_name" -v key="$key" '
-        $0 ~ ("^pcm\\." pcm "[[:space:]]*\\{") {
-            in_block = 1
-            next
-        }
-        in_block && /^[[:space:]]*}/ {
-            in_block = 0
-            next
-        }
-        in_block {
-            line = $0
-            sub(/[[:space:]]*#.*/, "", line)
-            pattern = "^[[:space:]]*" key "[[:space:]]+"
-            if (line ~ pattern) {
-                sub(pattern, "", line)
-                sub(/[[:space:]]*$/, "", line)
-                if (line ~ /^[0-9]+$/) {
-                    print line
-                    exit
-                }
-            }
-        }
-    ' "$RING_ALSA_CONF"
-}
-
 env_file_value() {
     local file="$1"
     local key="$2"
@@ -217,15 +194,31 @@ env_file_value() {
     ' "$file"
 }
 
-positive_int_or_default() {
+# Both callers below strip surrounding whitespace/quotes, then a leading
+# zero run (bash's own `$(( ))` misreads a leading-zero numeral as octal —
+# "008" is a parse error, "010" silently means 8, not ten — and every
+# resolved value here eventually crosses a bash arithmetic multiply), then
+# bound to 6 digits: a generous ceiling no real frame count needs (>20s at
+# 48kHz) that keeps every downstream $(( )) safely inside bash's signed
+# 64-bit range regardless of what a hand-edited env file contains.
+_strip_and_bound_int() {
     local value="$1"
-    local default="$2"
     value="${value//[[:space:]]/}"
     value="${value%\"}"
     value="${value#\"}"
     value="${value%\'}"
     value="${value#\'}"
-    if [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]]; then
+    if [[ "$value" =~ ^0*([0-9]+)$ ]]; then
+        value="${BASH_REMATCH[1]}"
+    fi
+    printf '%s\n' "$value"
+}
+
+positive_int_or_default() {
+    local value default
+    value="$(_strip_and_bound_int "$1")"
+    default="$2"
+    if [[ "$value" =~ ^[0-9]{1,6}$ && "$value" -gt 0 ]]; then
         printf '%s\n' "$value"
     else
         printf '%s\n' "$default"
@@ -233,30 +226,39 @@ positive_int_or_default() {
 }
 
 nonnegative_int_or_empty() {
-    local value="$1"
-    value="${value//[[:space:]]/}"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
-    if [[ "$value" =~ ^[0-9]+$ ]]; then
+    local value
+    value="$(_strip_and_bound_int "$1")"
+    if [[ "$value" =~ ^[0-9]{1,6}$ ]]; then
         printf '%s\n' "$value"
+    fi
+}
+
+# The interpreter shared by every daemon-STATUS read and the
+# jasper.ring_assets parse below. Prefer the runtime venv (so `import
+# jasper.*` resolves without a PYTHONPATH), then bare python3 on PATH.
+# Empty output (nothing on stdout) means "no usable interpreter" — every
+# caller treats that as its tier failing, never as a hard error.
+resolve_jasper_python() {
+    local python="${JASPER_STATUS_PYTHON:-}"
+    if [[ -n "$python" ]]; then
+        printf '%s\n' "$python"
+        return 0
+    fi
+    if [[ -x /opt/jasper/.venv/bin/python ]]; then
+        printf '%s\n' /opt/jasper/.venv/bin/python
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s\n' python3
     fi
 }
 
 status_json_value() {
     local socket="$1"
     local dotted_path="$2"
-    local python="${JASPER_STATUS_PYTHON:-}"
-    if [[ -z "$python" ]]; then
-        if [[ -x /opt/jasper/.venv/bin/python ]]; then
-            python=/opt/jasper/.venv/bin/python
-        elif command -v python3 >/dev/null 2>&1; then
-            python=python3
-        else
-            return 0
-        fi
-    fi
+    local python
+    python="$(resolve_jasper_python || true)"
+    [[ -n "$python" ]] || return 0
     [[ -S "$socket" ]] || return 0
     "$python" - "$socket" "$dotted_path" <<'PY' 2>/dev/null || true
 import json
@@ -290,53 +292,137 @@ if isinstance(value, (int, float, str)):
 PY
 }
 
+# Ring A/B geometry parsed straight from the shipped ALSA ring conf via
+# jasper.ring_assets — the production authority for this file's schema
+# (brace-MATCHED block bodies, torn-conf detection across the file's
+# shared period_frames). Never a bash/awk re-parse of that schema: a
+# from-scratch line scanner cannot see a nested `hint { ... }` block, an
+# Allman-style opening brace on its own line, or a torn conf declaring two
+# different period_frames values the way this module's own tests already
+# pin it must.
+#
+# mode="capacity" prints period_frames x n_slots for the named PCM block
+# (Ring A's tier); mode="period" prints period_frames alone, shared by
+# every ring so pcm_name is unused in that mode but still passed for one
+# uniform call shape (Ring B's tier). Empty output on any failure — no
+# python, no jasper import, conf unreadable, or a torn/absent block — so
+# the caller falls through to its next tier rather than failing the render.
+ring_conf_parsed_frames() {
+    local pcm_name="$1"
+    local mode="$2"
+    local python
+    python="$(resolve_jasper_python || true)"
+    [[ -n "$python" ]] || return 0
+    "$python" - "$RING_ALSA_CONF" "$pcm_name" "$mode" <<'PY' 2>/dev/null || true
+import sys
+
+try:
+    from jasper.ring_assets import ring_conf_n_slots, ring_conf_period_frames
+except ImportError:
+    sys.exit(0)
+
+conf_d, pcm_name, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+period = ring_conf_period_frames(conf_d)
+if period is None:
+    sys.exit(0)
+if mode == "period":
+    print(period)
+    sys.exit(0)
+slots = ring_conf_n_slots(pcm_name, conf_d)
+if slots is None:
+    sys.exit(0)
+print(period * slots)
+PY
+}
+
 outputd_dac_buffer_frames() {
     local value
     value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)"
     positive_int_or_default "$value" "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
 }
 
-# Ring A (fan-in -> CamillaDSP, pcm.jts_ring_capture / program.ring): the
-# shipped ring's full slot capacity, period_frames x n_slots. Falls back to
-# DEFAULT_RING_A_LATENCY_FRAMES if RING_ALSA_CONF can't be read or parsed.
-ring_a_latency_frames_default() {
-    local period slots
-    period="$(ring_conf_pcm_int jts_ring_capture period_frames || true)"
-    slots="$(ring_conf_pcm_int jts_ring_capture n_slots || true)"
-    if [[ "$period" =~ ^[0-9]+$ && "$slots" =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$((period * slots))"
-    else
-        printf '%s\n' "$DEFAULT_RING_A_LATENCY_FRAMES"
-    fi
-}
-
-# Ring B (CamillaDSP -> outputd, pcm.jts_ring_playback / content.ring): one
-# slot's worth (period_frames alone — see DEFAULT_RING_B_LATENCY_FRAMES's
-# comment for why this doesn't get the x n_slots multiplier Ring A gets).
-# Falls back to DEFAULT_RING_B_LATENCY_FRAMES if RING_ALSA_CONF can't be
-# read or parsed.
-ring_b_latency_frames() {
-    local period
-    period="$(ring_conf_pcm_int jts_ring_playback period_frames || true)"
-    if [[ "$period" =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$period"
-    else
-        printf '%s\n' "$DEFAULT_RING_B_LATENCY_FRAMES"
-    fi
-}
-
-fanin_output_latency_frames() {
+# Ring A (fan-in -> CamillaDSP, pcm.jts_ring_capture / program.ring).
+# Richest evidence first:
+#   tier=live-status (ALSA delay) — fanin STATUS output.snd_pcm_delay_frames,
+#     the real ALSA queue depth on a LOOPBACK-topology box. This field
+#     predates the ring and stays correct there; it is always null on the
+#     ring topology (ADR-0100 left no playback PCM to sample), which is
+#     exactly when the next tier is what actually answers.
+#   tier=live-status (ring occupancy) — output.ring.occupancy (the live
+#     write_seq-read_seq depth, refreshed every render period) times
+#     output.period_frames (the ring's slot size). Absent whenever
+#     output.ring itself is absent — a non-ring topology, i.e. exactly the
+#     case the tier above already answered.
+#   tier=parsed — jasper.ring_assets's period_frames x n_slots for
+#     pcm.jts_ring_capture, reached only when fanin's STATUS is entirely
+#     unavailable (daemon down, no socket).
+#   tier=default — DEFAULT_RING_A_LATENCY_FRAMES, reached only when the
+#     conf itself cannot be read or parsed either.
+ring_a_latency_frames() {
     local value
     value="$(status_json_value "$FANIN_STATUS_SOCKET" output.snd_pcm_delay_frames || true)"
     value="$(nonnegative_int_or_empty "$value")"
     if [[ -n "$value" ]]; then
-        echo "jasper-apply-airplay-mode: using fanin STATUS output.snd_pcm_delay_frames=$value" >&2
+        echo "jasper-apply-airplay-mode: ring_a tier=live-status basis=alsa-delay frames=$value" >&2
         printf '%s\n' "$value"
-    else
-        value="$(ring_a_latency_frames_default)"
-        echo "jasper-apply-airplay-mode: fanin STATUS delay unavailable; using Ring A's ring-queue capacity (${value} frames)" >&2
-        printf '%s\n' "$value"
+        return
     fi
+
+    local occupancy period
+    occupancy="$(status_json_value "$FANIN_STATUS_SOCKET" output.ring.occupancy || true)"
+    occupancy="$(nonnegative_int_or_empty "$occupancy")"
+    period="$(status_json_value "$FANIN_STATUS_SOCKET" output.period_frames || true)"
+    period="$(nonnegative_int_or_empty "$period")"
+    if [[ -n "$occupancy" && -n "$period" ]]; then
+        value="$((occupancy * period))"
+        echo "jasper-apply-airplay-mode: ring_a tier=live-status basis=ring-occupancy occupancy=$occupancy period_frames=$period frames=$value" >&2
+        printf '%s\n' "$value"
+        return
+    fi
+
+    value="$(ring_conf_parsed_frames jts_ring_capture capacity || true)"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        echo "jasper-apply-airplay-mode: ring_a tier=parsed frames=$value" >&2
+        printf '%s\n' "$value"
+        return
+    fi
+
+    echo "jasper-apply-airplay-mode: ring_a tier=default frames=$DEFAULT_RING_A_LATENCY_FRAMES" >&2
+    printf '%s\n' "$DEFAULT_RING_A_LATENCY_FRAMES"
+}
+
+# Ring B (CamillaDSP -> outputd, pcm.jts_ring_playback / content.ring).
+#   tier=live-status — outputd STATUS shm_ring.occupancy (live
+#     write_seq-read_seq depth, refreshed every DAC period) times
+#     shm_ring.slot_frames. Absent whenever shm_ring itself is unconfigured
+#     (non-ring topology) or outputd predates the field.
+#   tier=parsed — jasper.ring_assets's period_frames for pcm.jts_ring_playback
+#     (one slot's worth, NOT x n_slots — unlike Ring A there is no
+#     pinned-full evidence for Ring B, so only the proven one-slot floor is
+#     charged; see DEFAULT_RING_B_LATENCY_FRAMES's comment above).
+#   tier=default — DEFAULT_RING_B_LATENCY_FRAMES.
+ring_b_latency_frames() {
+    local occupancy slot_frames value
+    occupancy="$(status_json_value "$OUTPUTD_STATUS_SOCKET" shm_ring.occupancy || true)"
+    occupancy="$(nonnegative_int_or_empty "$occupancy")"
+    slot_frames="$(status_json_value "$OUTPUTD_STATUS_SOCKET" shm_ring.slot_frames || true)"
+    slot_frames="$(nonnegative_int_or_empty "$slot_frames")"
+    if [[ -n "$occupancy" && -n "$slot_frames" ]]; then
+        value="$((occupancy * slot_frames))"
+        echo "jasper-apply-airplay-mode: ring_b tier=live-status occupancy=$occupancy slot_frames=$slot_frames frames=$value" >&2
+        printf '%s\n' "$value"
+        return
+    fi
+
+    value="$(ring_conf_parsed_frames jts_ring_playback period || true)"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        echo "jasper-apply-airplay-mode: ring_b tier=parsed frames=$value" >&2
+        printf '%s\n' "$value"
+        return
+    fi
+
+    echo "jasper-apply-airplay-mode: ring_b tier=default frames=$DEFAULT_RING_B_LATENCY_FRAMES" >&2
+    printf '%s\n' "$DEFAULT_RING_B_LATENCY_FRAMES"
 }
 
 outputd_dac_latency_frames() {
@@ -344,12 +430,13 @@ outputd_dac_latency_frames() {
     value="$(status_json_value "$OUTPUTD_STATUS_SOCKET" dac.snd_pcm_delay_frames || true)"
     value="$(nonnegative_int_or_empty "$value")"
     if [[ -n "$value" ]]; then
-        echo "jasper-apply-airplay-mode: using outputd STATUS dac.snd_pcm_delay_frames=$value" >&2
+        echo "jasper-apply-airplay-mode: outputd_dac tier=live-status frames=$value" >&2
         printf '%s\n' "$value"
-    else
-        echo "jasper-apply-airplay-mode: outputd STATUS delay unavailable; using configured DAC buffer fallback" >&2
-        outputd_dac_buffer_frames
+        return
     fi
+    value="$(outputd_dac_buffer_frames)"
+    echo "jasper-apply-airplay-mode: outputd_dac tier=default frames=$value" >&2
+    printf '%s\n' "$value"
 }
 
 bonded_extra_delay_sec() {
@@ -381,12 +468,12 @@ derive_audio_backend_latency_offset() {
     local sample_rate
     local chunksize
     local target_level
-    local fanin_output_latency
+    local ring_a_latency
     local ring_b_latency
     local outputd_dac_latency
     local bonded_extra_sec
 
-    config="$(camilla_config_path)"
+    config="$(camilla_config_path || true)"
     if [[ ! -r "$config" ]]; then
         echo "jasper-apply-airplay-mode: Camilla config missing at $config; using latency offset 0.0" >&2
         printf '0.000000'
@@ -412,18 +499,14 @@ derive_audio_backend_latency_offset() {
 
     # Ring A: fan-in's output queue (between jasper-fanin and
     # CamillaDSP/AEC). This is downstream of shairport's private input
-    # lane, so it is also invisible to shairport's snd_pcm_delay(). Prefer
-    # the live ALSA delay surfaced by jasper-fanin STATUS; a ring box
-    # reports none (ADR-0100 left no playback PCM to sample), so in
-    # practice Ring A's parsed slot capacity below is what the offset uses.
-    fanin_output_latency="$(fanin_output_latency_frames)"
+    # lane, so it is also invisible to shairport's snd_pcm_delay(). See
+    # ring_a_latency_frames for the tier cascade.
+    ring_a_latency="$(ring_a_latency_frames || true)"
 
     # Ring B: CamillaDSP's output queue into outputd. Also downstream of
     # shairport's private lane and of CamillaDSP, so shairport cannot
-    # observe it via snd_pcm_delay() either. No live STATUS path for this
-    # one (see ring_b_latency_frames) — it comes straight from the shipped
-    # ring geometry.
-    ring_b_latency="$(ring_b_latency_frames)"
+    # observe it via snd_pcm_delay() either. See ring_b_latency_frames.
+    ring_b_latency="$(ring_b_latency_frames || true)"
 
     # outputd's DAC queue is downstream of shairport's private lane
     # and of CamillaDSP. shairport cannot observe it via
@@ -431,17 +514,22 @@ derive_audio_backend_latency_offset() {
     # explicitly. Prefer outputd's live snd_pcm_delay over the configured
     # buffer size because ALSA/DAC presentation delay can be larger than
     # the requested buffer.
-    outputd_dac_latency="$(outputd_dac_latency_frames)"
+    outputd_dac_latency="$(outputd_dac_latency_frames || true)"
 
     # Bonded-leader-only extra delay (seconds): the Snapcast round-trip
     # playout buffer. 0.0 unless jasper-grouping-reconcile wrote it for an
     # active bonded leader, so solo + follower offsets are unchanged.
-    bonded_extra_sec="$(bonded_extra_delay_sec)"
+    bonded_extra_sec="$(bonded_extra_delay_sec || true)"
 
-    awk -v sample_rate="$sample_rate" \
+    # LC_ALL=C: printf "%.6f" renders the decimal point per the process
+    # locale, and a comma-decimal (e.g. de_DE.UTF-8) would write a
+    # rendered conf shairport-sync cannot parse as a number, crash-looping
+    # ExecStartPre. Pin the C locale on this one invocation rather than
+    # trust every future caller's environment.
+    LC_ALL=C awk -v sample_rate="$sample_rate" \
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
-        -v fanin_output_latency="$fanin_output_latency" \
+        -v ring_a_latency="$ring_a_latency" \
         -v ring_b_latency="$ring_b_latency" \
         -v outputd_dac_latency="$outputd_dac_latency" \
         -v bonded_extra_sec="$bonded_extra_sec" '
@@ -452,7 +540,8 @@ derive_audio_backend_latency_offset() {
             }
             # Term by term: see the derivation beside
             # audio_backend_latency_offset_in_seconds in
-            # deploy/shairport-sync.conf.template.
+            # deploy/shairport-sync.conf.template, and ADR-0200 for the
+            # full four-term ledger and empirical validation path.
             #
             # NB: any single-quote (apostrophe) in this comment block would
             # close the surrounding awk single-quoted string and break
@@ -466,7 +555,7 @@ derive_audio_backend_latency_offset() {
                 camilla_term = 0
             }
             camilla_term = camilla_term + chunksize
-            invisible_frames = fanin_output_latency + camilla_term + ring_b_latency + outputd_dac_latency
+            invisible_frames = ring_a_latency + camilla_term + ring_b_latency + outputd_dac_latency
             offset = -((invisible_frames / sample_rate) + bonded_extra_sec)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0
