@@ -14,14 +14,18 @@ bank is the LLM's job over SSH (ADR-0188 §4, ruling S12).
 Usage::
 
     jasper-measure --kind baseline
-    jasper-measure --kind candidate --position -30 --position 0 --position 30
+    jasper-measure --kind candidate --position -30
     jasper-measure --kind candidate --polarity inverted --inverted-role tweeter \\
         --candidate-id null_a1
 
-**N configs at one position are N runs of this command**, or N specs against one
-open session by a caller that loops. Nothing here batches variants: the variant
-emit-cache makes each swap one ``SetConfig``, so the loop costs a graph load and
-nothing else.
+**One placement per run, and one bearing with it.** The engine walks several
+bearings because the wizard prompts a mover between them; this door prompts
+nobody, so a second ``--position`` would play both stimuli from wherever the
+microphone already is and bank two poses nothing moved to. A walk is N runs,
+one per placement — and so are N configs at one placement, or N specs against
+one open session by a caller that loops. Nothing here batches variants: the
+variant emit-cache makes each swap one ``SetConfig``, so the loop costs a graph
+load and nothing else.
 
 Run it as root (``sudo``): the CamillaDSP socket and the session-volume record
 are root-owned.
@@ -70,11 +74,25 @@ REFUSE_NO_MIC = "measure_no_wired_mic"
 #: at open, where an operator can still act on it, rather than measuring
 #: unmatched branches under a record that claims a level match.
 REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
+#: More than one ``--position`` in one invocation. The engine walks bearings
+#: because the wizard prompts a mover between them; this door has no mover
+#: seam, so N bearings would play back-to-back from ONE placement and bank N
+#: different ``position_deg`` values — a silently wrong measurement (S12).
+REFUSE_ONE_POSITION_PER_RUN = "measure_one_position_per_run"
+
+#: The running measurement graph could not be re-proven or put back mid-walk.
+REFUSE_GRAPH_LOST = "measure_graph_lost"
+#: The measurement isolation window was lost mid-walk, so household audio could
+#: re-enter the mix. ``play_program`` stops before it does.
+REFUSE_ISOLATION_LOST = "measure_isolation_lost"
+#: The measurement volume stopped being open, confirmed and fresh mid-walk.
+REFUSE_VOLUME_LOST = "measure_volume_lost"
 
 __all__ = [
     "BoxDeclaration",
     "BoxNotMeasurable",
     "MeasureFlagError",
+    "MeasureInterrupted",
     "build_parser",
     "main",
     "read_box_declaration",
@@ -97,6 +115,25 @@ class BoxNotMeasurable(RuntimeError):
     def __init__(self, reason: str, detail: str) -> None:
         self.reason = reason
         self.detail = detail
+        super().__init__(f"{reason}: {detail}")
+
+
+class MeasureInterrupted(RuntimeError):
+    """A walk stopped part-way, with takes already banked.
+
+    Carries what the operator needs and an exception alone cannot: the ids of
+    the records that DID land. Without them the takes are on disk under names
+    only a directory scan could recover, and the whole point of this door is
+    that it prints the names.
+    """
+
+    def __init__(self, reason: str, detail: str, session: Any, store: Any) -> None:
+        self.reason = reason
+        self.detail = detail
+        self.record_ids = list(session.banked_record_ids)
+        self.graph_fingerprint = str(session.graph_fingerprint)
+        self.bundle_dir = str(store.bundle_dir)
+        self.session_id = str(session.session_id)
         super().__init__(f"{reason}: {detail}")
 
 
@@ -293,6 +330,20 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             "a variant take needs --candidate-id to select it from its "
             f"siblings; {', '.join(variant_axes)} names no candidate",
         )
+    if len(args.position) > 1:
+        # The ENGINE walks bearings because the wizard prompts a mover between
+        # them. This door has no mover seam: N bearings here would play N
+        # stimuli back-to-back from ONE microphone placement and bank N
+        # different ``position_deg`` values — takes that name a pose nothing
+        # moved to, which is the silent wrong measurement ruling S12 refuses.
+        # A walk is N runs of this command, one per placement.
+        raise MeasureFlagError(
+            REFUSE_ONE_POSITION_PER_RUN,
+            "this door prompts nobody to move the microphone, so it measures "
+            f"one bearing per run; got {len(args.position)} --position values "
+            f"({', '.join(str(deg) for deg in args.position)}). Run it once "
+            "per placement",
+        )
     try:
         return MeasureSpec(
             kind=args.kind,
@@ -433,12 +484,67 @@ def _bind_compose(
     return _compose
 
 
+@dataclass(frozen=True)
+class _CaptureAnnotatedStore:
+    """The banked store, plus what the microphone said about the take.
+
+    :class:`~jasper.active_speaker.crossover_v2.session.TuningSession` builds a
+    record from what the ENGINE knows, and the engine deliberately knows nothing
+    about a microphone. The capture half meanwhile mints a whole
+    :class:`~jasper.active_speaker.crossover_v2.capture_source.CaptureAnswer`
+    and hands the transaction only the path. Without this seam the two never
+    meet and a CLI take banks structurally poorer than a wizard one — no xrun
+    counters, no mic identity, no calibration reference — so a reader could not
+    tell a clean take from a spliced one.
+
+    Draining is take-and-CLEAR by the capture half's own contract, and it
+    happens here because banking is the moment the two facts belong to the same
+    take. A stimulus that played but did not bank leaves its answer for the next
+    ``around`` to clear, which is that contract working, not a leak.
+    """
+
+    inner: Any
+    capture: Any
+
+    async def bank(self, record: Mapping[str, Any]) -> str:
+        answer = self.capture.take_answer()
+        if answer is None:
+            return await self.inner.bank(record)
+        # Prefixed, because a record is a different namespace from an answer:
+        # ``capture_integrity`` keeps the spelling every existing reader
+        # already knows, and the other two say whose ears and which curve.
+        annotated = {
+            **record,
+            **({"capture_integrity": answer.capture_integrity}
+               if answer.capture_integrity else {}),
+            **({"capture_device": answer.device} if answer.device else {}),
+            **({"capture_setup": answer.setup} if answer.setup else {}),
+        }
+        return await self.inner.bank(annotated)
+
+    async def read(self, record_id: str) -> Mapping[str, Any] | None:
+        return await self.inner.read(record_id)
+
+    async def persist(self, state: Mapping[str, Any]) -> str:
+        return await self.inner.persist(state)
+
+    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
+        return await self.inner.read_state(state_id)
+
+
 async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
     """Open the door, measure what the spec asks for, close, and report.
 
     The engine's own give-back runs inside the door's: ``TuningSession.close``
     puts the graph back and drops the claim, and the door's ``finally`` then
     finds three idempotent no-ops and lands the plan's durable snapshot last.
+
+    **The bundle is opened INSIDE the door**, and that ordering is a safety
+    property rather than tidiness: ``open_bundle``'s first act is to mark every
+    prior ``open`` bundle ``abandoned``, which strips the retention protection
+    off a wizard session's evidence. Opening it before the interlock would do
+    that to a LIVE session and then get refused — destructive on the path that
+    was supposed to change nothing.
     """
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
@@ -468,15 +574,6 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
             "no measurement microphone answered; connect the UMIK and re-run",
         )
 
-    info = open_bundle(box.topology, calibration_id="")
-    if not isinstance(info, Mapping) or not info.get("session_id"):
-        raise BoxNotMeasurable(
-            REFUSE_BOX_NOT_READY,
-            "could not open a commissioning evidence bundle for this session",
-        )
-    store = CommissioningEvidenceStore.open(
-        Path(str(info["bundle_dir"])), expected_session_id=str(info["session_id"])
-    )
     session_id = f"measure-{secrets.token_hex(4)}"
     config_dir = str(DEFAULT_CAMILLA_CONFIG_DIR)
     cam_factory = primary_controller
@@ -494,15 +591,32 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
         action="measuring",
         config_dir=config_dir,
     ) as door:
+        info = open_bundle(box.topology, calibration_id="")
+        if not isinstance(info, Mapping) or not info.get("session_id"):
+            raise BoxNotMeasurable(
+                REFUSE_BOX_NOT_READY,
+                "could not open a commissioning evidence bundle for this session",
+            )
+        store = CommissioningEvidenceStore.open(
+            Path(str(info["bundle_dir"])),
+            expected_session_id=str(info["session_id"]),
+        )
+        capture = WiredStimulusCapture(
+            device=device, bundle_dir=Path(store.bundle_dir),
+        )
         seams = bind_engine_seams(
             session_graph=door.graph,
-            records=BankedRecordStore(
-                evidence=store,
-                relay_session_id=session_id,
-                # The door banks and exits (S12), so it holds no durable
-                # session state — and no engine verb reads these two (ADR-0198).
-                load_state=lambda: None,
-                save_state=lambda state: None,
+            records=_CaptureAnnotatedStore(
+                inner=BankedRecordStore(
+                    evidence=store,
+                    relay_session_id=session_id,
+                    # The door banks and exits (S12), so it holds no durable
+                    # session state — and no engine verb reads these two
+                    # (ADR-0198).
+                    load_state=lambda: None,
+                    save_state=lambda state: None,
+                ),
+                capture=capture,
             ),
             volume_claim=door.claim,
             session_volume_plan=door.plan,
@@ -513,9 +627,7 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
                 cam_factory=cam_factory,
                 config_dir=config_dir,
             ),
-            capture_stimulus=WiredStimulusCapture(
-                device=device, bundle_dir=Path(store.bundle_dir),
-            ),
+            capture_stimulus=capture,
         )
         async with TuningSession(
             session_id=session_id,
@@ -523,8 +635,40 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
             measurement_level_db=box.session_volume_db,
             level_match_trims_db=trims,
         ) as session:
-            outcome = await session.measure(spec)
+            outcome = await _measured(session, spec, store=store)
             return _report(session, outcome, store=store, session_id=session_id)
+
+
+async def _measured(session: Any, spec: Any, *, store: Any) -> Any:
+    """``measure``, with a mid-walk failure turned into a PARTIAL result.
+
+    Three named failures can land between two stimuli of one walk: the running
+    graph could not be put back or re-proven, the isolation window was lost, and
+    the measurement volume stopped being open. None of them is a programming
+    error and all three can arrive after ``k`` takes are already on disk.
+    Letting one traceback out would exit with no JSON while those takes sit in
+    the bundle unnamed — evidence the operator has no id for and the next run
+    cannot find. So the ids the session DID bank are carried out with the
+    reason, and the caller renders both.
+    """
+    from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    try:
+        return await session.measure(spec)
+    except SessionGraphError as exc:
+        raise MeasureInterrupted(
+            REFUSE_GRAPH_LOST, str(exc), session, store,
+        ) from exc
+    except MeasurementWindowError as exc:
+        raise MeasureInterrupted(
+            REFUSE_ISOLATION_LOST, str(exc), session, store,
+        ) from exc
+    except SessionVolumePlanError as exc:
+        raise MeasureInterrupted(
+            REFUSE_VOLUME_LOST, str(exc), session, store,
+        ) from exc
 
 
 def _report(
@@ -596,6 +740,40 @@ def _refused(reason: str, detail: str, *, json_output: bool, code: int) -> int:
     return code
 
 
+def _interrupted(exc: MeasureInterrupted) -> int:
+    """A walk that stopped part-way, printed as a PARTIAL result.
+
+    Always JSON, and always on stdout beside the ordinary result, because the
+    ids in it are the only handle anybody has on takes that are already on
+    disk. A refusal line on stderr would be honest about the failure and lose
+    the evidence.
+    """
+    log_event(
+        logger,
+        "active_speaker.measure",
+        level=logging.ERROR,
+        action="interrupted",
+        reason=exc.reason,
+        detail=exc.detail,
+        banked=str(len(exc.record_ids)),
+    )
+    print(json.dumps(
+        {
+            "status": "partial",
+            "reason": exc.reason,
+            "detail": exc.detail,
+            "session_id": exc.session_id,
+            "bundle_dir": exc.bundle_dir,
+            "graph_fingerprint": exc.graph_fingerprint,
+            "record_ids": exc.record_ids,
+        },
+        indent=2,
+        sort_keys=True,
+        default=str,
+    ))
+    return EXIT_REFUSED
+
+
 def _cmd_measure(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
 
@@ -607,6 +785,8 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         )
     try:
         payload = asyncio.run(_measure(spec, read_box_declaration()))
+    except MeasureInterrupted as exc:
+        return _interrupted(exc)
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(
             exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED
@@ -633,21 +813,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
     parser.add_argument(
+        # ``append`` rather than a plain value so a SECOND one is visible here
+        # and can be refused by name (``spec_from_args``). Taking the last one
+        # silently would measure one bearing and let the operator believe two
+        # were walked.
         "--position",
         type=int,
         action="append",
         default=[],
         metavar="DEG",
         help=(
-            "signed whole-degree bearing, repeatable; negative is LEFT of the "
-            "design axis seen from the microphone. None means the design axis"
+            "signed whole-degree bearing, ONE per run; negative is LEFT of the "
+            "design axis seen from the microphone. Omitted means the design axis"
         ),
     )
     parser.add_argument(
         "--prompt",
         action="append",
         default=[],
-        help="what the mover was told, one per --position or none",
+        help="what the mover was told, for the bearing this run measures",
     )
     parser.add_argument("--axis", choices=POSITION_AXES, default=POSITION_AXIS_HORIZONTAL)
     parser.add_argument(

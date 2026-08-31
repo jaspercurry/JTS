@@ -14,9 +14,12 @@ the audio emission itself.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+from jasper.active_speaker.crossover_v2 import door as door_module
 
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_BASELINE,
@@ -30,7 +33,9 @@ from jasper.cli.measure import (
     EXIT_OK,
     EXIT_REFUSED,
     REFUSE_CANDIDATE_ID_REQUIRED,
+    REFUSE_GRAPH_LOST,
     REFUSE_NO_MIC,
+    REFUSE_ONE_POSITION_PER_RUN,
     REFUSE_SPEC_INVALID,
     BoxDeclaration,
     MeasureFlagError,
@@ -40,6 +45,7 @@ from jasper.cli.measure import (
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import _preset, _roles
 
+ARTIFACTS = "evidence/v1/artifacts"
 CAPTURE_RELPATH = "captures/summed/take.wav"
 HOUSEHOLD_DB = -14.0
 
@@ -137,10 +143,25 @@ def test_the_same_variant_builds_a_spec_once_it_is_named(argv):
 
 def test_an_ordinary_take_needs_no_candidate_id():
     """The unlabelled walk is the common case and pays nothing for the rule."""
-    spec = spec_from_args(_args("--position", "-30", "--position", "30"))
+    spec = spec_from_args(_args("--position", "-30"))
 
     assert spec.candidate_id == ""
-    assert spec.positions == (-30, 30)
+    assert spec.positions == (-30,)
+
+
+def test_a_second_position_is_refused_because_nothing_moves_the_microphone():
+    """B3: N bearings from ONE placement would bank N poses nobody moved to.
+
+    The engine walks bearings because the wizard prompts a mover between them.
+    This door prompts nobody, so a second ``--position`` would play two stimuli
+    back-to-back at one placement and label them −30° and +30° — the silent
+    wrong measurement, and one no downstream reader could detect. A walk is N
+    runs of the command.
+    """
+    with pytest.raises(MeasureFlagError) as caught:
+        spec_from_args(_args("--position", "-30", "--position", "30"))
+
+    assert caught.value.reason == REFUSE_ONE_POSITION_PER_RUN
 
 
 def test_the_engine_s_own_refusals_reach_the_operator_as_input_errors():
@@ -199,21 +220,42 @@ def _declaration() -> BoxDeclaration:
     )
 
 
+#: What the wired half's own minter puts on an answer, in its shape.
+CAPTURE_INTEGRITY = {"encoded_frames": 192000, "zero_run_count": 0, "xruns": 0}
+CAPTURE_DEVICE = {"label": "UMIK-2 (card1)", "wired": True, "channel_selected": 0}
+CAPTURE_SETUP = {"calibration": {"mode": "stored", "calibration_id": "cal-1"}}
+
+
+class _Answer:
+    wav = b""
+    capture_integrity = CAPTURE_INTEGRITY
+    device = CAPTURE_DEVICE
+    setup = CAPTURE_SETUP
+
+
 class _Capture:
     """The host's capture half, minus the microphone.
 
     Rolls around the play exactly as the wired one does, so the transaction
     still decides ``played`` from what it OBSERVED, and hands back a
     bundle-relative path so the banked record carries a real pointer.
+    ``take_answer`` is take-and-CLEAR like the real one, which is what the
+    record annotation relies on.
     """
 
     def __init__(self) -> None:
         self.arounds = 0
+        self._pending: list[_Answer] = []
 
     async def around(self, play, *, program) -> str:
+        self._pending.clear()
         self.arounds += 1
         await play()
+        self._pending.append(_Answer())
         return CAPTURE_RELPATH
+
+    def take_answer(self):
+        return self._pending.pop() if self._pending else None
 
 
 @pytest.fixture
@@ -356,3 +398,109 @@ def test_a_box_with_no_microphone_refuses_before_it_takes_the_speaker(
     assert json.loads(capsys.readouterr().out)["reason"] == REFUSE_NO_MIC
     assert speaker["cam"].loaded == []
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_a_refused_run_does_not_abandon_the_live_session_s_bundle(
+    speaker, tmp_path, monkeypatch, capsys,
+):
+    """B2: the interlock must run BEFORE anything destructive, and open_bundle is.
+
+    ``open_bundle``'s first act is to mark every prior ``open`` bundle
+    ``abandoned`` — that is how at-most-one-open is maintained — which strips
+    the retention protection off whatever session owns it. Opening the bundle
+    before the door's interlock therefore did that to a LIVE wizard session and
+    THEN got refused: destructive on the one path whose whole promise is that it
+    changes nothing.
+
+    Driven through the interlock rather than a unit call, because the ordering
+    is the property and only the real sequence has one.
+    """
+    from jasper.active_speaker.bundles import open_bundle
+
+    sessions = tmp_path / "sessions"
+    live = open_bundle(
+        mono_output_topology(), calibration_id="", sessions_dir=sessions,
+    )
+    assert live is not None
+    info = Path(str(live["bundle_dir"])) / "info.json"
+    assert json.loads(info.read_text())["state"] == "open"
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.live_measurement_session",
+        lambda **kw: "a measurement session is already running",
+    )
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--json"])
+
+    assert code == EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == (
+        door_module.REFUSE_SESSION_LIVE
+    )
+    assert json.loads(info.read_text())["state"] == "open", (
+        "the refused run abandoned the live session's bundle"
+    )
+    assert [p.name for p in sessions.iterdir()] == [Path(str(live["bundle_dir"])).name]
+
+
+def test_a_walk_that_stops_part_way_still_names_what_it_banked(
+    speaker, monkeypatch, capsys,
+):
+    """B4: ``k`` takes on disk and an exit code is not a result — the ids are.
+
+    A mid-walk graph loss is not a programming error and it arrives after
+    earlier rungs have already banked. A traceback would exit with no JSON at
+    all, leaving those takes under names only a directory scan could recover —
+    which is the one thing this door exists to spare a reader.
+    """
+    from jasper.active_speaker.crossover_v2 import session_graph as graph_mod
+
+    real_install = graph_mod.MeasurementSessionGraph.install
+    capture = speaker["capture"]
+
+    async def _install(self, *args, **kwargs):
+        # Keyed on "a stimulus has already played" rather than a call ordinal:
+        # the door and the session each prove the graph once at open, and a
+        # magic count would silently move if either stopped doing so.
+        if capture.arounds:
+            raise graph_mod.SessionGraphError("the measurement graph was stomped")
+        return await real_install(self, *args, **kwargs)
+
+    monkeypatch.setattr(graph_mod.MeasurementSessionGraph, "install", _install)
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--level-dbfs", "-12", "--level-dbfs", "-18",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "partial"
+    assert payload["reason"] == REFUSE_GRAPH_LOST
+    assert len(payload["record_ids"]) == 1, "the banked take was not reported"
+    assert payload["bundle_dir"]
+    # Still given back: a partial result is not a stranded speaker.
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_a_banked_take_carries_what_the_microphone_reported(speaker, capsys):
+    """N8: a CLI take must not be structurally poorer than a wizard one.
+
+    The engine builds a record from what it knows and knows nothing about a
+    microphone; the capture half mints the counters and hands the transaction
+    only a path. Without the annotating seam the two never meet, and a grading
+    reader could not tell a clean take from one with an xrun in it — so the
+    assertion is on the banked BYTES, not on the payload the CLI printed.
+    """
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    banked = json.loads(
+        (Path(payload["bundle_dir"]) / ARTIFACTS / payload["record_ids"][0])
+        .read_text()
+    )
+    assert banked["capture_integrity"] == CAPTURE_INTEGRITY
+    assert banked["capture_device"] == CAPTURE_DEVICE
+    assert banked["capture_setup"] == CAPTURE_SETUP
+    # The engine's own fields are untouched by the annotation.
+    assert banked["level_db"] == pytest.approx(-20.0)
+    assert banked["wav_path"] == CAPTURE_RELPATH

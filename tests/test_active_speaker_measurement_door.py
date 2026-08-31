@@ -13,6 +13,7 @@ graph would prove nothing about the fader it strands.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -24,12 +25,17 @@ from jasper.active_speaker.crossover_v2.door import (
     measurement_door,
 )
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+from jasper.active_speaker.session_volume_plan import (
+    SessionVolumePlan,
+    live_measurement_session,
+)
 from jasper.volume_owner import VolumeOwner, install_volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import _preset
 from tests.test_cli_measure import HOUSEHOLD_DB, FakeCam
 
 ENTRY_CONFIG = "entry.yml"
+VOLUME_STATE = "session_volume.json"
 
 
 @pytest.fixture
@@ -87,7 +93,7 @@ def _door(tmp_path, cam, **overrides: Any):
         "camilla_factory": lambda: cam,
         "action": "measuring",
         "config_dir": tmp_path,
-        "volume_state_path": tmp_path / "session_volume.json",
+        "volume_state_path": tmp_path / VOLUME_STATE,
     }
     kwargs.update(overrides)
     return measurement_door(**kwargs)
@@ -170,6 +176,96 @@ async def test_a_process_with_no_fader_owner_refuses_rather_than_minting_one(
     assert box.loaded == []
 
 
+async def test_a_cancel_inside_the_open_leaves_no_durable_record(tmp_path, box):
+    """B1: ``plan.open`` persists BEFORE it writes, so a cancel there must drain.
+
+    The plan writes its durable ``active`` intent before the first volume
+    mutation — deliberately, so a crash hydrates as recoverable. A cancellation
+    landing in that gap (Ctrl-C, or the coordinator's isolation-loss abort) is
+    therefore the one failure that can leave a record with no owner, and every
+    operator door then reads a live measurement for the whole wall-clock
+    ceiling. The cancel is delivered while the fader write is in flight, which
+    is exactly where the gap is.
+
+    Asserted at two altitudes because either alone is weaker than it reads: the
+    plan's own ``needs_recovery`` is the structural fact, and
+    ``live_measurement_session`` is the sentence the NEXT door would have been
+    refused with.
+    """
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    real_set = box.set_volume_db
+
+    async def _hang(db: float, best_effort: bool = True) -> bool:
+        reached.set()
+        await release.wait()
+        return await real_set(db, best_effort=best_effort)
+
+    box.set_volume_db = _hang
+
+    async def _run() -> None:
+        async with _door(tmp_path, box):
+            pytest.fail("the door opened through a cancelled fader write")
+
+    task = asyncio.ensure_future(_run())
+    await reached.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    state_path = tmp_path / VOLUME_STATE
+    assert SessionVolumePlan(state_path=state_path).needs_recovery is False
+    assert live_measurement_session(state_path=state_path, action="measuring") is None
+    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_a_stale_record_from_a_crashed_run_does_not_lock_the_door(
+    tmp_path, box,
+):
+    """N5: a crashed run's leftover is drained, not treated as a live session.
+
+    ``live_measurement_session`` deliberately lets a stale-active record
+    through — blocking on it would make a crash permanently un-openable — and
+    ``plan.open`` then refuses over it. Without the force-drain the two
+    together make every later run fail at the volume, which is the crash
+    recovery nobody can perform.
+
+    The leftover is written by a REAL plan on a frozen clock, so the record is
+    the shape the plan actually persists rather than a hand-built guess.
+    """
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+        OwnerVolumeDoor,
+    )
+    from jasper.volume_owner import volume_owner
+
+    state_path = tmp_path / VOLUME_STATE
+    crashed = SessionVolumePlan(
+        state_path=state_path, wall_clock_ceiling_s=1.0, clock=lambda: 0.0,
+    )
+    owner = volume_owner()
+    claim = MeasurementVolumeClaim(owner)
+    await crashed.open(
+        -20.0,
+        OwnerVolumeDoor(
+            owner,
+            read_fader=lambda: box.get_volume_db(best_effort=False),
+            claim=claim,
+        ),
+    )
+    # The CLAIM dies with the process; only the durable record survives a
+    # crash. Holding one here would make the leftover outrank the drain and
+    # test a state no crash can produce.
+    await claim.release()
+    assert state_path.exists(), "the crashed run left no record to drain"
+
+    async with _door(tmp_path, box) as door:
+        assert door.graph_fingerprint
+
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
+
+
 async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box):
     """Three axes, no ``variant`` parameter — the graph seam's own arity.
 
@@ -190,31 +286,52 @@ async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box
 
 
 def test_the_wizard_emits_through_the_shared_home(tmp_path):
-    """The move landed with no duplication window: one emit, two front ends.
+    """The move landed with no duplication window, and mapped all FIVE fields.
 
     ``bind_production_play`` built its own closure over five values that were
-    never web vocabulary. It now hands the SAME function
-    ``jasper-measure`` binds, so the emitter's proofs, the both-halves device
-    derivation and the three variant axes cannot diverge between the two doors
-    by anybody editing one of them.
+    never web vocabulary. It now hands the SAME function ``jasper-measure``
+    binds, so the emitter's proofs, the both-halves device derivation and the
+    three variant axes cannot diverge between the two doors.
+
+    **Both halves are asserted, and the second is the one that matters.**
+    Function identity alone would pass a binding that transposed ``topology``
+    and ``playback_device``, or dropped the confirmed protection — a
+    measurement graph that emits without a name to fail under. The profile is a
+    frozen dataclass, so one equality covers every field, and a field added to
+    it later fails here until this site maps it.
     """
     from types import SimpleNamespace
 
+    from jasper.active_speaker.branch_chain import sections_by_role
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
     from jasper.web import correction_crossover_v2 as host
+
+    preset = _preset()
+    topology = mono_output_topology()
+    protection = sections_by_role(preset.crossover_regions)
 
     play = host.bind_production_play(
         run_async=lambda coro: None,
         camilla_factory=lambda: object(),
         evidence_store=SimpleNamespace(bundle_dir=tmp_path),
         relay_session_id="door_pin",
-        topology=mono_output_topology(),
-        preset=_preset(),
+        topology=topology,
+        preset=preset,
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device="plughw:CARD=Loopback,DEV=0",
         safety_profile={},
         role_targets={},
         session_volume_db=-20.0,
+        protection_sections_by_role=protection,
     )
 
     assert play.graph._emit.func is emit_measurement_graph
+    assert play.graph._emit.args == (
+        MeasurementGraphProfile(
+            preset=preset,
+            topology=topology,
+            role_channels={"woofer": 0, "tweeter": 1},
+            playback_device="plughw:CARD=Loopback,DEV=0",
+            protection_sections_by_role=protection,
+        ),
+    )

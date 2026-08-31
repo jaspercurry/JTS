@@ -4,10 +4,11 @@
 
 """The kernel path onto a held speaker: consult, claim, install, yield, restore.
 
-One linear ``async with``. Two operator doors ride it — ``jasper-measure``, the
-general door onto :class:`~.session.TuningSession`, and the summed reverse-null
-instrument — and they differ only in what they play once it is open, which is
-why the path itself is a helper and not a framework.
+One linear ``async with``. ``jasper-measure`` rides it onto
+:class:`~.session.TuningSession`. It is a shared helper rather than inlined
+code because what an operator door does BEFORE it plays anything is the same
+whatever it plays, and two spellings of this order would be free to disagree
+about the give-back.
 
 **Linear, and deliberately nothing else.** No phase vocabulary, no registry, no
 journey, no retry ledger. Every step below already has an owner elsewhere in
@@ -57,6 +58,7 @@ from typing import Any, AsyncIterator, Callable
 from jasper.log_event import log_event
 
 from ..measurement_emit import MeasurementGraphProfile, emit_measurement_graph
+from ..restore_wait import resilient_restore
 
 logger = logging.getLogger(__name__)
 
@@ -175,20 +177,29 @@ async def measurement_door(
     # The window wraps the open, because the latch's first write is a fader
     # write like any other — the shape `seat_level_ramp` already keeps.
     async with coordinator.measurement_window():
+        # A leftover ACTIVE record past its own wall-clock ceiling is a crashed
+        # run, not a live one: `live_measurement_session` deliberately lets it
+        # through (a crash must not be permanently un-openable), and `plan.open`
+        # then refuses over it. Force-draining it here is what the wizard's own
+        # new-session reconcile does, and it is a no-op when nothing is stale.
+        await plan.enforce_ceiling(volume_door)
+        body_error: BaseException | None = None
+        volume_open = False
         try:
-            opened = await plan.open(measurement_volume_db, volume_door)
-        except SessionVolumePlanError as exc:
-            raise MeasurementDoorRefused(
-                REFUSE_VOLUME_NOT_OPEN, str(exc)
-            ) from exc
-        if opened is not SessionVolumeOpenResult.OPENED:
-            raise MeasurementDoorRefused(
-                REFUSE_VOLUME_NOT_OPEN,
-                f"the measurement volume did not confirm at "
-                f"{measurement_volume_db:.2f} dB ({opened.value}); the speaker "
-                "was put back",
-            )
-        try:
+            try:
+                opened = await plan.open(measurement_volume_db, volume_door)
+            except SessionVolumePlanError as exc:
+                raise MeasurementDoorRefused(
+                    REFUSE_VOLUME_NOT_OPEN, str(exc)
+                ) from exc
+            if opened is not SessionVolumeOpenResult.OPENED:
+                raise MeasurementDoorRefused(
+                    REFUSE_VOLUME_NOT_OPEN,
+                    f"the measurement volume did not confirm at "
+                    f"{measurement_volume_db:.2f} dB ({opened.value}); the "
+                    "speaker was put back",
+                )
+            volume_open = True
             fingerprint = await graph.install()
             log_event(
                 logger,
@@ -204,26 +215,85 @@ async def measurement_door(
                 measurement_volume_db=measurement_volume_db,
                 graph_fingerprint=fingerprint,
             )
+        except BaseException as raised:
+            # Held so the give-back can ATTACH its own failures to it rather
+            # than raise over it — the rule
+            # :meth:`~.session.TuningSession._give_back_held` keeps, where a
+            # cleanup failure never replaces the failure that caused the
+            # cleanup. ``BaseException`` because a ``CancelledError`` is the
+            # commonest one to arrive here and is not an ``Exception``.
+            body_error = raised
+            raise
         finally:
-            await _give_back(graph, claim, plan, volume_door)
+            # **`plan.open` IS inside this guard, and that is the whole of the
+            # B1 fix.** It persists its durable ``active`` intent BEFORE the
+            # first volume mutation, so a cancellation landing in that gap —
+            # Ctrl-C, or the coordinator's isolation-loss abort — leaves a
+            # record no later process drains, and every operator door then
+            # reads a live measurement for the whole wall-clock ceiling. A
+            # ``finally`` on a flag rather than an ``except``, because a
+            # ``CancelledError`` is not an ``Exception``.
+            #
+            # SHIELDED: a cancel landing inside the give-back would abort it
+            # and strand the fader at measurement level with nothing latched.
+            await resilient_restore(
+                _give_back(
+                    graph, claim, plan, volume_door,
+                    reason=(
+                        "measurement_door_closed" if volume_open
+                        else "measurement_door_open_failed"
+                    ),
+                    body_error=body_error,
+                )
+            )
 
 
-async def _give_back(graph: Any, claim: Any, plan: Any, volume_door: Any) -> None:
+async def _give_back(
+    graph: Any,
+    claim: Any,
+    plan: Any,
+    volume_door: Any,
+    *,
+    reason: str,
+    body_error: BaseException | None = None,
+) -> None:
     """Graph, then claim, then the plan's snapshot — reverse order of taking.
 
     Every step runs even when an earlier one raises, for the reason
     :meth:`~.session.TuningSession._give_back_held` gives: a graph that will not
     come back must not strand the fader at measurement level. All three are
     idempotent and safe against nothing-held, so a body that already closed a
-    :class:`~.session.TuningSession` over them reaches three no-ops.
+    :class:`~.session.TuningSession` over them reaches three no-ops, and a
+    failed open reaches three that give back whatever half it took.
+
+    ``body_error`` is the exception already in flight, if any. A cleanup failure
+    is ATTACHED to it rather than raised over it — the same rule
+    :func:`~.session._attach_cleanup_failure` states, because an ``__aexit__``
+    that raised would demote the real cause to ``__context__`` and report the
+    symptom. With nothing in flight a give-back failure IS the failure and
+    propagates.
     """
-    try:
-        await graph.restore()
-    finally:
+    first: BaseException | None = None
+    for step in (
+        graph.restore,
+        claim.release,
+        lambda: plan.close(volume_door, reason=reason),
+    ):
         try:
-            await claim.release()
-        finally:
-            await plan.close(volume_door, reason="measurement_door_closed")
+            await step()
+        except BaseException as failure:  # noqa: BLE001 - see the docstring
+            # EVERY step still runs. A graph that will not come back must not
+            # stop the fader coming down, which is the one give-back order
+            # failure that is audible. The FIRST failure is the one kept: it is
+            # the one nearest the cause, which is ``_attach_first``'s rule.
+            if first is None:
+                first = failure
+    if first is None:
+        return
+    if body_error is None:
+        raise first
+    if body_error.__context__ is None:
+        body_error.__context__ = first
 
 
 def _measurement_claim() -> tuple[Any, Any]:
