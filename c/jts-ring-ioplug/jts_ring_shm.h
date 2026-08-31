@@ -512,9 +512,8 @@ uint64_t jts_ring_monotonic_raw_ns(void);
 
 // Rate headroom, ppm. The governed quantity is a DIFFERENCE of independent clocks
 // (the wire's crystal vs this Pi's), so a crystal's own +-100 ppm spec is the wrong
-// size: this fleet's dongle measures ~667 ppm and the repo's precedent for the same
-// two-crystal problem took ~4x that — both in docs/HANDOFF-airplay.md. An exact
-// reciprocal of 1e6, so the refill below is integer.
+// size: this fleet's dongle measures ~667 ppm and the same two-crystal problem took
+// ~4x that. An exact reciprocal of 1e6 keeps the refill integral.
 //
 // BARS BELONG AGAINST THE DERIVED BOUND, not against this number flat.
 // Asymptotically the rate IS the headroom. Every truncation in the path rounds

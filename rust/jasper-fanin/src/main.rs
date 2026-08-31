@@ -11,9 +11,6 @@
 //! the production renderer topology; the old renderer-side dmix path
 //! was retired after AirPlay burst testing exposed timing drops.
 //!
-//! Read `docs/HANDOFF-fan-in-daemon.md` for the full architecture,
-//! resilience contract, and observability contract before modifying.
-//!
 //! This file is the entry point. Module layout:
 //!   - `config`   — JASPER_FANIN_* env var parsing.
 //!   - `watchdog` — progress-sentinel heartbeat (sd_notify pattern).

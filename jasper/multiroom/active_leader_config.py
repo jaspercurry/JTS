@@ -29,7 +29,7 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
     leader's own drivers are protected by the SAME re-proven Layer-A graph a
     wireless follower uses.
 
-This is the **music-only validated seam** (HANDOFF "Sequencing" step 1): no
+This is the **music-only validated seam**: no
 ``outputd-summer``, no leader TTS yet (Steps 2-3). camilla#2 runs the active
 follower's clock seam unchanged — same capture (the grouping ring), same
 per-sink rate-adjust resolution — so a failure here has one candidate cause (the

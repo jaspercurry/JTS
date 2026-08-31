@@ -1734,9 +1734,8 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
         # ROLEFULNESS IS NOT THE DISCRIMINATOR EITHER, and this pair keeps
         # saying so: a passive box resolves the active outputd lane like any
         # other. Only an unreadable topology or a route with no device reports
-        # null. The docstring and the observability HANDOFF both used to name
-        # "a passive box" as a null case — false, and these are the pins that
-        # keep the corrected sentence true.
+        # null. A passive box is not a null case; these pins keep that sentence
+        # true.
         (_passive_topology, False, "ring"),
         (_passive_topology, True, "ring"),
     ],

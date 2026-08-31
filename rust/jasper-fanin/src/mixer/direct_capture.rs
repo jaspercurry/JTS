@@ -82,8 +82,7 @@ pub struct DirectObservability {
     /// signature: usbsink was streaming, then a UDC rebind / stop-start left the
     /// handle attached to a destroyed instance). Without this gate the detector
     /// mis-fires on an ordinary attached-but-silent host: a Mac wired 24/7 with
-    /// music paused streams `avail≈0` drains indefinitely (measured — see
-    /// `docs/HANDOFF-usb-low-latency.md` "attached-idle drains record avail≈0"), so
+    /// music paused streams `avail≈0` drains indefinitely, so
     /// every ~2 s the raw streak would hit threshold and churn a reopen + WARN with
     /// no gadget rebuild in sight. Latching on frames-having-flowed bounds reopens
     /// to one per real rebuild and keeps the `reopens` counter / incident
@@ -635,8 +634,7 @@ fn drain_direct_capture(
             // The `frames_flowed_since_open` gate is load-bearing: an ordinary
             // attached-but-silent host (Mac wired, music paused/asleep) streams
             // avail≈0 drains indefinitely with NO gadget rebuild (measured on
-            // jts.local — docs/HANDOFF-usb-low-latency.md, "attached-idle drains
-            // record avail≈0"). Firing on raw zero-avail alone would churn a reopen
+            // jts.local). Firing on raw zero-avail alone would churn a reopen
             // every ~2 s of idle on the flagship box (journal spam + a lying
             // `reopens` counter). A zombie is a FLOWING→DEAD edge: only once this
             // handle has actually fed the lane (avail > 0 seen at least once) does a

@@ -3482,8 +3482,8 @@ static void test_pace_is_inert_when_the_device_binds_first(void) {
     CHECK(gov.pace_bound_ns == 0, "an inert governor accrues no bound time");
 
     // ...and it must still be inert against a device running as far off nominal as
-    // this fleet's own hardware does. The dongle measures ~667 ppm
-    // (docs/HANDOFF-airplay.md), which is what the headroom is sized for; a
+    // this fleet's own hardware does. The dongle measures ~667 ppm,
+    // which is what the headroom is sized for; a
     // headroom picked off a crystal's +-100 ppm datasheet line would bind here and
     // throttle a perfectly healthy stream.
     jts_ring_pointer_state_t fast = pace_state_started();

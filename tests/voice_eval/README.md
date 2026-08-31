@@ -15,7 +15,7 @@ reality is*.
 
 Bypasses the wake loop and ALSA/dmix — we test the LLM session,
 not the audio plumbing. Plumbing has its own surface in
-`jasper-doctor` and the various HANDOFF docs.
+`jasper-doctor` and hardware-free tests.
 
 ---
 

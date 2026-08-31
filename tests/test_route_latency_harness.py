@@ -613,9 +613,8 @@ def test_diff_route_health_negative_known_delta_means_restart_not_clean():
 
 
 def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
-    # S2: a new fan-in OUTPUT xrun is on the route's own path — the HANDOFF
-    # clean-window contract names "no outputd/fan-in xruns" explicitly, so it
-    # must disqualify on its own.
+    # S2: a new fan-in OUTPUT xrun is on the route's own path. The clean-window
+    # contract names "no outputd/fan-in xruns" explicitly, so it must disqualify.
     before = _healthy_route_snapshot()
     after = _healthy_route_snapshot(
         uptime_seconds=20.0,

@@ -19,8 +19,8 @@ sentence or two.)
 ## How does this fit with the existing architecture?
 
 (Optional. If you've poked around the codebase, note which
-subsystems it would touch and which HANDOFF doc is most relevant.
-This is the fastest way to get a substantive response.)
+subsystems it would touch. This is the fastest way to get a
+substantive response.)
 
 ## Alternatives considered
 

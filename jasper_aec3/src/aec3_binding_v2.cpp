@@ -15,9 +15,7 @@
 //
 // Default kwargs reflect the BEST_A config from the 2026-05-22 sweep
 // campaign — see experiments/aec3-v2-deep-tune-spike/README.md for the
-// methodology + per-knob rationale, and
-// docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan"
-// for how this fits into the broader system.
+// methodology + per-knob rationale.
 //
 // Production loader (jasper/cli/aec_bridge.py): tries `import _aec3_v2`
 // first, falls back to `import _aec3` (v1.3-3 binding) if the v2 build

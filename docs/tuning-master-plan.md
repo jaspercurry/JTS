@@ -302,12 +302,11 @@ the ruling those banners point back to.
   not into this plan: the doctrine is where the loop's rules live (see the
   orientation note above), and the three production sites that cite the
   ruling now cite it there.
-- `docs/historical/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
-  `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
-  a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that
-  document's campaign-ordering authority ("what supersedes what")
-  transfers here. The apply-vertical candidate is recorded only there — the
-  `R21` token elsewhere in the tree (accept-receipt provenance in
+- The cancelled CURRENT-POSITION `next_mission` — the **R21
+  "apply-vertical" candidate (a path that applies
+  a machine-RECOMMENDED Fc) is cancelled** by invariant 2. This plan owns
+  campaign ordering ("what supersedes what"). The `R21` token elsewhere in
+  the tree (accept-receipt provenance in
   `crossover_v2/contracts.py` and the crossover-measurement-v2 ledger)
   names shipped vocabulary, not established as the same round and
   unaffected by this cancellation. The 80-20 plan's landed R14–R20 record
@@ -342,8 +341,8 @@ in wave 7e; ticket 2.4 still names the R17 deliverable it retires.
 4.4),
 `room-correction-regime-plan.md` (parked under the Loop C pin),
 `crossover-measurement-productization-design.md`,
-`two-stage-commission-flow-plan.md`, the information-design docs, and the
-operational HANDOFFs. `tuning-operator-runbook.md` stays the
+`two-stage-commission-flow-plan.md`, and the information-design docs.
+`tuning-operator-runbook.md` stays the
 operational canon and `crossover-v2-engine-design.md` carries the file map. The
 Wave-2 deletion PRs landed: `fc_selector.py` is gone and `fc_sweep`'s sweep half
 with it, so the file map carries no rows for them to amend.
@@ -479,8 +478,7 @@ vocabulary; update `docs/doc-map.toml` routing; update
     analyzer they awaited. (S)
 2.14 Docs true-up (the Supersessions section): historical tags/banners on
     `audio-commissioning-roadmap.md`, `llm-native-tuning-workbench-plan.md`,
-    and `attribution-stage-plan.md`;
-    `HANDOFF-correction-revision-plan.md`'s next_mission cancellation +
+    and `attribution-stage-plan.md`; the next_mission cancellation and
     ordering-authority transfer note; doctrine deviation-table rows
     (a)/(b); a one-line unapplied-phase note in `calibration.py`. (S–M)
 

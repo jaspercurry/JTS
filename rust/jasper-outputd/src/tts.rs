@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Post-round-trip TTS IPC for the final-output owner — the bonded-member
-//! voice path (docs/HANDOFF-multiroom.md §2, Increment 5 PR-2).
+//! voice path.
 //!
 //! On a bonded member, conversational TTS must NOT ride the synced
 //! stream (inv-3 — the ~buffer_ms playout delay is right for music and

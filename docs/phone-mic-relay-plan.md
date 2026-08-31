@@ -152,8 +152,7 @@
 > `JASPER_CAPTURE_ALIGNMENT_THRESHOLD` against on-device sweeps; (c) an audible failure cue
 > (jasper-web → jasper-voice bridge; failures currently surface on the capture page
 > + `/status.relay` + `event=capture_relay.*` logs). **Validate on jts3/jts5, never
-> the production jts.local.** **Once fully validated, convert this doc to the HANDOFF shape with a
-> `Last verified:` footer.**
+> the production jts.local.**
 
 ---
 

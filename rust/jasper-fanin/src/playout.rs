@@ -32,10 +32,9 @@
 //! the DAC buffer/hw delay), on the order of tens to ~150 ms. That is the
 //! conservative direction for truncation (slightly more "heard" than
 //! reality, so the assistant will not wrongly repeat) and a large
-//! improvement over the previous hardcoded `0`. Closing that fixed offset
-//! to exact DAC-clock precision (subtracting outputd's reported DAC delay)
-//! is a documented follow-up — see
-//! `docs/HANDOFF-speaker-output-reference.md` "Robust Barge-In Contract".
+//! improvement over the previous hardcoded `0`. This ledger does not claim
+//! exact DAC-clock precision because it does not subtract outputd's reported
+//! DAC delay.
 //!
 //! ## Shape parity with outputd
 //!

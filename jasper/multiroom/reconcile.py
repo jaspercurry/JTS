@@ -451,8 +451,8 @@ def snapclient_argv(
     Channel selection (which of L/R/sub this client plays) is a later
     CamillaDSP concern and is intentionally NOT decided here.
 
-    ``player_fifo`` (inv-2 leader content lane — STAGED, see HANDOFF §2 "inv-2
-    realization"): when set, snapclient writes raw PCM to that FIFO via its
+    ``player_fifo`` (inv-2 leader content lane — STAGED): when set, snapclient
+    writes raw PCM to that FIFO via its
     ``file`` player instead of a default ALSA sink, so the buffered round-trip
     feeds outputd's ``dac_content`` lane (Increment 3) rather than snd-aloop
     (which would trip the ``snd_pcm_delay``-lies trap — inv-2) — and rather
