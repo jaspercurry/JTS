@@ -244,7 +244,7 @@ class SummedAcousticResult:
     # SC-1 band-specific SNR verdict block (alignment decision class), from
     # jasper.audio_measurement.snr_policy.band_snr_verdicts over the overlap
     # band [fc/2, fc*2]. None when neither noise_band_report nor
-    # noise_floor_dbfs was supplied to analyze_summed_crossover.
+    # noise_floor_dbfs was supplied to the summed analyzer.
     snr: dict[str, Any] | None = None
     ambient: dict[str, Any] | None = None
     # True when null_depth_db was reduced from its raw measured value because
@@ -257,7 +257,7 @@ class SummedAcousticResult:
     # SC-2 low-frequency validity floor. True whenever gating was not applied
     # (near-field/exempt) or found no floor issue; False only when a
     # reference-axis capture's floor makes the null undecidable (paired with
-    # verdict=unusable_capture — see analyze_summed_crossover).
+    # verdict=unusable_capture).
     above_validity_floor: bool | None = True
     near_validity_floor: bool = False
     # SC-2 gating block — see DriverAcousticResult.gating.
@@ -346,7 +346,6 @@ def _capture_to_magnitude(
     calibration: "CalibrationCurve | None" = None,
     capture_geometry: str = "near_field",
     ambient_duration_s: float | None = None,
-    snr_bands: Sequence[tuple[str, float, float]] | None = None,
 ):
     """Shared capture → (quality, freqs, smoothed_magnitude_db, gating) pipeline.
 
@@ -375,17 +374,13 @@ def _capture_to_magnitude(
     ``gating`` dict is always populated (exempt or applied) whenever an IR
     exists at all.
 
-    ``snr_bands`` selects the band table the paired-ambient report is measured
-    on. ``None`` keeps
+    The paired-ambient report is measured on
     :data:`~jasper.audio_measurement.snr_policy.CROSSOVER_SNR_BANDS_HZ` — the
     canonical acoustic bands, correct for the WIDE per-driver near-field sweep
-    this path was built for, and byte-identical to before this parameter
-    existed. :func:`analyze_summed_crossover` passes a table derived from the
-    sweep's own ``[f1, f2]`` instead, because its sweep is too narrow to cover
-    a canonical band; see
-    :func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands`. The
-    caller MUST measure its signal side on the same table it passes here — the
-    two are subtracted per ``band_id``.
+    this path was built for. The caller MUST measure its signal side on that
+    same table: the two are subtracted per ``band_id``. A sweep too narrow to
+    cover a canonical band needs a derived table instead
+    (:func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands`).
     """
     if capture_geometry not in CAPTURE_GEOMETRIES:
         raise DriverAcousticsError(
@@ -562,9 +557,7 @@ def _capture_to_magnitude(
 
         # One band table for every term below. The signal side (measured by the
         # caller) must use this same table: the two are subtracted per band_id.
-        bands = (
-            snr_policy.CROSSOVER_SNR_BANDS_HZ if snr_bands is None else tuple(snr_bands)
-        )
+        bands = snr_policy.CROSSOVER_SNR_BANDS_HZ
         noise_bands = snr_policy.magnitude_band_levels(
             noise_freqs, noise_smoothed, bands
         )
@@ -679,36 +672,18 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     not a fixed per-band offset that could be calibrated out once; it is a
     function of where the sweep happens to sit inside the recording.
 
-    *Why it is nonetheless dead today.* Both call sites are unreachable in
-    the sense that matters:
+    *Why it is nonetheless dead today.* Its one remaining call site,
+    :func:`analyze_driver_capture`, is unreachable in the sense that matters:
+    the raw-WAV ``POST /crossover/driver-capture`` route it needs was retired
+    by W5b. That route is absent from ``jasper.web.correction_setup``'s route
+    allowlist and pinned at 404 by ``test_web_correction_setup``'s
+    route-inventory test. The static callers that survive
+    (``web_measurement``'s driver-capture chain, itself zero-caller) cannot
+    be entered.
 
-    * :func:`analyze_driver_capture` — reachable only through the retired
-      raw-WAV ``POST /crossover/driver-capture`` route, which W5b removed. It
-      is absent from ``jasper.web.correction_setup``'s route allowlist and
-      pinned at 404 by ``test_web_correction_setup``'s route-inventory test.
-    * :func:`analyze_summed_crossover` — no longer reached from any live
-      path. Its one production caller was the commissioning capture producer,
-      deleted by ADR-0197. One reference survives —
-      ``commissioning_capture.record_summed_acoustic_capture``'s ``analyze``
-      default argument — but that function has no production caller either
-      (tests and an ``active_speaker.__init__`` re-export only), so binding
-      the default never calls it. While the producer existed it always passed
-      ``ambient_duration_s`` and passed NEITHER ``noise_band_report`` NOR
-      ``noise_floor_dbfs``, which builds the paired ambient report, stamped
-      ``domain="deconvolved"``, so the capture side is measured by
-      ``snr_policy.magnitude_band_levels`` instead. Reaching this function
-      needs ``paired_ambient is None`` AND one of those two kwargs set; with
-      neither set the SNR block is skipped entirely. That shape stays pinned
-      by
-      ``test_summed_production_shape_never_reads_the_hann_capture_band_levels``,
-      which now guards the shape a rebuilt caller must keep rather than one
-      any live path takes.
-
-    *Reviving either caller re-arms this immediately.* Adding a
-    driver-capture upload route, or passing ``noise_band_report`` /
-    ``noise_floor_dbfs`` on a capture whose paired ambient did not build,
-    puts a layout-dependent error straight into the SC-1 SNR gate — a
-    decision, not a disclosure. ``window="rectangular"`` is the likely fix: it
+    *Reviving that caller re-arms this immediately.* Adding a driver-capture
+    upload route puts a layout-dependent error straight into the SC-1 SNR
+    gate — a decision, not a disclosure. ``window="rectangular"`` is the likely fix: it
     tracks the same law to within 0.2 dB everywhere in the 2.07-20.03 s family
     above. That residual is a smooth function of sweep LENGTH, not a constant
     (about 0.18 dB at 2.07 s, 0.10 dB at the 6 s default, 0.05 dB at 20.03 s,
@@ -1140,267 +1115,5 @@ def analyze_driver_capture(
         snr=snr_block,
         ambient=paired_ambient,
         gating=gating_block,
-        capture_geometry=capture_geometry,
-    )
-
-
-def analyze_summed_crossover(
-    captured_wav: str | Path,
-    sweep_meta: Mapping[str, Any],
-    *,
-    crossover_fc_hz: float,
-    null_threshold_db: float = DEFAULT_NULL_THRESHOLD_DB,
-    expect_null: bool = False,
-    has_mic_calibration: bool = False,
-    calibration: "CalibrationCurve | None" = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
-    noise_floor_dbfs: float | None = None,
-    capture_geometry: str,
-    ambient_duration_s: float | None = None,
-) -> SummedAcousticResult:
-    """Measure the cancellation null at the crossover in a summed-speaker capture.
-
-    The null depth is the magnitude at ``crossover_fc_hz`` below the mean of the
-    octave-away shoulders, which cancels the unknown absolute reference.
-
-    Two capture kinds, selected by ``expect_null`` (the canonical reverse-polarity
-    method). Both use the same
-    ``null_threshold_db`` to decide whether a null is *present*; the per-capture
-    verdict is a "did a null form?" signal, and the cap-independent polarity call
-    (reverse-vs-in-phase margin) lives in ``crossover_alignment``:
-
-    * ``expect_null=False`` (normal, in-phase): a correct crossover sums flat, so
-      a deep null (``>= null_threshold_db``) is the polarity/delay PROBLEM.
-    * ``expect_null=True`` (one adjacent driver inverted): a correct, time-aligned
-      crossover now CANCELS, so a deep null (``>= null_threshold_db``) is the PASS
-      signal and a shallow one flags delay/polarity/wiring/hardware.
-
-    ``calibration`` (L2 calibrated mic) corrects the magnitude before the shoulder
-    comparison; ``has_mic_calibration`` alone only relaxes the quality gate.
-
-    ``noise_band_report`` (correction-shape band list) and/or
-    ``noise_floor_dbfs`` (a single scalar) feed the SC-1 alignment-class SNR
-    verdict (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`)
-    over the overlap band ``[fc/2, fc*2]``, stored on the result's ``snr``
-    field. Per the split SNR policy, a scalar alone (or no evidence) reads as
-    "unknown" for this decision class — it is not sufficient evidence for a
-    null/alignment call. When real band evidence proves the overlap SNR, the
-    REPORTED ``null_depth_db`` is capped at what that SNR can prove
-    (:func:`~jasper.audio_measurement.snr_policy.cap_null_depth_db`,
-    ``null_depth_capped=True``); the verdict below is always decided from the
-    raw, uncapped measured depth — a capped-but-still-deep null is safely "at
-    least that deep".
-    ``capture_geometry`` — see :func:`_capture_to_magnitude`. It is REQUIRED
-    here, with no default. The two geometries analyse the capture differently
-    enough (a gated vs an ungated impulse response, and so a different null
-    depth and a different validity floor) that there is no answer that is
-    right when the caller has not thought about it; the previous
-    ``"near_field"`` default made the un-gated reading the silent one. Both
-    production callers already state their geometry, so requiring it costs
-    them nothing and makes the un-gated path impossible to select by
-    omission. When gating
-    applies and reports a floor, and either ``crossover_fc_hz`` or its lower
-    shoulder (``crossover_fc_hz / 2``, one of the two points the null depth is
-    measured from) sits below it, the reference-axis capture cannot decide
-    this crossover's null at all: reported ``unusable_capture`` rather than a
-    null computed from contaminated data. ``above_validity_floor`` /
-    ``near_validity_floor`` record the (non-excluding) advisory state for a
-    usable result.
-    """
-    if crossover_fc_hz <= 0:
-        raise DriverAcousticsError(
-            f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
-        )
-
-    from jasper.audio_measurement import snr_policy
-
-    # This capture's sweep is one octave either side of Fc, too narrow to cover
-    # a canonical acoustic band, so the SNR band table is derived from the sweep
-    # itself. That keeps both sides of every band subtraction in the one gated
-    # deconvolved domain instead of silently pairing a deconvolved signal level
-    # against a raw dBFS ambient one (SC-1 SNR units defect, 2026-08-01).
-    snr_bands = (
-        snr_policy.sweep_excitation_bands(
-            f1_hz=float(sweep_meta["f1"]), f2_hz=float(sweep_meta["f2"])
-        )
-        if ambient_duration_s is not None
-        else None
-    )
-
-    report, freqs, mag_db, gating_block, paired_ambient = _capture_to_magnitude(
-        captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
-        calibration=calibration, capture_geometry=capture_geometry,
-        ambient_duration_s=ambient_duration_s, snr_bands=snr_bands,
-    )
-    quality_dict = report.to_dict()
-    mic_clipping = report.clipped_fraction >= 1e-4
-    calibrated = calibration is not None
-
-    if freqs is None:
-        return SummedAcousticResult(
-            verdict=VERDICT_UNUSABLE_CAPTURE,
-            null_depth_db=float("nan"),
-            crossover_fc_hz=crossover_fc_hz,
-            observed_mic_dbfs=report.rms_dbfs,
-            mic_clipping=mic_clipping,
-            quality=quality_dict,
-            expect_null=expect_null,
-            calibrated=calibrated,
-            snr=None,
-            null_depth_capped=False,
-            gating=None,
-            above_validity_floor=(
-                True if capture_geometry == "near_field" else None
-            ),
-            near_validity_floor=False,
-            capture_geometry=capture_geometry,
-        )
-
-    validity_known, floor_hz = _validity_floor(capture_geometry, gating_block)
-
-    lower_shoulder_hz = crossover_fc_hz / 2.0
-    if not validity_known:
-        return SummedAcousticResult(
-            verdict=VERDICT_UNUSABLE_CAPTURE,
-            null_depth_db=float("nan"),
-            crossover_fc_hz=crossover_fc_hz,
-            observed_mic_dbfs=report.rms_dbfs,
-            mic_clipping=mic_clipping,
-            quality=quality_dict,
-            expect_null=expect_null,
-            calibrated=calibrated,
-            ambient=paired_ambient,
-            gating=gating_block,
-            above_validity_floor=None,
-            near_validity_floor=False,
-            capture_geometry=capture_geometry,
-        )
-    if floor_hz is not None:
-        if crossover_fc_hz < floor_hz or lower_shoulder_hz < floor_hz:
-            # The room prevented a low-frequency decision here (spec:
-            # "no proposal rests on data below the floor"). Never emits a
-            # null computed from a below-floor shoulder.
-            return SummedAcousticResult(
-                verdict=VERDICT_UNUSABLE_CAPTURE,
-                null_depth_db=float("nan"),
-                crossover_fc_hz=crossover_fc_hz,
-                observed_mic_dbfs=report.rms_dbfs,
-                mic_clipping=mic_clipping,
-                quality=quality_dict,
-                expect_null=expect_null,
-                calibrated=calibrated,
-                ambient=paired_ambient,
-                gating=gating_block,
-                above_validity_floor=False,
-                near_validity_floor=False,
-                capture_geometry=capture_geometry,
-            )
-        from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
-
-        above_validity_floor = True
-        near_validity_floor = (
-            floor_hz <= lower_shoulder_hz < NEAR_FLOOR_RATIO * floor_hz
-        )
-    else:
-        above_validity_floor = True
-        near_validity_floor = False
-
-    from jasper.audio_measurement.analysis import crossover_null_depth_db
-
-    null_depth = crossover_null_depth_db(freqs, mag_db, crossover_fc_hz)
-
-    deep = null_depth >= null_threshold_db
-    if expect_null:
-        # Reverse-polarity proof: the deep null is what we WANT.
-        verdict = SUMMED_BLEND_OK if deep else SUMMED_POLARITY_OR_DELAY_PROBLEM
-    else:
-        verdict = SUMMED_POLARITY_OR_DELAY_PROBLEM if deep else SUMMED_BLEND_OK
-
-    snr_block = None
-    reported_null_depth = null_depth
-    null_depth_capped = False
-    effective_noise_report = paired_ambient or noise_band_report
-    if effective_noise_report or noise_floor_dbfs is not None:
-        noise_domain, noise_bands = snr_policy.unwrap_noise_report(
-            effective_noise_report
-        )
-        # The paired ambient we just measured is keyed on the sweep-derived
-        # table; an externally supplied report is keyed on the canonical one it
-        # was built with. Subtracting across two tables would match no band_id.
-        paired_is_source = (
-            paired_ambient is not None and effective_noise_report is paired_ambient
-        )
-        capture_band_table = (
-            snr_bands
-            if paired_is_source and snr_bands is not None
-            else snr_policy.CROSSOVER_SNR_BANDS_HZ
-        )
-        # Fail closed rather than subtract across domains. This applies to
-        # EITHER route into the gate — the paired ambient we measured, and an
-        # externally supplied report — because a raw-ambient band is never a
-        # legitimate noise term for this decision: it is a band-integrated
-        # dBFS RMS over ungated 1 s frames, and the signal side it would be
-        # subtracted from is a gated transfer-function level. On the paired
-        # route a sweep-derived table makes it unreachable by construction; on
-        # the external route nothing constrains the caller, which is exactly
-        # why the check cannot be conditional on the paired route. Without it
-        # the gate's correctness would rest on the reflection gate having
-        # run — a fact this subtraction has no way to see (SC-1 SNR units
-        # defect, 2026-08-01).
-        fallback_bands = sorted(
-            str(band.get("band_id"))
-            for band in (noise_bands or ())
-            if isinstance(band, Mapping)
-            and band.get("basis") == "raw_ambient_fallback"
-        )
-        if fallback_bands:
-            raise DriverAcousticsError(
-                "summed-crossover SNR requires every ambient band in the "
-                "deconvolved domain, but these took the raw-ambient "
-                f"fallback: {fallback_bands}"
-            )
-        if noise_domain == "deconvolved":
-            capture_bands = snr_policy.magnitude_band_levels(
-                freqs, mag_db, capture_band_table
-            )
-            band_method = (
-                str(effective_noise_report.get("method") or "")
-                if isinstance(effective_noise_report, Mapping)
-                else ""
-            ) or "deconvolved_band_difference"
-        else:
-            capture_bands = _capture_band_levels(captured_wav)
-            band_method = "fft_band_power_difference"
-        snr_block = snr_policy.band_snr_verdicts(
-            decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
-            capture_bands=capture_bands,
-            noise_bands=noise_bands,
-            noise_floor_dbfs_scalar=noise_floor_dbfs,
-            relevant_hz=(
-                max(crossover_fc_hz / 2.0, ANALYSIS_LO_HZ),
-                min(crossover_fc_hz * 2.0, ANALYSIS_HI_HZ),
-            ),
-            model=DRIVER,
-            band_method=band_method,
-        )
-        reported_null_depth, null_depth_capped = snr_policy.cap_null_depth_db(
-            null_depth, snr_block.get("worst_relevant"), DRIVER.null_cap_margin_db,
-        )
-
-    return SummedAcousticResult(
-        verdict=verdict,
-        null_depth_db=reported_null_depth,
-        crossover_fc_hz=crossover_fc_hz,
-        observed_mic_dbfs=report.rms_dbfs,
-        mic_clipping=mic_clipping,
-        quality=quality_dict,
-        expect_null=expect_null,
-        calibrated=calibrated,
-        snr=snr_block,
-        ambient=paired_ambient,
-        null_depth_capped=null_depth_capped,
-        gating=gating_block,
-        above_validity_floor=above_validity_floor,
-        near_validity_floor=near_validity_floor,
         capture_geometry=capture_geometry,
     )

@@ -21,9 +21,11 @@ prior / geometry-prior seed-only), and a DI-continuity term in the
 objective. The reverse-null test was never part of that deleted machinery:
 its code ships and is live (`profile.py`'s `SUPPORTED_POLARITY`;
 `commissioning_evidence.py`'s and `commissioning_host.py`'s `"reverse"`
-evidence/graph kind; `driver_acoustics.analyze_summed_crossover`'s
-null-depth pass signal; `crossover_alignment.py`'s
-`POLARITY_KEEP`/`POLARITY_INVERT` decision on measured null depth) — but no
+evidence/graph kind; `crossover_alignment.py`'s
+`POLARITY_KEEP`/`POLARITY_INVERT` decision on measured null depth) — the
+analyzer that produced that null depth, `analyze_summed_crossover`, has
+since been deleted as a zero-caller orphan, so a rebuilt summed probe must
+supply it. And no
 physical inverted-polarity probe has ever been banked:
 `commissioning_capture_producer.SummedCaptureProducer` is a confirmed
 runtime orphan nothing instantiates, `docs/attribution-stage-plan.md`

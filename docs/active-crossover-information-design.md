@@ -1041,13 +1041,17 @@ produce false passes (3 of 156). **Read that as "the false-pass regime is the
 short-sweep regime", not as "the old bug was never dangerous"** — shipped
 4 s configurations lie between the measured points and were not tested.
 
-`analyze_summed_crossover` therefore derives its band table from the sweep
+The summed analyzer therefore derived its band table from the sweep
 itself (`snr_policy.sweep_excitation_bands`: three log-uniform bands spanning
-exactly `[f1, f2]`, ids `sweep_low`/`sweep_mid`/`sweep_high`). Every band is
-then covered by construction, the fallback is structurally unreachable on that
-path, and both sides of every subtraction stay in one gated deconvolved
+exactly `[f1, f2]`, ids `sweep_low`/`sweep_mid`/`sweep_high`). Every band was
+then covered by construction, the fallback structurally unreachable on that
+path, and both sides of every subtraction stayed in one gated deconvolved
 domain. Post-fix error at 8 s: **−0.64 to +0.05 dB**, zero bands on the
 fallback.
+
+> `driver_acoustics.analyze_summed_crossover` has since been deleted as a
+> zero-caller orphan. The band-table rule above is the constraint any rebuilt
+> summed analyzer must satisfy, not a description of shipping code.
 
 Captures refused despite a whole-sweep SNR above the floor fall from 43/162 to
 5/162 — but that whole-sweep yardstick suits the PRE-fix gate (which reported a
