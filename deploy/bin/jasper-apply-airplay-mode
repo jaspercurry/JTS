@@ -11,13 +11,15 @@
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
 #     CamillaDSP config's samplerate/chunksize/target_level, jasper-fanin's
-#     live output delay (else the ring-queue stand-in), and jasper-outputd's
-#     live DAC delay (else JASPER_OUTPUTD_DAC_BUFFER_FRAMES); AND, only
-#     while this speaker is an active bonded leader, the Snapcast
-#     round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
-#     written by jasper-grouping-reconcile). Absent on solo/follower
-#     => unchanged. The formula is restated once, beside the placeholder
-#     in deploy/shairport-sync.conf.template.
+#     live output delay (else Ring A's slot capacity, parsed from the
+#     shipped ALSA ring conf), the CamillaDSP->outputd Ring B queue (also
+#     parsed from that conf), and jasper-outputd's live DAC delay (else
+#     JASPER_OUTPUTD_DAC_BUFFER_FRAMES); AND, only while this speaker is an
+#     active bonded leader, the Snapcast round-trip playout buffer
+#     (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC, written by
+#     jasper-grouping-reconcile). Absent on solo/follower => unchanged. The
+#     formula is restated once, beside the placeholder in
+#     deploy/shairport-sync.conf.template.
 #   - output_device from the renderer-lane map (U3/P6d):
 #     /var/lib/jasper/renderer_lanes.env's JASPER_SHAIRPORT_DEVICE line,
 #     written by `jasper-audio-config renderer-lanes` — shairport_ring_lane
@@ -45,6 +47,14 @@
 #                                 Default: /var/lib/camilladsp/outputd-statefile.yml.
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
 #                                   Default: /etc/camilladsp/outputd-cutover.yml.
+#   JASPER_RING_ALSA_CONF       — the shipped ALSA ring conf declaring Ring
+#                                 A/B's period_frames + n_slots (installed
+#                                 verbatim from
+#                                 deploy/alsa/conf.d/60-jts-ring.conf),
+#                                 parsed for the ring-geometry latency terms
+#                                 below so a future ring retune propagates
+#                                 without a code change.
+#                                 Default: /etc/alsa/conf.d/60-jts-ring.conf.
 #   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
 #                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES,
 #                                 the fallback when outputd STATUS offers
@@ -82,6 +92,10 @@ JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
+# Shipped ALSA ring conf (deploy/alsa/conf.d/60-jts-ring.conf, installed
+# verbatim) declaring Ring A/B's period_frames + n_slots — the single
+# source of truth for the ring-queue latency terms below.
+RING_ALSA_CONF="${JASPER_RING_ALSA_CONF:-/etc/alsa/conf.d/60-jts-ring.conf}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 # Reconciler-owned env file (jasper-grouping-reconcile) carrying the
 # bonded-leader AirPlay offset delta. ABSENT/empty on solo + followers,
@@ -93,14 +107,16 @@ RENDERER_LANES_FILE="${JASPER_RENDERER_LANES_ENV:-/var/lib/jasper/renderer_lanes
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
-# Stand-in for the fan-in → CamillaDSP queue depth, in frames at the configured
-# sample rate. Fan-in reaches CamillaDSP over the SHM ring (ADR-0100), which has
-# no ALSA delay to sample, so fan-in STATUS reports none and this fixed value is
-# what the derived offset actually uses. 1024 is the number the retired
-# JASPER_FANIN_OUTPUT_BUFFER_FRAMES shipped, kept so the offset is unchanged;
-# re-deriving it against the ring's real depth needs a fresh AirPlay sync
-# measurement.
-DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024
+# Ring A/B slot-geometry fallback, used only if RING_ALSA_CONF itself is
+# unreadable (e.g. a non-ring topology, or a box that predates
+# ring-platform.sh). Matches the shipped 60-jts-ring.conf defaults:
+# period_frames 128, n_slots 2. Ring A counts the full 2-slot capacity —
+# it runs pinned full in steady state (STATUS full_waits/published ratio
+# ~1.0, rust/jasper-fanin/src/config.rs's RING_SLOT_FRAMES/ring_slots) —
+# while Ring B counts only the one-slot floor: there is no equivalent
+# pinned-full evidence for it, so only the proven minimum is charged.
+DEFAULT_RING_A_LATENCY_FRAMES=256
+DEFAULT_RING_B_LATENCY_FRAMES=128
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -154,6 +170,37 @@ camilla_devices_int() {
             }
         }
     ' "$config"
+}
+
+ring_conf_pcm_int() {
+    local pcm_name="$1"
+    local key="$2"
+    # ALSA's own conf syntax is `key value` (space separated, no colon) —
+    # distinct from CamillaDSP's YAML that camilla_devices_int above parses.
+    [[ -r "$RING_ALSA_CONF" ]] || return 0
+    awk -v pcm="$pcm_name" -v key="$key" '
+        $0 ~ ("^pcm\\." pcm "[[:space:]]*\\{") {
+            in_block = 1
+            next
+        }
+        in_block && /^[[:space:]]*}/ {
+            in_block = 0
+            next
+        }
+        in_block {
+            line = $0
+            sub(/[[:space:]]*#.*/, "", line)
+            pattern = "^[[:space:]]*" key "[[:space:]]+"
+            if (line ~ pattern) {
+                sub(pattern, "", line)
+                sub(/[[:space:]]*$/, "", line)
+                if (line ~ /^[0-9]+$/) {
+                    print line
+                    exit
+                }
+            }
+        }
+    ' "$RING_ALSA_CONF"
 }
 
 env_file_value() {
@@ -249,6 +296,35 @@ outputd_dac_buffer_frames() {
     positive_int_or_default "$value" "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
 }
 
+# Ring A (fan-in -> CamillaDSP, pcm.jts_ring_capture / program.ring): the
+# shipped ring's full slot capacity, period_frames x n_slots. Falls back to
+# DEFAULT_RING_A_LATENCY_FRAMES if RING_ALSA_CONF can't be read or parsed.
+ring_a_latency_frames_default() {
+    local period slots
+    period="$(ring_conf_pcm_int jts_ring_capture period_frames || true)"
+    slots="$(ring_conf_pcm_int jts_ring_capture n_slots || true)"
+    if [[ "$period" =~ ^[0-9]+$ && "$slots" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$((period * slots))"
+    else
+        printf '%s\n' "$DEFAULT_RING_A_LATENCY_FRAMES"
+    fi
+}
+
+# Ring B (CamillaDSP -> outputd, pcm.jts_ring_playback / content.ring): one
+# slot's worth (period_frames alone — see DEFAULT_RING_B_LATENCY_FRAMES's
+# comment for why this doesn't get the x n_slots multiplier Ring A gets).
+# Falls back to DEFAULT_RING_B_LATENCY_FRAMES if RING_ALSA_CONF can't be
+# read or parsed.
+ring_b_latency_frames() {
+    local period
+    period="$(ring_conf_pcm_int jts_ring_playback period_frames || true)"
+    if [[ "$period" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$period"
+    else
+        printf '%s\n' "$DEFAULT_RING_B_LATENCY_FRAMES"
+    fi
+}
+
 fanin_output_latency_frames() {
     local value
     value="$(status_json_value "$FANIN_STATUS_SOCKET" output.snd_pcm_delay_frames || true)"
@@ -257,8 +333,9 @@ fanin_output_latency_frames() {
         echo "jasper-apply-airplay-mode: using fanin STATUS output.snd_pcm_delay_frames=$value" >&2
         printf '%s\n' "$value"
     else
-        echo "jasper-apply-airplay-mode: fanin STATUS delay unavailable; using the fixed ring-queue stand-in" >&2
-        printf '%s\n' "$DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES"
+        value="$(ring_a_latency_frames_default)"
+        echo "jasper-apply-airplay-mode: fanin STATUS delay unavailable; using Ring A's ring-queue capacity (${value} frames)" >&2
+        printf '%s\n' "$value"
     fi
 }
 
@@ -305,6 +382,7 @@ derive_audio_backend_latency_offset() {
     local chunksize
     local target_level
     local fanin_output_latency
+    local ring_b_latency
     local outputd_dac_latency
     local bonded_extra_sec
 
@@ -332,13 +410,20 @@ derive_audio_backend_latency_offset() {
         target_level="$chunksize"
     fi
 
-    # Fan-in output queue (between jasper-fanin and CamillaDSP/AEC).
-    # This is downstream of shairport's private input lane, so it is
-    # also invisible to shairport's snd_pcm_delay(). Prefer the live
-    # ALSA delay surfaced by jasper-fanin STATUS; a ring box reports none
-    # (ADR-0100 left no playback PCM to sample), so in practice the fixed
-    # stand-in below is what the offset uses.
+    # Ring A: fan-in's output queue (between jasper-fanin and
+    # CamillaDSP/AEC). This is downstream of shairport's private input
+    # lane, so it is also invisible to shairport's snd_pcm_delay(). Prefer
+    # the live ALSA delay surfaced by jasper-fanin STATUS; a ring box
+    # reports none (ADR-0100 left no playback PCM to sample), so in
+    # practice Ring A's parsed slot capacity below is what the offset uses.
     fanin_output_latency="$(fanin_output_latency_frames)"
+
+    # Ring B: CamillaDSP's output queue into outputd. Also downstream of
+    # shairport's private lane and of CamillaDSP, so shairport cannot
+    # observe it via snd_pcm_delay() either. No live STATUS path for this
+    # one (see ring_b_latency_frames) — it comes straight from the shipped
+    # ring geometry.
+    ring_b_latency="$(ring_b_latency_frames)"
 
     # outputd's DAC queue is downstream of shairport's private lane
     # and of CamillaDSP. shairport cannot observe it via
@@ -357,6 +442,7 @@ derive_audio_backend_latency_offset() {
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
         -v fanin_output_latency="$fanin_output_latency" \
+        -v ring_b_latency="$ring_b_latency" \
         -v outputd_dac_latency="$outputd_dac_latency" \
         -v bonded_extra_sec="$bonded_extra_sec" '
         BEGIN {
@@ -371,7 +457,16 @@ derive_audio_backend_latency_offset() {
             # NB: any single-quote (apostrophe) in this comment block would
             # close the surrounding awk single-quoted string and break
             # the script — do not paraphrase.
-            invisible_frames = (target_level - chunksize) + fanin_output_latency + outputd_dac_latency
+            #
+            # CamillaDSP holds at least one full chunk, plus any extra fill
+            # target_level asks for above that baseline (never negative —
+            # a target BELOW chunksize is still one chunk of real buffering).
+            camilla_term = target_level - chunksize
+            if (camilla_term < 0) {
+                camilla_term = 0
+            }
+            camilla_term = camilla_term + chunksize
+            invisible_frames = fanin_output_latency + camilla_term + ring_b_latency + outputd_dac_latency
             offset = -((invisible_frames / sample_rate) + bonded_extra_sec)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0

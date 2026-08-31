@@ -70,13 +70,17 @@ SHAIRPORT_FIXED_ADD_FRAMES = 11035
 # AP2 RTP audio frame clock.
 AIRPLAY_FRAME_RATE_HZ = 44100
 # The solo speaker's fixed downstream delay above the AP2 anchor baseline
-# (CamillaDSP + fan-in + outputd). The derived solo offset is ~-0.1493 s;
+# (Ring A + CamillaDSP + Ring B + outputd). On the shipped ring topology's
+# only checked-in config (deploy/camilladsp/outputd-cutover.yml: chunksize
+# = target_level = 128) the derived solo offset is ~-0.0158 s
+# (256 + 128 + 128 + a live outputd DAC delay of ~248 frames, all / 48000);
 # 0.150 is the documented round-number estimate the tight-regime threshold
-# uses. First-order on purpose — this surface flags the regime, it does not
-# re-derive the offset. GROUND TRUTH for the real per-box value:
-# derive_audio_backend_latency_offset in deploy/bin/jasper-apply-airplay-mode
-# (a live sum of target_level/chunksize/fan-in/outputd frames). Re-check this
-# constant if those pipeline buffer defaults change materially.
+# uses, comfortably above that. First-order on purpose — this surface flags
+# the regime, it does not re-derive the offset. GROUND TRUTH for the real
+# per-box value: derive_audio_backend_latency_offset in
+# deploy/bin/jasper-apply-airplay-mode (a live sum of Ring A/Camilla/Ring
+# B/outputd frames). Re-check this constant if those pipeline buffer
+# defaults change materially.
 PIPELINE_FIXED_DELAY_SEC = 0.150
 # shairport's own desired output backend buffer
 # (audio_backend_buffer_desired_length_in_seconds in
