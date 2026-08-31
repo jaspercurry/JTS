@@ -240,7 +240,7 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
 
 def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
     """Gate ruling (W6.10 should-fix): Start-over while a candidate is APPLIED
-    must preserve `applied` + `pre_apply_profile` — the stash carrying the way
+    must preserve `applied` + `previous_candidate_fingerprint` — the way
     back's pointer — while clearing the journey fields so the envelope serves
     the clean start screen. A full clear here would strand the household on
     the applied graph with no way back."""
@@ -249,7 +249,6 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
 
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
-        pre_apply = {"candidate_fingerprint": "fp-prior", "config": {"path": "/x.yml"}}
         v2.save_v2_state({
             "session_id": "cap_x",
             "accepted_phases": ["check", "measure"],
@@ -258,7 +257,7 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
             "verify": {"outcome": "fail"},
             "failure": {"code": "verify_out_of_tolerance"},
             "gain_plan_db": {"woofer": -6.0},
-            "pre_apply_profile": pre_apply,
+            "previous_candidate_fingerprint": "fp-prior",
         })
         _reset_scaffold(monkeypatch)
 
@@ -267,9 +266,9 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         assert status == 200
         state = v2.load_v2_state()
         assert state is not None
-        # Undo pointers preserved…
+        # The way back's pointers preserved…
         assert state["applied"] is True
-        assert state["pre_apply_profile"] == pre_apply
+        assert state["previous_candidate_fingerprint"] == "fp-prior"
         # …journey fields cleared, so the envelope lands on the clean start
         # screen (phase derives to the microphone check).
         assert state["accepted_phases"] == []

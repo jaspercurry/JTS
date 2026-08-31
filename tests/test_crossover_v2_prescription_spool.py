@@ -848,13 +848,21 @@ _HOSTILE_VALUES = (
     [], {}, [[[[[]]]]], {"a": {"b": {"c": {}}}}, [1e308, float("inf")],
 )
 
+def _drop_staged() -> None:
+    """Clear the pending slot between fuzz cases (test-side unlink)."""
+    try:
+        spool.prescription_spool_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
 #: Every top-level field the envelope carries. Derived from a staged document
 #: rather than listed, so a field added to the envelope joins the fuzz without
 #: anyone remembering to add it — the sweep cannot go stale against its subject.
 def _envelope_fields() -> tuple[str, ...]:
     _stage(for_round_ordinal=9)
     fields = tuple(sorted(json.loads(spool.prescription_spool_path().read_text())))
-    spool.withdraw_staged_prescription()
+    _drop_staged()
     return fields
 
 
@@ -907,7 +915,7 @@ def test_no_corrupt_envelope_field_escapes_the_refusal_vocabulary():
             try:
                 _rewrite_envelope(**{field: value})
             except (TypeError, ValueError):  # unserializable probe, not a case
-                spool.withdraw_staged_prescription()
+                _drop_staged()
                 continue
             try:
                 spool.take_staged_prescription(round_ordinal=9)
@@ -917,7 +925,7 @@ def test_no_corrupt_envelope_field_escapes_the_refusal_vocabulary():
             except Exception as exc:  # noqa: BLE001 - the finding IS the escape
                 escapes.append(f"{field}={value!r} -> {type(exc).__name__}: {exc}")
             finally:
-                spool.withdraw_staged_prescription()
+                _drop_staged()
 
     assert not escapes, "corrupt envelopes escaped the vocabulary:\n" + "\n".join(
         escapes
@@ -1059,55 +1067,6 @@ def test_the_round_that_took_one_leaves_nothing_for_the_next(monkeypatch):
     assert _prepare(monkeypatch).blend_prescription_record is not None
     v2host.save_v2_state(_state_carrying_a_kept_round())
     assert _prepare(monkeypatch).blend_prescription_record is None
-
-
-# --------------------------------------------------------------------------- #
-# 4. Undo — the #2699 withdrawal, applied to this slot
-# --------------------------------------------------------------------------- #
-
-
-def test_a_household_undo_withdraws_a_staged_prescription():
-    """#2699's rule: an Undo withdraws the instruction it reverses.
-
-    An operator stages a prescription by reading the evidence of a round the
-    household then removes. Surviving, it would compose a correction onto a
-    graph that is no longer there — the same reason ``observe_restore`` clears
-    the receipt's banked ``blend``.
-    """
-    v2host.save_v2_state(_state_carrying_a_kept_round())
-    _stage(for_round_ordinal=9)
-
-    v2host.observe_restore()
-
-    assert not spool.staged_prescription_pending()
-    assert spool.take_staged_prescription(round_ordinal=9) is None
-
-
-def test_an_undo_withdraws_even_when_the_journey_state_is_gone():
-    """The withdrawal runs ahead of the no-state early return, deliberately.
-
-    A lost state file resolves the next round's ordinal back to 1, which is an
-    ordinal a surviving document could legitimately match — so the one thing
-    ``observe_restore`` clears that does not live in ``state`` must not be
-    guarded by ``state`` being readable.
-    """
-    _stage(for_round_ordinal=9)
-    assert v2host.load_v2_state() is None
-
-    v2host.observe_restore()
-
-    assert not spool.staged_prescription_pending()
-
-
-def test_a_withdrawn_document_is_not_filed_among_the_ones_that_ran():
-    """Nothing consumed it, so the consumed slot must not claim it did."""
-    _stage(for_round_ordinal=9)
-    pending = spool.prescription_spool_path()
-
-    assert spool.withdraw_staged_prescription() is True
-
-    assert not pending.with_suffix(spool.CONSUMED_SUFFIX + pending.suffix).exists()
-    assert spool.withdraw_staged_prescription() is False
 
 
 # --------------------------------------------------------------------------- #

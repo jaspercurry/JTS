@@ -547,11 +547,10 @@ def _crossover_fc_hz(
     gate runs that analysis, so this is a precondition rather than a nicety.
 
     Read from :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
-    (via :func:`~.evidence_packet._applied_profile_source`), never from a flow
-    state's ``pre_apply_profile``: that field is the Undo stash, written only by
-    ``observe_apply_success`` and naming the graph Undo restores TO, so it is one
-    apply behind after any v2 apply and arbitrarily behind after an apply through
-    a door that never touches v2 state. A caller that wants a specific round's
+    (via :func:`~.evidence_packet._applied_profile_source`), never from the
+    flow state: what that state records about the previous apply is one apply
+    behind after any v2 apply and arbitrarily behind after an apply through a
+    door that never touches v2 state. A caller that wants a specific round's
     corner passes that round's own banked applied-profile file, never a flow
     state.
     """
@@ -1089,9 +1088,9 @@ def read_round_harmonics(
     where the round's crossover corner is read from (see
     :func:`_crossover_fc_hz`). Its absence, or an unreadable file, is reported
     through :class:`HarmonicEvidenceRefused` rather than falling back to
-    ``state``'s ``pre_apply_profile`` — that field is the Undo stash, which can
-    be one apply behind or arbitrarily behind the graph a round actually
-    measured through.
+    anything the flow state records about a previous apply — which can be one
+    apply behind or arbitrarily behind the graph a round actually measured
+    through.
 
     ``session_id`` is the BUNDLE session id, and it is what says which of the
     ring's captures this round's program was played through. Omitting it is NOT

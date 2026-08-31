@@ -397,24 +397,27 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
    **minting** `session_id` + `evidence.bundle_session_id`. It publishes
    `accepted_phases: ["measure"]` and clears `applied` and the accepted-Sound
    pair, because `_update_current_review`'s compare-and-set gates on all four and
-   a failed CAS would apply the graph while recording nothing, leaving Undo
-   unreachable. It applies nothing: every admission gate reads live SSOT, so no
-   state write can satisfy one. **Two things it will not do:** restore
+   a failed CAS would apply the graph while recording nothing — no `applied`
+   flag, no way-back pointer. It applies nothing: every admission gate reads
+   live SSOT, so no state write can satisfy one. **Two things it will not do:** restore
    `verify_priors` (they belong to the stage-1 conductor that ran the fit, so a
    post-apply VERIFY grades INDETERMINATE, never a false pass); and republish a
    candidate whose crossover differs from what `/sound` declares. Journal:
    `event=correction.crossover_v2_banked_candidate_found`,
    `…_candidate_republished`, `…_republish_refused` with a machine `code=`.
-8. **Undo survives everything.** `handle_v2_apply` stashes the
-   `pre_apply_profile` and `persist_conductor_state` carries it *unconditionally*
-   across every snapshot, so `handle_v2_restore` can pin a restore to the prior
-   compiled config even after a VERIFY re-arm. The `/sound` declaration undo is
-   written in the SAME state write, so neither half can describe a different
-   apply from the other. The anchor is a `(path, digest)` pair, and **its
-   integrity is `restore_applied_baseline_profile`'s to prove**: it hashes the
-   retained file itself and refuses under `restore_target_unreadable` or
-   `restore_target_changed`, then hands the digest it just computed to
-   `apply_dsp_config`, whose own proof is a validate-to-load race check.
+8. **The way back is the normal path.** Configs get applied; an earlier
+   config gets applied the same way: any banked candidate can be made live
+   again via republish-then-apply (invariant 7's door, then the apply door
+   with every admission gate it always runs). The one durable pointer is
+   `previous_candidate_fingerprint` — the measured candidate the applied
+   graph displaced, recorded by `observe_apply_success` and carried
+   *unconditionally* across every snapshot, so the wizard's way-back action
+   and the round's automatic revert survive a VERIFY re-arm. It is a pointer,
+   never a promise: the bank re-verifies the artifact on republish, and the
+   apply transaction re-proves the recomposed config. There is no separate
+   restore engine, no anchor vocabulary, and no `/sound` declaration undo —
+   a revert IS an apply, and writes the declaration the same way any apply
+   does.
 9. **The walked-away guarantee.** `SessionVolumePlan` holds one measurement
    window with an abort target, a wall-clock ceiling and a restore-once latch
    drained by close, session death, or the ceiling. **Each stage arms its own

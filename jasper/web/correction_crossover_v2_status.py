@@ -570,13 +570,14 @@ def _prediction_status(state: Any) -> dict[str, Any] | None:
 
 
 def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | None:
-    """The measured candidate behind ``pre_apply_profile``, if it names one.
+    """The measured candidate the applied graph displaced, if one is recorded.
 
-    Reads the identity the apply path already recorded —
-    ``source.measured_candidate_fingerprint``, written by
-    ``baseline_profile._source_payload`` and preserved through the frozen
-    applied-profile projection — the same field
-    :mod:`jasper.correction.applied_speaker_evidence` keys staleness on.
+    Reads the ``previous_candidate_fingerprint`` the apply path records
+    (``observe_apply_success``, off the displaced profile's own
+    ``source.measured_candidate_fingerprint`` — the identity
+    ``baseline_profile._source_payload`` writes). A state written before the
+    field existed reads as "no previous candidate" — the way back returns at
+    the next apply, with no schema bump.
 
     Three readers, one field: the status block below (the wizard's way-back
     action), the host's ``_previous_candidate_known`` seam (the adoption
@@ -584,13 +585,7 @@ def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | No
     (``bind_delta_probe_rollback``). Sharing the read is what keeps the
     capability answer and the action aimed at one identity.
     """
-    profile = (state or {}).get("pre_apply_profile")
-    source = profile.get("source") if isinstance(profile, Mapping) else None
-    value = (
-        source.get("measured_candidate_fingerprint")
-        if isinstance(source, Mapping)
-        else None
-    )
+    value = (state or {}).get("previous_candidate_fingerprint")
     return value if isinstance(value, str) and value else None
 
 
@@ -687,14 +682,14 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
         # The banked-candidate way back: the fingerprint of the measured
-        # candidate the pre-apply stash was built from, or ``None`` (a
-        # first-ever apply, a prior profile that was not a measured-candidate
-        # apply, or a pointer the republish door would refuse). The envelope
-        # mints a /crossover/v2/republish action from it; publishing it only
-        # when the door's own read-only admission passes is what keeps the
-        # button and the door one answer (#2291's non-drift rule). The door
-        # still re-runs the admission on POST — the bank can change between
-        # the answer and the action.
+        # candidate the applied graph displaced, or ``None`` (a first-ever
+        # apply, a prior profile that was not a measured-candidate apply, or
+        # a pointer the republish door would refuse). The envelope mints a
+        # /crossover/v2/republish action from it; publishing it only when
+        # the door's own read-only admission passes is what keeps the button
+        # and the door one answer (#2291's non-drift rule). The door still
+        # re-runs the admission on POST — the bank can change between the
+        # answer and the action.
         "previous_candidate_fingerprint": _offerable_previous_candidate(state),
         "session_id": session_id,
         # Minimal live-loop observability: no attempt curves/history on the

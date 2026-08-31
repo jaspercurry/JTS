@@ -1232,8 +1232,8 @@ is the promotion of this script's method: same two gates (program-id proof,
 analysis-fidelity comparison) and same band arithmetic, but it takes a bundle
 rather than three loose directories, derives the driver gains from the round's
 own state and the crossover corner from its applied-profile SSOT (never from
-the state's `pre_apply_profile` Undo stash, which can be stale by one apply or
-arbitrarily many), and files `harmonic_distortion.json` where the evidence
+anything the flow state records about a previous apply, which can be stale by
+one apply or arbitrarily many), and files `harmonic_distortion.json` where the evidence
 packet reads it. This script stays as the exploratory bench — it prints a
 table, takes `--captures`/`--dumps` as separate paths, and reads corpora that
 were never banked as rounds.
@@ -1742,7 +1742,7 @@ bank jts3 even when `.env.local` points somewhere else.
 
 It then pulls the newest session bundle, the crossover-v2 flow state, the
 design draft, the applied baseline profile (`applied-profile.json` — what the
-speaker is PLAYING, which the flow state's Undo stash cannot say), a bounded
+speaker is PLAYING, which the flow state cannot say), a bounded
 journal window (the four units a round speaks through:
 `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
 `jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
@@ -2009,8 +2009,8 @@ tolerance, so a cuttable peak nearby cannot vouch for a filter sitting on a dip.
 `stage` writes one document to
 `/var/lib/jasper/active_speaker_crossover_v2_prescription.json` and stamps it
 with the round the flow state says is next. The next crossover round takes it
-**once**, re-validates it, and consumes it; a household Undo withdraws it
-unrun; and a document staged for a round that has already run is refused as
+**once**, re-validates it, and consumes it; to clear the slot unrun, stage
+over it; and a document staged for a round that has already run is refused as
 `prescription_not_staged_for_this_round` while the round carries on with its
 class's own deterministic answer — the previous round's banked blend
 instruction, or the automatic per-driver fit. `--state` is required here (it is
@@ -2033,7 +2033,7 @@ applied baseline profile — this speaker's record of what it is PLAYING, banked
 separately for the same reason; without it the packet cannot name the
 correction the graph already carries, so a per-driver prescription's
 displacement is reported `unknown` rather than guessed. The flow state does
-**not** stand in for it: `pre_apply_profile` is the Undo stash, one apply
+**not** stand in for it: what it records about a previous apply is one apply
 behind after any v2 apply and arbitrarily behind after a graph applied through
 a door that never touches v2 state.
 
@@ -2342,7 +2342,7 @@ jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 # capture riding the tweeter branch sign-flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
 
-# the undo
+# withdraw the staged walk
 jasper-angle-capture withdraw
 ```
 

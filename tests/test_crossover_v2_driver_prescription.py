@@ -219,8 +219,8 @@ def applied_profile(
 
 #: The tweeter linearization the 2026-08-22 round was already playing, banked
 #: verbatim from ``captures/tuning-hw-validation-2026-08/e-boost-measure/
-#: state.json`` -> ``pre_apply_profile.linearization.tweeter`` (#2863). The
-#: Lowshelf is the filter that document deleted without saying so.
+#: state.json``'s legacy pre-apply stash (#2863). The Lowshelf is the filter
+#: that document deleted without saying so.
 INCUMBENT_TWEETER = [
     {"biquad_type": "Lowshelf", "freq": 5844.665822142265,
      "gain": -6.074416704015194, "q": 0.7071067811865475},
@@ -244,8 +244,8 @@ def _speaker(
     """A bundle plus the two per-driver evidence sources, as a packet.
 
     ``incumbent`` is what the speaker is PLAYING (the applied-profile SSOT);
-    ``stash`` is the flow state's ``pre_apply_profile``, the Undo record this
-    packet must never mistake for the first.
+    ``stash`` lands in a legacy flow-state pre-apply record this packet must
+    never mistake for the first.
     """
     session, _ = _bundle(tmp_path)
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
@@ -3871,25 +3871,6 @@ def test_a_taken_prescription_is_never_offered_to_a_second_round(tmp_path):
     ) is None
 
 
-def test_a_household_undo_withdraws_a_staged_per_driver_prescription(tmp_path):
-    """Same instruction from a different author, derived from the same evidence
-    the restore just discarded — so it is withdrawn the same way."""
-    _stage_driver(tmp_path, ordinal=4)
-
-    assert spool.withdraw_staged_prescription() is True
-    assert spool.staged_prescription_pending() is False
-    assert spool.withdraw_staged_prescription() is False
-
-
-def test_a_withdrawn_document_is_not_filed_among_the_ones_that_ran(tmp_path):
-    _stage_driver(tmp_path, ordinal=4)
-
-    spool.withdraw_staged_prescription()
-
-    consumed = spool.prescription_spool_path().with_suffix(".consumed.json")
-    assert not consumed.exists()
-
-
 def test_the_blend_class_still_stages_and_takes_unchanged(tmp_path):
     """The one door carries both, and the older class's default is unchanged.
 
@@ -4119,12 +4100,12 @@ STASH_TWEETER = [
 def test_the_incumbent_is_the_applied_profile_never_the_undo_stash(
     tmp_path, live_profile
 ):
-    """The packet describes the GRAPH, and the Undo stash is not the graph.
+    """The packet describes the GRAPH, and a flow-state stash is not the graph.
 
-    ``pre_apply_profile`` is written only by ``observe_apply_success`` and
-    names the profile Undo restores TO, so it is one apply behind after any v2
-    apply and arbitrarily behind after an apply through a door that never
-    touches v2 state. Both directions were measured on jts3 on 2026-08-29: a
+    A legacy state file's pre-apply record names the profile live BEFORE some
+    earlier apply, so it is one apply behind after any v2 apply and
+    arbitrarily behind after an apply through a door that never touches v2
+    state. Both directions were measured on jts3 on 2026-08-29: a
     15-hour-old chain reported over a freshly applied baseline, and an empty
     one reported over a graph carrying a full per-driver correction.
 

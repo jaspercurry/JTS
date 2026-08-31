@@ -862,9 +862,10 @@ def test_the_replay_run_names_the_prelude_vintage_it_solved(
                 "gain_plan_db": GAIN_PLAN_DB,
                 "candidate": {"program_id": program.program_id},
             }))
-            # The crossover fc_hz is read from the applied-profile SSOT, never
-            # from state's pre_apply_profile Undo stash (one apply behind or
-            # arbitrarily behind the graph actually measured through).
+            # The crossover fc_hz is read from the applied-profile SSOT,
+            # never from anything the flow state records about a previous
+            # apply (one apply behind or arbitrarily behind the graph
+            # actually measured through).
             applied_profile = tmp_path / f"applied-profile-{label}.json"
             applied_profile.write_text(json.dumps({
                 "artifact_schema_version": SCHEMA_VERSION,

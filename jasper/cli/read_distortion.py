@@ -22,8 +22,8 @@ carrying more than one round is refused rather than guessed at.
 rebuilt from its ``gain_plan_db`` and proved against its ``candidate.program_id``
 before any capture is read. ``--applied-profile`` is the round's own banked
 applied-baseline-profile SSOT, and is where the crossover corner is read from —
-never from ``--state``, whose ``pre_apply_profile`` is the Undo stash and can be
-stale by one apply or arbitrarily many. ``--woofer-band`` / ``--tweeter-band``
+never from ``--state``, whose record of a previous apply can be stale by one
+apply or arbitrarily many. ``--woofer-band`` / ``--tweeter-band``
 supply the driver bands the rebuild needs; they default to the shipped MEASURE
 bands and a wrong pair simply fails the program-id proof rather than producing a
 wrong reading.
@@ -126,10 +126,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "the applied baseline profile JSON — this speaker's record of what "
             "it is PLAYING, and where the round's crossover corner is read "
-            "from. NOT the flow state's pre_apply_profile: that Undo stash can "
-            "be one apply behind or arbitrarily behind the graph the round "
-            "actually measured through. Without it (or if it cannot be read) "
-            "the round is refused rather than read"
+            "from. NOT the flow state's record of a previous apply, which "
+            "can be one apply behind or arbitrarily behind the graph the "
+            "round actually measured through. Without it (or if it cannot be "
+            "read) the round is refused rather than read"
         ),
     )
     parser.add_argument(

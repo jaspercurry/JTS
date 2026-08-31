@@ -455,6 +455,12 @@ which the envelope's own screens read", and it does not; the review
 screen is where that claim becomes true. See D3 for the era caveat that
 comes with it.
 
+*(Superseded 2026-08-31 for D5/D6's Undo affordance: the product-level
+Undo verb was removed — the way back is a republish-then-apply of the prior
+candidate; see [crossover-v2-engine-design.md](crossover-v2-engine-design.md)
+invariant 8. The demote/never-offer decisions stand; the verb they named
+does not.)*
+
 **D5 — Verify-failed demotes, and Undo is loud. ADOPT, on the existing
 grade vocabulary.** `_post_apply_grade` stays the single owner of "did
 this apply survive its verify". A `GRADE_FAILED` / `GRADE_UNVERIFIED`

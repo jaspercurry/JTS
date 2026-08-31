@@ -104,8 +104,6 @@ from jasper.capture_relay.session import (
     mint_session,
     register_session,
 )
-from jasper.active_speaker.crossover_v2.round_anchor import round_anchor_record
-from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_backend
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
@@ -3586,8 +3584,8 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     ``persist_conductor_state`` would have written) -> the REAL re-arm
     conductor + the REAL ``persist_conductor_state`` call (the exact
     production seam the verify-only prepare's ``_open`` uses, mirroring
-    ``test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm``'s
-    own pattern for ``pre_apply_profile``) -> asserts all three surfaces
+    ``test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm``'s
+    own pattern for the way-back pointer) -> asserts all three surfaces
     (`/state`, the envelope, the doctor) still see the cloud verdict. The
     candidate assertion also pins #2079's crash/retry write identity: the
     fingerprint must survive this same new-session rebind so a recovery
@@ -4997,11 +4995,12 @@ def test_apply_refuses_when_stage_2_could_not_be_opened(monkeypatch, tmp_path):
     # The predicate's OWN sentence reaches the household, not a generic one.
     assert "confirm the driver safety profile" in str(excinfo.value)
     assert "was not run" in str(excinfo.value)
-    # The DSP was never touched: nothing durable claims an apply happened, and
-    # no pre-apply profile was stashed (which only a real commit produces).
+    # The DSP was never touched: nothing durable claims an apply happened,
+    # and no way-back pointer was recorded (which only a real commit
+    # produces).
     state = v2host.load_v2_state()
     assert state.get("applied") is not True
-    assert state.get("pre_apply_profile") is None
+    assert state.get("previous_candidate_fingerprint") is None
 
 
 def test_an_unexpected_preflight_failure_refuses_the_apply_too(
@@ -5541,7 +5540,7 @@ def test_the_prediction_verdict_survives_a_verify_rearm_persist():
 
     A verify-only re-arm builds a FRESH conductor that never runs a fit, so
     every MEASURE-owned prior has to travel to it explicitly or the first
-    "Try again" blanks it — the ``cloud`` B1 / ``pre_apply_profile`` W6.12 bug
+    "Try again" blanks it — the ``cloud`` B1 / way-back-stash W6.12 bug
     shape. The verdict rides the same route as ``gate_window_ms``, and this is
     what proves the route is wired at BOTH ends."""
     conductor = _closed_cloud_conductor()
@@ -5971,186 +5970,19 @@ def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
         assert v2host.load_v2_state() == good
 
 
-def test_the_apply_names_the_moment_it_inherits_a_stale_undo_stash(caplog, tmp_path):
-    """#2859: the divergence is CREATED here, and until now said nothing.
-
-    ``jasper-sound reconcile-current-dsp`` is a legitimate graph writer that is
-    (correctly) ignorant of the active-speaker profile system, so a deploy
-    moves the live graph without touching the record ``pre_apply_profile`` is
-    frozen from. The next apply stamps a ``displaced`` identity the stash does
-    not name — and every one of the four field occurrences was diagnosed hours
-    later, at a restore, from a refusal that could not say when.
-
-    Nothing is refused and nothing is re-anchored: the stash is written exactly
-    as passed, and ``applied`` still lands. The line is observability.
-    """
-    displaced = tmp_path / "sound_current.yml"
-    displaced.write_text("the graph this apply replaced\n", encoding="utf-8")
-    stale = tmp_path / "active_speaker_baseline_candidate_ff12ef1da447.yml"
-    stale.write_text("what the record still names\n", encoding="utf-8")
-
-    v2host.save_v2_state({"session_id": "cap_stale", "candidate": {"fingerprint": "fp"}})
-    with caplog.at_level(logging.WARNING):
-        v2host.observe_apply_success(
-            "fp",
-            pre_apply_profile={"config": {"path": str(stale), "sha256": "deadbeef"}},
-            round_anchor=round_anchor_record({
-                "apply": {"prior_config_path": str(displaced)},
-                "profile": {"config": {"path": "new.yml", "sha256": "cafe"}},
-            }),
-        )
-
-    assert "crossover_v2_apply_inherited_stale_anchor" in caplog.text
-    assert str(stale) in caplog.text and str(displaced) in caplog.text
-    # Reported, not acted on: the stash is untouched and the apply stands.
-    state = v2host.load_v2_state()
-    assert state["pre_apply_profile"]["config"]["path"] == str(stale)
-    assert state["applied"] is True
-
-    # …and a coherent apply is silent, which is what makes the line a signal.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        v2host.observe_apply_success(
-            "fp",
-            pre_apply_profile={
-                "config": {
-                    "path": str(displaced),
-                    "sha256": config_file_sha256(str(displaced)),
-                },
-            },
-            round_anchor=round_anchor_record({
-                "apply": {"prior_config_path": str(displaced)},
-                "profile": {"config": {"path": "new.yml", "sha256": "cafe"}},
-            }),
-        )
-    assert "inherited_stale_anchor" not in caplog.text
-
-
-def test_observe_apply_success_stashes_the_pre_apply_profile():
+def test_observe_apply_success_records_the_way_back_pointer():
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-1"},
         "applied": False,
     })
-    v2host.observe_apply_success("fp-1", pre_apply_profile={"status": "applied"})
-    assert v2host.load_v2_state()["pre_apply_profile"] == {"status": "applied"}
-    # The speaker's first-ever apply has nothing to stash.
-    v2host.observe_apply_success("fp-1", pre_apply_profile=None)
-    assert v2host.load_v2_state()["pre_apply_profile"] is None
-
-
-def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
-    """Mirrors observe_apply_success: the Undo path's durable-state clear
-    (W6 run-8 Blocker Q) resets the flow to a clean unmeasured state rather
-    than leaving a half-consistent review_apply pointing at the undone
-    candidate.
-
-    ``observe_restore`` clears in PLACE, so — unlike ``reset_v2_journey_state``,
-    which writes a fresh dict and drops unlisted fields for free — every new
-    durable field must be added to it by hand. This pin therefore grows with
-    the state: it passed unchanged while ``session_phases``/``cloud`` survived
-    an Undo, which is exactly the shape of hole it exists to catch — and now
-    ``evidence`` (SF-2 review finding, 2026-07-27): the B1 fix's group-phase-less
-    carry-forward in ``persist_conductor_state`` reads ``prior["evidence"]``
-    unconditionally, so a stale ``cloud_artifacts`` fingerprint map left behind
-    by an Undo would be resurrected on the very next verify-only re-arm.
-
-    ``measure`` is the fourth (#2087): G1's ripple reservation describes the
-    capture the undone tuning was built from, and the same PR added a
-    ``prior["measure"]`` carry-forward with the identical resurrection shape.
-    """
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked"},
-                "positions": [
-                    {"position_id": "cloud_measure_03", "index": 3, "attempt": 3}
-                ],
-                # PR-4's own addition to this block — must be just as gone
-                # after an Undo as the two PR-3b fields above it; a surviving
-                # "pipeline" hands PR-4's spec verdict for an undone session
-                # to any surface reading the durable state as if it were live.
-                "pipeline": {"available": True, "spec": {"overall_passed": True}},
-            }
-        },
-        "candidate": {"fingerprint": "fp-1"},
-        "verify": {"outcome": "fail"},
-        "applied": True,
-        "apply_blocked": {"id": "x", "message": "x"},
-        "pre_apply_profile": {"status": "applied"},
-        "gain_plan_db": {"woofer": -3.0},
-        "evidence": {
-            "bundle_session_id": "bundle-undone",
-            "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-undone"},
-        },
-        "attempts_loop": {
-            "history": [{"attempt_id": "candidate-undone"}],
-            "last_decision": {"decision": "stop_floor"},
-            "store_count": 1,
-        },
-        "measure": {
-            "ripple_reservation": {
-                "predicted_ripple_db": 15.244, "threshold_db": 15.0,
-            }
-        },
-        "sound_design_revision": 3,
-        "accepted_sound_revision": 4,
-        "accepted_sound_declaration_change": {
-            "between_roles": ["woofer", "tweeter"],
-            "applied_hz": 2750.0, "previous_hz": 2500.0,
-            "applied_filter_type": "Linkwitz-Riley",
-            "previous_filter_type": "Linkwitz-Riley",
-            "applied_slope_db_per_octave": 24.0,
-            "previous_slope_db_per_octave": 24.0,
-        },
-        "sound_declaration_undo": {
-            "sound_revision": 4, "between_roles": ["woofer", "tweeter"],
-            "applied_hz": 2750.0, "previous_hz": 2500.0,
-        },
-    })
-    v2host.observe_restore()
-    state = v2host.load_v2_state()
-    assert state["applied"] is False
-    assert state["candidate"] is None
-    assert state["verify"] is None
-    assert state["failure"] is None
-    assert state["apply_blocked"] is None
-    assert state["pre_apply_profile"] is None
-    assert state["accepted_phases"] == []
-    assert state["gain_plan_db"] is None
-    # The two fields PR-3b added. A surviving ``session_phases`` sends
-    # ``_phase_from_state`` to the VERIFY screen — "The crossover is applied.
-    # Put the microphone back where it started…" — moments after the household
-    # removed it; a surviving ``cloud`` hands PR-4 a geometry verdict for an
-    # undone session.
-    assert state["session_phases"] == []
-    assert state["cloud"] is None
-    # SF-2's field: a surviving ``evidence.cloud_artifacts`` is exactly what
-    # persist_conductor_state's B1 carry-forward would resurrect on the next
-    # verify-only re-arm, describing artifacts from the undone session.
-    assert state["evidence"] is None
-    assert state["attempts_loop"] is None
-    # #2087's field: a surviving ``measure`` is a reservation about the capture
-    # the UNDONE tuning was built from, and persist_conductor_state's own
-    # ``prior["measure"]`` carry-forward is the same resurrection shape SF-2
-    # found for ``evidence``.
-    assert state["measure"] is None
-    assert state["sound_design_revision"] is None
-    assert state["accepted_sound_revision"] is None
-    # The retry-resume inverse, scoped to the token above and cleared with it.
-    # It describes what an accept displaced in ``/sound``; an Undo has just put
-    # that back, so a survivor is an instruction to re-displace it.
-    assert state["accepted_sound_declaration_change"] is None
-    # #2292's field is the fifth. It is carried forward UNCONDITIONALLY by
-    # persist_conductor_state (it has ``pre_apply_profile``'s lifetime), so a
-    # record that survived an Undo would be resurrected on the next re-arm and
-    # then offer to "restore" a declaration for an apply that no longer exists.
-    assert state["sound_declaration_undo"] is None
-    assert v2host._applied_gate() is False
+    v2host.observe_apply_success("fp-1", previous_candidate_fingerprint="fp-prev")
+    assert v2host.load_v2_state()["previous_candidate_fingerprint"] == "fp-prev"
+    # The speaker's first-ever apply has nothing to point back to, and a
+    # later apply that displaced a non-measured profile clears the pointer.
+    v2host.observe_apply_success("fp-1", previous_candidate_fingerprint=None)
+    assert v2host.load_v2_state()["previous_candidate_fingerprint"] is None
 
 
 def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
@@ -6200,23 +6032,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     v2host.reset_v2_journey_state()
     assert v2host.load_v2_state()["attempts_loop"] == loop
-
-
-def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():
-    """The reachable path NEW-2 was found on: apply → re-verify (whose session
-    runs ONLY ``verify``) → Undo. Before the fix the leftover
-    ``session_phases == ["verify"]`` made the exit screen contradict the action
-    the household had just taken."""
-    v2host.save_v2_state({
-        "session_id": "cap_reverify",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "session_phases": [PHASE_VERIFY],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": True,
-        "pre_apply_profile": {"status": "applied"},
-    })
-    v2host.observe_restore()
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
 def test_status_block_surfaces_apply_blocked():
@@ -6874,7 +6689,7 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
     """Contract test over the REAL production seam — save_v2_state ->
     crossover_v2_status_block -> build_crossover_envelope_v2 — exactly what a
     GET /crossover/envelope on the done screen serves, not a hand-built
-    envelope fixture. A first-ever apply (no pre_apply_profile) offers no way
+    envelope fixture. A first-ever apply (no recorded prior candidate) offers no way
     back; a stash naming a measured candidate mints the republish action."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
     from jasper.web import correction_crossover_v2_republish as republish_door
@@ -6887,12 +6702,12 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
     # the refused shape has a dedicated pin below.
     monkeypatch.setattr(republish_door, "republish_preflight", lambda fp: None)
 
-    def _envelope_for(pre_apply_profile):
+    def _envelope_for(previous_candidate_fingerprint):
         v2host.save_v2_state({
             "session_id": "cap_e2e",
             "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
             "applied": True,
-            "pre_apply_profile": pre_apply_profile,
+            "previous_candidate_fingerprint": previous_candidate_fingerprint,
             "verify": {"outcome": "pass"},
         })
         status = {
@@ -6909,11 +6724,7 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
         a["id"] == "republish_previous" for a in first_ever["alternate_actions"]
     )
 
-    with_prior = _envelope_for({
-        "kind": "prior",
-        "source": {"measured_candidate_fingerprint": "f" * 64},
-        "config": {"path": "/tmp/x.yml"},
-    })
+    with_prior = _envelope_for("f" * 64)
     assert with_prior["screen"] == "done"
     assert with_prior["next_action"]["id"] == "room"
     way_back = next(
@@ -6930,8 +6741,9 @@ def test_apply_blocked_is_scoped_to_its_producing_session():
     the durable session_id still matches the snapshot's (the blocked-apply
     terminal path is same-session), but a FRESH session's first snapshot drops
     the stale nudge instead of surfacing session A's blocker on session B's
-    apply step. pre_apply_profile stays unconditional — only apply_blocked is
-    gated (see persist_conductor_state's carry-forward comment)."""
+    apply step. The way-back pointer stays unconditional — only
+    apply_blocked is gated (see persist_conductor_state's carry-forward
+    comment)."""
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     _c1, session1, phone1 = _mint_v2_session(backend, spec, driver_cls=None)
@@ -8002,7 +7814,9 @@ def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
 
     # 2. The auto-apply's OWN transaction then lands (observe_apply_success
     #    is exactly what handle_v2_apply calls on success).
-    v2host.observe_apply_success(fingerprint, pre_apply_profile={"stub": True})
+    v2host.observe_apply_success(
+        fingerprint, previous_candidate_fingerprint="fp-stub",
+    )
 
     state = v2host.load_v2_state()
     # Coherent, not clobbered either direction (SF1(b), now pinned in BOTH
@@ -9699,7 +9513,7 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     one parent-directory fsync each.
 
     The fourth pair is #2291's: that write CREATES the rollback anchor
-    (``pre_apply_profile``) and runs after the new graph is already live, so a
+    (``previous_candidate_fingerprint``) and runs after the new graph is already live, so a
     power cut that lost it would leave a corrected speaker with nothing to
     restore to. Counted here rather than merely asserted elsewhere because the
     count is the only thing that can catch the anchor write quietly losing its
@@ -10107,7 +9921,6 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
     assert draft["revision"] == 1
     state = v2host.load_v2_state() or {}
     assert state.get("accepted_sound_revision") is None
-    assert state.get("sound_declaration_undo") is None
     assert state["applied"] is False
 
 
@@ -10167,7 +9980,6 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     # nothing, so the revision never moves and there is no inverse to record.
     assert draft["revision"] == 1
     state = v2host.load_v2_state() or {}
-    assert state["sound_declaration_undo"] is None
     assert state.get("accepted_sound_revision") is None
     # The control that keeps this test honest: the contrary record was STILL
     # there while the apply ran. A refactor that cleared it earlier would make
@@ -10224,19 +10036,7 @@ def test_a_slope_only_change_reaches_the_declaration_and_leaves_fc_alone(
         "LinkwitzRileyLowpass": (2500.0, 2),
         "LinkwitzRileyHighpass": (2500.0, 2),
     }
-    # The inverse is recorded on both halves, so Undo has a slope to put back.
-    assert v2host.load_v2_state()["sound_declaration_undo"] == {
-        "kind": "jts_crossover_declaration_change",
-        "artifact_schema_version": 1,
-        "sound_revision": 2,
-        "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
-        "applied_hz": 2500.0,
-        "previous_hz": 2500.0,
-        "applied_filter_type": "Linkwitz-Riley",
-        "previous_filter_type": "Linkwitz-Riley",
-        "applied_slope_db_per_octave": 12.0,
-        "previous_slope_db_per_octave": 24.0,
-    }
+
 
 
 def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
@@ -10565,7 +10365,7 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     literal, so any key whose value comes from ``observe_apply_success`` —
     which the conductor neither produces nor reads — is erased unless a
     carry-forward line exists for it. That has been a P0 for
-    ``pre_apply_profile`` (W6.12), for ``cloud`` (PR-4 B1), and for
+    the way-back stash (W6.12), for ``cloud`` (PR-4 B1), and for
     ``expected_post_apply_offset_db`` (#1811).
 
     The host-owned set is derived MECHANICALLY rather than listed: a key is
@@ -10599,11 +10399,7 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     })
     v2host.observe_apply_success(
         "fp",
-        pre_apply_profile={"kind": "prior", "config": {"path": "/tmp/x.yml"}},
-        sound_declaration_undo={
-            "sound_revision": 2, "between_roles": ["woofer", "tweeter"],
-            "applied_hz": 2250.0, "previous_hz": 2500.0,
-        },
+        previous_candidate_fingerprint="fp-prior-measured",
         expected_post_apply_offset_db=-22.458,
     )
     after_apply = dict(v2host.load_v2_state() or {})
@@ -10611,16 +10407,12 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
         key for key, value in after_apply.items()
         if value is not None and key not in from_conductor_alone
     }
-    # The derivation must actually see this PR's key — a guard that derives an
-    # empty set proves nothing.
+    # The derivation must actually see the class's keys — a guard that derives
+    # an empty set proves nothing.
     assert "expected_post_apply_offset_db" in host_owned
-    assert "pre_apply_profile" in host_owned
+    assert "previous_candidate_fingerprint" in host_owned
     # The way-back pointer's pairing — the automatic revert's arming fact.
     assert "previous_candidate_displaced_by" in host_owned
-    # #2292's key is the fourth of the class, and it is here rather than in an
-    # exception list because it takes ``pre_apply_profile``'s unconditional
-    # carry-forward for the identical reason (see persist_conductor_state).
-    assert "sound_declaration_undo" in host_owned
 
     # (3) Cross the seam under the re-arm's BRAND-NEW session id.
     v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
@@ -10983,12 +10775,12 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
     assert saved_state["apply_blocked"] == payload["issue"]
 
 
-# --- the pre-apply stash, through the REAL apply seams ------------------------
+# --- the way-back pointer, through the REAL apply seams -----------------------
 #
-# The stash (``pre_apply_profile``) is the way back's only durable pointer:
-# its ``source.measured_candidate_fingerprint`` is what a republish-then-apply
-# resolves. These tests drive handle_v2_apply through the REAL seams (same
-# fixture shape as the Blocker M tests above) — not a faked apply gate.
+# ``previous_candidate_fingerprint`` is the way back's only durable pointer:
+# it is what a republish-then-apply resolves. These tests drive
+# handle_v2_apply through the REAL seams (same fixture shape as the Blocker M
+# tests above) — not a faked apply gate.
 
 
 def _prior_measured_candidate(preset):
@@ -11104,86 +10896,24 @@ def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
     assert "surface=commanded_axis" in caplog.text
 
 
-def test_the_declaration_undo_record_survives_the_deferred_verify_rearm():
-    """The W6.12 P0 shape, one field over. The VERIFY that auto-arms after
-    every apply persists under a BRAND-NEW session id, so a session-scoped
-    carry-forward would erase this record before any household could reach the
-    Undo button — every first Undo would report ``not_applicable`` and leave
-    ``/sound`` declaring the undone crossover.
-
-    Its neighbour ``accepted_sound_revision`` is deliberately NOT carried the
-    same way (it is the review-binding token, and a fresh MEASURE must clear
-    it), so this pins both halves of that asymmetry.
-    """
-    record = {
-        "sound_revision": 2, "between_roles": ["woofer", "tweeter"],
-        "applied_hz": 2250.0, "previous_hz": 2500.0,
-    }
-    v2host.save_v2_state({
-        "session_id": "cap_apply", "applied": True,
-        "accepted_sound_revision": 2, "sound_declaration_undo": record,
-    })
-
-    v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
-    assert (v2host.load_v2_state() or {})["sound_declaration_undo"] == record
-
-    # A fresh MEASURE clears the review token but NOT the record: the applied
-    # graph it inverts is still playing.
-    v2host.persist_conductor_state(
-        _StubConductor("cap_measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
-        failure_code=None,
-    )
-    state = v2host.load_v2_state() or {}
-    assert state["accepted_sound_revision"] is None
-    assert state["sound_declaration_undo"] == record
-
-
-def test_start_over_keeps_the_declaration_undo_record_with_the_applied_graph():
-    """Start over deliberately keeps ``applied`` + ``pre_apply_profile`` so
-    Undo stays reachable while the applied graph is still playing. The
-    declaration half has to survive on exactly those terms, or that Undo comes
-    back with the sound but not the crossover ``/sound`` declares for it."""
-    record = {
-        "sound_revision": 2, "between_roles": ["woofer", "tweeter"],
-        "applied_hz": 2250.0, "previous_hz": 2500.0,
-    }
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": True,
-        "pre_apply_profile": {"status": "applied"},
-        "sound_declaration_undo": record,
-    })
-
-    v2host.reset_v2_journey_state()
-
-    state = v2host.load_v2_state() or {}
-    assert state["applied"] is True
-    assert state["pre_apply_profile"] == {"status": "applied"}
-    assert state["sound_declaration_undo"] == record
-
-
-def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
+def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
     monkeypatch, tmp_path,
 ):
-    """W6.12 P0 regression: the durable Undo stash must survive the deferred
-    VERIFY that always auto-arms right after every apply.
+    """W6.12 P0 regression shape: the way-back pointer must survive the
+    deferred VERIFY that always auto-arms right after every apply.
 
     Drives handle_v2_apply TWICE in sequence, both through the production
     seam (not seeded state) — a v2-written prior profile ("run 1"), then a
     v2 apply over it ("run 2 over run 1"), matching the round-4 hardware
-    differential. Round-4 found ``pre_apply_profile: null`` after EVERY
-    apply on real hardware even though a standalone compose probe showed the
-    host DOES attach ``applied_recomposition_profile`` — the drop was never
-    in ``handle_v2_apply``/``observe_apply_success`` (both prove correct
-    here); it was that ``persist_conductor_state`` built a fresh state dict
-    that never carried ``pre_apply_profile`` forward, so the deferred VERIFY
-    that auto-arms after every apply (the verify-only prepare mints a NEW
-    relay session id and immediately calls ``persist_conductor_state`` to
-    "rebind" it — see its own call site) wiped the just-stashed pointer before a
-    household could ever reach the verify_fail Undo screen. This test
-    reproduces that exact rebind call (a real ``CrossoverV2Session``, not a
-    mock) between each apply and the next, and pins that the stash survives
+    differential. The historical drop was never in
+    ``handle_v2_apply``/``observe_apply_success`` (both prove correct here);
+    it was that ``persist_conductor_state`` built a fresh state dict that
+    never carried the stash forward, so the deferred VERIFY that auto-arms
+    after every apply (the verify-only prepare mints a NEW relay session id
+    and immediately calls ``persist_conductor_state`` to "rebind" it — see
+    its own call site) wiped the just-recorded pointer. This test reproduces
+    that exact rebind call (a real ``CrossoverV2Session``, not a mock)
+    between each apply and the next, and pins that the pointer survives
     it."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
     from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams
@@ -11247,13 +10977,14 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         run1_payload["profile"]["config"]["path"]
     ).read_text(encoding="utf-8")
     assert config_path.read_text(encoding="utf-8") == run1_config_text
-    assert v2host.load_v2_state()["pre_apply_profile"] is None  # speaker's first-ever apply
+    # The speaker's first-ever apply displaced no measured candidate.
+    assert v2host.load_v2_state()["previous_candidate_fingerprint"] is None
 
     # The deferred VERIFY always auto-arms right after an apply — reproduce
     # its rebind-and-persist before the household ever reaches run 2.
     _simulate_deferred_verify_rearm(verify_session_id="verify_of_run1")
     assert v2host.load_v2_state()["applied"] is True
-    assert v2host.load_v2_state()["pre_apply_profile"] is None
+    assert v2host.load_v2_state()["previous_candidate_fingerprint"] is None
 
     # --- run 2 over run 1: also v2-written, through the SAME production seam ---
     run2_candidate = _run6_measured_candidate(preset)
@@ -11285,23 +11016,19 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     assert run2_config_text != run1_config_text
 
     state_after_run2_apply = v2host.load_v2_state()
-    pre_apply_profile = state_after_run2_apply.get("pre_apply_profile")
-    assert isinstance(pre_apply_profile, dict)
     assert (
-        pre_apply_profile["candidate_fingerprint"]
-        == run1_payload["profile"]["candidate_fingerprint"]
+        state_after_run2_apply.get("previous_candidate_fingerprint")
+        == run1_candidate.fingerprint
     )
 
     # The P0 assertion: run 2's own deferred VERIFY rebind must NOT wipe the
-    # stash — before the fix this is exactly where it went null.
+    # pointer — this is exactly where the stash went null before the fix.
     _simulate_deferred_verify_rearm(verify_session_id="verify_of_run2")
     state_after_verify_rearm = v2host.load_v2_state()
     assert state_after_verify_rearm["applied"] is True
-    pre_apply_profile_after_verify = state_after_verify_rearm.get("pre_apply_profile")
-    assert isinstance(pre_apply_profile_after_verify, dict)
     assert (
-        pre_apply_profile_after_verify["candidate_fingerprint"]
-        == run1_payload["profile"]["candidate_fingerprint"]
+        state_after_verify_rearm.get("previous_candidate_fingerprint")
+        == run1_candidate.fingerprint
     )
 
 
@@ -11311,8 +11038,8 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
     """W6.10 gate should-fix: apply the prior crossover, apply a measured
     candidate over it, Start-over (reset_v2_journey_state — what handle_reset
     calls under the v2 flow). The reset must serve the clean start screen
-    WITHOUT unlinking the `applied`/`pre_apply_profile` pointers — the stash
-    is the way back's only durable pointer."""
+    WITHOUT unlinking `applied` + `previous_candidate_fingerprint` — the way
+    back's only durable pointer."""
     from jasper.active_speaker.baseline_profile import apply_baseline_profile
     from jasper.active_speaker.crossover_preview import build_crossover_preview
 
@@ -11361,7 +11088,7 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
     state = v2host.load_v2_state()
     assert state is not None
     assert state["applied"] is True
-    assert isinstance(state["pre_apply_profile"], dict)
+    assert state["previous_candidate_fingerprint"] == prior_candidate.fingerprint
     assert state["accepted_phases"] == []
     assert state["candidate"] is None
     # The envelope serves the clean start screen…
@@ -11967,13 +11694,9 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
 
-    anchor = (v2host.load_v2_state() or {}).get("pre_apply_profile")
-    assert isinstance(anchor, dict)
-    assert (
-        anchor["candidate_fingerprint"]
-        == prior_payload["profile"]["candidate_fingerprint"]
-    )
-    return anchor
+    pointer = (v2host.load_v2_state() or {}).get("previous_candidate_fingerprint")
+    assert pointer, "the apply must record the displaced measured candidate"
+    return pointer
 
 
 def test_the_rearm_stand_in_matches_prepare_v2_sessions_durable_write_set():
@@ -11990,7 +11713,7 @@ def test_the_rearm_stand_in_matches_prepare_v2_sessions_durable_write_set():
     assert "persist_conductor_state(" in source
     for direct_writer in (
         "save_v2_state(", "clear_v2_state(", "reset_v2_journey_state(",
-        "observe_restore(", "observe_apply_success(", "_update_current_review(",
+        "observe_apply_success(", "_update_current_review(",
     ):
         assert direct_writer not in source, direct_writer
 
@@ -12009,7 +11732,7 @@ def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
 ):
     """The automatic half of the same guarantee, through the NORMAL path.
 
-    The rollback resolves the stash's ``source.measured_candidate_fingerprint``
+    The rollback resolves the recorded ``previous_candidate_fingerprint``
     — which must survive the re-arm — republishes that banked candidate, and
     drives the REAL apply transaction to completion. Success leaves the prior
     candidate APPLIED (not an un-applied speaker: the way back is itself an
@@ -12017,9 +11740,7 @@ def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
     displaced. The proof expectation reaching the DSP transaction is the
     recomposed candidate's own digest — real, never the empty expectation that
     refuses unconditionally."""
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
-    assert prior_fingerprint
+    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
 
     _rearm_verify()
 
@@ -12048,13 +11769,11 @@ def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
     assert state["candidate"]["fingerprint"] == prior_fingerprint
     # The revert re-stamped the way back at the candidate it displaced, so a
     # household can come forward again through the same door…
-    assert (
-        state["pre_apply_profile"]["source"]["measured_candidate_fingerprint"]
-        != prior_fingerprint
-    )
-    # …but CONSUMED its own pairing, so the automatic path cannot follow that
-    # pointer back inside the [revert…next-apply] window. The button is the
-    # household's; the auto path waits for the next ordinary apply.
+    assert state["previous_candidate_fingerprint"] not in ("", None)
+    assert state["previous_candidate_fingerprint"] != prior_fingerprint
+    # …but with its pairing CONSUMED, so the automatic path cannot follow
+    # that pointer back inside the [revert…next-apply] window. The button
+    # is the household's; the auto path waits for the next ordinary apply.
     assert state["previous_candidate_displaced_by"] is None
 
 
@@ -12148,8 +11867,7 @@ def test_a_persist_after_a_rollback_keeps_the_reverted_candidate_applied(
     the slot the republish just restored — the slot the household's next apply
     or review reads.
     """
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
+    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
 
     conductor = CrossoverV2Session(
         session_id="cap_2616",
@@ -12218,8 +11936,7 @@ def test_a_graded_round_reverts_through_the_real_doors_and_the_window_stays_shut
     """
     from jasper.active_speaker.crossover_v2 import coordinator as round_coordinator
 
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
+    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
     regressed_fingerprint = (v2host.load_v2_state() or {})["candidate"]["fingerprint"]
     monkeypatch.setattr(
         correction_crossover_backend, "status_payload", lambda: {},
@@ -12264,10 +11981,7 @@ def test_a_graded_round_reverts_through_the_real_doors_and_the_window_stays_shut
     state = v2host.load_v2_state() or {}
     assert state["applied"] is True
     assert state["candidate"]["fingerprint"] == prior_fingerprint
-    assert (
-        state["pre_apply_profile"]["source"]["measured_candidate_fingerprint"]
-        == regressed_fingerprint
-    )
+    assert state["previous_candidate_fingerprint"] == regressed_fingerprint
     assert state["previous_candidate_displaced_by"] is None
 
     second = _graded_round("cap_window_round")
@@ -12296,8 +12010,7 @@ def test_the_status_block_withholds_a_way_back_its_door_would_refuse(
     bank: the same state publishes the fingerprint once the artifact is
     admissible.
     """
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
+    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
 
     assert (
         v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]

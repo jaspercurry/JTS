@@ -1427,38 +1427,25 @@ def _recorded_write_calls(monkeypatch) -> list[str]:
     return calls
 
 
-def test_the_apply_write_that_creates_the_rollback_anchor_is_fsynced(monkeypatch):
-    """Power loss here leaves a corrected speaker with no way back.
+def test_the_apply_write_that_creates_the_way_back_is_fsynced(monkeypatch):
+    """Power loss here leaves a corrected speaker with no recorded way back.
 
-    ``observe_apply_success`` creates ``pre_apply_profile`` — the only pointer
-    Undo restores from — in the same moment the new graph goes live. Atomic is
-    not durable: without the fsync a power cut can lose the whole write while
-    leaving the DSP graph changed.
+    ``observe_apply_success`` records ``previous_candidate_fingerprint`` — the
+    only pointer the way back resolves its target from — in the same moment
+    the new graph goes live. Atomic is not durable: without the fsync a power
+    cut can lose the whole write while leaving the DSP graph changed.
     """
     _seed_round_state(previous_candidate=False)
     calls = _recorded_write_calls(monkeypatch)
 
     v2host.observe_apply_success(
-        "fp-stage-1", pre_apply_profile={"candidate_fingerprint": "fp-previous"},
+        "fp-stage-1", previous_candidate_fingerprint="fp-previous",
     )
 
     assert calls == ["chmod", "fsync", "replace", "fsync"]
-
-
-def test_the_restore_write_that_clears_the_anchor_is_fsynced_too(monkeypatch):
-    """The mirror, and it fails the other way round.
-
-    ``observe_restore`` flips ``applied`` off after the previous graph is
-    already back. A lost write leaves the state claiming a correction the
-    speaker is no longer playing — and an Undo button for a graph that is
-    already gone.
-    """
-    _seed_round_state()
-    calls = _recorded_write_calls(monkeypatch)
-
-    v2host.observe_restore()
-
-    assert calls == ["chmod", "fsync", "replace", "fsync"]
+    assert (
+        v2host.load_v2_state()["previous_candidate_fingerprint"] == "fp-previous"
+    )
 
 
 def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
@@ -2901,66 +2888,6 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
     assert flow.CrossoverV2Session._applied_blend_correction(
         SimpleNamespace()
     ) == incumbent
-
-
-def test_a_household_undo_withdraws_the_instruction_but_not_the_series(
-    monkeypatch,
-):
-    """The second door into the hop above, and the ruled contract it must obey.
-
-    "A round that does not KEEP its graph issues no instruction" is decided at
-    the receipt writer, for the round's OWN restore. A household Undo reverses
-    an apply from outside that path: ``observe_restore`` clears the journey
-    field by field, which its own docstring calls a standing trap, and
-    ``round_receipt`` is the fifth durable field to meet it. While stage 1
-    derived its blend from the applied graph the trap cost nothing — the
-    restore itself answered. Since #2698 stage 1 reads the receipt, so the
-    instruction has to be withdrawn explicitly or the next round composes a
-    correction onto a base the household just removed.
-
-    **What must NOT be withdrawn with it**: the ordinal. Nulling the whole
-    receipt would send the series back to round 1, and an Undo→measure cycle
-    could then be repeated past the round cap forever. Objectives and the
-    trusted floor go with the ordinal for the same reason — they frame it.
-    """
-
-    restored = _APPLIED_INCUMBENT
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile."
-        "load_applied_baseline_profile_state",
-        lambda: {"blend_correction": [dict(f) for f in restored]},
-    )
-    v2host.save_v2_state(_state_carrying_a_banked_instruction())
-    # The premise, asserted rather than assumed: there really is an instruction
-    # to withdraw, or every assertion below passes for the wrong reason.
-    assert coordinator.series_position_from_state(
-        v2host.load_v2_state()
-    ).previous_blend_correction == _BANKED_INSTRUCTION
-
-    v2host.observe_restore()
-
-    position = coordinator.series_position_from_state(v2host.load_v2_state())
-    assert position.previous_blend_correction is None, (
-        "an Undo left its instruction standing"
-    )
-    assert position.previous_blend_residual_db is None, (
-        "the reading the instruction was decided against outlived it"
-    )
-    # The series itself is untouched: the cap still counts round 8, so an
-    # Undo→measure cycle cannot be repeated past it.
-    assert position.ordinal == 9
-    assert position.previous_objectives is not None
-    assert position.previous_trusted_floor_hz == 143.0
-
-    # End to end, at the surface the household feels: the next measuring
-    # session prescribes the graph Undo put back, not the discarded
-    # instruction.
-    prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=None,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-
-    assert conductor._blend_prescription() == restored
 
 
 #: "the session resolved no position at all", distinct from "it resolved one

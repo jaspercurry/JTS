@@ -654,7 +654,7 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
     """``stage`` hard-refuses without it, so an operator hears about it once."""
     session, _ = _speaker_dirs(tmp_path)
     state = tmp_path / "state.json"
-    state.write_text(json.dumps({"pre_apply_profile": {}}))
+    state.write_text(json.dumps({"applied": True}))
 
     _, without = _status([str(session)], capsys)
     _, with_state = _status([str(session), "--state", str(state)], capsys)

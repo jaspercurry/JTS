@@ -30,7 +30,6 @@ import logging
 import time
 from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_v2.round_anchor import ROUND_ANCHOR_STATE_KEY
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -167,16 +166,17 @@ def handle_v2_republish(
     * ``accepted_phases`` containing ``"measure"`` — :func:`_update_current_review`
       gates on it, and that CAS is what admits :func:`observe_apply_success`.
       Omit it and the graph goes live while the state never records the apply:
-      no ``applied`` flag, no ``pre_apply_profile``, **Undo unreachable**.
+      no ``applied`` flag, **no way-back pointer recorded**.
     * ``accepted_sound_revision`` / ``accepted_sound_declaration_change`` —
       the retry breadcrumb of a Sound accept. Another candidate's pair left
       standing would make apply believe Sound already carries THIS candidate's
       crossover when it carries the other one's, so both are cleared.
     * ``applied`` not already ``True`` — same CAS. ``False`` beside a preserved
-      ``pre_apply_profile`` is not a contradiction: it is byte-for-byte what a
-      fresh measuring session persists over a previously-applied graph
-      (``applied`` is session-scoped at :func:`persist_conductor_state`'s
-      carry-forward; the Undo anchor is host-owned and unconditional).
+      ``previous_candidate_fingerprint`` is not a contradiction: it is
+      byte-for-byte what a fresh measuring session persists over a
+      previously-applied graph (``applied`` is session-scoped at
+      :func:`persist_conductor_state`'s carry-forward; the way-back pointer is
+      host-owned and unconditional).
 
     **The fact a bundle cannot reconstruct, named rather than guessed.**
     ``sound_design_revision`` records which ``/sound`` revision the measurement
@@ -312,42 +312,30 @@ def handle_v2_republish(
             # produces, which no state rebuild can regenerate. Erasing that
             # class on a rebuild is a bug that has shipped three times
             # (``test_every_host_owned_apply_key_survives_persist_conductor_state``
-            # is the guard), so a whole-dict replacement must carry them.
-            #
-            # NOT "otherwise Undo breaks": this write sets ``applied`` False, so
-            # a restore refuses ``not_applied`` from here whatever these hold —
-            # correctly, and byte-for-byte what a fresh measuring session leaves
-            # behind. What preservation buys is that the record of the graph
-            # still playing survives a republish the operator never applies.
+            # is the guard), so a whole-dict replacement must carry them. What
+            # preservation buys is that the way back of the graph still
+            # playing survives a republish the operator never applies.
             "attempts_loop": (
                 dict(prior["attempts_loop"])
                 if isinstance(prior.get("attempts_loop"), Mapping)
                 else None
             ),
-            "pre_apply_profile": (
-                dict(prior["pre_apply_profile"])
-                if isinstance(prior.get("pre_apply_profile"), Mapping)
+            "previous_candidate_fingerprint": (
+                prior.get("previous_candidate_fingerprint")
+                if isinstance(prior.get("previous_candidate_fingerprint"), str)
+                and prior.get("previous_candidate_fingerprint")
                 else None
             ),
-            # The pointer's pairing crosses on the stash's terms. It names the
-            # apply that recorded the stash — NOT this republish — so a round
-            # graded after this door's own apply compares it against a fresh
-            # stamp anyway; carrying it is what keeps a republish the operator
-            # never applies from silently unpairing the way back.
+            # The pointer's pairing crosses on the same terms. It names the
+            # apply that recorded the pointer — NOT this republish — so a
+            # round graded after this door's own apply compares it against
+            # a fresh stamp anyway; carrying it is what keeps a republish
+            # the operator never applies from silently unpairing the way
+            # back.
             "previous_candidate_displaced_by": (
                 prior.get("previous_candidate_displaced_by")
                 if isinstance(prior.get("previous_candidate_displaced_by"), str)
                 and prior.get("previous_candidate_displaced_by")
-                else None
-            ),
-            "sound_declaration_undo": (
-                dict(prior["sound_declaration_undo"])
-                if isinstance(prior.get("sound_declaration_undo"), Mapping)
-                else None
-            ),
-            ROUND_ANCHOR_STATE_KEY: (
-                dict(prior[ROUND_ANCHOR_STATE_KEY])
-                if isinstance(prior.get(ROUND_ANCHOR_STATE_KEY), Mapping)
                 else None
             ),
         }

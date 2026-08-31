@@ -1499,22 +1499,22 @@ def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
     assert _flow_seams(stage_2_conductor).publish_findings is None
 
 
-def test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile(monkeypatch):
+def test_stage_2_rollback_refuses_cleanly_with_no_prior_candidate(monkeypatch):
     """#1863's neighbour: an automatic rollback with nothing to roll back to.
 
-    Binding rollback on stage 2 means it can now actually FIRE, so what it does
-    on a first-ever apply — where no ``pre_apply_profile`` was stashed, so no
-    prior candidate fingerprint is recorded to republish — is part of the
-    contract rather than a hypothetical. The seam reports "not restored" and
-    does NOT raise: it refuses before pressing either normal-path door, and
-    the verdict that asked for the rollback still reaches the household under
+    Binding rollback on stage 2 means it can now actually FIRE, so what it
+    does on a first-ever apply — where no prior candidate fingerprint was
+    recorded to republish — is part of the contract rather than a
+    hypothetical. The seam reports "not restored" and does NOT raise: it
+    refuses before pressing either normal-path door, and the verdict that
+    asked for the rollback still reaches the household under
     ``REASON_CORRECTION_ROLLBACK_FAILED``.
 
     Issue #1863 proper — not OFFERING a way back when no prior candidate
     exists — is a render-side affordance question on the done / verify-fail /
     applied-failure screens, and is untouched here.
     """
-    _seed_applied_stage_1_state()  # applied, but no ``pre_apply_profile``
+    _seed_applied_stage_1_state()  # applied, but no prior candidate recorded
     conductor, _state = _stage_2(monkeypatch, camilla_factory=lambda: SimpleNamespace())
 
     rollback = _flow_seams(conductor).rollback
@@ -1585,11 +1585,11 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # Deliberate widening (Fc/slope apply path, 2026-08-19). What the accept
     # DISPLACED in the ``/sound`` declaration, written in the same state write
     # as the revision above and scoped to exactly that token — so it crosses
-    # with `accepted_sound_revision`'s session gate, not `pre_apply_profile`'s
-    # unconditional one. It has to cross at all because once the declaration
-    # carries the candidate's crossover, nothing live can still say what it
-    # replaced, and a retry (which skips the completed Sound save) still owes
-    # Undo that inverse.
+    # with `accepted_sound_revision`'s session gate, not the way-back
+    # pointer's unconditional one. It has to cross at all because once the
+    # declaration carries the candidate's crossover, nothing live can still
+    # say what it replaced, and a retry (which skips the completed Sound
+    # save) still needs that inverse to rebuild its change.
     "accepted_sound_declaration_change",
     "applied",
     "apply_blocked",
@@ -1609,47 +1609,36 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # fit, so an offline rebuild can replay a fitted round instead of
     # refusing PROGRAM_NOT_REPRODUCIBLE.
     "measure_sweep_durations_s",
-    "pre_apply_profile",
-    # The way-back pointer's pairing (which apply recorded the stash) — the
-    # automatic revert's arming fact, host-owned like the stash and carried
-    # on identical terms.
+    # The way back's pointer: the measured candidate the applied graph
+    # displaced, written by ``observe_apply_success`` and carried forward
+    # unconditionally by every ordinary persist (the deferred VERIFY re-arm
+    # is a different session).
+    "previous_candidate_fingerprint",
+    # The pointer's pairing (which apply recorded it) — the automatic
+    # revert's arming fact, host-owned like the pointer and carried on
+    # identical terms.
     "previous_candidate_displaced_by",
-    # Deliberate widening (#2537). What one apply DISPLACED (the running
-    # config immediately before the load) and what it PUT LIVE, from that
-    # apply's own transaction — see round_anchor.py's module docstring for
-    # the jts3 cycle-4 incident this closes. Written by
-    # ``observe_apply_success`` alongside ``pre_apply_profile`` in the same
-    # state write, carried forward by every ordinary persist the same way,
-    # and cleared by ``observe_restore`` once the anchor it names is no
-    # longer live.
-    "round_anchor",
     # Deliberate widening (B5). How many times the round ORDINAL sequence has
     # been reset. Both doors that replace durable state wholesale while leaving
     # a measured graph on the speaker — the republish and Start-Over's applied
     # branch — drop ``round_receipt`` below, which is that sequence's only
     # memory, so the next round is ordinal 1 again on an already-tuned speaker.
-    # It crosses this boundary for a sharper version of ``pre_apply_profile``'s
-    # reason: the conductor cannot contribute it (only those two doors write
-    # it), and it has to outlive the very session they mint — a session-scoped
+    # It crosses this boundary for a sharper version of the way-back
+    # pointer's reason: the conductor cannot contribute it (only those two
+    # doors write it), and it has to outlive the very session they mint — a
+    # session-scoped
     # marker would be erased by the first persist after the reset, which is
     # exactly the round it exists to label. Disclosure only; nothing gates on it.
     "round_ordinal_epoch",
     # Deliberate widening (#2291 Phase 3c). WHERE this round's receipt landed —
     # round id plus the bundle artifact's fingerprint — so the next round can
     # resolve the previous one by identity rather than scanning bundles. It
-    # crosses for ``pre_apply_profile``'s reason: it describes the graph
+    # crosses for the way-back pointer's reason: it describes the graph
     # currently on the speaker, which outlives the session that wrote it.
     "round_receipt",
     "schema_version",
     "session_id",
     "session_phases",
-    # Deliberate widening (#2292). The declaration half of Undo has to cross
-    # this boundary for the same reason ``pre_apply_profile`` does: both are
-    # written by ``observe_apply_success`` in one state write, and the deferred
-    # VERIFY that arms right after every apply is a DIFFERENT session — so a
-    # key that did not cross would leave stage 2's Undo able to restore the
-    # graph but not the crossover ``/sound`` declares for it.
-    "sound_declaration_undo",
     "sound_design_revision",
     "tier",
     "updated_at",

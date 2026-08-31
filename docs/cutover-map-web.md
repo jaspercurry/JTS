@@ -60,7 +60,7 @@ map, so it is re-measured rather than cited:
 |---|---|---|
 | zero route decorators / handlers | `@(app\|router)\.(get\|post\|route)\|def do_(GET\|POST)\|add_route\|path == ` | **0** |
 | zero HTML / DOM | `<div\|<html\|<script\|<style\|innerHTML\|document\.getElementById` | **0** |
-| zero CSRF / static assets / socket writes | `csrf\|_static\|send_header\|wfile` | **5, all false** — every hit is the substring `_static` inside `restore_anchor_static_prefix_refusal` (`:2057`, `:2059`, `:7646`, `:7701`, `:7787`) |
+| zero CSRF / static assets / socket writes | `csrf\|_static\|send_header\|wfile` | **5, all false** — every hit was the substring `_static` inside `restore_anchor_static_prefix_refusal` (deleted 2026-08-31 with the restore verb; **0** at HEAD) |
 
 **It is an orchestration host.** Routes are `correction_setup.py`'s
 `_dispatch_crossover` (`:7366`), reached from the funnel at **`:8015`** — §5
@@ -163,18 +163,18 @@ unlike its twin.
 | **AG** | 5353–5388 | 36 | `V2PreparedSession` — what the dispatch needs to host one session. | **setup `:6356`** (`.capture_source`), `:6342` (the return) | **→W5-a** |
 | **AH** | 5389–5459 | 71 | `_volume_hooks` — the in-runner drains. `_open` acquires the pause **before** the volume and releases it in a `finally` if the open did not take; `_put_the_graph_back` restores the graph **before** the pause release in both `_close` and `_abandon`. **The two safety ordering sites** — the only places the graph goes back on a teardown. | in-file (rows AM, AN) | **→W5-c**, ordering preserved. See §3. |
 | **AI** | 5460–5475 | 16 | Stage-capabilities banner — 15 of 16 lines are the essay recording that the declarations moved to `journey` in #2291 Phase 4. | — | **SUPERSEDED** — pure pointer at a completed move. Delete with row B. |
-| **AJ** | 5476–5673 | 198 | Applied-graph / rollback-anchor introspection: `_active_graph_fingerprint`, `_rollback_anchor_available`, `_applied_graph_boosts`, `_applied_profile_now`. | in-file (rows AP, AS, AT) | **KEEP** — apply-adjacent; lives in the surviving host beside the apply transaction. |
+| **AJ** | 5476–5673 | 198 | Applied-graph introspection: `_active_graph_fingerprint`, `_previous_candidate_known` (was `_rollback_anchor_available`), `_applied_graph_boosts`, `_applied_profile_now`. | in-file (rows AP, AQ) | **KEEP** — apply-adjacent; lives in the surviving host beside the apply transaction. |
 | **AK** | 5674–5784 | 111 | `bind_v2_stage_seams` — builds one stage's `V2FlowSeams` and journals what it opened with. **The convergence point**: rows J, Y, AA, AB, AQ all arrive here. | in-file (rows AM, AN) | **→W5-b** — `EngineSeams` replaces `V2FlowSeams`. This is the file's single most consequential line-range for the cutover. |
 | **AL** | 5785–5942 | 158 | Capture-source resolution and run building: `_resolve_prepare_capture_source`, `_hand_released_plan_shape`, `_mint_source_session`, `_build_source_run`. | in-file (rows AM, AN) | **→W5-a** — shared tail of both preparers; converges with them. |
 | **AM** | 5943–6518 | 576 | `prepare_v2_session` (534 L) + the three `VERIFY_STAGE_*` constants + `_verify_plan_shape`. Stage-1 preparer: gate, build the conductor, hand the walk to the capture source. Holds the conductor in a bare `holder: dict[str, Any]` at `:6258`, filled `:6432`, drained by `_run` at `:6448`. | **setup `:6341`** | **→W5-a**, then W5-b. |
 | **AN** | 6519–6903 | 385 | The verify-only preparer (382 L) — the near-duplicate twin. Same `_open`/`_run`/`holder` shape (`:6711`, `:6856`, `:6872`), same `bind_v2_stage_seams` call shape, same `_build_source_run` tail. | **setup `:6341`**; `VERIFY_STAGE_*` also by **`scripts/run-crossover-round.py:188`, the file's one top-level production import** | **W5-a LANDED (#3166).** This range no longer exists: the twin folded into row AM's preparer under a `verify_only` flag, and `bind_v2_stage_seams` is now ONE call for both stages. Rows AL+AM+AN were **1,119 lines** and the fold returned **−94 of code**, not the whole 385 — the two bodies shared a ~95-line scaffold and little else; the rest was per-stage prose and per-stage ctor kwargs, which do not fold. Read that number before sizing any sibling row's de-duplication win. Row AM is now the whole preparer, and carries on to W5-b. |
 | **AO** | 6904–6960 | 57 | Apply banner + `_assert_stage_2_can_open` — refuse an apply this speaker could not then verify (D3). | in-file (row AP) | **KEEP** |
 | **AP** | 6961–7361 | 401 | `handle_v2_apply` — the apply transaction. | **setup `:6390`** | **KEEP.** This is §6's *"NO ENGINE HOME"* ruling resolved in this file's favour: the apply transaction is *"not a target. Ever."*, and its two options were a publish/commit organ **or a thin surviving host module**. This file is that host. |
-| **AQ** | 7362–7462 | 101 | `bind_delta_probe_rollback` — the conductor's `rollback` seam; calls `handle_v2_restore` at `:7428`. | in-file (row AK) | **KEEP** — it is the apply transaction's inverse and reaches into row AT. |
-| **AR** | 7463–7620 | 158 | Sound-declaration Undo: the four `DECLARATION_*` codes, `_parse_sound_declaration_undo`, `_crossover_label`, `_restore_sound_declaration`. | in-file (row AT); **republish `:169`, `:171`** reach `_crossover_label` | **KEEP** |
-| **AS** | 7621–7831 | 211 | Rollback-anchor refusal vocabulary: five `ANCHOR_*` codes, `RollbackAnchorRefusal`, `restore_anchor_static_prefix_refusal`, `rollback_anchor_refusal` (146 L). | **`v2-status`** (`restore_anchor_static_prefix_refusal`); in-file (row AT) | **KEEP** |
-| **AT** | 7832–7972 | 141 | `handle_v2_restore` — the v2-aware Undo. | **setup `:6421`**; in-file `:7428` | **KEEP** |
-| **AU** | 7973–8088 | 116 | Apply-blocked tail: `_restore_refusal_code`, `_blocking_apply_issue`, `_dsp_apply_is_known_inactive`, `_persist_apply_blocked`, `_reopen_candidate_artifact`. | in-file (rows AP, AT) | **KEEP** |
+| **AQ** | 7362–7462 | 101 | `bind_delta_probe_rollback` — the conductor's `rollback` seam. Since 2026-08-31 it presses the NORMAL doors: `handle_v2_republish`, then `handle_v2_apply`. | in-file (row AK) | **KEEP** — it is the apply transaction's inverse, through the apply transaction. |
+| **AR** | 7463–7620 | 158 | Was the Sound-declaration Undo. | — | **DELETED (2026-08-31)** with the restore verb; only `_crossover_label` survives (republish + apply read it). |
+| **AS** | 7621–7831 | 211 | Was the rollback-anchor refusal vocabulary. | — | **DELETED (2026-08-31)** — `rollback_available` became "a prior candidate fingerprint is recorded", and the normal apply path carries its own refusals. |
+| **AT** | 7832–7972 | 141 | Was `handle_v2_restore` — the v2-aware Undo. | — | **DELETED (2026-08-31)** — the way back is republish-then-apply (owner ruling: configs get applied; an earlier config gets applied the same way). |
+| **AU** | 7973–8088 | 116 | Apply-blocked tail: `_blocking_apply_issue`, `_dsp_apply_is_known_inactive`, `_persist_apply_blocked`, `_reopen_candidate_artifact` (`_restore_refusal_code` deleted with row AT). | in-file (row AP) | **KEEP** |
 
 ### The whole production caller surface, in one place
 
@@ -195,7 +195,7 @@ and over-counts. It returns **20** import sites.)*
 | Caller | Import site | Name(s) reached | Use sites |
 |---|---|---|---|
 | `correction_setup.py` | 1010 | `CrossoverV2LocalSeamError`, `classify_program_failure` | 1029, 1031 |
-| | 6419 (`v2host`) | `prepare_v2_session`, `SOURCE_WIRED`, `handle_v2_apply`, `handle_v2_restore` | 6341, 6356, 6390, 6421 |
+| | 6419 (`v2host`) | `prepare_v2_session`, `SOURCE_WIRED`, `handle_v2_apply` (`handle_v2_restore` deleted 2026-08-31) | 6341, 6356, 6390 |
 | | 7394 | `refusal_next_action` | 7399 |
 | | 7536 | `CrossoverV2Refused` | 7539 |
 | | 7646 | `v2_volume_recovery_active`, `recover_session_volume` | 7648–7649 |

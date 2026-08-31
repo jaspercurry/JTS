@@ -26,10 +26,9 @@ web module — a rule a test names writer-by-writer.  The staging step runs from
 a CLI, in another process, as another user, possibly while a session is live.
 Teaching that CLI to write the flow state would make it a second writer of the
 one file whose single-writer property the whole flow rests on.  So the
-instruction gets its OWN path with its OWN owner: this module.  Three callers
-use its API and none of them touch the bytes — :func:`stage_prescription` from
-the CLI, :func:`take_staged_prescription` from the round's preparer, and
-:func:`withdraw_staged_prescription` from Undo.
+instruction gets its OWN path with its OWN owner: this module.  Two callers
+use its API and neither touches the bytes — :func:`stage_prescription` from
+the CLI and :func:`take_staged_prescription` from the round's preparer.
 
 **What "taking" means, and why reading and consuming are one call.**  There is
 no way to read a staged prescription without consuming it.
@@ -153,7 +152,6 @@ __all__ = [
     "stage_prescription",
     "staged_prescription_pending",
     "take_staged_prescription",
-    "withdraw_staged_prescription",
 ]
 
 
@@ -953,29 +951,3 @@ def _band(raw: Any) -> tuple[float, float] | None:
     return (lo, hi) if hi <= _EVALUABLE_MAX_HZ else None
 
 
-# --------------------------------------------------------------------------- #
-# withdraw
-# --------------------------------------------------------------------------- #
-
-
-def withdraw_staged_prescription() -> bool:
-    """Drop a pending prescription without running it. ``True`` if one was there.
-
-    Undo's half of the lifecycle (#2699's rule, applied to this slot). When a
-    household restores the graph a round applied, the banked blend instruction
-    that round left is withdrawn, because the measuring stage would otherwise
-    compose a correction onto the graph the household just removed. A staged
-    prescription is the same instruction from a different author and is derived
-    from the same discarded evidence, so it is withdrawn the same way.
-
-    Unlinked rather than moved to the consumed slot: nothing consumed it, and a
-    withdrawn document filed beside the taken ones would misreport which
-    prescriptions ran.
-    """
-    try:
-        prescription_spool_path().unlink()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return False
-    return True

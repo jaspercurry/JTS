@@ -39,14 +39,14 @@ fresh by this session or inherited from the state being replaced, and *which*
 is a per-key judgement with an incident behind it. Three shapes recur, and the
 comment on each rule says which one it is and why:
 
-* **unconditional** — the host-owned apply keys (``pre_apply_profile``,
-  ``expected_post_apply_offset_db``, ``sound_declaration_undo``,
-  ``round_anchor``). The deferred VERIFY that auto-arms after every apply runs
-  under a brand-new relay session id, so a session-scoped guard drops them on
-  the first post-apply write. Three separate P0s were caused by adding a
-  host-owned key without a line here;
+* **unconditional** — the host-owned apply keys
+  (``previous_candidate_fingerprint``, ``expected_post_apply_offset_db``).
+  The deferred VERIFY that auto-arms after every apply runs under a brand-new
+  relay session id, so a session-scoped guard drops them on the first
+  post-apply write. Three separate P0s were caused by adding a host-owned key
+  without a line here;
   ``test_every_host_owned_apply_key_survives_persist_conductor_state`` derives
-  the set mechanically and fails on the fourth.
+  the set mechanically and fails on the next.
 * **session-scoped** — ``applied``, ``candidate``, ``evidence``,
   ``apply_blocked``. A previous session's answer says nothing about this one.
 * **phase-gated** — ``cloud`` and the ``cloud_artifacts`` refs on the group
@@ -69,7 +69,6 @@ from typing import Any, Mapping, Sequence
 
 from jasper.log_event import log_event
 
-from .round_anchor import ROUND_ANCHOR_STATE_KEY
 from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
@@ -1190,13 +1189,13 @@ def build_conductor_state(
     )
     # #2616: let the journey learn about a restore it could not see.
     #
-    # ``observe_restore`` clears the durable ``applied`` in place and holds no
-    # conductor, so a LIVE session whose speaker was restored out from under
-    # it kept ``applied`` True in memory. The write below reads that stale
-    # True off the snapshot and put it straight back over the clear, which is
-    # one fact with two owners and the durable one losing. (The round's
-    # adoption restore no longer takes this door: it re-applies the prior
-    # candidate through the normal path, which leaves ``applied`` True.)
+    # A durable-state writer that clears ``applied`` holds no conductor, so a
+    # LIVE session whose speaker was restored out from under it kept
+    # ``applied`` True in memory. The write below reads that stale True off
+    # the snapshot and put it straight back over the clear, which is one fact
+    # with two owners and the durable one losing. (The round's adoption
+    # restore never takes this door: it re-applies the prior candidate
+    # through the normal path, which leaves ``applied`` True.)
     #
     # Resolved in the owner's favour rather than by special-casing the write:
     # the durable state is the authority on whether a restore HAPPENED, the
@@ -1757,7 +1756,7 @@ def build_conductor_state(
     # returns ``None`` for it: not because nothing closed, but because there
     # is nothing to close in this session. A session-id gate would never
     # carry the prior cloud verdict forward — exactly the same shape of bug
-    # ``pre_apply_profile``'s own comment below documents ("the deferred
+    # the way-back pointer's own comment below documents ("the deferred
     # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
     # relay session id"), and it hit on the very first tap of "Try again"
     # (the PRIMARY next_action after a failed verify): the cloud verdict a
@@ -1766,7 +1765,7 @@ def build_conductor_state(
     #
     # Carry ``cloud`` forward UNCONDITIONALLY whenever THIS conductor's own
     # session has no group phase to report on — mirroring
-    # ``pre_apply_profile``'s unconditional carry-forward below, not
+    # the way-back pointer's unconditional carry-forward below, not
     # ``candidate``/``evidence``'s session-scoped one above, which is the
     # wrong shape for this path. A conductor that DOES have a group phase in
     # its own session is left alone: ``_cloud_summary``'s own ``None`` there
@@ -1842,9 +1841,9 @@ def build_conductor_state(
         # nothing to carry, and a legacy value ages out of durable state on the
         # next write rather than being copied forward into a record whose
         # version has no such field.
-    # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
-    # handle_v2_restore), ``expected_post_apply_offset_db`` (the apply's own
-    # declared level move — observe_apply_success / the delta probe's
+    # ``previous_candidate_fingerprint`` (the way back's pointer —
+    # observe_apply_success), ``expected_post_apply_offset_db`` (the apply's
+    # own declared level move — observe_apply_success / the delta probe's
     # ``applied_offset_db`` seam), and ``apply_blocked`` (the
     # auto-apply-failed nudge, layered onto the "applying"-phase
     # fix_and_retry screen — owner ruling, 2026-07-20) are NOT conductor-owned
@@ -1853,7 +1852,7 @@ def build_conductor_state(
     # this function only ever sets the fields it does know about.
     #
     # THREE separate P0s have now been caused by a host-owned key being added
-    # to ``observe_apply_success`` without a line here (pre_apply_profile
+    # to ``observe_apply_success`` without a line here (the way-back stash
     # W6.12; cloud B1; this offset, #1811).
     # ``test_every_host_owned_apply_key_survives_persist_conductor_state``
     # derives the host-owned set mechanically — whatever the apply path gives a
@@ -1864,17 +1863,15 @@ def build_conductor_state(
     #
     # They carry forward with OPPOSITE session-scoping, by design:
     #
-    #   * ``pre_apply_profile`` is carried forward UNCONDITIONALLY (not gated
-    #     on a matching session_id): the deferred VERIFY that auto-arms right
-    #     after every SUCCESSFUL apply runs under a BRAND-NEW relay session id
-    #     (the verify-only re-arm mints one and "rebinds" the conductor's
-    #     session_id before its own ``persist_conductor_state`` call), so a
-    #     session-id-gated carry-forward would lose the stash on that very
-    #     first post-apply snapshot. W6.12 P0: without this, the verify phase
-    #     that always immediately follows an apply wiped the just-stashed
-    #     ``pre_apply_profile`` before a household could ever reach the
-    #     verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
-    #     previous crossover to restore to" after literally every apply.
+    #   * ``previous_candidate_fingerprint`` is carried forward
+    #     UNCONDITIONALLY (not gated on a matching session_id): the deferred
+    #     VERIFY that auto-arms right after every SUCCESSFUL apply runs under
+    #     a BRAND-NEW relay session id (the verify-only re-arm mints one and
+    #     "rebinds" the conductor's session_id before its own
+    #     ``persist_conductor_state`` call), so a session-id-gated
+    #     carry-forward would lose the pointer on that very first post-apply
+    #     snapshot — the W6.12 P0 shape, which wiped the just-stashed way
+    #     back after literally every apply.
     #
     #   * ``apply_blocked`` IS session-scoped (#1605): it is only ever set on
     #     a BLOCKED auto-apply, which — unlike a successful one — refuses the
@@ -1883,19 +1880,21 @@ def build_conductor_state(
     #     new-session rebind. Gating it drops a stale nudge the moment a fresh
     #     session begins instead of leaking session A's blocker onto session
     #     B's apply step.
-    state["pre_apply_profile"] = prior.get("pre_apply_profile")
-    # The pointer's PAIRING (which apply recorded the stash) is host-owned on
+    state["previous_candidate_fingerprint"] = prior.get(
+        "previous_candidate_fingerprint"
+    )
+    # The pointer's PAIRING (which apply recorded it) is host-owned on
     # identical terms — ``observe_apply_success`` writes it, the automatic
-    # revert consumes it, the conductor neither produces nor reads it — so it
-    # takes the same unconditional carry. Session-scoping it would unpair the
-    # pointer on the first post-apply re-arm and silently disarm the round's
-    # automatic revert.
+    # revert consumes it, the conductor neither produces nor reads it — so
+    # it takes the same unconditional carry. Session-scoping it would
+    # unpair the pointer on the first post-apply re-arm and silently
+    # disarm the round's automatic revert.
     state["previous_candidate_displaced_by"] = prior.get(
         "previous_candidate_displaced_by"
     )
-    # ``expected_post_apply_offset_db`` (#1811) is the THIRD field in this
-    # host-owned class and takes ``pre_apply_profile``'s unconditional shape
-    # for the identical reason: ``observe_apply_success`` writes it, the
+    # ``expected_post_apply_offset_db`` (#1811) is another field in this
+    # host-owned class and takes the pointer's unconditional shape for the
+    # identical reason: ``observe_apply_success`` writes it, the
     # conductor neither produces nor reads it, so it is absent from the state
     # literal above and every call to this function would otherwise erase it.
     #
@@ -1909,52 +1908,21 @@ def build_conductor_state(
     # the verify-only re-arm persists under a brand-new session id, so
     # every "Try again" probe would have been blind too.
     #
-    # Session-scoping it would reintroduce that second half: like
-    # ``pre_apply_profile``, this must survive the new-session rebind.
+    # Session-scoping it would reintroduce that second half: like the
+    # way-back pointer, this must survive the new-session rebind.
     state["expected_post_apply_offset_db"] = prior.get(
         "expected_post_apply_offset_db"
     )
     state["accepted_sound_revision"] = (prior.get("accepted_sound_revision")
         if PHASE_MEASURE not in snap.session_phases else None)
-    # Takes ``accepted_sound_revision``'s session-gated shape, not
-    # ``sound_declaration_undo``'s unconditional one, because it is scoped to
-    # exactly that token: it is the inverse of a save the apply has not yet
-    # committed to a graph, readable only while the review that saved Sound is
-    # still the current one. A fresh MEASURE clears the token, and a record
-    # that outlived it would be an inverse nothing can apply.
+    # Session-gated to exactly that token: it is the inverse of a save the
+    # apply has not yet committed to a graph, readable only while the review
+    # that saved Sound is still the current one. A fresh MEASURE clears the
+    # token, and a record that outlived it would be an inverse nothing can
+    # apply.
     state["accepted_sound_declaration_change"] = (
         prior.get("accepted_sound_declaration_change")
         if PHASE_MEASURE not in snap.session_phases else None)
-    # #2292's declaration-undo record is the FOURTH key in the host-owned class
-    # described above — ``observe_apply_success`` writes it beside
-    # ``pre_apply_profile``, the conductor neither produces nor reads it — so it
-    # takes that key's UNCONDITIONAL shape, and the mechanical guard
-    # ``test_every_host_owned_apply_key_survives_persist_conductor_state``
-    # covers it automatically.
-    #
-    # Deliberately NOT the shape of ``accepted_sound_revision`` directly above,
-    # even though the same event makes both non-null — an apply whose candidate
-    # crosses somewhere other than the declaration, today an operator's topology
-    # pin (``declaration_change_for_candidate`` is the live gate; the retired
-    # alternative-Fc accept was the original one):
-    #
-    #   * ``accepted_sound_revision`` is the REVIEW-binding token
-    #     ``_update_current_review`` gates the apply on. It is scoped to the
-    #     review that saved Sound, so a fresh MEASURE must clear it or the next
-    #     accept would skip its own Sound save.
-    #   * this record is the inverse of a LIVE applied declaration, which
-    #     outlives that review exactly as long as the graph does. Session-
-    #     scoping it would reproduce the W6.12 P0 one field over: the deferred
-    #     VERIFY that auto-arms after every apply persists under a brand-new
-    #     session id, so the very first Undo after every apply would find no
-    #     record and leave ``/sound`` declaring the undone crossover.
-    state["sound_declaration_undo"] = prior.get("sound_declaration_undo")
-    # #2537's round anchor is the FIFTH key in the same host-owned class, and
-    # takes the same unconditional shape for the same reason — ``round_anchor``
-    # describes the live apply, and the deferred VERIFY that auto-arms after
-    # every apply persists under a brand-new session id, so session-scoping it
-    # would blank the restore's divergence check on the very first re-arm.
-    state[ROUND_ANCHOR_STATE_KEY] = prior.get(ROUND_ANCHOR_STATE_KEY)
     state["apply_blocked"] = (
         prior.get("apply_blocked")
         if prior.get("session_id") == snap.session_id

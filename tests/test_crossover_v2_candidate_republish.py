@@ -30,7 +30,6 @@ import pytest
 
 from jasper.active_speaker import candidate_bank
 from jasper.active_speaker.crossover_v2 import coordinator
-from jasper.active_speaker.crossover_v2.round_anchor import ROUND_ANCHOR_STATE_KEY
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
 
@@ -164,29 +163,25 @@ def test_republish_names_the_apply_endpoint_and_discloses_verify_is_not_restored
     assert v2host.load_v2_state()["verify_priors"] is None
 
 
-def test_republish_preserves_the_undo_anchor_of_the_playing_graph(bank):
+def test_republish_preserves_the_way_back_of_the_playing_graph(bank):
     """A republish moves a pointer; it changes no graph.
 
-    So the host-owned record of what IS playing — and how to undo it — must
-    survive, exactly as it survives ``reset_v2_journey_state``. Dropping it
-    would leave a corrected speaker with Undo permanently unreachable.
+    So the host-owned record of what IS playing — and the way back from it —
+    must survive, exactly as it survives ``reset_v2_journey_state``. Dropping
+    it would leave a corrected speaker with no way back.
     """
     candidate = _candidate()
     _publish(bank, candidate)
     v2host.save_v2_state({
         "applied": True,
-        "pre_apply_profile": {"profile": "before"},
-        "sound_declaration_undo": {"sound_revision": 7},
-        ROUND_ANCHOR_STATE_KEY: {"entry_graph_fingerprint": "abc"},
+        "previous_candidate_fingerprint": "fp-before",
         "attempts_loop": {"history": [{"attempt": 1}]},
     })
 
     republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
 
     state = v2host.load_v2_state()
-    assert state["pre_apply_profile"] == {"profile": "before"}
-    assert state["sound_declaration_undo"] == {"sound_revision": 7}
-    assert state[ROUND_ANCHOR_STATE_KEY] == {"entry_graph_fingerprint": "abc"}
+    assert state["previous_candidate_fingerprint"] == "fp-before"
     assert state["attempts_loop"] == {"history": [{"attempt": 1}]}
     # ...while `applied` returns to false: this candidate is not applied, and
     # `_update_current_review`'s non-`allow_applied` calls refuse a state that
@@ -670,7 +665,7 @@ def test_start_over_resets_the_same_sequence_and_takes_the_same_epoch(bank):
     v2host.save_v2_state({
         "applied": True,
         "round_receipt": {"round_ordinal": 2},
-        "pre_apply_profile": {"path": "/tmp/x"},
+        "previous_candidate_fingerprint": "fp-prev",
     })
 
     v2host.reset_v2_journey_state()
@@ -761,7 +756,7 @@ def test_a_start_over_with_no_graded_round_does_not_invent_a_reset(bank):
     """
     v2host.save_v2_state({
         "applied": True,
-        "pre_apply_profile": {"candidate_fingerprint": "fp-prev"},
+        "previous_candidate_fingerprint": "fp-prev",
     })
 
     v2host.reset_v2_journey_state()
@@ -784,7 +779,7 @@ def test_start_over_banks_the_ordinal_it_reset_from(bank):
     v2host.save_v2_state({
         "applied": True,
         "round_receipt": {"round_ordinal": 4},
-        "pre_apply_profile": {"candidate_fingerprint": "fp-prev"},
+        "previous_candidate_fingerprint": "fp-prev",
     })
 
     v2host.reset_v2_journey_state()
@@ -834,11 +829,7 @@ def test_the_wizard_way_back_action_round_trips_through_this_door(
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
         "applied": True,
         "verify": {"outcome": "pass"},
-        "pre_apply_profile": {
-            "kind": "prior",
-            "source": {"measured_candidate_fingerprint": previous.fingerprint},
-            "config": {"path": "/tmp/x.yml"},
-        },
+        "previous_candidate_fingerprint": previous.fingerprint,
     })
 
     env = build_crossover_envelope_v2({

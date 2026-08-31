@@ -422,14 +422,12 @@ def config_file_sha256(path: str | Path) -> str | None:
 def same_config_file(left: str | Path, right: str | Path) -> bool:
     """Do two paths name ONE config file? (#2537)
 
-    Beside :func:`config_file_sha256` and public for the same reason: two
-    callers asking "is this the same config" must get one answer. They ask it of
-    different pairs — the applied-profile record against CamillaDSP's statefile
-    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`),
-    and a round's own anchor against the running path
-    (:func:`~jasper.active_speaker.crossover_v2.round_anchor.running_config_diverged`)
-    — but it is the same question about the same kind of path, and it shipped as
-    two near-verbatim copies until an adversarial gate caught them.
+    Beside :func:`config_file_sha256` and public for the same reason: every
+    caller asking "is this the same config" must get one answer — today the
+    applied-profile record against CamillaDSP's statefile
+    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`).
+    It shipped as two near-verbatim copies until an adversarial gate caught
+    them.
 
     **Resolved rather than string-compared.** A statefile carries whatever
     CamillaDSP was handed and a record carries what the apply wrote, so a

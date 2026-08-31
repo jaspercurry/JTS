@@ -4631,7 +4631,8 @@ def test_failure_without_a_timestamp_reads_as_aged():
     """Migration, fail-honest. Every failure written before #1942 is undated,
     and the state file's schema version is deliberately NOT bumped for the new
     key (a bump makes load_v2_state reject every deployed Pi's file, which
-    would discard pre_apply_profile and the way back with it). Undated means
+    would discard previous_candidate_fingerprint and the way back with it).
+    Undated means
     "we cannot say this is current", so it renders as history — and says
     "earlier" rather than inventing a date."""
     env = build_crossover_envelope_v2({

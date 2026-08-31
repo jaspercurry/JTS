@@ -329,11 +329,10 @@ def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
     change completed with a guess, and inventing a slope to write into
     ``/sound`` would be a number no accept ever chose. That strictness DOES
     have an older shape to be tolerant of, though: the accept branch that
-    writes this record shipped in the same PR as this module (#2743) and has
-    been live for days, so a currently-applied speaker can already hold a
-    ``sound_declaration_undo`` record from before ``kind``/
-    ``artifact_schema_version`` existed — see the envelope paragraph below for
-    how that shape is read.
+    writes this record's shape shipped in the same PR as this module (#2743),
+    so a deployed speaker can already hold a record from before ``kind``/
+    ``artifact_schema_version`` existed — see the envelope paragraph below
+    for how that shape is read.
 
     ``kind`` and ``artifact_schema_version`` are checked on the same terms as
     every other field, with ONE exception: a record naming NEITHER is exactly

@@ -369,10 +369,10 @@ class CommissionJourney:
         """The applied graph has been put back — disarms the VERIFY hold (#2616).
 
         :meth:`mark_applied`'s inverse, and the reason it has to exist: this
-        object is the single owner of ``applied``, and until it had a way to go
-        back the flag could only ever be set. The durable state's own clear
-        (``correction_crossover_v2.observe_restore``) holds no conductor, so a
-        live session that rolled back kept ``applied`` True IN MEMORY, and the
+        object is the single owner of ``applied``, and until it had a way to
+        go back the flag could only ever be set. A durable-state writer that
+        clears ``applied`` holds no conductor, so a live session that was
+        restored out from under it kept ``applied`` True IN MEMORY, and the
         next ``persist_conductor_state`` wrote that stale True straight back
         over the clear — one fact with two owners, resolved here in favour of
         the one whose job it is.
