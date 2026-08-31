@@ -53,6 +53,7 @@ from tests.test_crossover_v2_stage_bridge import (
 )
 
 __all__ = [
+    "_PREVIOUS_CANDIDATE_FINGERPRINT",
     "_bg_run_async",
     "_consume_verify",
     "_household_sentence",
@@ -62,6 +63,7 @@ __all__ = [
     "_restored_ok",
     "_restoring_stage_2",
     "_seed_round_state",
+    "_stub_restore_doors",
     "_tracking_curve_change_from_entry",
 ]
 
@@ -246,14 +248,19 @@ def _consume_verify(
     )
 
 
-def _seed_round_state(*, anchor: bool = True) -> dict[str, Any]:
+#: The prior MEASURED candidate the seeded pre-apply stash names — the
+#: republish target an adoption restore resolves. Distinct from the stash's
+#: own composed-baseline fingerprint so a wrong-key read cannot pass.
+_PREVIOUS_CANDIDATE_FINGERPRINT = "fp-previous"
+
+
+def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     """The durable state a household reaches stage 2 with, post-apply.
 
-    ``anchor`` decides whether an Undo target exists. The stashed profile
-    carries no ``source.topology_fingerprint``, which the shipped predicate
-    allows through (a stash that predates the fingerprint is validated by the
-    restore path itself) — so this is a genuinely valid anchor, not one that
-    passes by skipping a check nobody could satisfy here.
+    ``previous_candidate`` decides whether the pre-apply stash names a prior
+    measured candidate — the one fact the adoption table's
+    ``rollback_available`` reads, and the fingerprint the restore republishes.
+    ``False`` is every first-ever apply.
     """
     state = _seed_applied_stage_1_state()
     # The seeded entry baseline sits on a five-point grid of its own, which
@@ -261,21 +268,28 @@ def _seed_round_state(*, anchor: bool = True) -> dict[str, Any]:
     # comparable one on the conductor; drop the placeholder so a test that
     # forgets is INDETERMINATE rather than quietly graded against a stranger.
     state["verify_priors"]["entry_baseline"] = None
-    if anchor:
-        state["pre_apply_profile"] = {"candidate_fingerprint": "fp-previous"}
+    if previous_candidate:
+        state["pre_apply_profile"] = {
+            "candidate_fingerprint": "fp-previous-baseline",
+            "source": {
+                "measured_candidate_fingerprint": _PREVIOUS_CANDIDATE_FINGERPRINT,
+            },
+        }
+        # The pairing rule's other half: the pointer was recorded by the apply
+        # of the candidate this state grades ("fp-stage-1", the seeded
+        # published candidate), so the automatic revert is armed.
+        state["previous_candidate_displaced_by"] = "fp-stage-1"
     v2host.save_v2_state(state)
     return state
 
 
 async def _restored_ok(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-    """The DSP half of Undo, stubbed — and ONLY that half.
+    """The DSP half of ``handle_v2_restore``, stubbed — and ONLY that half.
 
-    Everything else on the restore path runs for real: the anchor predicate,
-    the refusal, ``observe_restore``'s durable clear, and therefore the
-    non-idempotence a second Undo meets. That is what makes the exactly-once
-    pin below discriminating — a once-guard removed from
-    ``bind_delta_probe_rollback`` really does produce the false
-    "still applied" sentence, because the second call really does refuse.
+    Everything else on the endpoint's path runs for real: the anchor
+    predicate, the refusal, and ``observe_restore``'s durable clear. For the
+    ROUND's own restore — republish-then-apply — see
+    :func:`_stub_restore_doors` instead.
     """
     return {"status": "restored"}
 
@@ -286,25 +300,75 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
     return asyncio.run(coro)
 
 
+def _stub_restore_doors(monkeypatch) -> list[int]:
+    """Stand in for the two normal-path doors an adoption restore presses.
+
+    The restore is republish-then-apply through the production handlers
+    (``bind_delta_probe_rollback``); what a ROUND test needs stubbed is those
+    two doors, not a DSP transaction underneath them — the doors have their
+    own endpoint suites. Each stub REFUSES any fingerprint other than the
+    seeded prior candidate's, so a seam that resolved the wrong identity
+    turns every restore outcome into a failed one and the outcome pins say so.
+
+    Returns the counter of how many times the APPLY door — the leg that
+    changes the speaker — actually ran.
+    """
+    from jasper.web import correction_crossover_backend
+    from jasper.web import correction_crossover_v2_republish as republish_door
+
+    attempts: list[int] = []
+
+    # Hermetic stand-ins for the doors' surroundings: the displacement gate
+    # reads the applied-profile SSOT (absent here unless a test installs one),
+    # and the way-back preflight reads the candidate bank (absent in a round
+    # test); each answers its production shape for the seeded prior.
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+
+    def _preflight(fingerprint: str) -> str | None:
+        return None if fingerprint == _PREVIOUS_CANDIDATE_FINGERPRINT else "not_found"
+
+    monkeypatch.setattr(republish_door, "republish_preflight", _preflight)
+
+    def _republish(raw: Any, **_kwargs: Any) -> dict[str, Any]:
+        if str(raw.get("fingerprint") or "") != _PREVIOUS_CANDIDATE_FINGERPRINT:
+            raise v2host.CrossoverV2Refused("that candidate cannot be republished")
+        return {"status": "republished"}
+
+    def _apply(raw: Any, _run_async: Any, _camilla: Any, *, status: Any,
+               ) -> dict[str, Any]:
+        del status
+        expected = str(raw.get("expected_candidate_fingerprint") or "")
+        if expected != _PREVIOUS_CANDIDATE_FINGERPRINT:
+            raise v2host.CrossoverV2Refused(
+                "the reviewed crossover is no longer current"
+            )
+        attempts.append(1)
+        return {"status": "applied"}
+
+    monkeypatch.setattr(republish_door, "handle_v2_republish", _republish)
+    monkeypatch.setattr(v2host, "handle_v2_apply", _apply)
+    # The auto-revert reads a fresh status for the apply preflight; hand it
+    # the same fixture status the preparers were given.
+    monkeypatch.setattr(correction_crossover_backend, "status_payload", _status)
+    return attempts
+
+
 def _restoring_stage_2(monkeypatch) -> tuple[Any, list[int]]:
     """A real stage 2 whose rollback seam can actually complete a restore.
 
     ``tests/test_crossover_v2_stage_bridge.py``'s ``_stage_2`` passes
     ``run_async=None`` / ``camilla_factory=None``, which is right for a module
     about what crosses the bridge and wrong here: with them the rollback seam
-    raises before it reaches ``handle_v2_restore``, and every adoption restore
-    would read as a failed one. This binds the real endpoint behind a stubbed
-    DSP leg, and returns a counter of how many times that leg actually ran.
+    raises inside the apply door, and every adoption restore would read as a
+    failed one. This binds the real seam over stubbed doors
+    (:func:`_stub_restore_doors`), and returns a counter of how many times the
+    speaker-changing leg actually ran.
     """
-    attempts: list[int] = []
-
-    async def _counted(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        attempts.append(1)
-        return await _restored_ok(*args, **kwargs)
-
-    monkeypatch.setattr(
-        baseline_profile_mod, "restore_applied_baseline_profile", _counted,
-    )
+    attempts = _stub_restore_doors(monkeypatch)
     prepared = v2host.prepare_v2_session(
         {}, status=_status(), run_async=_bg_run_async,
         camilla_factory=lambda: SimpleNamespace(), verify_only=True,

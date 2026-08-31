@@ -106,6 +106,7 @@ from jasper.capture_relay.session import (
 )
 from jasper.active_speaker.crossover_v2.round_anchor import round_anchor_record
 from jasper.dsp_apply import config_file_sha256
+from jasper.web import correction_crossover_backend
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web import correction_crossover_v2_relay as v2relay
@@ -6355,53 +6356,6 @@ def test_restore_never_loads_a_graph_the_round_did_not_displace(tmp_path, caplog
     assert str(stale) in line and str(displaced) in line
 
 
-def test_the_seam_rollback_reports_not_restored_when_the_stash_is_stale(
-    tmp_path, monkeypatch,
-):
-    """…and the conductor's own seam degrades to "not restored", not to a crash.
-
-    ``bind_delta_probe_rollback`` catches ``CrossoverV2Refused`` as the ordinary
-    outcome for an automatic caller, so the new refusal reaches the round the
-    same way a first-ever-apply refusal does: ``False``, which re-grades the
-    round into ``recovery_required`` rather than silently leaving it graded as
-    though a restore had happened.
-    """
-    stale = tmp_path / "active_speaker_baseline_candidate_3298558b817e.yml"
-    stale.write_text("run 2's candidate\n", encoding="utf-8")
-    displaced = tmp_path / "sound_current.yml"
-    displaced.write_text("the sound the round displaced\n", encoding="utf-8")
-
-    class _NoopCam:
-        async def get_config_file_path(self, best_effort=False):
-            return str(tmp_path / "round1_candidate.yml")
-
-    v2host.save_v2_state({
-        "session_id": "cap_1447",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": True,
-        "pre_apply_profile": {
-            "status": "applied",
-            "source": {},
-            "config": {
-                "path": str(stale),
-                "sha256": hashlib.sha256(stale.read_bytes()).hexdigest(),
-            },
-        },
-        "round_anchor": {
-            "displaced": {"config_path": str(displaced), "sha256": ""},
-            "applied": {"config_path": "", "sha256": ""},
-        },
-    })
-
-    rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _NoopCam)
-
-    assert rollback("model_error") is False
-    # The state is untouched: nothing was restored, so ``applied`` must not have
-    # been cleared by a path that did not restore anything.
-    assert v2host.load_v2_state().get("applied") is True
-
-
 def test_status_block_surfaces_apply_blocked():
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -7060,10 +7014,15 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
     envelope fixture. A first-ever apply (no pre_apply_profile) offers no way
     back; a stash naming a measured candidate mints the republish action."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+    from jasper.web import correction_crossover_v2_republish as republish_door
 
     monkeypatch.setattr(
         v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
+    # This contract is the status->envelope seam; the bank behind the door's
+    # read-only admission has its own suites. The admitted shape is stubbed;
+    # the refused shape has a dedicated pin below.
+    monkeypatch.setattr(republish_door, "republish_preflight", lambda fp: None)
 
     def _envelope_for(pre_apply_profile):
         v2host.save_v2_state({
@@ -10793,6 +10752,8 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     # empty set proves nothing.
     assert "expected_post_apply_offset_db" in host_owned
     assert "pre_apply_profile" in host_owned
+    # The way-back pointer's pairing — the automatic revert's arming fact.
+    assert "previous_candidate_displaced_by" in host_owned
     # #2292's key is the fourth of the class, and it is here rather than in an
     # exception list because it takes ``pre_apply_profile``'s unconditional
     # carry-forward for the identical reason (see persist_conductor_state).
@@ -12758,10 +12719,25 @@ def test_playback_signal_handler_failure_never_stops_the_measurement():
 # end to end, over the real apply/restore transaction.
 
 
+def _bank_candidate(monkeypatch, tmp_path, candidate) -> None:
+    """Publish ``candidate`` into a bundle bank, at the path its minting relay
+    session would have used — the artifact the automatic way back republishes."""
+    root = tmp_path / "bank-sessions"
+    path = (
+        root / "bundleprior00" / "evidence" / "v1" / "artifacts"
+        / "crossover_v2" / "relay-prior-1" / "candidate.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: root)
+
+
 def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     """Apply the household's pre-existing crossover, then a v2 measured
     candidate over it — the state a household is in when VERIFY arms. Returns
-    the durable v2 state's Undo anchor."""
+    the durable v2 state's Undo anchor. The prior candidate is also banked, as
+    its own measure session would have left it, so the automatic way back can
+    republish it."""
     from jasper.active_speaker.baseline_profile import apply_baseline_profile
     from jasper.active_speaker.crossover_preview import build_crossover_preview
 
@@ -12771,6 +12747,8 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
 
+    prior_candidate = _prior_measured_candidate(preset)
+    _bank_candidate(monkeypatch, tmp_path, prior_candidate)
     prior_cam = _FakeApplyCam()
     prior_payload = _bg_run_async(
         apply_baseline_profile(
@@ -12781,7 +12759,7 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
             load_config=prior_cam.set_config_file_path,
             get_current_config_path=prior_cam.get_config_file_path,
             tuning_owner="automatic",
-            measured_candidate=_prior_measured_candidate(preset),
+            measured_candidate=prior_candidate,
         )
     )
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
@@ -12862,11 +12840,19 @@ def test_a_verify_rearm_leaves_the_undo_anchor_restorable(monkeypatch, tmp_path)
 def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
     monkeypatch, tmp_path,
 ):
-    """The automatic half of the same guarantee. The probe runs one capture
-    INTO the re-armed session, so its rollback is the first caller to meet a
-    re-armed anchor — and it reaches the apply transaction with a real digest,
-    never the empty expectation that refuses unconditionally."""
+    """The automatic half of the same guarantee, through the NORMAL path.
+
+    The rollback resolves the stash's ``source.measured_candidate_fingerprint``
+    — which must survive the re-arm — republishes that banked candidate, and
+    drives the REAL apply transaction to completion. Success leaves the prior
+    candidate APPLIED (not an un-applied speaker: the way back is itself an
+    apply), with the way-back pointer re-armed at the graph this revert
+    displaced. The proof expectation reaching the DSP transaction is the
+    recomposed candidate's own digest — real, never the empty expectation that
+    refuses unconditionally."""
     anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
+    assert prior_fingerprint
 
     _rearm_verify()
 
@@ -12878,16 +12864,31 @@ def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
         return await real_apply(**kwargs)
 
     monkeypatch.setattr(baseline_profile_mod, "apply_dsp_config", observed_apply)
+    monkeypatch.setattr(
+        correction_crossover_backend, "status_payload", lambda: {},
+    )
 
     rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
 
-    assert rollback("realized_shape_differs_from_commanded") is True
+    with _stage2_openable():
+        assert rollback("realized_shape_differs_from_commanded") is True
     # Non-empty is the load-bearing half: an empty expectation is a guaranteed
-    # proof refusal (``DSP_PROOF_ANCHOR_MISSING``), which is what a lost anchor
-    # would look like from inside the transaction.
-    assert seen["expected"] == anchor["config"]["sha256"]
+    # proof refusal, which is what a lost way back would look like from inside
+    # the transaction.
     assert seen["expected"]
-    assert (v2host.load_v2_state() or {})["applied"] is False
+    state = v2host.load_v2_state() or {}
+    assert state["applied"] is True
+    assert state["candidate"]["fingerprint"] == prior_fingerprint
+    # The revert re-stamped the way back at the candidate it displaced, so a
+    # household can come forward again through the same door…
+    assert (
+        state["pre_apply_profile"]["source"]["measured_candidate_fingerprint"]
+        != prior_fingerprint
+    )
+    # …but CONSUMED its own pairing, so the automatic path cannot follow that
+    # pointer back inside the [revert…next-apply] window. The button is the
+    # household's; the auto path waits for the next ordinary apply.
+    assert state["previous_candidate_displaced_by"] is None
 
 
 # --- #2519: a refused restore has to SAY why, in the only record it has ------
@@ -12965,61 +12966,60 @@ def test_a_successful_undo_journals_an_empty_code(monkeypatch, tmp_path, caplog)
     )
 
 
-def test_the_automatic_rollback_journals_the_same_code_the_undo_does(
+def test_a_corrupted_bank_refuses_the_automatic_way_back_loudly(
     monkeypatch, tmp_path, caplog,
 ):
-    """The delta probe's rollback reduces the payload to a bool for its
-    conductor and has no household screen, so this journal line is the ONLY
-    place its refusal reason can exist.
+    """The delta probe's rollback reduces the doors' outcome to a bool for its
+    conductor and has no household screen, so the journal is the ONLY place
+    its refusal reason can exist.
 
-    Asserted against THAT record, never ``caplog.text``. The rollback runs
-    ``handle_v2_restore`` underneath it, so the shared text already carries a
-    ``code=`` from the ``…_restored`` line — a substring assertion over the
-    whole buffer passes while the site with no screen behind it says nothing,
-    which is precisely the site this test exists for (gate finding, delta
-    review: removing ``code=`` from the delta-probe call alone left all three
-    journal tests green)."""
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    target = Path(anchor["config"]["path"])
-    target.write_text(
-        target.read_text(encoding="utf-8") + "# a later writer\n", encoding="utf-8"
+    A single flipped byte in the banked artifact must refuse the republish
+    (the candidate model's own recompute-and-compare), reach the seam as
+    "not restored", and leave the regressed graph's record untouched — a
+    revert that could not verify its target must not move anything.
+    """
+    _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    from jasper.active_speaker.bundles import sessions_dir
+
+    artifact = next(sessions_dir().glob("*/evidence/v1/artifacts/crossover_v2/*/candidate.json"))
+    artifact.write_text(
+        artifact.read_text(encoding="utf-8").replace("prog-prior-1", "prog-tampered"),
+        encoding="utf-8",
     )
     rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
 
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         assert rollback("realized_shape_differs_from_commanded") is False
 
-    # The trailing space keeps the sibling events out — ``…_restore_repeat``
-    # and ``…_restore_refused`` are different lines with different contracts.
-    probe_lines = [
+    refused_lines = [
         record.getMessage() for record in caplog.records
         if record.getMessage().startswith(
-            "event=correction.crossover_v2_delta_probe_restore "
+            "event=correction.crossover_v2_delta_probe_restore_refused "
         )
     ]
+    assert len(refused_lines) == 1, refused_lines
+    # The fingerprint it aimed at rides the line, so a support read can tell
+    # WHICH candidate could not come back.
+    assert "candidate_fingerprint=" in refused_lines[0]
+    assert (v2host.load_v2_state() or {})["applied"] is True
 
-    assert len(probe_lines) == 1, probe_lines
-    assert "code=restore_target_changed" in probe_lines[0]
 
-
-def test_a_persist_after_a_rollback_cannot_resurrect_applied(
+def test_a_persist_after_a_rollback_keeps_the_reverted_candidate_applied(
     monkeypatch, tmp_path,
 ):
-    """#2616 — the live session's stale ``applied`` must not overwrite the clear.
+    """#2616's successor: the live session must not falsify what a revert did.
 
-    The production shape exactly: a stage-2 conductor is minted ``applied=True``
-    (the verify-only prepare's own ``_open``), the delta probe's rollback seam
-    restores through ``handle_v2_restore`` — which clears the DURABLE flag and
-    holds no conductor — and then the ordinary post-capture
-    ``persist_conductor_state`` runs. Before the fix that persist wrote the
-    conductor's in-memory ``applied=True`` straight back over the clear, and the
-    household's screen went on offering a correction the speaker was no longer
-    playing.
-
-    The two existing rollback tests above pass today only because neither runs a
-    persist AFTER the restore; this one does, which is the whole regression.
+    The production shape exactly: a stage-2 conductor is live in memory when
+    the round's rollback seam republishes-and-applies the prior candidate —
+    holding no conductor — and then the ordinary post-capture
+    ``persist_conductor_state`` runs. The revert leaves the speaker APPLIED
+    (the way back is itself an apply), so the persist must keep saying so, and
+    must carry the REVERTED candidate's identity forward rather than erasing
+    the slot the republish just restored — the slot the household's next apply
+    or review reads.
     """
-    _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
 
     conductor = CrossoverV2Session(
         session_id="cap_2616",
@@ -13045,19 +13045,144 @@ def test_a_persist_after_a_rollback_cannot_resurrect_applied(
     assert (v2host.load_v2_state() or {})["applied"] is True
     assert conductor.applied is True
 
+    monkeypatch.setattr(
+        correction_crossover_backend, "status_payload", lambda: {},
+    )
     rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
-    assert rollback("realized_shape_differs_from_commanded") is True
-    assert (v2host.load_v2_state() or {})["applied"] is False
+    with _stage2_openable():
+        assert rollback("realized_shape_differs_from_commanded") is True
+    state = v2host.load_v2_state() or {}
+    assert state["applied"] is True
+    assert state["candidate"]["fingerprint"] == prior_fingerprint
 
-    # The regression: an ordinary persist, from the same live session.
+    # An ordinary persist, from the same live session.
     v2host.persist_conductor_state(conductor, failure_code=None)
 
-    assert (v2host.load_v2_state() or {})["applied"] is False
-    # ...and the in-memory owner was corrected rather than merely out-voted, so
-    # a SECOND persist cannot bring it back either.
-    assert conductor.applied is False
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (v2host.load_v2_state() or {})["applied"] is False
+    state = v2host.load_v2_state() or {}
+    assert state["applied"] is True
+    assert state["candidate"]["fingerprint"] == prior_fingerprint
+    assert conductor.applied is True
+
+
+def test_a_graded_round_reverts_through_the_real_doors_and_the_window_stays_shut(
+    monkeypatch, tmp_path,
+):
+    """The whole-state replacement BETWEEN the doors, pinned inside a round.
+
+    Every round suite stubs the two doors (their own gates have their own
+    suites), so the one thing nothing pinned was the door-to-door contract a
+    LIVE adoption restore rides: republish replaces the durable session
+    document wholesale, and the apply door must still admit the republished
+    prior. This drives ``coordinator.run_round`` — the real adoption act —
+    over the REAL seam, REAL republish (real bank), and the REAL apply
+    transaction, then closes the loop on the review's ping-pong window:
+
+    * the restore round ends ``REFUSAL_RESTORED`` with the prior candidate
+      APPLIED (the way back is itself an apply);
+    * the pointer is re-stamped at the displaced candidate with its pairing
+      CONSUMED by the revert;
+    * a second graded round in the [revert…next-apply] window — same
+      restore-worthy evidence, fresh binding, so the once-guard is not what
+      saves it — routes to ``RECOVERY_REQUIRED`` with nothing attempted, and
+      the measured-worse graph stays off the speaker.
+    """
+    from jasper.active_speaker.crossover_v2 import coordinator as round_coordinator
+
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
+    regressed_fingerprint = (v2host.load_v2_state() or {})["candidate"]["fingerprint"]
+    monkeypatch.setattr(
+        correction_crossover_backend, "status_payload", lambda: {},
+    )
+
+    def _graded_round(session_id: str) -> Any:
+        # No usable post-apply analysis + a boosted applied graph is the
+        # adoption table's fail-closed restore row (row4_untrusted_evidence)
+        # — the smallest evidence that makes a REAL round decide RESTORE.
+        evidence = round_coordinator.RoundEvidence(
+            session_id=session_id,
+            tier="express",
+            post_analysis=None,
+            entry_baseline=None,
+            spec_report=None,
+            proposal_fingerprint="fp-proposal",
+            commanded_delta_present=False,
+            realization_tolerance_db=1.0,
+            reference_mark="design_axis",
+            proposal_fingerprint_kind="candidate",
+            candidate_fingerprint=(
+                (v2host.load_v2_state() or {}).get("candidate") or {}
+            ).get("fingerprint", ""),
+            delta_probe=None,
+            round_ordinal=1,
+            previous_objectives=None,
+        )
+        ports = round_coordinator.RoundPorts(
+            # A FRESH binding per round: the once-guard memo must not be what
+            # keeps the window shut.
+            rollback=v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam),
+            rollback_available=v2host._previous_candidate_known,
+            applied_boosts=lambda: True,
+        )
+        with _stage2_openable():
+            return round_coordinator.run_round(evidence, ports)
+
+    first = _graded_round("cap_revert_round")
+
+    assert first.refusal is not None
+    assert first.refusal.kind == round_coordinator.REFUSAL_RESTORED
+    state = v2host.load_v2_state() or {}
+    assert state["applied"] is True
+    assert state["candidate"]["fingerprint"] == prior_fingerprint
+    assert (
+        state["pre_apply_profile"]["source"]["measured_candidate_fingerprint"]
+        == regressed_fingerprint
+    )
+    assert state["previous_candidate_displaced_by"] is None
+
+    second = _graded_round("cap_window_round")
+
+    assert second.refusal is not None
+    assert second.refusal.kind == round_coordinator.REFUSAL_ROLLBACK_FAILED
+    assert second.refusal.rollback_anchor_available is False
+    after = v2host.load_v2_state() or {}
+    # Nothing moved: the prior candidate is still the applied one, and the
+    # measured-worse graph was not automatically re-applied.
+    assert after["applied"] is True
+    assert after["candidate"]["fingerprint"] == prior_fingerprint
+
+
+def test_the_status_block_withholds_a_way_back_its_door_would_refuse(
+    monkeypatch, tmp_path,
+):
+    """Review row 6, at the seam that feeds every screen.
+
+    ``previous_candidate_fingerprint`` on the status block is what the
+    envelope mints the way-back button AND selects the rollback-failed copy
+    arm from. When the republish door would refuse the pointer — here a bank
+    with no verifiable artifact for it — the block publishes ``None``, so no
+    surface advertises a "Go back to the previous tuning" that refuses on the
+    same fact. The positive control drives the REAL preflight over a REAL
+    bank: the same state publishes the fingerprint once the artifact is
+    admissible.
+    """
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    prior_fingerprint = anchor["source"]["measured_candidate_fingerprint"]
+
+    assert (
+        v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
+        == prior_fingerprint
+    )
+
+    # Prune the bank out from under the pointer: the answer must flip with it.
+    monkeypatch.setattr(
+        "jasper.active_speaker.bundles.sessions_dir",
+        lambda: tmp_path / "empty-bank",
+    )
+    assert (
+        v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
+        is None
+    )
 
 
 # --- the request-time topology pin: ONE corner + order, for ONE round --------

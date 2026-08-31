@@ -439,10 +439,9 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
 
 def _stage_2(monkeypatch, *, camilla_factory: Any = None) -> tuple[Any, dict[str, Any]]:
     """``camilla_factory`` defaults to ``None`` for every caller that never
-    reaches the rollback seam's DSP leg. A caller that actually FIRES the
-    rollback (#2537 made ``handle_v2_restore`` call ``camilla_factory()``
-    unconditionally, ahead of its own refusal check) must supply a callable —
-    see ``test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile``.
+    reaches the rollback seam's apply leg. A caller that actually FIRES a
+    completable rollback must stub the republish/apply doors instead — see
+    ``crossover_v2_round_harness._stub_restore_doors``.
     """
     prepared = v2host.prepare_v2_session(
         {}, status=_status(), run_async=None, camilla_factory=camilla_factory,
@@ -1504,25 +1503,16 @@ def test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile(monkeypatch)
     """#1863's neighbour: an automatic rollback with nothing to roll back to.
 
     Binding rollback on stage 2 means it can now actually FIRE, so what it does
-    on a first-ever apply — where no ``pre_apply_profile`` was stashed — is part
-    of this PR's contract rather than a hypothetical. The seam reports "not
-    restored" and does NOT raise: ``handle_v2_restore`` refuses with
-    ``CrossoverV2Refused``, which is the ordinary outcome for an automatic
-    caller, and ``bind_delta_probe_rollback`` catches exactly that. The verdict
-    that asked for the rollback then still reaches the household under
-    ``REASON_CORRECTION_ROLLBACK_FAILED``, with the Undo button on the screen.
+    on a first-ever apply — where no ``pre_apply_profile`` was stashed, so no
+    prior candidate fingerprint is recorded to republish — is part of the
+    contract rather than a hypothetical. The seam reports "not restored" and
+    does NOT raise: it refuses before pressing either normal-path door, and
+    the verdict that asked for the rollback still reaches the household under
+    ``REASON_CORRECTION_ROLLBACK_FAILED``.
 
-    Issue #1863 proper — not OFFERING Undo when no restorable profile exists —
-    is a render-side affordance question on the done / verify-fail / applied-
-    failure screens, and is untouched here.
-
-    ``camilla_factory`` must be callable: #2537 made ``handle_v2_restore``
-    read the running config's path (the fourth anchor precondition's live
-    half) BEFORE its refusal check, so the factory is invoked unconditionally
-    now. ``SimpleNamespace()`` has no ``get_config_file_path``, so the read is
-    swallowed as an ``AttributeError`` and resolves to "could not compare" —
-    the refusal below still fires on the ``no_pre_apply_profile`` precondition
-    alone, which is what this test pins.
+    Issue #1863 proper — not OFFERING a way back when no prior candidate
+    exists — is a render-side affordance question on the done / verify-fail /
+    applied-failure screens, and is untouched here.
     """
     _seed_applied_stage_1_state()  # applied, but no ``pre_apply_profile``
     conductor, _state = _stage_2(monkeypatch, camilla_factory=lambda: SimpleNamespace())
@@ -1620,6 +1610,10 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # refusing PROGRAM_NOT_REPRODUCIBLE.
     "measure_sweep_durations_s",
     "pre_apply_profile",
+    # The way-back pointer's pairing (which apply recorded the stash) — the
+    # automatic revert's arming fact, host-owned like the stash and carried
+    # on identical terms.
+    "previous_candidate_displaced_by",
     # Deliberate widening (#2537). What one apply DISPLACED (the running
     # config immediately before the load) and what it PUT LIVE, from that
     # apply's own transaction — see round_anchor.py's module docstring for

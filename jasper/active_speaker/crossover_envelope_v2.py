@@ -3403,14 +3403,24 @@ def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
 def _failure_rollback_anchor_available(status: Mapping[str, Any]) -> bool | None:
     """Which ``correction_rollback_failed`` arm the record describes (#2291).
 
-    ``True`` a restore was attempted against a real anchor and did not
-    complete, so a stored previous sound exists. ``False`` there was never an
-    anchor — no previous sound to point the copy at. ``None`` is the third
-    state, read for
+    ``True`` a restore was attempted against a real way back and did not
+    complete, so going back is a live remedy. ``False`` there was never one —
+    nothing to point the copy at. ``None`` is the third state, read for
     :func:`_failure_pilot_heard`'s reason: a code the question does not apply
     to, and every state file written before this shipped, simply do not say.
+
+    **The recorded ``True`` is ANDed with the way back being offerable NOW**
+    (``previous_candidate_fingerprint`` on the status — already gated on the
+    republish door's own admission). The record describes the round, but the
+    sentence's remedy clause ("Go back to the previous tuning") describes a
+    button on THIS screen, and a sentence naming a control the screen cannot
+    mint is the advertised-then-refused drift the door's preflight exists to
+    remove. The False-arm copy states no cause, so rendering it here stays
+    honest for every way the button can be gone.
     """
     available = _mapping(_v2(status).get("failure")).get("rollback_anchor_available")
+    if available is True and not _way_back_action(status):
+        return False
     return available if isinstance(available, bool) else None
 
 

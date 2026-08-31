@@ -1509,13 +1509,13 @@ class V2FlowSeams:
     # speaker honestly must not be rejected because the host could not name the
     # graph it measured — the record then carries "" and says so.
     entry_graph_fingerprint: Callable[[], str] | None = None
-    # #2291: is there a valid anchor to restore TO? The ANCHOR half of the
-    # adoption table's ``rollback_available``; the SEAM half is ``rollback``
-    # above being bound at all, and
+    # #2291: is a prior candidate recorded to restore TO? The STATE half of
+    # the adoption table's ``rollback_available``; the SEAM half is
+    # ``rollback`` above being bound at all, and
     # :func:`~jasper.active_speaker.crossover_v2.coordinator.rollback_available`
-    # ANDs them. Optional, and its absence reads as "cannot confirm an anchor"
-    # rather than as "there is one" — see that function for why the pessimistic
-    # direction is the safe one here.
+    # ANDs them. Optional, and its absence reads as "cannot confirm a prior
+    # candidate" rather than as "there is one" — see that function for why the
+    # pessimistic direction is the safe one here.
     rollback_available: Callable[[], bool] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Read from the host at
     # grading time, because the grading session cannot answer it from its own
@@ -3837,9 +3837,10 @@ class CrossoverV2Session:
         :meth:`note_apply_complete`'s mirror, and the same split of duties: the
         journey owns the flag and says nothing, this says it. The host calls it
         when the DURABLE state shows a restore this in-memory session did not
-        see — the delta probe's rollback seam and the round's adoption restore
-        both clear the durable flag through ``observe_restore``, which holds no
-        conductor and so could not tell the owner.
+        see — a restore door that clears the durable flag holds no conductor
+        and so could not tell the owner. (The round's adoption restore no
+        longer clears the flag at all: it re-applies the prior candidate
+        through the normal path, so the speaker stays applied.)
         """
         self._journey.mark_restored()
         log_event(

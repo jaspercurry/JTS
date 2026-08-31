@@ -4012,6 +4012,47 @@ def test_no_registry_sentence_names_undo():
             assert "undo" not in text.lower(), (code, text)
 
 
+def test_the_rollback_failed_copy_never_names_a_way_back_the_screen_cannot_mint():
+    """Review row 6 of the normal-path revert: sentence/button non-drift.
+
+    The failure record's ``rollback_anchor_available`` describes the ROUND,
+    but the True-arm sentence's remedy clause ("Go back to the previous
+    tuning") describes a control on THIS screen — and the way-back action is
+    minted only from a ``previous_candidate_fingerprint`` the republish door's
+    own read-only admission has passed. When the pointer is not offerable the
+    copy must fall to the no-way-back arm (which asserts no cause, #2859)
+    rather than advertise a button that refuses on the same fact.
+    """
+    recorded_true = {
+        "code": REASON_CORRECTION_ROLLBACK_FAILED,
+        "rollback_anchor_available": True,
+    }
+
+    offered = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True,
+        failure=dict(recorded_true),
+        previous_candidate_fingerprint="b" * 64,
+    ))
+    assert offered["screen"] == "verify_fail"
+    assert "previous tuning" in offered["verdict_text"]
+    assert any(
+        action["id"] == "republish_previous"
+        for action in offered["alternate_actions"]
+    )
+
+    unofferable = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True,
+        failure=dict(recorded_true),
+    ))
+    assert unofferable["screen"] == "verify_fail"
+    assert "previous tuning" not in unofferable["verdict_text"]
+    assert "measure again" in unofferable["verdict_text"].lower()
+    assert not any(
+        action["id"] == "republish_previous"
+        for action in unofferable["alternate_actions"]
+    )
+
+
 def test_a_retriable_verify_fail_code_keeps_its_try_again():
     """The regression guard on the swap above. Every OTHER verify_fail code is
     retriable and its retry is a real lever, so the shipped screen — "Try

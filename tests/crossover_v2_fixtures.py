@@ -438,11 +438,12 @@ class FakeSeams:
     # PR-L5: the delta probe's automatic-rollback seam. ``None`` (the default)
     # is the honest "no binding" case the conductor must still refuse under.
     rollback: Any = None
-    # #2291's anchor half of "can this host restore" — the STATE fact beside
-    # ``rollback``'s process fact. Production binds it UNCONDITIONALLY on both
-    # stages (``bind_v2_stage_seams``), so a fixture that binds ``rollback``
-    # and leaves this unbound is not modelling any real speaker: the round
-    # would route to ``recovery_required`` on a host whose Undo works.
+    # #2291's state half of "can this host restore" — a prior candidate is
+    # recorded — beside ``rollback``'s process fact. Production binds it
+    # UNCONDITIONALLY on both stages (``bind_v2_stage_seams``), so a fixture
+    # that binds ``rollback`` and leaves this unbound is not modelling any
+    # real speaker: the round would route to ``recovery_required`` on a host
+    # whose way back works.
     #
     # It matters here since the fifth-principle routing. A delta-probe rollback
     # class used to restore from the probe's own seam, which asked only whether

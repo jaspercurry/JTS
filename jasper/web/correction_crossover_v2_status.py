@@ -577,6 +577,12 @@ def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | No
     ``baseline_profile._source_payload`` and preserved through the frozen
     applied-profile projection — the same field
     :mod:`jasper.correction.applied_speaker_evidence` keys staleness on.
+
+    Three readers, one field: the status block below (the wizard's way-back
+    action), the host's ``_previous_candidate_known`` seam (the adoption
+    table's ``rollback_available``), and the auto-revert's target resolution
+    (``bind_delta_probe_rollback``). Sharing the read is what keeps the
+    capability answer and the action aimed at one identity.
     """
     profile = (state or {}).get("pre_apply_profile")
     source = profile.get("source") if isinstance(profile, Mapping) else None
@@ -586,6 +592,40 @@ def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | No
         else None
     )
     return value if isinstance(value, str) and value else None
+
+
+def _offerable_previous_candidate(state: Mapping[str, Any] | None) -> str | None:
+    """The way-back fingerprint, published only when its door would admit it.
+
+    :func:`_previous_candidate_fingerprint`'s value, gated on
+    :func:`~jasper.web.correction_crossover_v2_republish.republish_preflight`
+    — the republish door's own read-only admission — so no screen advertises
+    a "Go back to the previous tuning" the door then refuses (a pruned bank,
+    a corrupted artifact, a corner the declaration no longer carries a
+    revision for). Deliberately NOT gated on the automatic revert's pairing:
+    that gates only the AUTO path, and the button is the household's.
+
+    Fails CLOSED on an unexpected preflight error — a button that cannot be
+    vouched for is withheld, with the cause in the journal — because the
+    alternative is the advertised-then-refused drift this gate exists to
+    remove.
+    """
+    from jasper.web import correction_crossover_v2_republish as republish_door
+
+    fingerprint = _previous_candidate_fingerprint(state)
+    if fingerprint is None:
+        return None
+    try:
+        admitted = republish_door.republish_preflight(fingerprint) is None
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        log_event(
+            _host.logger,
+            "correction.crossover_v2_way_back_preflight_failed",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return None
+    return fingerprint if admitted else None
 
 
 def crossover_v2_status_block() -> dict[str, Any] | None:
@@ -648,11 +688,14 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "applied": bool(state and state.get("applied")),
         # The banked-candidate way back: the fingerprint of the measured
         # candidate the pre-apply stash was built from, or ``None`` (a
-        # first-ever apply, or a prior profile that was not a measured-
-        # candidate apply). The envelope mints a /crossover/v2/republish
-        # action from it; the bank re-verifies on POST, so this is a pointer,
-        # never a promise that the artifact is still on disk.
-        "previous_candidate_fingerprint": _previous_candidate_fingerprint(state),
+        # first-ever apply, a prior profile that was not a measured-candidate
+        # apply, or a pointer the republish door would refuse). The envelope
+        # mints a /crossover/v2/republish action from it; publishing it only
+        # when the door's own read-only admission passes is what keeps the
+        # button and the door one answer (#2291's non-drift rule). The door
+        # still re-runs the admission on POST — the bank can change between
+        # the answer and the action.
+        "previous_candidate_fingerprint": _offerable_previous_candidate(state),
         "session_id": session_id,
         # Minimal live-loop observability: no attempt curves/history on the
         # household polling path, only the kernel output the envelope formats

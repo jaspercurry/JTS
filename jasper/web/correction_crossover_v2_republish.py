@@ -60,6 +60,84 @@ def _refused(code: str, message: str, *, fingerprint: str = "") -> Exception:
     return _host.CrossoverV2Refused(message, code=code)
 
 
+def _admit_banked_candidate(fingerprint: str) -> tuple[str, str, Any, Any]:
+    """The republish door's read-only admission: ``(code, detail, banked, change)``.
+
+    ``code == ""`` admits; otherwise it is the refusal code the door would
+    answer, with ``detail`` the door-independent half of its sentence.
+    Read-only by construction — it loads the bank and the live declaration and
+    writes nothing — so a caller may ask without moving the published slot.
+
+    ONE owner for the door's admission rules, with two callers:
+    :func:`handle_v2_republish` (which raises the refusal and then republishes)
+    and :func:`republish_preflight` (the answer half — the status block and the
+    round's ``rollback_available`` ask it so no surface advertises a way back
+    this door would refuse; #2291's answer/action non-drift rule).
+    """
+    from jasper.active_speaker.candidate_bank import (
+        CandidateBankRefusal,
+        find_banked_candidate,
+    )
+    from jasper.active_speaker.crossover_declaration import (
+        declaration_change_for_candidate,
+    )
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.output_topology import load_output_topology
+    from jasper.web import correction_crossover_v2 as _host
+
+    if not str(fingerprint or "").strip():
+        return "fingerprint_required", "fingerprint is required", None, None
+    try:
+        banked = find_banked_candidate(str(fingerprint).strip())
+    except CandidateBankRefusal as exc:
+        return (
+            exc.code,
+            f"that candidate cannot be republished: {exc.detail}",
+            None,
+            None,
+        )
+    # The one companion fact the bundle cannot supply (see
+    # :func:`handle_v2_republish`'s docstring). Read through the SAME helper
+    # the apply path branches on, so the two agree by construction rather
+    # than by a restated rule.
+    change = declaration_change_for_candidate(
+        source_preset=banked.candidate.source_preset,
+        design_draft=load_design_draft(topology=load_output_topology()),
+    )
+    if change is not None:
+        # BOTH numbers, because the operator's next question is always "which
+        # one is wrong" — a refusal naming only the candidate's corner makes
+        # them go look up the declaration by hand.
+        return (
+            "sound_design_revision_unavailable",
+            f"that candidate crosses at "
+            f"{_host._crossover_label(change.selected, change.changes_slope)} but "
+            f"Sound declares "
+            f"{_host._crossover_label(change.configured, change.changes_slope)}; "
+            "applying it would rewrite the declaration, and the Sound revision "
+            "its measurement was taken under (sound_design_revision) is not "
+            "recorded in the bundle. Measure this crossover again to apply it.",
+            banked,
+            change,
+        )
+    return "", "", banked, change
+
+
+def republish_preflight(fingerprint: str) -> str | None:
+    """The refusal code this door would answer for ``fingerprint``, or ``None``.
+
+    The ANSWER half of the way back, asked before anything advertises the
+    ACTION: the status block's ``previous_candidate_fingerprint`` (the
+    wizard's way-back button) and the round's ``rollback_available`` both gate
+    on it, so neither can promise a republish the door then refuses — the
+    same drift #2291 closed for the old restore verb. A pointer is still
+    never a promise: the door re-runs the same admission on POST, because the
+    bank can change between the answer and the action.
+    """
+    code, _detail, _banked, _change = _admit_banked_candidate(fingerprint)
+    return code or None
+
+
 def handle_v2_republish(
     raw: Mapping[str, Any], *, now: float | None = None
 ) -> dict[str, Any]:
@@ -129,55 +207,16 @@ def handle_v2_republish(
     VERIFY of a republished candidate grades INDETERMINATE, never a false pass.
     """
     from jasper.web import correction_crossover_v2 as _host
-    from jasper.active_speaker.candidate_bank import (
-        CandidateBankRefusal,
-        find_banked_candidate,
-    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         ROUND_ORDINAL_EPOCH_STATE_KEY,
         round_ordinal_epoch_from_state,
     )
-    from jasper.active_speaker.crossover_declaration import (
-        declaration_change_for_candidate,
-    )
     from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.output_topology import load_output_topology
 
     fingerprint = str(raw.get("fingerprint") or "").strip()
-    if not fingerprint:
-        raise _refused("fingerprint_required", "fingerprint is required")
-    try:
-        banked = find_banked_candidate(fingerprint)
-    except CandidateBankRefusal as exc:
-        raise _refused(
-            exc.code,
-            f"that candidate cannot be republished: {exc.detail}",
-            fingerprint=fingerprint,
-        ) from exc
-
-    # The one companion fact the bundle cannot supply (see the docstring). Read
-    # through the SAME helper the apply path branches on, so the two agree by
-    # construction rather than by a restated rule.
-    change = declaration_change_for_candidate(
-        source_preset=banked.candidate.source_preset,
-        design_draft=load_design_draft(topology=load_output_topology()),
-    )
-    if change is not None:
-        # BOTH numbers, because the operator's next question is always "which
-        # one is wrong" — a refusal naming only the candidate's corner makes
-        # them go look up the declaration by hand.
-        raise _refused(
-            "sound_design_revision_unavailable",
-            f"that candidate crosses at "
-            f"{_host._crossover_label(change.selected, change.changes_slope)} but "
-            f"Sound declares "
-            f"{_host._crossover_label(change.configured, change.changes_slope)}; "
-            "applying it would rewrite the declaration, and the Sound revision "
-            "its measurement was taken under (sound_design_revision) is not "
-            "recorded in the bundle. Measure this crossover again to apply it.",
-            fingerprint=banked.fingerprint,
-        )
+    code, detail, banked, _change = _admit_banked_candidate(fingerprint)
+    if code:
+        raise _refused(code, detail, fingerprint=fingerprint)
 
     # Lazy for ``_candidate_summary``'s own stated reason: the fit module pulls
     # numpy and this one is on the socket-activated wizard's cold-start path.
@@ -288,6 +327,17 @@ def handle_v2_republish(
             "pre_apply_profile": (
                 dict(prior["pre_apply_profile"])
                 if isinstance(prior.get("pre_apply_profile"), Mapping)
+                else None
+            ),
+            # The pointer's pairing crosses on the stash's terms. It names the
+            # apply that recorded the stash — NOT this republish — so a round
+            # graded after this door's own apply compares it against a fresh
+            # stamp anyway; carrying it is what keeps a republish the operator
+            # never applies from silently unpairing the way back.
+            "previous_candidate_displaced_by": (
+                prior.get("previous_candidate_displaced_by")
+                if isinstance(prior.get("previous_candidate_displaced_by"), str)
+                and prior.get("previous_candidate_displaced_by")
                 else None
             ),
             "sound_declaration_undo": (
