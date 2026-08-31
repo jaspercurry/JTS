@@ -105,6 +105,8 @@ from jasper.active_speaker.flat_spec_views import (
     _exclusion_mask,
     _pool,
 )
+from jasper.active_speaker.crossover_v2 import forward_model
+from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
@@ -112,6 +114,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
 )
+from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 
 __all__ = [
@@ -121,6 +124,7 @@ __all__ = [
     "BankedRound",
     "ENTRY_STATE_UNREADABLE",
     "EntryStateGrade",
+    "ForwardModelDeltaResult",
     "FrozenReferenceResult",
     "RepeatabilityMetric",
     "RepeatabilityResult",
@@ -130,6 +134,7 @@ __all__ = [
     "agreement_table",
     "default_agreement_lo_hz",
     "entry_state_grade",
+    "forward_model_verify_delta",
     "frozen_reference_grade",
     "load_banked_round",
     "per_seat_curves",
@@ -696,6 +701,70 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
         take_id="",
     )
     return VerifyPoseResult(curve, "")
+
+
+@dataclass(frozen=True)
+class ForwardModelDeltaResult:
+    """The round's predicted-vs-measured VERIFY delta, or why there is none.
+
+    ``delta`` is ``None`` exactly when ``reason`` is non-empty, exactly as
+    :class:`VerifyPoseResult` reads. Never raises: a round that banked no
+    per-driver solos, or none at this pose, or no VERIFY curve, is a normal
+    shape rather than an error.
+
+    Additive evidence. It carries no verdict, tolerance or score — what a
+    given ``max_abs_db`` means is the reader's judgement (invariant 3).
+    """
+
+    delta: Mapping[str, Any] | None
+    reason: str
+
+
+def forward_model_verify_delta(
+    banked: BankedRound,
+    candidate: "forward_model.SummationCandidate",
+    *,
+    phase: str = PHASE_MEASURE,
+    position_deg: int = DESIGN_AXIS_DEG,
+) -> ForwardModelDeltaResult:
+    """Predict this round's summed response from its own banked solos, and
+    delta it against the VERIFY sum the round measured (ticket 4.5).
+
+    The two halves a round must carry for the question to mean anything: a
+    PREDICTION BASIS (a banked take at ``position_deg`` carrying both driver
+    solos, magnitude and phase, per ruling R9) and a MEASURED VERIFY SUM (read
+    through :func:`verify_pose_curve`'s own source). Either absent, and the
+    result says which — this view never substitutes one for the other.
+
+    ``candidate`` is a PARAMETER rather than the round's incumbent, and that is
+    the point of a forward model: the question is usually what some candidate
+    WOULD have measured, not what the applied one did. Postdicting the flat
+    campaign's r8 regression is exactly that shape — r7's banked solos, the
+    inherited EQ held verbatim, and the delay that was applied on top.
+    """
+
+    verify = verify_pose_curve(banked)
+    if verify.curve is None:
+        return ForwardModelDeltaResult(None, verify.reason)
+    try:
+        pair = forward_model.load_branch_pair(
+            banked.session_dir, phase=phase, position_deg=position_deg
+        )
+    except forward_model.ForwardModelError as exc:
+        return ForwardModelDeltaResult(None, str(exc))
+    if pair is None:
+        return ForwardModelDeltaResult(
+            None,
+            f"no {phase} take at {position_deg} deg banks both driver solos",
+        )
+    predicted = forward_model.predict_sum(pair, candidate)
+    try:
+        delta = forward_model.predicted_minus_measured_db(
+            predicted, verify.curve.freqs_hz, verify.curve.magnitude_db
+        )
+    except forward_model.ForwardModelError as exc:
+        return ForwardModelDeltaResult(None, str(exc))
+    return ForwardModelDeltaResult(delta, "")
 
 
 # --------------------------------------------------------------------------- #
