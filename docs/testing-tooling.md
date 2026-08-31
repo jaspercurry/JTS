@@ -1789,14 +1789,7 @@ Any other non-zero code is bash's own — including `1` for an omitted
 "no sidecars to grade" and callers treated it as a pass; it no longer is,
 and `scripts/run-crossover-round.py` now aborts on it.
 
-`jasper.audio_measurement.capture_integrity` is unchanged and still runs
-standalone over any directory of sidecars: `python -m
-jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`.
-Hardware-free coverage — clean / dirty / unreadable fixture trees, the
-exit-code values themselves (not just the names), and one test per named
-finding class — lives in
-[`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py);
-the bank script's own non-empty-`<dest-dir>` refusal (exit `4`, no Pi
+The bank script's own non-empty-`<dest-dir>` refusal (exit `4`, no Pi
 needed — the check runs before any SSH call) is pinned in
 [`tests/test_bank_crossover_round_script.py`](../tests/test_bank_crossover_round_script.py).
 
