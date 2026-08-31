@@ -16,7 +16,8 @@ sender reading would make the canonical level track the phone while Camilla —
 the actual master — did something else.
 
 Inbound does not depend on the back-channel, and shairport-sync offers a
-first-class push surface for it. In our pinned 4.3.7 source,
+first-class push surface for it. In the source this repo pins —
+`SHAIRPORT_SYNC_VERSION="4.3.7"`, commit `0b1c4391` in `deploy/install.sh` —
 `general.run_this_when_volume_is_set` is unconditional (no `#ifdef`;
 `shairport.c:880-881`, `common.c:1078-1090`). shairport invokes it as
 `<command> <float>` with the raw AirPlay volume on every volume message
