@@ -720,79 +720,22 @@ def test_fewer_than_one_take_per_position_is_refused(
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
 
 
-@pytest.mark.parametrize("regime", ["per_driver", "summed"])
-def test_takes_are_taken_for_every_regime_that_stages_ONE_stop_per_angle(
-    checkout, wizard, tmp_path, regime
-):
-    """``_REGIME_STOPS`` maps every member of ``REGIMES`` to a 1-tuple of
-    itself, so ``summed`` composes exactly one stop per angle just as
-    ``per_driver`` does — the token count is its exact stop count too, and the
-    floor is sound. Refusing it (as an earlier version did, on a stated
-    mechanism that was simply false) blocked a reversible experiment for no
-    reason at all."""
-    proc, ssh_lines, _ = _run(
-        checkout, wizard,
-        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
-         "--angles", "0,7", "--per-position", "3", "--attest-rig-clear",
-         "--regime", regime, "--complete-after", "6"],
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--angles 0,0,0,7,7,7" in stage_cmd and f"--regime {regime}" in stage_cmd
-
-
-def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
-    checkout, wizard, tmp_path
-):
-    """``jasper-angle-capture`` composes stops as ``angle x
-    _REGIME_STOPS[regime]``, so ``both`` — and only ``both`` — is TWO stops per
-    token, where the ``--complete-after`` floor, which counts tokens, would be
-    exactly half the real stop count. Refused rather than multiplied: a
-    multiplier here would be this file's second opinion about another tool's
-    composition rule.
-
-    What is declined is the FLAG, never the experiment — measurement-loop
-    doctrine §5. The refusal has to say so and name the way through, because a
-    message that only said "no" would be the nanny gate that doctrine forbids:
-    the repeat was always the seam's own shape, so a hand-written staged list
-    takes N captures per pose at any regime.
+def test_a_regime_other_than_per_driver_is_refused(checkout, wizard, tmp_path):
+    """A session walk plays the per_driver program at every pose
+    (``angle_capture.session_lateral_walk``), so no other ``--regime`` value
+    is ever served. The parser refuses it outright — before anything is
+    staged — rather than banking a spool that dies ten minutes into a session
+    that refuses to open.
     """
     proc, ssh_lines, bank_lines = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1",
-         "--angles", "0,7", "--per-position", "3", "--attest-rig-clear",
-         "--regime", "both", "--complete-after", "12"],
+         "--angles", "0,7", "--attest-rig-clear", "--regime", "both"],
     )
 
     assert proc.returncode == 2
-    assert "--regime both" in proc.stderr
-    # The stated mechanism has to be the REAL one — the composed count — not a
-    # claim about which single regime is blessed. That sentence was false once.
-    assert "2 stops per angle" in proc.stderr
-    assert "0,0,0,7,7,7" in proc.stderr  # the way through, not just the "no"
+    assert "invalid choice: 'both'" in proc.stderr
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
-
-
-def test_a_hand_staged_repeat_list_is_taken_at_any_regime(
-    checkout, wizard, tmp_path
-):
-    """The escape hatch the refusal above points at, exercised.
-
-    ``--regime both`` with the repeats written out reaches the seam unchanged —
-    this runner counts nothing on the operator's behalf, so nothing of its
-    arithmetic is in the way.
-    """
-    proc, ssh_lines, _ = _run(
-        checkout, wizard,
-        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
-         "--angles", "0,0,0,7,7,7", "--attest-rig-clear",
-         "--regime", "both", "--complete-after", "12"],
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--angles 0,0,0,7,7,7" in stage_cmd and "--regime both" in stage_cmd
 
 
 def test_takes_are_refused_on_the_verify_stage_which_serves_its_own_poses(
