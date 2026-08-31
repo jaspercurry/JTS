@@ -174,8 +174,11 @@ measured delay far outside that estimate is a lobe hop, not a discovery.
 
 **Method of record — compute, then confirm.** The measurement is the
 band-limited reverse null: invert one branch, and read null depth at fc against
-the shoulders either side (fc/2 and 2·fc). What changed is how the coordinate is
-chosen.
+the shoulders either side — canonically fc/2 and 2·fc, **clamped into the band
+the two drivers actually share** where their declared bands overlap by less than
+two octaves (most 2-ways). The proposal states the span it read and which side
+was clamped; a clamped span is weaker evidence, not a refusal. What changed is
+how the coordinate is chosen.
 
 1. **Clear the protection phase first — or know what replaced it.** §2's plant
    is captured with the declared protective high-pass live, so that filter's
@@ -283,17 +286,18 @@ tweeter trim nobody had measured. The arithmetic was fine; it described a
 different loudspeaker.
 
 Run the measured level-match rounds and let the measurement replace the seed.
-The measured artifact has one writer (`jasper-driver-trim`) and one reader (the
-baseline profile's trim derivation, which prefers a banked base trim and falls
-back to the declared estimate). **Absent is normal.** Know which of the two you
-stand on before you attribute a level error to the graph.
+The measured artifact has one writer (the apply seam, which banks the trim it
+just applied) and one reader (the baseline profile's trim derivation, which
+prefers a banked base trim and falls back to the declared estimate). **Absent
+is normal.** Know which of the two you stand on before you attribute a level
+error to the graph.
 
 **On a speaker with a material sensitivity gap, this step runs before §4's
 acoustic confirm.** That confirm plays whatever trim this derivation resolved,
 and a gap wider than §4's bound caps the null before delay is even in question —
-so bank the measured trim first, then go and null. `jasper-driver-trim`'s
-invocation belongs to [`testing-tooling.md`](testing-tooling.md), "Measured
-driver base trim".
+so apply a measured level match first, then go and null. There is no separate
+verb to run; what the artifact is and when it is written belongs to
+[`testing-tooling.md`](testing-tooling.md), "Measured driver base trim".
 
 **A trim is re-solved every round.** So **a transplanted chain needs its trim
 pinned, or a refit against the new trim.** Filters carried over from an earlier
@@ -472,7 +476,7 @@ intervention whose measured evidence stands.
 | **Correcting into a positional dip** — the dip moves with position, the feature carries an excess-GD spike, the classifier says `interference-barred` or `room` | a cancellation or boundary effect | **no EQ, ever**; route it to position, placement, or corner choice |
 | **Flat on-axis but hot** — top-octave overshoot after an on-axis-flat fit above the beaming onset; realization matches, listeners call it bright | you targeted the wrong curve | refit weighted to the listening window (§6) |
 | **Delay masquerading as a response error** — a ripple centred on fc that EQ cannot remove and that changes with a polarity flip | the branches are not time-aligned | stop EQ-ing, go to §4, re-verify, resume |
-| **A null that will not deepen** — best null short of the usable bar, the shoulders either side of fc disagree, and the declared per-driver sensitivities are far apart | branch LEVEL mismatch, not geometry: the gap bounds the null on its own and no delay coordinate gets under it | level-match the branches from banked evidence and re-measure **before** concluding lobing; where the box refuses for want of that evidence, bank the measured base trim first (§5), then return to §4 |
+| **A null that will not deepen** — best null short of the usable bar, the shoulders either side of fc disagree, and the declared per-driver sensitivities are far apart | branch LEVEL mismatch, not geometry: the gap bounds the null on its own and no delay coordinate gets under it | level-match the branches from banked evidence and re-measure **before** concluding lobing; where the box refuses for want of that evidence, apply a measured level match first (§5) — the apply banks it — then return to §4 |
 | **Gate-floor artifacts** — features below `validity_floor_hz` that vary with position and vanish when the gate moves | the analysis window, not the speaker | disclose the band unverified; correct nothing there (§9) |
 | **Measuring-noise chasing** — round-to-round differences inside the rig's own repeatability band, the story changing each round | you are reading noise | stop iterating, re-measure the repeat floor, raise the action threshold above it |
 

@@ -7320,6 +7320,10 @@ class CrossoverV2Session:
                 # cannot derive either, because a stage-2 grading run is a
                 # fresh session that has seen no earlier round.
                 round_ordinal=position.ordinal,
+                # Which epoch that ordinal counts in, from the same durable
+                # read — a republish restarts the sequence, and the pair says
+                # so where the ordinal alone cannot.
+                round_ordinal_epoch=position.ordinal_epoch,
                 previous_objectives=position.previous_objectives,
                 # #2609 SF5: the frame those objectives were graded in, this
                 # round's from the group that produced the report and the

@@ -119,6 +119,8 @@ __all__ = [
     "AGREEMENT_TESTIFY_MIN",
     "AgreementFeature",
     "BankedRound",
+    "ENTRY_STATE_UNREADABLE",
+    "EntryStateGrade",
     "FrozenReferenceResult",
     "RepeatabilityMetric",
     "RepeatabilityResult",
@@ -127,6 +129,7 @@ __all__ = [
     "VerifyPoseResult",
     "agreement_table",
     "default_agreement_lo_hz",
+    "entry_state_grade",
     "frozen_reference_grade",
     "load_banked_round",
     "per_seat_curves",
@@ -290,6 +293,211 @@ def load_banked_round(round_dir: Path) -> BankedRound:
         curve_grid_hz=grid,
         report=report,
         packet=packet,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# View 0 — grading the state the round STARTED from
+# --------------------------------------------------------------------------- #
+
+
+#: Why an entry state could not be graded, when the take IS banked but will not
+#: rehydrate. ``EntryBaseline.from_dict`` owns that rule and answers ``None``
+#: for every member of the set — a curve or mask that is not a list, a mask
+#: whose length disagrees with the curve, a curve ``ResponseCurve`` itself
+#: refuses (empty, length-mismatched, or non-finite), and a blank
+#: ``program_id`` / ``reference_mark`` / ``graph_fingerprint`` /
+#: ``captured_at``. This is what that ``None`` MEANS to an operator; that
+#: reader does not say which member it was, and neither does this.
+ENTRY_STATE_UNREADABLE = (
+    "this round banked an entry_baseline take, but it does not rehydrate into "
+    "a gradeable baseline — its curve, exclusion mask, or identity fields are "
+    "absent, disagree in length, or are not finite"
+)
+
+
+@dataclass(frozen=True)
+class EntryStateGrade:
+    """The graph a round ENTERED on, graded — or the named reason it was not.
+
+    **The gap this closes.** Every round grades what it PRODUCED and compares
+    that against the state it started from, but the entry state itself was
+    never graded as a first-class result: a fresh box wearing nothing but its
+    declarations-derived config had no way to ask "how flat am I right now"
+    short of an operator calling
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` by hand. The
+    measurement was always banked — the entry-baseline take is write-once,
+    which is ruling S3's offline promise — so this is a reader, not a new
+    capture and not a second grader.
+
+    ``report`` is a real :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
+    from the shipped evaluator, so it carries the same per-band table the
+    round's own ``spec`` block does and the two read side by side with no
+    translation step.
+
+    **The frame is the ROUND's, the exclusion mask is the TAKE's**, and the
+    split is deliberate. The mask belongs to this capture: it is
+    :func:`~.round_evidence._validity_clamp`'s output — the bins below THIS
+    capture's own reflection gate, where the response is an artifact of a
+    truncated gate window — not the cloud's interference screen, which is a
+    different mask over a different capture. Grading this curve through the
+    round's post-apply exclusions would report deviations at bins nobody
+    vouched for, and screen bins this capture's own gate never invalidated.
+    The floor and ceiling belong to the round: they are the span its post-apply
+    grade was taken over, and stating the before in a different span would make
+    the pair incomparable — which is the whole reason to grade the before.
+    :func:`_own_reference_db` already grades a foreign curve in the round's
+    frame for exactly this reason.
+
+    ``round_ordinal`` / ``round_ordinal_epoch`` are the round this entry state
+    belongs to and which epoch of the ordinal sequence that ordinal counts in,
+    read from the banked flow state. ``None`` for each is "not recorded" — a
+    round banked before the field shipped, or a directory with no state file.
+    They ride here because an unattributed table is not a disclosure: "the
+    entry state was this flat" means one thing at round 1 of a fresh box and
+    another at round 1 after a republish reset the count.
+
+    ``available`` ``False`` carries a non-empty ``reason`` and no report;
+    ``True`` carries a report and an empty ``reason``. A round that banked no
+    take is a fact this door reports rather than a failure it raises —
+    retention is fail-soft and never costs the household a retake.
+    """
+
+    available: bool
+    reason: str
+    program_id: str
+    reference_mark: str
+    graph_fingerprint: str
+    captured_at: str
+    artifact_ref: str
+    report: FlatSpecReport | None
+    round_ordinal: int | None = None
+    round_ordinal_epoch: int | None = None
+
+    @classmethod
+    def unavailable(
+        cls,
+        reason: str,
+        *,
+        round_ordinal: int | None = None,
+        round_ordinal_epoch: int | None = None,
+    ) -> "EntryStateGrade":
+        return cls(
+            available=False, reason=reason, program_id="", reference_mark="",
+            graph_fingerprint="", captured_at="", artifact_ref="", report=None,
+            round_ordinal=round_ordinal, round_ordinal_epoch=round_ordinal_epoch,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "reason": self.reason,
+            "program_id": self.program_id,
+            "reference_mark": self.reference_mark,
+            # WHICH entry state was graded. Without it the table is an
+            # unattributed set of numbers: a first round's entry graph is the
+            # declarations-derived config a fresh box wears, a later round's is
+            # whatever the previous round left on the speaker, and the two are
+            # told apart by this fingerprint and nothing else here.
+            "graph_fingerprint": self.graph_fingerprint,
+            "captured_at": self.captured_at,
+            "artifact_ref": self.artifact_ref,
+            # WHICH round, and which epoch of the count that round number
+            # belongs to. Round 1 of a fresh box and round 1 after a reset are
+            # the same ordinal and different facts.
+            "round_ordinal": self.round_ordinal,
+            "round_ordinal_epoch": self.round_ordinal_epoch,
+            "report": None if self.report is None else self.report.to_dict(),
+        }
+
+
+def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
+    """``(round_ordinal, round_ordinal_epoch)`` off the banked flow state.
+
+    ``(None, None)`` for a directory with no readable ``state.json``, and
+    ``None`` for either field the record does not carry — "not recorded",
+    never zero, on :attr:`PositionCurve.degrees`' rule. Read here rather than
+    off the evidence packet because the packet's ``round_receipt`` block
+    publishes identities and does not carry the ordinal.
+
+    ``bool`` is rejected before ``int`` because it subclasses it, the same
+    guard :func:`_row_degrees` applies for the same reason.
+    """
+
+    def _count(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
+    state_path = round_dir / _STATE_FILENAME
+    if not state_path.is_file():
+        return None, None
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(state, Mapping):
+        return None, None
+    receipt = state.get("round_receipt")
+    ordinal = _count(receipt.get("round_ordinal")) if isinstance(receipt, Mapping) else None
+    return ordinal, _count(state.get("round_ordinal_epoch"))
+
+
+def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
+    """Grade the entry state this round measured before it applied anything.
+
+    Reads the banked entry-baseline take out of the round's evidence packet,
+    rehydrates it through
+    :meth:`~.round_evidence.EntryBaseline.from_dict` — which already owns the
+    "length-agreeing curve and mask, or nothing" rule, so this door does not
+    re-spell it — and hands the arrays to the shipped
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`. Every number
+    returned comes from that evaluator; see :class:`EntryStateGrade` for why
+    the frame is the round's and the mask is the take's.
+
+    ``packet["entry_baseline"]`` is indexed rather than fetched with a default,
+    on :func:`load_banked_round`'s own precedent for the blocks it requires:
+    the packet is DERIVED fresh on every read by a builder that always emits
+    this block (present-and-``available: False`` is how it reports a round that
+    banked no take), so a missing key is a corrupt packet and belongs in the
+    ``KeyError`` arm the CLI already treats as an unreadable round — not in a
+    fallback sentence that can never be produced.
+    """
+
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+    ordinal, epoch = _banked_series_position(banked.round_dir)
+    block = banked.packet["entry_baseline"]
+    if not block.get("available"):
+        return EntryStateGrade.unavailable(
+            str(block.get("reason") or ""),
+            round_ordinal=ordinal, round_ordinal_epoch=epoch,
+        )
+    baseline = EntryBaseline.from_dict(block)
+    if baseline is None:
+        return EntryStateGrade.unavailable(
+            ENTRY_STATE_UNREADABLE,
+            round_ordinal=ordinal, round_ordinal_epoch=epoch,
+        )
+    report = evaluate_flat_spec(
+        np.asarray(baseline.curve.hz, dtype=float),
+        np.asarray(baseline.curve.db, dtype=float),
+        np.asarray(baseline.excluded, dtype=bool),
+        smoothing_fraction=banked.report.smoothing_fraction,
+        trusted_floor_hz=banked.report.trusted_floor_hz,
+        trusted_ceiling_hz=banked.report.trusted_ceiling_hz,
+    )
+    return EntryStateGrade(
+        available=True,
+        reason="",
+        program_id=baseline.program_id,
+        reference_mark=baseline.reference_mark,
+        graph_fingerprint=baseline.graph_fingerprint,
+        captured_at=baseline.captured_at,
+        artifact_ref=baseline.artifact_ref,
+        report=report,
+        round_ordinal=ordinal,
+        round_ordinal_epoch=epoch,
     )
 
 

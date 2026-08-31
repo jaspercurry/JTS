@@ -14,21 +14,23 @@ where that estimate becomes an observation.
 
 Ownership, deliberately narrow:
 
-* **one writer** — :mod:`jasper.cli.driver_trim`, after per-driver captures
-  analysed through :func:`~jasper.active_speaker.driver_acoustics.analyze_driver_capture`;
+* **one writer** — the apply seam,
+  ``baseline_profile.persist_applied_baseline_profile``, which banks the trim a
+  successfully applied profile is actually playing (and clears the record when
+  the applied profile is not level-matched by measurement);
 * **one reader** — ``baseline_profile._measured_level_trims``, which prefers a
   banked base trim over the guided-capture derivation and falls back to it;
-* **absent is normal.** A speaker that has never run the trim step behaves
-  exactly as it did before this module existed — the guided captures, then the
-  datasheet estimate.
+* **absent is normal.** A speaker that has never applied a measured level match
+  behaves exactly as it did before this module existed — the guided captures,
+  then the datasheet estimate.
 
-**No estimator lives here.** The per-driver level is
-``driver_acoustics._overlap_band_levels``' deconvolved magnitude read AT the
-declared Fc — a point, not a band average — and the chain from adjacent-driver
-deltas to a per-role attenuation is ``level_trim.attenuation_from_group_deltas``.
-Both already ship and both are already what the profile consumes; this module
-only banks their answer. Minting another way to measure an inter-driver level
-gap is the defect ``intervention.compare_level_definitions`` and
+**No estimator lives here, and no solver either.** The trims are whatever the
+applied profile resolved — the crossover-v2 measured candidate's own
+``role_attenuations_db``, or the guided captures chained through
+``level_trim.attenuation_from_group_deltas`` — and this module only banks that
+answer under the declaration it was measured against. Minting another way to
+measure an inter-driver level gap is the defect
+``intervention.compare_level_definitions`` and
 ``baseline_profile._compare_level_sittings`` exist to disclose, and it is not
 reopened here.
 
@@ -36,11 +38,10 @@ reopened here.
 declaration it was measured against (the crossover preview's own fingerprint).
 A speaker whose declaration has moved — a different Fc, a different driver, a
 re-save at ``/sound`` — has a banked trim that answers a question nobody is
-asking any more, so the reader refuses it with one remediation ("re-run
-``jasper-driver-trim``") and falls back. Under the owner's 2026-08-23
-no-legacy-config ruling this file grows no tolerant readers for older stored
-shapes: a breaking change to the payload refuses the same way, and re-measuring
-is the accepted cost.
+asking any more, so the reader refuses it with one remediation and falls back.
+Under the owner's 2026-08-23 no-legacy-config ruling this file grows no
+tolerant readers for older stored shapes: a breaking change to the payload
+refuses the same way, and re-measuring is the accepted cost.
 """
 
 from __future__ import annotations
@@ -54,11 +55,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json
 
-from .level_trim import (
-    MAX_ATTENUATION_DB,
-    LevelTrimError,
-    attenuation_from_group_deltas,
-)
+from .level_trim import MAX_ATTENUATION_DB
 
 SCHEMA_VERSION = 1
 BASE_TRIM_KIND = "jts_active_speaker_driver_base_trim"
@@ -85,11 +82,27 @@ REFUSED_STATUSES = frozenset({
 
 #: The single remediation string. One sentence, one verb, in every surface that
 #: refuses a banked trim, so an operator never has to reconcile two wordings.
-REMEASURE_REMEDIATION = "re-run jasper-driver-trim to measure this speaker again"
+REMEASURE_REMEDIATION = (
+    "measure and apply this speaker's crossover again to re-bank the trim"
+)
+
+
+#: Why the writer refused. A closed vocabulary rather than prose, because the
+#: apply seam logs the reason and a test pins it.
+REFUSE_NO_DECLARATION = "base_trim_no_declaration"
+REFUSE_NO_TRIM_SOURCE = "base_trim_no_trim_source"
+REFUSE_NO_SPEAKER_GROUP = "base_trim_no_speaker_group"
+REFUSE_ROLES_INCOMPLETE = "base_trim_roles_incomplete"
+REFUSE_NOT_ATTENUATION = "base_trim_not_attenuation"
 
 
 class DriverBaseTrimError(ValueError):
     """A base-trim record was asked to be written outside its own envelope."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
 
 
 def base_trim_state_path(path: str | Path | None = None) -> Path:
@@ -102,13 +115,6 @@ def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _fc_key(fc: float) -> str:
-    """How a declared Fc is spelled as a JSON key. One writer, one reader: the
-    record's evidence is keyed this way and the reader re-derives which groups
-    it covers by looking the same keys back up."""
-    return f"{float(fc):g}"
-
-
 def _finite(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -116,118 +122,18 @@ def _finite(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
-def _levelled_group_ids(
-    levels: Mapping[str, Any], crossovers: Any
-) -> list[str]:
-    """The groups the record actually levelled: those carrying a finite level
-    for BOTH drivers of EVERY crossover it names.
+def _group_ids(value: Any) -> list[str]:
+    """The record's speaker groups, or ``[]`` when it names none readably.
 
-    The same completeness rule :func:`solve_base_trims` applies before a group
-    contributes a delta chain, re-derived from the banked evidence so the set
-    the readiness gate reads is measured rather than asserted. An unreadable
-    ``crossovers`` list yields no group, which is the fail-closed direction:
-    the caller falls back to the trim it already had.
+    Fail-closed on any unreadable member: a record whose group list is partly
+    garbage would otherwise claim to have levelled a set it cannot name, and
+    ``crossover_contract.automatic_candidate_readiness`` gates on that set.
     """
-    required: list[tuple[str, str, str]] = []
-    for region in crossovers if isinstance(crossovers, list) else ():
-        if not isinstance(region, Mapping):
-            return []
-        lower = str(region.get("lower_role") or "")
-        upper = str(region.get("upper_role") or "")
-        fc = _finite(region.get("declared_fc_hz"))
-        if not lower or not upper or fc is None:
-            return []
-        required.append((lower, upper, _fc_key(fc)))
-    if not required:
+    if not isinstance(value, (list, tuple)) or not value:
         return []
-    levelled: list[str] = []
-    for group_id, by_role in levels.items():
-        if not str(group_id) or not isinstance(by_role, Mapping):
-            continue
-        if all(
-            isinstance(by_role.get(role), Mapping)
-            and _finite(by_role[role].get(fc_key)) is not None
-            for lower, upper, fc_key in required
-            for role in (lower, upper)
-        ):
-            levelled.append(str(group_id))
-    return sorted(levelled)
-
-
-def _mixed_geometry_group_ids(geometries: Mapping[str, Any]) -> list[str]:
-    """Groups whose drivers were NOT all captured under one geometry.
-
-    Disclosed, never refused. The delta between two drivers read at one mic
-    position is what the trim is built on, and reading one near-field and the
-    other on the reference axis compares two different acoustic distances — a
-    small effect, but one nothing in the record otherwise says out loud.
-    """
-    mixed: list[str] = []
-    for group_id, by_role in geometries.items():
-        if not str(group_id) or not isinstance(by_role, Mapping):
-            continue
-        if len({str(value) for value in by_role.values()}) > 1:
-            mixed.append(str(group_id))
-    return sorted(mixed)
-
-
-def solve_base_trims(
-    levels_db: Mapping[str, Mapping[str, Mapping[float, float]]],
-    roles: Sequence[str],
-    regions: Sequence[tuple[str, str, float]],
-) -> dict[str, float]:
-    """Per-role attenuation from measured, ledger-normalized overlap levels.
-
-    ``levels_db`` is ``speaker_group_id -> role -> declared Fc -> level``, where
-    each level is the overlap-band level MINUS that capture's own effective
-    excitation peak — the excitation-ledger normalize that makes captures taken
-    at different protected drive levels comparable, exactly as
-    ``baseline_profile._measured_level_trims`` does it.
-
-    Fail-closed in one direction only: a speaker group missing a usable level
-    for either driver of any declared crossover is DROPPED, and no qualifying
-    group returns ``{}`` so the caller keeps the estimate it already had. The
-    surviving groups are averaged and normalized up by
-    :func:`~jasper.active_speaker.level_trim.attenuation_from_group_deltas`:
-    every trim is an attenuation, and the vector is shifted so its maximum is
-    exactly 0 dB — the QUIETEST driver is the reference and nothing is
-    attenuated further than the level match requires, which is the give-back
-    the composed gain structure owes the speaker's maximum SPL.
-    """
-    ordered = tuple(roles)
-    chains: list[list[tuple[str, str, float]]] = []
-    for group_id in sorted(levels_db):
-        by_role = levels_db[group_id]
-        if not isinstance(by_role, Mapping):
-            continue
-        deltas: list[tuple[str, str, float]] = []
-        for lower, upper, fc in regions:
-            lower_levels = by_role.get(lower)
-            upper_levels = by_role.get(upper)
-            level_lo = (
-                _finite(lower_levels.get(fc))
-                if isinstance(lower_levels, Mapping)
-                else None
-            )
-            level_up = (
-                _finite(upper_levels.get(fc))
-                if isinstance(upper_levels, Mapping)
-                else None
-            )
-            if level_lo is None or level_up is None:
-                deltas = []
-                break
-            deltas.append((lower, upper, level_up - level_lo))
-        if deltas:
-            chains.append(deltas)
-    if not chains:
-        return {}
-    try:
-        return attenuation_from_group_deltas(
-            ordered, chains, minimum_db=MAX_ATTENUATION_DB
-        )
-    except LevelTrimError:
-        return {}
+    if not all(isinstance(item, str) and item for item in value):
+        return []
+    return sorted(set(value))
 
 
 def load_base_trim(*, state_path: str | Path | None = None) -> dict[str, Any] | None:
@@ -319,101 +225,93 @@ def banked_base_trims(
                 "remediation": REMEASURE_REMEDIATION,
             }
         trims[role] = value
-    levels = record.get("levels_db")
-    geometries = record.get("capture_geometries")
-    if not isinstance(levels, Mapping) or not isinstance(geometries, Mapping):
+    # WHICH speaker groups this trim covers, not merely how many.
+    # ``crossover_contract.automatic_candidate_readiness`` gates on the
+    # measured-group SET against the topology's required one, so a record that
+    # levelled only the left cabinet of a stereo pair must not read as having
+    # levelled both.
+    measured = _group_ids(record.get("speaker_group_ids"))
+    trim_source = str(record.get("trim_source") or "")
+    if not measured or not trim_source:
         return {}, {
             **meta,
             "status": STATUS_UNUSABLE,
-            "detail": "the record carries no readable per-driver evidence",
-            "remediation": REMEASURE_REMEDIATION,
-        }
-    measured = _levelled_group_ids(levels, record.get("crossovers"))
-    if not measured:
-        return {}, {
-            **meta,
-            "status": STATUS_UNUSABLE,
-            "detail": (
-                "no speaker group in the record carries a level for both "
-                "drivers of every declared crossover"
-            ),
+            "detail": "the record names no speaker group or no trim source",
             "remediation": REMEASURE_REMEDIATION,
         }
     return trims, {
         **meta,
         "status": STATUS_APPLIED,
         "trims": dict(trims),
-        # WHICH speaker groups this trim was measured on, not merely how many,
-        # and DERIVED from the record's own evidence rather than read off the
-        # bare keys of ``levels_db``: the record banks every group it captured,
-        # including one the solve dropped for a driver it never got a level for.
-        # ``crossover_contract.automatic_candidate_readiness`` gates on the
-        # measured-group SET against the topology's required one, so a record
-        # that levelled only the left cabinet of a stereo pair must not read as
-        # having levelled both.
         "speaker_group_ids": measured,
-        "groups_total": sum(1 for group_id in levels if str(group_id)),
-        "mixed_geometry_group_ids": _mixed_geometry_group_ids(geometries),
+        "groups_total": len(measured),
+        # WHICH evidence the applied profile levelled by, carried through to
+        # the profile's own ``level_match`` ledger so a receipt reading the
+        # banked trim still names the measurement behind it (ruling S16 (d)).
+        "trim_source": trim_source,
     }
 
 
 def write_base_trim(
     *,
     trims_db: Mapping[str, float],
-    levels_db: Mapping[str, Mapping[str, Mapping[float, float]]],
-    capture_geometries: Mapping[str, Mapping[str, str]],
     roles: Sequence[str],
-    regions: Sequence[tuple[str, str, float]],
+    speaker_group_ids: Sequence[str],
     declaration_fingerprint: str,
-    microphone: Mapping[str, Any],
+    trim_source: str,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Publish one measured base trim. Called ONLY on a complete solve.
+    """Publish one measured base trim. Called ONLY from the apply seam.
 
     Raises :class:`DriverBaseTrimError` when the record would not survive
     :func:`banked_base_trims` — writing a value the reader rejects is a silent
     no-op dressed up as success.
+
+    **Attenuation-only by construction, and REFUSED rather than clamped.** No
+    path that reaches this writer can legitimately produce a positive per-role
+    trim: both measured-candidate types refuse one at construction
+    (``role_attenuations_db``), ``level_trim.attenuation_from_group_deltas``
+    shifts its vector so the maximum is exactly 0 dB, and a positive research
+    or operator gain is zeroed upstream and never reaches a ``measured``
+    correction source. A positive value here is therefore a fault, not a
+    reading, and clamping it would bank a trim no measurement produced — so it
+    earns :data:`REFUSE_NOT_ATTENUATION` and nothing is written. That keeps the
+    reverse-null door's branch-gap depth ceiling and the per-role caps
+    argument two independent legs: a positive trim in this artifact would
+    couple them.
     """
     ordered = tuple(roles)
     if not isinstance(declaration_fingerprint, str) or not declaration_fingerprint:
-        raise DriverBaseTrimError("a base trim must name the declaration it measured")
+        raise DriverBaseTrimError(
+            REFUSE_NO_DECLARATION, "a base trim must name the declaration it measured"
+        )
+    if not isinstance(trim_source, str) or not trim_source:
+        raise DriverBaseTrimError(
+            REFUSE_NO_TRIM_SOURCE, "a base trim must name the evidence behind it"
+        )
+    groups = _group_ids(speaker_group_ids)
+    if not groups:
+        raise DriverBaseTrimError(
+            REFUSE_NO_SPEAKER_GROUP,
+            "a base trim must name the speaker groups it covers",
+        )
     if set(trims_db) != set(ordered):
         raise DriverBaseTrimError(
+            REFUSE_ROLES_INCOMPLETE,
             f"trims cover {sorted(trims_db)!r}, not the declared roles "
-            f"{sorted(ordered)!r}"
+            f"{sorted(ordered)!r}",
         )
     trims: dict[str, float] = {}
     for role in ordered:
         value = _finite(trims_db.get(role))
         if value is None or value > 0.0 or value < MAX_ATTENUATION_DB:
             raise DriverBaseTrimError(
+                REFUSE_NOT_ATTENUATION,
                 f"{role} trim {trims_db.get(role)!r} dB is outside the "
-                f"({MAX_ATTENUATION_DB:g}, 0.0] dB attenuation-only envelope"
+                f"[{MAX_ATTENUATION_DB:g}, 0.0] dB attenuation-only envelope",
             )
         trims[role] = round(value, 1)
     path = base_trim_state_path(state_path)
-    # The evidence behind the trims, so a reader can re-derive them without the
-    # WAVs: one ledger-normalized level per group, per role, per declared Fc.
-    # Fc keys are stringified because JSON has no float key.
-    banked_levels = {
-        group_id: {
-            role: {
-                _fc_key(fc): round(float(level), 2)
-                for fc, level in sorted(by_fc.items())
-            }
-            for role, by_fc in sorted(by_role.items())
-        }
-        for group_id, by_role in sorted(levels_db.items())
-    }
-    banked_crossovers = [
-        {"lower_role": lower, "upper_role": upper, "declared_fc_hz": float(fc)}
-        for lower, upper, fc in regions
-    ]
-    if not _levelled_group_ids(banked_levels, banked_crossovers):
-        raise DriverBaseTrimError(
-            "no speaker group carries a level for both drivers of every declared "
-            "crossover, so this record's own reader would refuse it"
-        )
     payload = {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASE_TRIM_KIND,
@@ -422,22 +320,33 @@ def write_base_trim(
         "declaration_fingerprint": declaration_fingerprint,
         "roles": list(ordered),
         "trims_db": trims,
-        "levels_db": banked_levels,
-        "crossovers": banked_crossovers,
-        "microphone": dict(microphone),
-        # Under WHICH geometry each driver was read, per group. The trim is a
-        # delta between two drivers, so two drivers read at different acoustic
-        # distances is a fact about the answer's footing; the reader discloses
-        # it as ``mixed_geometry_group_ids`` rather than guessing it away.
-        "capture_geometries": {
-            group_id: {role: str(geometry) for role, geometry in sorted(by_role.items())}
-            for group_id, by_role in sorted(capture_geometries.items())
-        },
-        # Named so the absence reads as a decision, not an oversight: one mic
-        # position per driver measures the ON-AXIS ratio, and a waveguide's
-        # on-axis level overstates its power output against a cone's. The
-        # listening-window average is the arm-walk program's question.
-        "geometry_claim": "on_axis_single_position",
+        "speaker_group_ids": groups,
+        "trim_source": trim_source,
     }
     atomic_write_json(path, payload, mode=0o640, group_from_parent=True)
     return payload
+
+
+def clear_base_trim(*, state_path: str | Path | None = None) -> bool:
+    """Drop the banked record. ``True`` when the box is left carrying none.
+
+    The other half of single ownership. A profile applied WITHOUT a measured
+    level match — a datasheet seed, an operator pin, a preserved manual
+    crossover — is not levelled by the banked trim, so leaving that record in
+    place would let a ``--level-matched`` walk level its graph by numbers the
+    box is not playing. That is the S12 lie in the direction this artifact's
+    own writer would otherwise create.
+
+    **Nothing to drop is SUCCESS; a drop that could not HAPPEN is not.** The
+    two cases were one return value until this split, and they are opposites:
+    an absent record is the state the clear exists to reach, while a record
+    that survived the clear (EACCES, a read-only ``/var/lib``) is exactly the
+    stale record the clear exists to prevent. Fail-soft either way — the graph
+    is applied by the time this runs — so the caller LOGS the ``False``
+    rather than failing the apply on it.
+    """
+    try:
+        base_trim_state_path(state_path).unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True

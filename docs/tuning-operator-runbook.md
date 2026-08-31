@@ -487,8 +487,8 @@ the round's queue the work sits, never whether the work happens (methodology
 §4). Before grading a confirmation, check what the graph will actually play: the
 candidate delay arrives through the measurement-graph emitter, but the branch
 LEVELS are whatever the baseline profile's trim derivation resolved — the banked
-base trim where `jasper-driver-trim` wrote one, the declared estimate otherwise.
-On a speaker whose declared sensitivities sit far apart, bank the measured trim
+base trim where an apply wrote one, the declared estimate otherwise. On a
+speaker whose declared sensitivities sit far apart, apply a measured level match
 before you grade a null: an un-level-matched pair caps its own null depth, and
 the depth is the whole reading.
 
