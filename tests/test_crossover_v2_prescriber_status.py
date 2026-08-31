@@ -56,6 +56,21 @@ def _known_hostname(monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_pi_paths(tmp_path: Path, monkeypatch):
+    """No test may depend on whether THIS machine has ``/var/lib/jasper/*``.
+
+    ``--drivers``/``--applied-profile`` now default to real on-speaker paths;
+    a test that omits either flag must stay hermetic rather than reading
+    whatever happens to sit at those absolute paths on the box running pytest.
+    """
+    monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", tmp_path / "unset-drivers-default.json")
+    monkeypatch.setattr(
+        cli, "_APPLIED_PROFILE_DEFAULT_PATH",
+        tmp_path / "unset-applied-profile-default.json",
+    )
+
+
 def _speaker_dirs(
     tmp_path: Path,
     *,
@@ -170,14 +185,16 @@ def test_the_json_and_the_report_say_the_same_sentence(tmp_path, capsys):
 
 
 def test_an_absence_carries_the_reason_the_packet_gave_for_it(tmp_path, capsys):
-    """``source_absent`` and "not supplied" are different facts, both kept."""
+    """``source_absent`` is the packet's own word, echoed rather than reworded."""
     session, _ = _speaker_dirs(tmp_path)
 
     _, payload = _status([str(session)], capsys)
 
-    # No draft was passed at all — the packet's own words for that.
+    # --drivers was not passed, so its true default was read and found
+    # unreadable — the same "source_absent" a badly-pointed explicit flag
+    # would give, not a bespoke "not supplied" wording for the omitted case.
     assert payload["declared"]["available"] is False
-    assert payload["declared"]["reason"] == "no driver design draft was supplied"
+    assert payload["declared"]["reason"] == "source_absent"
     # The artifact could have been banked in the bundle and was not.
     assert payload["banked"]["classification"]["reason"] == "source_absent"
 
@@ -196,12 +213,9 @@ def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
 
     assert payload["applied"]["from_round_receipt"]["available"] is True
     assert payload["applied"]["from_round_receipt"]["n_filters"] == 0
-    # …while the side that genuinely was not supplied says so.
+    # …while the side whose default path has nothing behind it says so.
     assert payload["applied"]["from_applied_profile"]["available"] is False
-    assert (
-        payload["applied"]["from_applied_profile"]["reason"]
-        == "no applied baseline profile was supplied"
-    )
+    assert payload["applied"]["from_applied_profile"]["reason"] == "source_absent"
 
 
 def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
@@ -508,6 +522,30 @@ def test_a_missing_declaration_names_the_flag_that_supplies_it(tmp_path, capsys)
     _, payload = _status([str(session)], capsys)
 
     assert any("--drivers" in action for action in payload["next_actions"])
+
+
+def test_drivers_and_applied_profile_are_true_defaults_not_documentation(
+    tmp_path, capsys, monkeypatch
+):
+    """``--help`` used to print these on-Pi paths as though they were
+    argparse defaults; they were not, so omitting either flag silently
+    carried no evidence. Now the default IS read.
+    """
+    draft_path = tmp_path / "design_draft.json"
+    draft_path.write_text(json.dumps(_draft()))
+    applied_path = tmp_path / "applied-profile.json"
+    applied_path.write_text(json.dumps(applied_profile(blend=[{"freq": 1000.0}])))
+    monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", draft_path)
+    monkeypatch.setattr(cli, "_APPLIED_PROFILE_DEFAULT_PATH", applied_path)
+
+    session, _ = _speaker_dirs(tmp_path, classification=_classification())
+    _, payload = _status([str(session)], capsys)  # neither flag passed
+
+    assert payload["declared"]["available"] is True
+    assert payload["declared"]["roles"] == ["tweeter", "woofer"]
+    assert payload["applied"]["from_applied_profile"] == {
+        "available": True, "n_filters": 1
+    }
 
 
 def test_a_missing_classification_names_the_instrument_that_banks_it(

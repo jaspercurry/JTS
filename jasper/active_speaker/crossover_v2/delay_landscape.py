@@ -29,6 +29,12 @@ acoustic null comes back shallow is the model breaking at this band — lobing,
 or a position the two-transfer sum does not describe — and it is reported as
 that. The delta between computed and measured is banked either way: it is the
 controllability evidence for the alignment band.
+
+**Weaker evidence is disclosed, never refused.** A real 2-way's drivers overlap
+by less than the canonical two octaves, so the depth's shoulders are that span
+clamped into the measured overlap and every landscape carries the span it used
+and which side was clamped
+(:class:`~jasper.audio_measurement.analysis.ShoulderSpan`).
 """
 
 from __future__ import annotations
@@ -44,11 +50,19 @@ from jasper.active_speaker.delay_sweep import (
     VERDICT_ROBUST,
     VERDICT_WEAK,
 )
-from jasper.audio_measurement.analysis import crossover_null_depth_db
+from jasper.audio_measurement.analysis import (
+    ShoulderSpan,
+    crossover_null_depth_db,
+    shoulder_span,
+)
 from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
 LANDSCAPE_KIND = "jts_inter_driver_delay_landscape"
 LANDSCAPE_SCHEMA_VERSION = 1
+
+REFUSAL_UNSUPPORTED = "delay_landscape_unsupported"
+REFUSAL_FC_OUTSIDE_OVERLAP = "shoulder_overlap_excludes_fc"
+REFUSAL_SHOULDER_RUN_UP = "shoulder_run_up_too_short"
 
 #: How far the measured null may sit from the computed one before the two are
 #: telling different stories. Wider than the walk's own repeat spread (2 dB)
@@ -61,7 +75,24 @@ VERDICT_NO_EVIDENCE = "confirmation_missing"
 
 
 class DelayLandscapeError(ValueError):
-    """The banked curves cannot support a delay landscape."""
+    """The banked curves cannot support a delay landscape.
+
+    Carries ``refusal_reason`` and the numbers behind it in ``detail``, so a
+    caller reads attributes set at the raise site instead of parsing the
+    message. The reason and the numbers are the contract; the message is
+    operator copy and may be reworded freely.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = REFUSAL_UNSUPPORTED,
+        detail: Mapping[str, float] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.refusal_reason = reason
+        self.detail: dict[str, float] = dict(detail or {})
 
 
 def _curve(
@@ -73,9 +104,9 @@ def _curve(
     not the grid: :func:`~.spatial.lateral_pose_curve` resamples every curve onto
     one shared evidence grid and keeps the band it actually swept in
     ``band_hz``. Deriving the overlap from grid endpoints would therefore find
-    the same extent for both drivers on real bank data — the shoulder-span
-    refusal could never fire, and the sum would include bins neither driver was
-    swept over.
+    the same extent for both drivers on real bank data — the shoulders would
+    read as canonical however narrow the real overlap was, and the sum would
+    include bins neither driver was swept over.
 
     ``expected_role`` is checked against the banked ``role`` because the two
     curves reach the caller positionally: swapped, the model would delay and
@@ -123,6 +154,43 @@ def _curve(
     return freqs, tf, swept
 
 
+def _shoulders(lower_freqs, lower_band, upper_band, *, crossover_fc_hz: float):
+    """The grid the sum is taken on, and the shoulders its depth is read at.
+
+    The two drivers sweep their own bands, so the sum is taken on the overlap
+    they SHARE — read from each curve's declared band, never from the grid it
+    was resampled onto. A crossover null lives in exactly that overlap, and the
+    shoulders are the canonical span clamped into it. Refused here is only what
+    no span can read: an overlap that does not bracket Fc, or one too coarse to
+    interpolate a shoulder from.
+    """
+
+    lo = max(lower_band[0], upper_band[0])
+    hi = min(lower_band[1], upper_band[1])
+    freqs = lower_freqs[(lower_freqs >= lo) & (lower_freqs <= hi)]
+    span = shoulder_span(freqs, crossover_fc_hz=crossover_fc_hz, overlap_hz=(lo, hi))
+    if not span.used_hz[0] < crossover_fc_hz < span.used_hz[1]:
+        raise DelayLandscapeError(
+            f"the shared band {lo:g}-{hi:g} Hz does not bracket Fc "
+            f"{crossover_fc_hz:g} Hz, so there is no null at Fc to read",
+            reason=REFUSAL_FC_OUTSIDE_OVERLAP,
+            detail={"crossover_fc_hz": crossover_fc_hz, "overlap_lo_hz": lo,
+                    "overlap_hi_hz": hi},
+        )
+    if not span.usable:
+        raise DelayLandscapeError(
+            f"the shared band {lo:g}-{hi:g} Hz carries {span.samples_below_fc} "
+            f"points below Fc {crossover_fc_hz:g} Hz and {span.samples_above_fc} "
+            "above, too few to place a shoulder either side",
+            reason=REFUSAL_SHOULDER_RUN_UP,
+            detail={"crossover_fc_hz": crossover_fc_hz, "overlap_lo_hz": lo,
+                    "overlap_hi_hz": hi,
+                    "samples_below_fc": span.samples_below_fc,
+                    "samples_above_fc": span.samples_above_fc},
+        )
+    return freqs, span
+
+
 def _resample(freqs_out, freqs_in, tf):
     """One complex transfer onto another grid, magnitude and unwrapped phase."""
 
@@ -148,7 +216,9 @@ def predicted_null_depth_db(
     One branch is sign-reversed and one is delayed, then they are summed and the
     notch at Fc is read with :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`
     — the same subtraction an acoustic capture is graded with, so a computed
-    depth and a measured one are the same quantity in the same units.
+    depth and a measured one are the same quantity in the same units — read at
+    the shoulders :func:`curve_shoulder_span` derives, over a narrower span than
+    canonical where the banked overlap forced them inward.
 
     ``relative_delay_us`` follows ``null_walk``'s sign frame: positive delays
     the UPPER branch, negative delays the lower.
@@ -168,18 +238,9 @@ def predicted_null_depth_db(
         upper_curve, field_name="upper curve", expected_role=upper_role
     )
 
-    # The two drivers sweep their own bands, so the sum is taken on the overlap
-    # they SHARE — read from each curve's declared band, never from the grid it
-    # was resampled onto. A crossover null lives in exactly that overlap.
-    lo = max(lower_band[0], upper_band[0])
-    hi = min(lower_band[1], upper_band[1])
-    if not lo < crossover_fc_hz / 2.0 or not crossover_fc_hz * 2.0 < hi:
-        raise DelayLandscapeError(
-            "the banked curves do not span both crossover shoulders"
-        )
-    freqs = lower_freqs[(lower_freqs >= lo) & (lower_freqs <= hi)]
-    if freqs.size < 2:
-        raise DelayLandscapeError("the shared band carries too few points")
+    freqs, span = _shoulders(
+        lower_freqs, lower_band, upper_band, crossover_fc_hz=crossover_fc_hz
+    )
 
     # Resampled in POLAR form. A driver transfer at ~1 m carries milliseconds
     # of acoustic delay, so its phasor turns a full circle every few hundred
@@ -206,7 +267,31 @@ def predicted_null_depth_db(
 
     summed = lower + upper
     magnitude_db = 20.0 * np.log10(np.maximum(np.abs(summed), 1e-12))
-    return crossover_null_depth_db(freqs, magnitude_db, crossover_fc_hz)
+    return crossover_null_depth_db(
+        freqs, magnitude_db, crossover_fc_hz, shoulders_hz=span.used_hz
+    )
+
+
+def curve_shoulder_span(
+    lower_curve: Mapping[str, Any],
+    upper_curve: Mapping[str, Any],
+    *,
+    crossover_fc_hz: float,
+    lower_role: str,
+    upper_role: str,
+) -> ShoulderSpan:
+    """The span a pair of banked curves can carry a null depth over."""
+
+    lower_freqs, _, lower_band = _curve(
+        lower_curve, field_name="lower curve", expected_role=lower_role
+    )
+    _, _, upper_band = _curve(
+        upper_curve, field_name="upper curve", expected_role=upper_role
+    )
+    _, span = _shoulders(
+        lower_freqs, lower_band, upper_band, crossover_fc_hz=crossover_fc_hz
+    )
+    return span
 
 
 @dataclass(frozen=True)
@@ -220,6 +305,7 @@ class DelayLandscape:
     best_coordinate_us: float
     best_predicted_null_depth_db: float
     confirmation_coordinates_us: tuple[float, ...]
+    shoulders: ShoulderSpan
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -232,6 +318,10 @@ class DelayLandscape:
             "best_coordinate_us": self.best_coordinate_us,
             "best_predicted_null_depth_db": self.best_predicted_null_depth_db,
             "confirmation_coordinates_us": list(self.confirmation_coordinates_us),
+            # Every depth above was read at THESE shoulders — narrower than
+            # canonical where clamped, which a reader comparing this landscape
+            # against an acoustic confirm has to know.
+            "shoulders": self.shoulders.to_dict(),
         }
 
 
@@ -260,6 +350,13 @@ def compute_landscape(
     except NullWalkError as exc:
         raise DelayLandscapeError(str(exc)) from exc
 
+    span = curve_shoulder_span(
+        lower_curve,
+        upper_curve,
+        crossover_fc_hz=spec.crossover_fc_hz,
+        lower_role=spec.negative_delay_target,
+        upper_role=spec.positive_delay_target,
+    )
     depths = tuple(
         predicted_null_depth_db(
             lower_curve,
@@ -293,6 +390,7 @@ def compute_landscape(
         best_coordinate_us=coordinates[best_index],
         best_predicted_null_depth_db=depths[best_index],
         confirmation_coordinates_us=neighbours,
+        shoulders=span,
     )
 
 
@@ -394,11 +492,15 @@ def confirmation_verdict(
 __all__ = [
     "LANDSCAPE_KIND",
     "MODEL_AGREEMENT_DB",
+    "REFUSAL_FC_OUTSIDE_OVERLAP",
+    "REFUSAL_SHOULDER_RUN_UP",
+    "REFUSAL_UNSUPPORTED",
     "VERDICT_MODEL_BROKE",
     "VERDICT_NO_EVIDENCE",
     "DelayLandscape",
     "DelayLandscapeError",
     "compute_landscape",
     "confirmation_verdict",
+    "curve_shoulder_span",
     "predicted_null_depth_db",
 ]

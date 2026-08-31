@@ -174,8 +174,11 @@ measured delay far outside that estimate is a lobe hop, not a discovery.
 
 **Method of record — compute, then confirm.** The measurement is the
 band-limited reverse null: invert one branch, and read null depth at fc against
-the shoulders either side (fc/2 and 2·fc). What changed is how the coordinate is
-chosen.
+the shoulders either side — canonically fc/2 and 2·fc, **clamped into the band
+the two drivers actually share** where their declared bands overlap by less than
+two octaves (most 2-ways). The proposal states the span it read and which side
+was clamped; a clamped span is weaker evidence, not a refusal. What changed is
+how the coordinate is chosen.
 
 1. **Clear the protection phase first — or know what replaced it.** §2's plant
    is captured with the declared protective high-pass live, so that filter's
