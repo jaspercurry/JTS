@@ -68,6 +68,10 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "measured"
+
 #: A variant axis was set with no ``--candidate-id`` to select the takes by.
 REFUSE_CANDIDATE_ID_REQUIRED = "measure_candidate_id_required"
 #: The flags do not describe a measurement the engine accepts. The spec's own
@@ -1182,6 +1186,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-measure",
         description="Measure this speaker once, bank the takes, print their ids",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "PURPOSE\n"
+            "  One on-box measurement through a temporary protected graph,\n"
+            "  banked as a standard take jasper-round-views frequency can\n"
+            "  read directly. For raw-driver plants or ad-hoc work outside a\n"
+            "  wizard round -- scripts/run-crossover-round.py is the\n"
+            "  ordinary path through a full session.\n"
+            "\n"
+            "WHEN NOT TO USE\n"
+            "  - inside a wizard-run round -- scripts/run-crossover-round.py\n"
+            "    already calls this per pose\n"
+            "  - to measure several PLACEMENTS in one call -- one placement\n"
+            "    per run; --specs measures several MeasureSpecs at ONE\n"
+            "    placement, not several placements\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-measure --kind baseline --position 0\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  EXIT_OK -- every spec measured; ids printed\n"
+            "  1  EXIT_REFUSED -- the door refused the measurement itself\n"
+            "     (box not measurable, an interrupt, a restore failure);\n"
+            "     \"refused (<reason>): <detail>\" on stderr, and as JSON\n"
+            "     with --json\n"
+            "  2  EXIT_INPUT -- the request could not even be built: a\n"
+            "     second --position, a variant axis with no --candidate-id,\n"
+            "     a malformed --specs file"
+        ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
     parser.add_argument(

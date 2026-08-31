@@ -94,6 +94,11 @@ EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). `stage`
+#: writes the walk for the next session; `plan` and `withdraw` do not.
+AUTHORITY_TIER = "mutating (`stage` writes; `plan`/`withdraw` do not)"
+
 
 def _angle_field(text: str) -> Any:
     """One ``--angles`` field, as the seam should see it.
@@ -455,6 +460,31 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "State one angle walk, see what it resolves to, and leave it for "
             "the next measurement session."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - to run a walk -- this only DECLARES one; jasper-arm-walk\n"
+            "    (lab arm) or the guided web flow (human mover) is what\n"
+            "    actually moves the microphone\n"
+            "  - stage, when a walk is already staged -- check first with\n"
+            "    jasper-crossover-prescriber status, or withdraw the\n"
+            "    pending one\n"
+            "\n"
+            "EXAMPLES\n"
+            "  jasper-angle-capture plan --angles 0,7,-7,22,-22\n"
+            "  jasper-angle-capture stage --angles 0,7,-7,22,-22 --mover human\n"
+            "  jasper-angle-capture withdraw\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  EXIT_OK -- resolved (plan), staged (stage), or\n"
+            "     withdrew/no-op (withdraw)\n"
+            "  2  EXIT_REFUSED -- the request itself is invalid; \"refused\n"
+            "     (<reason>): <detail>\" on stderr names why, and as JSON\n"
+            "     with --json\n"
+            "  3  EXIT_STAGE_FAILED -- stage or withdraw could not write or\n"
+            "     unlink the spool file -- a filesystem problem, not a\n"
+            "     request problem"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

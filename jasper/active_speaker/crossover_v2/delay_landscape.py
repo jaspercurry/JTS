@@ -73,6 +73,21 @@ MODEL_AGREEMENT_DB = 6.0
 VERDICT_MODEL_BROKE = "model_break_at_alignment_band"
 VERDICT_NO_EVIDENCE = "confirmation_missing"
 
+#: Ticket 6.11c's phase-overlay corridor. Convention layered on the
+#: summation math below, not a derived bound (research 04:
+#: docs/research/2026-08-31-tuning-methodology-deep-research/
+#: 04-structure-alignment-and-automation-prior-art.md) -- van Veen's "555"
+#: mnemonic, the mathematically clean +5 dB point sitting at ~55 deg and 60
+#: deg being the rounded, easily-visualized tolerance.
+PHASE_OVERLAY_TIGHT_DEG = 60.0
+
+#: The summation table's OWN additive boundary, not convention: at
+#: |dphi| = 120 deg two equal-level branches sum to exactly 0 dB (neither
+#: gain nor loss versus one branch alone); past it the sum falls below a
+#: single branch. Bob McCarthy, "Sound Systems: Design and Optimization"
+#: ("Summation" chapter) -- same research citation as above.
+PHASE_OVERLAY_ADDITIVE_DEG = 120.0
+
 
 class DelayLandscapeError(ValueError):
     """The banked curves cannot support a delay landscape.
@@ -113,9 +128,7 @@ def _curve(
     invert the wrong branches and say nothing.
     """
 
-    import numpy as np
-
-    from .position_cycle import parse_curve_magnitude
+    from .position_cycle import parse_curve_complex
 
     if not isinstance(raw, Mapping):
         raise DelayLandscapeError(f"{field_name} must be a banked curve mapping")
@@ -125,23 +138,13 @@ def _curve(
             f"{field_name} is the {role!r} curve, but was passed as "
             f"{expected_role!r}"
         )
-    # The exact inverse of pose_curve_record's serialization (ruling S3) —
-    # the shared magnitude step, with this reader's phase requirement on top.
-    parsed = parse_curve_magnitude(raw)
+    parsed = parse_curve_complex(raw)
     if parsed is None:
         raise DelayLandscapeError(
-            f"{field_name} does not parse as a banked magnitude curve "
-            "(freqs_hz/magnitude_db/band_hz)"
+            f"{field_name} does not parse as a banked complex curve "
+            "(freqs_hz/magnitude_db/phase_deg/band_hz)"
         )
-    freqs, magnitude_db, swept = parsed
-    try:
-        phase_deg = np.asarray([float(deg) for deg in raw["phase_deg"]], dtype=float)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DelayLandscapeError(f"{field_name} must carry phase_deg") from exc
-    if phase_deg.size != freqs.size:
-        raise DelayLandscapeError(f"{field_name} curve arrays disagree in length")
-    tf = 10.0 ** (magnitude_db / 20.0) * np.exp(1j * np.radians(phase_deg))
-    return freqs, tf, swept
+    return parsed
 
 
 def _shoulders(lower_freqs, lower_band, upper_band, *, crossover_fc_hz: float):
@@ -284,6 +287,95 @@ def curve_shoulder_span(
     return span
 
 
+def _phase_overlay(
+    lower_curve: Mapping[str, Any],
+    upper_curve: Mapping[str, Any],
+    *,
+    crossover_fc_hz: float,
+    lower_role: str,
+    upper_role: str,
+) -> dict[str, Any]:
+    """Ticket 6.11c: dphi(f) between the two branches' OWN banked curves.
+
+    Diagnostic evidence, not a candidate's result: no delay and no inversion
+    applied here — this is the RAW phase relationship a delay candidate is
+    trying to fix, read on the shared grid across the corner octave
+    (Fc/2..2*Fc) clamped into the band both drivers actually share — the
+    same clamp :func:`curve_shoulder_span` applies
+    (:data:`~jasper.audio_measurement.analysis.CANONICAL_SHOULDER_RATIOS` is
+    exactly ``(0.5, 2.0)``).
+
+    Reuses the existing pair reader (:func:`_curve`) and the existing
+    shoulder/resample helpers (:func:`_shoulders`, :func:`_resample`) rather
+    than a second implementation of either.
+
+    ``implied_summation_db`` is the textbook two-EQUAL-LEVEL-phasor
+    summation figure, ``20*log10(2*cos(dphi/2))`` — magnitude-agnostic by
+    construction (the "2" assumes equal level), so it does not restate
+    :func:`predicted_null_depth_db`'s magnitude-aware complex sum; it is
+    what the raw phase ALONE implies. Clamped only at the formula's own
+    zero (perfect cancellation): wrapping ``dphi`` into (-180, 180] keeps
+    ``dphi/2`` inside [-90, 90] deg, where ``cos`` is never negative, so
+    ``2*cos(dphi/2)`` never needs a lower bound but the exact-zero case
+    still needs a floor before the log.
+
+    NO verdict field: :data:`PHASE_OVERLAY_TIGHT_DEG` and
+    :data:`PHASE_OVERLAY_ADDITIVE_DEG` back two read FACTS (a max and a
+    band fraction), never a pass/fail this function computes.
+    """
+
+    import numpy as np
+
+    lower_freqs, lower_tf, lower_band = _curve(
+        lower_curve, field_name="lower curve", expected_role=lower_role
+    )
+    upper_freqs, upper_tf, upper_band = _curve(
+        upper_curve, field_name="upper curve", expected_role=upper_role
+    )
+    freqs, span = _shoulders(
+        lower_freqs, lower_band, upper_band, crossover_fc_hz=crossover_fc_hz
+    )
+    lower = _resample(freqs, lower_freqs, lower_tf)
+    upper = _resample(freqs, upper_freqs, upper_tf)
+
+    lo_hz, hi_hz = span.used_hz
+    band = (freqs >= lo_hz) & (freqs <= hi_hz)
+    band_freqs_hz = freqs[band]
+
+    wrapped = (np.angle(upper[band]) - np.angle(lower[band]) + np.pi) % (
+        2 * np.pi
+    ) - np.pi
+    delta_phase_deg = np.degrees(wrapped)
+    # cos(wrapped/2) in [0, 1] by construction (wrapped in (-pi, pi]), so the
+    # only floor needed is against the exact zero at |dphi| = 180 deg.
+    implied_summation_db = 20.0 * np.log10(
+        np.maximum(2.0 * np.cos(wrapped / 2.0), 1e-12)
+    )
+
+    if delta_phase_deg.size:
+        max_abs_deg = float(np.max(np.abs(delta_phase_deg)))
+        fraction_within_60 = float(
+            np.mean(np.abs(delta_phase_deg) <= PHASE_OVERLAY_TIGHT_DEG)
+        )
+        fraction_within_120 = float(
+            np.mean(np.abs(delta_phase_deg) <= PHASE_OVERLAY_ADDITIVE_DEG)
+        )
+    else:
+        max_abs_deg = float("nan")
+        fraction_within_60 = float("nan")
+        fraction_within_120 = float("nan")
+
+    return {
+        "band_hz": [float(lo_hz), float(hi_hz)],
+        "freqs_hz": [float(f) for f in band_freqs_hz],
+        "delta_phase_deg": [float(v) for v in delta_phase_deg],
+        "implied_summation_db": [float(v) for v in implied_summation_db],
+        "max_abs_delta_phase_deg": max_abs_deg,
+        "fraction_within_60deg": fraction_within_60,
+        "fraction_within_120deg": fraction_within_120,
+    }
+
+
 @dataclass(frozen=True)
 class DelayLandscape:
     """Every coordinate's predicted null, and the three worth playing."""
@@ -296,6 +388,10 @@ class DelayLandscape:
     best_predicted_null_depth_db: float
     confirmation_coordinates_us: tuple[float, ...]
     shoulders: ShoulderSpan
+    #: Ticket 6.11c: the raw phase relationship between the two banked
+    #: curves, independent of any candidate coordinate — see
+    #: :func:`_phase_overlay`.
+    phase_overlay: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -312,6 +408,7 @@ class DelayLandscape:
             # canonical where clamped, which a reader comparing this landscape
             # against an acoustic confirm has to know.
             "shoulders": self.shoulders.to_dict(),
+            "phase_overlay": self.phase_overlay,
         }
 
 
@@ -341,6 +438,13 @@ def compute_landscape(
         raise DelayLandscapeError(str(exc)) from exc
 
     span = curve_shoulder_span(
+        lower_curve,
+        upper_curve,
+        crossover_fc_hz=spec.crossover_fc_hz,
+        lower_role=spec.negative_delay_target,
+        upper_role=spec.positive_delay_target,
+    )
+    overlay = _phase_overlay(
         lower_curve,
         upper_curve,
         crossover_fc_hz=spec.crossover_fc_hz,
@@ -381,6 +485,7 @@ def compute_landscape(
         best_predicted_null_depth_db=depths[best_index],
         confirmation_coordinates_us=neighbours,
         shoulders=span,
+        phase_overlay=overlay,
     )
 
 
@@ -482,6 +587,8 @@ def confirmation_verdict(
 __all__ = [
     "LANDSCAPE_KIND",
     "MODEL_AGREEMENT_DB",
+    "PHASE_OVERLAY_ADDITIVE_DEG",
+    "PHASE_OVERLAY_TIGHT_DEG",
     "REFUSAL_FC_OUTSIDE_OVERLAP",
     "REFUSAL_SHOULDER_RUN_UP",
     "REFUSAL_UNSUPPORTED",

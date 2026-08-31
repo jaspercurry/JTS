@@ -245,6 +245,20 @@ install_jasper() {
         "${REPO_DIR}/experiments/usb-turntable" \
         "${INSTALL_DIR}/experiments/"
 
+    # The three operator docs (ADR-0204 tier 2): methodology, runbook and
+    # doctrine load on demand from the box rather than riding in an agent's
+    # resident context. install_streambox_jasper below already carries all of
+    # docs/ (its rsync predates this ticket); named individually here instead
+    # of widening this profile's rsync to the whole tree, which would also
+    # ship the dev-process corpus (ADRs, research, historical/) this profile
+    # has never installed.
+    install -d -m 0755 "${INSTALL_DIR}/docs"
+    install -m 0644 \
+        "${REPO_DIR}/docs/tuning-methodology.md" \
+        "${REPO_DIR}/docs/tuning-operator-runbook.md" \
+        "${REPO_DIR}/docs/measurement-loop-doctrine.md" \
+        "${INSTALL_DIR}/docs/"
+
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
     fi

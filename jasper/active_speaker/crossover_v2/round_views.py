@@ -90,6 +90,7 @@ them is a coincidence rather than a correspondence.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -105,6 +106,8 @@ from jasper.active_speaker.flat_spec_views import (
     _exclusion_mask,
     _pool,
 )
+from jasper.active_speaker.crossover_v2 import forward_model
+from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
@@ -112,27 +115,39 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
 )
+from jasper.active_speaker.crossover_v2.feature_classifier import (
+    load_round_pose_curves,
+)
+from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.olive_metrics import nbd_and_sm
 
 __all__ = [
     "AGREEMENT_DISSENT_MAX",
     "AGREEMENT_TESTIFY_MIN",
     "AgreementFeature",
+    "AudibilityCoMetrics",
+    "AudibilityMetrics",
     "BankedRound",
     "ENTRY_STATE_UNREADABLE",
     "EntryStateGrade",
+    "ForwardModelDeltaResult",
     "FrozenReferenceResult",
+    "PooledWindowResult",
     "RepeatabilityMetric",
     "RepeatabilityResult",
     "RoundViewsError",
     "SeatCurve",
     "VerifyPoseResult",
     "agreement_table",
+    "audibility_co_metrics",
     "default_agreement_lo_hz",
     "entry_state_grade",
+    "forward_model_verify_delta",
     "frozen_reference_grade",
     "load_banked_round",
     "per_seat_curves",
+    "pooled_window_horizontal",
     "repeatability_spread",
     "verify_pose_curve",
 ]
@@ -698,6 +713,70 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     return VerifyPoseResult(curve, "")
 
 
+@dataclass(frozen=True)
+class ForwardModelDeltaResult:
+    """The round's predicted-vs-measured VERIFY delta, or why there is none.
+
+    ``delta`` is ``None`` exactly when ``reason`` is non-empty, exactly as
+    :class:`VerifyPoseResult` reads. Never raises: a round that banked no
+    per-driver solos, or none at this pose, or no VERIFY curve, is a normal
+    shape rather than an error.
+
+    Additive evidence. It carries no verdict, tolerance or score — what a
+    given ``max_abs_db`` means is the reader's judgement (invariant 3).
+    """
+
+    delta: Mapping[str, Any] | None
+    reason: str
+
+
+def forward_model_verify_delta(
+    banked: BankedRound,
+    candidate: "forward_model.SummationCandidate",
+    *,
+    phase: str = PHASE_MEASURE,
+    position_deg: int = DESIGN_AXIS_DEG,
+) -> ForwardModelDeltaResult:
+    """Predict this round's summed response from its own banked solos, and
+    delta it against the VERIFY sum the round measured (ticket 4.5).
+
+    The two halves a round must carry for the question to mean anything: a
+    PREDICTION BASIS (a banked take at ``position_deg`` carrying both driver
+    solos, magnitude and phase, per ruling R9) and a MEASURED VERIFY SUM (read
+    through :func:`verify_pose_curve`'s own source). Either absent, and the
+    result says which — this view never substitutes one for the other.
+
+    ``candidate`` is a PARAMETER rather than the round's incumbent, and that is
+    the point of a forward model: the question is usually what some candidate
+    WOULD have measured, not what the applied one did. Postdicting the flat
+    campaign's r8 regression is exactly that shape — r7's banked solos, the
+    inherited EQ held verbatim, and the delay that was applied on top.
+    """
+
+    verify = verify_pose_curve(banked)
+    if verify.curve is None:
+        return ForwardModelDeltaResult(None, verify.reason)
+    try:
+        pair = forward_model.load_branch_pair(
+            banked.session_dir, phase=phase, position_deg=position_deg
+        )
+    except forward_model.ForwardModelError as exc:
+        return ForwardModelDeltaResult(None, str(exc))
+    if pair is None:
+        return ForwardModelDeltaResult(
+            None,
+            f"no {phase} take at {position_deg} deg banks both driver solos",
+        )
+    predicted = forward_model.predict_sum(pair, candidate)
+    try:
+        delta = forward_model.predicted_minus_measured_db(
+            predicted, verify.curve.freqs_hz, verify.curve.magnitude_db
+        )
+    except forward_model.ForwardModelError as exc:
+        return ForwardModelDeltaResult(None, str(exc))
+    return ForwardModelDeltaResult(delta, "")
+
+
 # --------------------------------------------------------------------------- #
 # View 3 — every seat comparable, including one a round has no position row for
 # --------------------------------------------------------------------------- #
@@ -1114,3 +1193,286 @@ def agreement_table(
             )
         )
     return tuple(features)
+
+
+# --------------------------------------------------------------------------- #
+# View 4 — audibility-weighted co-metrics: NBD + SM (Olive 2004 /
+# US 8,311,232 B2), ADR-0202, ticket 6.13
+# --------------------------------------------------------------------------- #
+
+#: The lateral-walk curve role this view pools onto the on-axis curve: the
+#: composed acoustic response, not one driver's isolated branch. A local
+#: literal on :data:`DEFAULT_PRIMARY_ROLE`'s own precedent — importing
+#: ``crossover_v2.spatial`` (large, orchestration-heavy) for one string is
+#: not worth it, and this module defines no role constant of its own beyond
+#: what it needs to select.
+_SUMMED_CURVE_ROLE = "summed"
+
+_ON_AXIS_POSITION_UNAVAILABLE = (
+    f"this round banked no {DEFAULT_PRIMARY_ROLE!r}-role cloud position"
+)
+_POOLED_WINDOW_UNAVAILABLE = (
+    f"this round's lateral walk banked no {_SUMMED_CURVE_ROLE!r}-role curve "
+    "at any bearing"
+)
+
+
+@dataclass(frozen=True)
+class PooledWindowResult:
+    """:func:`pooled_window_horizontal`'s output curve, plus its own
+    provenance.
+
+    **Not** CTA-2034's "listening window": that average includes vertical
+    poses this rig does not capture — the name is deliberate (ADR-0202 /
+    ticket 6.13). This is the power average of whatever horizontal
+    bearings — 0/±7/±22° or fewer — the round's lateral walk banked a
+    :data:`_SUMMED_CURVE_ROLE` curve for.
+
+    Args:
+      freqs_hz: the grid the curve was resampled onto (the caller's own).
+      magnitude_db: the power-averaged curve.
+      bearings_deg: which banked bearings actually contributed, sorted —
+        the round's own coverage, disclosed rather than assumed complete.
+      n_curves: how many banked lateral-walk stops contributed in total —
+        never a superseded retake (:func:`pooled_window_horizontal` has
+        the pooling and supersession rules).
+    """
+
+    freqs_hz: np.ndarray
+    magnitude_db: np.ndarray
+    bearings_deg: tuple[float, ...]
+    n_curves: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "freqs_hz": self.freqs_hz.tolist(),
+            "magnitude_db": self.magnitude_db.tolist(),
+            "bearings_deg": list(self.bearings_deg),
+            "n_curves": self.n_curves,
+        }
+
+
+def pooled_window_horizontal(
+    bundle_dir: Path, *, grid_hz: np.ndarray,
+) -> PooledWindowResult | None:
+    """Power-average the round's banked SUMMED lateral-pose curves.
+
+    **Reused, not re-walked.** :func:`~.feature_classifier.load_round_pose_curves`
+    is the same banked-curve reader (:func:`~.record_index.bundle_measurements`
+    + :func:`~.position_cycle.read_take_curves` +
+    :func:`~.position_cycle.parse_curve_magnitude`) every other lateral-pose
+    consumer in this tree already uses — never a second reader of the take
+    files. This function only adds the ``role == "summed"`` filter and the
+    power-average.
+
+    **Power-averaged, never dB-averaged** — the house convention
+    :func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` uses
+    for the same reason (a dB mean over-emphasises deep nulls), restated
+    here rather than delegated to it because this reduction is across
+    CURVES at one frequency, not across frequencies within one curve, so it
+    is not literally a call to that function. Per curve: resampled onto
+    ``grid_hz`` and masked to the curve's OWN driven ``band_hz`` (a point
+    outside it was never measured, so it is excluded rather than read as
+    silence). Distinct stops sharing a bearing (a drift re-visit) are
+    power-averaged together FIRST, so a bearing visited three times cannot
+    outweigh one visited once; the per-bearing curves are then
+    power-averaged across bearings. A RETAKE is not such a repeat:
+    :func:`~.feature_classifier.load_round_pose_curves` has already
+    superseded the older attempts, so rejected noise never reaches this
+    pool.
+
+    Returns ``None`` when the round's lateral walk banked no
+    :data:`_SUMMED_CURVE_ROLE` curve at ANY bearing — not every round has
+    banked the composed post-apply response yet
+    (``docs/active-speaker-tuning-layers-design.md``'s "S at every angle"
+    is a landing capability, not a shipped one). The absence is disclosed
+    by the caller (:func:`audibility_co_metrics`'s ``pooled_window_reason``),
+    never fabricated.
+    """
+
+    grid = np.asarray(grid_hz, dtype=float)
+    by_bearing: dict[float, list[np.ndarray]] = {}
+    for curve in load_round_pose_curves(Path(bundle_dir)):
+        if curve.role != _SUMMED_CURVE_ROLE or curve.position_deg is None:
+            continue
+        resampled_db = np.interp(grid, curve.freqs_hz, curve.magnitude_db)
+        in_band = (grid >= curve.band_hz[0]) & (grid <= curve.band_hz[1])
+        power = np.where(in_band, 10.0 ** (resampled_db / 10.0), np.nan)
+        by_bearing.setdefault(float(curve.position_deg), []).append(power)
+    if not by_bearing:
+        return None
+
+    # A grid point outside every contributing curve's own band is legitimate
+    # (not a bug): np.nanmean of an all-NaN slice is the correct "no bearing
+    # covered this frequency" answer, and both it and the log of its NaN
+    # propagate that honestly. Only the WARNINGS are silenced here — numpy's
+    # "Mean of empty slice" is raised through the stdlib `warnings` module
+    # (not the FPE machinery `errstate` governs), and "invalid value
+    # encountered in log10" needs `errstate` for the same NaN.
+    n_curves = sum(len(powers) for powers in by_bearing.values())
+    bearing_means = []
+    with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        for _deg, powers in sorted(by_bearing.items()):
+            bearing_means.append(np.nanmean(np.stack(powers, axis=0), axis=0))
+        pooled_power = np.nanmean(np.stack(bearing_means, axis=0), axis=0)
+        pooled_db = 10.0 * np.log10(np.maximum(pooled_power, 1e-12))
+    return PooledWindowResult(
+        freqs_hz=grid,
+        magnitude_db=pooled_db,
+        bearings_deg=tuple(sorted(by_bearing)),
+        n_curves=n_curves,
+    )
+
+
+@dataclass(frozen=True)
+class AudibilityMetrics:
+    """NBD + SM (Olive 2004 / US 8,311,232 B2) for ONE curve.
+
+    A co-metric (ADR-0202 rule 2): it informs a graded round and never
+    gates or vetoes it — ``flat_spec.SPEC_BANDS`` stays the sole acceptance
+    metric.
+    """
+
+    nbd_db: float
+    sm_r2: float
+    band_hz: tuple[float, float]
+    smoothing_fraction: int
+    input_smoothing_fraction: int | None
+
+    @classmethod
+    def compute(
+        cls,
+        freqs_hz: np.ndarray,
+        magnitude_db: np.ndarray,
+        band_hz: tuple[float, float],
+        *,
+        input_smoothing_fraction: int | None = None,
+    ) -> "AudibilityMetrics":
+        nbd_result, sm_result = nbd_and_sm(
+            freqs_hz, magnitude_db, band_hz,
+            input_smoothing_fraction=input_smoothing_fraction,
+        )
+        return cls(
+            nbd_db=nbd_result.nbd_db,
+            sm_r2=sm_result.sm_r2,
+            band_hz=nbd_result.band_hz,
+            smoothing_fraction=nbd_result.smoothing_fraction,
+            input_smoothing_fraction=nbd_result.input_smoothing_fraction,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "nbd_db": self.nbd_db,
+            "sm_r2": self.sm_r2,
+            "band_hz": list(self.band_hz),
+            "smoothing_fraction": self.smoothing_fraction,
+            "input_smoothing_fraction": self.input_smoothing_fraction,
+        }
+
+
+@dataclass(frozen=True)
+class AudibilityCoMetrics:
+    """NBD + SM on both curves ADR-0202 names, for one graded round.
+
+    ``on_axis`` / ``pooled_window`` are ``None`` exactly when their own
+    ``*_reason`` is non-empty — the same "available iff no reason" contract
+    :class:`VerifyPoseResult` follows. A round missing one lens is not an
+    unreadable round: co-metrics inform, they never gate (ADR-0202 rule 2),
+    and an absent one is disclosed rather than fabricated.
+
+    Args:
+      round_dir: the round this describes.
+      on_axis: NBD/SM on ``banked.positions``' own
+        :data:`DEFAULT_PRIMARY_ROLE` curve(s), power-averaged together when
+        the round banked more than one.
+      pooled_window: NBD/SM on :func:`pooled_window_horizontal`.
+      pooled_window_bearings_deg: which bearings the pooled window actually
+        drew on — ``()`` when ``pooled_window`` is ``None``.
+    """
+
+    round_dir: str
+    on_axis: AudibilityMetrics | None
+    on_axis_reason: str
+    pooled_window: AudibilityMetrics | None
+    pooled_window_reason: str
+    pooled_window_bearings_deg: tuple[float, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "round_dir": self.round_dir,
+            "on_axis": None if self.on_axis is None else self.on_axis.to_dict(),
+            "on_axis_reason": self.on_axis_reason,
+            "pooled_window": (
+                None if self.pooled_window is None else self.pooled_window.to_dict()
+            ),
+            "pooled_window_reason": self.pooled_window_reason,
+            "pooled_window_bearings_deg": list(self.pooled_window_bearings_deg),
+        }
+
+
+def audibility_co_metrics(
+    banked: BankedRound, *, band_hz: tuple[float, float] | None = None,
+) -> AudibilityCoMetrics:
+    """NBD + SM on the on-axis curve and the pooled horizontal window, for
+    one graded round (ADR-0202, ticket 6.13).
+
+    A co-metric surface, additive beside the round's grade: nothing here
+    reads or writes ``banked.report`` — it is read once, for its own
+    ``graded_band_hz`` default, and never touched again.
+
+    ``band_hz`` defaults to ``banked.report.graded_band_hz`` — the SAME
+    span ``flat_spec.SPEC_BANDS`` itself graded, so a co-metric and the
+    grade it sits beside describe the same stretch of spectrum unless a
+    caller deliberately asks for a different one.
+    """
+
+    band = banked.report.graded_band_hz if band_hz is None else band_hz
+
+    on_axis_positions = [
+        position for position in banked.positions
+        if position.role == DEFAULT_PRIMARY_ROLE
+    ]
+    on_axis_metrics: AudibilityMetrics | None
+    on_axis_reason: str
+    if not on_axis_positions:
+        on_axis_metrics, on_axis_reason = None, _ON_AXIS_POSITION_UNAVAILABLE
+    else:
+        # Power-averaged on the same convention as everywhere else in this
+        # module (never dB-mean) — a no-op when there is exactly one, which
+        # is the ordinary case.
+        power = np.mean(
+            [10.0 ** (p.magnitude_db / 10.0) for p in on_axis_positions], axis=0,
+        )
+        on_axis_db = 10.0 * np.log10(np.maximum(power, 1e-12))
+        on_axis_metrics = AudibilityMetrics.compute(
+            banked.curve_grid_hz, on_axis_db, band,
+            # The coarsest attested fraction among the contributing curves —
+            # smaller N is coarser, and the coarser pass is the one that
+            # already averaged ripple away (olive_metrics' module docstring).
+            input_smoothing_fraction=min(
+                p.smoothing_fraction for p in on_axis_positions
+            ),
+        )
+        on_axis_reason = ""
+
+    pooled = pooled_window_horizontal(banked.session_dir, grid_hz=banked.curve_grid_hz)
+    pooled_metrics: AudibilityMetrics | None
+    pooled_reason: str
+    bearings: tuple[float, ...]
+    if pooled is None:
+        pooled_metrics, pooled_reason, bearings = None, _POOLED_WINDOW_UNAVAILABLE, ()
+    else:
+        # The lateral bank attests no smoothing fraction on its curves, so
+        # None ("unknown") is the honest statement here — never a guess.
+        pooled_metrics = AudibilityMetrics.compute(pooled.freqs_hz, pooled.magnitude_db, band)
+        pooled_reason, bearings = "", pooled.bearings_deg
+
+    return AudibilityCoMetrics(
+        round_dir=str(banked.round_dir),
+        on_axis=on_axis_metrics,
+        on_axis_reason=on_axis_reason,
+        pooled_window=pooled_metrics,
+        pooled_window_reason=pooled_reason,
+        pooled_window_bearings_deg=bearings,
+    )

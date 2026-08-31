@@ -34,9 +34,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
     DRIVER_ROLES,
@@ -49,8 +48,7 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
-from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
-from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
+from jasper.active_speaker.crossover_v2.position_cycle import read_pose_curve_pair
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
@@ -59,6 +57,10 @@ from ._logging import configure_verbose_logging
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
+
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory (plays nothing)"
 
 REFUSE_NO_ROUND = "delay_propose_no_round"
 REFUSE_NO_CURVES = "delay_propose_no_banked_curves"
@@ -73,38 +75,6 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
         signed_acoustic_path_difference_m=args.path_difference_m,
         step_us=args.step_us,
     )
-
-
-def _curve_pair(
-    bundle_dir: Path, *, phase: str, position_deg: int, roles: tuple[str, str],
-) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
-    """The latest banked take carrying BOTH roles, and the take it came from.
-
-    Selected through the measurement index, the shape
-    :func:`~jasper.active_speaker.crossover_v2.position_cycle._banked_take_records`
-    established: the rows narrow the candidates and the take file decides.
-
-    Both roles must ride ONE take: the two transfers are summed against each
-    other, so curves from two different captures would be summed across
-    whatever moved between them.
-
-    **Latest attempt wins.** A superseded take stays on disk as the honest walk
-    record, and ``take_id`` is ``{position}_a{attempt:02d}`` zero-padded so the
-    index's ``ORDER BY path`` is also chronological -- so the FIRST match is
-    the take a retake replaced.
-    """
-
-    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    for row in reversed(bundle_measurements(
-        bundle_dir, phase=phase, position_deg=position_deg
-    )):
-        curves = read_take_curves(artifacts / row.path, phase=phase)
-        if curves is None:
-            continue
-        by_role = {str(curve.get("role")): curve for curve in curves}
-        if roles[0] in by_role and roles[1] in by_role:
-            return by_role[roles[0]], by_role[roles[1]], row.path
-    return None
 
 
 def _refused(reason: str, detail: str) -> int:
@@ -132,7 +102,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             "evidence/v1/artifacts/crossover_v2/<relay>/",
         )
 
-    found = _curve_pair(
+    found = read_pose_curve_pair(
         bundle_dir,
         phase=args.phase,
         position_deg=args.position_deg,
@@ -234,6 +204,35 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Propose an inter-driver delay from banked curves. Computes only; "
             "plays nothing."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "PURPOSE\n"
+            "  Complex-sum a banked round's per-driver curves across the\n"
+            "  delay grid and print the computed optimum plus the\n"
+            "  jasper-angle-capture stage lines that confirm it.\n"
+            "\n"
+            "WHEN NOT TO USE\n"
+            "  - to actually confirm a delay acoustically -- pipe this\n"
+            "    command's \"confirm_with\" lines into jasper-angle-capture\n"
+            "    stage, then run jasper-null; propose only says where the\n"
+            "    null SHOULD be, it plays nothing itself\n"
+            "  - on a round with no per-driver curves at the requested\n"
+            "    --phase and --position-deg -- refused by name\n"
+            "    (REFUSE_NO_CURVES) rather than guessed\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-delay-sweep propose captures/.../session-1/round-3 \\\n"
+            "      --fc-hz 1800\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  EXIT_OK -- proposed; the optimum and confirm_with lines\n"
+            "     are printed\n"
+            "  1  EXIT_REFUSED -- no round at bundle_dir, no matching\n"
+            "     curves, or the landscape could not carry a null at Fc;\n"
+            "     \"refused (<reason>): <detail>\" on stderr, and as the\n"
+            "     JSON \"status\": \"refused\"\n"
+            "  2  EXIT_INPUT -- the bundle could not be read (OSError)"
         ),
     )
     parser.add_argument("--verbose", action="store_true")

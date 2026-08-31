@@ -162,6 +162,7 @@ from .feature_classification import (
     LAB_ROW_NOT_AN_UNCERTAINTY,
     LAB_ROW_UNCERTAINTY,
     UNCERTAINTY_RANDOM,
+    UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
     finite_number,
@@ -1884,15 +1885,29 @@ def _reflections_uncertainty() -> dict[str, Any]:
     }
 
 
+def _gate_numbers_present(
+    rows: list[dict[str, Any]], gate: dict[str, Any]
+) -> bool:
+    """Does ANY banked record in the round carry a gate number?
+
+    Over both carriers — the cloud's position rows and ``verify.gate`` —
+    because either one answering settles it. The ONE spelling of the
+    question :func:`_gate_numbers_reason` answers "no" to and the accuracy
+    budget's ``gate_leakage.available`` answers "yes" to.
+    """
+    return any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows) or bool(
+        _VERIFY_GATE_NUMBER_FIELDS & set(gate)
+    )
+
+
 def _gate_numbers_reason(
     positions: dict[str, Any], verify: dict[str, Any]
 ) -> str:
     """Why this round carries no gate numbers, or ``""`` when it does.
 
-    Asks whether ANY banked record in the round carries the fields, over both
-    carriers — the cloud's position rows and ``verify.gate`` — because the two
-    have different absence rules and either one answering settles it.
-    ``verify.gate`` is :func:`~.capture_dispatch._gate_record`'s dict, which
+    Presence is :func:`_gate_numbers_present`'s call; what this function owns
+    is the sentence, and the two carriers' different absence rules are why it
+    hedges. ``verify.gate`` is :func:`~.capture_dispatch._gate_record`'s dict, which
     always spells both keys once the writer shipped, null or not; a position row
     is filtered by :data:`~jasper.attribution.position_evidence._RECORD_FIELDS`,
     which drops a key whose value is ``None``, so an all-ungateable round could
@@ -1914,9 +1929,7 @@ def _gate_numbers_reason(
     gate = gate if isinstance(gate, dict) else {}
     if not rows and not gate:
         return ""
-    if any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows):
-        return ""
-    if _VERIFY_GATE_NUMBER_FIELDS & set(gate):
+    if _gate_numbers_present(rows, gate):
         return ""
     return (
         "no banked record in this round carries gate_moved_rms_db or "
@@ -2010,6 +2023,271 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
             "instrument, the time domain — and are published as times rather "
             "than converted, so two numbers about two reflectors cannot be "
             "read as one"
+        ),
+    }
+
+
+def _read_candidate(round_dir: Path) -> dict[str, Any]:
+    """One round's own ``candidate.json``, as a plain mapping, or ``{}``.
+
+    Read the same light way every other banked artifact in this module is —
+    JSON in, fields taken out by name — never through
+    ``MeasuredCrossoverCandidate.from_mapping``'s full validation and
+    fingerprint recompute. This packet does not re-verify an artifact's own
+    integrity; a tampered candidate would still misreport an EQ, which is a
+    different door's problem (``candidate_bank.load_candidate_artifact`` is
+    where that check lives), not a reason to withhold a receipt-derived
+    reading here the way ``round_receipt.json`` and ``cloud_verify.json``
+    already are not re-verified either.
+    """
+    raw, _reason = _read_json(round_dir / "candidate.json")
+    return _mapping(raw)
+
+
+#: Ticket 6.5's own bound: the components this block juxtaposes, and why
+#: neither of the two policy constants below is restated as a new table.
+#: :mod:`~jasper.active_speaker.linearization_envelope` is the ONE place the
+#: mic-tier trust ceiling is defined (design doc "Cold-start priors"); a
+#: second copy here is exactly the duplication the house rule against a
+#: second implementation of one concern forbids. The table is imported
+#: privately rather than promoted to a public name because this is the one
+#: reader outside that module that needs the raw breakpoints rather than the
+#: composed per-bin curve :func:`~.linearization_envelope.mic_trust_limit`
+#: returns.
+def _accuracy_budget_block(
+    *,
+    positions: dict[str, Any],
+    reflections: dict[str, Any],
+    verify: dict[str, Any],
+    round_dir: Path | None,
+) -> dict[str, Any]:
+    """Random beside systematic (ADR-0202) — juxtaposed, never pooled.
+
+    Assembled from fields the packet/bundle already carries: nothing here
+    measures anything new, and no two figures are ever added together —
+    the whole point is that a round's own RANDOM terms (this round's repeat
+    scatter) and the standing SYSTEMATIC bounds (mic-cal tier, gate leakage)
+    answer different questions, so a 0.04 dB repeat floor can never again
+    read as accuracy beside a systematic bound that dwarfs it.
+
+    Four components, each labelled its own kind (the substrate rule — every
+    entry says random / systematic / unseparated) and each honest about
+    absence rather than defaulted:
+
+    * ``cross_seat_position_spread`` — UNSEPARATED. Points at
+      ``positions.cross_seat_sigma`` rather than re-embedding its per-bin
+      array (this block adds no second copy of a figure already published).
+    * ``in_capture_repeat_floor`` — RANDOM, and always ``available=False``
+      today: this round's own repeat-sweep magnitude sigma is not banked
+      anywhere the packet reads (the flat campaign's 0.04 dB median is a
+      one-off comparison of two independent VERIFY rounds, not a durable
+      field), and the master plan's own calibration experiment for it
+      (E2) has not run. Unmeasured, never defaulted to 0.0.
+    * ``gate_leakage`` — SYSTEMATIC (a bias a single capture's window bakes
+      in; more captures at the SAME pose do not shrink it). Points at the
+      reflections/positions/verify gate-disclosure numbers ticket 1.5
+      already banks, rather than re-deriving them.
+    * ``mic_calibration_tier`` — SYSTEMATIC. This round's own tier PER ROLE,
+      read off its banked candidate (``candidate.json``'s
+      ``linearization[*].mic_tier``), beside each named tier's trust-ceiling
+      breakpoints. Roles fitted under different tiers are published as the
+      disagreement they are, never collapsed to one entry's answer.
+
+    No score, no recommendation, no verdict: this juxtaposes, an LLM judges.
+    """
+    from jasper.active_speaker.linearization_envelope import (
+        MIC_TIERS,
+        _MIC_TRUST_TABLE_HZ,
+    )
+
+    cross_seat = _mapping(positions.get("cross_seat_sigma"))
+    cross_seat_available = bool(cross_seat.get("available"))
+
+    rows = [row for row in positions.get("positions") or [] if isinstance(row, dict)]
+    gate = _mapping(verify.get("gate"))
+    gate_available = bool(reflections.get("available")) or _gate_numbers_present(
+        rows, gate
+    )
+
+    candidate = _read_candidate(round_dir) if round_dir is not None else {}
+    linearization = _mapping(candidate.get("linearization"))
+    # Per role, never elected: two roles fitted under different tiers is a
+    # fact this block discloses, not a tie one entry silently wins.
+    tier_by_role = {
+        str(role): str(entry["mic_tier"])
+        for role, entry in linearization.items()
+        if isinstance(entry, Mapping) and isinstance(entry.get("mic_tier"), str)
+    }
+    # dict.fromkeys, not set: dedupe with a run-stable order, since this
+    # document is content-fingerprinted.
+    trust_ceiling_hz_by_tier: dict[str, dict[str, float]] = {
+        tier: {"full_to_hz": bp[0], "taper_zero_hz": bp[1]}
+        for tier in dict.fromkeys(tier_by_role.values())
+        if (bp := _MIC_TRUST_TABLE_HZ.get(tier)) is not None
+    }
+
+    return {
+        "note": (
+            "juxtaposes this round's RANDOM terms against the standing "
+            "SYSTEMATIC bounds (ADR-0202); built from fields the "
+            "packet/bundle already carries, nothing measured fresh and "
+            "nothing pooled. Every component labels its OWN kind"
+        ),
+        "components": {
+            "cross_seat_position_spread": {
+                "kind": UNCERTAINTY_UNSEPARATED,
+                "available": cross_seat_available,
+                "n_seats": cross_seat.get("n_seats"),
+                "source": "positions.cross_seat_sigma",
+                "reason": (
+                    "" if cross_seat_available
+                    else str(cross_seat.get("reason") or "")
+                ),
+                "note": (
+                    "the per-bin array is "
+                    "positions.cross_seat_sigma.per_bin_sigma_db; not "
+                    "duplicated here"
+                ),
+            },
+            "in_capture_repeat_floor": {
+                "kind": UNCERTAINTY_RANDOM,
+                "available": False,
+                "reason": (
+                    "unmeasured -- experiment E2 pending "
+                    "(docs/tuning-master-plan.md, Calibration experiments)"
+                ),
+            },
+            "gate_leakage": {
+                "kind": UNCERTAINTY_SYSTEMATIC,
+                "available": gate_available,
+                "source": (
+                    "reflections.reflector_path_distance_m, "
+                    "verify.gate.moved_rms_db, positions[].gate_moved_rms_db"
+                ),
+                "reason": (
+                    "" if gate_available
+                    else "no capture in this round carries a gate-disclosure "
+                    "number"
+                ),
+            },
+            "mic_calibration_tier": {
+                "kind": UNCERTAINTY_SYSTEMATIC,
+                "available": bool(tier_by_role),
+                "tier_by_role": tier_by_role,
+                "tier_vocabulary": list(MIC_TIERS),
+                "trust_ceiling_hz_by_tier": trust_ceiling_hz_by_tier,
+                "source": "candidate.json linearization[*].mic_tier",
+                "reason": (
+                    "" if tier_by_role
+                    else "no banked candidate names a mic tier for this round"
+                ),
+            },
+        },
+    }
+
+
+#: Ticket 6.6's own bound: "recent per-round history... bounded, N~=8".
+TRIM_HISTORY_MAX_ROUNDS = 8
+
+#: How many of the household's recent bundles :func:`_trim_history_block`
+#: looks at before it stops trying to find :data:`TRIM_HISTORY_MAX_ROUNDS`
+#: rounds that banked a candidate. Wider than the round count itself: a
+#: household's recent bundles are not all crossover_v2 tournament rounds
+#: (commissioning and calibration bundles carry no candidate.json at all)
+#: and a bundle without one is silently skipped rather than counted against
+#: the round budget.
+_TRIM_HISTORY_BUNDLE_SCAN_LIMIT = 32
+
+
+def _trim_history_block(session_dir: Path) -> dict[str, Any]:
+    """The resolved per-driver trim pair's recent per-round history (6.6).
+
+    **Where it is durably banked, investigated.** Neither
+    ``round_receipt.json`` nor the durable conductor-state document
+    (:mod:`.durable_state`) carries a trim across rounds:
+    ``round_receipt.json``'s ``round_axes`` is the four ADOPTION-verdict axes
+    (trust/safety/quality/headroom), not an alignment axis, and
+    ``durable_state``'s document is ONE overwritten CURRENT snapshot
+    (``candidate`` is session-scoped there — "a previous session's answer
+    says nothing about this one"), never a log. ``round_anchor`` names
+    nothing in this tree. What DOES durably bank it, write-once, one file per
+    round directory, retained for as long as the bundle is:
+    ``candidate.json``'s ``role_attenuations_db`` — the trim the fit actually
+    committed for the round, pin-substituted where a prescription pinned one
+    (``crossover_v2.planning``'s trim-pin fold, disclosed per role as
+    ``linearization[role].trim_pinned`` — the same bit
+    ``durable_state._candidate_pinned_trims`` reads off the identical
+    candidate for the household's own /state projection).
+
+    So this reads the FIRST branch the ticket names, not the second: no
+    change to the round-receipt writer, only a reader here.
+
+    **Across bundles, not across round directories inside one.** A bundle
+    carries at most one round directory (:func:`round_artifact_dir` refuses
+    a second) — a household's rounds are siblings under ``session_dir``'s own
+    parent, newest first by ``started_at``
+    (:func:`~jasper.active_speaker.bundles.list_bundles`, the shipped
+    chronological lister; bundle DIRECTORY name order is a random uuid4 and
+    is explicitly not chronological, per :mod:`.candidate_bank`'s own
+    docstring). A bundle with no round directory, or none carrying a
+    candidate, is silently skipped: a best-effort scan across many bundles
+    must not fail the whole packet over one malformed or unrelated neighbour.
+
+    Values only, oldest first so a monotonic walk reads left to right; no
+    drift verdict — reading one is the LLM's job.
+    """
+    from jasper.active_speaker.bundles import list_bundles
+
+    try:
+        bundles = list_bundles(
+            session_dir.parent, limit=_TRIM_HISTORY_BUNDLE_SCAN_LIMIT
+        )
+    except OSError:
+        bundles = []
+
+    newest_first: list[dict[str, Any]] = []
+    for info in bundles:
+        bundle_dir = info.get("bundle_dir")
+        if not isinstance(bundle_dir, str) or not bundle_dir:
+            continue
+        round_dir, _reason = round_artifact_dir(Path(bundle_dir))
+        if round_dir is None:
+            continue
+        candidate = _read_candidate(round_dir)
+        trim_db = candidate.get("role_attenuations_db")
+        if not isinstance(trim_db, Mapping) or not trim_db:
+            continue
+        linearization = _mapping(candidate.get("linearization"))
+        newest_first.append({
+            "round_id": round_dir.name,
+            "trim_db": {
+                str(role): float(value)
+                for role, value in trim_db.items()
+                if finite_number(value) is not None
+            },
+            "pinned": {
+                str(role): bool(_mapping(entry).get("trim_pinned") is True)
+                for role, entry in linearization.items()
+            },
+        })
+        if len(newest_first) >= TRIM_HISTORY_MAX_ROUNDS:
+            break
+
+    oldest_first = list(reversed(newest_first))
+    return {
+        "available": bool(oldest_first),
+        "max_rounds": TRIM_HISTORY_MAX_ROUNDS,
+        "rounds_covered": len(oldest_first),
+        "rounds": [
+            {"ordinal": index + 1, **entry}
+            for index, entry in enumerate(oldest_first)
+        ],
+        "source": "candidate.json role_attenuations_db, across this bundle's recent siblings",
+        "note": (
+            "oldest first, so a monotonic walk reads left to right. Values "
+            "only -- no drift verdict. History legitimately starts wherever "
+            "the household's retained bundles do; rounds_covered states how "
+            "many this reading actually found, bounded at max_rounds"
         ),
     }
 
@@ -2823,6 +3101,20 @@ def build_crossover_evidence_packet(
         # because that block is copied verbatim from the cloud artifact and a
         # derived field does not belong inside a verbatim copy.
         "reflections": reflections,
+        # Ticket 6.5: this round's RANDOM terms beside the standing
+        # SYSTEMATIC bounds (ADR-0202) — juxtaposed only, never pooled and
+        # never a score. Reads fields already assembled above
+        # (positions/reflections/verify) plus this round's own candidate.
+        "accuracy_budget": _accuracy_budget_block(
+            positions=positions,
+            reflections=reflections,
+            verify=verify,
+            round_dir=round_dir,
+        ),
+        # Ticket 6.6: the resolved per-driver trim pair's recent per-round
+        # history, so a monotonic walk (a re-solved trim drifting round over
+        # round) is readable evidence. Values only; no drift verdict.
+        "trim_history": _trim_history_block(session_dir),
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
         # says where a filter may sit, the verdicts say what it may be aimed

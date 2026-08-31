@@ -100,6 +100,12 @@ EXIT_EVIDENCE_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). One tool,
+#: one owner: the generator reads this rather than the runbook restating it.
+#: Three of the four verbs only read; `stage` is the one that writes.
+AUTHORITY_TIER = "advisory (`stage` mutates)"
+
 #: Where a human goes to run, apply, or undo a crossover round.
 CROSSOVER_PAGE_PATH = "/sound/crossover/"
 
@@ -963,8 +969,62 @@ def _next_actions(
     return out
 
 
+#: Tier 0's front door (ADR-0204): the reading order an SSH-only agent lands
+#: on before any of the three operator docs. Methodology answers HOW
+#: (sequence, traps, thresholds); the runbook answers WHICH TOOL AND HOW TO
+#: RUN IT; the doctrine answers WHAT IS ALLOWED and binds the other two. Names
+#: only -- `_doc_path` resolves each to wherever it actually is on this box.
+_READING_ORDER: tuple[tuple[str, str, str], ...] = (
+    ("methodology guide", "tuning-methodology.md",
+     "sequence, traps, adjudicated thresholds"),
+    ("runbook, per tool", "tuning-operator-runbook.md",
+     "tool mechanics, contracts, exit codes"),
+    ("doctrine", "measurement-loop-doctrine.md",
+     "binds everything: what is allowed, who decides"),
+)
+
+#: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
+#: three operator docs. Existence is checked rather than assumed, so a
+#: laptop checkout that was never deployed falls back to the repo path
+#: instead of pointing an operator at a file that is not there.
+_INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
+#: The checkout's own docs/, anchored to this package (the repo root is
+#: three parents above this file), never the CWD — status runs from
+#: anywhere. Resolves to a nonexistent site-packages sibling under a venv
+#: install, which the existence check below treats as any other absence.
+_REPO_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
+
+
+def _doc_path(filename: str) -> str:
+    """The first of (installed, checkout) that exists, else the bare repo name.
+
+    The last fallback is an identifier, not a location: a box with neither
+    directory still gets the doc named in repo-relative spelling rather
+    than a path fabricated to look present.
+    """
+    for candidate in (_INSTALLED_DOCS_DIR / filename, _REPO_DOCS_DIR / filename):
+        if candidate.exists():
+            return str(candidate)
+    return f"docs/{filename}"
+
+
+def _print_reading_order() -> None:
+    """The cold-start front door, printed before anything this verb measures.
+
+    Orientation only -- the doctrine's hard stops are enforced in code
+    regardless of whether anyone reads this line (ADR-0204 point 3), so
+    there is nothing here to gate and nothing to get wrong by skipping it.
+    """
+    print("read in order:")
+    for n, (label, filename, gives) in enumerate(_READING_ORDER, start=1):
+        print(f"  {n}. {label:<18} {_doc_path(filename)}  ({gives})")
+    print()
+
+
 def _print_status(payload: dict[str, Any]) -> None:
-    """The report, from the section summaries rather than a second phrasing."""
+    """The front-door reading order, then the report from the section
+    summaries rather than a second phrasing of them."""
+    _print_reading_order()
     print(f"{'speaker:':9} {payload['speaker']['hostname']}")
     for name in ("declared", "banked", "staged", "applied"):
         print(f"{name + ':':9} {payload[name]['summary']}")
@@ -1146,6 +1206,37 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Emit one crossover round's evidence packet, read a prescription "
             "back through the strict gate, and say where this speaker stands."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - to actually MEASURE anything -- this tool never opens a\n"
+            "    session or plays a sound; scripts/run-crossover-round.py or\n"
+            "    the guided web flow does that\n"
+            "  - to skip propose and go straight to stage -- stage runs the\n"
+            "    SAME gate propose does, so skipping propose only delays\n"
+            "    finding out about a refusal, it does not avoid the gate\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-crossover-prescriber packet captures/.../session-1 \\\n"
+            "      > packet.json\n"
+            "  jasper-crossover-prescriber propose captures/.../session-1 \\\n"
+            "      --prescription my_prescription.json\n"
+            "  jasper-crossover-prescriber stage captures/.../session-1 \\\n"
+            "      --prescription my_prescription.json --state flow_state.json\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
+            "     read the evidence, even a partial one\n"
+            "  1  EXIT_EVIDENCE_UNREADABLE -- the bundle, --state,\n"
+            "     --drivers, or --applied-profile could not be read\n"
+            "  2  EXIT_REFUSED -- propose's or stage's gate refused the\n"
+            "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
+            "     and as JSON with --json\n"
+            "  3  EXIT_STAGE_FAILED -- stage's own write to the spool\n"
+            "     failed -- a filesystem problem, distinct from a refused\n"
+            "     prescription: 2 means fix the prescription, 3 means fix\n"
+            "     the speaker's filesystem"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
