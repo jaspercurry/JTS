@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
+import stat
 from pathlib import Path
 
 import pytest
@@ -1207,3 +1209,105 @@ def test_ring_playback_with_aloop_capture_refuses_at_admission_naming_the_check(
     persisted = json.loads(report_path.read_text())
     assert persisted["checks"]["capture_route_current"] is False
     assert persisted["passed"] is False
+
+
+def _stimulus_inputs(tmp_path):
+    from jasper.audio_measurement.sweep import synchronized_swept_sine
+    from tests.test_audio_measurement_excitation_artifacts import _generation
+
+    authority, generation = _generation(tmp_path)
+    _signal, meta = synchronized_swept_sine(
+        f1=200.0, f2=2000.0, duration_approx_s=0.2, sample_rate=48000
+    )
+    return authority, generation, meta
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_stimulus_directory_creation_syncs_authority_entry_and_mode(
+    tmp_path, monkeypatch, preexisting
+):
+    import jasper.active_speaker.commissioning_admission as admission
+
+    authority, generation, meta = _stimulus_inputs(tmp_path)
+    stimuli = authority.directory / "stimuli"
+    if preexisting:
+        stimuli.mkdir(mode=0o700)
+    synced: list[Path] = []
+    real_fsync = admission.fsync_directory
+
+    def record_fsync(path):
+        synced.append(Path(path))
+        real_fsync(path)
+
+    monkeypatch.setattr(admission, "fsync_directory", record_fsync)
+    stimulus = admission.persist_synchronized_stimulus_once(
+        authority.directory, generation=generation, meta=meta
+    )
+
+    assert (authority.directory / stimulus.artifact.relative_path).is_file()
+    assert stat.S_IMODE(stimuli.stat().st_mode) == 0o750
+    assert (authority.directory in synced) is (not preexisting)
+    assert stimuli in synced
+    assert not list(stimuli.glob(".stimulus-*"))
+
+
+def test_stimulus_persist_is_idempotent_for_identical_bytes(tmp_path):
+    from jasper.active_speaker.commissioning_admission import (
+        persist_synchronized_stimulus_once,
+    )
+
+    authority, generation, meta = _stimulus_inputs(tmp_path)
+    first = persist_synchronized_stimulus_once(
+        authority.directory, generation=generation, meta=meta
+    )
+    again = persist_synchronized_stimulus_once(
+        authority.directory, generation=generation, meta=meta
+    )
+    assert again.artifact == first.artifact
+
+
+def test_stimulus_persist_refuses_conflicting_published_bytes(tmp_path):
+    from jasper.active_speaker.commissioning_admission import (
+        persist_synchronized_stimulus_once,
+    )
+
+    authority, generation, meta = _stimulus_inputs(tmp_path)
+    target = authority.directory / f"stimuli/{generation.admission_id}.wav"
+    target.parent.mkdir(mode=0o750)
+    target.write_bytes(b"not the admitted sweep")
+    with pytest.raises(ActiveCommissioningAdmissionError):
+        persist_synchronized_stimulus_once(
+            authority.directory, generation=generation, meta=meta
+        )
+    assert target.read_bytes() == b"not the admitted sweep"
+
+
+def test_stimulus_publish_fault_after_link_keeps_target_and_recovers(
+    tmp_path, monkeypatch
+):
+    import jasper.active_speaker.commissioning_admission as admission
+
+    authority, generation, meta = _stimulus_inputs(tmp_path)
+    stimuli = authority.directory / "stimuli"
+    stimuli.mkdir(mode=0o750)
+    real_fsync = admission.fsync_directory
+
+    def failing_fsync(path):
+        raise OSError(errno.EIO, "simulated directory fsync fault")
+
+    monkeypatch.setattr(admission, "fsync_directory", failing_fsync)
+    with pytest.raises(ActiveCommissioningAdmissionError):
+        admission.persist_synchronized_stimulus_once(
+            authority.directory, generation=generation, meta=meta
+        )
+    target = authority.directory / f"stimuli/{generation.admission_id}.wav"
+    assert target.is_file()
+    assert not list(stimuli.glob(".stimulus-*"))
+
+    monkeypatch.setattr(admission, "fsync_directory", real_fsync)
+    recovered = admission.persist_synchronized_stimulus_once(
+        authority.directory, generation=generation, meta=meta
+    )
+    assert (
+        authority.directory / recovered.artifact.relative_path
+    ).read_bytes() == target.read_bytes()

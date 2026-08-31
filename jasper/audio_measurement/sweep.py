@@ -30,7 +30,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping
 
 import numpy as np
 
@@ -294,7 +294,7 @@ def phase_closing_duration_s(
 
 
 def write_sweep_wav(
-    path: str | Path,
+    path: str | Path | BinaryIO,
     sweep: np.ndarray,
     sample_rate: int,
 ) -> None:
@@ -314,7 +314,7 @@ def write_sweep_wav(
         )
     clipped = np.clip(sweep, -1.0, 1.0)
     int16 = (clipped * 32767.0).astype(np.int16)
-    wavfile.write(str(path), sample_rate, int16)
+    wavfile.write(path if hasattr(path, "write") else str(path), sample_rate, int16)
 
 
 def read_wav_mono(
