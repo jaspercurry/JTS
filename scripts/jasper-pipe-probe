@@ -52,7 +52,12 @@ analyze IN.raw [--json]
     section's THD+N/phase-glitch cells are null with a reason
     (`envelope_test`) -- a clean on/off edge is itself broadband,
     high-slew content that would otherwise read as a false failure every
-    row. A window under -70 dBFS RMS is reported "silent" rather than a
+    row. The phase-glitch column itself is live ONLY on the two
+    single-tone sections -- a second tone (dual-tone) or non-tonal energy
+    (white noise) makes Hilbert instantaneous frequency fire by
+    construction, so those rows null phase_glitches with a reason too
+    (THD+N is unaffected: it stays a real read wherever it is computed).
+    A window under -70 dBFS RMS is reported "silent" rather than a
     numerically meaningless ratio. Section labels are elapsed-time
     cosmetics that assume the capture starts with playback; when the
     first ~1+ seconds read silent, a printed/JSON alignment warning says
@@ -192,6 +197,17 @@ LEADING_SILENCE_WARNING_S = 1
 ENVELOPE_TEST_REASON = (
     "toggle-envelope edges register as broadband/phase content by "
     "construction, not evidence of a pipe defect"
+)
+# Hilbert instantaneous frequency is only meaningful on single-tone content:
+# a second tone (dual-tone section) or non-tonal energy (white noise) makes
+# the glitch detector fire by construction, not from a pipe defect -- see
+# count_phase_glitches(). The toggle section is excluded from this set too,
+# but keeps its own, more specific ENVELOPE_TEST_REASON above.
+GLITCH_ELIGIBLE_SECTIONS = frozenset({TONE_SECTION_LABEL, QUIET_TONE_SECTION_LABEL})
+GLITCH_NOT_MEANINGFUL_REASON = (
+    "phase-glitch detection (Hilbert instantaneous frequency) is only "
+    "meaningful on single-tone content; a second tone or non-tonal energy "
+    "makes it fire by construction, not from a pipe defect"
 )
 
 LATENCY_CAPTURE_SECONDS = 4.0
@@ -609,13 +625,16 @@ class SecondReading:
 def analyze_channel(samples: np.ndarray, rate: int) -> list[SecondReading]:
     """Per-second reading of one already-deinterleaved channel.
     section_label_at() is cosmetic labeling only (best-effort, assumes the
-    capture starts at file offset 0), but it DOES steer two real
-    behaviors: the dual-tone section passes both known tones to
-    thd_n_db so the 9 kHz partner is not misread as noise against a
-    10 kHz-only reference, and the toggle-burst section's THD+N/glitch
-    metrics are nulled (envelope_test=True) -- a clean on/off envelope
-    edge is itself broadband, high-slew content that would otherwise read
-    as a false failure every row."""
+    capture starts at file offset 0), but it DOES steer real behavior: the
+    dual-tone section passes both known tones to thd_n_db so the 9 kHz
+    partner is not misread as noise against a 10 kHz-only reference; the
+    toggle-burst section's THD+N/glitch metrics are nulled
+    (envelope_test=True) -- a clean on/off envelope edge is itself
+    broadband, high-slew content; and phase_glitches is live ONLY on the
+    two single-tone sections (GLITCH_ELIGIBLE_SECTIONS) -- Hilbert
+    instantaneous frequency is only meaningful on single-tone content, so
+    a second tone or non-tonal energy would otherwise read as a false
+    glitch storm every row."""
     window = rate
     n_seconds = len(samples) // window
     readings: list[SecondReading] = []
@@ -636,8 +655,13 @@ def analyze_channel(samples: np.ndarray, rate: int) -> list[SecondReading]:
             continue
         tones = (SECOND_TONE_HZ, REFERENCE_TONE_HZ) if label == DUAL_TONE_SECTION_LABEL else (REFERENCE_TONE_HZ,)
         thd_n = thd_n_db(chunk, rate, tones)
-        glitches = count_phase_glitches(chunk, rate)
-        readings.append(SecondReading(i, label, False, False, dominant, ppm, thd_n, glitches, None))
+        if label in GLITCH_ELIGIBLE_SECTIONS:
+            glitches: int | None = count_phase_glitches(chunk, rate)
+            reason = None
+        else:
+            glitches = None
+            reason = GLITCH_NOT_MEANINGFUL_REASON
+        readings.append(SecondReading(i, label, False, False, dominant, ppm, thd_n, glitches, reason))
     return readings
 
 

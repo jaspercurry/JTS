@@ -137,10 +137,13 @@ def test_single_sample_splice_per_second_reports_glitches(tmp_path: Path) -> Non
         assert row["phase_glitches"] > 0
 
 
-def test_dual_tone_row_reads_low_thd_n(tmp_path: Path) -> None:
+def test_dual_tone_row_reads_low_thd_n_and_null_glitches(tmp_path: Path) -> None:
     """A 10 kHz-only reference misreads the dual-tone section's 9 kHz
     partner as noise (proven: it read 0.00 dB in review); section-aware
-    thd_n_db fixes it -- this pins the fix through the real analyze path."""
+    thd_n_db fixes it -- this pins the fix through the real analyze path.
+    phase_glitches is null there too (proven: ~2000/s on clean input --
+    Hilbert instantaneous frequency fires by construction at a two-tone
+    envelope's nulls, the same false-failure shape as the toggle section)."""
     raw = tmp_path / "probe.raw"
     _write_stereo_raw(raw, _probe_shaped_buffer())
 
@@ -151,6 +154,8 @@ def test_dual_tone_row_reads_low_thd_n(tmp_path: Path) -> None:
     for row in dual_tone_rows:
         assert row["thd_n_db"] is not None
         assert row["thd_n_db"] < -60.0
+        assert row["phase_glitches"] is None
+        assert row["reason"]
 
 
 def test_toggle_row_is_marked_envelope_test_with_null_metrics(tmp_path: Path) -> None:
