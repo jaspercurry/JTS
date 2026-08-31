@@ -5424,10 +5424,12 @@ def _handle_crossover_v2_republish(
 ) -> dict[str, Any]:
     """POST /crossover/v2/republish: re-publish a banked candidate by fingerprint.
 
-    Touches no DSP and holds no relay — it moves the published-candidate
-    pointer and nothing else — so unlike its apply sibling it needs neither
-    ``_run_async`` nor ``_camilla`` nor the stage-2 ``status_payload()``. The
-    apply door still runs every gate it always did, on the next request.
+    Touches no DSP and holds no relay — it replaces the durable session
+    document around the published-candidate slot (host-owned apply keys
+    carried forward) and moves no graph — so unlike its apply sibling it
+    needs neither ``_run_async`` nor ``_camilla`` nor the stage-2
+    ``status_payload()``. The apply door still runs every gate it always did,
+    on the next request.
     """
     raw = _read_json_body(handler)
 

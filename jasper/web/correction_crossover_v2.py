@@ -605,6 +605,7 @@ def reset_v2_journey_state() -> None:
         )
         return
     pre_apply_profile = state.get("pre_apply_profile")
+    displaced_by = state.get("previous_candidate_displaced_by")
     attempts_loop = state.get("attempts_loop")
     sound_declaration_undo = state.get("sound_declaration_undo")
     round_anchor = state.get(ROUND_ANCHOR_STATE_KEY)
@@ -661,6 +662,14 @@ def reset_v2_journey_state() -> None:
         "pre_apply_profile": (
             dict(pre_apply_profile)
             if isinstance(pre_apply_profile, Mapping)
+            else None
+        ),
+        # The pointer's pairing survives on the stash's own terms: Start over
+        # keeps the applied graph playing, so the apply that recorded the
+        # pointer is still the one under grade.
+        "previous_candidate_displaced_by": (
+            displaced_by
+            if isinstance(displaced_by, str) and displaced_by
             else None
         ),
         # Preserved on exactly ``pre_apply_profile``'s terms (#2292): the two
@@ -774,7 +783,18 @@ def observe_apply_success(
     state["pre_apply_profile"] = (
         dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
     )
-    # UNCONDITIONAL, exactly like the line above it — that is the whole
+    # The way-back pointer's PAIRING: the identity of the apply that recorded
+    # it — this one, named by the candidate it installed. The automatic revert
+    # fires only when this equals the candidate the round displaced the prior
+    # with (one equality, checked at the seam), which is what refuses a
+    # pointer inherited from an OLDER apply (#2559's staleness class) and —
+    # because the revert's own success re-stamps this to ``None`` — a second
+    # automatic revert inside the [revert…next-apply] window (the ping-pong).
+    # Re-stamped by every successful apply, exactly like the stash above.
+    state["previous_candidate_displaced_by"] = (
+        str(candidate_fingerprint) if candidate_fingerprint else None
+    )
+    # UNCONDITIONAL, exactly like the stash above — that is the whole
     # invariant. Both halves of the Undo are re-stamped by every successful
     # apply, so neither can outlive the graph the other describes.
     state["sound_declaration_undo"] = (
@@ -5458,37 +5478,72 @@ def _active_graph_fingerprint() -> str:
     return str(applied.get("candidate_fingerprint") or "")
 
 
-def _rollback_anchor_available() -> bool:
-    """Is there a valid anchor for :func:`handle_v2_restore` to restore FROM?
+def _previous_candidate_known() -> bool:
+    """Can the automatic revert actually go back? (#2291's ``rollback_available``)
 
-    #2291's ``rollback_available``, anchor half. The seam half — is the
-    conductor's ``rollback`` bound at all — is the conductor's own to check,
-    and it ANDs the two: the parameter's name asks "can the host actually
-    restore", and either half alone answers that wrongly. A stage-2 conductor
-    on a speaker whose durable state carries no ``pre_apply_profile`` has the
-    seam bound and can restore nothing, so a round trusting seam presence
-    alone would issue a ``restore`` instruction that Undo then refuses.
+    The state half; the seam half — is the conductor's ``rollback`` bound at
+    all — is the coordinator's own to check, and it ANDs the two. Three facts,
+    each the answer half of a question the ACTION then re-asks, so the round's
+    promise cannot drift from what the doors do:
 
-    Reads :func:`rollback_anchor_refusal` — the same predicate
-    :func:`handle_v2_restore` refuses on — rather than re-deriving the three
-    preconditions, so the answer and the action cannot drift.
+    * a prior candidate fingerprint is recorded — the SAME field the
+      auto-revert resolves its target from
+      (:func:`~jasper.web.correction_crossover_v2_status._previous_candidate_fingerprint`);
+    * the pointer is PAIRED to the apply this round is grading
+      (``previous_candidate_displaced_by`` equals the published candidate's
+      fingerprint) — a pointer stamped by an older apply, or consumed by the
+      automatic revert itself, routes to ``recovery_required`` instead of
+      promising a restore the seam then refuses;
+    * the republish door would admit that fingerprint
+      (:func:`~jasper.web.correction_crossover_v2_republish.republish_preflight`
+      — the bank still holds a verifiable artifact and the declaration gate
+      passes).
 
-    **Fails closed.** Any unexpected error reading the durable state or the
-    output topology means "not available": a round that cannot confirm an
-    anchor must not be told it has one, because the cost of the wrong answer
-    is a restore instruction nothing can carry out, which then surfaces as
-    ``recovery_required`` anyway — one round later and less honestly.
+    The APPLY door's own gates are deliberately not re-asked here — they read
+    live SSOT that a probe cannot pre-answer — and the live displacement check
+    runs at the moment of action (:func:`bind_delta_probe_rollback`), exactly
+    the static/live split the old five-gate probe kept. A raising preflight is
+    caught by the coordinator's seam reader, which fails closed.
     """
-    try:
-        return rollback_anchor_refusal(load_v2_state()) is None
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        log_event(
-            logger,
-            "correction.crossover_v2_rollback_available_failed",
-            level=logging.WARNING,
-            exc_info=True,
-        )
+    from jasper.web import correction_crossover_v2_republish as republish_door
+    from jasper.web import correction_crossover_v2_status as v2_status
+
+    state = load_v2_state()
+    fingerprint = v2_status._previous_candidate_fingerprint(state)
+    if fingerprint is None:
         return False
+    if not _previous_candidate_paired(state):
+        return False
+    return republish_door.republish_preflight(fingerprint) is None
+
+
+def _previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
+    """Was the way-back pointer recorded by the apply now under grade?
+
+    The one equality of the pairing rule: ``previous_candidate_displaced_by``
+    — stamped by :func:`observe_apply_success` with the candidate its apply
+    installed, and re-stamped to ``None`` by the automatic revert's own
+    success — must equal the published candidate's fingerprint. ``False``
+    covers a pointer stamped by an older apply (#2559's staleness class), the
+    [revert…next-apply] window (no automatic ping-pong; the household's
+    way-back button is deliberately NOT gated on this), and a state written
+    before the pairing existed (no auto-follow until the next apply records
+    one — the same no-schema-bump posture the pointer itself takes).
+    """
+    resolved = state or {}
+    displaced_by = resolved.get("previous_candidate_displaced_by")
+    candidate = resolved.get("candidate")
+    published = (
+        str(candidate.get("fingerprint") or "")
+        if isinstance(candidate, Mapping)
+        else ""
+    )
+    return (
+        isinstance(displaced_by, str)
+        and bool(displaced_by)
+        and bool(published)
+        and displaced_by == published
+    )
 
 
 def _applied_graph_boosts() -> bool:
@@ -5771,7 +5826,7 @@ def bind_v2_stage_seams(
         # candidate and therefore only stage 1 reads it today.
         applied_profile=_applied_profile_now,
         record_model_error=_record_live_model_error,
-        rollback_available=_rollback_anchor_available,
+        rollback_available=_previous_candidate_known,
         # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
         # ``entry_graph_fingerprint``'s reason — what is live right now is not
         # a stage asymmetry — and it is the only way the grading stage can
@@ -7628,47 +7683,55 @@ def handle_v2_apply(
 def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     """The conductor's ``rollback`` seam (linearization-integrity PR-L5).
 
-    Runs the SAME restore the household's Undo button runs — one restore path,
-    not a second one that could drift from it — and returns True when the
-    previous profile is back on the speaker. The only difference is who
-    pressed it: here the delta probe did, because it measured that the applied
-    correction is not doing what its own filters commanded.
+    Puts the previous tuning back THROUGH THE NORMAL PATH — republish the
+    prior candidate by fingerprint (:func:`handle_v2_republish`, the same
+    handler POST /crossover/v2/republish runs), then apply it
+    (:func:`handle_v2_apply`, with every admission gate it always runs) — and
+    returns True when that candidate is live again. Not a second restore
+    mechanism that could drift from the operator's own way back: the target is
+    resolved from the SAME field the wizard's "Go back to the previous tuning"
+    action reads (``pre_apply_profile.source.measured_candidate_fingerprint``),
+    and the two doors are the two the operator would press. The only
+    difference is who pressed them: here the round's adoption table did,
+    because it measured that the applied correction made the speaker worse.
 
     Catches :class:`CrossoverV2Refused`, which is the ordinary outcome for an
-    automatic caller — a first-ever apply has nothing stashed to go back to,
-    and a changed output topology makes the stash unsafe to reload — and
-    reports "not restored" so the conductor's refusal still reaches the
-    household with the Undo button on it. A rollback that could not run must
-    not swallow the verdict that asked for it.
+    automatic caller — a first-ever apply records no prior candidate, a pruned
+    bank cannot republish one, and the apply door carries its own refusals —
+    and reports "not restored" so the conductor's refusal still reaches the
+    household. A rollback that could not run must not swallow the verdict that
+    asked for it.
 
     It does NOT claim to catch everything: an OSError from the CamillaDSP
-    socket or a malformed stash still propagates, and
+    socket still propagates, and
     :func:`~jasper.active_speaker.crossover_v2.coordinator._run_round_restore`
     catches that wider family on the other side of the seam (it has to — a
     conductor with a different binding gets the same protection). Two honest
     halves rather than one dishonest "never raises".
 
-    **Exactly once per binding, and the reason is the copy (#2291).** ONE
-    conductor site reaches this closure — the round's adoption path — and the
-    guard below is what its history bought. Until the fifth-principle routing
-    there were three: the delta probe's own refusal at VERIFY, the same refusal
-    when the post-apply cloud closed, and the round. ``handle_v2_restore`` is
-    NOT idempotent: a successful restore sets ``applied = False``, so a SECOND
-    call refused with "nothing is applied to undo", this closure returned
-    ``False``, and the second asker re-labelled its verdict
-    :data:`REASON_CORRECTION_ROLLBACK_FAILED` — whose household copy says the
-    correction is **still applied**. It is not. That false sentence about their
-    own speaker was the defect, not the extra call, so the guard fixed the
-    sentence rather than merely the reachability: the restore is attempted
+    **Three action-time gates run before the doors**, each the ACT half of
+    an answer the adoption table already gave: the pointer must exist, it
+    must be PAIRED to the apply this round displaced
+    (:func:`_previous_candidate_paired` — the stale-stash class, #2559, and
+    the automatic revert's own window both read as unpaired), and the running
+    graph must still be the one this round applied
+    (``applied_profile_displacement`` — the 2026-08-15 out-of-band class). A
+    successful revert then consumes its own pairing
+    (:func:`_consume_auto_revert_pairing`), which is what keeps the graph a
+    round measured WORSE from being automatically re-applied in the
+    [revert…next-apply] window.
+
+    **Exactly once per binding, and the stakes went UP with the normal path
+    (#2291).** ONE conductor site reaches this closure — the round's adoption
+    path — and the guard below is what its history bought (three callers once
+    raced it into a false "still applied" sentence). The restore is attempted
     once, and every later caller is handed the FIRST call's outcome verbatim.
 
-    **Kept now that the callers are down to one**, deliberately. It is a
-    property of THIS closure rather than of any caller's discipline, and it is
-    what makes "a successful restore never reports failure" hold without the
-    binding having to know how many askers exist — which is exactly the
-    assumption that broke last time. The one-owner rule is pinned separately,
-    at the flow (``test_two_restore_triggers_run_one_undo_and_keep_the_honest_
-    sentence`` asserts no second ``self._seams.rollback(`` call site survives).
+    **Kept as a property of THIS closure** rather than of any caller's
+    discipline — which is exactly the assumption that broke last time. The
+    one-owner rule is pinned separately, at the flow
+    (``test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence``
+    asserts no second ``self._seams.rollback(`` call site survives).
     """
     lock = threading.Lock()
     outcome: dict[str, bool] = {}
@@ -7688,42 +7751,127 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
             outcome["restored"] = restored
             return restored
 
+    def _refused_before_the_doors(reason: str, detail: str) -> bool:
+        # The answer ``_previous_candidate_known`` gave the adoption table,
+        # re-read at the moment of action: reaching one of these arms means
+        # the state (or the speaker) moved between the decision and the act,
+        # and refusing is the honest end — the round re-grades into
+        # recovery_required.
+        log_event(
+            logger, "correction.crossover_v2_delta_probe_restore_refused",
+            level=logging.WARNING, reason=reason, detail=detail,
+        )
+        return False
+
     def _restore_once(reason: str) -> bool:
+        from jasper.active_speaker.baseline_profile import (
+            APPLIED_PROFILE_DISPLACED,
+            applied_profile_displacement,
+            load_applied_baseline_profile_state,
+        )
+        from jasper.web import correction_crossover_backend
+        from jasper.web import correction_crossover_v2_republish as republish_door
+        from jasper.web import correction_crossover_v2_status as v2_status
+
+        state = load_v2_state()
+        fingerprint = v2_status._previous_candidate_fingerprint(state)
+        if fingerprint is None:
+            return _refused_before_the_doors(
+                reason, "no previous candidate fingerprint is recorded",
+            )
+        # The pairing rule's one equality, re-checked where the action is: the
+        # pointer must have been recorded by the apply this round displaced.
+        # An unpaired pointer is every stale-stash shape (#2559) plus the
+        # automatic revert's own [revert…next-apply] window — the AUTO path
+        # refuses; the household's way-back button is deliberately not gated
+        # on this and still offers the pointer through review + Apply.
+        if not _previous_candidate_paired(state):
+            return _refused_before_the_doors(
+                reason,
+                "the recorded previous candidate is not paired to the apply "
+                "this round displaced",
+            )
+        # The live half (#2537's out-of-band class): is the speaker still
+        # playing the graph this round's apply installed? A reconcile moved
+        # the running config on 2026-08-15 and the old restore faithfully
+        # replaced an operator's deliberate graph; the detector already
+        # existed — this path just never asked. Only a POSITIVE displacement
+        # refuses: the other codes mean the comparison could not be made, and
+        # an absent measurement is not evidence of a defect.
+        applied_record = load_applied_baseline_profile_state()
+        if applied_record is not None and (
+            applied_profile_displacement(applied_record)
+            == APPLIED_PROFILE_DISPLACED
+        ):
+            log_event(
+                logger,
+                "correction.crossover_v2_applied_profile_displaced",
+                level=logging.WARNING,
+                surface="auto_revert",
+            )
+            return _refused_before_the_doors(
+                reason,
+                "the running graph is not the one this round applied",
+            )
         try:
-            payload = handle_v2_restore(run_async, camilla_factory)
+            republish_door.handle_v2_republish({"fingerprint": fingerprint})
+            payload = handle_v2_apply(
+                {"expected_candidate_fingerprint": fingerprint},
+                run_async,
+                camilla_factory,
+                # Read fresh at the moment of action, exactly as the manual
+                # dispatch does: the stage-2 openability preflight must see
+                # the speaker as it is NOW, not as it was at session prepare.
+                status=correction_crossover_backend.status_payload(),
+            )
         except CrossoverV2Refused as exc:
             log_event(
                 logger, "correction.crossover_v2_delta_probe_restore_refused",
                 level=logging.WARNING, reason=reason, detail=str(exc),
+                candidate_fingerprint=fingerprint,
             )
             return False
-        restored = payload.get("status") == "restored"
-        # The declaration outcome (#2292) rides the payload, which this seam
-        # reduces to a bool for its conductor caller — so on an AUTOMATIC
-        # rollback a refused declaration is journal-only
-        # (``event=correction.crossover_v2_restore_sound_declaration``), not
-        # household-visible.
-        #
-        # #2291 Phase 3a bound this seam on the stage that actually reaches the
-        # delta probe (``STAGE_VERIFY_CAPABILITIES``), so an automatic rollback
-        # now genuinely runs — the two halves that used to sit on different
-        # stages have met. The declaration outcome is still journal-only:
-        # widening the seam's return shape to carry a household sentence means
-        # deciding which screen renders it, and the refusal the probe returns
-        # already routes through the verify_fail screen's own copy.
+        restored = payload.get("status") == "applied"
+        if restored:
+            _consume_auto_revert_pairing()
+        # This caller has NO screen — it reduces the payload to a bool for the
+        # conductor — so the blocked apply's cause exists nowhere else at all
+        # (#2519's reasoning, carried to the new mechanism).
         log_event(
             logger, "correction.crossover_v2_delta_probe_restore",
             level=logging.WARNING if not restored else logging.INFO,
             reason=reason, status=payload.get("status"),
-            # The same code the household's own Undo journals (#2519). This
-            # caller has NO screen — it reduces the payload to a bool for the
-            # conductor — so the refusal's cause exists nowhere else at all.
-            code=_restore_refusal_code(payload),
-            sound_declaration=str(payload.get("sound_declaration") or ""),
+            candidate_fingerprint=fingerprint,
+            code=str((_blocking_apply_issue(payload) or {}).get("id") or ""),
         )
         return restored
 
     return _rollback
+
+
+def _consume_auto_revert_pairing() -> None:
+    """Mark the way-back pointer as recorded by the automatic revert.
+
+    The revert's own apply just re-stamped the pointer at the candidate it
+    displaced — which is the graph a round measured WORSE. Left paired, the
+    very next graded round of the reverted-to candidate could automatically
+    re-apply that graph (the ping-pong the pairing rule exists to close), so
+    the revert consumes its own pairing: ``previous_candidate_displaced_by``
+    becomes ``None`` until the next ORDINARY apply records a fresh one. The
+    pointer itself stays — the household's way-back button still offers the
+    displaced candidate, through review + Apply, which is their call.
+
+    A cheap write on ``save_v2_state``'s own rule: losing it to a power cut
+    leaves a paired pointer, which re-opens the window for one round on one
+    boot — narrow, and the round it would mislead still runs every apply-door
+    gate.
+    """
+    with _state_lock:
+        state = load_v2_state()
+        if state is None:
+            return
+        state["previous_candidate_displaced_by"] = None
+        save_v2_state(state)
 
 
 #: The declaration half of Undo (#2292), as four named outcomes. The DSP graph

@@ -1191,11 +1191,12 @@ def build_conductor_state(
     # #2616: let the journey learn about a restore it could not see.
     #
     # ``observe_restore`` clears the durable ``applied`` in place and holds no
-    # conductor, so a LIVE session that rolled back — the delta probe's own
-    # ``rollback`` seam, or the round's adoption restore — kept ``applied``
-    # True in memory. The write below reads that stale True off the snapshot
-    # and put it straight back over the clear, which is one fact with two
-    # owners and the durable one losing.
+    # conductor, so a LIVE session whose speaker was restored out from under
+    # it kept ``applied`` True in memory. The write below reads that stale
+    # True off the snapshot and put it straight back over the clear, which is
+    # one fact with two owners and the durable one losing. (The round's
+    # adoption restore no longer takes this door: it re-applies the prior
+    # candidate through the normal path, which leaves ``applied`` True.)
     #
     # Resolved in the owner's favour rather than by special-casing the write:
     # the durable state is the authority on whether a restore HAPPENED, the
@@ -1883,6 +1884,15 @@ def build_conductor_state(
     #     session begins instead of leaking session A's blocker onto session
     #     B's apply step.
     state["pre_apply_profile"] = prior.get("pre_apply_profile")
+    # The pointer's PAIRING (which apply recorded the stash) is host-owned on
+    # identical terms — ``observe_apply_success`` writes it, the automatic
+    # revert consumes it, the conductor neither produces nor reads it — so it
+    # takes the same unconditional carry. Session-scoping it would unpair the
+    # pointer on the first post-apply re-arm and silently disarm the round's
+    # automatic revert.
+    state["previous_candidate_displaced_by"] = prior.get(
+        "previous_candidate_displaced_by"
+    )
     # ``expected_post_apply_offset_db`` (#1811) is the THIRD field in this
     # host-owned class and takes ``pre_apply_profile``'s unconditional shape
     # for the identical reason: ``observe_apply_success`` writes it, the

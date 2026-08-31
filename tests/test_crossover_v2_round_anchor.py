@@ -397,41 +397,6 @@ def test_the_restore_is_allowed_when_the_running_graph_is_still_the_rounds(
     ) is None
 
 
-def test_the_capability_probe_takes_no_live_reading_and_so_never_diverges(
-    tmp_path,
-):
-    """The seam answers the three STATIC preconditions; the endpoint adds the
-    live one.
-
-    Deliberate: a camilla hiccup flipping ``rollback_available`` to False would
-    route an otherwise-fine round to ``recovery_required``. A divergence found
-    at the endpoint instead returns "not restored", which re-grades the round
-    the same way — one round later and only when it matters.
-
-    Two halves, because either alone would pass on a broken split: the seam's
-    call site must pass no live reading, AND a call with none must not refuse
-    even when the running graph HAS moved.
-    """
-    import inspect
-
-    from jasper.web.correction_crossover_v2 import (
-        _rollback_anchor_available,
-        rollback_anchor_refusal,
-    )
-
-    seam = inspect.getsource(_rollback_anchor_available)
-    assert "rollback_anchor_refusal(load_v2_state())" in seam
-    assert "running_config_path" not in seam
-
-    applied_path, applied_sha = _yaml(tmp_path, "candidate.yml", "the round's\n")
-    _yaml(tmp_path, "sound_current.yml", "someone else's\n")
-    state = _applied_state(
-        tmp_path, applied_path=applied_path, applied_sha=applied_sha
-    )
-
-    assert rollback_anchor_refusal(state) is None
-
-
 def test_a_state_written_before_this_shipped_still_restores(tmp_path):
     """No ``round_anchor`` means the comparison cannot be made, and an absent
     comparison must not refuse a household's Undo."""

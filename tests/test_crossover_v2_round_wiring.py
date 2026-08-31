@@ -62,7 +62,6 @@ from typing import Any, Mapping
 
 import pytest
 
-from jasper.active_speaker import baseline_profile as baseline_profile_mod
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.delta_probe import (
@@ -109,6 +108,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CORRECTION_MEASURED_REGRESSION,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_CORRECTION_UNPROVEN_BOOST,
+    REASON_REGISTRY,
     REASON_VERIFY_OUT_OF_TOLERANCE,
 )
 from jasper.active_speaker.crossover_v2_flow import (
@@ -129,9 +129,9 @@ from tests.crossover_v2_round_harness import (
     _install_applied_graph,
     _install_entry_baseline,
     _post_apply_analysis,
-    _restored_ok,
     _restoring_stage_2,
     _seed_round_state,
+    _stub_restore_doors,
     _tracking_curve_change_from_entry,
 )
 
@@ -465,7 +465,7 @@ def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
     The table must escalate rather than issue a restore instruction Undo
     would then refuse.
     """
-    _seed_round_state(anchor=False)
+    _seed_round_state(previous_candidate=False)
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_applied_graph(monkeypatch, boosts=True)
     analysis = dataclasses.replace(
@@ -499,7 +499,7 @@ def test_the_no_anchor_arm_does_not_send_the_household_to_undo(monkeypatch):
     always right and only the sentence lied. Same genuinely-UNTRUSTED evidence
     shape as the pin above (#2537) — see its docstring.
     """
-    _seed_round_state(anchor=False)
+    _seed_round_state(previous_candidate=False)
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_applied_graph(monkeypatch, boosts=True)
     analysis = dataclasses.replace(
@@ -524,46 +524,20 @@ def test_the_no_anchor_arm_does_not_send_the_household_to_undo(monkeypatch):
     assert "first measured crossover" not in sentence
 
 
-def test_the_no_anchor_arm_states_no_cause(monkeypatch):
+def test_the_no_anchor_arm_states_no_cause():
     """#2859 defect 1, pinned at the sentence rather than at a screen.
 
-    ``rollback_anchor_available=False`` reports one capability —
-    ``rollback_anchor_refusal(state) is None`` — and that refusal has FOUR
-    named codes. The sentence used to end "this was its first measured
-    crossover", which is a claim about only one of them. On jts3, 2026-08-22,
-    a speaker with an intact stash and an intact displaced record hit
-    ``ANCHOR_STASH_NOT_DISPLACED`` and was told it had never been corrected.
-
-    Enumerated from the refusal's own code set, not from the two the incident
-    happened to involve: any code that can produce ``False`` here has to be a
-    code the sentence is true of.
+    ``rollback_anchor_available=False`` reports one capability — no prior
+    candidate fingerprint is recorded — which covers a first-ever apply AND
+    any prior profile that was not a measured-candidate apply. The sentence
+    used to end "this was its first measured crossover", a claim about only
+    one of those; on jts3, 2026-08-22, it told a corrected speaker's
+    household that their speaker had never been corrected.
     """
-    from jasper.web.correction_crossover_v2 import (
-        ANCHOR_NOT_APPLIED,
-        ANCHOR_NO_PRE_APPLY_PROFILE,
-        ANCHOR_RUNNING_CONFIG_DIVERGED,
-        ANCHOR_STASH_NOT_DISPLACED,
-        ANCHOR_TOPOLOGY_CHANGED,
-    )
-
     sentence = correction_rollback_failed_message(False)
-    # FIVE gates, FOUR of them reachable by the capability probe: it calls
-    # ``rollback_anchor_refusal`` with no ``running_config_path``, and
-    # ``running_config_diverged(anchor, None)`` is False for every way the
-    # question cannot be answered — so ANCHOR_RUNNING_CONFIG_DIVERGED is the
-    # live check ``handle_v2_restore`` adds at the moment of action, and it
-    # reaches this sentence only through that door.
-    assert len({
-        ANCHOR_NOT_APPLIED, ANCHOR_NO_PRE_APPLY_PROFILE, ANCHOR_TOPOLOGY_CHANGED,
-        ANCHOR_STASH_NOT_DISPLACED,
-    }) == 4
-    assert ANCHOR_RUNNING_CONFIG_DIVERGED not in {
-        ANCHOR_NOT_APPLIED, ANCHOR_NO_PRE_APPLY_PROFILE, ANCHOR_TOPOLOGY_CHANGED,
-        ANCHOR_STASH_NOT_DISPLACED,
-    }
     assert "first" not in sentence.lower()
     assert "never" not in sentence.lower()
-    # The remedies are the half that IS true of all of them.
+    # The remedies are the half that IS true of every arm.
     assert "measure again" in sentence.lower()
     assert "Sound page" in sentence
     # …and the other arm is untouched, so this is a narrowing and not a
@@ -587,19 +561,200 @@ def test_the_attempted_and_failed_arm_keeps_its_way_back_pointer(monkeypatch):
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=0.4)
     _install_applied_graph(monkeypatch, boosts=False)
-    # The anchor is real, but the restore does not complete.
+    # A prior candidate is recorded, but the apply door does not put it back.
     monkeypatch.setattr(
-        v2host, "handle_v2_restore",
-        lambda *a, **k: {"status": "restore_failed"},
+        v2host, "handle_v2_apply",
+        lambda *a, **k: {"status": "blocked"},
     )
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
     assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
-    assert attempts == []  # the stubbed endpoint never reached the DSP leg
+    assert attempts == []  # nothing went live: the counted success door never ran
     sentence = _household_sentence(conductor, verdict.code)
     assert "previous tuning" in sentence
     assert "STILL APPLIED" in sentence
+
+
+# --------------------------------------------------------------------------- #
+# 1b. exactly one restore, and the seams it reaches
+# --------------------------------------------------------------------------- #
+
+
+def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
+    monkeypatch,
+):
+    """ONE owner, one restore — and the source proves there is no second.
+
+    Both the round's adoption path and the delta probe's own seam used to ask
+    this host to put the previous sound back, and the restore is not
+    idempotent: a completed one re-stamps the DISPLACED candidate as the new
+    previous one, so a second ask would republish-and-apply the very graph the
+    first one just took off. The historical second asker also read the
+    repeat's refusal as a FAILED rollback and re-labelled its verdict
+    ``correction_rollback_failed`` — whose household copy says the correction
+    is still applied. It was not. That false sentence about their own speaker
+    was the defect, and a once-guarded closure was the mitigation.
+
+    **The second owner is now deleted** (the fifth-principle routing): the
+    probe reports and ``coordinator._run_round_restore`` is the only caller of
+    the rollback seam. So this pins the property the once-guard was standing in
+    for — one restore per session — plus the structural fact that makes it hold
+    without a guard at all.
+    """
+
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    # The round's adoption path, on a measured regression.
+    first = _consume_verify(conductor, _post_apply_analysis(conductor))
+    assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
+    sentence = _household_sentence(conductor, first.code)
+    still_applied = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
+    assert "STILL APPLIED" not in sentence
+    assert sentence != still_applied
+
+    # A second capture in the same session, carrying a probe verdict that used
+    # to fire the seam's own immediate rollback: 2 dB LOUDER than the applied
+    # filters commanded, across the whole band. Nothing restores a second time.
+    _consume_verify(
+        conductor,
+        dataclasses.replace(
+            _post_apply_analysis(conductor),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=-2.0, louder_spike_db=+4.0,
+            ),
+        ),
+        attempt=2,
+    )
+
+    assert conductor.delta_probe is not None
+    assert conductor.delta_probe.rollback is True, (
+        "the probe still MEASURES a rollback class — what moved is who acts"
+    )
+    # ONE restore, not two.
+    assert attempts == [1]
+
+    # …and there is no second caller left to grow one back. Source-level
+    # because that is the actual invariant: a behavioural pin would pass again
+    # the moment someone re-added a seam behind a different guard.
+    source = Path(flow.__file__).read_text(encoding="utf-8")
+    assert "self._seams.rollback(" not in source, (
+        "the flow must not call the rollback seam directly — restoring is "
+        "coordinator._run_round_restore's, and a second owner is how the "
+        "false STILL-APPLIED sentence came back last time"
+    )
+    assert "the previous sound has been put back" in sentence
+
+
+def test_the_first_restore_outcome_is_what_a_later_asker_is_handed(monkeypatch):
+    """The control: the guard REMEMBERS, it does not merely suppress.
+
+    A guard that returned ``False`` on every repeat would satisfy "one
+    restore" and still produce the false sentence. This pins the remembering
+    half directly on the seam both owners share.
+    """
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    rollback = _flow_seams(conductor).rollback
+
+    assert rollback("first") is True
+    assert rollback("second") is True
+    assert rollback("third") is True
+    assert attempts == [1]
+
+
+def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch, caplog):
+    """…and in the other direction, which is the one that must stay loud.
+
+    A first attempt that could NOT restore must keep answering "not restored",
+    so the household keeps getting the "still applied" sentence. A guard that
+    cached only successes would let a later asker retry into a different
+    answer about the same speaker — and, under the normal-path mechanism,
+    retry a republish aimed at a record that already said no.
+
+    The return values alone cannot see this — a re-attempted restore on a
+    speaker with no recorded prior candidate refuses identically every time,
+    so ``False`` twice is what a MISSING guard produces too (a mutation
+    removing the memo left an earlier version of this test green). What
+    separates them is whether the restore was attempted a second time, and the
+    seam already says so in the journal: one ``restore_refused`` for the real
+    attempt, then ``restore_repeat`` for every asker handed the remembered
+    answer.
+    """
+    _seed_round_state(previous_candidate=False)  # nothing recorded to go back to
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    rollback = _flow_seams(conductor).rollback
+
+    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
+        assert rollback("first") is False
+        assert rollback("second") is False
+    assert attempts == []
+
+    lines = [record.getMessage() for record in caplog.records]
+    refused = [
+        line for line in lines
+        if "event=correction.crossover_v2_delta_probe_restore_refused" in line
+    ]
+    repeats = [
+        line for line in lines
+        if "event=correction.crossover_v2_delta_probe_restore_repeat" in line
+    ]
+    assert len(refused) == 1
+    assert len(repeats) == 1
+    assert "restored=false" in repeats[0]
+
+
+def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
+    """The conductor→coordinator port mapping, pinned as reach rather than identity.
+
+    #2291 Phase 5 moved the round's sequencing behind
+    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round`, which is
+    handed a narrowed :class:`RoundPorts` instead of the conductor's seams. That
+    narrowing is a place two names can be crossed, and most crossings would
+    still pass the outcome tests above: a swapped pair usually raises inside a
+    guard and fails closed, which several rows here expect anyway.
+
+    So this asserts the weaker fact that no single-outcome test implies — that
+    ONE round reaches all five — on a restoring round, the only shape in which
+    every seam is live. Comparing the port objects instead would pin the
+    assignment and not the call, and the call is what a round is.
+    """
+    seen: list[str] = []
+    _seed_round_state()
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    # A baseline FLATTER than the post-apply capture — the graph made the
+    # speaker measurably worse — so the table says restore and the rollback
+    # seam is live. Every other adoption row leaves at least one seam untouched.
+    _install_entry_baseline(conductor, scale=0.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+    bound = _flow_seams(conductor)
+
+    def _recorded(name: str, seam: Any) -> Any:
+        def _call(*args: Any, **kwargs: Any) -> Any:
+            seen.append(name)
+            return seam(*args, **kwargs)
+        return _call
+
+    conductor._seams = dataclasses.replace(
+        bound,
+        **{
+            name: _recorded(name, getattr(bound, name))
+            for name in (
+                "rollback", "rollback_available", "applied_boosts",
+                "entry_graph_fingerprint", "publish_round_receipt",
+            )
+        },
+    )
+
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    assert set(seen) == {
+        "rollback", "rollback_available", "applied_boosts",
+        "entry_graph_fingerprint", "publish_round_receipt",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1283,7 +1438,7 @@ def test_the_apply_write_that_creates_the_rollback_anchor_is_fsynced(monkeypatch
     not durable: without the fsync a power cut can lose the whole write while
     leaving the DSP graph changed.
     """
-    _seed_round_state(anchor=False)
+    _seed_round_state(previous_candidate=False)
     calls = _recorded_write_calls(monkeypatch)
 
     v2host.observe_apply_success(
@@ -1381,9 +1536,9 @@ def test_a_failed_restore_is_regraded_with_the_restore_failed_flag(monkeypatch):
 def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
     """C7. ``rollback_available`` claims BOTH halves fail closed; one was pinned.
 
-    The parametrized table above varies the ``rollback`` seam and the anchor's
-    ANSWER, but always binds an anchor probe. The docstring's other half — no
-    probe bound at all — had no row.
+    The parametrized table below varies the ``rollback`` seam and the state
+    seam's ANSWER, but always binds a state probe. The docstring's other half
+    — no probe bound at all — had no row.
 
     **The ANSWER alone does not pin it, and finding that out is why this test
     reads the journal.** Deleting the ``seam is None`` guard still returns
@@ -1437,6 +1592,69 @@ def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
     ] == ["WARNING"]
 
 
+@pytest.mark.parametrize(
+    ("seam_bound", "known", "expected"),
+    [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+        (False, False, False),
+    ],
+    ids=["seam+state", "seam-only", "state-only", "neither"],
+)
+def test_rollback_available_needs_both_the_seam_and_the_state(
+    seam_bound, known, expected,
+):
+    """All four combinations, because each single-half rule is wrong differently.
+
+    Seam-only says yes on a speaker whose pre-apply stash names no prior
+    candidate: the round would issue a restore instruction the republish door
+    then refuses, and the household would be told the old sound was coming
+    back when nothing could bring it. State-only ignores that a caller may
+    have no rollback binding at all. Pinning only the true corner, or only one
+    false one, would leave an ``or`` in place of the ``and`` looking correct.
+
+    Asked of the rule's OWNER (#2291 Phase 5 moved it to the coordinator), and
+    of a port set rather than a conductor. That the production conductor hands
+    the coordinator these two seams is a different claim, pinned end-to-end by
+    :func:`test_a_round_reaches_every_one_of_its_five_seams` and by the restore
+    outcomes above it.
+    """
+    ports = coordinator.RoundPorts(
+        rollback=(lambda _cause: True) if seam_bound else None,
+        rollback_available=lambda: known,
+    )
+
+    assert coordinator.rollback_available(ports, session_id="cap_x") is expected
+
+
+@pytest.mark.parametrize(
+    ("seam", "expected", "why"),
+    [
+        (None, True, "no seam bound at all"),
+        (lambda: (_ for _ in ()).throw(RuntimeError("unreadable")), True,
+         "the seam raised"),
+        (lambda: False, False, "the seam answered cut-only"),
+        (lambda: True, True, "the seam answered boosted"),
+    ],
+    ids=["unbound", "raises", "cut-only", "boosted"],
+)
+def test_an_unreadable_boost_reads_as_boosted(seam, expected, why):
+    """``boosted`` fails CLOSED, on both of the two ways it can go unanswered.
+
+    ``boosted`` is what routes an unprovable round to a restore rather than to
+    "ask the household" (#2318's fail-closed cell), so the wrong default leaves
+    a driver being driven on evidence nobody has. The two unanswerable shapes —
+    no seam, and a seam that raised — are the ones no end-to-end round reaches,
+    because the production host always binds it and the applied-profile SSOT
+    always answers; a mutation flipping either default survived the whole
+    round suite before this pin existed.
+    """
+    ports = coordinator.RoundPorts(applied_boosts=seam)
+
+    assert coordinator.applied_boosts(ports, session_id="cap_x") is expected, why
+
+
 def test_the_no_anchor_escalation_is_logged_at_error(monkeypatch, caplog):
     """C8. Loudness is the remedy here, so the LEVEL is the pin.
 
@@ -1445,7 +1663,7 @@ def test_the_no_anchor_escalation_is_logged_at_error(monkeypatch, caplog):
     journal shouts; a demotion to WARNING would be invisible in exactly the
     situation that needs an operator.
     """
-    _seed_round_state(anchor=False)
+    _seed_round_state(previous_candidate=False)
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=0.4)
     _install_applied_graph(monkeypatch, boosts=False)
@@ -1680,19 +1898,11 @@ def _full_stage_2(monkeypatch) -> tuple[Any, list[int]]:
     the tier chooser governs both stages), and the caller asks for
     ``stage="post_apply"`` rather than the §5.2 recovery re-verify.
 
-    Everything else is the same real preparer behind the same stubbed DSP leg,
+    Everything else is the same real preparer behind the same stubbed doors,
     and the returned counter is the same "how many times did a restore actually
     run" the Express tests assert on.
     """
-    attempts: list[int] = []
-
-    async def _counted(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        attempts.append(1)
-        return await _restored_ok(*args, **kwargs)
-
-    monkeypatch.setattr(
-        baseline_profile_mod, "restore_applied_baseline_profile", _counted,
-    )
+    attempts = _stub_restore_doors(monkeypatch)
     prepared = v2host.prepare_v2_session(
         {"stage": "post_apply"}, status=_status(), run_async=_bg_run_async,
         camilla_factory=lambda: SimpleNamespace(), verify_only=True,
@@ -1705,9 +1915,9 @@ def _full_stage_2(monkeypatch) -> tuple[Any, list[int]]:
     return conductor, attempts
 
 
-def _seed_full_round_state(*, anchor: bool = True) -> dict[str, Any]:
+def _seed_full_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     """:func:`_seed_round_state`, plus the tier the measuring session declared."""
-    state = _seed_round_state(anchor=anchor)
+    state = _seed_round_state(previous_candidate=previous_candidate)
     state["tier"] = "full"
     v2host.save_v2_state(state)
     return state

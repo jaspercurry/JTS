@@ -125,7 +125,8 @@ class RoundPorts:
 
     #: Put the previous graph back. Takes the adoption reason, returns success.
     rollback: Callable[[str], bool] | None = None
-    #: Is there a valid anchor to put back? (the state half of "can we restore")
+    #: Is a prior candidate recorded to go back to? (the state half of "can we
+    #: restore")
     rollback_available: Callable[[], bool] | None = None
     #: Does the APPLIED intervention put energy in? (the applied-profile SSOT)
     applied_boosts: Callable[[], bool] | None = None
@@ -184,18 +185,19 @@ def rollback_available(ports: RoundPorts, *, session_id: str) -> bool:
       capability idiom (``STAGE_VERIFY_CAPABILITIES`` provides
       ``CAPABILITY_ROLLBACK``). A single-stage or future caller may reach this
       decision with no seam at all.
-    * a valid anchor exists — a *state* fact, owned by the host's
-      ``rollback_available`` seam, which reads the very predicate
-      ``handle_v2_restore`` refuses on.
+    * a prior candidate is recorded — a *state* fact, owned by the host's
+      ``rollback_available`` seam, which reads the very field the restore
+      action resolves its republish target from.
 
     Either half alone gives a wrong answer to the question
     :func:`~.verification.decide_adoption` is actually asking. Seam-only says
-    yes on a speaker whose durable state carries no ``pre_apply_profile``: the
-    round would issue a ``restore`` instruction Undo then refuses, and the
-    household would be told the old sound was coming back when nothing could
-    bring it. Anchor-only ignores that some callers cannot restore at all.
+    yes on a speaker whose pre-apply stash names no banked candidate: the
+    round would issue a ``restore`` instruction the republish door then
+    refuses, and the household would be told the old sound was coming back
+    when nothing could bring it. State-only ignores that some callers cannot
+    restore at all.
 
-    Fails closed on both halves — an unbound anchor seam, or one that raises,
+    Fails closed on both halves — an unbound state seam, or one that raises,
     means "not available", which routes the adoption table to
     ``recovery_required`` (loud, operator-visible) rather than to a restore that
     cannot happen.
@@ -417,10 +419,11 @@ class RoundRefusal:
     ``kind`` is :data:`REFUSAL_RESTORED` or :data:`REFUSAL_ROLLBACK_FAILED`.
     ``rollback_anchor_available`` travels with the second because that code
     covers two situations whose household sentences differ — a restore that
-    failed (Undo can still help) and a restore that was never possible (Undo
-    refuses on the very predicate that routed here). The fact is recorded here,
-    never re-derived at render time: the anchor can change between the round and
-    the screen, and the screen must describe the round.
+    failed (the way back can still help) and a restore that was never possible
+    (no prior candidate is recorded, the very predicate that routed here). The
+    fact is recorded here, never re-derived at render time: the record can
+    change between the round and the screen, and the screen must describe the
+    round.
     """
 
     kind: str
@@ -624,8 +627,8 @@ def _act_on_adoption(
       graph, because it is.
     * ``RECOVERY_REQUIRED`` — refuse LOUDLY under the flow's rollback-failed
       code, whose copy already tells the household the correction is still
-      applied and Undo is on screen. No new screen: this is the shape the delta
-      probe's refusal established.
+      applied and which remedies remain. No new screen: this is the shape the
+      delta probe's refusal established.
     """
     outcome = evaluation.adoption.outcome
     if outcome in (AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION):
@@ -644,16 +647,18 @@ def _act_on_adoption(
             )
         return (
             _regrade_after_failed_restore(evaluation, evidence, ports),
-            # An anchor existed — the restore was attempted against it and did
-            # not complete — so Undo is still a real remedy.
+            # A prior candidate was recorded — the restore was attempted
+            # against it and did not complete — so going back to the previous
+            # tuning is still a real remedy.
             RoundRefusal(
                 kind=REFUSAL_ROLLBACK_FAILED, rollback_anchor_available=True,
             ),
             restore_result,
         )
     # RECOVERY_REQUIRED — the table already knew no restore was possible (no
-    # anchor), so nothing is attempted here; the record says why, and the copy
-    # must not point at an Undo that refuses on the same fact.
+    # prior candidate recorded), so nothing is attempted here; the record says
+    # why, and the copy must not offer a way back that refuses on the same
+    # fact.
     log_event(
         logger, "correction.crossover_v2_round_recovery_required",
         level=logging.ERROR, session_id=evidence.session_id,
@@ -678,10 +683,12 @@ def _regrade_after_failed_restore(
     """Re-run the table with ``restore_failed=True``, or keep what we had.
 
     **The speaker is still on the APPLIED graph**, which is what the household
-    copy says ("the newer tuning is STILL APPLIED"). Both reachable failure
-    shapes leave it there: a ``CrossoverV2Refused`` never touches DSP, and
-    ``restore_applied_baseline_profile`` is an atomic transaction that leaves
-    the live config alone when it does not complete. ``decide_adoption`` and
+    copy says ("the newer tuning is STILL APPLIED"). The reachable failure
+    shapes leave it there: a ``CrossoverV2Refused`` from either normal-path
+    door never touches DSP (a republish REPLACES the durable session document
+    — carrying the host-owned apply keys forward — but moves no graph), and
+    the apply door rides an atomic transaction that rolls back to the live
+    config when it does not complete. ``decide_adoption`` and
     :class:`~.contracts.RoundReceipt` still describe this state as "neither the
     entry graph nor the intended one" — the abstract worst case, not this one,
     and contradicted by the sentence the household reads. Left for their owners
@@ -742,12 +749,14 @@ def _run_round_restore(
 
     **The ONLY caller of that seam, and that is a guarantee rather than an
     observation about the call graph.** The delta probe used to restore from a
-    seam of its own, so a Full session could ask twice; ``handle_v2_restore``
-    is not idempotent, and the second asker read its "nothing is applied to
-    undo" refusal as a failed rollback and told the household "the correction
-    is still applied" when it was not. That seam is deleted — the probe reports
-    and this function acts on the table's decision — and the flow is pinned
-    against growing a second one back.
+    seam of its own, so a Full session could ask twice; the restore is not
+    idempotent — a completed one re-stamps the DISPLACED candidate as the new
+    previous one, so a second ask would put the just-removed graph back — and
+    the historical second asker read the repeat's refusal as a failed rollback
+    and told the household "the correction is still applied" when it was not.
+    That seam is deleted — the probe reports and this function acts on the
+    table's decision — and the flow is pinned against growing a second one
+    back.
 
     The host's closure is still once-guarded, and it should stay that way: the
     guard is a property of the binding rather than of this caller's discipline,

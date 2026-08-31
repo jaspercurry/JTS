@@ -1361,18 +1361,13 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
 
     **This arm states no CAUSE, and that is #2859's finding** (it used to end
     "this was its first measured crossover"). ``False`` is not one situation:
-    the capability it reports is ``rollback_anchor_refusal is None``, and that
-    refusal has FOUR named codes — nothing applied, no stashed profile, the
-    output topology changed since the apply, and the stash naming a graph this
-    round did not displace. (Those are the four STATIC gates; the fifth,
-    ``ANCHOR_RUNNING_CONFIG_DIVERGED``, needs a live CamillaDSP reading the
-    capability probe deliberately does not take, so it reaches a household
-    through the restore endpoint rather than through this bool.) On jts3,
-    2026-08-22, the last of the four told a
-    household with an intact stash and an intact displaced record that their
-    speaker had never been corrected, and sent the operator after the wrong
-    diagnosis. One sentence true of all four is the honest rendering of a bool
-    that names all four — the same repair ``verify_inconclusive`` had (#1974),
+    the capability it reports is "no prior candidate fingerprint is recorded",
+    which is every first-ever apply but also any prior profile that was not a
+    measured-candidate apply. On jts3, 2026-08-22, a cause-asserting version
+    of this sentence told a household whose restore was blocked for another
+    reason that their speaker had never been corrected, and sent the operator
+    after the wrong diagnosis. One sentence true of every arm is the honest
+    rendering of a bool — the same repair ``verify_inconclusive`` had (#1974),
     where copy asserted a cause its verdict had never consulted.
 
     ``None`` takes the way-back arm deliberately: an unestablished fact must
