@@ -2118,14 +2118,13 @@ def _accuracy_budget_block(
         for role, entry in linearization.items()
         if isinstance(entry, Mapping) and isinstance(entry.get("mic_tier"), str)
     }
-    trust_ceiling_hz_by_tier: dict[str, dict[str, float]] = {}
-    for tier in tier_by_role.values():
-        breakpoints_hz = _MIC_TRUST_TABLE_HZ.get(tier)
-        if breakpoints_hz is not None:
-            full_to_hz, taper_zero_hz = breakpoints_hz
-            trust_ceiling_hz_by_tier[tier] = {
-                "full_to_hz": full_to_hz, "taper_zero_hz": taper_zero_hz,
-            }
+    # dict.fromkeys, not set: dedupe with a run-stable order, since this
+    # document is content-fingerprinted.
+    trust_ceiling_hz_by_tier: dict[str, dict[str, float]] = {
+        tier: {"full_to_hz": bp[0], "taper_zero_hz": bp[1]}
+        for tier in dict.fromkeys(tier_by_role.values())
+        if (bp := _MIC_TRUST_TABLE_HZ.get(tier)) is not None
+    }
 
     return {
         "note": (

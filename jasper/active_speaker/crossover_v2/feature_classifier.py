@@ -637,38 +637,36 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     from .spatial import take_stop_id
 
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    attempts_by_stop: dict[str, list[Measurement]] = {}
+    # Rows arrive in path order, which the zero-padded attempt ids make
+    # chronological, so the last readable write per stop IS the newest
+    # readable attempt.
+    latest_by_stop: dict[str, tuple[Measurement, list[Mapping[str, Any]]]] = {}
     for row in bundle_measurements(bundle_dir, phase=PHASE_LATERAL):
-        stop = take_stop_id(Path(row.path).stem)
-        attempts_by_stop.setdefault(stop, []).append(row)
+        curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
+        if curves is None:
+            continue
+        latest_by_stop[take_stop_id(Path(row.path).stem)] = (row, curves)
     out: list[RoundPoseCurve] = []
-    for attempts in attempts_by_stop.values():
-        # Path order is chronological (zero-padded attempt ids), so the
-        # newest readable attempt is the first hit walking backwards.
-        for row in reversed(attempts):
-            curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
-            if curves is None:
+    for row, curves in latest_by_stop.values():
+        pose_id = Path(row.path).stem
+        for curve in curves:
+            role = curve.get("role")
+            if not isinstance(role, str):
                 continue
-            pose_id = Path(row.path).stem
-            for curve in curves:
-                role = curve.get("role")
-                if not isinstance(role, str):
-                    continue
-                parsed = parse_curve_magnitude(curve)
-                if parsed is None:
-                    continue
-                freqs_arr, mag_arr, band_tuple = parsed
-                out.append(
-                    RoundPoseCurve(
-                        pose_id=pose_id,
-                        position_deg=row.position_deg,
-                        role=role,
-                        freqs_hz=freqs_arr,
-                        magnitude_db=mag_arr,
-                        band_hz=band_tuple,
-                    )
+            parsed = parse_curve_magnitude(curve)
+            if parsed is None:
+                continue
+            freqs_arr, mag_arr, band_tuple = parsed
+            out.append(
+                RoundPoseCurve(
+                    pose_id=pose_id,
+                    position_deg=row.position_deg,
+                    role=role,
+                    freqs_hz=freqs_arr,
+                    magnitude_db=mag_arr,
+                    band_hz=band_tuple,
                 )
-            break
+            )
     return tuple(out)
 
 

@@ -1233,13 +1233,9 @@ class PooledWindowResult:
       magnitude_db: the power-averaged curve.
       bearings_deg: which banked bearings actually contributed, sorted —
         the round's own coverage, disclosed rather than assumed complete.
-      n_curves: how many banked lateral-walk stops contributed in total.
-        A bearing hosting more than one stop is itself power-averaged
-        first (see :func:`pooled_window_horizontal`), so a re-visited
-        bearing cannot silently outweigh one measured once. Superseded
-        retakes never reach this count —
-        :func:`~.feature_classifier.load_round_pose_curves` keeps only the
-        latest attempt per stop.
+      n_curves: how many banked lateral-walk stops contributed in total —
+        never a superseded retake (:func:`pooled_window_horizontal` has
+        the pooling and supersession rules).
     """
 
     freqs_hz: np.ndarray
