@@ -612,19 +612,24 @@ priors measured.
     center and at flanking bands — promoting the campaign's out-of-repo
     898 Hz ridge method into the classifier's field set, with known-answer
     controls in the shipped control-suite style. (M)
-6.4 Toolbox legibility: the runbook tool menu gains inputs/outputs
-    columns; a hardware-free test pins that every tuning `jasper-*` entry
-    point in `pyproject.toml` appears in the menu; one front-door
-    paragraph states the reading order for a fresh driving LLM (runbook →
-    methodology → doctrine). Widened 2026-08-31 for the discovery gap:
+6.4 Toolbox legibility, redesigned on research 05
+    ([ADR-0204](adr/0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md)):
+    the operator surface becomes three loading tiers. Tier 0 —
     `jasper-crossover-prescriber status` (the runbook's own "Orient"
-    step) prints the reading-order pointer, and the three operator docs
-    (methodology, runbook, doctrine) install onto the box — the #2882
-    "installed runbook" direction, taken now for all three — so an LLM
-    whose only surface is SSH on the speaker still finds the front door.
-    Each tuning CLI's `--help` carries its full I/O contract (the
-    tools-teach-at-the-surface pattern); per-tool depth lives there and
-    in the runbook's menu row, never in new per-tool documents. (S–M)
+    step) prints the reading order and the menu pointer, the cold-start
+    entry an SSH-only agent lands on. Tier 2 — the three operator docs
+    (methodology, runbook, doctrine) install onto the box (the #2882
+    direction, taken for all three) and load on demand, never pasted
+    into resident context. Tier 3 — each tuning CLI's `--help` is the
+    tool's contract of record: purpose, when NOT to use, parameters, one
+    worked example, exit codes, and error messages that name the
+    corrective action (the field's best-measured lever — SWE-agent ACI,
+    research 05). The runbook's per-tool menu section becomes a
+    generated index derived from the CLIs' own metadata, pinned by a
+    hardware-free regeneration test (the counted-in-one-place pattern,
+    ADR-0181); the hand-maintained table and its drift surface are
+    deleted. No per-tool `.md` documents; no Skill packaging for the
+    tuning flow. (M)
 6.5 Accuracy beside precision: one packet summary block juxtaposing the
     round's measured repeat floor (random) against the standing systematic
     bounds (mic-cal tier, position sensitivity, gate leakage), building on
