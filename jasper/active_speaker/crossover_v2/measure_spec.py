@@ -20,8 +20,8 @@ holds the parameter vocabulary and no preset catalogue.
 modules that own the words (``spatial``, ``driver_acoustics``,
 ``program_analysis``) costs ~1,100 imported modules including ``numpy`` — a
 price a 1 GB Pi's always-on daemon would pay to reach five string literals, and
-one this package's own ``__init__`` refuses to pay for ``forward_model`` for
-exactly this reason. ``contracts`` declares them and
+one this package's own ``__init__`` refuses to pay for its own numpy-heavy
+modules, for exactly this reason. ``contracts`` declares them and
 ``tests/test_crossover_v2_engine_skeleton.py`` pins each equal to its owner's
 spelling, so the cheap copy cannot drift off the real one.
 

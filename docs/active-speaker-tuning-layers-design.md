@@ -1353,21 +1353,21 @@ heading: what is absent there is a *guard*, not the capture it guards.
    vertical offsets, the household string-and-protractor method does not
    generalize as stated, and the lab arm's elevation capability is undetermined.
    P2 is the consumer that turns that deferral from tidy-later into blocking.
-3. **The forward model — PRESENT since 2026-08-19; the optimizer over it —
-   DELETED, by ruling.**
-   The complex-summation predictor is
-   [`crossover_v2/forward_model.py`](../jasper/active_speaker/crossover_v2/forward_model.py)
+3. **The forward model — PRESENT 2026-08-19 to 2026-08-30; DELETED by ruling
+   S7, as the optimizer over it was earlier, by ruling R1.**
+   The complex-summation predictor was `crossover_v2/forward_model.py`
    (`driver_plants` / `branch_operator` / `predict_sum`, plus the
-   `XoverCandidate` it predicts for). It is pure and fixture-tested. The
+   `XoverCandidate` it predicted for). It was pure and fixture-tested. The
    enumeration/optimization search over it landed with #2739 and never gained a
-   product consumer; the tuning master plan's ruling R1 deletes it — the
+   product consumer; the tuning master plan's ruling R1 deleted it first — the
    candidate space, the objective, and the walk — rather than leaving it to
-   accrete one. What remains is offline **simulated evaluation**: corners are
-   declared by the operator, and the predictor says what a variation of one
-   would measure, at zero capture cost. The two things a ranking would have
-   needed and never had — an objective in the grade's own currency, and a delay
-   axis graded against measurement — are why it may not rank candidates, and
-   why deleting it costs the product nothing it was using.
+   accrete one. What remained afterward was offline **simulated evaluation**:
+   corners declared by the operator, and the predictor saying what a variation
+   of one would measure, at zero capture cost. The two things a ranking would
+   have needed and never had — an objective in the grade's own currency, and a
+   delay axis graded against measurement — are why it could never rank
+   candidates, and why ruling S7 could delete it at zero product cost: it
+   never gained a caller either.
 4. **A Stage-0 timing acceptance test — MISSING; its bar is declared and its
    precondition is measured.** Pass bar: **relative-phase alignment residual
    ≤ 20 µs (3σ)** — the ~15° at 2 kHz that a ±0.5 dB summation prediction near
