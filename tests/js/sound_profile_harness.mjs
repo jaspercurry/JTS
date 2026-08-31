@@ -920,6 +920,71 @@ async function testLiveTabReplay() {
   };
 }
 
+// #3309 rejected skipping the swap duck itself (a full Camilla graph replace
+// cannot prove gain continuity, so it stays). The accepted fix is
+// event-wiring: a continuous EQ slider drag ('input', one event per tick)
+// must update the draft and the local graph only; the live-draft send that
+// causes the duck fires exactly once, on 'change' (release).
+async function testEqSliderDragSendsNoLiveAudioUntilRelease() {
+  const liveDraftRequests = [];
+  const fetchHandler = baseFetch({
+    "./live-draft": (_path, options = {}) => {
+      liveDraftRequests.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        ...basePayload,
+        profile: flatProfile,
+        filter_count: 0,
+        dsp_write_epoch: "live-1",
+        live_status: "live",
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler, { mode: "eq" });
+  await harness.flush();
+  await harness.flush();
+
+  harness.elements.get("tab-draft").click();
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  liveDraftRequests.length = 0; // discard the tab switch's own (unrelated) immediate live-draft
+
+  // Collapse the 180ms live-draft debounce to a microtask for the whole
+  // gesture below, standing in for a drag slow enough that the debounce
+  // window elapses between ticks — the real-world case #3309 was filed
+  // against. If any 'input' tick still schedules a live-draft, this makes it
+  // actually land instead of merely being outrun by the assertion.
+  const originalSetTimeout = globalThis.window.setTimeout;
+  globalThis.window.setTimeout = (fn, ms) => {
+    if (ms === 180) { queueMicrotask(fn); return 1; }
+    return originalSetTimeout(fn, ms);
+  };
+  try {
+    // A drag is a stream of 'input' events, one per tick.
+    harness.dispatchInput({ "data-field": "bass_db" }, "2");
+    await harness.flush(); await harness.flush(); await harness.flush();
+    harness.dispatchInput({ "data-field": "bass_db" }, "4");
+    await harness.flush(); await harness.flush(); await harness.flush();
+    harness.dispatchInput({ "data-field": "bass_db" }, "6");
+    await harness.flush(); await harness.flush(); await harness.flush();
+    if (liveDraftRequests.length !== 0) {
+      fail("a slider 'input' stream (drag) must send no live-draft", { liveDraftRequests });
+    }
+
+    harness.dispatchChange({
+      value: "6",
+      getAttribute(name) { return name === "data-field" ? "bass_db" : ""; },
+    });
+    await harness.flush(); await harness.flush(); await harness.flush();
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+  }
+  if (liveDraftRequests.length !== 1) {
+    fail("releasing the slider ('change') should send exactly one live-draft", { liveDraftRequests });
+  }
+  return { eqSliderDragSendsNoLiveAudioUntilRelease: true };
+}
+
 async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
   const settingsPosts = [];
   const auditionPosts = [];
@@ -8544,6 +8609,7 @@ async function testSafetyLimitsDeepLinkOpensTheComponentStep() {
 
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
+results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());

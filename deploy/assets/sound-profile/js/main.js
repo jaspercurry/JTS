@@ -5467,6 +5467,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       scheduleSummedTestLevelUpdate(summedLevel, nextSummedLevel);
       return;
     }
+    // Continuous drag (this 'input' stream, one event per tick): update the
+    // draft and the instant local/optimistic graph, but do not send a live
+    // draft — that would duck audio once per tick (#3309 rejected skipping
+    // the duck itself; this skips the redundant sends instead). The single
+    // live-draft send fires on 'change' (release/keyboard-step commit) below.
     if (field) {
       draft.simple_eq[field] = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
       var readout = el('view-body').querySelector('[data-readout-field="' + field + '"]');
@@ -5474,7 +5479,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       positionThumb(ev.target);
       refreshActiveCount();
       refreshDraftActionState();
-      schedulePreview(); requestLiveSource({immediate: false});
+      schedulePreview();
     } else if (range) {
       var row = ev.target.closest('.band-row');
       var bi = Number(row.getAttribute('data-index'));
@@ -5488,7 +5493,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
       positionThumb(ev.target);
       refreshDraftActionState();
-      schedulePreview(); requestLiveSource({immediate: false});
+      schedulePreview();
     }
   });
   el('view-body').addEventListener('input', function(ev) {
@@ -5505,6 +5510,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   });
   el('view-body').addEventListener('change', function(ev) {
     var field = ev.target.getAttribute('data-field');
+    var range = ev.target.getAttribute('data-range');
     if (field) {
       var next = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
       if (Math.abs(next) <= ZERO_DETENT_DB) next = 0;
@@ -5515,6 +5521,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       positionThumb(ev.target);
       refreshActiveCount();
       refreshDraftActionState();
+      schedulePreview(); requestLiveSource({immediate: false});
+      return;
+    }
+    // Advanced EQ band sliders (data-range): the 'input' stream above already
+    // applied every tick to the draft and the local graph, sending no live
+    // audio. The drag has now ended (or a keyboard step committed) — send
+    // the one live-draft for it.
+    if (range) {
       schedulePreview(); requestLiveSource({immediate: false});
       return;
     }
