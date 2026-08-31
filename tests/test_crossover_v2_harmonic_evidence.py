@@ -486,14 +486,47 @@ def _state(**overrides: Any) -> dict[str, Any]:
     state: dict[str, Any] = {
         "gain_plan_db": {"woofer": -6.0, "tweeter": -31.2},
         "candidate": {"program_id": "not-a-real-id"},
-        "pre_apply_profile": {
-            "recomposition_snapshot": {
-                "preset": {"crossover_regions": [{"fc_hz": 1648.7}]}
-            }
-        },
     }
     state.update(overrides)
     return state
+
+
+def _applied_profile(fc_hz: float = 1648.7) -> dict[str, Any]:
+    """The bare shape ``_crossover_fc_hz`` reads — no SSOT schema wrapper.
+
+    Used only for direct ``_crossover_fc_hz`` calls, which read the fields
+    below without going through :func:`~.evidence_packet._applied_profile_source`.
+    A test that goes through the real loader (:func:`_write_applied_profile`)
+    needs the wrapper; this one does not.
+    """
+    return {
+        "recomposition_snapshot": {
+            "preset": {"crossover_regions": [{"fc_hz": fc_hz}]}
+        }
+    }
+
+
+def _write_applied_profile(tmp_path: Path, *, fc_hz: float = 1648.7) -> Path:
+    """A minimal applied-profile SSOT file, valid enough for the real loader.
+
+    ``load_applied_baseline_profile_state`` (via ``_applied_profile_source``)
+    only accepts a document carrying its own schema stamp and an "applied"
+    status — see ``jasper.active_speaker.baseline_profile._load_saved_state``
+    and ``_applied_profile_anchor``.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        BASELINE_PROFILE_KIND,
+        SCHEMA_VERSION,
+    )
+
+    path = tmp_path / "applied-profile.json"
+    path.write_text(json.dumps({
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": BASELINE_PROFILE_KIND,
+        "status": "applied",
+        **_applied_profile(fc_hz),
+    }))
+    return path
 
 
 def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
@@ -520,30 +553,45 @@ def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
     assert packet["harmonics"]["program"]["state_relay_session_id"] == "wired-TESTONLY"
 
 
-def test_the_crossover_corner_is_read_from_the_round_not_taken_as_a_flag():
+def test_the_crossover_corner_is_read_from_the_applied_profile_not_a_flag():
     """It is a fact about the round, and the shipped analysis refuses without it.
 
     A flag would let an operator hand this instrument a different corner from
     the one the captures were taken through, which would move the analysis's
     per-driver expectations without moving anything a reader could see.
     """
-    assert he._crossover_fc_hz(_state()) == pytest.approx(1648.7)
+    assert he._crossover_fc_hz(_applied_profile(), "") == pytest.approx(1648.7)
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he._crossover_fc_hz(_state(pre_apply_profile={}))
+        he._crossover_fc_hz({}, "")
     assert excinfo.value.reason == he.STATE_UNREADABLE
     assert "fc_hz" in excinfo.value.evidence["missing"]
+
+
+def test_the_corner_reports_absent_with_reason_never_a_stash_fallback():
+    """No readable applied-profile SSOT refuses with ITS reason, nothing else.
+
+    ``_crossover_fc_hz`` used to read a flow state's ``pre_apply_profile`` — the
+    Undo stash, one apply behind after any v2 apply and arbitrarily behind
+    after an apply through a door that never touches v2 state. It now takes
+    the SSOT (or the reason there is none) directly and has no stash to fall
+    back to even if it wanted one.
+    """
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he._crossover_fc_hz(None, "no applied baseline profile was supplied")
+    assert excinfo.value.reason == he.STATE_UNREADABLE
+    assert excinfo.value.evidence["reason"] == "no applied baseline profile was supplied"
 
 
 @pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), True, "1648.7", None])
 def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
     """``True`` is an ``int`` in Python and would otherwise pass as 1 Hz."""
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he._crossover_fc_hz(_state(pre_apply_profile={
+        he._crossover_fc_hz({
             "recomposition_snapshot": {
                 "preset": {"crossover_regions": [{"fc_hz": value}]}
             }
-        }))
+        }, "")
     assert excinfo.value.reason == he.STATE_UNREADABLE
 
 
@@ -587,7 +635,8 @@ def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_p
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
         he.read_round_harmonics(
-            tmp_path, tmp_path / "dumps", _real_state(), he_bands()
+            tmp_path, tmp_path / "dumps", _real_state(), he_bands(),
+            applied_profile_path=_write_applied_profile(tmp_path),
         )
     assert excinfo.value.reason == he.NO_ADMISSIBLE_CAPTURES
     assert "one driver at a time" in excinfo.value.evidence["note"]

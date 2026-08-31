@@ -839,6 +839,10 @@ def test_the_replay_run_names_the_prelude_vintage_it_solved(
     import json
     import sys
 
+    from jasper.active_speaker.baseline_profile import (
+        BASELINE_PROFILE_KIND,
+        SCHEMA_VERSION,
+    )
     from jasper.active_speaker.crossover_v2.programs import (
         courtesy_prelude_for_phase,
     )
@@ -857,13 +861,23 @@ def test_the_replay_run_names_the_prelude_vintage_it_solved(
             state.write_text(json.dumps({
                 "gain_plan_db": GAIN_PLAN_DB,
                 "candidate": {"program_id": program.program_id},
-                "pre_apply_profile": {"recomposition_snapshot": {"preset": {
+            }))
+            # The crossover fc_hz is read from the applied-profile SSOT, never
+            # from state's pre_apply_profile Undo stash (one apply behind or
+            # arbitrarily behind the graph actually measured through).
+            applied_profile = tmp_path / f"applied-profile-{label}.json"
+            applied_profile.write_text(json.dumps({
+                "artifact_schema_version": SCHEMA_VERSION,
+                "kind": BASELINE_PROFILE_KIND,
+                "status": "applied",
+                "recomposition_snapshot": {"preset": {
                     "crossover_regions": [{"fc_hz": 1648.7}],
-                }}},
+                }},
             }))
             monkeypatch.setattr(sys, "argv", [
                 "harmonic-distortion-replay.py",
                 "--state", str(state),
+                "--applied-profile", str(applied_profile),
                 "--captures", str(captures),
                 "--dumps", str(dumps),
             ])

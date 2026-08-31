@@ -44,6 +44,7 @@ Usage (laptop, from the repo root)::
 
     .venv/bin/python scripts/harmonic-distortion-replay.py \\
         --state captures/xover-series2-2026-08-17/series2-state-r1b-preapply.json \\
+        --applied-profile captures/xover-series2-2026-08-17/applied-profile-r1b.json \\
         --captures captures/xover-series2-2026-08-17/e0-r1b \\
         --dumps captures/xover-series2-2026-08-17/dumps-r1b \\
         --calibration captures/flat-linearization-20260725/umik2-cal/umik2-b7343c0c625b.txt
@@ -577,6 +578,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--state", type=Path, required=True,
                         help="round state JSON carrying gain_plan_db + candidate.program_id")
+    parser.add_argument(
+        "--applied-profile", type=Path, required=True,
+        help=(
+            "applied baseline profile JSON this speaker was playing through "
+            "— where the crossover fc_hz is read from, never from --state's "
+            "pre_apply_profile (the Undo stash, which can be one apply behind "
+            "or arbitrarily behind the graph actually measured through)"
+        ),
+    )
     parser.add_argument("--captures", type=Path, required=True, help="dir of capture WAVs")
     parser.add_argument("--dumps", type=Path, required=True, help="dir of sidecar JSON")
     parser.add_argument("--calibration", type=Path, default=None, help="mic calibration text")
@@ -600,12 +610,22 @@ def main() -> int:
           f"(session volume solved: {downstream:+.1f} dB, courtesy prelude "
           f"{'on' if prelude else 'off'})")
 
-    preset = ((state.get("pre_apply_profile") or {}).get("recomposition_snapshot")
-              or {}).get("preset") or {}
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+
+    applied_profile = load_applied_baseline_profile_state(args.applied_profile)
+    if applied_profile is None:
+        raise SystemExit(
+            f"could not read an applied baseline profile at {args.applied_profile}"
+        )
+    preset = ((applied_profile.get("recomposition_snapshot") or {})
+              .get("preset") or {})
     regions = preset.get("crossover_regions") or [{}]
     fc_hz = float(regions[0].get("fc_hz") or 0.0) or None
     if fc_hz is None:
-        raise SystemExit("state carries no crossover fc_hz; MEASURE analysis needs it")
+        raise SystemExit(
+            "applied baseline profile carries no crossover fc_hz; MEASURE "
+            "analysis needs it"
+        )
 
     captures = bind_captures(args.captures, args.dumps, set(args.phases.split(",")))
     if args.limit:
