@@ -583,6 +583,16 @@ work is already planned (#2880's `(azimuth, elevation)` axis, the `verify`
 program's tilt check, experiment E1) — deliberately not promoted into this
 wave. Impedance measurement is dead, not parked:
 [ADR-0200](adr/0200-the-measurement-toolbox-is-microphone-only.md).
+Owner ruling, same day
+([ADR-0203](adr/0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md)):
+the incumbent tune retires and the program's next campaign recommissions
+structure-first — the measured delay committed before any response fit.
+This wave's instruments are what that campaign runs with; 6.12/6.14 verify
+the committed structure rather than adjudicate it. The wave's acceptance
+run: the banked flat-campaign rounds re-read through 6.1–6.3 (+6.10–6.11),
+validating the new fields on known data and mapping the incumbent's
+features to mechanisms, so the recommissioning campaign opens with its
+priors measured.
 6.1 Gate-ladder exposure: `jasper-classify-features` grows a gates-list
     flag wired to `classify_round(gates_ms=...)`, and the artifact's
     per-rung rows (center/depth per gate, per feature) are verified
@@ -639,7 +649,55 @@ wave. Impedance measurement is dead, not parked:
     is its own ADR — named candidates: the FDW not-built entry, the flat
     ±dB `SPEC_BANDS` tolerances (audibility/Q weighting), the 0°
     reference axis for the horn class. Until a result lands, the standing
-    ledger entries hold. (S)
+    ledger entries hold. (S) **Landed same day:** files 00–04 under
+    `docs/research/2026-08-31-tuning-methodology-deep-research/`;
+    ADR-0201/0202/0203 carry the forced re-adjudications; the
+    reference-axis question resolved into 6.13's pooled-window co-metric
+    rather than a moved microphone.
+6.10 FDW rungs as diagnostic evidence: 5- and 15-cycle
+    frequency-dependent-window variants computed offline from banked IRs,
+    published as per-feature facts beside the fixed-gate ladder's rungs
+    (6.1's pattern). Correction targets and grades stay fixed-gate
+    ([ADR-0201](adr/0201-fdw-stays-out-of-the-correction-path-funded-as-diagnostic-evidence.md));
+    the diagnostic reading rule (a dip that fills under FDW but holds
+    under the fixed gate is reflection-caused) is guide content, not
+    code. (S)
+6.11 Derived structure/honesty fields: (a) phase-overlay Δφ(f) between
+    the two branches' banked complex curves across the crossover octave,
+    with the implied summation dB (`20·log10(2·cos(Δφ/2))` — the 60°
+    corridor is convention, the 120° additive boundary is McCarthy);
+    (b) per-feature cycles-in-gate; (c) an EGD-window receipt — prove the
+    excess-group-delay read takes the longest clean window rather than
+    the reflection gate (research 03's pitfall), and fix it if not. (S)
+6.12 Sideways-cabinet vertical family: the cabinet on its side turns the
+    turntable into a vertical-plane instrument; a standard walk reads
+    coarse lobe tilt for the committed alignment. Captures label the
+    orientation honestly (provenance, not a new identity axis — #2880's
+    elevation work stays where it is). Verification for the
+    recommissioning campaign per ADR-0203. (S, protocol + provenance
+    label)
+6.13 Audibility-weighted co-metrics: NBD and SM (Olive 2004, 1/20-octave
+    smoothing via the shared smoother) on the banked on-axis curve AND
+    the pooled horizontal window (0/±7/±22° average, named
+    `pooled_window_horizontal` — deliberately not "listening window":
+    CTA-2034's includes vertical poses this rig does not capture).
+    Co-reported beside the band grade; `SPEC_BANDS` stays the acceptance
+    metric
+    ([ADR-0202](adr/0202-audibility-weighted-co-metrics-beside-the-band-grade.md)). (M)
+6.14 Refit expected delta (gated on 6.7): `forward_model` renders the
+    structure-first refit's predicted endpoint — per-driver linearization
+    held (delay-independent), summed-region corrections re-derived
+    against the delayed sum — so the recommissioning campaign opens with
+    a pre-registered expectation per invariant 3. A predictor, not a
+    decision gate (ADR-0203 already decided). (M)
+6.15 The operator guide (conductor-authored — owner request 2026-08-31):
+    `tuning-methodology.md` becomes THE method SSOT for the driving LLM —
+    sequence (structure → crossover → response), traps, the adjudicated
+    reading thresholds with their evidence labels, topology lanes,
+    tool-selection pointers. The runbook narrows to pure tool reference
+    (menu, contracts, exit codes, debugging); its methodology prose moves
+    into the guide, never duplicated. The doctrine is untouched as the
+    authority. One front door: the guide states the reading order. (M)
 
 ## The operator session, end to end
 
