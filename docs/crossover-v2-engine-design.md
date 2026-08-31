@@ -12,35 +12,27 @@
 This file must live at `docs/` root: its file map and contracts carry ~40
 relative links of the form `../jasper/…`, which only resolve at this depth.
 
-## The four verbs
+## The measure verb
 
-The loop's vocabulary — **measure · analyze · recommend · save** — is not a
-motto the engine gestures at. It is four methods on one object, each returning
-its own typed outcome, in
+The loop's vocabulary was **measure · analyze · recommend · save**; ADR-0198
+(#3342) deleted `analyze`, `recommend` and `save` as engine methods. `measure`
+is the one verb left, returning its own typed outcome, in
 [`crossover_v2/session.py`](../jasper/active_speaker/crossover_v2/session.py).
-
-[Doctrine §1](measurement-loop-doctrine.md) states the loop as **five** steps,
-and the fifth is not a missing method: **`loop` is re-entry of `measure`** —
-"checking that a recommendation held is measuring again". The engine has four
-verbs because the fifth is the caller calling the first one again.
 
 | Verb | Returns | What it owns |
 |---|---|---|
 | `measure(spec)` | `MeasureOutcome` (carrying `StimulusOutcome` per stimulus) | a walk of stimuli, each proven and banked |
-| `analyze()` | `AnalyzeOutcome` | reading the banked evidence |
-| `recommend()` | `RecommendOutcome` | naming the next thing to try |
-| `save()` | `SaveOutcome` | banking the result |
 
 `MeasureOutcome.record_ids` and `StimulusOutcome.banked` are the seam between a
 walk and what it left behind: a stimulus that played but did not bank is
 visible as such rather than absent.
 
-## `TuningSession` and the five seams
+## `TuningSession` and the four seams
 
 `TuningSession` holds one session's state and lifecycle — `open` / `close`,
 also usable as an async context manager (`__aenter__` / `__aexit__`), with
 `is_open`, `graph_fingerprint` and `banked_record_ids` as its read surface.
-Every side effect it can have crosses one of **five fields on `EngineSeams`**
+Every side effect it can have crosses one of **four fields on `EngineSeams`**
 ([`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)),
 frozen and injected exactly as `V2FlowSeams` is, so a test double is a complete
 substitute rather than a partial one:
@@ -49,14 +41,13 @@ substitute rather than a partial one:
 |---|---|---|---|
 | `graph` | `SessionGraph` | `install` · `patch` · `restore` | the measurement graph for the whole session |
 | `volume` | `VolumeClaim` | `acquire` · `prove` · `release` | this session's one hold on the fader |
-| `records` | `RecordStore` | `bank` · `read` · `persist` · `read_state` | banked evidence, and the session's own durable state (wave 3's `persist_conductor_state`) — not the phase snapshot/hydrate pair |
+| `records` | `RecordStore` | `bank` | banked evidence — write-only since ADR-0198; reading a bank back is the doors-and-banks tools', over the bundle's own files |
 | `play` | `PlaybackTransaction` | `run` | ready → admit → lock → play → restore, for ONE stimulus |
-| `recommend` | `Recommender` | — (a callable) | the prescription side |
 
-**Four of the five are declared in `session_seams.py`; `play` is not.**
+**Three of the four are declared in `session_seams.py`; `play` is not.**
 `PlaybackTransaction` lives in
 [`playback_transaction.py`](../jasper/active_speaker/crossover_v2/playback_transaction.py),
-which is why a `session_seams`-only reading undercounts the seams at four. It
+which is why a `session_seams`-only reading undercounts the seams at three. It
 sits on `EngineSeams` beside the three lifetime slots even though ruling S1
 calls it *internal to* `measure`: that distinction is about **vocabulary** — the
 front end and the LLM never name a play transaction — not about who owns the
@@ -67,18 +58,16 @@ None of the four **protocols** is `@runtime_checkable`, deliberately: a runtime
 a `run` of the wrong signature would pass and the check would buy confidence it
 cannot deliver. They are satisfied by shape, checked by mypy and by the call
 actually working, and their method bodies raise `NotImplementedError` so a
-partial explicit subclass fails loudly rather than returning `None`. (`recommend`
-is the exception to the framing, not to the rule: `Recommender` is a `Callable`
-type alias, so it has neither Protocol-ness nor method bodies.)
+partial explicit subclass fails loudly rather than returning `None`.
 
 **These seams are ENGINE-INTERNAL.** The modularity claim is that both front
-ends drive the same four verbs; a caller reaching `session.seams.graph.patch(…)`
+ends drive the same verb; a caller reaching `session.seams.graph.patch(…)`
 or `session.seams.records.bank(…)` would be doing engine work outside the
 engine, and the second would bank a record the session never counts in
 `banked_record_ids`. The field is public because construction and testing need
 it. Wave 2 lands the enforcement pin, when there is a front end to point it at.
 
-**All five seams are `async`, and so is the machinery behind every one.**
+**All four seams are `async`, and so is the machinery behind every one.**
 `MeasurementSessionGraph`'s three verbs, `VolumeOwner`'s `acquire_level` /
 `prove` / `release`, and `program_playback.play_program` were already `async`:
 the transport is CamillaDSP over a websocket and every production caller is
@@ -95,8 +84,7 @@ at HEAD the shape is ahead of it:
 - **`TuningSession` is constructed in production** — the converged preparer
   builds one per stage and holds it for the run's lifetime
   (`jasper/web/correction_crossover_v2.py`, `prepare_v2_session`), and the
-  wired walk drives `measure()` for its MEASURE captures. The other verbs'
-  production callers are still owed.
+  wired walk drives `measure()` for its MEASURE captures.
 - **`MeasurementSessionGraph` is the seam implementation that runs in
   production today**, through `crossover_v2_flow` and
   `web/correction_crossover_v2` — it is the part of this design already carrying
@@ -542,7 +530,7 @@ Design prose lives in each module's docstring. What that index does not cover:
 **Scope of this file's warranty — it is two halves with two different
 provenances, and they are not equally warranted.**
 
-The sections above the Architecture heading — the four verbs, the seams, the
+The sections above the Architecture heading — the measure verb, the seams, the
 session graph, the volume owner, the playback transaction, and "what is wired
 today" — were **derived from the code at HEAD on 2026-08-26** and each names the
 symbol it describes. Read a claim against that symbol before relying on it.
