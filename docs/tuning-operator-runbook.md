@@ -437,6 +437,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-seat-level` | find the volume that hits a target seat SPL; bank it as the round's reference | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|withdraw` | declare a walk shape and leave it for the next session | mutating (`stage`) | `jasper/cli/angle_capture.py` |
 | `jasper-arm-walk` | drive the lab arm through the staged walk | measured | `jasper/cli/arm_walk.py` |
+| `jasper-measure` | one measurement of the applied speaker, banked as a standard take the packet and round views read. Usually reached for at the raw-driver plants (methodology §2), where the substrate every later model computes from gets banked, and for ad-hoc captures outside a wizard round. Two contracts the tool enforces itself: a second `--position` is refused, because nothing here prompts a mover and two bearings would play from one placement and bank a pose nothing moved to; and a variant take (inverted polarity, a delayed branch, a level match) is refused without `--candidate-id`, because the label is what selects those takes apart afterwards | measured | `jasper/cli/measure.py` |
 | `scripts/run-crossover-round.py` | one measure round end to end; banks it | measured | `scripts/run-crossover-round.py` |
 | ” `--apply <fp>` | put the reviewed candidate on the speaker | mutating-with-gates | → `POST /crossover/v2/apply` |
 | `scripts/bank-crossover-round.sh` | gather a round into `captures/<campaign>/<label>/` | advisory | `scripts/bank-crossover-round.sh` |
