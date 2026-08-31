@@ -383,16 +383,24 @@ def f_trusted_floor_hz(window_s: float) -> float:
     return TRUSTED_FLOOR_MULTIPLIER * f_valid_floor_hz(window_s)
 
 
-def analytic_envelope(x: np.ndarray) -> np.ndarray:
-    """Analytic-signal magnitude envelope (the ETC magnitude) of ``x``.
+def analytic_signal(x: np.ndarray) -> np.ndarray:
+    """The complex analytic signal (scipy's Hilbert transform) of ``x``.
 
     ``scipy`` is imported here rather than at module scope so importing
     :mod:`gating` stays as cheap as it was when this module was pure numpy
     (the socket-activated wizard imports it on paths that never measure).
+    :func:`analytic_envelope` is this function's magnitude; a caller that
+    also needs the PHASE (e.g. an instantaneous-frequency read) uses this
+    one directly instead.
     """
     from scipy.signal import hilbert
 
-    return np.abs(hilbert(np.asarray(x, dtype=np.float64)))
+    return hilbert(np.asarray(x, dtype=np.float64))
+
+
+def analytic_envelope(x: np.ndarray) -> np.ndarray:
+    """Analytic-signal magnitude envelope (the ETC magnitude) of ``x``."""
+    return np.abs(analytic_signal(x))
 
 
 def _idx_to_ms(idx: int, sample_rate: float) -> float:

@@ -247,6 +247,7 @@ def checkout(tmp_path: Path):
     scripts.mkdir(parents=True)
     shutil.copy2(SCRIPT, scripts / SCRIPT.name)
     shutil.copy2(ROOT / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    shutil.copy2(ROOT / "scripts" / "_pi_target.py", scripts / "_pi_target.py")
     # All three keys, which is what scripts/onboard.sh actually writes -- and
     # what makes a SPLIT identity reachable: export only PI_HOST and the ssh
     # target is yours while the speaker's name is still this file's.

@@ -12,105 +12,175 @@ whether the pipe held its clock (frequency, phase, timing) across the trip.
 Subcommands
 -----------
 gen-wav OUT.wav
-    Write the 44 s stereo S16 probe file: 10 kHz sine @ -20 dBFS (10 s),
-    10 kHz @ -45 dBFS (10 s), a 9 kHz + 10 kHz dual tone (10 s), 0.5 s
-    on/off toggle bursts of 10 kHz (10 s), then white noise (4 s).
+    Write the 44 s stereo S16 probe file @ 44.1 kHz: 10 kHz sine @ -20 dBFS
+    (10 s), 10 kHz @ -45 dBFS (10 s), a 9 kHz + 10 kHz dual tone (10 s),
+    0.5 s on/off toggle bursts of 10 kHz (10 s), then white noise (4 s).
 
 gen-click OUT.wav
-    Write a 48 kHz stereo S16 marker WAV for `latency`: silence, one
-    full-scale sample, silence.
+    Write a 48 kHz stereo S16 marker WAV for `latency`: silence, then
+    jasper.route_latency.click_track's own ~5 ms raised-cosine 2 kHz burst
+    (its default -12 dBFS), then silence.
 
 capture SECONDS OUT.raw
     Capture outputd's post-DSP reference tap (127.0.0.1:9891 UDP, S16LE
     stereo 48 kHz, ch0=woofer lane / ch1=tweeter lane) for SECONDS,
-    remotely. Pushes a small stdlib-only sniffer to /tmp/tapsniff.py on
-    the box every run (so a wiped /tmp never matters), runs it under
-    `sudo` (AF_PACKET needs CAP_NET_RAW), and scp's the raw payload
-    stream back. The sniffer reads "lo" at the packet level, which
-    delivers each loopback datagram twice (both directions of the same
-    local hop); OUT.raw is written already deduplicated -- adjacent
-    512-byte payloads that are byte-identical collapse to one.
+    remotely. Pushes a small stdlib-only sniffer to a session-unique
+    /tmp/tapsniff-<id>.py on the box every run (so a wiped /tmp never
+    matters), runs it under `sudo` (AF_PACKET needs CAP_NET_RAW), and
+    scp's the result back. The sniffer reads "lo" at the packet level,
+    which delivers each loopback datagram TWICE (both directions of the
+    same local hop) -- it writes each as a length-prefixed record (4-byte
+    LE length + payload; the outputd wire's own datagram size is
+    period_frames * 4 bytes and varies by box/config, so nothing here
+    assumes a fixed payload length). Laptop-side reassembly STRICTLY pairs
+    consecutive records (record[2i] must byte-match record[2i+1]) and
+    keeps the even one; a pairing violation -- an odd record count, or a
+    pair that does not match -- is never silently guessed at: it prints a
+    loud warning with counts and keeps every record unmerged. OUT.raw is
+    the reassembled pure-PCM stream either way, so `analyze`'s input
+    format is unchanged.
 
 analyze IN.raw [--json]
     Per-second table of dominant frequency (4x zero-padded, Hann-windowed
     FFT with parabolic sub-bin interpolation), THD+N in dB (out-of-band
-    energy 2-20 kHz, excluding +/-60 Hz around 10 kHz and its 2nd
-    harmonic, relative to the 10 kHz band's own energy), a phase-glitch
-    count (FFT-based analytic-signal instantaneous-frequency jumps over
-    2 kHz sample to sample), and a pitch-offset track in ppm vs 10 kHz --
-    for both tap channels. A window under -70 dBFS RMS is reported
-    "silent" rather than a numerically meaningless ratio. This is a
-    meter: it always exits 0, whatever the numbers say.
+    energy 2-20 kHz, excluding +/-60 Hz around each row's reference
+    tone(s) and their 2nd harmonics), a phase-glitch count (Hilbert
+    instantaneous-frequency jumps over 2 kHz sample to sample), and a
+    pitch-offset track in ppm vs 10 kHz -- for both tap channels. The
+    dual-tone section reads THD+N against BOTH known tones (a 10 kHz-only
+    reference misreads the 9 kHz partner as noise); the toggle-burst
+    section's THD+N/phase-glitch cells are null with a reason
+    (`envelope_test`) -- a clean on/off edge is itself broadband,
+    high-slew content that would otherwise read as a false failure every
+    row. A window under -70 dBFS RMS is reported "silent" rather than a
+    numerically meaningless ratio. Section labels are elapsed-time
+    cosmetics that assume the capture starts with playback; when the
+    first ~1+ seconds read silent, a printed/JSON alignment warning says
+    so rather than let a shifted-looking table pass without comment.
+    `--json` emits `null` for any non-finite value (never the non-JSON-
+    spec `Infinity` token) and carries the SAME aggregate summary (total
+    glitches, worst THD+N, ppm min/max) the text table prints, from one
+    shared aggregation function. This is a meter: it always exits 0,
+    whatever the numbers say.
 
 latency LANE_PCM [--repeats N]
-    Starts the tap sniffer, then over a second ssh connection launches
-    `aplay -D LANE_PCM` on the click WAV, printing the box's own
-    CLOCK_MONOTONIC time just before exec'ing aplay. The sniffer prints
-    its own start CLOCK_MONOTONIC time to stderr; because both readings
-    are taken on the SAME box, they share a clock domain and never cross
-    a laptop<->Pi offset. The click's arrival is derived from the sample
-    offset it is first found at in the (deduplicated) capture, converted
-    to a time via the tap's fixed 48 kHz rate -- not a per-packet
-    timestamp, so packet loss inside the window shows up as a location
-    error, not a wrong rate. CAVEAT: the reported number includes
-    aplay's own process-start and ALSA-device-open cost ahead of the
-    WAV's fixed leading silence. It is for BEFORE/AFTER comparison on
-    one box, not an absolute cross-box or cross-lane truth.
+    Starts the tap sniffer and waits for its own READY line (printed
+    right after it binds) -- a bounded handshake, not a fixed sleep
+    guessing how long ssh+sudo+python startup takes. Then over a second
+    ssh connection launches `aplay -D LANE_PCM` on the click WAV,
+    printing the box's own CLOCK_MONOTONIC time (stamped fresh, right
+    before exec, so nothing upstream of that -- the READY wait, the
+    second ssh connection's own setup -- is included in the measurement)
+    just before `aplay` starts. Because both timestamps are taken ON THE
+    SAME BOX, they share a clock domain and never cross a laptop<->Pi
+    offset. The click's arrival is derived from the sample offset it is
+    first found at (the STRONGEST peak crossing
+    jasper.route_latency.impulse_detect's shared threshold, not the first
+    crossing -- a burst has many samples near its own peak that would all
+    cross a low threshold) in the reassembled capture, converted to a
+    time via the tap's fixed 48 kHz rate. Sample 0 of the capture
+    corresponds to the sniffer's own bind time only because outputd
+    continuously publishes to the tap -- zero-filled during silence,
+    never gated on real content -- so the very first datagram after bind
+    is already a real elapsed-time anchor (verified in
+    rust/jasper-outputd/src/main.rs's publish loop).
 
-Host resolution matches every other laptop script: --host wins, else
-scripts/_lib.sh's own PI_HOST/.env.local precedence (see
-resolve_target()).
+    CAVEAT: the reported number measures from aplay's own process-start
+    through the WAV's fixed leading silence, the DSP pipe, and tap
+    arrival -- it does NOT include this tool's own ssh/sudo/READY-wait
+    overhead, all of which happens before the timestamp is taken. It is
+    for BEFORE/AFTER comparison on one box, never an absolute number
+    compared across boxes or lanes. Prints each repeat plus the median,
+    min and max (default 5 repeats).
+
+Every remote temp path (sniffer, click WAV, capture file) is suffixed
+with a short per-invocation id; on exit (including Ctrl-C) this tool
+kills the remote sniffer BY THAT EXACT PATH -- never a broad pkill
+pattern that could catch a concurrent session -- and removes its own
+temp files.
+
+Host resolution matches every other laptop script: --host wins for the
+ssh target only; scripts/_pi_target.py (shared with
+run-crossover-round.py) still applies .env.local's PI_USER even then.
+See resolve_target().
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import os
+import select
 import shlex
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
 
-from jasper.route_latency.ref9891_pcap import PAYLOAD_BYTES, RATE as TAP_RATE_HZ
+try:
+    from _pi_target import LibTargetError, resolve_pi_target
+except ModuleNotFoundError as exc:
+    if exc.name != "_pi_target":
+        raise
+    from scripts._pi_target import LibTargetError, resolve_pi_target
 
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-LIB_SH = REPO_ROOT / "scripts" / "_lib.sh"
-SSH_OPTS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"]
+from jasper.audio_measurement.gating import analytic_signal
+from jasper.audio_measurement.program_analysis import parabolic_peak
+from jasper.route_latency.click_track import SAMPLE_RATE_HZ as CLICK_TRACK_RATE_HZ
+from jasper.route_latency.click_track import click_samples
+from jasper.route_latency.impulse_detect import DEFAULT_THRESHOLD as CLICK_DETECT_THRESHOLD
+from jasper.route_latency.ref9891_pcap import RATE as TAP_RATE_HZ
 
 # Same tap jasper.route_latency.ref9891_pcap reads from a pcap; its own
 # _REF_UDP_PORT is private, so the number is declared once here and
 # interpolated into the embedded sniffer below rather than typed twice.
 TAP_UDP_PORT = 9891
-REMOTE_SNIFFER_PATH = "/tmp/tapsniff.py"
-REMOTE_CAPTURE_RAW = "/tmp/tapsniff-out.raw"
-REMOTE_CLICK_WAV = "/tmp/tapsniff-click.wav"
+
+_SSH_CONTROL_DIR = Path(tempfile.gettempdir()) / "jasper-pipe-probe-ssh-control"
+_SSH_CONTROL_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+# ControlMaster/ControlPersist multiplex every ssh/scp call to one host onto
+# one real handshake -- a `latency` run at 5 repeats otherwise pays for 17
+# separate connections (push sniffer + push click + 5 x [capture, launch,
+# scp pull]).
+SSH_OPTS = [
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ConnectTimeout=10",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPersist=15s",
+    "-o", f"ControlPath={_SSH_CONTROL_DIR}/%r@%h:%p",
+]
 
 PROBE_SAMPLE_RATE_HZ = 44_100
 PROBE_NOISE_SEED = 1234
 REFERENCE_TONE_HZ = 10_000.0
 SECOND_TONE_HZ = 9_000.0
 
-# (label, duration_s) in playback order. Shared by gen-wav (builds the file)
-# and analyze (labels rows on the assumption capture started at file offset
-# 0) -- see build_probe_signal() / section_label_at().
+TONE_SECTION_LABEL = "tone_10k_-20dBFS"
+QUIET_TONE_SECTION_LABEL = "tone_10k_-45dBFS"
+DUAL_TONE_SECTION_LABEL = "dual_tone_9k+10k"
+TOGGLE_SECTION_LABEL = "toggle_bursts_10k"
+NOISE_SECTION_LABEL = "white_noise"
+
+# (label, duration_s) in playback order. Shared by gen-wav (builds the
+# file) and analyze (labels rows on the assumption capture started at file
+# offset 0, and section-steers the dual-tone/toggle handling -- see
+# analyze_channel()).
 PROBE_SECTIONS: tuple[tuple[str, float], ...] = (
-    ("tone_10k_-20dBFS", 10.0),
-    ("tone_10k_-45dBFS", 10.0),
-    ("dual_tone_9k+10k", 10.0),
-    ("toggle_bursts_10k", 10.0),
-    ("white_noise", 4.0),
+    (TONE_SECTION_LABEL, 10.0),
+    (QUIET_TONE_SECTION_LABEL, 10.0),
+    (DUAL_TONE_SECTION_LABEL, 10.0),
+    (TOGGLE_SECTION_LABEL, 10.0),
+    (NOISE_SECTION_LABEL, 4.0),
 )
 
-CLICK_SAMPLE_RATE_HZ = 48_000
 CLICK_LEAD_SILENCE_S = 0.5
 CLICK_TRAIL_SILENCE_S = 0.5
 
@@ -118,17 +188,21 @@ SILENCE_RMS_DBFS = -70.0
 THD_N_BAND_HZ = (2_000.0, 20_000.0)
 THD_N_EXCLUSION_HALFWIDTH_HZ = 60.0
 PHASE_GLITCH_JUMP_HZ = 2_000.0
+LEADING_SILENCE_WARNING_S = 1
+ENVELOPE_TEST_REASON = (
+    "toggle-envelope edges register as broadband/phase content by "
+    "construction, not evidence of a pipe defect"
+)
 
 LATENCY_CAPTURE_SECONDS = 4.0
-LATENCY_WARMUP_S = 0.5
-CLICK_DETECT_THRESHOLD_FRAC = 0.2
+READY_TIMEOUT_S = 10.0
 
 
 # The sniffer is pushed to the box and run there under `sudo python3` with
-# no venv and no jasper import available -- it must stay stdlib-only. Dedup
-# is deliberately NOT done here: it happens laptop-side in dedup_payloads(),
-# once, on the file this writes (see the module docstring's `capture`
-# entry).
+# no venv and no jasper import available -- it must stay stdlib-only.
+# Pairing/dedup is deliberately NOT done here: it happens laptop-side in
+# reassemble_records(), once, on the length-prefixed record stream this
+# writes (see the module docstring's `capture` entry).
 SNIFFER_SOURCE = f'''\
 import socket
 import struct
@@ -143,6 +217,7 @@ def main():
     out_path = sys.argv[2]
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
     sock.bind(("lo", 0))
+    print("READY", flush=True)
     start = time.monotonic()
     sys.stderr.write("START_MONOTONIC_NS=%d\\n" % int(start * 1e9))
     sys.stderr.flush()
@@ -157,7 +232,9 @@ def main():
                 packet = sock.recv(65535)
             except socket.timeout:
                 break
-            if len(packet) < 42:
+            if len(packet) < 34:
+                continue
+            if struct.unpack(">H", packet[12:14])[0] != 0x0800:
                 continue
             ihl = (packet[14] & 0x0F) * 4
             udp_off = 14 + ihl
@@ -166,7 +243,9 @@ def main():
             dport = struct.unpack(">H", packet[udp_off + 2:udp_off + 4])[0]
             if dport != TAP_PORT:
                 continue
-            out.write(packet[udp_off + 8:])
+            payload = packet[udp_off + 8:]
+            out.write(struct.pack("<I", len(payload)))
+            out.write(payload)
 
 
 if __name__ == "__main__":
@@ -175,78 +254,129 @@ if __name__ == "__main__":
 
 
 # --------------------------------------------------------------------------- #
-# host resolution + ssh/scp
+# host resolution
 # --------------------------------------------------------------------------- #
 
 
 def resolve_target(explicit_host: str | None) -> tuple[str, str]:
-    """(host, user) the way every laptop script resolves them: --host wins,
-    else scripts/_lib.sh's own PI_HOST/PI_USER precedence (caller env, then
-    .env.local, then jts.local/pi) -- read by sourcing it rather than
-    re-parsing .env.local a second time (issue #2689's one-reader rule)."""
-    user = os.environ.get("PI_USER") or "pi"
-    if explicit_host:
-        return explicit_host, user
-    query = 'set -u; . "$0" >/dev/null 2>&1; printf "%s\\n%s\\n" "$PI_HOST" "$PI_USER"'
+    """(host, user) via the shared scripts/_pi_target.py resolver:
+    --host wins for the ssh HOST only -- .env.local's PI_USER still
+    applies even then (see resolve_pi_target). Fails loud on any
+    resolution problem rather than silently guessing a default."""
     try:
-        proc = subprocess.run(
-            ["bash", "-c", query, str(LIB_SH)],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise SystemExit(f"could not resolve a target via scripts/_lib.sh: {exc}")
-    if proc.returncode != 0:
-        raise SystemExit(f"scripts/_lib.sh failed to resolve a target: {proc.stderr.strip()[-300:]}")
-    lines = (proc.stdout.splitlines() + ["", ""])[:2]
-    host, resolved_user = lines[0] or "jts.local", lines[1] or user
-    return host, resolved_user
+        return resolve_pi_target(host_override=explicit_host)
+    except LibTargetError as exc:
+        raise SystemExit(str(exc))
+
+
+# --------------------------------------------------------------------------- #
+# ssh/scp
+# --------------------------------------------------------------------------- #
+
+
+def _run_checked(cmd: list[str], *, input_text: str | None = None, timeout: float) -> None:
+    """subprocess.run(check=True), but a failure becomes a clean SystemExit
+    diagnostic instead of a raw traceback."""
+    try:
+        subprocess.run(cmd, input=input_text, text=True, capture_output=True, timeout=timeout, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"{cmd[0]} failed (exit {exc.returncode}): {(exc.stderr or '').strip()[-400:]}")
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"{cmd[0]} timed out after {timeout}s: {' '.join(cmd[:3])}...")
+    except OSError as exc:
+        raise SystemExit(f"could not run {cmd[0]}: {exc}")
 
 
 def ssh_run(host: str, user: str, remote_cmd: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["ssh", *SSH_OPTS, f"{user}@{host}", remote_cmd],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    """Run one remote command, returning its result (including a nonzero
+    exit) for the caller to interpret. Only TRANSPORT failures (timeout,
+    ssh missing) become SystemExit here -- the remote command's own exit
+    status is legitimately the caller's to read."""
+    try:
+        return subprocess.run(
+            ["ssh", *SSH_OPTS, f"{user}@{host}", remote_cmd],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"ssh to {host} timed out after {timeout}s")
+    except OSError as exc:
+        raise SystemExit(f"could not run ssh: {exc}")
 
 
 def ssh_popen(host: str, user: str, remote_cmd: str) -> subprocess.Popen[str]:
-    return subprocess.Popen(
-        ["ssh", *SSH_OPTS, f"{user}@{host}", remote_cmd],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
+    try:
+        return subprocess.Popen(
+            ["ssh", *SSH_OPTS, f"{user}@{host}", remote_cmd],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+    except OSError as exc:
+        raise SystemExit(f"could not run ssh: {exc}")
 
 
 def scp_push(host: str, user: str, local_path: Path, remote_path: str, *, timeout: float = 30) -> None:
-    subprocess.run(
-        ["scp", *SSH_OPTS, str(local_path), f"{user}@{host}:{remote_path}"],
-        check=True, timeout=timeout, capture_output=True,
-    )
+    _run_checked(["scp", *SSH_OPTS, str(local_path), f"{user}@{host}:{remote_path}"], timeout=timeout)
 
 
 def scp_pull(host: str, user: str, remote_path: str, local_path: Path, *, timeout: float = 60) -> None:
-    subprocess.run(
-        ["scp", *SSH_OPTS, f"{user}@{host}:{remote_path}", str(local_path)],
-        check=True, timeout=timeout, capture_output=True,
+    _run_checked(["scp", *SSH_OPTS, f"{user}@{host}:{remote_path}", str(local_path)], timeout=timeout)
+
+
+# --------------------------------------------------------------------------- #
+# session-scoped remote paths + cleanup
+# --------------------------------------------------------------------------- #
+
+
+def new_session_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def remote_sniffer_path(session: str) -> str:
+    return f"/tmp/tapsniff-{session}.py"
+
+
+def remote_capture_path(session: str) -> str:
+    return f"/tmp/tapsniff-{session}-out.raw"
+
+
+def remote_click_path(session: str) -> str:
+    return f"/tmp/tapsniff-{session}-click.wav"
+
+
+def push_sniffer(host: str, user: str, session: str) -> None:
+    remote_path = remote_sniffer_path(session)
+    _run_checked(
+        ["ssh", *SSH_OPTS, f"{user}@{host}", f"cat > {shlex.quote(remote_path)}"],
+        input_text=SNIFFER_SOURCE, timeout=15,
     )
 
 
-def push_sniffer(host: str, user: str) -> None:
-    subprocess.run(
-        ["ssh", *SSH_OPTS, f"{user}@{host}", f"cat > {REMOTE_SNIFFER_PATH}"],
-        input=SNIFFER_SOURCE, text=True, check=True, timeout=15,
+def remote_capture_cmd(seconds: float, session: str) -> str:
+    sniffer = remote_sniffer_path(session)
+    out_path = remote_capture_path(session)
+    # chmod after the sniffer exits: it ran under sudo (root-owned output),
+    # and scp runs as the plain ssh user -- readability must not depend on
+    # the box's umask.
+    return (
+        f"sudo python3 {shlex.quote(sniffer)} {seconds} {shlex.quote(out_path)} "
+        f"&& sudo chmod 644 {shlex.quote(out_path)}"
     )
 
 
-def remote_capture_cmd(seconds: float, remote_out: str) -> str:
-    return f"sudo python3 {REMOTE_SNIFFER_PATH} {seconds} {remote_out}"
-
-
-def parse_tagged_ns(stderr_text: str, tag: str) -> int | None:
-    prefix = f"{tag}="
-    for line in stderr_text.splitlines():
-        if line.startswith(prefix):
-            return int(line[len(prefix):])
-    return None
+def cleanup_session(host: str, user: str, session: str) -> None:
+    """Kill the remote sniffer BY ITS UNIQUE PATH (never a broad pkill
+    pattern -- a concurrent session's sniffer must survive) and remove
+    this session's remote temp files. Best-effort: called from `finally`
+    (including on KeyboardInterrupt), so a cleanup failure is printed,
+    never raised -- it must not mask the real outcome or hang the exit."""
+    sniffer = remote_sniffer_path(session)
+    paths = " ".join(
+        shlex.quote(p) for p in (sniffer, remote_capture_path(session), remote_click_path(session))
+    )
+    remote_cmd = f"sudo pkill -f {shlex.quote(sniffer)} >/dev/null 2>&1; sudo rm -f {paths}"
+    try:
+        ssh_run(host, user, remote_cmd, timeout=15)
+    except SystemExit as exc:
+        print(f"warning: session cleanup on {host} failed: {exc}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -260,21 +390,21 @@ def _amp_db(db: float) -> float:
 
 def _section_mono(label: str, n: int, rate: int, rng: np.random.Generator) -> np.ndarray:
     t = np.arange(n) / rate
-    if label == "tone_10k_-20dBFS":
+    if label == TONE_SECTION_LABEL:
         return _amp_db(-20.0) * np.sin(2 * np.pi * REFERENCE_TONE_HZ * t)
-    if label == "tone_10k_-45dBFS":
+    if label == QUIET_TONE_SECTION_LABEL:
         return _amp_db(-45.0) * np.sin(2 * np.pi * REFERENCE_TONE_HZ * t)
-    if label == "dual_tone_9k+10k":
+    if label == DUAL_TONE_SECTION_LABEL:
         # -26 dBFS each so the two in-phase peaks can never sum past -20
         # dBFS -- no clipping headroom needed.
         amp = _amp_db(-26.0)
         return amp * np.sin(2 * np.pi * SECOND_TONE_HZ * t) + amp * np.sin(2 * np.pi * REFERENCE_TONE_HZ * t)
-    if label == "toggle_bursts_10k":
+    if label == TOGGLE_SECTION_LABEL:
         tone = _amp_db(-20.0) * np.sin(2 * np.pi * REFERENCE_TONE_HZ * t)
         cycle = int(round(0.5 * rate))
         on = ((np.arange(n) // cycle) % 2) == 0
         return tone * on
-    if label == "white_noise":
+    if label == NOISE_SECTION_LABEL:
         amp = _amp_db(-20.0)
         noise = rng.standard_normal(n) * (amp / 4.0)
         return np.clip(noise, -amp, amp)
@@ -294,10 +424,15 @@ def build_probe_signal(rate: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def build_click_signal(rate: int) -> np.ndarray:
+    """CLICK_LEAD_SILENCE_S of silence, then click_track's own ~5 ms
+    raised-cosine 2 kHz burst (its default -12 dBFS -- a full-scale
+    impulse under-detects after USB/DSP losses and risks driver/DAC
+    strain; see click_track's module docstring), then trailing silence."""
+    click = np.asarray(click_samples(), dtype=np.float64) / 32768.0
     lead = int(round(CLICK_LEAD_SILENCE_S * rate))
     trail = int(round(CLICK_TRAIL_SILENCE_S * rate))
-    mono = np.zeros(lead + 1 + trail, dtype=np.float64)
-    mono[lead] = 1.0
+    mono = np.zeros(lead + click.size + trail, dtype=np.float64)
+    mono[lead:lead + click.size] = click
     return np.column_stack([mono, mono])
 
 
@@ -316,20 +451,67 @@ def write_wav_int16(path: Path, stereo_float: np.ndarray, rate: int) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def dedup_payloads(raw: bytes, payload_size: int = PAYLOAD_BYTES) -> bytes:
-    """Split into PAYLOAD_BYTES chunks and drop each that repeats the
-    chunk immediately before it -- the loopback double-capture the module
-    docstring's `capture` entry names. A short trailing partial chunk is
-    dropped, never padded."""
-    n_chunks = len(raw) // payload_size
-    out = bytearray()
-    last: bytes | None = None
-    for i in range(n_chunks):
-        chunk = raw[i * payload_size:(i + 1) * payload_size]
-        if chunk != last:
-            out += chunk
-        last = chunk
-    return bytes(out)
+def parse_records(raw: bytes) -> list[bytes]:
+    """Parse the sniffer's length-prefixed record stream (4-byte LE length
+    + payload, one per received packet) into a list of payloads. A
+    truncated trailing record (the sniffer killed mid-write) is dropped --
+    it is incomplete data, not corrupt data."""
+    records: list[bytes] = []
+    offset = 0
+    n = len(raw)
+    while offset + 4 <= n:
+        (length,) = struct.unpack_from("<I", raw, offset)
+        offset += 4
+        if offset + length > n:
+            break
+        records.append(raw[offset:offset + length])
+        offset += length
+    return records
+
+
+@dataclass(frozen=True)
+class ReassemblyResult:
+    payloads: list[bytes]
+    pairing_ok: bool
+    detail: str
+
+
+def reassemble_records(raw: bytes) -> ReassemblyResult:
+    """Collapse the loopback double-capture (an AF_PACKET tap on "lo" sees
+    each datagram twice, both directions of the same local hop) via
+    STRICT pairing: record[2i] must byte-match record[2i+1]. Keeps the
+    even-indexed record of each verified pair. On ANY pairing violation --
+    an odd record count, or a pair that does not match -- this refuses to
+    guess: it reports the violation and returns every record UNMERGED,
+    rather than silently keeping a stream that might not be what it looks
+    like. Accepts any payload length; the only length validation is the
+    multiple-of-4 truncation in deinterleave_s16le_stereo()."""
+    records = parse_records(raw)
+    if len(records) % 2 != 0:
+        return ReassemblyResult(
+            records, False,
+            f"odd record count ({len(records)}) -- expected byte-identical "
+            "pairs from the loopback double-capture; keeping all records "
+            "unmerged",
+        )
+    mismatches = [i // 2 for i in range(0, len(records), 2) if records[i] != records[i + 1]]
+    if mismatches:
+        return ReassemblyResult(
+            records, False,
+            f"{len(mismatches)} of {len(records) // 2} record pairs did not "
+            f"byte-match (first at pair {mismatches[0]}) -- keeping all "
+            "records unmerged rather than guessing which half to drop",
+        )
+    kept = records[0::2]
+    return ReassemblyResult(kept, True, f"{len(kept)} pairs verified and collapsed")
+
+
+def fetch_and_reassemble(host: str, user: str, remote_path: str) -> ReassemblyResult:
+    with tempfile.TemporaryDirectory() as tmp:
+        local_raw = Path(tmp) / "capture.raw"
+        scp_pull(host, user, remote_path, local_raw)
+        raw = local_raw.read_bytes()
+    return reassemble_records(raw)
 
 
 def deinterleave_s16le_stereo(raw: bytes) -> tuple[np.ndarray, np.ndarray]:
@@ -339,56 +521,36 @@ def deinterleave_s16le_stereo(raw: bytes) -> tuple[np.ndarray, np.ndarray]:
 
 
 # --------------------------------------------------------------------------- #
-# analyzer -- pure functions, exercised directly by tests/test_jasper_pipe_probe_script.py
+# analyzer -- pure functions, exercised directly by
+# tests/test_jasper_pipe_probe_script.py
 # --------------------------------------------------------------------------- #
 
 
 def dominant_frequency_hz(samples: np.ndarray, rate: int) -> float:
-    """4x zero-padded, Hann-windowed FFT peak, refined by parabolic
-    interpolation of the log-magnitude around the peak bin. A single bin
-    of a plain 4x-padded FFT is rate/(4*len) wide -- 0.25 Hz at 48 kHz/1 s,
-    i.e. 25 ppm at 10 kHz -- too coarse for the ppm track this feeds, so
-    the interpolation is load-bearing, not decorative."""
+    """4x zero-padded, Hann-windowed FFT peak, refined by
+    jasper.audio_measurement.program_analysis's shared parabolic sub-bin
+    interpolation. A single bin of a plain 4x-padded FFT is rate/(4*len)
+    wide -- 0.25 Hz at 48 kHz/1 s, i.e. 25 ppm at 10 kHz -- too coarse for
+    the ppm track this feeds, so the refinement is load-bearing, not
+    decorative."""
     n = len(samples)
-    if n < 8:
-        return float("nan")
+    assert n >= 8, f"dominant_frequency_hz needs >=8 samples, got {n}"
     windowed = samples * np.hanning(n)
     nfft = 4 * n
     spectrum = np.fft.rfft(windowed, n=nfft)
     mags = np.abs(spectrum)
     mags[0] = 0.0
     peak = int(np.argmax(mags))
-    freqs = np.fft.rfftfreq(nfft, d=1.0 / rate)
-    offset = 0.0
-    if 0 < peak < len(mags) - 1:
-        log_mags = np.log(mags + 1e-20)
-        alpha, beta, gamma = log_mags[peak - 1], log_mags[peak], log_mags[peak + 1]
-        denom = alpha - 2 * beta + gamma
-        if denom != 0:
-            offset = float(np.clip(0.5 * (alpha - gamma) / denom, -1.0, 1.0))
+    refined_idx = parabolic_peak(mags, peak)
     bin_hz = rate / nfft
-    return float(freqs[peak] + offset * bin_hz)
-
-
-def analytic_signal(samples: np.ndarray) -> np.ndarray:
-    """FFT-based Hilbert transform (no scipy): zero the negative
-    frequencies, double the positive ones, leave DC/Nyquist alone."""
-    n = len(samples)
-    spectrum = np.fft.fft(samples)
-    mask = np.zeros(n)
-    if n % 2 == 0:
-        mask[0] = 1.0
-        mask[n // 2] = 1.0
-        mask[1:n // 2] = 2.0
-    else:
-        mask[0] = 1.0
-        mask[1:(n + 1) // 2] = 2.0
-    return np.fft.ifft(spectrum * mask)
+    return float(refined_idx * bin_hz)
 
 
 def count_phase_glitches(samples: np.ndarray, rate: int, jump_hz: float = PHASE_GLITCH_JUMP_HZ) -> int:
-    if len(samples) < 8:
-        return 0
+    """FFT-based Hilbert instantaneous frequency (via
+    jasper.audio_measurement.gating.analytic_signal), counting
+    sample-to-sample jumps over `jump_hz`."""
+    assert len(samples) >= 8, f"count_phase_glitches needs >=8 samples, got {len(samples)}"
     phase = np.unwrap(np.angle(analytic_signal(samples)))
     inst_freq = np.diff(phase) * rate / (2.0 * np.pi)
     return int(np.count_nonzero(np.abs(np.diff(inst_freq)) > jump_hz))
@@ -398,10 +560,9 @@ def thd_n_db(samples: np.ndarray, rate: int, tones_hz: tuple[float, ...]) -> flo
     """dB ratio of out-of-tone energy (2-20 kHz, excluding +/-60 Hz around
     each of `tones_hz` and each one's 2nd harmonic) to tones_hz[0]'s own
     band energy. Only tones_hz[0] is the reference -- a second entry (the
-    dual-tone section's 9 kHz partner) is excluded from the noise sum but
-    does not change what the ratio is against."""
-    if not tones_hz:
-        return float("nan")
+    dual-tone section's partner) is excluded from the noise sum but does
+    not change what the ratio is against."""
+    assert tones_hz, "thd_n_db needs at least one reference tone"
     n = len(samples)
     windowed = samples * np.hanning(n)
     nfft = 1 << max(1, (n - 1).bit_length())
@@ -437,19 +598,24 @@ class SecondReading:
     second: int
     section: str
     silent: bool
+    envelope_test: bool
     dominant_hz: float | None
     pitch_offset_ppm: float | None
     thd_n_db: float | None
-    phase_glitches: int
+    phase_glitches: int | None
+    reason: str | None
 
 
 def analyze_channel(samples: np.ndarray, rate: int) -> list[SecondReading]:
-    """Per-second reading of one already-deinterleaved channel. A window
-    is analyzed on 10 kHz as its reference tone regardless of which probe
-    section it falls in -- section_label_at() is cosmetic labeling only
-    (best-effort, assumes the capture starts at file offset 0), never a
-    gate on what gets measured, so a slightly misaligned capture still
-    reads correctly even if a row's printed section name is off by one."""
+    """Per-second reading of one already-deinterleaved channel.
+    section_label_at() is cosmetic labeling only (best-effort, assumes the
+    capture starts at file offset 0), but it DOES steer two real
+    behaviors: the dual-tone section passes both known tones to
+    thd_n_db so the 9 kHz partner is not misread as noise against a
+    10 kHz-only reference, and the toggle-burst section's THD+N/glitch
+    metrics are nulled (envelope_test=True) -- a clean on/off envelope
+    edge is itself broadband, high-slew content that would otherwise read
+    as a false failure every row."""
     window = rate
     n_seconds = len(samples) // window
     readings: list[SecondReading] = []
@@ -459,14 +625,73 @@ def analyze_channel(samples: np.ndarray, rate: int) -> list[SecondReading]:
         rms = float(np.sqrt(np.mean(chunk ** 2))) if chunk.size else 0.0
         rms_dbfs = 20.0 * math.log10(max(rms, 1e-12))
         if rms_dbfs < SILENCE_RMS_DBFS:
-            readings.append(SecondReading(i, label, True, None, None, None, 0))
+            readings.append(SecondReading(i, label, True, False, None, None, None, None, "silent"))
             continue
         dominant = dominant_frequency_hz(chunk, rate)
         ppm = (dominant - REFERENCE_TONE_HZ) / REFERENCE_TONE_HZ * 1e6
-        thd_n = thd_n_db(chunk, rate, (REFERENCE_TONE_HZ,))
+        if label == TOGGLE_SECTION_LABEL:
+            readings.append(
+                SecondReading(i, label, False, True, dominant, ppm, None, None, ENVELOPE_TEST_REASON)
+            )
+            continue
+        tones = (SECOND_TONE_HZ, REFERENCE_TONE_HZ) if label == DUAL_TONE_SECTION_LABEL else (REFERENCE_TONE_HZ,)
+        thd_n = thd_n_db(chunk, rate, tones)
         glitches = count_phase_glitches(chunk, rate)
-        readings.append(SecondReading(i, label, False, dominant, ppm, thd_n, glitches))
+        readings.append(SecondReading(i, label, False, False, dominant, ppm, thd_n, glitches, None))
     return readings
+
+
+def leading_silence_seconds(readings: list[SecondReading]) -> int:
+    """How many CONSECUTIVE seconds from second 0 are silent -- a proxy
+    for a capture-vs-playback start offset, since the probe file's own
+    first section is never silent."""
+    count = 0
+    for r in readings:
+        if not r.silent:
+            break
+        count += 1
+    return count
+
+
+@dataclass(frozen=True)
+class ChannelSummary:
+    audible_seconds: int
+    total_seconds: int
+    total_phase_glitches: int
+    worst_thd_n_db: float | None
+    pitch_offset_ppm_min: float | None
+    pitch_offset_ppm_max: float | None
+
+
+def summarize_channel(readings: list[SecondReading]) -> ChannelSummary:
+    """The one aggregation both the text table and --json use, so the two
+    representations can never drift apart."""
+    audible = [r for r in readings if not r.silent]
+    glitch_values = [r.phase_glitches for r in audible if r.phase_glitches is not None]
+    thd_values = [r.thd_n_db for r in audible if r.thd_n_db is not None and math.isfinite(r.thd_n_db)]
+    ppm_values = [r.pitch_offset_ppm for r in audible if r.pitch_offset_ppm is not None]
+    return ChannelSummary(
+        audible_seconds=len(audible),
+        total_seconds=len(readings),
+        total_phase_glitches=sum(glitch_values),
+        worst_thd_n_db=max(thd_values) if thd_values else None,
+        pitch_offset_ppm_min=min(ppm_values) if ppm_values else None,
+        pitch_offset_ppm_max=max(ppm_values) if ppm_values else None,
+    )
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _reading_json(r: SecondReading) -> dict:
+    return {k: _json_safe(v) for k, v in asdict(r).items()}
+
+
+def _summary_json(s: ChannelSummary) -> dict:
+    return {k: _json_safe(v) for k, v in asdict(s).items()}
 
 
 # --------------------------------------------------------------------------- #
@@ -487,54 +712,62 @@ def cmd_gen_wav(args: argparse.Namespace) -> int:
 
 
 def cmd_gen_click(args: argparse.Namespace) -> int:
-    stereo = build_click_signal(CLICK_SAMPLE_RATE_HZ)
-    write_wav_int16(args.out, stereo, CLICK_SAMPLE_RATE_HZ)
-    click_at = int(round(CLICK_LEAD_SILENCE_S * CLICK_SAMPLE_RATE_HZ))
+    stereo = build_click_signal(CLICK_TRACK_RATE_HZ)
+    write_wav_int16(args.out, stereo, CLICK_TRACK_RATE_HZ)
+    click_at = int(round(CLICK_LEAD_SILENCE_S * CLICK_TRACK_RATE_HZ))
     print(
-        f"{args.out}: {len(stereo) / CLICK_SAMPLE_RATE_HZ:.3f}s @ {CLICK_SAMPLE_RATE_HZ} Hz "
-        f"stereo S16, click at sample {click_at}"
+        f"{args.out}: {len(stereo) / CLICK_TRACK_RATE_HZ:.3f}s @ {CLICK_TRACK_RATE_HZ} Hz "
+        f"stereo S16, click burst starts at sample {click_at}"
     )
     return 0
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
+    if args.seconds <= 0:
+        raise SystemExit("SECONDS must be > 0")
     host, user = resolve_target(args.host)
-    push_sniffer(host, user)
-    proc = ssh_run(host, user, remote_capture_cmd(args.seconds, REMOTE_CAPTURE_RAW), timeout=args.seconds + 30)
-    if proc.returncode != 0:
-        raise SystemExit(f"remote capture failed (exit {proc.returncode}): {proc.stderr.strip()[-400:]}")
-    with tempfile.TemporaryDirectory() as tmp:
-        local_raw = Path(tmp) / "capture.raw"
-        scp_pull(host, user, REMOTE_CAPTURE_RAW, local_raw, timeout=120)
-        raw = local_raw.read_bytes()
-    deduped = dedup_payloads(raw)
-    args.out.write_bytes(deduped)
+    session = new_session_id()
+    push_sniffer(host, user, session)
+    try:
+        proc = ssh_run(host, user, remote_capture_cmd(args.seconds, session), timeout=args.seconds + 30)
+        if proc.returncode != 0:
+            raise SystemExit(f"remote capture failed (exit {proc.returncode}): {proc.stderr.strip()[-400:]}")
+        result = fetch_and_reassemble(host, user, remote_capture_path(session))
+    finally:
+        cleanup_session(host, user, session)
+    if not result.pairing_ok:
+        print(f"WARNING: {result.detail}", file=sys.stderr)
+    raw_out = b"".join(result.payloads)
+    args.out.write_bytes(raw_out)
     print(
-        f"{args.out}: {len(deduped)} bytes ({len(deduped) // PAYLOAD_BYTES} packets after dedup, "
-        f"{len(raw) - len(deduped)} duplicate/partial bytes dropped) from {host}"
+        f"{args.out}: {len(raw_out)} bytes ({len(result.payloads)} payload records"
+        f"{'' if result.pairing_ok else ', UNPAIRED -- see warning above'}) from {host}"
     )
     return 0
 
 
 def _print_channel_table(channel_name: str, readings: list[SecondReading]) -> None:
     print(f"\n=== {channel_name} ===")
-    print(f"{'sec':>4} {'section':<20} {'dom_hz':>10} {'ppm':>8} {'thd_n_db':>9} {'glitches':>9}")
+    print(f"{'sec':>4} {'section':<20} {'dom_hz':>10} {'ppm':>8} {'thd_n_db':>9} {'glitches':>9}  note")
     for r in readings:
         if r.silent:
-            print(f"{r.second:4d} {r.section:<20} {'silent':>10} {'--':>8} {'--':>9} {'--':>9}")
+            print(f"{r.second:4d} {r.section:<20} {'--':>10} {'--':>8} {'--':>9} {'--':>9}  silent")
             continue
+        thd_cell = f"{r.thd_n_db:9.1f}" if r.thd_n_db is not None else f"{'--':>9}"
+        glitch_cell = f"{r.phase_glitches:9d}" if r.phase_glitches is not None else f"{'--':>9}"
+        note = f"  {r.reason}" if r.reason else ""
         print(
             f"{r.second:4d} {r.section:<20} {r.dominant_hz:10.2f} {r.pitch_offset_ppm:8.1f} "
-            f"{r.thd_n_db:9.1f} {r.phase_glitches:9d}"
+            f"{thd_cell} {glitch_cell}{note}"
         )
-    audible = [r for r in readings if not r.silent]
-    total_glitches = sum(r.phase_glitches for r in audible)
-    worst_thd_n = max((r.thd_n_db for r in audible if r.thd_n_db is not None), default=float("nan"))
-    ppm_values = [r.pitch_offset_ppm for r in audible if r.pitch_offset_ppm is not None]
+    summary = summarize_channel(readings)
+    worst = f"{summary.worst_thd_n_db:.1f} dB" if summary.worst_thd_n_db is not None else "n/a"
+    ppm_lo = f"{summary.pitch_offset_ppm_min:.1f}" if summary.pitch_offset_ppm_min is not None else "n/a"
+    ppm_hi = f"{summary.pitch_offset_ppm_max:.1f}" if summary.pitch_offset_ppm_max is not None else "n/a"
     print(
-        f"summary: {len(audible)}/{len(readings)} seconds audible, "
-        f"{total_glitches} total phase glitches, worst THD+N {worst_thd_n:.1f} dB, "
-        f"pitch offset {min(ppm_values, default=float('nan')):.1f}..{max(ppm_values, default=float('nan')):.1f} ppm"
+        f"summary: {summary.audible_seconds}/{summary.total_seconds} seconds audible, "
+        f"{summary.total_phase_glitches} total phase glitches, worst THD+N {worst}, "
+        f"pitch offset {ppm_lo}..{ppm_hi} ppm"
     )
 
 
@@ -545,35 +778,98 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         "ch0_woofer": analyze_channel(ch0, TAP_RATE_HZ),
         "ch1_tweeter": analyze_channel(ch1, TAP_RATE_HZ),
     }
+    leading_silence = max(leading_silence_seconds(rows) for rows in channels.values())
+    alignment_warning = None
+    if leading_silence > LEADING_SILENCE_WARNING_S:
+        alignment_warning = (
+            f"{leading_silence}s of leading silence -- section labels assume the "
+            "capture starts with playback and may be shifted if capture began early"
+        )
     if args.json:
-        print(json.dumps({name: [asdict(r) for r in rows] for name, rows in channels.items()}, indent=2))
+        payload = {
+            "alignment_warning": alignment_warning,
+            "channels": {
+                name: {
+                    "readings": [_reading_json(r) for r in rows],
+                    "summary": _summary_json(summarize_channel(rows)),
+                }
+                for name, rows in channels.items()
+            },
+        }
+        print(json.dumps(payload, indent=2, allow_nan=False))
         return 0
+    if alignment_warning:
+        print(f"WARNING: {alignment_warning}")
     for name, rows in channels.items():
         _print_channel_table(name, rows)
     return 0  # a meter, not a gate -- see module docstring
 
 
-def _click_launch_command(lane_pcm: str) -> str:
+def _click_launch_command(lane_pcm: str, session: str) -> str:
+    remote_wav = remote_click_path(session)
     launch_py = (
         "import time,sys,os;"
         "sys.stderr.write('LAUNCH_MONOTONIC_NS=%d\\n' % int(time.monotonic()*1e9));"
         "sys.stderr.flush();"
-        f"os.execvp('aplay', ['aplay','-q','-D',{lane_pcm!r},{REMOTE_CLICK_WAV!r}])"
+        f"os.execvp('aplay', ['aplay','-q','-D',{lane_pcm!r},{remote_wav!r}])"
     )
     return f"python3 -c {shlex.quote(launch_py)}"
 
 
-def locate_click_sample(ch0: np.ndarray, ch1: np.ndarray, threshold_frac: float = CLICK_DETECT_THRESHOLD_FRAC) -> int | None:
-    threshold = threshold_frac * 32767.0
-    peak = np.maximum(np.abs(ch0.astype(np.int64)), np.abs(ch1.astype(np.int64)))
+def locate_click_sample(ch0: np.ndarray, ch1: np.ndarray, threshold: float = CLICK_DETECT_THRESHOLD) -> int | None:
+    """Sample index of the STRONGEST peak across both channels crossing
+    `threshold` -- not the first crossing: a raised-cosine burst has many
+    samples near its own peak that would all cross a low threshold, so
+    the strongest one is the repeatable anchor. `threshold` is
+    jasper.route_latency.impulse_detect's own shared contract."""
+    peak = np.maximum(np.abs(ch0.astype(np.int64)), np.abs(ch1.astype(np.int64))) / 32768.0
     hits = np.flatnonzero(peak > threshold)
-    return int(hits[0]) if hits.size else None
+    if hits.size == 0:
+        return None
+    return int(hits[np.argmax(peak[hits])])
 
 
-def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, tmp_path: Path, index: int) -> float | None:
-    capture_proc = ssh_popen(host, user, remote_capture_cmd(LATENCY_CAPTURE_SECONDS, REMOTE_CAPTURE_RAW))
-    time.sleep(LATENCY_WARMUP_S)  # let the remote socket bind before aplay can possibly fire
-    launch_proc = ssh_run(host, user, _click_launch_command(lane_pcm), timeout=15)
+def parse_tagged_ns(stderr_text: str, tag: str) -> int | None:
+    prefix = f"{tag}="
+    for line in stderr_text.splitlines():
+        if line.startswith(prefix):
+            return int(line[len(prefix):])
+    return None
+
+
+def _wait_for_ready(proc: subprocess.Popen[str], *, timeout: float = READY_TIMEOUT_S) -> None:
+    """Block until the remote sniffer prints READY to stdout (right after
+    it binds -- see SNIFFER_SOURCE), or raise SystemExit. Replaces a fixed
+    sleep that raced ssh+sudo+python startup: that startup time varies
+    with load and network, and a sleep shorter than it would launch aplay
+    before the sniffer's socket exists."""
+    assert proc.stdout is not None
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(f"remote sniffer did not print READY within {timeout}s")
+        readable, _, _ = select.select([proc.stdout], [], [], remaining)
+        if not readable:
+            continue
+        line = proc.stdout.readline()
+        if not line:
+            raise SystemExit(f"remote sniffer exited before READY (rc={proc.poll()})")
+        if line.strip() == "READY":
+            return
+
+
+def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, index: int) -> float | None:
+    capture_proc = ssh_popen(host, user, remote_capture_cmd(LATENCY_CAPTURE_SECONDS, session))
+    try:
+        _wait_for_ready(capture_proc)
+    except SystemExit as exc:
+        capture_proc.kill()
+        capture_proc.communicate()
+        print(f"repeat {index + 1}: FAILED ({exc})", file=sys.stderr)
+        return None
+
+    launch_proc = ssh_run(host, user, _click_launch_command(lane_pcm, session), timeout=15)
     launch_ns = parse_tagged_ns(launch_proc.stderr, "LAUNCH_MONOTONIC_NS")
     try:
         _cap_out, cap_err = capture_proc.communicate(timeout=LATENCY_CAPTURE_SECONDS + 15)
@@ -584,23 +880,37 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, tmp_path: Path,
     if launch_ns is None or start_ns is None or capture_proc.returncode != 0:
         print(
             f"repeat {index + 1}: FAILED (launch_ns={launch_ns} start_ns={start_ns} "
-            f"capture_rc={capture_proc.returncode}) launch_stderr={launch_proc.stderr.strip()[-300:]!r} "
+            f"launch_rc={launch_proc.returncode} capture_rc={capture_proc.returncode}) "
+            f"launch_stderr={launch_proc.stderr.strip()[-300:]!r} "
             f"capture_stderr={cap_err.strip()[-300:]!r}",
             file=sys.stderr,
         )
         return None
-    local_raw = tmp_path / f"latency-{index}.raw"
-    scp_pull(host, user, REMOTE_CAPTURE_RAW, local_raw, timeout=60)
-    deduped = dedup_payloads(local_raw.read_bytes())
-    ch0, ch1 = deinterleave_s16le_stereo(deduped)
+
+    result = fetch_and_reassemble(host, user, remote_capture_path(session))
+    if not result.pairing_ok:
+        print(f"repeat {index + 1}: WARNING: {result.detail}", file=sys.stderr)
+    raw = b"".join(result.payloads)
+    ch0, ch1 = deinterleave_s16le_stereo(raw)
     sample_index = locate_click_sample(ch0, ch1)
     if sample_index is None:
         print(
-            f"repeat {index + 1}: click not found in capture (nothing above threshold) "
-            "-- check the lane is actually routed to the tap",
+            f"repeat {index + 1}: click not found in capture (nothing above "
+            f"threshold; launch_rc={launch_proc.returncode}, "
+            f"launch_stderr={launch_proc.stderr.strip()[-300:]!r}) -- check "
+            "LANE_PCM names a real, routed device rather than assuming a "
+            "routing problem",
             file=sys.stderr,
         )
         return None
+    if not result.pairing_ok:
+        # Un-collapsed duplicate records double the apparent sample count for
+        # the same wall-clock span, so the sample-rate-based arrival math
+        # below would read ~2x too late -- refuse rather than report a
+        # silently-wrong number.
+        print(f"repeat {index + 1}: skipping latency math -- pairing failed (see warning above)", file=sys.stderr)
+        return None
+
     arrival_ns = start_ns + int(sample_index / TAP_RATE_HZ * 1e9)
     delta_ms = (arrival_ns - launch_ns) / 1e6
     print(f"repeat {index + 1}: {delta_ms:.2f} ms")
@@ -609,29 +919,37 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, tmp_path: Path,
 
 def cmd_latency(args: argparse.Namespace) -> int:
     host, user = resolve_target(args.host)
-    push_sniffer(host, user)
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        click_local = tmp_path / "click.wav"
-        write_wav_int16(click_local, build_click_signal(CLICK_SAMPLE_RATE_HZ), CLICK_SAMPLE_RATE_HZ)
-        scp_push(host, user, click_local, REMOTE_CLICK_WAV)
-
-        deltas = [
-            delta
-            for i in range(args.repeats)
-            if (delta := _run_one_latency_repeat(host, user, args.lane_pcm, tmp_path, i)) is not None
-        ]
+    session = new_session_id()
+    push_sniffer(host, user, session)
+    deltas: list[float] = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            click_local = Path(tmp) / "click.wav"
+            write_wav_int16(click_local, build_click_signal(CLICK_TRACK_RATE_HZ), CLICK_TRACK_RATE_HZ)
+            scp_push(host, user, click_local, remote_click_path(session))
+        for i in range(args.repeats):
+            delta = _run_one_latency_repeat(host, user, args.lane_pcm, session, i)
+            if delta is not None:
+                deltas.append(delta)
+    finally:
+        cleanup_session(host, user, session)
 
     if not deltas:
         print("no successful repeats -- see failures above", file=sys.stderr)
         return 1
-    print(f"\nmedian: {statistics.median(deltas):.2f} ms over {len(deltas)}/{args.repeats} successful repeats")
     print(
-        "caveat: this includes aplay's own process-start and ALSA-device-open cost "
-        "ahead of the WAV's fixed leading silence, plus this tool's own warmup sleep "
-        "before launch -- it is not a pure DSP-pipe latency. Use it for BEFORE/AFTER "
-        "comparison on this box, never as an absolute number compared across boxes "
-        "or lanes."
+        f"\nmedian: {statistics.median(deltas):.2f} ms  "
+        f"(min {min(deltas):.2f} ms, max {max(deltas):.2f} ms) over "
+        f"{len(deltas)}/{args.repeats} successful repeats"
+    )
+    print(
+        "caveat: this measures from aplay's own process-start (stamped on "
+        "the box right before exec) through the WAV's fixed leading "
+        "silence, the DSP pipe, and tap arrival -- it does NOT include "
+        "this tool's own ssh/sudo/READY-wait overhead, all of which "
+        "happens before that timestamp is taken. Use it for BEFORE/AFTER "
+        "comparison on this box, never as an absolute number compared "
+        "across boxes or lanes."
     )
     return 0
 
@@ -656,7 +974,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cap = sub.add_parser("capture", help="capture the post-DSP reference tap")
     p_cap.add_argument("seconds", type=float)
     p_cap.add_argument("out", type=Path)
-    p_cap.add_argument("--host", default=None, help="ssh target override (default: scripts/_lib.sh resolution)")
+    p_cap.add_argument("--host", default=None, help="ssh target override (default: scripts/_pi_target.py resolution)")
     p_cap.set_defaults(func=cmd_capture)
 
     p_ana = sub.add_parser("analyze", help="read a captured tap and report per-second metrics")
@@ -666,7 +984,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_lat = sub.add_parser("latency", help="measure lane-to-tap latency")
     p_lat.add_argument("lane_pcm")
-    p_lat.add_argument("--host", default=None, help="ssh target override (default: scripts/_lib.sh resolution)")
+    p_lat.add_argument("--host", default=None, help="ssh target override (default: scripts/_pi_target.py resolution)")
     p_lat.add_argument("--repeats", type=int, default=5)
     p_lat.set_defaults(func=cmd_latency)
 
