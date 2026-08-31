@@ -76,6 +76,7 @@ from .driver_base_trim import (
     DriverBaseTrimError,
     banked_base_trims,
     clear_base_trim,
+    load_base_trim,
     write_base_trim,
 )
 from .driver_pad import effective_sensitivity_db
@@ -704,6 +705,10 @@ def _measured_level_trims(
             if item.get("speaker_group_id")
         }),
         "deltas": deltas,
+        # WHEN this answer's evidence was measured. The apply seam banks it as
+        # the record's ``measured_at``, so a re-persist of a frozen candidate
+        # re-banks the evidence time, never the persist time.
+        "newest_capture_at": newest_capture_at,
         "comparison": "placement_attested_gain_ledger_normalized",
         "placement_policy": DRIVER_PLACEMENT_POLICY_ID,
         "active_comparison_set_id": (
@@ -734,6 +739,9 @@ def _measured_level_trims(
             return base_trims, {
                 "source": "banked_base_trim",
                 "base_trim": base_trim_meta,
+                # The record's ``measured_at`` IS the evidence time, so a
+                # candidate levelled by the bank re-banks that same instant.
+                "newest_capture_at": base_trim_meta.get("measured_at"),
                 # The record's own trim source, not a second word for it: the
                 # apply that banked it stamped WHICH evidence levelled the
                 # graph, and this ledger repeats that rather than minting a
@@ -768,7 +776,6 @@ def _measured_level_trims(
         meta["base_trim"] = {
             **base_trim_meta,
             "status": BASE_TRIM_STATUS_SUPERSEDED,
-            "superseded_by_capture_at": newest_capture_at,
         }
 
     if not trims:
@@ -2559,6 +2566,11 @@ def build_baseline_profile_candidate(
                 "comparison": "strict_measured_candidate",
                 "incomparable_groups": [],
                 "applied": True,
+                # Evidence recency for the bank's ``measured_at``: the v2
+                # session carries no capture clock at this seam, so the build
+                # instant is the upper bound — stamped ONCE here and frozen
+                # into the candidate, so a re-persist cannot re-date the bank.
+                "newest_capture_at": now,
                 "sitting_differences": list(sitting_notes),
                 "sitting_frame": sitting_frame,
             },
@@ -3472,6 +3484,20 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             )
             return
         trims_db[str(role)] = gain
+    # The record's ``measured_at`` is the EVIDENCE time (the S20 supersede
+    # compares capture times against it), never this persist's wall clock:
+    # this seam re-runs on frozen candidates (the apply retry before the
+    # idempotent early-return, any re-apply of an older candidate), and
+    # stamping now would re-date old evidence past strictly newer captures —
+    # silently, forever. Candidates carry their own recency in the ledger;
+    # a frozen candidate from before that field existed inherits the standing
+    # record's time (never re-dated forward), and only a box with no dated
+    # evidence and no record lets the writer mint now.
+    evidence_at = str(level_match.get("newest_capture_at") or "") or None
+    if evidence_at is None:
+        existing = load_base_trim()
+        if existing is not None:
+            evidence_at = str(existing.get("measured_at") or "") or None
     try:
         record = write_base_trim(
             trims_db=trims_db,
@@ -3481,6 +3507,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
                 source.get("crossover_preview_fingerprint") or ""
             ),
             trim_source=str(level_match.get("comparison") or ""),
+            measured_at=evidence_at,
         )
     except (OSError, DriverBaseTrimError) as exc:
         refused(

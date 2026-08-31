@@ -281,6 +281,7 @@ def write_base_trim(
     speaker_group_ids: Sequence[str],
     declaration_fingerprint: str,
     trim_source: str,
+    measured_at: str | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish one measured base trim. Called ONLY from the apply seam.
@@ -288,6 +289,12 @@ def write_base_trim(
     Raises :class:`DriverBaseTrimError` when the record would not survive
     :func:`banked_base_trims` — writing a value the reader rejects is a silent
     no-op dressed up as success.
+
+    ``measured_at`` is WHEN THE EVIDENCE WAS MEASURED (the newest capture that
+    fed the trim), not when this record was written — the S20 supersede
+    compares capture times against it, so stamping write time here would let a
+    re-persist of a frozen candidate re-date old evidence past newer captures.
+    Minted as now only when the caller has no dated evidence at all.
 
     **Attenuation-only by construction, and REFUSED rather than clamped.** No
     path that reaches this writer can legitimately produce a positive per-role
@@ -353,7 +360,7 @@ def write_base_trim(
     payload = {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASE_TRIM_KIND,
-        "measured_at": _utc_now(),
+        "measured_at": measured_at or _utc_now(),
         "state_path": str(path),
         "declaration_fingerprint": declaration_fingerprint,
         "roles": list(ordered),
