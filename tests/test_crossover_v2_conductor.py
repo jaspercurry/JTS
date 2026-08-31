@@ -84,6 +84,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_DONE,
     PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
+    PHASE_REVIEW,
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -821,6 +822,22 @@ def test_happy_path_walks_check_measure_apply_verify():
     assert fakes.played[2][0] == PHASE_VERIFY
     assert c.verify_outcome == "pass"
     assert c.current_phase == PHASE_DONE
+
+
+def test_a_capture_on_a_phase_without_a_consumer_is_refused_loudly():
+    """A capture index mapped to a control-page phase is a wiring defect.
+
+    The dispatch table refuses it as a typed error. The chains it replaced
+    fell back to grading such a capture as post-apply VERIFY against empty
+    priors — banking it durably as a tuning attempt, silently.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes, index_phase_map={1: PHASE_REVIEW})
+    with pytest.raises(CrossoverV2FlowError):
+        c.consume_capture(1, 1, _capture())
+    # Refused before any analysis, banking, or verify grading ran.
+    assert fakes.analyzed == []
+    assert c.attempt_history == ()
 
 
 def test_apply_gate_seam_releases_deferred_verify():
@@ -3862,38 +3879,6 @@ def test_a_verify_take_banks_the_kind_its_own_round_can_derive():
     banked = [m for m in retained if m["phase"] == PHASE_VERIFY]
     assert len(banked) == 1
     assert banked[0]["measure_kind"] == MEASURE_KIND_VERIFY
-
-
-def test_a_catch_all_capture_banks_under_the_phase_it_actually_ran():
-    """The dispatch's ``else`` is a CATCH-ALL, and its take says so.
-
-    Every phase the dispatch does not name by hand lands in the VERIFY arm.
-    Banking those under a hardcoded ``verify`` would file them durably as
-    post-apply tracking evidence — the same mislabel the entry baseline's
-    explicit carve-out one branch up exists to prevent, except written into a
-    write-once record instead of a verdict, where no later capture can correct
-    it.
-
-    The program selector is stubbed because it refuses these phases before the
-    arm is reached; what is under test is which LABEL the arm banks, not which
-    stimulus the phase plays.
-    """
-    retained: list = []
-    fakes = FakeSeams()
-    odd_index = max(STAGE2_MAP) + 1
-    c = _conductor(
-        fakes,
-        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
-        index_phase_map={**STAGE2_MAP, odd_index: PHASE_APPLYING},
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-    )
-    c.program_for_phase = lambda phase: c._verify_program
-
-    _run_phase(c, odd_index, 1)
-
-    assert [m["phase"] for m in retained] == [PHASE_APPLYING]
-    assert retained[0]["take_id"].startswith(f"{PHASE_APPLYING}_")
 
 
 def test_an_unprompted_take_is_named_the_way_the_entry_baseline_named_its_own():

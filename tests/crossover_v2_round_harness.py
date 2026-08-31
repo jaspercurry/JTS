@@ -237,9 +237,9 @@ def _consume_verify(
     production arm on the very branch these tests exercise. Any test that
     wants to READ a banked VERIFY take must state ``index`` and ``result``.
 
-    ``phase`` is stated rather than defaulted: the arm is the dispatch's
-    catch-all, and a default would let the harness bank under a label the
-    caller never chose — the mislabel :meth:`_consume_verify` documents.
+    ``phase`` is stated rather than defaulted: a default would let the
+    harness bank under a label the caller never chose — the mislabel
+    :meth:`_consume_verify` documents.
     """
     return conductor._consume_verify(
         index, attempt, analysis, result, phase=flow.PHASE_VERIFY,
