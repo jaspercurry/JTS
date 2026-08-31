@@ -549,18 +549,18 @@ def stage_walk(
     """
     flags = ""
     if polarity is not None:
-        flags += f" --polarity {shlex.quote(polarity)}"
+        flags += f" --polarity={shlex.quote(polarity)}"
     if inverted_role is not None:
-        flags += f" --inverted-role {shlex.quote(inverted_role)}"
+        flags += f" --inverted-role={shlex.quote(inverted_role)}"
     if delayed_role is not None:
-        flags += f" --delayed-role {shlex.quote(delayed_role)}"
+        flags += f" --delayed-role={shlex.quote(delayed_role)}"
     if delay_us is not None:
         flags += f" --delay-us {delay_us!r}"
     if level_matched:
         flags += " --level-matched"
     remote = (
         f"sudo {PI_VENV_BIN}/jasper-angle-capture stage --mover arm "
-        f"--angles {shlex.quote(angles)} --regime {shlex.quote(regime)}"
+        f"--angles={shlex.quote(angles)} --regime={shlex.quote(regime)}"
         f"{flags} --json"
     )
     proc = subprocess.run(
