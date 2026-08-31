@@ -52,6 +52,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import secrets
 import sys
 from dataclasses import dataclass
@@ -89,9 +90,8 @@ REFUSE_ONE_POSITION_PER_RUN = "measure_one_position_per_run"
 
 #: ``--specs`` could not be read, or does not hold a non-empty list of mappings.
 REFUSE_SPECS_UNREADABLE = "measure_specs_file_unreadable"
-#: A specs file whose entries name more than one pose. A batch measures ONE
-#: placement; mixing bearings is B3 through a file and mixing elevations is the
-#: same defect stood on its end.
+#: A specs file whose entries disagree about the pose — bearing, prompts, axis
+#: or elevation. A batch measures ONE microphone placement.
 REFUSE_SPECS_MIXED_POSE = "measure_specs_mixed_pose"
 #: ``--specs`` given beside the flags that describe one take. Two sources of
 #: truth for one spec, refused rather than merged behind a precedence rule.
@@ -104,6 +104,10 @@ REFUSE_GRAPH_LOST = "measure_graph_lost"
 REFUSE_ISOLATION_LOST = "measure_isolation_lost"
 #: The measurement volume stopped being open, confirmed and fresh mid-walk.
 REFUSE_VOLUME_LOST = "measure_volume_lost"
+#: The evidence store stopped accepting writes mid-walk. Later specs would
+#: play sweeps whose takes nothing keeps, so the batch aborts as a partial
+#: result instead of letting the store's exception escape as a traceback.
+REFUSE_STORE_LOST = "measure_evidence_store_lost"
 #: The operator interrupted the run. Named like the other three because it ends
 #: the batch the same way, and because whoever pressed Ctrl-C is exactly who
 #: needs the ids of what already banked.
@@ -157,19 +161,21 @@ class MeasureInterrupted(RuntimeError):
         store: Any,
         *,
         spec: Any,
-        done: tuple[Any, ...] = (),
+        spec_index: int,
+        done: tuple[tuple[Any, str], ...] = (),
     ) -> None:
         self.reason = reason
         self.detail = detail
         self.record_ids = list(session.banked_record_ids)
-        self.graph_fingerprint = str(session.graph_fingerprint)
         self.bundle_dir = str(store.bundle_dir)
         self.session_id = str(session.session_id)
-        #: WHICH spec was in flight. In a batch the ids alone cannot say where
-        #: the run stopped, and the next attempt needs to know what to re-take.
+        #: WHICH spec was in flight, and its zero-based place in the batch. In
+        #: a batch the ids alone cannot say where the run stopped, and repeated
+        #: or unlabelled entries cannot be told apart by their fields.
         self.spec = spec
-        #: The specs that completed before it, so a partial batch renders the
-        #: same per-spec shape a whole one does.
+        self.spec_index = int(spec_index)
+        #: ``(outcome, graph fingerprint)`` per completed spec, so a partial
+        #: batch renders the same per-spec shape a whole one does.
         self.done = done
         super().__init__(f"{reason}: {detail}")
 
@@ -361,13 +367,11 @@ def _variant_axes(spec: Any) -> tuple[str, ...]:
 
 
 def _require_candidate_id(spec: Any, *, where: str) -> None:
-    """C3, for one spec however it was written down.
+    """A variant spec must name the candidate id that selects its takes.
 
-    **The rule lives HERE, in the door's flag layer, and not on the spec.** A
-    spec constructed by the wizard already carries a candidate id from the round
-    it belongs to; an engine-side refusal would be a new gate on a shipped shape
-    rather than a door telling its own operator that the take they are about to
-    bank would be unfindable.
+    The rule lives in the door, not on the spec: a spec constructed by the
+    wizard already carries a candidate id from the round it belongs to, and an
+    engine-side refusal would be a new gate on a shipped shape.
     """
     axes = _variant_axes(spec)
     if axes and not spec.candidate_id:
@@ -379,7 +383,7 @@ def _require_candidate_id(spec: Any, *, where: str) -> None:
 
 
 def spec_from_args(args: argparse.Namespace) -> Any:
-    """One :class:`MeasureSpec` from the flags, with the C3 rule behind it."""
+    """One :class:`MeasureSpec` from the flags, candidate-id rule included."""
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
     if len(args.position) > 1:
@@ -436,9 +440,8 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
 
     The batch measures one PLACEMENT, which is the whole reason it exists: the
     physical cost is the mic move, so N configs against one move is the win. A
-    file whose entries disagree about the pose is therefore refused here rather
-    than measured — mixing bearings is B3 arriving through a file, and mixing
-    elevations is the same defect stood on its end.
+    file whose entries disagree about the pose — bearing, prompts, axis or
+    elevation — is therefore refused here rather than measured.
     """
     if not args.specs:
         return (spec_from_args(args),)
@@ -458,15 +461,74 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
             "or drop --specs",
         )
     specs = _specs_from_file(args)
-    poses = {(spec.positions, spec.position_axis, spec.vertical_deg) for spec in specs}
+    poses = {
+        # ``positions=()`` and ``positions=(0,)`` name the same design-axis
+        # pose — :class:`MeasureSpec`'s own contract — so the two spellings
+        # must not read as two placements. The prompt is part of the placement
+        # too: it is what the mover was told, and nothing moves between specs.
+        (spec.positions or (0,), spec.pose_prompts, spec.position_axis,
+         spec.vertical_deg)
+        for spec in specs
+    }
     if len(poses) > 1:
         raise MeasureFlagError(
             REFUSE_SPECS_MIXED_POSE,
             "a batch measures ONE microphone placement, and nothing here moves "
             f"the microphone between specs; this file names {len(poses)} poses "
-            "(bearing, axis, elevation). Split it into one file per placement",
+            "(bearing, prompts, axis, elevation). Split it into one file per "
+            "placement",
         )
     return specs
+
+
+#: The spec fields a file entry must state as JSON strings. Each is trimmed,
+#: so a whitespace-only candidate id cannot pass the variant rule as a truthy
+#: label.
+_STRING_FIELDS = (
+    "kind", "position_axis", "regime", "polarity", "inverted_role",
+    "delayed_role", "candidate_id",
+)
+
+
+def _typed_entry(index: int, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """argparse's typing, for a mapping that never went through argparse.
+
+    Raw JSON can hand :class:`MeasureSpec` what no flag ever could — a truthy
+    string for ``level_matched``, a numeric candidate id, a bare string where a
+    tuple field expects an array (``tuple("030")`` is three character
+    bearings), a non-finite or non-numeric delay or ladder rung. Each is
+    refused here with the entry's index, instead of crashing outside the typed
+    refusal or flowing through as a silently different measurement.
+    """
+
+    def refuse(what: str) -> MeasureFlagError:
+        return MeasureFlagError(REFUSE_SPEC_INVALID, f"spec {index}: {what}")
+
+    fields = dict(entry)
+    for key in ("positions", "pose_prompts", "level_ladder_dbfs"):
+        if key in fields:
+            if not isinstance(fields[key], list):
+                raise refuse(f"{key} must be a JSON array")
+            fields[key] = tuple(fields[key])
+    for key in _STRING_FIELDS:
+        if key in fields:
+            if not isinstance(fields[key], str):
+                raise refuse(f"{key} must be a string")
+            fields[key] = fields[key].strip()
+    if not all(isinstance(p, str) for p in fields.get("pose_prompts", ())):
+        raise refuse("pose_prompts entries must be strings")
+    if not isinstance(fields.get("level_matched", False), bool):
+        raise refuse("level_matched must be true or false")
+    for name, values in (
+        ("delay_us", (fields.get("delay_us", 0.0),)),
+        ("level_ladder_dbfs", fields.get("level_ladder_dbfs", ())),
+    ):
+        for value in values:
+            # ``bool`` is an ``int``; JSON itself can carry NaN/Infinity.
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise refuse(f"{name} must be a finite number, got {value!r}")
+    return fields
 
 
 def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -495,16 +557,23 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
                 REFUSE_SPECS_UNREADABLE,
                 f"spec {index} is not a mapping",
             )
-        fields = {**defaults, **entry}
-        for key in ("positions", "pose_prompts", "level_ladder_dbfs"):
-            if key in fields:
-                fields[key] = tuple(fields[key])
+        fields = {**defaults, **_typed_entry(index, entry)}
         try:
             spec = MeasureSpec(**fields)
         except (TypeError, ValueError) as exc:
             raise MeasureFlagError(
                 REFUSE_SPEC_INVALID, f"spec {index}: {exc}",
             ) from exc
+        if len(spec.positions) > 1:
+            # The same rule a second ``--position`` meets: nothing here moves
+            # the microphone, so one entry states at most one placement.
+            raise MeasureFlagError(
+                REFUSE_ONE_POSITION_PER_RUN,
+                f"spec {index} names {len(spec.positions)} bearings "
+                f"({', '.join(str(deg) for deg in spec.positions)}), and "
+                "nothing here moves the microphone between them; one entry "
+                "measures one placement",
+            )
         _require_candidate_id(spec, where=f"spec {index}")
         specs.append(spec)
     return tuple(specs)
@@ -543,7 +612,6 @@ def _bind_compose(
     session_id: str,
     cam_factory: Any,
     config_dir: str,
-    played: _PlayedProgram,
 ) -> Any:
     """The host's ``compose``: one routed per-driver program per stimulus.
 
@@ -612,7 +680,6 @@ def _bind_compose(
             write_program_wav(str(wav_path), program)
             return store.identify_artifact(wav_rel)
 
-        played.program = program
         artifact = await asyncio.to_thread(_render)
         seams = bind_program_playback_seams(
             cam_factory(),
@@ -632,78 +699,6 @@ def _bind_compose(
     return _compose
 
 
-def _crunch(
-    program: Any, wav_path: Path, integrity: Any, fc_hz: float,
-) -> list[dict[str, Any]]:
-    """The take's complex responses, through the analysis that already owns them.
-
-    Three shipped owners in a row and no arithmetic of its own:
-    :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.read_banked_capture_mono`
-    for the bytes (the one place that reads a banked capture's width off its own
-    ``fmt`` chunk rather than assuming it — a 16-bit read of a 32-bit wired take
-    is a 96 dB level error),
-    :func:`~jasper.audio_measurement.program_analysis.analyze_program_capture`
-    for the analysis, and
-    :func:`~jasper.active_speaker.crossover_v2.spatial.analysis_curve_records`
-    for the banked shape. Uncalibrated, and the record says so: the calibration
-    reference rides beside this as ``capture_setup``, and applying a curve is
-    the analysis stage's job, not the capture's.
-
-    **Fail-soft, and not decoratively** — the wizard's own ``_banked_curves``
-    guards the same call for the same reason: the sweep already played and the
-    take is already on disk, so a serialization fault must cost the CURVES, not
-    the capture. An empty list therefore reads as "no curve was banked", which
-    the journal line is the discriminator for.
-    """
-    from jasper.active_speaker.crossover_v2 import spatial
-    from jasper.active_speaker.crossover_v2.harmonic_evidence import (
-        read_banked_capture_mono,
-    )
-    from jasper.audio_measurement.program_analysis import (
-        MeasurementPriors,
-        analyze_program_capture,
-    )
-
-    if program is None:
-        return []
-    try:
-        analysis = analyze_program_capture(
-            program,
-            read_banked_capture_mono(wav_path),
-            program.sample_rate_hz,
-            # The corner is a DECLARED property of this speaker, and a MEASURE
-            # analysis refuses without it — it is what the per-driver read
-            # splits its bands around. Taken from the box's own declaration,
-            # never from a flag.
-            priors=MeasurementPriors(crossover_fc_hz=fc_hz),
-            capture_report=integrity,
-        )
-        return spatial.analysis_curve_records(analysis, program)
-    except (AttributeError, IndexError, OSError, TypeError, ValueError):
-        log_event(
-            logger,
-            "active_speaker.measure",
-            level=logging.WARNING,
-            action="curves_failed",
-            wav_path=str(wav_path),
-            exc_info=True,
-        )
-        return []
-
-
-@dataclass
-class _PlayedProgram:
-    """The program the last composed stimulus played, for the crunch to read.
-
-    One slot, set at compose and read at bank, which are the two ends of one
-    stimulus. The crunch needs the program the capture answers — its schedule is
-    what locates the segments and names each role's band — and neither the
-    engine's record nor the capture answer carries it.
-    """
-
-    program: Any = None
-
-
 @dataclass(frozen=True)
 class _CaptureAnnotatedStore:
     """The banked store, plus what the microphone said about the take.
@@ -721,24 +716,10 @@ class _CaptureAnnotatedStore:
     happens here because banking is the moment the two facts belong to the same
     take. A stimulus that played but did not bank leaves its answer for the next
     ``around`` to clear, which is that contract working, not a leak.
-
-    **It also CRUNCHES.** Capture and analysis are one act: there is no point
-    taking a measurement nobody turns into numbers, and a take banked as a WAV
-    reference alone makes every later reader re-derive what the box already
-    knew. So the complex responses land ON the record, in the same
-    ``curves`` shape and under the same key the wizard's own takes use — ruling
-    S3's *"just save the information"*, which is what makes a bank re-analysable
-    by an analysis that did not exist when it was captured.
-
-    Deeper readings stay explicit tools: classification, distortion and packets
-    are things somebody ASKS for, and folding them in here would make every
-    take pay for readings most takes never need.
     """
 
     inner: Any
     capture: Any
-    played: _PlayedProgram
-    fc_hz: float
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         answer = self.capture.take_answer()
@@ -753,15 +734,9 @@ class _CaptureAnnotatedStore:
                if answer.capture_integrity else {}),
             **({"capture_device": answer.device} if answer.device else {}),
             **({"capture_setup": answer.setup} if answer.setup else {}),
-            "curves": await asyncio.to_thread(
-                _crunch,
-                self.played.program,
-                Path(self.inner.evidence.bundle_dir) / str(record["wav_path"]),
-                answer.capture_integrity,
-                self.fc_hz,
-            ),
         }
         return await self.inner.bank(annotated)
+
 
 async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any]:
     """Open the door once, measure every spec through it, close, and report.
@@ -814,7 +789,6 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             "no measurement microphone answered; connect the UMIK and re-run",
         )
 
-    played = _PlayedProgram()
     session_id = f"measure-{secrets.token_hex(4)}"
     config_dir = str(DEFAULT_CAMILLA_CONFIG_DIR)
     cam_factory = primary_controller
@@ -853,8 +827,6 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                     relay_session_id=session_id,
                 ),
                 capture=capture,
-                played=played,
-                fc_hz=box.fc_hz,
             ),
             volume_claim=door.claim,
             session_volume_plan=door.plan,
@@ -864,7 +836,6 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                 session_id=session_id,
                 cam_factory=cam_factory,
                 config_dir=config_dir,
-                played=played,
             ),
             capture_stimulus=capture,
         )
@@ -875,9 +846,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             level_match_trims_db=trims,
         ) as session:
             outcomes = await _measured(session, specs, store=store)
-            return _report(
-                session, outcomes, store=store, session_id=session_id,
-            )
+            return _report(outcomes, store=store, session_id=session_id)
 
 
 def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type, str]]:
@@ -885,15 +854,19 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
 
     **The scope split is drawn by exception type at this one site, and nowhere
     else** — no string matching and no runtime judgement about how bad a failure
-    was. The discriminator is structural: everything here is a property of the
-    SESSION (the graph nobody can re-prove, the volume that stopped being open,
-    the isolation that was lost, the operator's own cancel), so the next spec
-    would measure through a speaker this process no longer holds. Every other
-    failure is a property of ONE STIMULUS — an admission refusal, a dead aplay,
-    a capture that could not be placed — and those never raise at all: the play
-    transaction turns each into a typed ``incident`` on its own stimulus, which
-    is what lets the batch carry on and disclose them per spec.
+    was. Everything here is a property of what the whole batch stands on: the
+    graph nobody can re-prove, the volume that stopped being open, the lost
+    isolation window, the evidence store that stopped accepting writes, the
+    operator's own cancel. The next spec would measure through a speaker — or
+    into a bank — this process no longer holds. A failure scoped to one
+    stimulus (an admission refusal, a dead aplay, a capture that could not be
+    placed) never raises here at all: the play transaction turns it into a
+    typed ``incident`` on its own stimulus, which is what lets the batch carry
+    on and disclose it per spec.
     """
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStoreError,
+    )
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.correction.coordinator import MeasurementWindowError
@@ -902,6 +875,7 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
         SessionGraphError: REFUSE_GRAPH_LOST,
         SessionVolumePlanError: REFUSE_VOLUME_LOST,
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
+        CommissioningEvidenceStoreError: REFUSE_STORE_LOST,
         asyncio.CancelledError: REFUSE_CANCELLED,
     }
     return tuple(reasons), reasons
@@ -909,14 +883,13 @@ def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type
 
 async def _measured(
     session: Any, specs: tuple[Any, ...], *, store: Any,
-) -> tuple[Any, ...]:
-    """Every spec against one open session, and what a mid-batch failure costs.
+) -> tuple[tuple[Any, str], ...]:
+    """Every spec against one open session, as ``(outcome, graph fingerprint)``.
 
     A session-scoped failure ABORTS: the speaker is no longer held the way the
     remaining specs would be measured through, so continuing would bank takes
     whose provenance is a guess. It leaves through :class:`MeasureInterrupted`
-    naming the spec that was in flight, carrying every id banked so far — B4's
-    partial payload, generalized from one spec to N.
+    naming the spec that was in flight, carrying every id banked so far.
 
     A spec-scoped failure does not reach here at all: the play transaction
     reports it as a typed ``incident`` on the stimulus, so that spec's entry in
@@ -925,10 +898,10 @@ async def _measured(
     give the placement back.
     """
     aborting, reasons = _session_scoped_aborts()
-    outcomes: list[Any] = []
-    for spec in specs:
+    done: list[tuple[Any, str]] = []
+    for index, spec in enumerate(specs):
         try:
-            outcomes.append(await session.measure(spec))
+            outcome = await session.measure(spec)
         except aborting as exc:
             # ``isinstance`` and not ``reasons[type(exc)]``: a subclass of any
             # of these is still that failure, and a KeyError here would replace
@@ -943,13 +916,21 @@ async def _measured(
             # so the speaker is handed back before this is rendered.
             raise MeasureInterrupted(
                 reason, str(exc) or type(exc).__name__,
-                session, store, spec=spec, done=tuple(outcomes),
+                session, store, spec=spec, spec_index=index, done=tuple(done),
             ) from exc
-    return tuple(outcomes)
+        # Read per spec, before the next spec swaps the install: the session
+        # re-proves the graph per stimulus, so its fingerprint at this moment
+        # names the variant graph THIS spec measured through.
+        done.append((outcome, str(session.graph_fingerprint)))
+    return tuple(done)
 
 
-def _spec_report(outcome: Any) -> dict[str, Any]:
+def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
     """One spec's own answer, in the caller's words.
+
+    ``graph_fingerprint`` rides per spec and never once per run: each spec may
+    install a different variant graph, and the fingerprint is which graph THIS
+    spec's takes measured through.
 
     Every stimulus is reported, not only the banked ones: a rung that played and
     could not be banked is the fact a reader most needs, and a bare list of ids
@@ -967,6 +948,7 @@ def _spec_report(outcome: Any) -> dict[str, Any]:
     return {
         "candidate_id": outcome.spec.candidate_id,
         "kind": outcome.spec.kind,
+        "graph_fingerprint": graph_fingerprint,
         "record_ids": list(outcome.record_ids),
         "stimuli": [
             {
@@ -990,25 +972,29 @@ def _spec_report(outcome: Any) -> dict[str, Any]:
 
 
 def _report(
-    session: Any, outcomes: tuple[Any, ...], *, store: Any, session_id: str,
+    outcomes: tuple[tuple[Any, str], ...], *, store: Any, session_id: str,
 ) -> dict[str, Any]:
     """What this run measured — ONE shape whether it ran one spec or ten.
 
     A single-spec run reports a one-entry ``specs`` list rather than a flatter
     payload of its own: two shapes would make every reader branch on a count,
-    and the batch is the general case the door now has.
+    and the batch is the general case the door now has. The graph fingerprint
+    lives on each ``specs`` entry, never at the top: one value could not name
+    the several variant graphs a batch installs.
     """
     return {
         "status": "measured",
         "session_id": session_id,
         "bundle_dir": str(store.bundle_dir),
-        "graph_fingerprint": session.graph_fingerprint,
         "record_ids": [
             record_id
-            for outcome in outcomes
+            for outcome, _fingerprint in outcomes
             for record_id in outcome.record_ids
         ],
-        "specs": [_spec_report(outcome) for outcome in outcomes],
+        "specs": [
+            _spec_report(outcome, fingerprint)
+            for outcome, fingerprint in outcomes
+        ],
     }
 
 
@@ -1048,9 +1034,9 @@ def _interrupted(exc: MeasureInterrupted) -> int:
     the evidence.
 
     ``specs`` carries the same per-spec shape a whole run reports, and
-    ``stopped_at`` names the one that was in flight — in a batch the ids alone
-    cannot say where the run stopped, and the next attempt needs to know what
-    is still owed.
+    ``stopped_at`` names the one that was in flight — by zero-based ``index``
+    in the file as well as by its fields, because repeated or unlabelled
+    entries cannot be told apart by their fields alone.
     """
     log_event(
         logger,
@@ -1068,10 +1054,13 @@ def _interrupted(exc: MeasureInterrupted) -> int:
             "detail": exc.detail,
             "session_id": exc.session_id,
             "bundle_dir": exc.bundle_dir,
-            "graph_fingerprint": exc.graph_fingerprint,
             "record_ids": exc.record_ids,
-            "specs": [_spec_report(outcome) for outcome in exc.done],
+            "specs": [
+                _spec_report(outcome, fingerprint)
+                for outcome, fingerprint in exc.done
+            ],
             "stopped_at": {
+                "index": exc.spec_index,
                 "candidate_id": exc.spec.candidate_id,
                 "kind": exc.spec.kind,
             },
