@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, six subcommands — each a thin argparse wrapper over
+One console script, seven subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. This module reads banked round directories (the
 tree ``scripts/bank-crossover-round.sh`` produces), calls the product view,
@@ -37,6 +37,11 @@ Subcommands:
 * ``frequency <source-a> [<source-b>]`` — the renderer-neutral frequency view
   shared with the JTS web page. A source may be a banked round, a session
   bundle, or a JSON measurement/analysis document.
+* ``co-metrics <round-dir>`` — NBD + SM (Olive 2004, ADR-0202) on the
+  on-axis curve and the pooled horizontal window. Co-metrics only: they
+  inform, they never gate or veto — ``entry``/``frozen``/``per-seat`` etc.
+  above stay the acceptance path. Writes
+  ``<round-dir>/audibility_co_metrics.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout), and prints a one-line human summary to stderr either
@@ -56,6 +61,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
     RoundViewsError,
     agreement_table,
+    audibility_co_metrics,
     default_agreement_lo_hz,
     entry_state_grade,
     frozen_reference_grade,
@@ -274,6 +280,35 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_co_metrics(args: argparse.Namespace) -> int:
+    try:
+        banked = load_banked_round(Path(args.round_dir))
+        result = audibility_co_metrics(banked)
+    except _ROUND_READ_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    written = _write_json(
+        result.to_dict(), args.out, Path(args.round_dir) / "audibility_co_metrics.json"
+    )
+    on_axis = (
+        f"NBD={result.on_axis.nbd_db:.3f} dB SM={result.on_axis.sm_r2:.3f}"
+        if result.on_axis is not None else f"NOT AVAILABLE ({result.on_axis_reason})"
+    )
+    pooled = (
+        f"NBD={result.pooled_window.nbd_db:.3f} dB SM={result.pooled_window.sm_r2:.3f} "
+        f"({len(result.pooled_window_bearings_deg)} bearing(s))"
+        if result.pooled_window is not None
+        else f"NOT AVAILABLE ({result.pooled_window_reason})"
+    )
+    print(
+        f"co-metrics [informational only, never a grade input]: "
+        f"on-axis {on_axis}; pooled-window {pooled}"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _frequency_source(path: Path):
     """One round, bundle, or JSON document as a neutral frequency run."""
 
@@ -334,8 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "The round-grading comparison views: entry-state grading, "
             "frozen-reference grading, per-seat curves, session-to-session "
-            "repeatability, per-seat agreement, and the shared frequency "
-            "view — over banked rounds."
+            "repeatability, per-seat agreement, audibility co-metrics, and "
+            "the shared frequency view — over banked rounds."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -397,6 +432,13 @@ def build_parser() -> argparse.ArgumentParser:
     agreement.add_argument("--testify-db", type=float, default=0.4, help="minimum |seat dB| to testify or dissent")
     agreement.add_argument("--out", default=None, help="write the result here (- for stdout)")
     agreement.set_defaults(func=_cmd_agreement)
+
+    co_metrics = sub.add_parser(
+        "co-metrics", help="NBD + SM (Olive 2004) on the on-axis and pooled-window curves — informational only",
+    )
+    co_metrics.add_argument("round_dir", help="banked round directory")
+    co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    co_metrics.set_defaults(func=_cmd_co_metrics)
 
     frequency = sub.add_parser("frequency", help="build the shared frequency-response view")
     frequency.add_argument(
