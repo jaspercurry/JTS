@@ -32,6 +32,7 @@ from jasper.active_speaker.session_volume_plan import (
 from jasper.volume_owner import VolumeOwner, install_volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import _preset
+from tests._async_wait import wait_signalled
 from tests.test_cli_measure import HOUSEHOLD_DB, FakeCam
 
 ENTRY_CONFIG = "entry.yml"
@@ -208,7 +209,7 @@ async def test_a_cancel_inside_the_open_leaves_no_durable_record(tmp_path, box):
             pytest.fail("the door opened through a cancelled fader write")
 
     task = asyncio.ensure_future(_run())
-    await reached.wait()
+    await wait_signalled(reached, "the fader write began", producer=task)
     task.cancel()
     release.set()
     with pytest.raises(asyncio.CancelledError):

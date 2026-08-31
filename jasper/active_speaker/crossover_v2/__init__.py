@@ -102,6 +102,9 @@ call and neither extends:
 * :mod:`.composition` — the engine stood up around a host: the seam binder,
   the play-seam plumbing, and the graph-is-live proof, importable without
   :mod:`jasper.web` so a second front end can construct the same engine.
+* :mod:`.door` — the kernel path an operator door rides onto a held speaker:
+  the interlock, the isolation window, the volume plan and the measurement
+  graph, opened in one order and given back in its mirror.
 * :mod:`.measurement_phase` — which stimulus a measurement KIND plays, in the
   flow's phase words: the one place those two vocabularies meet.
 * :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for

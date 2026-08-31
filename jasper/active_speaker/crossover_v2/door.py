@@ -215,13 +215,15 @@ async def measurement_door(
                 measurement_volume_db=measurement_volume_db,
                 graph_fingerprint=fingerprint,
             )
-        except BaseException as raised:
+        except BaseException as raised:  # noqa: BLE001 - CancelledError is the point
             # Held so the give-back can ATTACH its own failures to it rather
             # than raise over it — the rule
             # :meth:`~.session.TuningSession._give_back_held` keeps, where a
             # cleanup failure never replaces the failure that caused the
-            # cleanup. ``BaseException`` because a ``CancelledError`` is the
-            # commonest one to arrive here and is not an ``Exception``.
+            # cleanup. ``BaseException`` and not ``Exception``: a
+            # ``CancelledError`` is the commonest arrival here and is not an
+            # ``Exception``, so narrowing the catch would drop the very case
+            # this guard exists for.
             body_error = raised
             raise
         finally:
