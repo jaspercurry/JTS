@@ -424,6 +424,7 @@ def evaluate_flat_spec(
     smoothing_fraction: int = 3,
     trusted_floor_hz: float | None = None,
     trusted_ceiling_hz: float | None = None,
+    reference_db_override: float | None = None,
 ) -> FlatSpecReport:
     """Evaluate the flat-linearization spec against one combined, 1/3-oct-
     smoothed magnitude curve (docs/historical/linearization-campaign-2026-07.md, "The spec --
@@ -464,6 +465,16 @@ def evaluate_flat_spec(
             value; every lower band's is lowered to it if it sits above.
             ``None`` or non-finite clamps nothing and grades the nominal
             table. Same take-the-number rule as ``trusted_floor_hz``.
+        reference_db_override: use this value as ``reference_db`` instead of
+            computing it, when not ``None``. Lets a caller grade a curve
+            against a DIFFERENT capture's reference level -- e.g. a target
+            round compared against a baseline round's own on-axis reference
+            -- without touching what the reference band is or how band
+            levels are computed: the zero-non-excluded-bins check below
+            still runs first regardless, so a position with nothing to grade
+            in the reference band still raises even when an override is
+            supplied. ``None`` (the default) computes the reference the
+            ordinary way.
 
     Reference level: the power mean (:func:`_power_mean_db`) over
     non-excluded bins inside :data:`REFERENCE_BAND_HZ`, its lower edge raised
@@ -576,7 +587,11 @@ def evaluate_flat_spec(
             f"reference band {ref_lo_hz}-{ref_hi_hz} Hz has zero non-excluded "
             "bins; cannot compute reference level"
         )
-    reference_db = _power_mean_db(spec_smoothed_db[ref_band_mask])
+    reference_db = (
+        _power_mean_db(spec_smoothed_db[ref_band_mask])
+        if reference_db_override is None
+        else float(reference_db_override)
+    )
 
     deviation_db = spec_smoothed_db - reference_db
 
