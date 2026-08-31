@@ -177,7 +177,6 @@ from jasper.active_speaker.camilla_yaml import role_polarity
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import admission as _admission
-from jasper.active_speaker.crossover_v2 import attempt_grading as _grading
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
@@ -7490,18 +7489,17 @@ class CrossoverV2Session:
         history is likewise not a new tuning attempt and cannot double-write
         model error.
 
-        Both rulings are stated in
-        :mod:`~jasper.active_speaker.crossover_v2.attempt_grading` (#2291
-        5b-ii), which brackets the durable write rather than driving it. Every
-        act stays here: building the record, the ``record_model_error`` seam
-        call with the guard that decides whether to make it, its ``except``
-        arms, all of its log lines, the identity conflict it can report, the
-        decision payload the household reads, and the history append. "How many
-        times can that write fire" is still answered by reading this method.
+        Both rulings (#2291 5b-ii) are stated inline at their arms below, and
+        every act sits beside them: building the record, the
+        ``record_model_error`` seam call with the guard that decides whether
+        to make it, its ``except`` arms, all of its log lines, the identity
+        conflict it can report, the decision payload the household reads, and
+        the history append. "How many times can that write fire" is answered
+        by reading this method alone.
 
         **Exactly-once survives a failed write, and that is why the seam call
         catches broadly** (#2386). The rung that stops a second write is the
-        ``ATTEMPT_ALREADY_RECORDED`` answer above, and it can only see a repeat
+        already-recorded skip above, and it can only see a repeat
         once the attempt is in ``_attempt_history`` — which this method appends
         at its END. So a store exception that ESCAPES the seam call skips that
         append, and the next capture of the same applied candidate is assessed
@@ -7516,39 +7514,27 @@ class CrossoverV2Session:
         method's own guard honest is exactly the coupling #2291 forbids.
         """
 
-        identity = _grading.assess_attempt_identity(
-            tuning_attempt_id=self._tuning_attempt_id,
-            # A callable for the ladder's stated call-count reason: the shipped
-            # flow reaches into the candidate only when no tuning attempt id is
-            # in hand, and ``None`` is how "there is no candidate to ask" is
-            # spelled.
-            candidate_fingerprint=lambda: (
-                str(getattr(self._candidate, "fingerprint", "") or "")
-                if self._candidate is not None else None
-            ),
-            session_id=self.session_id,
-            capture_attempt=capture_attempt,
-            recorded_ids=(item.attempt_id for item in self._attempt_history),
-        )
-        if identity.kind != _grading.ATTEMPT_NEW:
-            # ``ATTEMPT_ALREADY_RECORDED``'s arm, and the LOUD fallback for a
-            # kind nobody wired. One arm per :data:`attempt_grading.IDENTITY_KINDS`
-            # member, and the dangerous direction here is the PERMISSIVE one:
-            # falling through reaches the model-error write below, so a kind
-            # from the future would bank a second durable observation of one
-            # candidate identity — the exact double-write this rung exists to
-            # make unreachable. An unknown kind therefore skips, and says so.
-            if identity.kind != _grading.ATTEMPT_ALREADY_RECORDED:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_attempt_identity_kind_unmapped",
-                    level=logging.ERROR,
-                    session_id=self.session_id,
-                    attempt_id=identity.attempt_id,
-                    kind=str(identity.kind),
-                )
+        # The identity is the APPLIED candidate's, most specific first: the
+        # tuning attempt id the durable state carries, then the built
+        # candidate's own fingerprint (read only when no id is in hand — on
+        # the stage that grades a round the id is the only rung populated,
+        # and the flow makes no candidate read there), then a session-scoped
+        # fallback unique per capture. The order is the point: two captures
+        # of one applied candidate must land on one id, or the dedup below
+        # cannot see a repeat — and an empty fingerprint is as absent as no
+        # candidate, which keeps an unidentifiable capture out of another
+        # attempt's identity.
+        attempt_id = self._tuning_attempt_id
+        if not attempt_id and self._candidate is not None:
+            attempt_id = str(getattr(self._candidate, "fingerprint", "") or "")
+        if not attempt_id:
+            attempt_id = f"{self.session_id}:{capture_attempt}"
+        if any(item.attempt_id == attempt_id for item in self._attempt_history):
+            # The applied candidate is already in accepted history: a repeated
+            # successful re-verify is not a new tuning attempt, and this skip
+            # is the one rung between a replayed capture and a second durable
+            # observation of one candidate identity.
             return
-        attempt_id = identity.attempt_id
 
         record = attempt_record_from_verify(
             analysis,
@@ -7608,7 +7594,7 @@ class CrossoverV2Session:
                 # reverses a VERIFY the measurement gate accepted, and it skips
                 # the ``_attempt_history`` append at the end of this method, so
                 # the next capture of the same applied candidate is assessed as
-                # ``ATTEMPT_NEW`` and asks the seam a SECOND time.
+                # new and asks the seam a SECOND time.
                 #
                 # The append is the property, and it must run even though this
                 # write may have failed: a raising seam says nothing about
@@ -7664,35 +7650,15 @@ class CrossoverV2Session:
                     return
 
         prospective = [*self._attempt_history, record]
-        # Evidence refusal outranks grading preconditions — the ladder's ruling,
-        # stated in :func:`attempt_grading.grade_attempt_outcome`. ``decide_next``
-        # requires a real floor, but #2033's integrity result is meaningful
-        # even on a speaker that has not adopted one. What stays here is the
-        # construction: the kernel's typed evidence verdict from its own
-        # vocabulary, and the flow-owned no-floor status that must not mask a
-        # rejected capture.
-        grade = _grading.grade_attempt_outcome(
-            comparable=record.integrity.comparable,
-            floor_present=self._attempt_floor is not None,
-        )
-        if grade not in _grading.GRADE_KINDS:
-            # Checked against the declared set rather than by an ``else`` arm,
-            # because the arms below keep the ladder's own order and its LAST
-            # one is the permissive direction: a kind from the future reaching
-            # ``decide_next`` would put an improvement claim nobody wired in
-            # front of a household. Degrade to the evidence refusal instead —
-            # "the loop could not judge this attempt" is what a wiring defect
-            # actually means — and say so loudly.
-            log_event(
-                logger,
-                "correction.crossover_v2_attempt_grade_kind_unmapped",
-                level=logging.ERROR,
-                session_id=self.session_id,
-                attempt_id=record.attempt_id,
-                kind=str(grade),
-            )
-            grade = _grading.GRADE_NOT_COMPARABLE
-        if grade == _grading.GRADE_NOT_COMPARABLE:
+        # The arm ORDER is a ruling (#2033): evidence refusal outranks grading
+        # preconditions. A capture that failed its integrity checks is
+        # answered as a capture problem even on a speaker with no adopted
+        # floor — answering no-floor first would mask a rejected recording
+        # behind a configuration sentence. And the LAST arm is the one that
+        # makes a claim about the speaker, so any future arm that cannot
+        # decide must degrade toward the evidence refusal, never toward
+        # ``decide_next``.
+        if not record.integrity.comparable:
             decision = LoopDecision(
                 decision=STOP_EVIDENCE,
                 reason=REASON_ATTEMPT_NOT_COMPARABLE,
@@ -7703,7 +7669,9 @@ class CrossoverV2Session:
                 provenance=record.provenance,
                 notes=record.integrity.reasons,
             ).to_dict()
-        elif grade == _grading.GRADE_NO_FLOOR:
+        elif self._attempt_floor is None:
+            # Usable capture, no adopted claim floor: the attempt is recorded
+            # ungraded rather than graded against nothing.
             decision = {
                 "decision": None,
                 "reason": ATTEMPT_REASON_NO_FLOOR,
@@ -7719,10 +7687,6 @@ class CrossoverV2Session:
                 "notes": [],
             }
         else:
-            # ``GRADE_DECIDE_NEXT`` is returned only for a comparable capture on
-            # a speaker that HAS a floor, so this restates the ladder's own
-            # postcondition for the type checker rather than re-deciding it.
-            assert self._attempt_floor is not None
             decision = decide_next(prospective, self._attempt_floor).to_dict()
         self._last_attempt_decision = decision
         floor = decision.get("floor")
