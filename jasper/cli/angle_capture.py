@@ -183,6 +183,8 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
         "externally_positioned": request.externally_positioned,
         "polarity": request.polarity,
         "inverted_role": request.inverted_role,
+        "delayed_role": request.delayed_role,
+        "delay_us": request.delay_us,
         "level_matched": request.level_matched,
         "stops": [
             {
@@ -255,6 +257,15 @@ def _print_walk(payload: dict[str, Any]) -> None:
         print(
             f"  polarity: {payload['polarity']} on the design-axis MEASURE "
             f"capture, flipping {payload['inverted_role']!r}"
+        )
+    if payload["delayed_role"]:
+        # Printed only when stated, for the same reason the polarity line is:
+        # a walk that reaches the graph carrying a confirmation delay must not
+        # look identical to one that does not -- previously this was
+        # traceable only through measure_spec.measurement_delays_for.
+        print(
+            f"  delay: {payload['delay_us']:g} us on "
+            f"{payload['delayed_role']!r}"
         )
     announced = payload["announced_indexes"]
     print(

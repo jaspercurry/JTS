@@ -1064,6 +1064,18 @@ def _run_relay_capture(
         request_retake=kind.request_retake,
         local=kind.local,
     ):
+        # Name the ACTUAL holder rather than assuming phone-mic relay: a wired
+        # (local) capture claims this same single slot (#2662 W2b), so a box
+        # with no phone in the loop at all could see this refusal read as one.
+        # A race between this read and the failed claim above can only ever
+        # widen to the generic relay wording below, never misreport a wired
+        # holder as something else.
+        holder = _get_relay_capture()
+        if holder is not None and holder.get("source") == SOURCE_WIRED:
+            raise ValueError(
+                f"a wired capture ({holder.get('kind')}) already holds the "
+                "measurement slot; finish or cancel it before starting another"
+            )
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
     spawned = False

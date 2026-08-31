@@ -50,6 +50,16 @@ def test_help_lists_internal_hotplug_stop_without_argparse_placeholder(turntable
     assert argparse.SUPPRESS not in help_text
 
 
+def test_json_flag_is_accepted_before_or_after_the_subcommand(turntable):
+    """``--json`` after the subcommand used to be an argparse "unrecognized
+    arguments" error, easy to misread as a tool fault mid-incident."""
+    parser = turntable.build_parser()
+
+    assert parser.parse_args(["--json", "left", "5"]).json is True
+    assert parser.parse_args(["left", "5", "--json"]).json is True
+    assert parser.parse_args(["left", "5"]).json is False
+
+
 class FakeProtocolError(Exception):
     """Stand-in for the vendored ``usb_turntable.ProtocolError``.
 

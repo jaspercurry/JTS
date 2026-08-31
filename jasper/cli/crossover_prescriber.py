@@ -1027,10 +1027,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
     """
     packet: dict[str, Any] | None = None
     packet_error = ""
-    try:
-        packet = _load_packet(args)
-    except (CrossoverEvidencePacketError, OSError) as exc:
-        packet_error = str(exc)
+    if args.session_dir is None:
+        # The runbook's own step 1 ("Orient"): on a virgin speaker no session
+        # dir exists yet, so there is nothing to point this verb at. Every
+        # section below already tolerates ``packet=None`` (its own contract,
+        # stated above), so this reuses that path rather than inventing a
+        # second, partial report shape for the no-session case.
+        packet_error = (
+            "no session_dir given -- this speaker has no crossover-v2 "
+            "session yet"
+        )
+    else:
+        try:
+            packet = _load_packet(args)
+        except (CrossoverEvidencePacketError, OSError) as exc:
+            packet_error = str(exc)
 
     payload = status_document(packet, packet_error, state_supplied=bool(args.state))
 
@@ -1092,13 +1103,24 @@ _APPLIED_PROFILE_HELP = (
 
 
 def _add_evidence_args(
-    parser: argparse.ArgumentParser, *, state_help: str = _STATE_HELP_OPTIONAL
+    parser: argparse.ArgumentParser,
+    *,
+    state_help: str = _STATE_HELP_OPTIONAL,
+    session_dir_optional: bool = False,
 ) -> None:
     parser.add_argument(
         "session_dir",
+        nargs="?" if session_dir_optional else None,
         help=(
             "a commissioning bundle directory (the one holding info.json and "
             "evidence/v1/artifacts/crossover_v2/<relay-session-id>/)"
+            + (
+                ". Omit on a virgin speaker with no session yet -- status "
+                "reports what it can (declared state lives at --drivers / "
+                "the design draft) and names the gap"
+                if session_dir_optional
+                else ""
+            )
         ),
     )
     # Not `required=True` even for ``stage``: argparse would refuse before the
@@ -1133,7 +1155,7 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="print declared / banked / staged / applied state and what is next",
     )
-    _add_evidence_args(status)
+    _add_evidence_args(status, session_dir_optional=True)
     status.add_argument(
         "--json", action="store_true", help="emit the report as JSON"
     )

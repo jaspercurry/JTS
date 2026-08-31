@@ -340,7 +340,13 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
 
     stimulus = Path(args.stimulus_wav)
     if not stimulus.is_file():
-        return _refused(REFUSE_STIMULUS_MISSING, f"no such stimulus WAV: {stimulus}")
+        return _refused(
+            REFUSE_STIMULUS_MISSING,
+            f"no such stimulus WAV: {stimulus}. On a virgin speaker no "
+            "stimulus exists until a session generates one -- run "
+            "jasper-driver-trim (or open a session) first, then point "
+            "--stimulus-wav at its program",
+        )
 
     sensitivity = resolve_mic_sensitivity(
         calibration_file=args.calibration_file,

@@ -2100,14 +2100,19 @@ jasper-classify-features <bundle-dir> --dumps <ring> --walk-log logs/walk-1.json
 jasper-classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
 ```
 
-It composes directly with
-[`scripts/bank-crossover-round.sh`](../scripts/bank-crossover-round.sh), whose
-`<dest>` holds exactly the two inputs this wants:
+It composed directly with
+[`scripts/bank-crossover-round.sh`](../scripts/bank-crossover-round.sh) for a
+corpus banked BEFORE the dumps-ring's removal (see above): `<dest>` held
+exactly the two inputs this wants.
 
 ```sh
-bash scripts/bank-crossover-round.sh <dest>
+bash scripts/bank-crossover-round.sh <dest>   # pre-removal corpora only
 jasper-classify-features <dest>/bundle/<session> --dumps <dest>/dumps
 ```
+
+A round banked by the script TODAY has no `<dest>/dumps` to pass here: the
+ring's producer died with the speaker-side retention seam (see above), and
+nothing pulls one in its place.
 
 `<bundle-dir>` is a commissioning bundle; the round directory inside it is
 found by the same rule the packet reader uses, so the artifact cannot land

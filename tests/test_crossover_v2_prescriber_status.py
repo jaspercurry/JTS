@@ -555,6 +555,20 @@ def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
     assert any("run a round at" in action for action in payload["next_actions"])
 
 
+def test_a_virgin_speaker_orients_with_no_session_dir_at_all(capsys):
+    """The runbook's step 1 (Orient) must run before any session exists:
+    ``session_dir`` is optional for ``status`` alone, so a virgin speaker with
+    nothing banked yet still gets a report naming the gap, not a usage error.
+    """
+    code, payload = _status([], capsys)
+
+    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert payload["packet_error"]
+    assert payload["banked"]["available"] is False
+    assert payload["banked"]["reason"] == payload["packet_error"]
+    assert any("run a round at" in action for action in payload["next_actions"])
+
+
 def test_a_missing_declaration_names_the_flag_that_supplies_it(tmp_path, capsys):
     """Each absence names the tool that would refuse for want of it."""
     session, _ = _speaker_dirs(tmp_path, classification=_classification())
