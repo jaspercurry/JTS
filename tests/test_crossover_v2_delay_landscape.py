@@ -5,6 +5,7 @@
 """Compute-then-confirm: the delay landscape, and how a confirmation grades it."""
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -382,6 +383,91 @@ def test_the_landscape_serializes_every_coordinate_it_scored():
     assert len(payload["coordinates_us"]) == len(payload["predicted_null_depth_db"])
     assert payload["best_coordinate_us"] == pytest.approx(100.0)
     assert math.isfinite(payload["best_predicted_null_depth_db"])
+
+
+# --------------------------------------------------------------------------- #
+# the phase overlay (ticket 6.11c) -- diagnostic, no delay or inversion applied
+# --------------------------------------------------------------------------- #
+
+
+def _constant_phase_curve(
+    role: str, *, phase_deg: float, freqs=None
+) -> dict[str, Any]:
+    """A flat-magnitude curve at ONE constant phase, in the banked shape.
+
+    Unphysical by construction (a real driver's phase turns with frequency),
+    and deliberately so: it is what pins a KNOWN dphi(f) exactly, where the
+    file's own ``_curve`` helper's LR4 shape carries frequency-dependent
+    phase from the crossover filter itself and could not.
+    """
+    grid = np.linspace(200.0, 12000.0, 512) if freqs is None else np.asarray(freqs)
+    return {
+        "role": role,
+        "band_hz": [float(grid[0]), float(grid[-1])],
+        "freqs_hz": [float(hz) for hz in grid],
+        "magnitude_db": [0.0 for _ in grid],
+        "phase_deg": [float(phase_deg) for _ in grid],
+    }
+
+
+def test_phase_overlay_pins_a_known_offset_and_its_implied_db():
+    offset_deg = 50.0
+    landscape = compute_landscape(
+        _constant_phase_curve("woofer", phase_deg=0.0),
+        _constant_phase_curve("tweeter", phase_deg=offset_deg),
+        spec=_spec(),
+        inverted_role="tweeter",
+    )
+    overlay = landscape.phase_overlay
+    assert overlay["delta_phase_deg"]
+    assert overlay["delta_phase_deg"] == pytest.approx(
+        [offset_deg] * len(overlay["delta_phase_deg"])
+    )
+    expected_db = 20.0 * math.log10(2.0 * math.cos(math.radians(offset_deg) / 2.0))
+    assert overlay["implied_summation_db"] == pytest.approx(
+        [expected_db] * len(overlay["implied_summation_db"]), abs=1e-6
+    )
+    assert overlay["max_abs_delta_phase_deg"] == pytest.approx(offset_deg)
+    assert overlay["fraction_within_60deg"] == pytest.approx(1.0)
+    assert overlay["fraction_within_120deg"] == pytest.approx(1.0)
+    # No verdict field of any kind -- facts only (ADR-0201's sibling rule).
+    assert "verdict" not in overlay
+
+
+def test_phase_overlay_reads_the_clamp_360_deg_away_the_same():
+    """A 300 deg offset wraps to -60 deg, and the implied dB is what the
+    WRAPPED angle says -- the summation table is periodic, and a caller
+    reading the raw (unwrapped) offset would misread cancellation as gain.
+    """
+    landscape = compute_landscape(
+        _constant_phase_curve("woofer", phase_deg=0.0),
+        _constant_phase_curve("tweeter", phase_deg=300.0),
+        spec=_spec(),
+        inverted_role="tweeter",
+    )
+    overlay = landscape.phase_overlay
+    assert overlay["delta_phase_deg"][0] == pytest.approx(-60.0)
+    expected_db = 20.0 * math.log10(2.0 * math.cos(math.radians(-60.0) / 2.0))
+    assert overlay["implied_summation_db"][0] == pytest.approx(expected_db)
+
+
+def test_phase_overlay_clamps_into_the_measured_overlap_like_the_shoulders():
+    """The SAME clamp :func:`curve_shoulder_span` applies -- narrower than
+    canonical where a real 2-way's declared bands force it inward, read off
+    the reference speaker's own bands from the shoulders test above."""
+    fc_hz = 2500.0
+    lower = _banded("woofer", JTS3_BANDS[0], fc_hz=fc_hz, arrival_us=100.0)
+    upper = _banded("tweeter", JTS3_BANDS[1], fc_hz=fc_hz)
+    spec = sweep_spec(
+        crossover_fc_hz=fc_hz, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
+    )
+    landscape = compute_landscape(lower, upper, spec=spec, inverted_role="tweeter")
+    overlay = landscape.phase_overlay
+    assert overlay["band_hz"] == pytest.approx(landscape.shoulders.used_hz)
+    assert overlay["band_hz"] == pytest.approx((1600.0, 4000.0))
+    assert min(overlay["freqs_hz"]) >= 1600.0
+    assert max(overlay["freqs_hz"]) <= 4000.0
 
 
 # --------------------------------------------------------------------------- #

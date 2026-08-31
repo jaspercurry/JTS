@@ -208,6 +208,20 @@ GATE_LADDER_MS: tuple[float, ...] = (3.0, 5.0, DEFAULT_GATE_MS)
 #: reported as ``lead_sensitivity_us`` so the choice is evidenced.
 PHASE_GATE_LEAD_MS = 1.0
 
+#: 6.11b's receipt: what :func:`excess_group_delay` actually windows with.
+#: Research 03's pitfall is real — a SHORT gate biases the Hilbert min-phase
+#: reconstruction — but the window this instrument reads EGD through is
+#: ``DEFAULT_GATE_MS`` (``== gating.SEARCH_T_MAX_MS``), already documented
+#: above as the longest window the product ever calls reflection-free: there
+#: is no longer clean window to move to, so this names what is used rather
+#: than changing it. It is also the exact window the C1/C3 controls are
+#: calibrated on, on THIS round's own IR — a known minimum-phase change must
+#: still read flat through it (``CONTROL_MAX_FALSE_POSITIVE_US`` /
+#: ``CONTROL_MAX_ECHO_FALSE_POSITIVE_US``), which is the reflection-freeness
+#: claim being tested rather than assumed. Investigated, not derived: judged
+#: deliberate and defensible, so nothing about the window changed.
+EGD_WINDOW_KIND = "fixed_reflection_free_gate"
+
 #: Magnitude smoothing. 1/12 octave is fine enough to keep a feature's own
 #: shape and coarse enough that grid noise does not become one.
 MAGNITUDE_SMOOTH_FRACTION = 12
@@ -2213,6 +2227,12 @@ def classify_round(
         row["fdw_rungs"] = _fdw_rungs(
             irs, peaks, sample_rate, fc, pooled_db[key] < 0
         )
+        # 6.11a: how many cycles of THIS feature's own frequency fit inside
+        # the primary gate -- the grey-zone read research 03 names (2.5/T is
+        # prudence, not a law; a feature at 2-3 cycles is where a magnitude
+        # estimate is taper-biased and low-resolution). A row field, not a
+        # threshold: nothing here refuses or grades on it.
+        row["cycles_in_primary_gate"] = fc * primary * 1e-3
         rows.append(row)
 
     return {
@@ -2235,6 +2255,11 @@ def classify_round(
             "gate_ms_primary": primary,
             "gate_ladder_ms": list(ladder),
             "phase_gate_lead_ms": PHASE_GATE_LEAD_MS,
+            "egd_window_source": {
+                "kind": EGD_WINDOW_KIND,
+                "gate_ms": primary,
+                "lead_ms": PHASE_GATE_LEAD_MS,
+            },
             "trusted_band_hz": list(trusted_band_hz),
             "classifiable_band_hz": list(band_hz),
             "magnitude_smooth_fraction": MAGNITUDE_SMOOTH_FRACTION,

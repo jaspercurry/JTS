@@ -354,6 +354,31 @@ def test_fdw_5_excludes_a_reflection_the_fixed_gate_retains(tmp_path):
     assert abs(fdw5_db) < abs(fixed_gate_db) / 4.0, (fdw5_db, fixed_gate_db)
 
 
+def test_cycles_in_primary_gate_is_frequency_times_the_primary_window(
+    peak_artifact,
+):
+    """6.11a: the grey-zone read research 03 names, per feature."""
+    row = peak_artifact["rows"][0]
+    assert row["cycles_in_primary_gate"] == pytest.approx(
+        row["hz"] * fx.DEFAULT_GATE_MS * 1e-3
+    )
+
+
+def test_the_egd_window_source_names_the_gate_and_lead_it_reads(peak_artifact):
+    """6.11b: the receipt. Investigated and judged deliberate and defensible
+    -- reflection-freeness (``DEFAULT_GATE_MS`` is already the longest window
+    the product ever calls reflection-free) with the C1/C3 controls
+    calibrated to this exact window on this round's own IR -- so nothing
+    about the window itself changed here, only the disclosure.
+    """
+    source = peak_artifact["measurement"]["egd_window_source"]
+    assert source == {
+        "kind": fx.EGD_WINDOW_KIND,
+        "gate_ms": fx.DEFAULT_GATE_MS,
+        "lead_ms": fx.PHASE_GATE_LEAD_MS,
+    }
+
+
 def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
     """6.1: ``--gates-ms`` is not merely parsed -- it reaches classify_round."""
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))

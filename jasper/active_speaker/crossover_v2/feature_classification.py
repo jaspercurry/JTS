@@ -227,6 +227,7 @@ LAB_ROW_FIELDS: tuple[str, ...] = (
     "pose_persistence",
     "decay",
     "fdw_rungs",
+    "cycles_in_primary_gate",
 )
 
 #: The two kinds an uncertainty can be, and the reason a published one always
