@@ -8,11 +8,9 @@
 // block below).
 // Default = no (synced). The shipped sync set is
 // drift_tolerance_in_seconds=0.002, resync_threshold_in_seconds=0.2, and
-// audio_backend_buffer_desired_length_in_seconds=0.5; each value's transport-
-// specific evidence and remaining gaps live in docs/HANDOFF-airplay.md. Toggle via
+// audio_backend_buffer_desired_length_in_seconds=0.5. Toggle via
 // http://jts.local/airplay/ or `jasper-airplay-mode set
-// [free-running|synced]`. See jasper/web/airplay_setup.py +
-// docs/HANDOFF-airplay.md for the toggle UX and full rationale.
+// [free-running|synced]`. See jasper/web/airplay_setup.py for the toggle UX.
 // SYNC-CONSTANT PROVENANCE: drift tolerance has SHM-ring evidence for the
 // regular out-of-date/order event class. The resync threshold, backend target,
 // and latency offset are unchanged and still need their own ring reliability
@@ -41,8 +39,7 @@ general = {
     // A JTS4 SHM-ring A/B trial on 2026-08-18 isolated 0.002 s for its regular
     // out-of-date/order pairs: lowering drift eliminated them while the ring
     // stayed at the same 15/16 occupancy, so that occupancy was not sufficient
-    // to produce the events. The canonical results and open ring-validation
-    // gaps live in docs/HANDOFF-airplay.md.
+    // to produce the events. Ring-validation gaps remain.
     drift_tolerance_in_seconds = 0.002;
     // shairport's drift correction has two paths:
     // - Continuous ±1-sample stuffing (gated by drift_tolerance) —
@@ -52,7 +49,7 @@ general = {
     //   to 250 ms of zeros = audible "tear".
     // resync_threshold=0.2 prevents the historical large-error path from
     // flushing early. It was held constant in the JTS4 ring A/B and still
-    // needs its own long-run ring validation. See docs/HANDOFF-airplay.md.
+    // needs its own long-run ring validation.
     resync_threshold_in_seconds = 0.2;
     // Derived by jasper-apply-airplay-mode as:
     //   -((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)
@@ -75,7 +72,7 @@ general = {
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
     // Held at 0.5 s in the JTS4 ring A/B. A 64 ms trial changed occupancy but
     // is not adopted: longer WiFi-disruption, reliability, and A/V validation
-    // is required first. Canonical evidence: docs/HANDOFF-airplay.md.
+    // is required first.
     audio_backend_buffer_desired_length_in_seconds = 0.5;
 };
 
@@ -136,11 +133,10 @@ diagnostics = {
     // Audio Stream." at rtsp.c:3304, then silently fails to start
     // audio. Level 1 stops logging at that line — level 2 emits
     // enough downstream detail to name the failing component on the
-    // next recurrence. See docs/HANDOFF-airplay.md "Pattern E —
-    // SETUP-progresses variant" for context and what's on the table.
-    // EARMARK: drop back to log_verbosity = 1 once Pattern E is
+    // next recurrence.
+    // EARMARK: drop back to log_verbosity = 1 once this failure is
     // closed — this level-2 detail is ~55% of shairport's log volume
-    // (~40 PTP-anchor lines/min). See docs/HANDOFF-observability.md.
+    // (~40 PTP-anchor lines/min).
     log_verbosity = 2;
     log_show_file_and_line_numbers = "no";
 };

@@ -17,7 +17,7 @@
 //   * one row per sibling speaker (self excluded by the server), each a real
 //     click-through <a> to that speaker's OWN /system/ page on its stable
 //     .local web host. The value of the directory is discovery +
-//     click-through, not config aggregation — see docs/HANDOFF-multiroom.md §6.
+//     click-through, not config aggregation.
 //
 // The poll loop self-schedules (setTimeout after each completes) so a slow
 // response can't overlap the next tick, and it separates a transport failure
@@ -197,7 +197,7 @@ function groupingBody(g) {
 //
 // Room is shown here but EDITED in the identity home (/speaker/) — the small
 // link keeps a single source of truth and avoids reopening the two-homes
-// drift (docs/HANDOFF-multiroom.md §6). The link is a static, trusted
+// drift. The link is a static, trusted
 // same-origin path, not derived from any untrusted field.
 // ---------------------------------------------------------------------------
 function roomValue(room) {

@@ -19,13 +19,12 @@ Description=AEC bridge — carries XVF mic audio via software AEC3 or chip-AEC
 # Software engine: when chip-AEC is not armed, WebRTC AEC3 runs via the
 # jasper_aec3 pybind11 binding around Trixie's libwebrtc-audio-processing-1
 # v1.3-3. Tuning knobs (JASPER_AEC_REF_GAIN_DB, JASPER_AEC_MIC_GAIN_DB,
-# JASPER_AEC_AGC2) come from /etc/jasper/jasper.env — see
-# docs/HANDOFF-aec.md "Tuning findings" for the chosen production values.
+# JASPER_AEC_AGC2) come from /etc/jasper/jasper.env.
 #
 # REPLACES the previous CamillaDSP-based bridge. The software fallback path is
 # WebRTC AEC3; the chip-AEC profile bypasses that engine while reusing this
 # service as the bridge from the chip beam into jasper-voice. See
-# jasper/cli/aec_bridge.py and docs/HANDOFF-aec.md.
+# jasper/cli/aec_bridge.py.
 After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service sound.target
 # `Wants=` so init runs whenever bridge starts (init is a one-shot
 # that applies XVF tuning; bridge depends on chip being initialised).
@@ -43,9 +42,8 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 Wants=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service
 
 # Tier 4.5 — escalate to system reboot if the per-service watchdog
-# spiral exceeds 4 restarts in 5 minutes. See
-# docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)" for
-# rationale. `reboot` (not `reboot-force`): clean unmount needed
+# spiral exceeds 4 restarts in 5 minutes. `reboot` (not `reboot-force`):
+# clean unmount needed
 # on a 1 GB Pi to flush dirty zram pages.
 StartLimitIntervalSec=300
 StartLimitBurst=4
@@ -55,8 +53,6 @@ StartLimitAction=reboot
 # MemorySwapMax=0. Today's stress test (2026-05-24) caught
 # aec-bridge accumulating 42 MB of VmSwap during sustained
 # memory pressure — exactly the failure mode this slice prevents.
-# See docs/HANDOFF-resilience.md "Stage 2 — audio-protection
-# subset (shipped)".
 
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
@@ -127,8 +123,7 @@ IOSchedulingPriority=4
 LimitRTPRIO=99
 LimitMEMLOCK=infinity
 
-# OOM protection (Stage 1 of memory-resilience plan, see
-# docs/HANDOFF-resilience.md). Real-time mic processing: killing
+# OOM protection (Stage 1 of memory-resilience plan). Real-time mic processing: killing
 # this stops AEC and the wake loop runs raw, but the speaker can
 # still play music — so we protect heavily but not as hard as
 # camilla (-900). -700 keeps us well above any non-jasper process

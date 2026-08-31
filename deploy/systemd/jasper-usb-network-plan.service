@@ -1,6 +1,5 @@
 [Unit]
 Description=Jasper USB management network address-plan gate
-Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
 After=local-fs.target
 Before=NetworkManager.service jasper-usbgadget.service
 

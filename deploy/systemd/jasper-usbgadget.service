@@ -21,8 +21,7 @@ Description=Jasper composite USB gadget (management network + optional audio)
 # the service keeps the same source-aware ExecCondition at its start boundary.
 #
 # NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` (the doctor's
-# low-latency contract reads that exact path). Accepted debt — see
-# docs/HANDOFF-usb-gadget.md.
+# low-latency contract reads that exact path). Accepted debt.
 Requires=jasper-usb-network-plan.service
 After=systemd-modules-load.service sys-kernel-config.mount jasper-usb-network-plan.service jasper-audio-hardware-reconcile.service jasper-fanin.service
 Wants=jasper-audio-hardware-reconcile.service jasper-fanin.service
@@ -62,8 +61,7 @@ ExecStartPre=/sbin/modprobe libcomposite
 # not fit in TimeoutStartSec above, so it is handed to
 # jasper-usbsink-name-index.service; until it lands, gadget-up autoloads the
 # stock module and jasper-doctor reports `usbsink name` as a warn rather than
-# claiming a label the host is not showing. See #2176 and
-# docs/HANDOFF-usbsink.md "Device name".
+# claiming a label the host is not showing. See #2176.
 ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
 ExecStart=/usr/local/sbin/jasper-usbgadget-up
 # Preserve the healthy post-bind signature and, most importantly, the wedged

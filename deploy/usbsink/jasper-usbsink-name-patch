@@ -8,8 +8,7 @@
 # module. We build a name-patched copy into the kernel's `updates/`
 # directory (which modprobe searches before `kernel/`), so when the
 # gadget function is created the patched module autoloads instead of the
-# stock one. See deploy/usbsink/uac2_name_patch.py for the byte transform
-# and docs/HANDOFF-usbsink.md "Device name" for the full design.
+# stock one. See deploy/usbsink/uac2_name_patch.py for the byte transform.
 #
 # Runs as jasper-usbgadget's ExecStartPre (best-effort, leading `-`):
 # a failure here must NEVER block USB audio — it only means the host

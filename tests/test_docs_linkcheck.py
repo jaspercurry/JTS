@@ -144,3 +144,17 @@ def test_local_line_suffix_passes(tmp_path):
     target.write_text("print('ok')\n", encoding="utf-8")
 
     assert docs_linkcheck.check_file(doc) == ()
+
+
+def test_adr_numbers_are_unique() -> None:
+    by_number: dict[str, list[str]] = {}
+    for path in sorted((ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]*.md")):
+        by_number.setdefault(path.name[:4], []).append(path.name)
+
+    duplicates = {
+        number: names
+        for number, names in by_number.items()
+        if len(names) > 1
+    }
+
+    assert duplicates == {}

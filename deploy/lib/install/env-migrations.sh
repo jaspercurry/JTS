@@ -263,7 +263,6 @@ ensure_intsecrets_dir() {
 # check_jasper_secrets_compartment FAILs on.
 #
 # Idempotent; no-op before the group exists.
-# See docs/HANDOFF-privilege-separation.md "Phase 4".
 reassert_secrets_compartment_perms() {
     getent group jasper-secrets >/dev/null 2>&1 || return 0
     ensure_secrets_dir
@@ -316,7 +315,6 @@ reassert_secrets_compartment_perms() {
 # Spotify is read-write: voice, control, mux, and web can all refresh/persist
 # spotipy token caches, so the compartment is writable by all four service
 # users via systemd ReadWritePaths=. Idempotent; no-op before the group exists.
-# See docs/HANDOFF-privilege-separation.md.
 reassert_intsecrets_compartment_perms() {
     getent group jasper-intsecrets >/dev/null 2>&1 || return 0
     ensure_intsecrets_dir
@@ -486,9 +484,8 @@ remove_retired_audio_topology_state() {
 }
 
 # Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
-# profile if no stash exists yet. This is the migration hook for the
-# WiFi profile guardian (docs/HANDOFF-resilience.md "Hardware-event
-# recovery" sidebar) — it covers the SSH-driven setup case where the
+# profile if no stash exists yet. This migration hook for the WiFi profile
+# guardian covers the SSH-driven setup case where the
 # operator brought up WiFi via raspi-config / nmcli before ever
 # opening the /wifi/ wizard.
 #
@@ -645,8 +642,7 @@ widen_control_secret_env_modes() {
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays
-    # owner-only 0600. Least privilege over blanket widening. See
-    # docs/HANDOFF-privilege-separation.md.
+    # owner-only 0600. Least privilege over blanket widening.
     #
     # WS1 Phase 4a/4b — google_credentials.env moved to jasper-secrets, while
     # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.

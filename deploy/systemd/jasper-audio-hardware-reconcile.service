@@ -1,6 +1,5 @@
 [Unit]
 Description=Reconcile output DAC hardware role
-Documentation=file:/opt/jasper/docs/HANDOFF-speaker-output-reference.md
 After=sound.target
 Wants=sound.target
 Before=jasper-outputd.service

@@ -659,6 +659,9 @@ _PANIC_PAT = re.compile(
 _EXPECT_MSG_PAT = re.compile(r'\.expect\(\s*"((?:[^"\\]|\\.)*)"')
 _STRING_PAT = re.compile(r'"(?:[^"\\]|\\.)*"')
 _QUOTED_STRING_PAT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_RAW_STRING_START_PAT = re.compile(
+    r'(?<![A-Za-z0-9_])(?:br|cr|r)(?P<hashes>#{0,255})"'
+)
 # A char literal, never a lifetime (issue #2274): both open with ``'``,
 # but only a char literal closes with one, so requiring a closing quote
 # after exactly one char or escape leaves ``<'a>`` / ``&'static`` /
@@ -671,8 +674,16 @@ def _strip_literals(line: str) -> str:
     """Blank out char and string literals so brace counting and comment
     detection aren't confused by braces / ``//`` / quotes inside them.
     Char literals go first: a ``'"'`` would otherwise read as the start
-    of a string and blank the real code up to the next ``"``."""
-    return _STRING_PAT.sub('""', _CHAR_PAT.sub("''", line))
+    of a string and blank the real code up to the next ``"``. Preserve
+    delimiter quotes and width so a later raw-string delimiter still indexes
+    the source line."""
+    chars_stripped = _CHAR_PAT.sub(
+        lambda match: "'" + " " * (len(match.group()) - 2) + "'", line
+    )
+    return _STRING_PAT.sub(
+        lambda match: '"' + " " * (len(match.group()) - 2) + '"',
+        chars_stripped,
+    )
 
 
 def _strip_comments(line: str) -> str:
@@ -681,21 +692,90 @@ def _strip_comments(line: str) -> str:
     return stripped[:idx] if idx >= 0 else stripped
 
 
+def _strip_source_lines(lines: list[str]) -> list[str]:
+    """Strip literals and comments while tracking Rust raw strings."""
+    result: list[str] = []
+    raw_close: str | None = None
+    block_comment_depth = 0
+    for line in lines:
+        code = ""
+        cursor = 0
+        while cursor < len(line):
+            if raw_close is not None:
+                close_at = line.find(raw_close, cursor)
+                if close_at < 0:
+                    code += " " * (len(line) - cursor)
+                    cursor = len(line)
+                    continue
+                after_close = close_at + len(raw_close)
+                code += " " * (after_close - cursor)
+                cursor = after_close
+                raw_close = None
+                continue
+
+            if block_comment_depth:
+                nested_at = line.find("/*", cursor)
+                close_at = line.find("*/", cursor)
+                if nested_at >= 0 and (
+                    close_at < 0 or nested_at < close_at
+                ):
+                    after_marker = nested_at + 2
+                    block_comment_depth += 1
+                elif close_at >= 0:
+                    after_marker = close_at + 2
+                    block_comment_depth -= 1
+                else:
+                    after_marker = len(line)
+                code += " " * (after_marker - cursor)
+                cursor = after_marker
+                continue
+
+            segment = line[cursor:]
+            stripped = _strip_comments(segment)
+            start = _RAW_STRING_START_PAT.search(stripped)
+            block_start = stripped.find("/*")
+            if block_start >= 0 and (
+                start is None or block_start < start.start()
+            ):
+                code += stripped[:block_start] + "  "
+                cursor += block_start + 2
+                block_comment_depth = 1
+                continue
+            if start is None:
+                code += stripped
+                break
+            code += stripped[: start.start()]
+            raw_close = '"' + start.group("hashes")
+            raw_start_end = cursor + start.end()
+            close_at = line.find(raw_close, raw_start_end)
+            if close_at < 0:
+                code += " " * (len(line) - cursor - start.start())
+                cursor = len(line)
+                continue
+            after_close = close_at + len(raw_close)
+            code += " " * (after_close - cursor - start.start())
+            cursor = after_close
+            raw_close = None
+        result.append(code)
+    return result
+
+
 def _cfg_test_spans(lines: list[str]) -> list[tuple[int, int]]:
     """0-based inclusive line spans of ``#[cfg(test)]``-attributed items
     (modules and functions), found by brace counting with char and
     string literals stripped."""
+    code_lines = _strip_source_lines(lines)
     spans: list[tuple[int, int]] = []
     i = 0
     while i < len(lines):
-        if "#[cfg(test)]" not in _strip_comments(lines[i]):
+        if "#[cfg(test)]" not in code_lines[i]:
             i += 1
             continue
         depth = 0
         opened = False
         j = i
         while j < len(lines):
-            code = _strip_comments(lines[j])
+            code = code_lines[j]
             depth += code.count("{") - code.count("}")
             if "{" in code:
                 opened = True
@@ -710,7 +790,9 @@ def _cfg_test_spans(lines: list[str]) -> list[tuple[int, int]]:
     return spans
 
 
-def _statement_span(lines: list[str], start: int) -> str:
+def _statement_span(
+    lines: list[str], code_lines: list[str], start: int
+) -> str:
     """The (possibly multi-line) statement text starting at ``lines[start]``,
     joined with single spaces, through the line where the parenthesis nest
     opened on ``start`` closes. Depth is counted on string-and-comment-
@@ -723,7 +805,7 @@ def _statement_span(lines: list[str], start: int) -> str:
     opened = False
     j = start
     while j < len(lines):
-        code_for_depth = _strip_comments(lines[j])
+        code_for_depth = code_lines[j]
         depth += code_for_depth.count("(") - code_for_depth.count(")")
         if "(" in code_for_depth:
             opened = True
@@ -778,6 +860,7 @@ def _scan_source(rel: str, lines: list[str]) -> _Findings:
     violations: list[str] = []
     seen_expects: set[tuple[str, str]] = set()
     seen_asserts: set[tuple[str, str]] = set()
+    code_lines = _strip_source_lines(lines)
     spans = _cfg_test_spans(lines)
 
     def in_test(n: int) -> bool:
@@ -787,14 +870,14 @@ def _scan_source(rel: str, lines: list[str]) -> _Findings:
         # Scanner soundness: every #[test] fn must sit inside a
         # #[cfg(test)] span, or the classifier would mislabel
         # its body as runtime code.
-        if "#[test]" in _strip_comments(raw) and not in_test(n):
+        if "#[test]" in code_lines[n] and not in_test(n):
             violations.append(
                 f"{rel}:{n + 1}: #[test] outside a #[cfg(test)] "
                 "module — move it inside one (or teach this "
                 "scanner about the new shape)"
             )
             continue
-        code = _strip_comments(raw)
+        code = code_lines[n]
         if not _PANIC_PAT.search(code) or in_test(n):
             continue
 
@@ -825,7 +908,7 @@ def _scan_source(rel: str, lines: list[str]) -> _Findings:
                 accounted = False
 
         if _ASSERT_FAMILY_PAT.search(code):
-            statement = _statement_span(lines, n)
+            statement = _statement_span(lines, code_lines, n)
             assert_key = (rel, _assert_key(statement))
             if assert_key in ALLOWED_ASSERTS:
                 seen_asserts.add(assert_key)
@@ -945,6 +1028,53 @@ def test_quote_constructs_do_not_move_the_cfg_test_span(
     assert [
         int(v.split(":")[1]) for v in findings.violations
     ] == [runtime_unwrap]
+
+
+def test_multiline_raw_strings_do_not_move_the_cfg_test_span() -> None:
+    lines = """\
+#[cfg(test)]
+mod tests {
+    const BODY: &str = r#"
+}
+"#;
+    #[test]
+    fn uses_the_construct() {
+        Some(1).unwrap();
+    }
+}
+
+pub fn boom(x: Option<u32>) -> u32 {
+    let _text = r##"
+    panic!("not code");
+    }
+"##;
+    x.unwrap()
+}
+""".splitlines()
+    runtime_unwrap = lines.index("    x.unwrap()") + 1
+
+    findings = _scan_source("fixture/src/lib.rs", lines)
+
+    assert [int(v.split(":")[1]) for v in findings.violations] == [
+        runtime_unwrap
+    ]
+
+
+def test_raw_string_marker_in_nested_block_comment_hides_no_panic() -> None:
+    lines = '''\
+/* outer
+   /* raw literals start with r#" */
+   panic!("commented out");
+*/
+pub fn boom() { panic!("live"); }
+'''.splitlines()
+    runtime_panic = lines.index('pub fn boom() { panic!("live"); }') + 1
+
+    findings = _scan_source("fixture/src/lib.rs", lines)
+
+    assert [int(v.split(":")[1]) for v in findings.violations] == [
+        runtime_panic
+    ]
 
 
 def test_no_new_panics_in_rust_runtime_code() -> None:

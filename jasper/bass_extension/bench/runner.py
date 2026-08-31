@@ -266,6 +266,11 @@ class BenchDeps:
     stop: Stop = field(default_factory=Stop)
 
 
+def candidate_artifact_tag(setting_dbfs: float) -> str:
+    """Return a path tag that preserves the exact finite float setting."""
+    return repr(setting_dbfs)
+
+
 async def _readback_receipt(
     sink: BundleSink,
     *,
@@ -440,6 +445,7 @@ async def _run_target(
         for probe in ordered:
             deps.stop.check()
             setting = probe.pre_limiter_peak_dbfs
+            setting_tag = candidate_artifact_tag(setting)
             async with deps.open_window():
                 predecessor = await snapshot_predecessor(deps.controller)
 
@@ -455,7 +461,7 @@ async def _run_target(
                 ) as ref_readback:
                     reference_activation = await _readback_receipt(
                         sink,
-                        role=f"reference_activation_{setting:g}",
+                        role=f"reference_activation_{setting_tag}",
                         target_id=target.target_id,
                         active_config_raw=ref_readback.active_config_raw,
                         graph_fingerprint=ref_readback.graph_fingerprint,
@@ -489,7 +495,7 @@ async def _run_target(
                 ) as cand_readback:
                     candidate_activation = await _readback_receipt(
                         sink,
-                        role=f"candidate_activation_{setting:g}",
+                        role=f"candidate_activation_{setting_tag}",
                         target_id=target.target_id,
                         active_config_raw=cand_readback.active_config_raw,
                         graph_fingerprint=cand_readback.graph_fingerprint,
@@ -508,7 +514,7 @@ async def _run_target(
 
                 restoration_receipt = await _readback_receipt(
                     sink,
-                    role=f"candidate_restoration_{setting:g}",
+                    role=f"candidate_restoration_{setting_tag}",
                     target_id=target.target_id,
                     active_config_raw=predecessor.active_config_raw,
                     graph_fingerprint=predecessor.graph_fingerprint,

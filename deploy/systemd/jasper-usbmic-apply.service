@@ -4,7 +4,6 @@
 
 [Unit]
 Description=Apply the desired JTS USB microphone shape
-Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
 # One accepted apply gets at most four starts (the initial try plus three
 # retries). jasper-control resets this budget before each explicit user action.
 #

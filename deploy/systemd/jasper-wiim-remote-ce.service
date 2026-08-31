@@ -1,6 +1,5 @@
 [Unit]
 Description=Reserve BLE connection-event time for the WiiM Remote 2 microphone
-Documentation=file:/opt/jasper/docs/HANDOFF-privilege-separation.md
 # Started on demand by jasper-wiim-remote-mic (through jasper-control's restart
 # broker) every time the remote's voice notifications start — the reservation
 # lives on the connection, so it is lost on every disconnect and cannot be

@@ -6,8 +6,7 @@
 # libasound2-plugins isn't installed, ALSA falls back to the built-in
 # "linear" resampler -- the failure mode that produced ~12 dB of
 # 4-8 kHz loss in shairport's 44.1->48 plug, crippling AEC
-# speech-band performance (May 2026 investigation in
-# docs/HANDOFF-aec.md). Affects:
+# speech-band performance (May 2026 investigation). Affects:
 #   - shairport-sync writing shairport_substream (44.1k → 48k)
 #   - bluealsa-aplay's plug operations
 # Medium preserves the speech/AEC band while saving CPU; Best keeps

@@ -5,15 +5,13 @@
 #   - ncm.usb0  — a USB management NETWORK link (default-on where the resolved
 #     hardware transport is available): a
 #     laptop plugged into the Pi's USB-C port gets an IP link to the Pi so
-#     http://<hostname>/ works even with Wi-Fi off. See
-#     docs/HANDOFF-usb-gadget.md.
+#     http://<hostname>/ works even with Wi-Fi off.
 #   - uac2.usb0 — USB AUDIO. The host-to-Pi direction is the wizard-toggled
 #     jasper-usbsink source. When the separate /wake USB-microphone intent is
 #     enabled, the same function also advertises a mono Pi-to-host direction.
 #     The default microphone-Off attribute block remains byte-identical to the
-#     pre-composite gadget (a low-latency contract — see
-#     docs/HANDOFF-usb-low-latency.md and the doctor's
-#     check_usbsink_low_latency_contract).
+#     pre-composite gadget; the doctor's check_usbsink_low_latency_contract
+#     enforces this low-latency contract.
 #
 # Runs at jasper-usbgadget.service start (oneshot + RemainAfterExit).
 # libcomposite is modprobed by the systemd unit's ExecStartPre, not here,
@@ -22,7 +20,7 @@
 # NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` even
 # though the gadget is no longer audio-only — the doctor's low-latency
 # contract check reads that exact path, and renaming it would break the
-# byte-identical attribute contract. Accepted debt; see the HANDOFF.
+# byte-identical attribute contract. Accepted debt.
 #
 # Idempotent by COMPOSITION, not by mere existence: a descriptor that is bound
 # AND already carries the desired function set exits 0 without a single write.

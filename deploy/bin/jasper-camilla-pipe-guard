@@ -10,8 +10,8 @@
 # daemon, whose bounded OnFailure recovery handler can park the graph).
 # A dead Snapcast PLAYBACK pipe is repaired by re-pointing the statefile
 # to the packaged base config BEFORE camilla launches, so the failing
-# starts never happen. The guarded config is the BONDED pipe config from
-# docs/HANDOFF-multiroom.md §2: playback File -> the snapserver FIFO.
+# starts never happen. The guarded BONDED pipe config sends playback File to
+# the snapserver FIFO.
 #
 # Why ExecStartPre and not only OnFailure=: preventing a known dead-pipe start
 # preserves the pipe evidence and avoids spending the bounded recovery budget.

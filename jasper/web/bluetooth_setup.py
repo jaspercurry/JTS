@@ -16,9 +16,8 @@ Routes (nginx strips /bluetooth/):
   POST /discoverable           {"on": bool}
   POST /pair                   {"mac": "..."} — returns {ok: true}
   GET  /pair/<mac>/stream      SSE: pair-flow status events
-  POST /connect                {"mac": "..."}
-  POST /disconnect             {"mac": "..."}
-  POST /forget                 {"mac": "..."}
+  POST /connect|disconnect|forget  {"mac": "...", "mutationId": "..."}
+  GET  /actions/<mutation-id>/stream  SSE: device-action terminal state
 
 Stack: stdlib http.server (ThreadingHTTPServer) — same shape as the
 sibling spotify_setup / voice_setup wizards. One thread
@@ -29,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -38,7 +38,7 @@ import threading
 import time
 import urllib.parse
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -72,6 +72,7 @@ from ..bluetooth.adapter import (
     state as adapter_state,
 )
 from ..bluetooth.engine import BluetoothEngine
+from ..bluetooth.models import BluetoothActionResult
 from ..log_event import log_event
 from ..local_sources import local_source_lifecycle
 from ..music_sources import Source
@@ -79,6 +80,7 @@ from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
 )
+from . import _systemd
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
@@ -89,6 +91,10 @@ STATE_PROBE_TIMEOUT_SEC = 5.0
 MUTATION_TIMEOUT_SEC = 35.0
 _MAC_ADDRESS_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PAIR_STREAM_TTL_SEC = 120.0
+DEVICE_MUTATION_TTL_SEC = 120.0
+DEVICE_MUTATION_HEARTBEAT_SEC = 10.0
+_DEVICE_ACTIONS = frozenset({"connect", "disconnect", "forget"})
+_MUTATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +123,13 @@ def _normalize_mac(value: object, *, url_encoded: bool = False) -> str | None:
     if not _MAC_ADDRESS_RE.fullmatch(candidate):
         return None
     return candidate.upper()
+
+
+def _normalize_mutation_id(value: object, *, url_encoded: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = urllib.parse.unquote(value) if url_encoded else value.strip()
+    return candidate if _MUTATION_ID_RE.fullmatch(candidate) else None
 
 
 def _unit_active(unit: str) -> bool:
@@ -152,7 +165,7 @@ def _unit_available(unit: str) -> bool:
 def _effective_bluetooth_state(
     *,
     desired: bool,
-    powered: bool,
+    powered: bool | None,
     parked: bool = False,
     availability: BluetoothAvailability | None = None,
     unit_snapshot: UnitSnapshot | None = None,
@@ -174,8 +187,10 @@ def _effective_bluetooth_state(
     if desired:
         if any_soft_blocked is True:
             reasons.append("the radio is RF-killed")
-        if not powered:
+        if powered is False:
             reasons.append("BlueZ reports the adapter powered off")
+        elif powered is None:
+            reasons.append("BlueZ adapter state is unavailable")
         inactive = [unit for unit, running in active.items() if not running]
         if inactive:
             reasons.append(f"required services are inactive: {', '.join(inactive)}")
@@ -184,8 +199,10 @@ def _effective_bluetooth_state(
         still_active = [unit for unit, running in active.items() if running]
         if still_active:
             reasons.append(f"services are still active: {', '.join(still_active)}")
-        if powered:
+        if powered is True:
             reasons.append("BlueZ still reports the adapter powered on")
+        elif powered is None:
+            reasons.append("BlueZ adapter state is unavailable")
         if fully_soft_blocked is False:
             reasons.append("the radio is not RF-killed")
         effective = "off" if not reasons else "degraded"
@@ -204,7 +221,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     except RuntimeError as exc:
         return ({
             "error": str(exc),
-            "powered": False,
+            "powered": None,
             "desired": False,
             "effective": "unavailable",
             "available": False,
@@ -224,7 +241,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     except (DBusError, OSError, RuntimeError, asyncio.TimeoutError) as exc:
         effective, degraded_reason = _effective_bluetooth_state(
             desired=desired,
-            powered=False,
+            powered=None,
             parked=parked,
             availability=availability,
             unit_snapshot=unit_snapshot,
@@ -233,7 +250,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             effective = "unavailable"
         payload: dict[str, Any] = {
             "error": str(exc),
-            "powered": False,
+            "powered": None,
             "desired": desired,
             "effective": effective,
             "available": availability.available,
@@ -333,6 +350,17 @@ class _AsyncDispatcher:
             return fut.result(timeout=timeout_sec)
         except TimeoutError:
             fut.cancel()
+            raise
+
+    def submit(self, coro):
+        """Submit background work without tying it to one HTTP request."""
+        if self._loop is None:
+            _close_awaitable(coro)
+            raise RuntimeError("dispatcher not started")
+        try:
+            return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except (RuntimeError, TypeError):
+            _close_awaitable(coro)
             raise
 
     def stream(self, coro_gen):
@@ -461,7 +489,7 @@ def _landing_html(csrf_token: str = "") -> bytes:
 # ============================================================
 
 
-def _make_handler() -> type[BaseHTTPRequestHandler]:
+def _make_handler(*, idle_hold=_systemd.no_hold) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -472,6 +500,16 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             send_json_response(self, payload, status=status)
+
+        def _claim_radio_activation(self) -> object | None:
+            owner = object()
+            if _claim_bluetooth_action(owner):
+                return owner
+            self._send_json(
+                _device_busy_payload(),
+                status=HTTPStatus.CONFLICT,
+            )
+            return None
 
         def _read_json(self) -> dict[str, Any]:
             try:
@@ -529,6 +567,19 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     return
                 self._stream_pair(mac)
                 return
+            if path.startswith("/actions/") and path.endswith("/stream"):
+                if not guard_read_request(self):
+                    return
+                parts = path.split("/")
+                if len(parts) != 4:
+                    self.send_error(HTTPStatus.BAD_REQUEST)
+                    return
+                mutation_id = _normalize_mutation_id(parts[2], url_encoded=True)
+                if mutation_id is None:
+                    self.send_error(HTTPStatus.BAD_REQUEST)
+                    return
+                self._stream_device_action(mutation_id)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -558,6 +609,16 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     self._send_json({"error": "invalid mac"}, status=400)
                     return
                 mac = normalized_mac
+            mutation_id = ""
+            if path[1:] in _DEVICE_ACTIONS:
+                normalized_id = _normalize_mutation_id(body.get("mutationId"))
+                if normalized_id is None:
+                    self._send_json(
+                        {"error": "invalid mutation id"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                mutation_id = normalized_id
             if bonded_follower_active():
                 # The canonical source coordinator parks every local Bluetooth
                 # resource after grouping applies a bonded-follower role. A direct wizard request must
@@ -600,15 +661,29 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 if path == "/power":
                     on = body["on"]
-                    request_source_intent(Source.BLUETOOTH, on)
+                    owner = self._claim_radio_activation() if on else None
+                    if on and owner is None:
+                        return
+                    try:
+                        request_source_intent(Source.BLUETOOTH, on)
+                    finally:
+                        if owner is not None:
+                            _release_bluetooth_action(owner)
                     self._send_json({"ok": True, "desired": on})
                     return
                 if path == "/discoverable":
                     on = body["on"]
-                    _dispatch().run(
-                        set_discoverable(on),
-                        timeout_sec=MUTATION_TIMEOUT_SEC,
-                    )
+                    owner = self._claim_radio_activation() if on else None
+                    if on and owner is None:
+                        return
+                    try:
+                        _dispatch().run(
+                            set_discoverable(on),
+                            timeout_sec=MUTATION_TIMEOUT_SEC,
+                        )
+                    finally:
+                        if owner is not None:
+                            _release_bluetooth_action(owner)
                     self._send_json({"ok": True})
                     return
                 if path == "/scan":
@@ -618,12 +693,18 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                         # long-lived bus (bluez auto-stops when the
                         # client disconnects — a short-lived helper
                         # would lose the scan instantly).
-                        _dispatch().run(
-                            _dispatch().engine.start_discovery(
-                                duration_s=SCAN_DURATION_SEC,
-                            ),
-                            timeout_sec=MUTATION_TIMEOUT_SEC,
-                        )
+                        owner = self._claim_radio_activation()
+                        if owner is None:
+                            return
+                        try:
+                            _dispatch().run(
+                                _dispatch().engine.start_discovery(
+                                    duration_s=SCAN_DURATION_SEC,
+                                ),
+                                timeout_sec=MUTATION_TIMEOUT_SEC,
+                            )
+                        finally:
+                            _release_bluetooth_action(owner)
                         self._send_json(
                             {"ok": True,
                              "duration_s": SCAN_DURATION_SEC},
@@ -649,41 +730,30 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     # subsequent /stream request can consume it.
                     if not _start_pair_stream(mac):
                         self._send_json(
-                            {"error": "pair attempt already in flight"},
+                            _device_busy_payload(),
                             status=HTTPStatus.CONFLICT,
                         )
                         return
                     self._send_json({"ok": True})
                     return
-                if path == "/connect":
-                    ok, msg = _dispatch().run(
-                        _dispatch().engine.connect(mac),
-                        timeout_sec=MUTATION_TIMEOUT_SEC,
+                if path[1:] in _DEVICE_ACTIONS:
+                    action = path[1:]
+                    attempt, resumed = _start_device_mutation(
+                        action,
+                        mac,
+                        mutation_id,
+                        idle_hold=idle_hold,
                     )
-                    if not ok:
-                        self._send_json({"error": msg}, status=502)
+                    if attempt is None:
+                        self._send_json(
+                            _device_busy_payload(),
+                            status=HTTPStatus.CONFLICT,
+                        )
                         return
-                    self._send_json({"ok": True, "message": msg})
-                    return
-                if path == "/disconnect":
-                    ok, msg = _dispatch().run(
-                        _dispatch().engine.disconnect(mac),
-                        timeout_sec=MUTATION_TIMEOUT_SEC,
+                    self._send_json(
+                        _device_mutation_payload(attempt, resumed=resumed),
+                        status=HTTPStatus.ACCEPTED,
                     )
-                    if not ok:
-                        self._send_json({"error": msg}, status=502)
-                        return
-                    self._send_json({"ok": True, "message": msg})
-                    return
-                if path == "/forget":
-                    ok, msg = _dispatch().run(
-                        _dispatch().engine.forget(mac),
-                        timeout_sec=MUTATION_TIMEOUT_SEC,
-                    )
-                    if not ok:
-                        self._send_json({"error": msg}, status=502)
-                        return
-                    self._send_json({"ok": True, "message": msg})
                     return
             except Exception as e:  # noqa: BLE001
                 logger.exception("POST %s failed", path)
@@ -704,6 +774,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self._begin_sse()
 
             async def _drive():
+                yield {"action": "reset"}
                 engine = _dispatch().engine
                 async with await engine.observer.subscribe() as sub:
                     async for action, device in sub.events():
@@ -733,7 +804,255 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             finally:
                 stream.close()
 
+        def _stream_device_action(self, mutation_id: str) -> None:
+            self._begin_sse()
+            for event in _consume_device_mutation(mutation_id):
+                if not self._sse_write(event):
+                    return
+
     return Handler
+
+
+# ============================================================
+# Server-owned device mutations
+# ============================================================
+
+
+@dataclass
+class _DeviceMutation:
+    mutation_id: str
+    action: str
+    mac: str
+    created_at: float
+    finished: threading.Event = field(default_factory=threading.Event)
+    result: BluetoothActionResult | None = None
+    expiry_timer: threading.Timer | None = None
+
+
+_DEVICE_COORDINATION_LOCK = threading.Lock()
+_DEVICE_MUTATIONS: dict[str, _DeviceMutation] = {}
+_ACTIVE_BLUETOOTH_ACTION: object | None = None
+
+
+def _claim_bluetooth_action(owner: object) -> bool:
+    global _ACTIVE_BLUETOOTH_ACTION
+    with _DEVICE_COORDINATION_LOCK:
+        if _ACTIVE_BLUETOOTH_ACTION is not None:
+            return False
+        _ACTIVE_BLUETOOTH_ACTION = owner
+    return True
+
+
+def _release_bluetooth_action(owner: object) -> None:
+    global _ACTIVE_BLUETOOTH_ACTION
+    with _DEVICE_COORDINATION_LOCK:
+        if _ACTIVE_BLUETOOTH_ACTION is owner:
+            _ACTIVE_BLUETOOTH_ACTION = None
+
+
+def _device_busy_payload() -> dict[str, Any]:
+    return {
+        "error": "another Bluetooth action is already running",
+        "code": "device_busy",
+    }
+
+
+def _device_mutation_status(attempt: _DeviceMutation) -> str:
+    if not attempt.finished.is_set():
+        return "pending"
+    result = attempt.result
+    if result is None or result.code == "interrupted":
+        return "interrupted"
+    return "succeeded" if result.ok else "failed"
+
+
+def _device_mutation_payload(
+    attempt: _DeviceMutation,
+    *,
+    resumed: bool | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": _device_mutation_status(attempt),
+        "mutationId": attempt.mutation_id,
+        "action": attempt.action,
+        "mac": attempt.mac,
+    }
+    if resumed is not None:
+        payload["stream"] = (
+            f"actions/{urllib.parse.quote(attempt.mutation_id, safe='')}/stream"
+        )
+        payload["resumed"] = resumed
+    if attempt.result is not None:
+        payload["message"] = attempt.result.message
+        if attempt.result.code is not None:
+            payload["code"] = attempt.result.code
+    return payload
+
+
+def _expire_device_mutation(
+    mutation_id: str,
+    attempt: _DeviceMutation,
+) -> None:
+    global _ACTIVE_BLUETOOTH_ACTION
+    with _DEVICE_COORDINATION_LOCK:
+        if _DEVICE_MUTATIONS.get(mutation_id) is attempt:
+            _DEVICE_MUTATIONS.pop(mutation_id, None)
+        if _ACTIVE_BLUETOOTH_ACTION is attempt:
+            _ACTIVE_BLUETOOTH_ACTION = None
+
+
+def _complete_device_mutation(
+    attempt: _DeviceMutation,
+    result: BluetoothActionResult,
+) -> None:
+    global _ACTIVE_BLUETOOTH_ACTION
+    attempt.result = result
+    timer = threading.Timer(
+        DEVICE_MUTATION_TTL_SEC,
+        _expire_device_mutation,
+        args=(attempt.mutation_id, attempt),
+    )
+    timer.daemon = True
+    with _DEVICE_COORDINATION_LOCK:
+        if _ACTIVE_BLUETOOTH_ACTION is attempt:
+            _ACTIVE_BLUETOOTH_ACTION = None
+        if _DEVICE_MUTATIONS.get(attempt.mutation_id) is not attempt:
+            attempt.finished.set()
+            return
+        attempt.expiry_timer = timer
+    attempt.finished.set()
+    timer.start()
+
+
+def _start_device_mutation(
+    action: str,
+    mac: str,
+    mutation_id: str,
+    *,
+    idle_hold=_systemd.no_hold,
+) -> tuple[_DeviceMutation | None, bool]:
+    """Accept one server-owned BlueZ action for a device."""
+    global _ACTIVE_BLUETOOTH_ACTION
+    if action not in _DEVICE_ACTIONS:
+        raise ValueError(f"unsupported Bluetooth device action: {action}")
+    mac_u = mac.upper()
+    hold = contextlib.ExitStack()
+    hold.enter_context(idle_hold(f"bluetooth:{action}"))
+    with _DEVICE_COORDINATION_LOCK:
+        previous = _DEVICE_MUTATIONS.get(mutation_id)
+        if previous is not None:
+            hold.close()
+            if previous.action == action and previous.mac == mac_u:
+                return previous, True
+            return None, False
+        active = _ACTIVE_BLUETOOTH_ACTION
+        if isinstance(active, _DeviceMutation):
+            hold.close()
+            if active.action == action and active.mac == mac_u:
+                return active, True
+            return None, False
+        if active is not None:
+            hold.close()
+            return None, False
+        attempt = _DeviceMutation(
+            mutation_id=mutation_id,
+            action=action,
+            mac=mac_u,
+            created_at=time.monotonic(),
+        )
+        _DEVICE_MUTATIONS[mutation_id] = attempt
+        _ACTIVE_BLUETOOTH_ACTION = attempt
+
+    def _interrupt_start() -> None:
+        try:
+            hold.close()
+        finally:
+            _complete_device_mutation(
+                attempt,
+                BluetoothActionResult(
+                    False,
+                    "Bluetooth action could not start.",
+                    "interrupted",
+                ),
+            )
+
+    async def _drive() -> None:
+        result = BluetoothActionResult(
+            False,
+            "Bluetooth action interrupted.",
+            "interrupted",
+        )
+        unexpected: BaseException | None = None
+        log_event(
+            logger,
+            "bluetooth.device_mutation_started",
+            mutation_id=mutation_id,
+            action=action,
+            address=mac_u,
+        )
+        try:
+            outcome = (await asyncio.gather(
+                getattr(_dispatch().engine, action)(mac_u),
+                return_exceptions=True,
+            ))[0]
+            if isinstance(outcome, BaseException):
+                if not isinstance(outcome, Exception):
+                    raise outcome
+                unexpected = outcome
+                result = BluetoothActionResult(False, "Bluetooth action failed.")
+            else:
+                result = outcome
+        finally:
+            try:
+                _complete_device_mutation(attempt, result)
+                log_event(
+                    logger,
+                    "bluetooth.device_mutation_finished",
+                    mutation_id=mutation_id,
+                    action=action,
+                    address=mac_u,
+                    status=_device_mutation_status(attempt),
+                    code=result.code,
+                    duration_ms=round(
+                        (time.monotonic() - attempt.created_at) * 1000,
+                    ),
+                    level=(
+                        logging.ERROR if unexpected is not None else logging.INFO
+                    ),
+                    exc_info=(
+                        (type(unexpected), unexpected, unexpected.__traceback__)
+                        if unexpected is not None
+                        else False
+                    ),
+                )
+            finally:
+                hold.close()
+
+    driver = _drive()
+    try:
+        _dispatch().submit(driver)
+    except (RuntimeError, TypeError):
+        _close_awaitable(driver)
+        _interrupt_start()
+        raise
+    return attempt, False
+
+
+def _consume_device_mutation(mutation_id: str):
+    with _DEVICE_COORDINATION_LOCK:
+        attempt = _DEVICE_MUTATIONS.get(mutation_id)
+    if attempt is None:
+        yield {
+            "status": "interrupted",
+            "mutationId": mutation_id,
+            "message": "This Bluetooth action is no longer available.",
+        }
+        return
+    if not attempt.finished.is_set():
+        yield _device_mutation_payload(attempt)
+        while not attempt.finished.wait(DEVICE_MUTATION_HEARTBEAT_SEC):
+            yield _device_mutation_payload(attempt)
+    yield _device_mutation_payload(attempt)
 
 
 # ============================================================
@@ -754,7 +1073,6 @@ class _PairAttempt:
 # In-flight pair attempts keyed by uppercase MAC. Registration precedes the
 # POST response; the sole SSE consumer owns cleanup/cancellation.
 _PAIR_STREAMS: dict[str, _PairAttempt] = {}
-_PAIR_STREAMS_LOCK = threading.Lock()
 
 
 def _cancel_pair_attempt(
@@ -793,11 +1111,11 @@ def _release_pair_attempt(
     terminal_message: str | None = None,
 ) -> bool:
     """Remove an attempt only when it is still the registered generation."""
-    with _PAIR_STREAMS_LOCK:
+    with _DEVICE_COORDINATION_LOCK:
         if _PAIR_STREAMS.get(mac) is not attempt:
             return False
+        _cancel_pair_attempt(attempt, terminal_message=terminal_message)
         _PAIR_STREAMS.pop(mac, None)
-    _cancel_pair_attempt(attempt, terminal_message=terminal_message)
     return True
 
 
@@ -816,9 +1134,13 @@ def _start_pair_stream(mac: str) -> bool:
 
     Queue registration is synchronous and happens before POST /pair can reply,
     so an immediately-following SSE GET cannot race ahead of the driver task.
-    Returns False when the same device already has an unconsumed attempt.
+    Returns False while another BlueZ action owns the adapter.
     """
+    global _ACTIVE_BLUETOOTH_ACTION
     mac_u = mac.upper()
+    with _DEVICE_COORDINATION_LOCK:
+        if _ACTIVE_BLUETOOTH_ACTION is not None:
+            return False
     dispatcher = _dispatch()
     loop = dispatcher._loop  # noqa: SLF001 — single owner
     if loop is None:
@@ -826,7 +1148,9 @@ def _start_pair_stream(mac: str) -> bool:
     q: asyncio.Queue[dict | None] = asyncio.Queue()
     attempt = _PairAttempt(queue=q, created_at=time.monotonic(), loop=loop)
     stale_attempt: _PairAttempt | None = None
-    with _PAIR_STREAMS_LOCK:
+    with _DEVICE_COORDINATION_LOCK:
+        if _ACTIVE_BLUETOOTH_ACTION is not None:
+            return False
         previous = _PAIR_STREAMS.get(mac_u)
         if previous is not None:
             if time.monotonic() - previous.created_at < PAIR_STREAM_TTL_SEC:
@@ -834,6 +1158,7 @@ def _start_pair_stream(mac: str) -> bool:
             _PAIR_STREAMS.pop(mac_u, None)
             stale_attempt = previous
         _PAIR_STREAMS[mac_u] = attempt
+        _ACTIVE_BLUETOOTH_ACTION = attempt
     if stale_attempt is not None:
         _cancel_pair_attempt(
             stale_attempt,
@@ -854,6 +1179,7 @@ def _start_pair_stream(mac: str) -> bool:
             await q.put({"stage": "error", "message": str(e)})
         finally:
             await q.put(None)  # sentinel
+            _release_bluetooth_action(attempt)
             # Don't pop from _PAIR_STREAMS yet — the consumer may not
             # have started reading yet. Cleanup happens in the
             # consumer's finally block.
@@ -868,7 +1194,18 @@ def _start_pair_stream(mac: str) -> bool:
             attempt,
             terminal_message="Pairing could not start.",
         )
+        _release_bluetooth_action(attempt)
         raise
+    with _DEVICE_COORDINATION_LOCK:
+        if _PAIR_STREAMS.get(mac_u) is attempt:
+            attempt.driver_future = driver_future
+            registered = True
+        else:
+            registered = False
+    if not registered:
+        attempt.driver_future = driver_future
+        _cancel_pair_attempt(attempt)
+        return False
     try:
         expiry_timer = threading.Timer(
             PAIR_STREAM_TTL_SEC,
@@ -876,15 +1213,13 @@ def _start_pair_stream(mac: str) -> bool:
             args=(mac_u, attempt),
         )
         expiry_timer.daemon = True
-        with _PAIR_STREAMS_LOCK:
+        with _DEVICE_COORDINATION_LOCK:
             if _PAIR_STREAMS.get(mac_u) is attempt:
-                attempt.driver_future = driver_future
                 attempt.expiry_timer = expiry_timer
                 registered = True
             else:
                 registered = False
         if not registered:
-            attempt.driver_future = driver_future
             _cancel_pair_attempt(attempt)
             return False
         expiry_timer.start()
@@ -907,7 +1242,7 @@ def _consume_pair_stream(mac: str):
     if loop is None:
         return
     claimed = False
-    with _PAIR_STREAMS_LOCK:
+    with _DEVICE_COORDINATION_LOCK:
         attempt = _PAIR_STREAMS.get(mac_u)
         if attempt is not None and not attempt.consumer_attached:
             attempt.consumer_attached = True
@@ -963,16 +1298,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # When socket-activated by systemd, adopt the inherited listener
     # instead of binding fresh. Direct CLI invocation falls through.
-    from . import _systemd
     sockets = _systemd.adopt_systemd_sockets()
     target = sockets[0] if sockets else (args.host, args.port)
-
-    handler_cls = _make_handler()
-    server = _systemd.make_http_server(target, handler_cls)
 
     # Idle-exit after 10 min of no requests so the resident set goes
     # to zero between admin sessions. ~17 MB Pss savings when idle.
     tracker = _systemd.IdleShutdownTracker()
+    handler_cls = _make_handler(idle_hold=tracker.hold)
+    server = _systemd.make_http_server(target, handler_cls)
     _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
 

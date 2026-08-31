@@ -5,6 +5,30 @@
 import { loadEsm } from "./_loader.mjs";
 
 const { toggleScanRequest } = await loadEsm(process.argv[2]);
+const {
+  applyDeviceEvent,
+  bindDeviceMutationStream,
+  deviceActionDisabled,
+  deviceMutationLabel,
+  deviceMutationOutcome,
+  recoverUnknownDeviceMutation,
+  submitDeviceMutation,
+  visibleDeviceRows,
+} = await loadEsm(process.argv[3], {
+  stripImports: true,
+  guardNoImports: true,
+  truncateBefore: "// -------- pair flow --------",
+  exportNames: [
+    "applyDeviceEvent",
+    "bindDeviceMutationStream",
+    "deviceActionDisabled",
+    "deviceMutationLabel",
+    "deviceMutationOutcome",
+    "recoverUnknownDeviceMutation",
+    "submitDeviceMutation",
+    "visibleDeviceRows",
+  ],
+});
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -91,6 +115,178 @@ function harness(overrides = {}) {
   assert(h.alerts[0] === "Network error talking to the Bluetooth backend.",
     "network failure copy drifted");
   assert(h.refreshes === 1, "network failure should refresh current state");
+}
+
+{
+  const poweredOff = {
+    powered: false, desired: false, available: true, parked: false,
+  };
+  for (const action of ["disconnect", "forget", "connect", "pair"]) {
+    assert(deviceActionDisabled(action, poweredOff, false),
+      `${action} must be disabled while adapter power is known off`);
+  }
+
+  const ready = {
+    powered: true, desired: true, available: true, parked: false,
+  };
+  for (const action of ["disconnect", "forget", "connect", "pair"]) {
+    assert(!deviceActionDisabled(action, ready, false),
+      `${action} must be enabled when the adapter is ready`);
+  }
+
+  const degradedButPowered = {
+    powered: true, desired: true, available: false, parked: false,
+  };
+  assert(!deviceActionDisabled("disconnect", degradedButPowered, false),
+    "generic unavailability must not trap disconnect cleanup");
+  assert(!deviceActionDisabled("forget", degradedButPowered, false),
+    "generic unavailability must not trap forget cleanup");
+  assert(deviceActionDisabled("connect", degradedButPowered, false),
+    "generic unavailability must still block connect activation");
+  assert(deviceActionDisabled("pair", degradedButPowered, false),
+    "generic unavailability must still block pair activation");
+
+  const startupState = {
+    powered: null, desired: false, available: true, parked: false,
+  };
+  assert(!deviceActionDisabled("forget", startupState, false),
+    "startup must keep cleanup available until adapter power is known");
+  assert(deviceActionDisabled("forget", degradedButPowered, true),
+    "an active mutation must block every device action");
+}
+
+{
+  const updates = [];
+  const terminal = [];
+  const stream = {
+    closed: false,
+    close() { this.closed = true; },
+  };
+  const mutation = {stream: "actions/forget/device/stream"};
+  bindDeviceMutationStream(mutation, {
+    openStream(path) {
+      assert(path === mutation.stream, "accepted stream path drifted");
+      return stream;
+    },
+    onStatus(event) { updates.push(event.status); },
+    onTerminal(event) { terminal.push(event.status); },
+  });
+
+  await stream.onmessage({data: JSON.stringify({status: "pending"})});
+  stream.onerror();
+  assert(stream.closed === false,
+    "transport loss must leave the server-owned action resumable");
+  assert(terminal.length === 0,
+    "transport loss must not be treated as an action failure");
+
+  await stream.onmessage({data: JSON.stringify({status: "succeeded"})});
+  assert(stream.closed === true, "terminal state must close the progress stream");
+  assert(JSON.stringify(updates) === JSON.stringify(["pending", "succeeded"]),
+    "mutation status events drifted");
+  assert(JSON.stringify(terminal) === JSON.stringify(["succeeded"]),
+    "terminal action state was not delivered once");
+  assert(deviceMutationLabel("forget", true) === "Removing…",
+    "forget row must remain visibly pending");
+  assert(deviceMutationOutcome("interrupted") === "unknown",
+    "service restart must not be reported as device failure");
+}
+
+{
+  const order = [];
+  await recoverUnknownDeviceMutation({action: "connect"}, {
+    refreshDevices() { order.push("devices"); },
+    async drainState() { order.push("drain"); },
+    async refreshState() { order.push("state"); },
+    release() { order.push("release"); },
+    notify() { order.push("notify"); },
+  });
+  assert(JSON.stringify(order)
+    === JSON.stringify(["devices", "drain", "state", "release", "notify"]),
+  "unknown outcome released controls before authoritative state refresh");
+}
+
+{
+  const device = {path: "/device/1", address: "AA:BB:CC:DD:EE:FF"};
+  const live = new Map([[device.path, device]]);
+  assert(applyDeviceEvent({action: "reset"}, live),
+    "stream reset event was ignored");
+  assert(live.size === 0, "stream reconnect kept stale device rows");
+  assert(applyDeviceEvent({action: "add", device}, live),
+    "device seed event was ignored after reset");
+
+  const pending = new Map([[device.address, {device}]]);
+  live.clear();
+  assert(visibleDeviceRows(live, pending)[0] === device,
+    "observer removal hid the acted row before mutation terminal");
+  pending.clear();
+  assert(visibleDeviceRows(live, pending).length === 0,
+    "terminal mutation kept the removed device snapshot");
+}
+
+{
+  const mutation = {
+    action: "connect",
+    mac: "AA:BB:CC:DD:EE:FF",
+    mutationId: "fixed-mutation-id",
+  };
+  let posts = 0;
+  let accepted = 0;
+  let rejected = 0;
+  const options = {
+    async post(current) {
+      posts += 1;
+      assert(current.mutationId === "fixed-mutation-id",
+        "response-loss retry changed the idempotency key");
+      throw new TypeError("response lost");
+    },
+    onAccepted() { accepted += 1; },
+    onRejected() { rejected += 1; },
+  };
+
+  assert(await submitDeviceMutation(mutation, options) === "probing",
+    "ambiguous response loss was treated as terminal");
+  assert(accepted === 1 && rejected === 0 && posts === 1,
+    "ambiguous response loss cleared or failed the pending action");
+  assert(mutation.stream === "actions/fixed-mutation-id/stream",
+    "response-loss recovery did not probe the accepted mutation id");
+}
+
+{
+  const mutation = {
+    action: "disconnect",
+    mac: "AA:BB:CC:DD:EE:FF",
+    mutationId: "new-action-id",
+  };
+  let accepted = 0;
+  let rejected = 0;
+  let rejection = '';
+  const result = await submitDeviceMutation(mutation, {
+    async post() {
+      return {
+        ok: false,
+        status: 409,
+        data: {
+          code: "device_busy",
+          status: "pending",
+          action: "connect",
+          mutationId: "active-action-id",
+          stream: "actions/active-action-id/stream",
+        },
+      };
+    },
+    onAccepted() { accepted += 1; },
+    onRejected(current, message) {
+      rejected += 1;
+      rejection = message;
+      assert(current === mutation, "busy rejection replaced the requested action");
+    },
+  });
+  assert(result === "rejected" && accepted === 0 && rejected === 1,
+    "device_busy attached to a conflicting progress stream");
+  assert(rejection === 409, "device_busy rejection did not preserve its status");
+  assert(mutation.action === "disconnect"
+    && mutation.mutationId === "new-action-id" && !mutation.stream,
+  "busy rejection rewrote the requested action identity");
 }
 
 console.log(JSON.stringify({ ok: true }));

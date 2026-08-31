@@ -101,9 +101,9 @@ def test_mutation_gate_stays_closed_until_preexisting_state_get_drains():
 
 def test_pairing_mode_and_scan_controls_remain_gated_by_adapter_power():
     js = _MODULE_JS.read_text()
-    assert "sd.disabled = mutationInFlight || parked || (!state.discoverable" in js
+    assert "sd.disabled = busy || parked || (!state.discoverable" in js
     assert "&& (unavailable || !state.desired || !state.powered));" in js
-    assert "btn.disabled = mutationInFlight || parked || (!scanning" in js
+    assert "btn.disabled = busy || parked || (!scanning" in js
 
 
 def test_unavailable_state_allows_pairing_mode_off_and_scan_stop_only():
@@ -118,23 +118,11 @@ def test_unavailable_and_parked_state_gate_activation_without_trapping_off():
     js = _MODULE_JS.read_text()
     assert "if (!r.ok)" in js
     assert "effective: 'unavailable'" in js
-    assert "power.disabled = mutationInFlight || powerIntentUnknown || parked" in js
+    assert "power.disabled = busy || powerIntentUnknown || parked" in js
     assert "|| (unavailable && !state.desired);" in js
     assert "Managed by this speaker’s stereo pair." in js
     assert "state.unavailableReason || state.error" in js
     assert "Bluetooth state unavailable." in js
-
-
-def test_unavailable_state_keeps_disconnect_and_forget_available():
-    js = _MODULE_JS.read_text()
-    assert "const mutationDisabled = mutationInFlight ? ' disabled' : '';" in js
-    assert "const radioActionDisabled = (" in js
-    assert 'data-action="disconnect"' in js
-    assert 'data-action="forget"' in js
-    assert "${mutationDisabled}>Disconnect</button>" in js
-    assert "${mutationDisabled}>Forget</button>" in js
-    assert "${radioActionDisabled}>Connect</button>" in js
-    assert "${radioActionDisabled}>Pair</button>" in js
 
 
 def test_failed_power_apply_uses_authoritative_state_readback():
@@ -148,20 +136,6 @@ def test_failed_power_apply_uses_authoritative_state_readback():
     assert "await jtsAlert('Bluetooth toggle failed:" in js
 
 
-def test_device_transport_failures_are_visible_before_mutation_finishes():
-    js = _MODULE_JS.read_text()
-    connect_start = js.index("async function connectDevice")
-    forget_start = js.index("async function forget", connect_start)
-    click_start = js.index("document.addEventListener", forget_start)
-    connect = js[connect_start:forget_start]
-    forget = js[forget_start:click_start]
-
-    assert "} catch (error) {" in connect
-    assert "'Connect' : 'Disconnect'} failed:" in connect
-    assert "} catch (error) {" in forget
-    assert "await jtsAlert('Forget failed:" in forget
-
-
 def test_desired_on_adapter_degraded_message_is_actionable():
     js = _MODULE_JS.read_text()
     assert "if (state.effective === 'degraded')" in js
@@ -170,9 +144,9 @@ def test_desired_on_adapter_degraded_message_is_actionable():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not on PATH")
-def test_scan_toggle_browser_module_handles_success_and_failures():
+def test_bluetooth_browser_modules_handle_scan_and_device_action_states():
     proc = subprocess.run(
-        [_NODE, str(_SCAN_HARNESS), str(_SCAN_JS)],
+        [_NODE, str(_SCAN_HARNESS), str(_SCAN_JS), str(_MODULE_JS)],
         capture_output=True,
         text=True,
         timeout=30,

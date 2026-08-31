@@ -1,6 +1,5 @@
 [Unit]
 Description=Re-check effective mDNS identity periodically (collisions happen when the OTHER device boots)
-Documentation=file:/opt/jasper/docs/HANDOFF-identity.md
 
 [Timer]
 # Boot pass shortly after avahi settles, then every 5 minutes. An mDNS

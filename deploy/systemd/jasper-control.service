@@ -14,7 +14,6 @@ Wants=network-online.target jasper-camilla.service
 # if it's stuck in a restart loop while the rest of the system
 # looks OK, the operator can't reach the dashboard to diagnose
 # — exactly the case where clean system reboot beats waiting.
-# See docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)".
 # `reboot` (not `reboot-force`): clean shutdown needed for zram.
 StartLimitIntervalSec=300
 StartLimitBurst=4
@@ -65,8 +64,7 @@ RestartSec=2
 # restart broker; and (2) the shared state it writes (speaker_volume.json) lands
 # in group `jasper` so jasper-voice/-mux can read it.
 #
-# This drop is GATED on two things that ship in the SAME PR (both validated on
-# hardware via the recovery matrix in docs/HANDOFF-privilege-separation.md):
+# This drop is GATED on two hardware-validated things that ship in the SAME PR:
 #   (a) a polkit rule (deploy/polkit/49-jasper-control.rules) — the supervisor
 #       recovery paths (system_supervisor reboot, shairport_supervisor restart)
 #       and the in-process restart broker call systemctl/reboot DIRECTLY as this
@@ -122,7 +120,7 @@ SystemCallFilter=@system-service
 # UMask=0007 — speaker_volume.json (written by jasper-control AND jasper-voice)
 # and other shared /var/lib/jasper state are created group-writable (0660), not
 # 0644, so the shared `jasper` group can write them. Mirrors jasper-voice/-mux;
-# see docs/HANDOFF-privilege-separation.md (2026-06-19 incident).
+# the 2026-06-19 incident showed why.
 UMask=0007
 
 # WS1 Phase 3 — the privileged restart broker binds a UNIX socket at
@@ -160,7 +158,7 @@ NoNewPrivileges=true
 # contracts explicitly so future hardening and current peering advert
 # rendering cannot silently regress.
 ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /etc/avahi/services
-# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
+# WS1 phase-1 hardening (hardened root).
 # ProtectKernelLogs is intentionally OMITTED: jasper-control spawns
 # jasper-doctor, whose watchdog-reset fingerprint check reads dmesg (/dev/kmsg).
 # ProtectHome stays read-only (above) for the same diagnostic-subprocess reason.
@@ -174,8 +172,7 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 
-# OOM protection (Stage 1 of memory-resilience plan, see
-# docs/HANDOFF-resilience.md). Control is the recovery surface — if
+# OOM protection (Stage 1 of memory-resilience plan). Control is the recovery surface — if
 # this dies, the operator can't reach /system/, can't flip AEC mode,
 # can't read the dashboard. Protected at -600, slightly less than
 # voice but well above any normal process.

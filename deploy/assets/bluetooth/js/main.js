@@ -30,13 +30,14 @@ let state = {
   effective: "off",
   available: true,
   parked: false,
-  powered: false,
+  powered: null,
   discoverable: false,
   discovering: false,
 };
 let devices = new Map(); // path → device
 let evtSrc = null;
 let pairStreams = new Map(); // mac → EventSource
+let deviceMutations = new Map(); // mac → accepted server-owned action
 let stateTimer = null;
 let scanIntentUntil = 0;  // ms; client-side window where we treat
                            // the button as scanning even before the
@@ -51,7 +52,7 @@ let stateFetchPromise = null;
 // -------- adapter state + toggles --------
 
 async function fetchState(force = false) {
-  if (mutationInFlight && !force) return;
+  if ((mutationInFlight || deviceMutations.size > 0) && !force) return;
   if (stateFetchPromise !== null) return stateFetchPromise;
   stateFetchPromise = (async () => {
     try {
@@ -62,7 +63,7 @@ async function fetchState(force = false) {
           ...state,
           available: false,
           effective: 'unavailable',
-          powered: false,
+          powered: null,
           discoverable: false,
           discovering: false,
           error: payload.error || `Bluetooth state request failed (${r.status})`,
@@ -78,7 +79,7 @@ async function fetchState(force = false) {
         ...state,
         available: false,
         effective: 'unavailable',
-        powered: false,
+        powered: null,
         discoverable: false,
         discovering: false,
       };
@@ -95,16 +96,17 @@ async function fetchState(force = false) {
 function renderToggles() {
   const unavailable = state.available === false || state.effective === 'unavailable';
   const parked = !!state.parked || state.effective === 'parked';
+  const busy = mutationInFlight || deviceMutations.size > 0;
   const power = document.getElementById('sw-power');
   if (!powerIntentUnknown) power.checked = !!state.desired;
   // Missing hardware blocks On, never the safer persisted Off repair.
-  power.disabled = mutationInFlight || powerIntentUnknown || parked
+  power.disabled = busy || powerIntentUnknown || parked
     || (unavailable && !state.desired);
   const sd = document.getElementById('sw-disc');
   sd.checked = !!state.discoverable;
   // Activation needs a ready radio; an already-active pairing window must
   // remain switchable Off as cleanup even when availability later degrades.
-  sd.disabled = mutationInFlight || parked || (!state.discoverable
+  sd.disabled = busy || parked || (!state.discoverable
     && (unavailable || !state.desired || !state.powered));
   let hint;
   if (parked) {
@@ -115,8 +117,12 @@ function renderToggles() {
     hint = state.degradedReason || (state.desired
       ? 'Set to on, but the Bluetooth radio is not ready.'
       : 'Set to off, but the Bluetooth radio is still active.');
+  } else if (state.powered === false) {
+    hint = 'Off — turn Bluetooth on to manage devices.';
+  } else if (state.powered === true) {
+    hint = `On — adapter ${state.adapter || 'hci0'}`;
   } else {
-    hint = state.powered ? `On — adapter ${state.adapter || 'hci0'}` : 'Off';
+    hint = 'Bluetooth radio state unknown.';
   }
   if (!unavailable && !parked && state.discovering) hint += ' · scanning…';
   document.getElementById('bt-hint').textContent = hint;
@@ -128,7 +134,7 @@ function renderToggles() {
   const scanning = !parked && (state.discovering || intent);
   const btn = document.getElementById('scan-btn');
   // As with pairing mode, degraded availability blocks Start but not Stop.
-  btn.disabled = mutationInFlight || parked || (!scanning
+  btn.disabled = busy || parked || (!scanning
     && (unavailable || !state.desired || !state.powered));
   btn.classList.toggle("scanning", scanning);
   btn.innerHTML = scanning
@@ -147,7 +153,7 @@ function schedulePoll(ms) {
 }
 
 function beginMutation() {
-  if (mutationInFlight) return false;
+  if (mutationInFlight || deviceMutations.size > 0) return false;
   mutationInFlight = true;
   renderToggles();
   return true;
@@ -317,23 +323,37 @@ function startDeviceStream() {
   evtSrc.onmessage = ev => {
     let data;
     try { data = JSON.parse(ev.data); } catch (e) { return; }
-    if (data.action === 'remove') {
-      devices.delete(data.device.path);
-    } else {
-      devices.set(data.device.path, data.device);
-    }
-    renderDevices();
+    if (applyDeviceEvent(data)) renderDevices();
   };
-  evtSrc.onerror = () => {
-    // Auto-reconnect on stream drop.
-    setTimeout(startDeviceStream, 2000);
-  };
+  evtSrc.onerror = () => {};
+}
+
+function applyDeviceEvent(data, target = devices) {
+  if (data.action === 'reset') {
+    target.clear();
+    return true;
+  }
+  if (!data.device || !data.device.path) return false;
+  if (data.action === 'remove') target.delete(data.device.path);
+  else target.set(data.device.path, data.device);
+  return true;
+}
+
+function visibleDeviceRows(live = devices, mutations = deviceMutations) {
+  const rows = Array.from(live.values());
+  const present = new Set(
+    rows.map(device => String(device.address || '').toUpperCase()),
+  );
+  for (const [mac, mutation] of mutations) {
+    if (mutation.device && !present.has(mac)) rows.push(mutation.device);
+  }
+  return rows;
 }
 
 function renderDevices() {
   const paired = [];
   const other = [];
-  for (const d of devices.values()) {
+  for (const d of visibleDeviceRows()) {
     (d.paired ? paired : other).push(d);
   }
   // Paired: connected first, then by name.
@@ -356,10 +376,9 @@ function renderDevices() {
 
 function deviceRow(d) {
   const isPaired = !!d.paired;
-  const mutationDisabled = mutationInFlight ? ' disabled' : '';
-  const radioActionDisabled = (
-    mutationInFlight || state.available === false || state.parked
-    || !state.desired || !state.powered
+  const pending = deviceMutations.get(String(d.address || '').toUpperCase());
+  const disabled = action => deviceActionDisabled(
+    action, state, mutationInFlight || deviceMutations.size > 0,
   ) ? ' disabled' : '';
   const canRemoveUnpaired = !isPaired && (
     !!d.connected || !!d.trusted || !!d.servicesResolved
@@ -379,7 +398,9 @@ function deviceRow(d) {
   let badges = '';
   // BLE HID devices can open a GATT link before pairing. JTS accessory
   // features are not usable until BlueZ has a paired record.
-  if ((d.connected || d.trusted) && !d.paired) {
+  if (pending) {
+    badges += `<span class="badge connecting">${deviceMutationLabel(pending.action, true)}</span>`;
+  } else if ((d.connected || d.trusted) && !d.paired) {
     badges += '<span class="badge linked">Pair required</span>';
   } else if (d.connected && d.servicesResolved === false) {
     badges += '<span class="badge connecting">Connecting</span>';
@@ -388,15 +409,17 @@ function deviceRow(d) {
   }
   else if (d.paired) badges += '<span class="badge paired">Paired</span>';
   let actions = '';
-  if (isPaired) {
+  if (pending) {
+    actions = `<button class="btn btn--default" disabled>${deviceMutationLabel(pending.action, true)}</button>`;
+  } else if (isPaired) {
     actions = d.connected
-      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}"${mutationDisabled}>Disconnect</button>`
-      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}"${radioActionDisabled}>Connect</button>`;
-    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${mutationDisabled}>Forget</button>`;
+      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}"${disabled('disconnect')}>Disconnect</button>`
+      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}"${disabled('connect')}>Connect</button>`;
+    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Forget</button>`;
   } else {
-    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}"${radioActionDisabled}>Pair</button>`;
+    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}"${disabled('pair')}>Pair</button>`;
     if (canRemoveUnpaired) {
-      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${mutationDisabled}>Remove</button>`;
+      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Remove</button>`;
     }
   }
   // Metrics. Render each label only when bluez actually has a value
@@ -446,6 +469,123 @@ function deviceRow(d) {
       <div class="actions">${actions}</div>
     </div>
   `;
+}
+
+function deviceActionDisabled(action, currentState, mutationPending) {
+  if (mutationPending) return true;
+  if (action === 'disconnect' || action === 'forget') {
+    return currentState.powered === false;
+  }
+  return currentState.available === false || currentState.parked
+    || !currentState.desired || currentState.powered !== true;
+}
+
+function deviceMutationLabel(action, pending = false) {
+  const labels = {
+    connect: ['Connect', 'Connecting…'],
+    disconnect: ['Disconnect', 'Disconnecting…'],
+    forget: ['Forget', 'Removing…'],
+  };
+  return (labels[action] || ['Bluetooth action', 'Working…'])[pending ? 1 : 0];
+}
+
+function deviceMutationOutcome(status) {
+  if (status === 'succeeded') return 'success';
+  if (status === 'interrupted') return 'unknown';
+  return status === 'failed' ? 'failure' : 'pending';
+}
+
+function newDeviceMutationId() {
+  const words = new Uint32Array(4);
+  crypto.getRandomValues(words);
+  return Array.from(words, value => value.toString(16).padStart(8, '0')).join('');
+}
+
+async function submitDeviceMutation(mutation, options = {}) {
+  const post = options.post || (async current => {
+    const response = await fetch(current.action, {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({
+        mac: current.mac,
+        mutationId: current.mutationId,
+      }),
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      data: await response.json().catch(() => ({})),
+    };
+  });
+  let response;
+  try {
+    response = await post(mutation);
+  } catch (error) {
+    mutation.stream = `actions/${encodeURIComponent(mutation.mutationId)}/stream`;
+    const accept = options.onAccepted || watchDeviceMutation;
+    await accept(mutation);
+    return 'probing';
+  }
+  const data = response.data || {};
+  const ambiguousServerFailure = !response.ok && response.status >= 500;
+  if (!response.ok && !ambiguousServerFailure) {
+    const reject = options.onRejected || rejectDeviceMutation;
+    await reject(mutation, data.error || data.message || response.status);
+    return 'rejected';
+  }
+  mutation.status = data.status || 'pending';
+  mutation.stream = (response.ok && data.stream)
+    || `actions/${encodeURIComponent(mutation.mutationId)}/stream`;
+  const accept = options.onAccepted || watchDeviceMutation;
+  await accept(mutation);
+  return data.stream ? 'accepted' : 'probing';
+}
+
+async function recoverUnknownDeviceMutation(mutation, options = {}) {
+  const refreshDevices = options.refreshDevices || startDeviceStream;
+  const drainState = options.drainState || (async () => {
+    if (stateFetchPromise !== null) {
+      try { await stateFetchPromise; } catch (error) {}
+    }
+  });
+  const refreshState = options.refreshState || (() => fetchState(true));
+  const release = options.release || (() => {
+    if (deviceMutations.get(mutation.mac) === mutation) {
+      deviceMutations.delete(mutation.mac);
+      renderToggles();
+    }
+  });
+  const notify = options.notify || (() => jtsAlert(
+    `${deviceMutationLabel(mutation.action)} outcome is unknown. `
+    + 'Check the current device state before trying again.',
+  ));
+  refreshDevices();
+  await drainState();
+  await refreshState();
+  await release();
+  await notify();
+}
+
+function bindDeviceMutationStream(mutation, {
+  openStream = path => new EventSource(path),
+  onStatus = () => {},
+  onTerminal = () => {},
+} = {}) {
+  const stream = openStream(mutation.stream);
+  mutation.eventSource = stream;
+  stream.onmessage = async event => {
+    let data;
+    try { data = JSON.parse(event.data); } catch (error) { return; }
+    mutation.status = data.status;
+    onStatus(data);
+    if (['succeeded', 'failed', 'interrupted'].includes(data.status)) {
+      stream.close();
+      await onTerminal(data);
+    }
+  };
+  // EventSource reconnects on transport errors. The server still owns the
+  // BlueZ call, so a dropped browser stream is not a terminal action state.
+  stream.onerror = () => {};
+  return stream;
 }
 
 function rssiBars(rssi) {
@@ -576,45 +716,72 @@ function renderPairStage(mac, data, card) {
 
 // -------- connect / disconnect / forget --------
 
-async function connectDevice(mac, connect) {
-  if (!beginMutation()) return;
-  const path = connect ? 'connect' : 'disconnect';
+function deviceByAddress(mac) {
+  const wanted = mac.toUpperCase();
+  return Array.from(devices.values()).find(
+    device => String(device.address || '').toUpperCase() === wanted,
+  ) || null;
+}
+
+function watchDeviceMutation(mutation) {
   try {
-    const response = await fetch(path, {
-      method: 'POST', headers: jsonHeaders(),
-      body: JSON.stringify({mac}),
+    bindDeviceMutationStream(mutation, {
+      onStatus() { renderDevices(); },
+      async onTerminal(data) {
+        if (deviceMutations.get(mutation.mac) !== mutation) return;
+        const outcome = deviceMutationOutcome(data.status);
+        if (outcome === 'unknown') {
+          await recoverUnknownDeviceMutation(mutation);
+          return;
+        }
+        deviceMutations.delete(mutation.mac);
+        renderToggles();
+        if (outcome === 'failure') {
+          await jtsAlert(`${deviceMutationLabel(mutation.action)} failed: `
+            + (data.message || 'unknown error'));
+        }
+      },
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      await jtsAlert(`${connect ? 'Connect' : 'Disconnect'} failed: `
-        + (data.error || data.message || response.status));
-    }
   } catch (error) {
-    await jtsAlert(`${connect ? 'Connect' : 'Disconnect'} failed: `
-      + (error && error.message ? error.message : 'network error'));
-  } finally {
-    await finishMutation();
+    setTimeout(() => {
+      if (deviceMutations.get(mutation.mac) === mutation) {
+        watchDeviceMutation(mutation);
+      }
+    }, 2000);
   }
+}
+
+async function rejectDeviceMutation(mutation, message) {
+  if (deviceMutations.get(mutation.mac) === mutation) {
+    deviceMutations.delete(mutation.mac);
+    renderToggles();
+  }
+  await jtsAlert(`${deviceMutationLabel(mutation.action)} failed: ${message}`);
+}
+
+function requestDeviceMutation(action, mac) {
+  const normalizedMac = mac.toUpperCase();
+  if (deviceMutations.has(normalizedMac)) return;
+  const mutation = {
+    action,
+    mac: normalizedMac,
+    mutationId: newDeviceMutationId(),
+    status: 'accepting',
+    stream: '',
+    device: deviceByAddress(normalizedMac),
+  };
+  deviceMutations.set(normalizedMac, mutation);
+  renderToggles();
+  submitDeviceMutation(mutation);
+}
+
+function connectDevice(mac, connect) {
+  requestDeviceMutation(connect ? 'connect' : 'disconnect', mac);
 }
 
 async function forget(mac, label) {
   if (!await jtsConfirm(`Remove "${label}" from JTS? You'll need to pair it again to use it.`, {danger: true})) return;
-  if (!beginMutation()) return;
-  try {
-    const r = await fetch('forget', {
-      method: 'POST', headers: jsonHeaders(),
-      body: JSON.stringify({mac}),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok || data.error) {
-      await jtsAlert('Forget failed: ' + (data.error || data.message || r.status));
-    }
-  } catch (error) {
-    await jtsAlert('Forget failed: '
-      + (error && error.message ? error.message : 'network error'));
-  } finally {
-    await finishMutation();
-  }
+  requestDeviceMutation('forget', mac);
 }
 
 document.addEventListener('click', function(e) {

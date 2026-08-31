@@ -31,13 +31,12 @@ StartLimitIntervalSec=300
 # But if the spiral DOES exceed 20 — which means sustained sickness
 # beyond what transient hardware blips can produce — the right
 # answer is a clean system reboot, not the kernel hardware
-# watchdog at Tier 5. See docs/HANDOFF-tier5-watchdog-liveness.md
-# "Option B (T5.1)". `reboot` (not `reboot-force`): we want clean
+# watchdog at Tier 5. `reboot` (not `reboot-force`): we want clean
 # shutdown so zram dirty pages sync; on a 1 GB Pi `reboot-force`
 # can leave the next boot in EXT4 "orphan cleanup" state.
 StartLimitAction=reboot
 
-# Voice-input presence gate (docs/HANDOFF-hotplug-resilience.md "Layer 1").
+# Voice-input presence gate.
 # jasper-aec-reconcile is the single writer of this PERSISTENT NEGATIVE
 # marker: it exists only when the reconciler positively determined there
 # is no usable voice input — neither a local microphone nor an accessory
@@ -139,7 +138,6 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 # http://jts.local/ha (PR 2). Optional via leading `-`;
 # the home_assistant tool is gated on both URL and token being set,
 # so a missing file just leaves smart-home control disabled.
-# See docs/HANDOFF-homeassistant.md.
 EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env
 # Tools the household DISABLED via the /tools/ wizard
 # (JASPER_DISABLED_TOOLS). Wizard-owned SSOT at
@@ -178,7 +176,7 @@ Environment="JASPER_DUCK_TRANSPORT=fanin"
 # route matrix either points JASPER_TTS_OUTPUTD_SOCKET at outputd's socket
 # for passive non-sub members, omits it so the inline fanin default above
 # applies, and/or parks voice with JASPER_GROUPING_VOICE_PARK. Reconciler-owned,
-# layered LAST so the derived state wins. See docs/HANDOFF-multiroom.md §2.
+# layered LAST so the derived state wins.
 EnvironmentFile=-/var/lib/jasper/grouping-voice.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
@@ -206,7 +204,6 @@ Restart=on-failure
 #                     marker above pre-empts the common no-mic case; this is
 #                     the backstop for custom/present-but-unopenable/first-boot
 #                     mics. jasper-aec-reconcile (udev) restarts us on plug-in.
-#                     See docs/HANDOFF-hotplug-resilience.md "Layer 2".
 SuccessExitStatus=66 78
 RestartPreventExitStatus=66 78
 # 5 s backoff (was 2 s). Audio-device transients (dongle enumerate
@@ -224,7 +221,7 @@ RestartSec=5
 # it needs no capability — CapabilityBoundingSet= drops them all and
 # SystemCallFilter=@system-service blocks the dangerous syscall classes
 # (NoNewPrivileges + SystemCallArchitectures=native below make the filter
-# enforce). docs/HANDOFF-privilege-separation.md.
+# enforce).
 User=jasper-voice
 Group=jasper
 # WS1 Phase 4a — `jasper-secrets` (supplementary) grants read of the
@@ -232,7 +229,6 @@ Group=jasper
 # /var/lib/jasper-secrets (which mux/control/input are NOT in). WS1 Phase
 # 4b — `jasper-intsecrets` grants read/write of HA + Spotify integration
 # secrets/caches (input is NOT in it). `audio` covers ALSA.
-# docs/HANDOFF-privilege-separation.md "Phase 4".
 SupplementaryGroups=audio jasper-secrets jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
@@ -249,7 +245,7 @@ StateDirectoryMode=0770
 # re-chowns the tree to its own user on restart). Without group write they land
 # 0644 and the non-owner daemon hits "attempt to write a readonly database" (the
 # 2026-06-19 incident). Same directive jasper-fanin/-outputd already use for their
-# group-`jasper` sockets. docs/HANDOFF-privilege-separation.md.
+# group-`jasper` sockets.
 UMask=0007
 # RuntimeDirectory creates /run/jasper at service start (auto-cleaned
 # at stop). voice_daemon binds /run/jasper/voice.sock there for
@@ -263,8 +259,8 @@ RuntimeDirectoryMode=0750
 # process on the speaker (parses microphone audio, third-party LLM
 # responses, Spotify/Google API responses). WS1 Phase 3b drops it to the
 # non-root jasper-voice user (above); /dev/snd access comes from the `audio`
-# supplementary group, not root. WS1 phase-1 hardening (see
-# docs/HANDOFF-privilege-separation.md): strict read-only FS (writes pinned by
+# supplementary group, not root. WS1 phase-1 hardening uses a strict read-only
+# FS (writes pinned by
 # ReadWritePaths + StateDirectory/RuntimeDirectory), ProtectHome=tmpfs hides
 # /root so a compromised voice can't read root's SSH key to pivot, no kernel
 # tunables/modules/logs, no extra namespaces. The capability + syscall filters
@@ -295,8 +291,7 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 
-# OOM protection (Stage 1 of memory-resilience plan, see
-# docs/HANDOFF-resilience.md). Voice daemon has the LARGEST blast
+# OOM protection (Stage 1 of memory-resilience plan). Voice daemon has the LARGEST blast
 # radius of any jasper-* process (~150 MB Pss; loads onnx wake model
 # + Python deps + holds the LLM session). Conservative protection
 # of -500 — kept alive when other processes blow up, but if we

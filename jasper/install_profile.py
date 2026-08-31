@@ -210,25 +210,9 @@ def is_streambox_install_profile(profile: str | None) -> bool:
     return install_role_for_profile(profile) == STREAMBOX_INSTALL_PROFILE
 
 
-def install_profile_runs_local_audio_graph(profile: str | None) -> bool:
-    """Whether this profile owns the local renderer -> DSP -> DAC graph.
-
-    True for both ``full`` and ``streambox`` — the only two profiles.
-    """
-    return install_role_for_profile(profile) in {
-        FULL_INSTALL_PROFILE,
-        STREAMBOX_INSTALL_PROFILE,
-    }
-
-
 def install_profile_allows_local_sources(profile: str | None) -> bool:
     """Whether this install role may advertise/run local music sources."""
-    return install_profile_runs_local_audio_graph(profile)
-
-
-def install_profile_allows_content_dsp(profile: str | None) -> bool:
-    """Whether local EQ/room-correction DSP belongs on this box."""
-    return install_profile_runs_local_audio_graph(profile)
+    return install_role_for_profile(profile) in VALID_INSTALL_PROFILES
 
 
 def install_profile_has_capability(
@@ -302,7 +286,6 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
     """
     role = install_role_for_profile(profile)
     full = role == FULL_INSTALL_PROFILE
-    local_dsp = install_profile_allows_content_dsp(profile)
     local_sources = install_profile_allows_local_sources(profile)
     voice_brain = install_profile_allows_voice_brain(profile)
     wake_detection = install_profile_supports_wake_detection(profile)
@@ -317,7 +300,7 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "install_profile": profile,
         "role": role,
         "local_sources": local_sources,
-        "content_dsp": local_dsp,
+        "content_dsp": local_sources,
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
         # having the headroom to listen for a wake word all day. The
@@ -331,9 +314,9 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "speaker_settings": True,
         "pair_management": True,
         "developer_tools": full,
-        "audio_quality": local_dsp,
+        "audio_quality": local_sources,
         "restart_voice": voice_brain,
-        "restart_audio": local_dsp,
+        "restart_audio": local_sources,
         "reboot": True,
         "poweroff": True,
         "diagnostics": True,

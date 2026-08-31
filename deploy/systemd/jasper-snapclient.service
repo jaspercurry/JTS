@@ -10,7 +10,6 @@ Description=Jasper Snapcast client — plays this speaker's grouping channel in 
 # audio, so it joins jts-audio.slice (MemorySwapMax=0) alongside
 # fanin/camilla and the renderers.
 #
-# See docs/HANDOFF-multiroom.md for the full design.
 After=jasper-camilla.service sound.target
 Wants=jasper-camilla.service
 

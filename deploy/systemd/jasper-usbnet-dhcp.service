@@ -2,8 +2,8 @@
 Description=Jasper USB management network DHCP (scoped dnsmasq on usb0)
 # A scoped dnsmasq instance that hands a plugged-in laptop an address on the
 # USB link so http://<hostname>/ works even with Wi-Fi off. It is NOT a DNS
-# server and pushes no router/DNS to the host — see docs/HANDOFF-usb-gadget.md
-# and /etc/jasper/usbnet-dnsmasq.conf.
+# server and pushes no router/DNS to the host; see
+# /etc/jasper/usbnet-dnsmasq.conf.
 #
 # Device-activated: it starts only when usb0 exists and stops when usb0
 # disappears. u_ether registers usb0 at gadget-BIND time (not host-attach), so

@@ -1,6 +1,5 @@
 [Unit]
 Description=Install optional enhanced WebRTC echo cancellation
-Documentation=file:/opt/jasper/docs/HANDOFF-enhanced-aec.md
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/var/lib/jasper/enhanced-aec-intent.json

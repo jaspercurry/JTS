@@ -17,8 +17,7 @@ ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 MODE_FILE="${JASPER_AEC_MODE_FILE:-/var/lib/jasper/aec_mode.env}"
 VOICE_PROVIDER_FILE="${JASPER_VOICE_PROVIDER_FILE:-/var/lib/jasper/voice_provider.env}"
 VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice_provider_ids}"
-# Persistent NEGATIVE marker for the voice-input gate
-# (docs/HANDOFF-hotplug-resilience.md "Layer 1"). This reconciler is the
+# Persistent NEGATIVE marker for the voice-input gate. This reconciler is the
 # SINGLE WRITER: created on every "no usable voice input, park voice" path,
 # removed on every "voice input available, (re)start voice" path.
 # jasper-voice.service gates ExecStart on its ABSENCE
@@ -1611,8 +1610,8 @@ accessory_mic_present() {
     [[ "$ACCESSORY_MIC_PROBE_STATUS" == "resolved" && -n "$ACCESSORY_MIC_SOURCES" ]]
 }
 
-# Mic-presence gate marker writers (docs/HANDOFF-hotplug-resilience.md
-# "Layer 1"). mark = "no usable voice input, voice is parked"; clear = "voice
+# Mic-presence gate marker writers. mark = "no usable voice input, voice is
+# parked"; clear = "voice
 # input is available". jasper-voice.service's ConditionPathExists=!<marker>
 # reads the absence. Both best-effort: a marker write failing must never abort a
 # reconcile pass (the daemon's exit-66 backstop still parks a no-mic start).
@@ -1880,7 +1879,7 @@ activate_managed_chip_aec() {
     return 1
 }
 
-# Dumb-follower profile (HANDOFF-multiroom Increment 5): an ACTIVE
+# Dumb-follower profile: an ACTIVE
 # bonded FOLLOWER parks jasper-voice AND the AEC stack — the leader owns
 # the mic/wake/AI session, and the parked daemons free ~310 MB on a 1 GB
 # Pi. The signal is the Python-validated derived flag the grouping

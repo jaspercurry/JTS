@@ -1,6 +1,5 @@
 [Unit]
 Description=Recover Wi-Fi after transient AP or Pi 5 scan-suppression loss
-Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 # Order after wait-online (like jasper-wifi-guardian) so the first
 # post-boot tick can't race NetworkManager's startup connection bring-up.
 # For later periodic ticks both targets are long reached, so this only

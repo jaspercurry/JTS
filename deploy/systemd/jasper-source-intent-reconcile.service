@@ -6,7 +6,6 @@
 # state and effective runtime state; bluetooth.service itself remains available
 # as shared control-plane infrastructure.
 Description=Reconcile persisted local-source intent
-Documentation=file:/opt/jasper/docs/HANDOFF-source-lifecycle.md
 # The coordinator synchronously starts source units. Wait for the boot-owned
 # shared prerequisites those units declare so child timeouts cover source work,
 # not concurrent core/network startup. These are ordering edges only: this

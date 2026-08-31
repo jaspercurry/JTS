@@ -20,6 +20,24 @@ UUID_HID = "00001124-"           # Human Interface Device (BR/EDR HID)
 UUID_HOGP = "00001812-"          # HID over GATT (BLE HID)
 UUID_BATTERY = "0000180f-"       # BLE Battery Service
 UUID_BATTERY_LEVEL = "00002a19-" # BLE Battery Level characteristic
+ADAPTER_NOT_READY_CODE = "adapter_not_ready"
+
+
+@dataclass(frozen=True)
+class BluetoothActionResult:
+    """Structured result for one BlueZ device action."""
+
+    ok: bool
+    message: str
+    code: str | None = None
+
+
+def adapter_not_ready_result() -> BluetoothActionResult:
+    return BluetoothActionResult(
+        False,
+        "Turn Bluetooth on to manage devices.",
+        ADAPTER_NOT_READY_CODE,
+    )
 
 
 def is_hid_uuids(uuids: list[str]) -> bool:
