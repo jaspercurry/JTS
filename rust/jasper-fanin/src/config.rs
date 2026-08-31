@@ -652,15 +652,16 @@ impl Config {
                 "hw:Loopback,1,4",
             ],
         );
+        // Spelled out rather than built from MEASUREMENT_LANE: this array is
+        // read as TEXT by tests/test_renderer_ring_lanes.py, which scrapes the
+        // quoted labels straight out of this file to check that every Python
+        // renderer-lane label is one fan-in will accept. A named constant is
+        // invisible to that scrape. The agreement is pinned behaviourally by
+        // `from_env_uses_documented_defaults` below, which asserts the parsed
+        // `input_renderers[4] == MEASUREMENT_LANE`.
         let input_renderers = env_list(
             "JASPER_FANIN_INPUT_RENDERERS",
-            &[
-                "spotify",
-                "airplay",
-                "bluealsa",
-                "usbsink",
-                MEASUREMENT_LANE,
-            ],
+            &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
         );
         if input_pcms.len() != input_renderers.len() {
             anyhow::bail!(
@@ -1422,7 +1423,7 @@ mod tests {
                 assert_eq!(cfg.input_pcms.len(), 5);
                 assert_eq!(cfg.input_renderers.len(), 5);
                 assert_eq!(cfg.input_renderers[0], "spotify");
-                assert_eq!(cfg.input_renderers[4], "correction");
+                assert_eq!(cfg.input_renderers[4], MEASUREMENT_LANE);
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
