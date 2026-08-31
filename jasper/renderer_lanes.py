@@ -191,8 +191,9 @@ class RendererLane:
     conf_renderer: str | None = None
     #: Optional operator note the arm CLI prints when this label is NEWLY
     #: armed. Plain data, no machinery: for facts the operator must carry to
-    #: the box's source pass (P6d: AirPlay's sync constants were derived on
-    #: the aloop transport). Never a refusal — advisories inform, gates gate.
+    #: the box's source pass (AirPlay's sync constants are derived from the
+    #: lane's ring geometry, and deploy/shairport-sync.conf.template owns
+    #: the values). Never a refusal — advisories inform, gates gate.
     arm_advisory: str | None = None
 
 
@@ -273,9 +274,9 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
             "AirPlay's sync values are sized against this lane's geometry: "
             "drift_tolerance=0.010 clears the 5.333 ms delay grain, and "
             "audio_backend_buffer_desired_length at 0.045 sits mid-lane "
-            "inside the 85.333 ms depth so the servo keeps two-sided "
-            "headroom. Keep resync_threshold at 0.2. Re-check ring "
-            "occupancy and A/V sync on the box after arming."
+            "inside the lane's ~90.6 ms saturation ceiling so the servo "
+            "keeps two-sided headroom. Keep resync_threshold at 0.2. "
+            "Re-check ring occupancy and A/V sync on the box after arming."
         ),
     ),
 )

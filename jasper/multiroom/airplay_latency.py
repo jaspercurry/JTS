@@ -85,7 +85,7 @@ PIPELINE_FIXED_DELAY_SEC = 0.150
 # budget < |offset| + this buffer, so the bonded-leader need must clear
 # need + this term, not just need. Verified against shairport-sync rtp.c
 # (rtp_ap2_control_receiver: net_latency<=0 → "too short" + offset dropped).
-SHAIRPORT_BACKEND_BUFFER_SEC = 0.5
+SHAIRPORT_BACKEND_BUFFER_SEC = 0.045
 
 # Float slack so an exactly-fits budget is not reported as tight.
 _FIT_EPSILON_SEC = 1e-6

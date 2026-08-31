@@ -364,24 +364,14 @@ derive_audio_backend_latency_offset() {
                 printf "0.000000"
                 exit
             }
-            # Total invisible-to-shairport delay budget in frames:
-            #   (target_level - chunksize)   ← CamillaDSP playback buffer
-            #                                   above its implicit one-chunk
-            #                                   baseline.
-            #   + fanin_output_latency       ← jasper-fanin output queue
-            #                                   between the private AirPlay
-            #                                   lane and CamillaDSP/AEC.
-            #   + outputd_dac_latency        ← jasper-outputd direct-DAC
-            #                                   playback queue.
+            # Term by term: see the derivation beside
+            # audio_backend_latency_offset_in_seconds in
+            # deploy/shairport-sync.conf.template.
             #
             # NB: any single-quote (apostrophe) in this comment block would
             # close the surrounding awk single-quoted string and break
-            # the script — bash 2026-05-25 lesson, do not paraphrase.
-            # shairport feeds this many frames early so audio still emerges
-            # from the speaker at the AirPlay-scheduled time.
+            # the script — do not paraphrase.
             invisible_frames = (target_level - chunksize) + fanin_output_latency + outputd_dac_latency
-            # bonded_extra_sec is a wall-clock buffer (the Snapcast round-
-            # trip on a bonded leader), added in seconds; 0 on solo.
             offset = -((invisible_frames / sample_rate) + bonded_extra_sec)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0

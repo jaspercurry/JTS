@@ -11,13 +11,17 @@
 // jasper/web/airplay_setup.py for the toggle UX.
 //
 // LANE GEOMETRY — every seconds-valued sync knob below is sized against
-// it (c/jts-ring-ioplug, at the fan-in lane's 48 kHz):
-//   16 slots x 256 frames = 4096 frames = 85.333 ms of depth, and the
-//   consumer drains exactly one slot per 5.333 ms, DAC-locked.
+// it. Declared by the jts_ring_lane_airplay block in
+// deploy/alsa/conf.d/61-jts-renderer-lanes.conf, at that lane's 48 kHz:
+//   16 slots x 256 frames = 4096 frames = 85.333 ms of whole-slot depth,
+//   and the consumer drains exactly one slot per 5.333 ms, DAC-locked.
 // So the lane's snd_pcm_delay() reports pure ring fill: it steps in
-// 5.333 ms grains and saturates near 90.6 ms. A knob that does not clear
-// that grain servos on quantization noise, and a target above 85.333 ms
-// can never be reached.
+// 5.333 ms grains and saturates at 16x256+255 = 4351 frames (~90.6 ms),
+// the .delay callback counting staged frames too. A knob that does not
+// clear that grain servos on quantization noise, and a target above the
+// lane's ~90.6 ms saturation point can never be reached.
+// These targets are only actively held in synced mode — free-running
+// (__DISABLE_SYNCHRONIZATION__ = "yes") skips the corrector entirely.
 //
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
@@ -63,12 +67,13 @@ general = {
     //   jasper-grouping-reconcile only while this speaker is an active
     //   bonded leader; 0 on solo and followers.
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
-    // Servo target for lane fill. Must be reachable INSIDE the 85.333 ms
-    // lane with room on both sides, or the servo saturates one-sided and
-    // the ring pins near full with nothing left to give back.
-    // 0.045 s = 2160 frames = 8.4 of the lane's 16 slots (53 % depth):
-    // ~40 ms of growth room, 45 ms of drain room, both far over the
-    // 5.333 ms grain.
+    // Servo target for lane fill. Must be reachable inside the lane's
+    // ~90.6 ms saturation ceiling with room on both sides, or the servo
+    // saturates one-sided and the ring pins near full with nothing left
+    // to give back.
+    // 0.045 s = 2160 frames = 8.4 of the lane's 16 slots (53 % of the
+    // 85.333 ms whole-slot depth): ~40 ms of growth room, 45 ms of drain
+    // room, both far over the 5.333 ms grain.
     audio_backend_buffer_desired_length_in_seconds = 0.045;
     // Under this delay shairport abandons soxr for "basic" stuffing (the
     // click). The ALSA-backend default of 0.120 exceeds the lane's

@@ -17,10 +17,23 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from jasper import renderer_lanes as rl
 from tests.install_surface import installer_text
+from tests.shairport_template_helpers import (
+    SHAIRPORT_TEMPLATE,
+    template_string_value,
+    template_value,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+# The airplay ring lane's geometry, from the same constants the lane is built
+# from: one drained slot is the delay grain, the whole ring is the depth.
+_LANE_GRAIN_SEC = rl.FANIN_RUST_DEFAULTS["JASPER_FANIN_PERIOD_FRAMES"] / 48_000
+_LANE_DEPTH_SEC = (
+    rl.FANIN_UNIT_DEFAULTS["JASPER_FANIN_INPUT_BUFFER_FRAMES"] / 48_000
+)
 
 
 def _non_comment(text: str) -> str:
@@ -166,44 +179,40 @@ def test_shairport_template_keeps_renderer_placeholder():
 def test_shairport_drift_tolerance_clears_the_lane_delay_grain():
     """shairport corrects when the error exceeds a per-packet random
     threshold uniform in [1x, 2x] drift_tolerance. The lane's delay only
-    moves in 5.333 ms grains (256 frames at 48 kHz), so 2x the tolerance
-    must exceed one grain or quantization alone parks the corrector in
-    its always-correct regime."""
-    conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
-    assignments = re.findall(
-        r"^\s*drift_tolerance_in_seconds\s*=\s*([0-9]+(?:\.[0-9]+)?);\s*$",
-        conf,
-        re.MULTILINE,
-    )
-    assert len(assignments) == 1
-    assert 2 * float(assignments[0]) > 256 / 48_000
+    moves in one-period grains, so 2x the tolerance must exceed one grain
+    or quantization alone parks the corrector in its always-correct
+    regime. The discrete resync path must stay clear of that band."""
+    conf = SHAIRPORT_TEMPLATE.read_text(encoding="utf-8")
+    drift = float(template_value(conf, "drift_tolerance_in_seconds"))
+    resync = float(template_value(conf, "resync_threshold_in_seconds"))
+
+    assert 2 * drift > _LANE_GRAIN_SEC
+    assert resync > 2 * drift
 
 
 def test_shairport_buffer_target_is_reachable_inside_the_lane():
-    """The servo target must fit the 4096-frame lane with room on both
-    sides, and the interpolation threshold must stay under it — shairport
-    die()s at startup when the threshold exceeds the desired length."""
-    conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
-
-    def only_value(setting: str) -> float:
-        matches = re.findall(
-            rf"^\s*{setting}\s*=\s*([0-9]+(?:\.[0-9]+)?);\s*$",
-            conf,
-            re.MULTILINE,
+    """The servo target must fit the lane with room on both sides, and the
+    interpolation threshold must stay under it — shairport die()s at
+    startup when the threshold exceeds the desired length."""
+    conf = SHAIRPORT_TEMPLATE.read_text(encoding="utf-8")
+    desired = float(
+        template_value(conf, "audio_backend_buffer_desired_length_in_seconds")
+    )
+    threshold = float(
+        template_value(
+            conf, "audio_backend_buffer_interpolation_threshold_in_seconds"
         )
-        assert len(matches) == 1, f"expected one live {setting} assignment"
-        return float(matches[0])
-
-    lane_depth_s = 4096 / 48_000
-    grain_s = 256 / 48_000
-    desired = only_value("audio_backend_buffer_desired_length_in_seconds")
-    threshold = only_value(
-        "audio_backend_buffer_interpolation_threshold_in_seconds"
     )
 
-    assert grain_s < desired < lane_depth_s - grain_s
+    assert _LANE_GRAIN_SEC < desired < _LANE_DEPTH_SEC - _LANE_GRAIN_SEC
     assert threshold < desired
-    assert re.search(r'^\s*interpolation = "soxr";', conf, re.MULTILINE)
+
+
+def test_shairport_pins_soxr_interpolation():
+    """`auto` can benchmark down to `basic` (single inserted/dropped sample)
+    on Pi-class CPUs, so the template pins soxr explicitly."""
+    conf = SHAIRPORT_TEMPLATE.read_text(encoding="utf-8")
+    assert template_string_value(conf, "interpolation") == "soxr"
 
 
 def test_install_writes_fanin_asound_conf_and_ships_no_switcher():
