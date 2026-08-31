@@ -1,0 +1,77 @@
+#!/bin/sh
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# jasper-airplay-volume — shairport-sync's `run_this_when_volume_is_set`
+# hook, and the one inbound path from an AirPlay sender's volume control to
+# the JTS master fader (ADR-0200). shairport invokes it as
+# `jasper-airplay-volume <db>` on every AirPlay volume message and once at
+# stream start.
+#
+# Fire-and-forget by contract: shairport runs the hook with cmd_blocking off,
+# a dropped volume nudge is harmless, and a wedged hook is not — so every
+# failure path exits 0 having done nothing. The value is delivered to
+# jasper-control's /volume/set as a SOURCE-ATTRIBUTED observation, so the
+# coordinator's active-source gate, echo window, measurement hold and the
+# CamillaDSP clamps all apply unchanged. This script never touches a fader.
+
+set -u
+
+# systemd exports RUNTIME_DIRECTORY for shairport-sync.service's
+# RuntimeDirectory=shairport-sync and the hook inherits it; the literal is
+# the fallback for a hand-run invocation.
+runtime_dir="${RUNTIME_DIRECTORY:-/run/shairport-sync}"
+state="${runtime_dir}/airplay-volume.pct"
+lockdir="${runtime_dir}/airplay-volume.lock"
+# jasper-control is always localhost (jasper/control/client.py owns that
+# contract); only the port varies, and it takes that client's default.
+url="http://127.0.0.1:${JASPER_CONTROL_PORT:-8780}/volume/set"
+
+# AirPlay carries volume as dB over [-30, 0]. -144 is its mute sentinel and
+# is IGNORED here: macOS flips -144 <-> 0 around session start and stop
+# (jts3 journal, 2026-08-31), so honouring it would mute the whole speaker
+# every time a Mac connects or drops. Mute stays the coordinator's own latch,
+# never a source sentinel. Unparseable or out-of-band input prints nothing,
+# and the hook exits without publishing.
+pct="$(
+    awk -v raw="${1:-}" 'BEGIN {
+        if (raw !~ /^-?[0-9]+(\.[0-9]+)?$/) exit 1
+        db = raw + 0
+        if (db < -140) exit 1
+        if (db > 0) db = 0
+        if (db < -30) db = -30
+        printf "%d", int((db + 30) * 100 / 30 + 0.5)
+    }'
+)" || exit 0
+
+printf '%s\n' "$pct" > "${state}.tmp" 2>/dev/null || exit 0
+mv -f "${state}.tmp" "$state" 2>/dev/null || exit 0
+
+# One poster at a time. A slider drag or a held volume key fires a burst of
+# these; every loser has already published its value above, so dropping it
+# costs nothing — the holder re-reads the file each pass and always ends on
+# the newest value. mkdir is the atomic POSIX mutex (flock is not on every
+# box's PATH). A SIGKILLed holder strands the directory and the hook goes
+# quiet until shairport restarts, which recreates RuntimeDirectory empty.
+# Drop the mutex if senders ever stop bursting.
+mkdir "$lockdir" 2>/dev/null || exit 0
+trap 'rmdir "$lockdir" 2>/dev/null' EXIT INT TERM HUP
+
+last=""
+passes=0
+# 25 passes x 200 ms covers a five-second drag. 200 ms is half CamillaDSP's
+# 400 ms fader ramp, so a held key reads as one continuous ramp instead of a
+# ramp restarted per message.
+while [ "$passes" -lt 25 ]; do
+    pct="$(cat "$state" 2>/dev/null)" || break
+    [ "$pct" = "$last" ] && break
+    curl -fsS --max-time 1 \
+        -H 'Content-Type: application/json' \
+        -d "{\"percent\": ${pct}, \"source\": \"airplay\"}" \
+        "$url" >/dev/null 2>&1 || true
+    last="$pct"
+    passes=$((passes + 1))
+    sleep 0.2
+done

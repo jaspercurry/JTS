@@ -48,13 +48,23 @@ def test_shipped_camilla_configs_leave_volume_ramp_time_at_the_default() -> None
 
 def test_no_camilla_config_generator_emits_volume_ramp_time() -> None:
     """Shipped YAML is only half the surface: correction, sound, and
-    active-speaker configs are generated at runtime by these emitters."""
+    active-speaker configs are generated at runtime by these emitters.
+
+    `deploy/bin` is scanned alongside `jasper/` because the operator-side
+    scripts there rewrite CamillaDSP configs too (jasper-camilla-recover,
+    the crossover and pipe guards), and because AirPlay's volume hook now
+    lands on the fader whose ramp this budget covers (ADR-0200).
+    """
     # Match the key as an emitter would write it — a quoted dict key or a
     # line of YAML template text — so prose mentioning it does not trip.
     written = ('"volume_ramp_time"', "'volume_ramp_time'", "volume_ramp_time:")
+    scanned = [
+        *(_REPO / "jasper").rglob("*.py"),
+        *(p for p in (_REPO / "deploy" / "bin").iterdir() if p.is_file()),
+    ]
     offenders = sorted(
         str(path.relative_to(_REPO))
-        for path in (_REPO / "jasper").rglob("*.py")
+        for path in scanned
         if any(token in path.read_text(encoding="utf-8") for token in written)
     )
     assert offenders == [], (

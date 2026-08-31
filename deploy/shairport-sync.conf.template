@@ -102,6 +102,20 @@ general = {
     // HARD CONSTRAINT: shairport die()s at startup when this exceeds
     // audio_backend_buffer_desired_length_in_seconds (audio.c).
     audio_backend_buffer_interpolation_threshold_in_seconds = 0.020;
+    // INBOUND VOLUME (ADR-0200). Fired with the raw AirPlay volume
+    // (-30..0 dB; -144 = the mute sentinel the hook ignores) on every
+    // volume message and once at stream start. The hook maps it onto the
+    // canonical percent scale and posts it to jasper-control as a
+    // source-attributed observation, so a sender's volume keys move the
+    // JTS master fader through CamillaDSP's 400 ms ramp. Outbound stays
+    // closed: AirPlay 2 senders expose no writable slider (ADR-0176).
+    run_this_when_volume_is_set = "/usr/local/sbin/jasper-airplay-volume";
+    // Unity softvol (fix_volume = 65536): shairport applies no gain of its
+    // own, so this S16 lane stays full-scale and attenuation happens once,
+    // in CamillaDSP's float master. Without it the sender's gain would
+    // compound with the master AND quantize in 16 bits. The hook above
+    // still fires on every volume message.
+    ignore_volume_control = "yes";
 };
 
 sessioncontrol = {

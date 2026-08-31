@@ -28,15 +28,11 @@ from tests._async_wait import wait_signalled
 from jasper import bluealsa_probe
 from jasper import volume_coordinator as vc_mod
 from jasper.volume_coordinator import (
-    AIRPLAY_DB_MAX,
-    AIRPLAY_DB_MIN,
     BT_VOLUME_MAX,
     ECHO_WINDOW_SEC,
     Source,
     VolumeCoordinator,
-    airplay_db_to_listening_level,
     bt_volume_to_listening_level,
-    listening_level_to_airplay_db,
     listening_level_to_bt_volume,
     listening_level_to_spotify_percent,
     spotify_percent_to_listening_level,
@@ -56,11 +52,9 @@ def _reset_bluealsa_probe_state():
 # ---------- mapping helpers -------------------------------------------------
 
 
-@pytest.mark.parametrize("level", [0, 25, 50, 75, 100])
-def test_airplay_round_trip(level):
-    db = listening_level_to_airplay_db(level)
-    assert AIRPLAY_DB_MIN <= db <= AIRPLAY_DB_MAX
-    assert airplay_db_to_listening_level(db) == level
+# AirPlay has no mapping helper here: shairport's volume hook owns that
+# scale and reaches the coordinator in percent (ADR-0200). Its endpoints are
+# pinned against AIRPLAY_DB_MIN/MAX in tests/test_airplay_volume_hook.py.
 
 
 @pytest.mark.parametrize("level", [0, 50, 100])
@@ -78,8 +72,6 @@ def test_bt_round_trip(level):
 
 
 def test_clamping_below_zero_and_above_100():
-    assert listening_level_to_airplay_db(-10) == AIRPLAY_DB_MIN
-    assert listening_level_to_airplay_db(150) == AIRPLAY_DB_MAX
     assert listening_level_to_bt_volume(-10) == 0
     assert listening_level_to_bt_volume(150) == BT_VOLUME_MAX
 
@@ -1061,9 +1053,10 @@ async def test_set_airplay_delegates_to_camilla_without_subprocess(
     assert Source.AIRPLAY not in coord._last_outbound
 
 
-async def test_observe_airplay_is_ignored(tmp_path):
-    """AirPlay sender slider is upstream trim, not canonical JTS
-    volume, while AirPlay is camilla-as-master."""
+async def test_observe_airplay_moves_the_camilla_master(tmp_path):
+    """The sender's slider is an inbound control surface (ADR-0200): its
+    observation becomes the canonical level and, because AirPlay is
+    camilla-as-master, lands on CamillaDSP's ramped fader."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={"aplactive": True})
@@ -1074,12 +1067,15 @@ async def test_observe_airplay_is_ignored(tmp_path):
     coord._level = 70
     persistence.save_listening_level(70)
 
-    db = listening_level_to_airplay_db(30)
-    await coord.observe_source_volume(Source.AIRPLAY, db)
+    accepted = await coord.observe_source_volume(Source.AIRPLAY, 30)
 
-    assert coord.get_listening_level() == 70
+    assert accepted is True
+    assert coord.get_listening_level() == 30
     rec = persistence.load()
-    assert rec is not None and rec.listening_level == 70
+    assert rec is not None and rec.listening_level == 30
+    assert cam.set_calls and cam.set_calls[-1] == pytest.approx(
+        percent_to_db(30)
+    )
 
 
 async def test_observe_inactive_source_is_ignored(tmp_path):
@@ -1095,9 +1091,7 @@ async def test_observe_inactive_source_is_ignored(tmp_path):
     coord._level = 70
     persistence.save_listening_level(70)
 
-    await coord.observe_source_volume(
-        Source.AIRPLAY, listening_level_to_airplay_db(30),
-    )
+    await coord.observe_source_volume(Source.AIRPLAY, 30)
 
     assert coord.get_listening_level() == 70
 

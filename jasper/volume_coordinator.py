@@ -24,10 +24,9 @@ push-mode: their own protocol sliders carry `listening_level` and
 CamillaDSP normally stays at 0 dB. At 0%, CamillaDSP also asserts
 `main_mute` so content/music zero is a final-output mute rather than
 source-side attenuation. Idle, AirPlay, and USB sink are camilla-as-master:
-CamillaDSP `main_volume` carries `listening_level`. Spotify,
-Bluetooth, and USB sink inbound observations update the canonical level
-in real time; AirPlay sender volume is treated as upstream trim and
-ignored.
+CamillaDSP `main_volume` carries `listening_level`. Every source's inbound
+observations update the canonical level in real time — AirPlay's arrive from
+shairport's volume hook rather than a poller (ADR-0200).
 
 Echo prevention. Every outbound write timestamps itself per source.
 When an inbound observer sees that source within `ECHO_WINDOW_SEC`
@@ -89,23 +88,14 @@ _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 # Source-unit mappings. Pure functions: clamp to [0, 100] first, then
 # convert. These are 1:1 inverses of the corresponding _from_X helpers.
 
-# AirPlay's volume range is -30..0 dB (shairport-sync RemoteControl).
-# -144 is reserved as "muted" — we use 0% → -30 dB (effective silence)
-# rather than the special mute value, since our coordinator owns mute
-# state separately.
+# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted".
+# Nothing in Python converts that scale: shairport's volume hook
+# (deploy/bin/jasper-airplay-volume) owns the dB→percent map and the mute
+# sentinel, and reaches the coordinator in percent (ADR-0200). These bounds
+# are what `VolumeObserver._read_airplay_db` clamps its diagnostic reading
+# to, and what tests pin the hook's endpoints against.
 AIRPLAY_DB_MIN = -30.0
 AIRPLAY_DB_MAX = 0.0
-
-
-def listening_level_to_airplay_db(level: int) -> float:
-    p = max(0, min(100, int(level)))
-    return AIRPLAY_DB_MIN + (AIRPLAY_DB_MAX - AIRPLAY_DB_MIN) * p / 100.0
-
-
-def airplay_db_to_listening_level(db: float) -> int:
-    span = AIRPLAY_DB_MAX - AIRPLAY_DB_MIN
-    p = (float(db) - AIRPLAY_DB_MIN) / span * 100.0
-    return max(0, min(100, round(p)))
 
 
 def listening_level_to_spotify_percent(level: int) -> int:
@@ -698,26 +688,21 @@ class VolumeCoordinator:
         initial: bool = False,
     ) -> bool:
         """Inbound observer entrypoint. `native_value` is in the
-        source's own units (dB for AirPlay, percent for Spotify,
+        source's own units (percent for AirPlay, Spotify and USB sink,
         uint16 for BT). The coordinator converts and updates the
         canonical level if this isn't an echo. Returns True when the
         observation was accepted for the active source and False when
         it was intentionally declined.
-
-        AirPlay is deliberately excluded. Modern AirPlay 2 senders
-        expose inbound sender-side volume to shairport-sync, but
-        receiver-originated volume reflection via shairport's DACP/DBus
-        path is no longer reliable. JTS therefore treats AirPlay sender
-        volume as upstream trim and keeps the JTS canonical volume on
-        camilla for AirPlay sessions.
         """
         if source == Source.AIRPLAY:
-            logger.debug(
-                "observe airplay: ignoring sender-side %.1f dB "
-                "(AirPlay uses camilla-as-master)",
-                float(native_value),
-            )
-            return False
+            # shairport's run_this_when_volume_is_set hook
+            # (deploy/bin/jasper-airplay-volume) has already mapped the
+            # sender's -30..0 dB onto this scale and dropped the -144 mute
+            # sentinel, so AirPlay arrives in listening-level units like
+            # USBSINK's. AirPlay is camilla-master, so the carrier sync
+            # below moves the ramped master fader; the sender's own slider
+            # is still never written (ADR-0176 outbound, ADR-0200 inbound).
+            level = max(0, min(100, int(native_value)))
         elif source == Source.SPOTIFY:
             level = spotify_percent_to_listening_level(int(native_value))
         elif source == Source.BLUETOOTH:
@@ -2459,10 +2444,11 @@ class VolumeCoordinator:
 
         shairport-sync still exposes SetAirplayVolume, but modern
         iOS/macOS AirPlay 2 sessions often omit DACP-ID/Active-Remote
-        and receiver-originated volume reflection silently no-ops.
-        The reliable product contract is therefore audible speaker
-        volume via CamillaDSP, while the sender slider remains upstream
-        trim.
+        and receiver-originated volume reflection silently no-ops, so
+        this direction stays closed (ADR-0176): a JTS-side volume change
+        moves CamillaDSP and leaves the sender's slider where it was.
+        The sender's slider reaches us the other way, through shairport's
+        volume hook (ADR-0200).
         """
         return await self._set_camilla(level)
 
