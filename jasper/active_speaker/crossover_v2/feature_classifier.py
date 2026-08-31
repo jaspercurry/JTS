@@ -79,6 +79,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.deconv import (
     magnitude_response,
@@ -114,8 +115,10 @@ __all__ = [
     "PROGRAM_MISSING",
     "FeatureClassificationRefused",
     "RoundCapture",
+    "RoundPoseCurve",
     "classify_round",
     "load_round_captures",
+    "load_round_pose_curves",
 ]
 
 
@@ -537,6 +540,92 @@ def load_round_captures(
             },
         )
     return tuple(sorted(captures, key=lambda cap: cap.stamp))
+
+
+@dataclass(frozen=True)
+class RoundPoseCurve:
+    """One banked lateral-walk pose's one driver-role curve, magnitude only.
+
+    Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
+    (Wave 4a / ruling S3) through the same reader :mod:`.delay_landscape` and
+    ``jasper-delay-sweep`` already use to reconstruct a transfer function --
+    never a raw lateral WAV, and never a second tree-walker over the bundle
+    (house ruling R11). ``band_hz`` is the role's own driven sweep band, the
+    same field :func:`~.delay_landscape._curve` reads to bound itself.
+    """
+
+    pose_id: str
+    position_deg: int | None
+    role: str
+    freqs_hz: np.ndarray
+    magnitude_db: np.ndarray
+    band_hz: tuple[float, float]
+
+
+def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
+    """Every banked lateral-walk pose curve in this bundle, magnitude only.
+
+    ``bundle_dir`` is the commissioning bundle -- the same directory
+    :func:`load_round_captures` and :func:`~.evidence_packet.round_artifact_dir`
+    read, not the round's own artifact directory.
+
+    Reused, not re-walked: :func:`~.record_index.bundle_measurements` is the
+    same take index the evidence packet's ``lateral_poses`` block and
+    ``jasper-delay-sweep propose`` scan, and
+    :func:`~.position_cycle.read_take_curves` is the same banked-curve reader
+    :func:`~.spatial.pose_curve_record` writes. Phase is dropped -- a
+    persistence read is magnitude-only -- so a caller wanting the pair reads
+    ``read_take_curves`` directly.
+
+    Returns one entry per (accepted take, role): a pose that measured two
+    driver curves banks two entries sharing one ``pose_id``. Empty when this
+    round ran no lateral walk, or banked none that survived to a curve --
+    never raises, which is what lets :func:`classify_round` tell "no lateral
+    walk" from "a walk that measured nothing usable" apart from a directory
+    error.
+    """
+    from .position_cycle import read_take_curves
+    from .record_index import bundle_measurements
+
+    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
+    out: list[RoundPoseCurve] = []
+    for row in bundle_measurements(bundle_dir, phase=PHASE_LATERAL):
+        curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
+        if curves is None:
+            continue
+        pose_id = Path(row.path).stem
+        for curve in curves:
+            role = curve.get("role")
+            freqs = curve.get("freqs_hz")
+            magnitude = curve.get("magnitude_db")
+            band = curve.get("band_hz")
+            if not (
+                isinstance(role, str)
+                and isinstance(freqs, list)
+                and isinstance(magnitude, list)
+                and isinstance(band, (list, tuple))
+                and len(band) == 2
+            ):
+                continue
+            try:
+                freqs_arr = np.asarray([float(v) for v in freqs], dtype=np.float64)
+                mag_arr = np.asarray([float(v) for v in magnitude], dtype=np.float64)
+                band_tuple = (float(band[0]), float(band[1]))
+            except (TypeError, ValueError):
+                continue
+            if freqs_arr.size == 0 or freqs_arr.size != mag_arr.size:
+                continue
+            out.append(
+                RoundPoseCurve(
+                    pose_id=pose_id,
+                    position_deg=row.position_deg,
+                    role=role,
+                    freqs_hz=freqs_arr,
+                    magnitude_db=mag_arr,
+                    band_hz=band_tuple,
+                )
+            )
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -1451,6 +1540,91 @@ def _subsample_delay_us(
     return float(-slope * 1e6)
 
 
+# --------------------------------------------------------------------------- #
+# off-axis persistence -- a fact read from ALREADY-BANKED lateral pose curves
+# --------------------------------------------------------------------------- #
+
+#: Fewest samples inside a centre-search span for its extremum to mean
+#: anything, on the lateral walk's own coarse evidence grid
+#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave -- "not a polar
+#: measurement", by that module's own words). Lower than
+#: :data:`_MIN_SLOPE_SAMPLES`: this reads an extremum, not a fitted slope.
+_POSE_MIN_CENTRE_SAMPLES = 3
+
+
+def _pose_reading(curve: RoundPoseCurve, fc: float, is_dip: bool) -> dict[str, Any]:
+    """One pose curve's own depth/centre near ``fc``, or NOT-RESOLVED.
+
+    Direct on the curve's own banked ``(freqs_hz, magnitude_db)`` -- never a
+    raw WAV. Detrended with this module's own :func:`detrend`, the same
+    one-octave baseline the primary detector uses, so a departure read here
+    means what it means there.
+
+    NOT-RESOLVED (``resolved=False``, both numbers ``None``) whenever this
+    pose cannot answer the question at all: ``fc``'s own neighbourhood falls
+    outside the curve's driven ``band_hz``, or too few of the grid's sparse
+    points land inside the centre-search span to read an extremum from. Never
+    a fabricated 0 dB -- absence is not zero.
+    """
+    lo = fc * 2**-NEIGHBOURHOOD_OCT
+    hi = fc * 2**NEIGHBOURHOOD_OCT
+    base: dict[str, Any] = {
+        "pose_id": curve.pose_id,
+        "position_deg": curve.position_deg,
+        "role": curve.role,
+        "resolved": False,
+        "pooled_db": None,
+        "centre_hz": None,
+    }
+    if not (curve.band_hz[0] <= lo and hi <= curve.band_hz[1]):
+        return base
+    detrended = detrend(curve.magnitude_db, curve.freqs_hz)
+    search = (curve.freqs_hz >= fc * 2**-CENTRE_SEARCH_OCT) & (
+        curve.freqs_hz <= fc * 2**CENTRE_SEARCH_OCT
+    )
+    if int(np.count_nonzero(search)) < _POSE_MIN_CENTRE_SAMPLES:
+        return base
+    window = detrended[search]
+    apex = int(np.argmin(window) if is_dip else np.argmax(window))
+    return {
+        **base,
+        "resolved": True,
+        "pooled_db": float(window[apex]),
+        "centre_hz": float(curve.freqs_hz[search][apex]),
+    }
+
+
+def _pose_persistence_rows(
+    pose_curves: Sequence[RoundPoseCurve], fc: float, is_dip: bool
+) -> list[dict[str, Any]]:
+    return [_pose_reading(curve, fc, is_dip) for curve in pose_curves]
+
+
+def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
+    """This round's lateral-pose bank, once -- what every row's
+    ``pose_persistence`` table is read against.
+
+    Mirrors :func:`_timing_scatter`'s NOT-RUN shape for the same reason: "no
+    lateral poses banked" is a different fact from "every pose read as
+    not-resolved", and a reader must not have to infer the first from a row
+    full of the second.
+    """
+    if not pose_curves:
+        return {
+            "available": False,
+            "n_poses": 0,
+            "note": (
+                "NOT RUN: this round banked no lateral-walk pose curves, so "
+                "no feature's off-axis persistence can be read. This is an "
+                "unmeasured dimension, not evidence a feature is on-axis only."
+            ),
+        }
+    return {
+        "available": True,
+        "n_poses": len({curve.pose_id for curve in pose_curves}),
+    }
+
+
 def _compose(
     fc: float,
     egd: Mapping[str, Any],
@@ -1608,11 +1782,17 @@ def classify_round(
     at: Sequence[float] | None = None,
     gate_ms: float = DEFAULT_GATE_MS,
     gates_ms: Sequence[float] = GATE_LADDER_MS,
+    pose_curves: Sequence[RoundPoseCurve] = (),
 ) -> dict[str, Any]:
     """Classify one round's features and return the artifact to bank.
 
     ``at`` pins the frequencies to classify; omitted, they are detected from
     the round's own pooled response (:func:`_detect_features`).
+
+    ``pose_curves`` is this round's banked lateral-walk curves
+    (:func:`load_round_pose_curves`), optional and orthogonal to ``captures``:
+    a caller with none still gets every EGD/gate/timing fact, plus a
+    ``pose_bank``/``pose_persistence`` NOT-RUN pair rather than a refusal.
 
     Raises :class:`FeatureClassificationRefused` — with
     :data:`CONTROLS_FAILED` when the known-answer controls did not pass, and
@@ -1775,6 +1955,9 @@ def classify_round(
             gates_ms=ladder,
         )
         row["gate_rungs"] = _gate_rungs(gate_table[key])
+        row["pose_persistence"] = _pose_persistence_rows(
+            pose_curves, fc, pooled_db[key] < 0
+        )
         rows.append(row)
 
     return {
@@ -1809,5 +1992,6 @@ def classify_round(
         "controls": controls,
         "gate_invariance_null_model": null_model,
         "timing_scatter": timing,
+        "pose_bank": _pose_bank_block(pose_curves),
         "rows": rows,
     }

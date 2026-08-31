@@ -676,6 +676,144 @@ def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):
 
 
 # --------------------------------------------------------------------------- #
+# 6.2: off-axis persistence, read from ALREADY-BANKED lateral pose curves
+# --------------------------------------------------------------------------- #
+
+
+def _pose_curve(
+    ir: np.ndarray,
+    *,
+    pose_id: str,
+    position_deg: int | None,
+    role: str = "woofer",
+    band_hz: tuple[float, float] = (200.0, 8000.0),
+) -> fx.RoundPoseCurve:
+    """A synthetic banked pose curve, built the same way the module's own
+    ``_resonant_ir`` fixtures are read -- :func:`fx.magnitude_response`, the
+    seam :func:`~jasper.active_speaker.crossover_v2.feature_classifier.smoothed_curve`
+    itself uses, never a hand-rolled transform.
+    """
+    freqs, db = fx.magnitude_response(ir.astype(np.float32), SR)
+    keep = np.isfinite(db) & (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    return fx.RoundPoseCurve(
+        pose_id=pose_id,
+        position_deg=position_deg,
+        role=role,
+        freqs_hz=freqs[keep],
+        magnitude_db=db[keep],
+        band_hz=band_hz,
+    )
+
+
+def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
+    """6.2: a feature present at every pose reads a depth/centre there; a
+    pose whose curve never swept the feature's band reads not-resolved.
+
+    ``absent is not zero`` (the ticket's own words): the not-resolved pose's
+    numbers are ``None``, never a fabricated 0 dB.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    present = [
+        _pose_curve(_resonant_ir(+3.0), pose_id="lateral_00_a01", position_deg=-15),
+        _pose_curve(_resonant_ir(+3.0), pose_id="lateral_01_a01", position_deg=15),
+    ]
+    # This pose's own driven band never reached the feature at all -- the
+    # honest, unambiguous way to construct "vanished" without guessing
+    # whether a sign-flipped read means the feature moved or the noise did.
+    vanished = _pose_curve(
+        _flat_ir(), pose_id="lateral_02_a01", position_deg=30, band_hz=(20.0, 500.0)
+    )
+    artifact = fx.classify_round(
+        captures, at=[RESONANCE_HZ], pose_curves=[*present, vanished]
+    )
+    assert artifact["pose_bank"] == {"available": True, "n_poses": 3}
+    persistence = artifact["rows"][0]["pose_persistence"]
+    assert len(persistence) == 3
+    by_pose = {entry["pose_id"]: entry for entry in persistence}
+    for pose_id, degrees in (("lateral_00_a01", -15), ("lateral_01_a01", 15)):
+        entry = by_pose[pose_id]
+        assert entry["resolved"] is True
+        assert entry["position_deg"] == degrees
+        assert isinstance(entry["pooled_db"], float)
+        assert isinstance(entry["centre_hz"], float)
+        assert abs(math.log2(entry["centre_hz"] / RESONANCE_HZ)) < fx.NEIGHBOURHOOD_OCT
+    vanished_entry = by_pose["lateral_02_a01"]
+    assert vanished_entry["resolved"] is False
+    assert vanished_entry["pooled_db"] is None
+    assert vanished_entry["centre_hz"] is None
+
+
+def test_no_lateral_poses_reads_as_not_run(peak_artifact):
+    """6.2(d): a round with no banked pose curves gets the classifier's own
+    NOT-RUN shape (mirroring ``_timing_scatter``'s), and every row's
+    persistence table is empty rather than absent.
+    """
+    assert peak_artifact["pose_bank"]["available"] is False
+    assert peak_artifact["pose_bank"]["n_poses"] == 0
+    assert all(row["pose_persistence"] == [] for row in peak_artifact["rows"])
+
+
+def _bank_lateral_pose(
+    bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
+    relay: str = "wired-TEST",
+) -> None:
+    """Directly write a banked ``positions/<take_id>.json`` -- the exact
+    fields :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
+    and :func:`~jasper.active_speaker.crossover_v2.position_cycle.read_take_curves`
+    read, real-shaped without going through the retention engine.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+
+    positions_dir = (
+        bundle / "evidence/v1/artifacts/crossover_v2" / relay / "positions"
+    )
+    positions_dir.mkdir(parents=True, exist_ok=True)
+    (positions_dir / f"{take_id}.json").write_text(
+        json.dumps({
+            "kind": POSITION_EVIDENCE_KIND,
+            "phase": fx.PHASE_LATERAL,
+            "position_deg": position_deg,
+            "curves": curves,
+        })
+    )
+
+
+def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
+    """6.2: the reuse this ticket requires, end to end -- ``load_round_pose_curves``
+    reaches a REAL banked take file through the same reader
+    ``jasper-delay-sweep`` uses, never a second tree-walker.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    curve = _pose_curve(_resonant_ir(+3.0), pose_id="ignored", position_deg=-20)
+    _bank_lateral_pose(
+        bundle,
+        take_id="lateral_00_a01",
+        position_deg=-20,
+        curves=[{
+            "role": "woofer",
+            "band_hz": list(curve.band_hz),
+            "freqs_hz": [float(v) for v in curve.freqs_hz],
+            "magnitude_db": [float(v) for v in curve.magnitude_db],
+            "phase_deg": [0.0] * curve.freqs_hz.size,
+        }],
+    )
+    code = cli.main([str(bundle), "--dumps", str(dumps), "--at", str(RESONANCE_HZ)])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert banked["pose_bank"] == {"available": True, "n_poses": 1}
+    persistence = banked["rows"][0]["pose_persistence"]
+    assert len(persistence) == 1
+    assert persistence[0]["pose_id"] == "lateral_00_a01"
+    assert persistence[0]["position_deg"] == -20
+    assert persistence[0]["resolved"] is True
+
+
+# --------------------------------------------------------------------------- #
 # the pieces the verdicts rest on
 # --------------------------------------------------------------------------- #
 

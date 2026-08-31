@@ -66,6 +66,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     FeatureClassificationRefused,
     classify_round,
     load_round_captures,
+    load_round_pose_curves,
 )
 
 EXIT_OK = 0
@@ -209,8 +210,16 @@ def main(argv: list[str] | None = None) -> int:
         gates_kwargs: dict[str, Any] = (
             {"gates_ms": tuple(args.gates_ms)} if args.gates_ms else {}
         )
+        # Best-effort and always attempted: a round with no lateral walk
+        # returns empty rather than raising, and classify_round reports that
+        # as its own NOT-RUN fact rather than needing a flag to ask for it.
+        pose_curves = load_round_pose_curves(args.bundle_dir)
         artifact = classify_round(
-            captures, at=args.at, gate_ms=args.gate_ms, **gates_kwargs
+            captures,
+            at=args.at,
+            gate_ms=args.gate_ms,
+            pose_curves=pose_curves,
+            **gates_kwargs,
         )
     except FeatureClassificationRefused as refusal:
         # The directory actually read, named explicitly: a refusal whose
