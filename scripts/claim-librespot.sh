@@ -37,8 +37,9 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 OAUTH_PORT="${OAUTH_PORT:-8091}"
 SYSTEM_CACHE="/var/cache/librespot"
 SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=no)

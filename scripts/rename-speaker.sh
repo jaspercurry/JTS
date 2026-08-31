@@ -63,8 +63,6 @@ if ! [[ "$NEW_BASE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
     exit 2
 fi
 
-PI_HOST="${PI_HOST:-jts.local}"
-PI_USER="${PI_USER:-pi}"
 SSH_TARGET="${PI_USER}@${PI_HOST}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
 
