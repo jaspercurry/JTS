@@ -92,6 +92,13 @@ def fsync_directory(path: str | os.PathLike) -> None:
         }
         if exc.errno not in unsupported:
             raise
+        log_event(
+            logger,
+            "atomic_io.dir_fsync_unsupported",
+            level=logging.DEBUG,
+            path=os.fspath(path),
+            error=exc,
+        )
     finally:
         os.close(descriptor)
 

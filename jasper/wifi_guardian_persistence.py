@@ -180,10 +180,6 @@ def write_stash(
     try:
         fsync_directory(p.parent)
     except OSError as e:
-        # Fail-soft beyond the helper's own unsupported-filesystem
-        # tolerance: ANY other error (unreadable parent, EIO) still
-        # only degrades rename durability — the file contents are on
-        # disk from step 2, and the wizard's connect must not fail.
         logger.debug(
             "wifi guardian persistence: parent fsync on %s failed (%s) — "
             "contents written, rename durability degraded",

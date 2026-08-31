@@ -107,27 +107,47 @@ def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
 
 
 @pytest.mark.parametrize(
-    "code", [errno.EINVAL, getattr(errno, "ENOTSUP", errno.EINVAL)]
+    ("code", "tolerated"),
+    [
+        (errno.EINVAL, True),
+        (errno.ENOTSUP, True),
+        (errno.EOPNOTSUPP, True),
+        (errno.EIO, False),
+    ],
 )
-def test_fsync_directory_tolerates_unsupported_filesystems(
-    tmp_path, monkeypatch, code
-):
-    def unsupported_fsync(_fd):
-        raise OSError(code, "directory fsync not supported")
+def test_fsync_directory_tolerance_contract(tmp_path, monkeypatch, code, tolerated):
+    opened: list[int] = []
+    closed: list[int] = []
+    fsynced: list[int] = []
+    real_open = os.open
+    real_close = os.close
 
-    monkeypatch.setattr(os, "fsync", unsupported_fsync)
+    def recording_open(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
 
-    fsync_directory(tmp_path)
+    def recording_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
 
+    def failing_fsync(descriptor):
+        fsynced.append(descriptor)
+        raise OSError(code, "directory fsync refused")
 
-def test_fsync_directory_reraises_real_faults(tmp_path, monkeypatch):
-    def failing_fsync(_fd):
-        raise OSError(errno.EIO, "simulated directory fsync fault")
-
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "close", recording_close)
     monkeypatch.setattr(os, "fsync", failing_fsync)
 
-    with pytest.raises(OSError, match="simulated directory fsync fault"):
+    if tolerated:
         fsync_directory(tmp_path)
+    else:
+        with pytest.raises(OSError) as raised:
+            fsync_directory(tmp_path)
+        assert raised.value.errno == code
+
+    assert fsynced == opened
+    assert closed == opened
 
 
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
