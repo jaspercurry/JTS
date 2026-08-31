@@ -1235,7 +1235,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_CORRECTION_MEASURED_REGRESSION: ReasonSpec(
         REASON_CORRECTION_MEASURED_REGRESSION, TEMPLATE_HARD_STOP, 0, "",
         "JTS measured your speaker before and after the tuning, and it "
-        "measured worse afterwards — so the previous sound has been put back. "
+        "sat further from flat afterwards — so the previous sound has been put back. "
         "Nothing is broken; this room and this speaker position did not suit "
         "the tuning. Moving the speaker a little, or measuring from your usual "
         "listening spot, is what changes this.",

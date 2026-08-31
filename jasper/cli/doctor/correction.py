@@ -829,9 +829,10 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
                 worst_text = f" ({worst:+.2f}dB{where})"
             return CheckResult(
                 label, "warn",
-                f"applied and graded, and the spatial grade FAILED{worst_text} "
-                f"— the tune stays on the speaker ({verify_text}); re-measure "
-                "at /correction/ or undo to restore the previous sound",
+                f"applied and graded, and the spatial grade missed the "
+                f"target{worst_text} — the tune stays on the speaker "
+                f"({verify_text}); re-measure at /correction/ or undo to "
+                "restore the previous sound",
             )
         if spatial == GRADE_SPATIAL_UNMEASURABLE:
             return CheckResult(

@@ -141,7 +141,7 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal
     epoch = "?" if grade.round_ordinal_epoch is None else grade.round_ordinal_epoch
     print(
-        f"entry-state: {len(report.bands)} band(s), {n_failed} failing, "
+        f"entry-state: {len(report.bands)} band(s), {n_failed} outside target, "
         f"{n_unevaluable} unevaluable; "
         f"overall_passed={report.overall_passed} "
         f"round={ordinal} epoch={epoch} "

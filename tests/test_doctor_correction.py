@@ -1782,7 +1782,7 @@ def test_a_failed_spatial_grade_is_not_a_green_tick(monkeypatch):
     r = doctor.check_crossover_v2_applied_is_graded()
 
     assert r.status == "warn"
-    assert "spatial grade FAILED" in r.detail
+    assert "spatial grade missed the target" in r.detail
     # The number rides the verdict, from the same gauge the cloud line prints.
     assert "-4.63dB" in r.detail
     assert "@ 1650Hz" in r.detail

@@ -2969,9 +2969,9 @@ def test_the_expert_disclosure_now_names_every_band_beside_the_pointer():
         line for line in details
         if line.startswith("every band from the same reference:")
     )
-    assert "250–2000 Hz +3.00 dB (fail, tolerance ±1.5 dB)" in per_band
-    assert "2000–8000 Hz -6.00 dB (fail, tolerance ±2.0 dB)" in per_band
-    assert "8000–16000 Hz -0.00 dB (pass, tolerance ±2.5 dB)" in per_band
+    assert "250–2000 Hz +3.00 dB (1.5 dB outside the ±1.5 dB target)" in per_band
+    assert "2000–8000 Hz -6.00 dB (4.0 dB outside the ±2.0 dB target)" in per_band
+    assert "8000–16000 Hz -0.00 dB (within the ±2.5 dB target)" in per_band
 
 
 def test_the_pre_apply_reading_also_names_every_band():
@@ -2989,9 +2989,9 @@ def test_the_pre_apply_reading_also_names_every_band():
     ))
     details = env["expert_details"]
     lead = next(line for line in details if line.startswith("Measured before tuning: "))
-    assert "250–2000 Hz +3.00 dB (fail, tolerance ±1.5 dB)" in lead
-    assert "2000–8000 Hz -6.00 dB (fail, tolerance ±2.0 dB)" in lead
-    assert "8000–16000 Hz -0.00 dB (pass, tolerance ±2.5 dB)" in lead
+    assert "250–2000 Hz +3.00 dB (1.5 dB outside the ±1.5 dB target)" in lead
+    assert "2000–8000 Hz -6.00 dB (4.0 dB outside the ±2.0 dB target)" in lead
+    assert "8000–16000 Hz -0.00 dB (within the ±2.5 dB target)" in lead
 
 
 def test_per_band_lines_uniformly_flat_shows_no_alarm():
@@ -3010,7 +3010,7 @@ def test_per_band_lines_uniformly_flat_shows_no_alarm():
     ]
     lines = _per_band_flatness_lines(spec_bands)
     assert len(lines) == 1
-    assert "+0.00 dB (pass" in lines[0]
+    assert "+0.00 dB (within" in lines[0]
     assert "fail" not in lines[0]
 
 
@@ -3030,8 +3030,8 @@ def test_per_band_lines_single_band_defect_leaves_the_others_quiet():
         for b in report.bands
     ]
     line = _per_band_flatness_lines(spec_bands)[0]
-    assert "250–2000 Hz" in line and "(pass" in line.split("250–2000 Hz")[1][:20]
-    assert "8000–16000 Hz" in line and "(fail" in line.split("8000–16000 Hz")[1][:20]
+    assert "250–2000 Hz +0.00 dB (within" in line
+    assert "8000–16000 Hz -6.00 dB (3.5 dB outside" in line
 
 
 def test_per_band_lines_both_bands_failing_shows_both():
@@ -3047,9 +3047,9 @@ def test_per_band_lines_both_bands_failing_shows_both():
          "max_deviation_db": 1.0, "tolerance_db": 2.5},
     ]
     line = _per_band_flatness_lines(spec_bands)[0]
-    assert "250–2000 Hz +3.00 dB (fail" in line
-    assert "2000–8000 Hz -4.50 dB (fail" in line
-    assert "8000–16000 Hz +1.00 dB (pass" in line
+    assert "250–2000 Hz +3.00 dB (1.5 dB outside" in line
+    assert "2000–8000 Hz -4.50 dB (2.5 dB outside" in line
+    assert "8000–16000 Hz +1.00 dB (within" in line
 
 
 def test_per_band_lines_skips_unevaluable_bands_without_fabricating():
@@ -3065,7 +3065,7 @@ def test_per_band_lines_skips_unevaluable_bands_without_fabricating():
     ]
     line = _per_band_flatness_lines(spec_bands)[0]
     assert "250–2000 Hz" not in line
-    assert "2000–8000 Hz -4.50 dB (fail" in line
+    assert "2000–8000 Hz -4.50 dB (2.5 dB outside" in line
 
 
 def test_per_band_lines_empty_or_malformed_input_renders_nothing():
@@ -3363,7 +3363,7 @@ def test_a_failed_check_is_never_described_as_one_that_never_finished():
         verify={"outcome": "fail"},
         cloud=_passing_post_apply_group(),
     ))
-    assert "did not pass" in env["verdict_text"]
+    assert "did not match its prediction" in env["verdict_text"]
     assert "never finished" not in env["verdict_text"]
     assert "could not tell either way" not in env["verdict_text"]
 
@@ -4605,7 +4605,7 @@ def test_aged_failure_note_is_one_quiet_dated_line():
     note = _history_note(env)
     assert note == (
         f"Your last measurement ended on {time.strftime('%B %-d', time.localtime(at))}"
-        " — the check didn't pass."
+        " — it wasn't confirmed."
     )
     # One LINE, not a paragraph (#1941: "clearer" is never "more words").
     assert len(note.split()) <= 12
@@ -4628,7 +4628,7 @@ def test_recent_history_reads_as_a_phrase_not_a_date(age_s, expected):
     note = _history_note(build_crossover_envelope_v2(
         _aged_status(REASON_VERIFY_OUT_OF_TOLERANCE, age_s=age_s),
     ))
-    assert note == f"Your last measurement ended {expected} — the check didn't pass."
+    assert note == f"Your last measurement ended {expected} — it wasn't confirmed."
 
 
 def test_aged_failure_note_dates_a_previous_year_explicitly():
@@ -4734,7 +4734,7 @@ def test_only_audited_durable_state_codes_are_exempt():
 
 
 @pytest.mark.parametrize("code,expected", [
-    (REASON_VERIFY_OUT_OF_TOLERANCE, "the check didn't pass"),
+    (REASON_VERIFY_OUT_OF_TOLERANCE, "it wasn't confirmed"),
     (REASON_RELAY_TIMEOUT, "it stopped before finishing"),
     (REASON_USER_STOPPED, "it stopped before finishing"),
     (REASON_CHANNEL_MAP_MISMATCH, "it couldn't continue"),
@@ -4798,7 +4798,7 @@ def test_failure_without_a_timestamp_reads_as_aged():
     assert env["screen"] == "microphone_check"
     assert env["expert_details"] == []
     assert _history_note(env) == (
-        "Your last measurement ended earlier — the check didn't pass."
+        "Your last measurement ended earlier — it wasn't confirmed."
     )
     assert any("Undo" in label for label in _labels(env))
 
