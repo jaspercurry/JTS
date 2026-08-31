@@ -522,16 +522,6 @@ class _CaptureAnnotatedStore:
         }
         return await self.inner.bank(annotated)
 
-    async def read(self, record_id: str) -> Mapping[str, Any] | None:
-        return await self.inner.read(record_id)
-
-    async def persist(self, state: Mapping[str, Any]) -> str:
-        return await self.inner.persist(state)
-
-    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
-        return await self.inner.read_state(state_id)
-
-
 async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
     """Open the door, measure what the spec asks for, close, and report.
 
@@ -610,11 +600,6 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
                 inner=BankedRecordStore(
                     evidence=store,
                     relay_session_id=session_id,
-                    # The door banks and exits (S12), so it holds no durable
-                    # session state — and no engine verb reads these two
-                    # (ADR-0198).
-                    load_state=lambda: None,
-                    save_state=lambda state: None,
                 ),
                 capture=capture,
             ),
