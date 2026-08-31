@@ -129,6 +129,7 @@ FANIN_TEST_OWNERS = frozenset({
     "active-speaker-commissioning",
     "correction-measurement",
     "doctor-aec-probe",
+    "jasper-null",
     "seat-level",
 })
 # A diagnostic owner must renew before this monotonic deadline. This is long

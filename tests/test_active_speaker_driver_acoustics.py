@@ -87,6 +87,73 @@ def _write_relay_capture(
 # ---------- channel-targeted sweep WAV --------------------------------------
 
 
+def test_summed_capture_curve_returns_a_readable_curve(tmp_path):
+    """The capture half of a reverse null, and ONLY that half.
+
+    It hands back the calibrated magnitude on the analysis grid. It computes no
+    depth and reaches no verdict — the subtraction belongs to
+    ``analysis.crossover_null_depth_db`` and the shoulders to
+    ``analysis.shoulder_span``, so a door composing all three reads the same
+    quantity a computed proposal does.
+    """
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=200.0, f2=8000.0, duration_approx_s=1.0, sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    path = _write_relay_capture(tmp_path, "null-curve.wav", reference, gain=0.2)
+
+    curve = da.summed_capture_curve(
+        path, sweep_meta.to_dict(), crossover_fc_hz=2000.0,
+        capture_geometry="near_field",
+    )
+
+    assert curve is not None
+    assert len(curve.freqs) == len(curve.magnitude_db)
+    assert curve.above_validity_floor is True
+    # Dense enough either side of Fc for a shoulder to be placed — the property
+    # the door's `shoulder_span` call depends on this grid for.
+    assert int(np.count_nonzero(curve.freqs < 2000.0)) >= 2
+    assert int(np.count_nonzero(curve.freqs > 2000.0)) >= 2
+
+
+def test_summed_capture_curve_refuses_a_capture_below_its_validity_floor(
+    tmp_path, monkeypatch
+):
+    """``None`` when the ROOM would supply the reference, not the crossover.
+
+    A reference-axis capture whose low-frequency validity floor sits above the
+    lower shoulder (``Fc/2``) cannot decide a null there. Refused rather than
+    returned, because a depth read off contaminated data is a number a reader
+    cannot tell from a measurement.
+    """
+    from jasper.audio_measurement import gating
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=200.0, f2=8000.0, duration_approx_s=1.0, sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    path = _write_relay_capture(tmp_path, "null-floor.wav", reference, gain=0.2)
+
+    def _gate_with_high_floor(ir, sample_rate, **_kwargs):
+        return ir, {
+            "schema_version": 1,
+            "direct_peak_ms": 5.0,
+            "first_reflection_ms": 8.0,
+            "window_ms": 8.0,
+            "window": "half_hann_tail",
+            # Above Fc/2 = 1000 Hz, so the lower shoulder is undecidable.
+            "f_valid_floor_hz": 1500.0,
+            "floor_source": "gate_window",
+        }
+
+    monkeypatch.setattr(gating, "gate_impulse_response", _gate_with_high_floor)
+
+    assert da.summed_capture_curve(
+        path, sweep_meta.to_dict(), crossover_fc_hz=2000.0,
+        capture_geometry="reference_axis",
+    ) is None
+
+
 def test_write_driver_sweep_wav_targets_one_channel(tmp_path):
     out = tmp_path / "sweep.wav"
     info = da.write_driver_sweep_wav(

@@ -54,6 +54,7 @@ from jasper.audio_measurement.program import (
     ExcitationProgram,
     ProgramSegment,
     render_program_pcm,
+    segment_emitted_band_hz,
 )
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
@@ -219,6 +220,13 @@ def _requested_segment_plan(
     program_id: str,
 ) -> RequestedDriverExcitationPlan:
     assert segment.f1_hz is not None and segment.f2_hz is not None
+    # The band this segment ACTUALLY emits, gate included. `f1_hz`/`f2_hz` are
+    # the PARENT sweep's, which a gated channel keeps so the branches stay
+    # sample-identical where both play (see `ProgramSegment`); judging a gated
+    # segment by them would refuse a driver for frequencies the gate silences
+    # -- and, the other way round, would let an ungated claim stand for a
+    # channel that does emit them.
+    emitted_f1, emitted_f2 = segment_emitted_band_hz(segment)
     amplitude = 10.0 ** (float(segment.gain_db) / 20.0)
     duration_s = segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
     context = json_fingerprint(
@@ -234,8 +242,8 @@ def _requested_segment_plan(
         target_fingerprint=target_fingerprint,
         commissioning_context_fingerprint=context,
         generator=DriverSweepGeneratorPlan(
-            f1_hz=float(segment.f1_hz),
-            f2_hz=float(segment.f2_hz),
+            f1_hz=emitted_f1,
+            f2_hz=emitted_f2,
             amplitude=amplitude,
             duration_s=duration_s,
             repeat_count=1,
@@ -331,7 +339,7 @@ def _evaluate_program(
                     segment_id=segment.segment_id,
                     role=role,
                     channel=int(segment.channel or 0),
-                    band=(float(segment.f1_hz or 0.0), float(segment.f2_hz or 0.0)),
+                    band=segment_emitted_band_hz(segment),
                     effective_peak_dbfs=float(segment.effective_peak_dbfs),
                     execution_allowed=False,
                     refusals=(ProgramAdmissionRefusal.TARGET_NOT_MAPPED.value,),
@@ -364,7 +372,7 @@ def _evaluate_program(
                     segment_id=segment.segment_id,
                     role=role,
                     channel=int(segment.channel or 0),
-                    band=(float(segment.f1_hz or 0.0), float(segment.f2_hz or 0.0)),
+                    band=segment_emitted_band_hz(segment),
                     effective_peak_dbfs=float(segment.effective_peak_dbfs),
                     execution_allowed=False,
                     refusals=(reason.value,),
@@ -539,7 +547,7 @@ def _segment_admission(
         segment_id=segment.segment_id,
         role=segment.role or "",
         channel=int(segment.channel or 0),
-        band=(float(segment.f1_hz or 0.0), float(segment.f2_hz or 0.0)),
+        band=segment_emitted_band_hz(segment),
         effective_peak_dbfs=float(prepared.requested_plan.effective_peak_dbfs),
         execution_allowed=prepared.execution_allowed,
         refusals=tuple(reason.value for reason in prepared.refusals),

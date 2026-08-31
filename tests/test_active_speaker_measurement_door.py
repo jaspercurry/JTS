@@ -286,6 +286,62 @@ async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box
     assert "# inverted_roles=" in box.loaded[1]
 
 
+async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
+    tmp_path, monkeypatch,
+):
+    """The gate identity REACHES ``measurement_window``, it is not merely stored.
+
+    ``mux.FANIN_TEST_OWNERS`` is a CLOSED allowlist: an owner missing from it is
+    refused the fan-in diagnostic gate, the correction lane never carries the
+    stimulus, and a door measures silence with every daemon healthy and no gate
+    tripped. So a caller has to be able to state its own — and asserting that a
+    constant EXISTS would not catch a door that accepted the argument and then
+    called ``measurement_window()`` bare, which is exactly the shape this
+    parameter was added to fix.
+
+    Default unchanged: ``None`` keeps the wizard's owner, so every caller that
+    does not care is byte-identical to before.
+    """
+    from jasper.correction import coordinator
+    from jasper.mux import FANIN_TEST_OWNERS
+
+    seen: list[str | None] = []
+
+    class _Window:
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+    def _window(**kw: Any) -> Any:
+        seen.append(kw.get("gate_owner"))
+        return _Window()
+
+    monkeypatch.setattr(coordinator, "measurement_window", _window)
+    entry = tmp_path / ENTRY_CONFIG
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    cam = FakeCam(entry)
+    install_volume_owner(
+        VolumeOwner(
+            set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: cam.get_volume_db(best_effort=True),
+        )
+    )
+    try:
+        async with _door(tmp_path, cam, gate_owner="jasper-null"):
+            pass
+        async with _door(tmp_path, cam):
+            pass
+    finally:
+        install_volume_owner(None)
+
+    assert seen == ["jasper-null", coordinator.MEASUREMENT_GATE_OWNER]
+    # A stated owner the allowlist does not carry is refused the gate on the
+    # box, so a door may only name one that is registered.
+    assert set(seen) <= FANIN_TEST_OWNERS
+
+
 def test_the_wizard_emits_through_the_shared_home(tmp_path):
     """The move landed with no duplication window, and mapped all FIVE fields.
 
