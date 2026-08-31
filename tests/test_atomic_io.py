@@ -150,6 +150,34 @@ def test_fsync_directory_reraises_real_faults(tmp_path, monkeypatch):
         fsync_directory(tmp_path)
 
 
+@pytest.mark.parametrize("code", [None, errno.EIO])
+def test_fsync_directory_closes_descriptor(tmp_path, monkeypatch, code):
+    closed: list[int] = []
+    fsynced: list[int] = []
+    real_close = os.close
+
+    def recording_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    def recording_fsync(descriptor):
+        fsynced.append(descriptor)
+        if code is not None:
+            raise OSError(code, "directory fsync refused")
+
+    monkeypatch.setattr(os, "close", recording_close)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    if code is None:
+        fsync_directory(tmp_path)
+    else:
+        with pytest.raises(OSError) as raised:
+            fsync_directory(tmp_path)
+        assert raised.value.errno == code
+
+    assert closed == fsynced != []
+
+
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
     path = tmp_path / "secret.env"
     calls: list[tuple[str, int, int]] = []
