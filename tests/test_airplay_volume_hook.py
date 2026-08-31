@@ -2,17 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""AirPlay's inbound volume intercept: template wiring + the hook's mapping.
+"""AirPlay's inbound volume intercept: template wiring + the hook's behaviour.
 
 shairport-sync fires `deploy/bin/jasper-airplay-volume <db>` on every AirPlay
-volume message and once at stream start (ADR-0200). The hook is exercised the
-way shairport runs it — as a subprocess against a stub jasper-control — so the
-pins cover the real sh/awk arithmetic, not a Python restatement of it.
+volume message, and `--session-start` before the connect-time volume push
+(ADR-0206). The hook is exercised the way shairport runs it — as a subprocess
+against a stub jasper-control — so the pins cover the real sh/awk arithmetic
+and the real delivery loop, not a Python restatement of them.
+
+The map is pinned through the state file the hook publishes, which is written
+before it serialises, so those pins run everywhere. The delivery pins need
+`flock(1)` and run on Linux only; CI is the authority.
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -29,17 +37,125 @@ from tests.shairport_template_helpers import (
 REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "deploy" / "bin" / "jasper-airplay-volume"
 INSTALLED_HOOK_PATH = "/usr/local/sbin/jasper-airplay-volume"
+STATE_NAME = "airplay-volume.pct"
+
+_FLOCK = shutil.which("flock")
+requires_flock = pytest.mark.skipif(
+    _FLOCK is None,
+    reason="the hook serialises with flock(1), which macOS does not ship",
+)
+
+
+def test_flock_is_available_on_linux():
+    """Guards the skip marker above. Without this, a runner that lost
+    flock(1) would skip every delivery pin below and still report green."""
+    if sys.platform.startswith("linux"):
+        assert _FLOCK is not None
+
+
+def _hook_env(runtime_dir: Path, port: int | None = None) -> dict[str, str]:
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "RUNTIME_DIRECTORY": str(runtime_dir),
+    }
+    if port is not None:
+        env["JASPER_CONTROL_PORT"] = str(port)
+    return env
+
+
+def _run_hook(*args: str, runtime_dir: Path, port: int | None = None) -> None:
+    subprocess.run(
+        ["sh", str(HOOK), *args],
+        env=_hook_env(runtime_dir, port),
+        check=True,
+        timeout=60,
+    )
+
+
+# ---------- the hook's dB → canonical-percent map --------------------------
+
+
+@pytest.fixture
+def losing_invocation(tmp_path):
+    """Hold the hook's lock, so the invocation under test is a burst loser.
+
+    A loser is the right subject for the map: it publishes its value and then
+    exits without posting, which is both the fast path and the property the
+    coalescer depends on — every message's value reaches the file even when
+    only one of them gets to deliver. It also keeps these pins
+    platform-neutral, since a loser never needs flock(1) to work.
+    """
+    handle = (tmp_path / "airplay-volume.lock").open("w")
+    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        yield tmp_path
+    finally:
+        handle.close()
+
+
+@pytest.mark.parametrize(
+    ("db", "expected_percent"),
+    [
+        # Endpoints of AirPlay's own range.
+        (f"{AIRPLAY_DB_MAX:.6f}", 100),
+        (f"{AIRPLAY_DB_MIN:.6f}", 0),
+        # shairport formats the float, so real values arrive with decimals.
+        ("-15.000000", 50),
+        ("-7.500000", 75),
+        # Exactly 50.5 %. Round-half-up is the deliberate rule, so 51.
+        ("-14.850000", 51),
+        # AirPlay's mute sentinel. It needs no branch of its own: clamping
+        # lands it on 0 %, which is the level at which the coordinator asserts
+        # Camilla main_mute, so a sender's mute button really does silence the
+        # speaker.
+        ("-144.000000", 0),
+        ("-144", 0),
+        # Out of band in either direction clamps rather than extrapolating.
+        ("5", 100),
+        ("-60.000000", 0),
+    ],
+)
+def test_hook_maps_airplay_db_onto_the_canonical_percent_scale(
+    db, expected_percent, losing_invocation,
+):
+    _run_hook(db, runtime_dir=losing_invocation)
+
+    published = (losing_invocation / STATE_NAME).read_text(encoding="utf-8")
+    assert published.strip() == str(expected_percent)
+
+
+@pytest.mark.parametrize("argument", ["loud", "", "12x", "--", "nan"])
+def test_hook_publishes_nothing_for_a_malformed_argument(
+    argument, losing_invocation,
+):
+    """A malformed argument must never read as 0 dB (full volume), and must
+    not read as a level at all — the hook has no value, so it publishes
+    none."""
+    _run_hook(argument, runtime_dir=losing_invocation)
+
+    assert not (losing_invocation / STATE_NAME).exists()
+
+
+def test_hook_ignores_a_missing_runtime_directory(tmp_path):
+    """shairport must never inherit a failure from this hook, including in
+    the window before its RuntimeDirectory exists."""
+    _run_hook("-10.000000", runtime_dir=tmp_path / "absent")
+
+
+# ---------- delivery to jasper-control -------------------------------------
 
 
 class _Recorder(BaseHTTPRequestHandler):
     posts: list[tuple[str, dict]] = []
+    statuses: list[int] = []
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8")
         type(self).posts.append((self.path, json.loads(body)))
+        status = type(self).statuses.pop(0) if type(self).statuses else 200
         payload = b'{"percent": 0}'
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -51,8 +167,13 @@ class _Recorder(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def control_stub():
-    """A stub jasper-control that records what the hook posted."""
+    """A stub jasper-control that records what the hook posted.
+
+    `statuses` scripts the reply codes it hands back, oldest first; anything
+    past the end of that list answers 200.
+    """
     _Recorder.posts = []
+    _Recorder.statuses = []
     server = HTTPServer(("127.0.0.1", 0), _Recorder)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -64,135 +185,99 @@ def control_stub():
         thread.join(timeout=5)
 
 
-def _run_hook(db: str, *, port: int, runtime_dir: Path) -> list[tuple[str, dict]]:
-    subprocess.run(
-        ["sh", str(HOOK), db],
-        env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "RUNTIME_DIRECTORY": str(runtime_dir),
-            "JASPER_CONTROL_PORT": str(port),
-        },
-        check=True,
-        timeout=30,
-    )
-    return list(_Recorder.posts)
+@requires_flock
+def test_hook_posts_a_source_attributed_observation(control_stub, tmp_path):
+    """`source` is load-bearing, not decoration: it routes the write through
+    `observe_source_volume`. Without it jasper-control treats the caller as
+    authoritative and the active-source gate, the echo window and the
+    measurement hold are all bypassed."""
+    _run_hook("-7.500000", runtime_dir=tmp_path, port=control_stub.server_port)
 
-
-# ---------- the hook's dB → canonical-percent map --------------------------
-
-
-@pytest.mark.parametrize(
-    ("db", "expected_percent"),
-    [
-        # Endpoints of AirPlay's own range.
-        (f"{AIRPLAY_DB_MAX:.6f}", 100),
-        (f"{AIRPLAY_DB_MIN:.6f}", 0),
-        # shairport formats the float, so the midpoint arrives with decimals.
-        ("-15.000000", 50),
-        ("-7.500000", 75),
-        # Out of band in either direction clamps rather than extrapolating.
-        ("5", 100),
-        ("-60.000000", 0),
-    ],
-)
-def test_hook_maps_airplay_db_onto_the_canonical_percent_scale(
-    db, expected_percent, control_stub, tmp_path,
-):
-    posts = _run_hook(
-        db, port=control_stub.server_port, runtime_dir=tmp_path,
-    )
-
-    # `source` is load-bearing, not decoration: it routes the write through
-    # `observe_source_volume`. Without it jasper-control treats the caller as
-    # authoritative and the active-source gate, the echo window and the
-    # measurement hold are all bypassed.
-    assert posts == [
-        ("/volume/set", {"percent": expected_percent, "source": "airplay"}),
+    assert _Recorder.posts == [
+        ("/volume/set", {"percent": 75, "source": "airplay"}),
     ]
 
 
-@pytest.mark.parametrize(
-    "argument",
-    [
-        # AirPlay's mute sentinel. macOS flips -144 <-> 0 around session start
-        # and stop, so honouring it would mute the speaker on every connect.
-        "-144.000000",
-        "-144",
-        # Nothing outside the sentinel's neighbourhood is a volume either.
-        "-1000",
-        # A malformed argument must never read as 0 dB (= full volume) or as
-        # 0% (= silence).
-        "loud",
-        "",
-    ],
-)
-def test_hook_publishes_nothing_for_the_mute_sentinel_or_garbage(
-    argument, control_stub, tmp_path,
-):
-    posts = _run_hook(
-        argument, port=control_stub.server_port, runtime_dir=tmp_path,
-    )
-
-    assert posts == []
-
-
-def test_hook_survives_an_unreachable_control_daemon(tmp_path):
-    """shairport must never inherit a failure from this hook: a lost volume
-    nudge is harmless, a wedged renderer is not."""
-    # Port 1 is privileged and unbound — curl fails immediately.
-    subprocess.run(
-        ["sh", str(HOOK), "-10.000000"],
-        env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "RUNTIME_DIRECTORY": str(tmp_path),
-            "JASPER_CONTROL_PORT": "1",
-        },
-        check=True,
-        timeout=30,
-    )
-
-
-def test_hook_releases_its_mutex_so_the_next_message_is_not_dropped(
+@requires_flock
+def test_session_start_marks_only_the_first_observation_as_initial(
     control_stub, tmp_path,
 ):
-    """The mutex that coalesces a slider-drag burst must not outlive one
-    invocation, or the first message after a drag would be the last one the
-    speaker ever hears."""
-    _run_hook("-30.000000", port=control_stub.server_port, runtime_dir=tmp_path)
-    posts = _run_hook(
+    """shairport fires `run_this_before_play_begins` ahead of the connect-time
+    volume push. That one write carries `observation_initial`, which the
+    coordinator defers while a mute is latched — so connecting a sender no
+    longer clears a mute asserted at the speaker. A later nudge must NOT carry
+    it, or volume-up-while-muted would do nothing."""
+    _run_hook("--session-start", runtime_dir=tmp_path)
+    _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+    _run_hook("-15.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+
+    assert [body for _, body in _Recorder.posts] == [
+        {"percent": 0, "source": "airplay", "observation_initial": True},
+        {"percent": 50, "source": "airplay"},
+    ]
+
+
+@requires_flock
+def test_a_rejected_write_is_retried_rather_than_recorded_as_delivered(
+    control_stub, tmp_path,
+):
+    """409 is what jasper-control answers while active-speaker output is not
+    ready. Recording it as delivered would strand the fader at the old level
+    for the rest of the drag."""
+    _Recorder.statuses = [409]
+
+    _run_hook("-15.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+
+    percents = [body["percent"] for _, body in _Recorder.posts]
+    assert percents[:2] == [50, 50]
+
+
+@requires_flock
+def test_hook_survives_an_unreachable_control_daemon(tmp_path):
+    """A lost volume nudge is harmless; a hook that fails back into shairport
+    is not. Port 1 is privileged and unbound, so curl fails immediately."""
+    _run_hook("-10.000000", runtime_dir=tmp_path, port=1)
+
+
+@requires_flock
+def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
+    control_stub, tmp_path,
+):
+    """The lock that coalesces a drag must not outlive one invocation, or the
+    first message after a drag would be the last one the speaker ever
+    hears."""
+    _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
+    _run_hook(
         f"{AIRPLAY_DB_MAX:.6f}",
-        port=control_stub.server_port,
         runtime_dir=tmp_path,
+        port=control_stub.server_port,
     )
 
-    assert [body["percent"] for _, body in posts] == [0, 100]
+    assert [body["percent"] for _, body in _Recorder.posts] == [0, 100]
 
 
+@requires_flock
 def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     control_stub, tmp_path,
 ):
     """macOS emits a burst during a slider drag or a held volume key. Posting
-    each one would open a coordinator per message on a 1 GB Pi; dropping all
+    each one would build a coordinator per message on a 1 GB Pi; dropping all
     but the first would leave the speaker at the wrong level. The hook has to
     thin the burst AND finish on the newest value.
 
     The assertions are shaped to survive a slow runner: a slower box coalesces
-    harder (fewer posts), and the mutex holder re-reads the published value
-    each pass, so the last post is the last value either way.
+    harder (fewer posts), and the holder re-reads the published value after
+    releasing the lock, so the last post is the last value either way.
     """
     messages = [f"{-30.0 + 30.0 * i / 20.0:.6f}" for i in range(21)]
-    env = {
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
-        "RUNTIME_DIRECTORY": str(tmp_path),
-        "JASPER_CONTROL_PORT": str(control_stub.server_port),
-    }
+    env = _hook_env(tmp_path, control_stub.server_port)
 
     running = []
     for db in messages:
         running.append(subprocess.Popen(["sh", str(HOOK), db], env=env))
         time.sleep(0.05)
     for process in running:
-        assert process.wait(timeout=30) == 0
+        assert process.wait(timeout=60) == 0
 
     percents = [body["percent"] for _, body in _Recorder.posts]
     assert percents, "the drag produced no volume write at all"
@@ -205,7 +290,7 @@ def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
 
 
 def test_template_points_shairport_at_the_installed_hook():
-    """The renderer substitutes placeholders only; this value ships as-is, so
+    """The renderer substitutes placeholders only; these values ship as-is, so
     the template and the install step must name the same path."""
     conf = SHAIRPORT_TEMPLATE.read_text(encoding="utf-8")
     installer = (
@@ -215,6 +300,9 @@ def test_template_points_shairport_at_the_installed_hook():
     assert (
         template_string_value(conf, "run_this_when_volume_is_set")
         == INSTALLED_HOOK_PATH
+    )
+    assert template_string_value(conf, "run_this_before_play_begins") == (
+        f"{INSTALLED_HOOK_PATH} --session-start"
     )
     assert INSTALLED_HOOK_PATH in installer
 

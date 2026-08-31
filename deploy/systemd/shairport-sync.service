@@ -39,10 +39,10 @@ ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode
 ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync
 Group=shairport-sync
-# /run/shairport-sync, owned by User=, holds the inbound volume hook's
-# coalescing state and its mutex (deploy/bin/jasper-airplay-volume, ADR-0200).
-# systemd creates it at start and removes it at stop, so a mutex stranded by a
-# SIGKILLed hook cannot outlive the service.
+# /run/shairport-sync, owned by User=, is where the inbound volume hook keeps
+# its coalescing state, its lock file and its session marker
+# (deploy/bin/jasper-airplay-volume, ADR-0206). systemd creates it at start
+# and removes it at stop, so every session begins with a clean one.
 RuntimeDirectory=shairport-sync
 RuntimeDirectoryMode=0755
 # jts-ring: lets the ioplug create/write the airplay lane's SHM ring under

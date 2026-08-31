@@ -26,7 +26,7 @@ CamillaDSP normally stays at 0 dB. At 0%, CamillaDSP also asserts
 source-side attenuation. Idle, AirPlay, and USB sink are camilla-as-master:
 CamillaDSP `main_volume` carries `listening_level`. Every source's inbound
 observations update the canonical level in real time — AirPlay's arrive from
-shairport's volume hook rather than a poller (ADR-0200).
+shairport's volume hook rather than a poller (ADR-0206).
 
 Echo prevention. Every outbound write timestamps itself per source.
 When an inbound observer sees that source within `ECHO_WINDOW_SEC`
@@ -87,13 +87,15 @@ _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 # Source-unit mappings. Pure functions: clamp to [0, 100] first, then
 # convert. These are 1:1 inverses of the corresponding _from_X helpers.
+# AirPlay is the exception with no pair here — its native map lives in
+# shairport's volume hook, deploy/bin/jasper-airplay-volume (ADR-0206).
 
-# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted".
-# Nothing in Python converts that scale: shairport's volume hook
-# (deploy/bin/jasper-airplay-volume) owns the dB→percent map and the mute
-# sentinel, and reaches the coordinator in percent (ADR-0200). These bounds
-# are what `VolumeObserver._read_airplay_db` clamps its diagnostic reading
-# to, and what tests pin the hook's endpoints against.
+# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted". Nothing
+# in Python converts that scale: the hook owns the dB→percent map, maps the
+# mute sentinel onto 0% (this module's content mute), and reaches the
+# coordinator in percent. These bounds are what
+# `VolumeObserver._read_airplay_db` clamps its diagnostic reading to, and what
+# tests pin the hook's endpoints against.
 AIRPLAY_DB_MIN = -30.0
 AIRPLAY_DB_MAX = 0.0
 
@@ -701,7 +703,7 @@ class VolumeCoordinator:
             # sentinel, so AirPlay arrives in listening-level units like
             # USBSINK's. AirPlay is camilla-master, so the carrier sync
             # below moves the ramped master fader; the sender's own slider
-            # is still never written (ADR-0176 outbound, ADR-0200 inbound).
+            # is still never written (ADR-0176 outbound, ADR-0206 inbound).
             level = max(0, min(100, int(native_value)))
         elif source == Source.SPOTIFY:
             level = spotify_percent_to_listening_level(int(native_value))
@@ -2448,7 +2450,7 @@ class VolumeCoordinator:
         this direction stays closed (ADR-0176): a JTS-side volume change
         moves CamillaDSP and leaves the sender's slider where it was.
         The sender's slider reaches us the other way, through shairport's
-        volume hook (ADR-0200).
+        volume hook (ADR-0206).
         """
         return await self._set_camilla(level)
 

@@ -53,7 +53,7 @@ def _reset_bluealsa_probe_state():
 
 
 # AirPlay has no mapping helper here: shairport's volume hook owns that
-# scale and reaches the coordinator in percent (ADR-0200). Its endpoints are
+# scale and reaches the coordinator in percent (ADR-0206). Its endpoints are
 # pinned against AIRPLAY_DB_MIN/MAX in tests/test_airplay_volume_hook.py.
 
 
@@ -1054,7 +1054,7 @@ async def test_set_airplay_delegates_to_camilla_without_subprocess(
 
 
 async def test_observe_airplay_moves_the_camilla_master(tmp_path):
-    """The sender's slider is an inbound control surface (ADR-0200): its
+    """The sender's slider is an inbound control surface (ADR-0206): its
     observation becomes the canonical level and, because AirPlay is
     camilla-as-master, lands on CamillaDSP's ramped fader."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
@@ -1076,6 +1076,45 @@ async def test_observe_airplay_moves_the_camilla_master(tmp_path):
     assert cam.set_calls and cam.set_calls[-1] == pytest.approx(
         percent_to_db(30)
     )
+
+
+@pytest.mark.parametrize(
+    ("initial", "expect_accepted"),
+    [(False, True), (True, False)],
+)
+async def test_observe_airplay_while_muted_turns_on_initial(
+    tmp_path, initial, expect_accepted,
+):
+    """`observation_initial` is the whole session-start guard (ADR-0206).
+
+    A plain observation is the user reaching for the volume, so it clears the
+    mute. The one observation shairport pushes when a sender connects is
+    marked initial, and that one must leave a latched mute alone — otherwise
+    connecting a Mac unmutes a speaker the owner silenced.
+    """
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"aplactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70)
+    await coord.set_muted(True)
+    assert coord.get_volume_state().pre_mute_level is not None
+
+    accepted = await coord.observe_source_volume(
+        Source.AIRPLAY, 40, initial=initial,
+    )
+
+    assert accepted is expect_accepted
+    state = coord.get_volume_state()
+    if expect_accepted:
+        assert state.pre_mute_level is None
+        assert state.listening_level == 40
+    else:
+        assert state.pre_mute_level is not None
 
 
 async def test_observe_inactive_source_is_ignored(tmp_path):

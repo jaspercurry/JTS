@@ -13,7 +13,7 @@ requiring the user to also tell Jarvis.
 AirPlay is intentionally different: it is not polled into the canonical
 level at all. shairport-sync pushes every sender-side volume change to
 `deploy/bin/jasper-airplay-volume` the moment it arrives, and that hook
-posts it to jasper-control (ADR-0200) — an event-driven path this 1 Hz
+posts it to jasper-control (ADR-0206) — an event-driven path this 1 Hz
 loop cannot improve on. The AirPlay reading below is therefore read and
 logged for diagnostics only, never dispatched. Receiver→sender reflection
 stays impossible on AirPlay 2 (ADR-0176), so JTS keeps AirPlay speaker
@@ -179,7 +179,7 @@ class VolumeObserver:
             logger.debug(
                 "airplay sender volume observed at %.1f dB "
                 "(diagnostics only; the canonical path is shairport's "
-                "volume hook — ADR-0200)",
+                "volume hook — ADR-0206)",
                 airplay_db,
             )
         if current_active == Source.SPOTIFY and spotify_pct is not None:
@@ -241,7 +241,7 @@ class VolumeObserver:
 
         Diagnostics only — this reading is logged, never dispatched. The
         canonical inbound path is shairport's own volume hook
-        (deploy/bin/jasper-airplay-volume, ADR-0200), which is
+        (deploy/bin/jasper-airplay-volume, ADR-0206), which is
         event-driven rather than polled and owns the dB→percent map.
         Returns None on any error; -144 (shairport's mute sentinel) is
         clamped up to AIRPLAY_DB_MIN so the log line stays in-range.

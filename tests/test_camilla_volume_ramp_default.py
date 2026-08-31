@@ -53,7 +53,7 @@ def test_no_camilla_config_generator_emits_volume_ramp_time() -> None:
     `deploy/bin` is scanned alongside `jasper/` because the operator-side
     scripts there rewrite CamillaDSP configs too (jasper-camilla-recover,
     the crossover and pipe guards), and because AirPlay's volume hook now
-    lands on the fader whose ramp this budget covers (ADR-0200).
+    lands on the fader whose ramp this budget covers (ADR-0206).
     """
     # Match the key as an emitter would write it — a quoted dict key or a
     # line of YAML template text — so prose mentioning it does not trip.
@@ -62,10 +62,16 @@ def test_no_camilla_config_generator_emits_volume_ramp_time() -> None:
         *(_REPO / "jasper").rglob("*.py"),
         *(p for p in (_REPO / "deploy" / "bin").iterdir() if p.is_file()),
     ]
+    # Tolerant decode: deploy/bin holds only scripts today, but the scan must
+    # not become a hard error the day something binary lands beside them. A
+    # byte that will not decode cannot spell the key anyway.
     offenders = sorted(
         str(path.relative_to(_REPO))
         for path in scanned
-        if any(token in path.read_text(encoding="utf-8") for token in written)
+        if any(
+            token in path.read_text(encoding="utf-8", errors="replace")
+            for token in written
+        )
     )
     assert offenders == [], (
         f"{offenders} now emit volume_ramp_time; re-check "

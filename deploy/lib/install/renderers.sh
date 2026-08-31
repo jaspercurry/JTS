@@ -181,7 +181,7 @@ install_renderers() {
         "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode" \
         /usr/local/sbin/jasper-apply-airplay-mode
     # The run_this_when_volume_is_set hook the template points at: AirPlay's
-    # inbound volume path into jasper-control (ADR-0200).
+    # inbound volume path into jasper-control (ADR-0206).
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-airplay-volume" \
         /usr/local/sbin/jasper-airplay-volume
