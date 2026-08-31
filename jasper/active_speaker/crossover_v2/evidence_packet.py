@@ -2171,6 +2171,112 @@ def _accuracy_budget_block(
     }
 
 
+#: Ticket 6.6's own bound: "recent per-round history... bounded, N~=8".
+TRIM_HISTORY_MAX_ROUNDS = 8
+
+#: How many of the household's recent bundles :func:`_trim_history_block`
+#: looks at before it stops trying to find :data:`TRIM_HISTORY_MAX_ROUNDS`
+#: rounds that banked a candidate. Wider than the round count itself: a
+#: household's recent bundles are not all crossover_v2 tournament rounds
+#: (commissioning and calibration bundles carry no candidate.json at all)
+#: and a bundle without one is silently skipped rather than counted against
+#: the round budget.
+_TRIM_HISTORY_BUNDLE_SCAN_LIMIT = 32
+
+
+def _trim_history_block(session_dir: Path) -> dict[str, Any]:
+    """The resolved per-driver trim pair's recent per-round history (6.6).
+
+    **Where it is durably banked, investigated.** Neither
+    ``round_receipt.json`` nor the durable conductor-state document
+    (:mod:`.durable_state`) carries a trim across rounds:
+    ``round_receipt.json``'s ``round_axes`` is the four ADOPTION-verdict axes
+    (trust/safety/quality/headroom), not an alignment axis, and
+    ``durable_state``'s document is ONE overwritten CURRENT snapshot
+    (``candidate`` is session-scoped there — "a previous session's answer
+    says nothing about this one"), never a log. ``round_anchor`` names
+    nothing in this tree. What DOES durably bank it, write-once, one file per
+    round directory, retained for as long as the bundle is:
+    ``candidate.json``'s ``role_attenuations_db`` — the trim the fit actually
+    committed for the round, pin-substituted where a prescription pinned one
+    (``crossover_v2.planning``'s trim-pin fold, disclosed per role as
+    ``linearization[role].trim_pinned`` — the same bit
+    ``durable_state._candidate_pinned_trims`` reads off the identical
+    candidate for the household's own /state projection).
+
+    So this reads the FIRST branch the ticket names, not the second: no
+    change to the round-receipt writer, only a reader here.
+
+    **Across bundles, not across round directories inside one.** A bundle
+    carries at most one round directory (:func:`round_artifact_dir` refuses
+    a second) — a household's rounds are siblings under ``session_dir``'s own
+    parent, newest first by ``started_at``
+    (:func:`~jasper.active_speaker.bundles.list_bundles`, the shipped
+    chronological lister; bundle DIRECTORY name order is a random uuid4 and
+    is explicitly not chronological, per :mod:`.candidate_bank`'s own
+    docstring). A bundle with no round directory, or none carrying a
+    candidate, is silently skipped: a best-effort scan across many bundles
+    must not fail the whole packet over one malformed or unrelated neighbour.
+
+    Values only, oldest first so a monotonic walk reads left to right; no
+    drift verdict — reading one is the LLM's job.
+    """
+    from jasper.active_speaker.bundles import list_bundles
+
+    try:
+        bundles = list_bundles(
+            session_dir.parent, limit=_TRIM_HISTORY_BUNDLE_SCAN_LIMIT
+        )
+    except OSError:
+        bundles = []
+
+    newest_first: list[dict[str, Any]] = []
+    for info in bundles:
+        bundle_dir = info.get("bundle_dir")
+        if not isinstance(bundle_dir, str) or not bundle_dir:
+            continue
+        round_dir, _reason = round_artifact_dir(Path(bundle_dir))
+        if round_dir is None:
+            continue
+        candidate = _read_candidate(round_dir)
+        trim_db = candidate.get("role_attenuations_db")
+        if not isinstance(trim_db, Mapping) or not trim_db:
+            continue
+        linearization = _mapping(candidate.get("linearization"))
+        newest_first.append({
+            "round_id": round_dir.name,
+            "trim_db": {
+                str(role): float(value)
+                for role, value in trim_db.items()
+                if finite_number(value) is not None
+            },
+            "pinned": {
+                str(role): bool(_mapping(entry).get("trim_pinned") is True)
+                for role, entry in linearization.items()
+            },
+        })
+        if len(newest_first) >= TRIM_HISTORY_MAX_ROUNDS:
+            break
+
+    oldest_first = list(reversed(newest_first))
+    return {
+        "available": bool(oldest_first),
+        "max_rounds": TRIM_HISTORY_MAX_ROUNDS,
+        "rounds_covered": len(oldest_first),
+        "rounds": [
+            {"ordinal": index + 1, **entry}
+            for index, entry in enumerate(oldest_first)
+        ],
+        "source": "candidate.json role_attenuations_db, across this bundle's recent siblings",
+        "note": (
+            "oldest first, so a monotonic walk reads left to right. Values "
+            "only -- no drift verdict. History legitimately starts wherever "
+            "the household's retained bundles do; rounds_covered states how "
+            "many this reading actually found, bounded at max_rounds"
+        ),
+    }
+
+
 def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
     """The crossover region a proposal must sit inside.
 
@@ -2990,6 +3096,10 @@ def build_crossover_evidence_packet(
             verify=verify,
             round_dir=round_dir,
         ),
+        # Ticket 6.6: the resolved per-driver trim pair's recent per-round
+        # history, so a monotonic walk (a re-solved trim drifting round over
+        # round) is readable evidence. Values only; no drift verdict.
+        "trim_history": _trim_history_block(session_dir),
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
         # says where a filter may sit, the verdicts say what it may be aimed
