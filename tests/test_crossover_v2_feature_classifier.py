@@ -280,6 +280,11 @@ def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
     captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
     artifact = fx.classify_round(captures, at=[RESONANCE_HZ], gates_ms=_WIDE_LADDER_MS)
     assert artifact["measurement"]["gate_ladder_ms"] == list(_WIDE_LADDER_MS)
+    # A rung past the primary never DISPLACES the primary: the verdict
+    # reference, and with it the trusted floor, stays on the commanded
+    # ``gate_ms`` (the shipped default here) — not on the ladder's max,
+    # which re-admits reflections.
+    assert artifact["measurement"]["gate_ms_primary"] == fx.DEFAULT_GATE_MS
     row = artifact["rows"][0]
     rungs = row["gate_rungs"]
     assert set(rungs) == {f"{g:.0f}" for g in _WIDE_LADDER_MS}
@@ -287,11 +292,13 @@ def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
         assert isinstance(entry["pooled_db"], float)
         assert isinstance(entry["centre_hz"], float)
         assert isinstance(entry["resolved"], bool)
-    # The primary rung (11 ms, the ladder's own max) has nothing to compare
-    # itself to, so the DERIVED per-gate maps exclude it -- the raw rung
-    # table above still reports it, which is the additive fact this ticket
-    # is about.
-    assert "11" not in row["excess_loss_vs_null"]
+    # The primary rung has nothing to compare itself to, so the DERIVED
+    # per-gate maps exclude it; every other rung — the 11 ms one past the
+    # primary included — is compared against the primary, and the raw rung
+    # table reports them all, which is the additive fact this ticket is
+    # about.
+    assert f"{fx.DEFAULT_GATE_MS:.0f}" not in row["excess_loss_vs_null"]
+    assert "11" in row["excess_loss_vs_null"]
     assert "11" in rungs
 
 
@@ -852,7 +859,7 @@ def test_decay_recovers_an_injected_rings_known_time():
     """
     ir = _decaying_sinusoid_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S)
     band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(ir, SR, band)
+    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
     expected_ms = _DECAY_RESONANCE_TAU_S * math.log(10) * 1000.0
     assert result["below_floor"] is False
     assert result["time_to_neg20_db_ms"] == pytest.approx(
@@ -868,7 +875,7 @@ def test_decay_reads_fast_on_a_clean_impulse():
     ir = np.zeros(int(0.6 * SR))
     ir[200] = 1.0
     band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(ir, SR, band)
+    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
     assert result["below_floor"] is False
     assert result["time_to_neg20_db_ms"] is not None
     assert result["time_to_neg20_db_ms"] < 10.0
@@ -883,7 +890,7 @@ def test_decay_reports_below_floor_for_a_steady_tone():
     t = np.arange(n) / SR
     ir = 0.5 * np.sin(2 * np.pi * RESONANCE_HZ * t)
     band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(ir, SR, band)
+    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
     assert result["below_floor"] is True
     assert result["time_to_neg20_db_ms"] is None
 

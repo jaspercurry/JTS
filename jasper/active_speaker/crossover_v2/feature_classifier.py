@@ -195,8 +195,10 @@ GENERATED_BY = "jasper.active_speaker.crossover_v2.feature_classifier"
 #: ever calls reflection-free. Overridable per run.
 DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
-#: The gate-invariance ladder, shortest first. The primary window is the last
-#: entry and every retention is read against it.
+#: The gate-invariance ladder, shortest first. Every retention is read against
+#: the commanded primary window (``gate_ms``) — the last entry here by
+#: default. A commanded rung longer than the primary stays a rung: it
+#: re-admits reflections as a readable fact and never displaces the primary.
 GATE_LADDER_MS: tuple[float, ...] = (3.0, 5.0, DEFAULT_GATE_MS)
 
 #: Pre-peak lead for the PHASE window only. A zero-lead window starts at
@@ -1329,6 +1331,8 @@ def _gate_invariance(
     features: Sequence[float],
     grid: np.ndarray,
     gates_ms: Sequence[float],
+    *,
+    primary_ms: float,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, float]]:
     """Retention and centre movement across the gate ladder, against a null model.
 
@@ -1338,8 +1342,12 @@ def _gate_invariance(
     injected into a real IR and gated identically — speaker-own by
     construction, so whatever retention it loses is the gate alone. A
     1.5x-narrower companion brackets the width rather than betting on one.
+
+    ``primary_ms`` is passed, never derived from the ladder: a commanded rung
+    longer than the primary must stay a rung, or every verdict reference
+    silently moves onto a reflection-admitting window.
     """
-    primary = max(gates_ms)
+    primary = float(primary_ms)
     primary_key = f"{primary:.0f}"
 
     pooled = np.mean(
@@ -1578,7 +1586,9 @@ def _subsample_delay_us(
 _POSE_MIN_CENTRE_SAMPLES = 3
 
 
-def _pose_reading(curve: RoundPoseCurve, fc: float, is_dip: bool) -> dict[str, Any]:
+def _pose_reading(
+    curve: RoundPoseCurve, detrended: np.ndarray, fc: float, is_dip: bool
+) -> dict[str, Any]:
     """One pose curve's own depth/centre near ``fc``, or NOT-RESOLVED.
 
     Direct on the curve's own banked ``(freqs_hz, magnitude_db)`` -- never a
@@ -1591,6 +1601,9 @@ def _pose_reading(curve: RoundPoseCurve, fc: float, is_dip: bool) -> dict[str, A
     outside the curve's driven ``band_hz``, or too few of the grid's sparse
     points land inside the centre-search span to read an extremum from. Never
     a fabricated 0 dB -- absence is not zero.
+
+    ``detrended`` is the curve's own detrended magnitude, computed once per
+    curve by the caller — it is feature-independent.
     """
     lo = fc * 2**-NEIGHBOURHOOD_OCT
     hi = fc * 2**NEIGHBOURHOOD_OCT
@@ -1604,7 +1617,6 @@ def _pose_reading(curve: RoundPoseCurve, fc: float, is_dip: bool) -> dict[str, A
     }
     if not (curve.band_hz[0] <= lo and hi <= curve.band_hz[1]):
         return base
-    detrended = detrend(curve.magnitude_db, curve.freqs_hz)
     search = (curve.freqs_hz >= fc * 2**-CENTRE_SEARCH_OCT) & (
         curve.freqs_hz <= fc * 2**CENTRE_SEARCH_OCT
     )
@@ -1621,9 +1633,15 @@ def _pose_reading(curve: RoundPoseCurve, fc: float, is_dip: bool) -> dict[str, A
 
 
 def _pose_persistence_rows(
-    pose_curves: Sequence[RoundPoseCurve], fc: float, is_dip: bool
+    pose_curves: Sequence[RoundPoseCurve],
+    detrended_curves: Sequence[np.ndarray],
+    fc: float,
+    is_dip: bool,
 ) -> list[dict[str, Any]]:
-    return [_pose_reading(curve, fc, is_dip) for curve in pose_curves]
+    return [
+        _pose_reading(curve, detrended, fc, is_dip)
+        for curve, detrended in zip(pose_curves, detrended_curves)
+    ]
 
 
 def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
@@ -1675,10 +1693,34 @@ def _decay_bands_hz(fc: float) -> dict[str, tuple[float, float]]:
     }
 
 
+@dataclass(frozen=True)
+class _DecayHost:
+    """One IR's forward FFT, computed once — every band read shares it.
+
+    The per-band work is only the mask and the inverse transform; the
+    spectrum itself is feature-independent, and a round reads three bands
+    per feature off the same host IR.
+    """
+
+    n: int
+    sample_rate: int
+    spectrum: np.ndarray
+    freqs: np.ndarray
+
+    @classmethod
+    def of(cls, ir: np.ndarray, sample_rate: int) -> "_DecayHost":
+        return cls(
+            n=ir.size,
+            sample_rate=sample_rate,
+            spectrum=np.fft.rfft(ir),
+            freqs=np.fft.rfftfreq(ir.size, d=1.0 / sample_rate),
+        )
+
+
 def _band_limited_envelope(
-    ir: np.ndarray, sample_rate: int, band_hz: tuple[float, float]
+    host: _DecayHost, band_hz: tuple[float, float]
 ) -> np.ndarray:
-    """The analytic envelope of ``ir`` restricted to ``band_hz``.
+    """The analytic envelope of the host IR restricted to ``band_hz``.
 
     An FFT-domain brick-wall mask, zero outside the band: the IR here is the
     module's own reflection-free deconvolution, already long and clean, so
@@ -1687,17 +1729,12 @@ def _band_limited_envelope(
     duplicated — the same Hilbert-magnitude envelope the gating half of this
     package already reads a ring-down with.
     """
-    n = ir.size
-    spectrum = np.fft.rfft(ir)
-    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
-    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
-    band_limited = np.fft.irfft(spectrum * mask, n=n)
+    mask = (host.freqs >= band_hz[0]) & (host.freqs <= band_hz[1])
+    band_limited = np.fft.irfft(host.spectrum * mask, n=host.n)
     return analytic_envelope(band_limited)
 
 
-def _decay_read(
-    ir: np.ndarray, sample_rate: int, band_hz: tuple[float, float]
-) -> dict[str, Any]:
+def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any]:
     """Time-to-``DECAY_TARGET_DROP_DB`` in one band, or an honest non-answer.
 
     ``noise_floor_db`` is the envelope's own late-tail level, dB relative to
@@ -1709,7 +1746,7 @@ def _decay_read(
     the envelope never reaches the target within the IR's own length —
     never a fabricated time.
     """
-    envelope = _band_limited_envelope(ir, sample_rate, band_hz)
+    envelope = _band_limited_envelope(host, band_hz)
     peak_idx = int(np.argmax(envelope))
     peak_level = float(envelope[peak_idx])
     tail_start = int(envelope.size * (1.0 - DECAY_NOISE_FLOOR_TAIL_FRACTION))
@@ -1722,7 +1759,7 @@ def _decay_read(
     target_level = peak_level * 10 ** (-DECAY_TARGET_DROP_DB / 20.0)
     crossings = np.flatnonzero(envelope[peak_idx:] <= target_level)
     time_ms = (
-        float(crossings[0] / sample_rate * 1000.0)
+        float(crossings[0] / host.sample_rate * 1000.0)
         if not below_floor and crossings.size
         else None
     )
@@ -1734,10 +1771,9 @@ def _decay_read(
     }
 
 
-def _decay_block(ir: np.ndarray, sample_rate: int, fc: float) -> dict[str, Any]:
+def _decay_block(host: _DecayHost, fc: float) -> dict[str, Any]:
     return {
-        name: _decay_read(ir, sample_rate, band)
-        for name, band in _decay_bands_hz(fc).items()
+        name: _decay_read(host, band) for name, band in _decay_bands_hz(fc).items()
     }
 
 
@@ -1918,7 +1954,7 @@ def classify_round(
     if not captures:
         raise FeatureClassificationRefused(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
     ladder = tuple(sorted({float(g) for g in gates_ms} | {float(gate_ms)}))
-    primary = max(ladder)
+    primary = float(gate_ms)
     primary_key = f"{primary:.0f}"
     trusted_band_hz = (f_trusted_floor_hz(primary * 1e-3), TRUSTED_CEILING_HZ)
     grid = analysis_grid()
@@ -2051,9 +2087,16 @@ def classify_round(
 
     gate_table, null_model, pooled_db = _gate_invariance(
         irs, peaks, irs[host_index], peaks[host_index], sample_rate, features, grid,
-        ladder,
+        ladder, primary_ms=primary,
     )
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
+
+    # Feature-independent work, once per round: each pose curve's detrended
+    # form, and the host IR's forward FFT — the rows loop only reads them.
+    pose_detrended = [
+        detrend(curve.magnitude_db, curve.freqs_hz) for curve in pose_curves
+    ]
+    decay_host = _DecayHost.of(irs[host_index], sample_rate)
 
     rows = []
     for fc in features:
@@ -2072,9 +2115,9 @@ def classify_round(
         )
         row["gate_rungs"] = _gate_rungs(gate_table[key])
         row["pose_persistence"] = _pose_persistence_rows(
-            pose_curves, fc, pooled_db[key] < 0
+            pose_curves, pose_detrended, fc, pooled_db[key] < 0
         )
-        row["decay"] = _decay_block(irs[host_index], sample_rate, fc)
+        row["decay"] = _decay_block(decay_host, fc)
         rows.append(row)
 
     return {
