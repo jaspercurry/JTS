@@ -20,13 +20,11 @@ from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.program_admission import (
     ProgramAdmissionError,
     ProgramAdmissionRefusal,
-    admit_excitation_program,
     readmit_program_from_wav,
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
-    KIND_COURTESY_TONE,
     RoleBand,
     build_measure_program,
     build_verify_program,
@@ -131,11 +129,37 @@ def _measure_program(session_volume_db, roles=None, gains=None, courtesy_prelude
     )
 
 
+def _admit(prog, *, topology, safety_profile, role_targets, session_volume_db,
+           pcm=None, declared_sensitivities=None):
+    """Admit through the actual play-time door: write ``prog`` to a WAV and
+    read it back, the way every real caller does. There is no composition-time
+    admission entry point -- ``admit_excitation_program`` had zero production
+    callers and was retired; ``pcm`` (default: a clean render) lets a test
+    attest tampered bytes the same way a tampered WAV would arrive."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav = Path(tmpdir) / "program.wav"
+        if pcm is None:
+            write_program_wav(wav, prog)
+        else:
+            clipped = np.clip(pcm, -1.0, 1.0)
+            wavfile.write(
+                str(wav), prog.sample_rate_hz, (clipped * 32767.0).astype(np.int16)
+            )
+        return readmit_program_from_wav(
+            prog, wav, topology=topology, safety_profile=safety_profile,
+            role_targets=role_targets, session_volume_db=session_volume_db,
+            declared_sensitivities=declared_sensitivities,
+        )
+
+
 def test_clean_program_is_admitted():
     topology, profile, targets = _profile_and_targets()
     sv = session_measurement_volume_db(profile, targets.values())
     prog = _measure_program(sv)
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
@@ -154,7 +178,7 @@ def test_band_escape_refuses_segment():
     sv = session_measurement_volume_db(profile, targets.values())
     # Woofer band dips below the 500 Hz permitted floor.
     prog = _measure_program(sv, roles=_roles(woofer_band=(150.0, 1600.0)))
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
@@ -167,7 +191,7 @@ def test_peak_over_ceiling_refuses():
     # A too-loud session volume pushes the tweeter's effective peak above its
     # -65 cap (gain -46 + volume -10 = -56 dBFS effective > -65).
     prog = _measure_program(-20.0)
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=-10.0,
     )
@@ -191,7 +215,7 @@ def test_asymmetric_caps_woofer_reaches_reference_while_tweeter_lands_at_cap():
     sv = session_measurement_volume_db(profile, targets.values())
     assert sv == -20.0
     prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -45.0})
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
@@ -263,7 +287,7 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
         for role in caps
     }
     prog = _measure_program(sv, gains=gains)
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
         declared_sensitivities=declared,
@@ -288,7 +312,7 @@ def test_channel_manifest_peak_mismatch_refuses():
     # Inflate the woofer channel's peak far above its declared -6 dBFS, but keep
     # it quiet enough (effective still <= cap) to isolate the manifest mismatch.
     pcm[prog.segment("sweep_w").start_sample, 0] = 0.9
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv, pcm=pcm,
     )
@@ -296,43 +320,11 @@ def test_channel_manifest_peak_mismatch_refuses():
     assert ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH in adm.refusals
 
 
-def test_out_of_segment_energy_refuses():
-    topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
-    prog = _measure_program(sv)
-    pcm = render_program_pcm(prog)
-    # Leak a tone into the leading guard silence on the woofer channel.
-    pcm[0:2000, 0] = 0.1
-    adm = admit_excitation_program(
-        prog, topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=sv, pcm=pcm,
-    )
-    assert not adm.allowed
-    assert ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY in adm.refusals
-
-
 # --- courtesy-tone prelude (issue #1677) --------------------------------------
-
-
-def test_courtesy_prelude_program_is_admitted():
-    """The core false-positive-refusal fix: a program with the prelude is
-    genuinely intentional, non-silent content outside any STIMULUS_KINDS
-    window -- without ``known_audible_segments()`` covering it in
-    ``_out_of_segment_mask``, this would always refuse as
-    OUT_OF_SEGMENT_ENERGY."""
-    topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
-    prog = _measure_program(sv, courtesy_prelude=True)
-    assert prog.segment("courtesy_tone_ch0").kind == KIND_COURTESY_TONE
-    adm = admit_excitation_program(
-        prog, topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=sv,
-    )
-    assert adm.allowed, adm.refusals
-    facts = {c.channel: c for c in adm.channels}
-    assert facts[0].peak_within_cap and facts[1].peak_within_cap
-    assert facts[0].quiet_out_of_segment and facts[1].quiet_out_of_segment
-    assert facts[0].peak_matches_manifest and facts[1].peak_matches_manifest
+#
+# test_readmit_courtesy_prelude_wav_is_admitted (below) already pins the
+# false-positive-refusal fix -- a prelude-bearing program is allowed -- through
+# the production door; these two cover paths it does not.
 
 
 def test_courtesy_prelude_still_catches_energy_outside_both_stimulus_and_tone():
@@ -346,7 +338,7 @@ def test_courtesy_prelude_still_catches_energy_outside_both_stimulus_and_tone():
     pcm = render_program_pcm(prog)
     gap = prog.segment("courtesy_gap")
     pcm[gap.start_sample:gap.start_sample + 2000, 0] = 0.1
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv, pcm=pcm,
     )
@@ -371,7 +363,7 @@ def test_courtesy_prelude_tampered_louder_than_cap_is_refused():
     # Inflate the tweeter tone's own rendered samples to full scale -- far
     # above its admitted -65 dB cap even after the session-volume fold.
     pcm[tone1.start_sample:tone1.start_sample + tone1.n_samples, 1] = 0.99
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv, pcm=pcm,
     )
@@ -399,7 +391,7 @@ def test_unmapped_role_refuses():
     topology, profile, targets = _profile_and_targets()
     sv = session_measurement_volume_db(profile, targets.values())
     prog = _measure_program(sv)
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets={"woofer": targets["woofer"]},  # tweeter missing
         session_volume_db=sv,
@@ -412,7 +404,7 @@ def test_verify_program_not_admitted_here():
     topology, profile, targets = _profile_and_targets()
     prog = build_verify_program(1600.0)
     with pytest.raises(ProgramAdmissionError):
-        admit_excitation_program(
+        _admit(
             prog, topology=topology, safety_profile=profile,
             role_targets=targets, session_volume_db=-65.0,
         )
@@ -507,7 +499,7 @@ def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
     assert gains["tweeter"] < solved["tweeter"]
 
     prog = _measure_program(session_volume_db, gains=gains)
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=session_volume_db,
     )
@@ -541,7 +533,7 @@ def test_refused_program_log_names_the_refusing_segment(caplog):
     # A tweeter segment driven past its own -65 cap in the EFFECTIVE frame:
     # -40.0 + sv (-20.0) = -60.0 dBFS, 5 dB over.
     prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -40.0})
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
@@ -594,7 +586,7 @@ def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_meas
     # to round DOWN to 3.9989 s and would pass. On jts3 the woofer's real
     # 150-4000 Hz band rounds UP to 4.0058 s.
     prog = _measure_program(sv, roles=_roles(woofer_band=(500.0, 2000.0)))
-    adm = admit_excitation_program(
+    adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )

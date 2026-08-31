@@ -5935,9 +5935,9 @@ def _bind_engine_measure_leg(
     **It claims exactly the MEASURE indices.** That is the one phase the
     engine can drive end-to-end today: its kind exists
     (``MEASURE_KIND_CANDIDATE``), its program is routed (a verify-class summed
-    sweep is structurally not re-admittable — ``admit_excitation_program``
-    raises for it — so the transaction's readmit gate cannot pass one), and
-    its graph discipline matches the session's prove-per-stimulus model. CHECK
+    sweep is structurally not re-admittable, so the transaction's readmit gate
+    cannot pass one), and its graph discipline matches the session's
+    prove-per-stimulus model. CHECK
     and the prompted walks stay on the flow callbacks until their kinds and
     verdicts move engine-side.
 

@@ -53,7 +53,6 @@ from jasper.audio_measurement.program import (
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
-    render_program_pcm,
     segment_emitted_band_hz,
 )
 from jasper.log_event import log_event
@@ -657,47 +656,6 @@ def _validate_program(program: ExcitationProgram) -> None:
             "program admission only covers CHECK/MEASURE programs; VERIFY rides "
             "the applied production graph"
         )
-
-
-def admit_excitation_program(
-    program: ExcitationProgram,
-    *,
-    topology: OutputTopology,
-    safety_profile: Mapping[str, Any],
-    role_targets: Mapping[str, str],
-    session_volume_db: float,
-    pcm: Any = None,
-    declared_sensitivities: Mapping[str, float] | None = None,
-) -> ProgramAdmission:
-    """Admit a program at composition time (N segment plans + M channel facts).
-
-    ``role_targets`` maps each driver role to its confirmed safety-profile target
-    fingerprint (the caller resolves it from ``active_driver_targets``).
-    ``session_volume_db`` is the SSOT fixed measurement volume (see
-    :func:`jasper.active_speaker.session_volume_plan.session_measurement_volume_db`);
-    it folds into every segment's and channel's effective peak so caps are
-    enforced regardless of its value. ``pcm`` defaults to a deterministic render
-    of ``program`` — pass an explicit array only to attest already-rendered bytes.
-    ``declared_sensitivities`` (per-role, from the declaration — see
-    :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`)
-    activates the W6.5 sensitivity-derived HF measurement ceiling; the caller
-    MUST pass the same mapping it composed against, or a program composed at
-    the derived cap is refused here at the legacy one.
-    """
-    _validate_program(program)
-    if not isinstance(topology, OutputTopology):
-        raise ProgramAdmissionError("topology must be an OutputTopology")
-    if pcm is None:
-        pcm = render_program_pcm(program)
-    return _evaluate_program(
-        program,
-        pcm,
-        topology=topology,
-        safety_profile=safety_profile,
-        role_targets=role_targets,
-        session_volume_db=session_volume_db,
-        declared_sensitivities=declared_sensitivities,
-    )
 
 
 def readmit_program_from_wav(
