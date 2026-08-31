@@ -240,6 +240,33 @@ def test_plan_exits_two_on_a_refusal_and_zero_on_a_walk(capsys):
     assert cli._cmd_plan(parser.parse_args(["plan", "--angles", "0,7"])) == cli.EXIT_OK
 
 
+def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
+    """A stated ``(delayed_role, delay_us)`` reaches the graph: before this,
+    confirming that was true meant tracing
+    ``measure_spec.measurement_delays_for`` by hand -- nothing in the preview
+    said so.
+    """
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["plan", "--angles", "0", "--delayed-role", "tweeter", "--delay-us", "128.588"]
+    )
+    assert cli._cmd_plan(args) == cli.EXIT_OK
+    human = capsys.readouterr().out
+    assert "tweeter" in human
+    assert "128.588" in human
+
+    payload = cli._walk_payload(cli._build_request(args))
+    assert payload["delayed_role"] == "tweeter"
+    assert payload["delay_us"] == 128.588
+
+    # The ordinary walk (no delay stated) prints no delay line at all -- the
+    # same "only when it is not the ordinary walk" contract the polarity line
+    # already keeps.
+    plain = parser.parse_args(["plan", "--angles", "0"])
+    assert cli._cmd_plan(plain) == cli.EXIT_OK
+    assert "delay:" not in capsys.readouterr().out
+
+
 def test_the_preview_says_who_arms_the_gate_for_both_movers(capsys):
     """The `plan` dry run is the operator's ONLY preview, so it may not state
     an arm-only fact as the whole truth (#2879 gate S1).

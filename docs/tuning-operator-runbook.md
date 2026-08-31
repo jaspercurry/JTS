@@ -107,7 +107,8 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
    `feature_classification.json` into the round dir;
    `jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>`
    files `harmonic_distortion.json` beside it;
-   `jasper-round-views frozen | per-seat | repeat | agreement` grades it.
+   `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
+   grades it.
 4. **Propose.** Author the prescription JSON yourself, then
    `jasper-crossover-prescriber propose --prescription -` — a true dry run
    sharing the whole gate with `stage`.
@@ -443,7 +444,8 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-crossover-prescriber packet` | one banked round → one versioned JSON document | advisory | `_cmd_packet` |
 | `jasper-crossover-prescriber propose` | validate a prescription against the round it answers | advisory (dry run) | `_cmd_propose` |
 | `jasper-crossover-prescriber stage` | place **one** accepted prescription for the next round | mutating | `_cmd_stage` |
-| `jasper-round-views frozen\|per-seat\|repeat\|agreement` | per-seat curves, pooled stats, session-to-session spread, per-feature testimony | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views frozen\|per-seat\|repeat\|agreement` | per-seat curves, pooled stats, session-to-session spread, per-feature testimony — each takes a banked ROUND dir, unlike the prescriber family's bundle dir | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views frequency` | the shared frequency-response view; takes a banked round dir, a session BUNDLE dir, or a raw JSON document | advisory | `jasper/cli/round_views.py` |
 | `jasper-classify-features` | classify a round's features; file the verdict | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | read a round's H2/H3 out of its banked MEASURE captures; file the reading | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | complex-sum a banked round's per-driver curves across the delay grid; print the computed optimum and the stage lines that confirm it | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |

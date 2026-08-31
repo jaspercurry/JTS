@@ -342,6 +342,21 @@ def _travel_refusal(controller: Any, args: argparse.Namespace) -> dict[str, Any]
     }
 
 
+#: Lets ``--json`` land either before or after the subcommand
+#: (``jts_turntable.py --json left 5`` and ``jts_turntable.py left 5 --json``
+#: both work). ``default=SUPPRESS`` is load-bearing: a subparser namespace is
+#: built separately and copied onto the top-level one (argparse's own
+#: ``_SubParsersAction``), so an ordinary default would overwrite a ``--json``
+#: already set before the subcommand with this subparser's unset default.
+#: SUPPRESS means "not passed here" adds no key, so the copy has nothing to
+#: overwrite with. Previously ``--json`` worked only before the subcommand;
+#: placing it after was an argparse "unrecognized arguments" error.
+_JSON_PARENT = argparse.ArgumentParser(add_help=False)
+_JSON_PARENT.add_argument(
+    "--json", action="store_true", default=argparse.SUPPRESS, help="emit compact JSON"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manual JTS USB turntable experiment")
     parser.add_argument("--port", help="serial path; default uses bundled discovery")
@@ -353,14 +368,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="emit compact JSON")
 
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("detect", help="list matching USB serial devices")
-    commands.add_parser("power", help="show the Raspberry Pi power preflight")
-    commands.add_parser("probe", help="query turntable identity and firmware")
-    left = commands.add_parser("left", help="vendor Left (clockwise from above)")
+
+    def add_sub(name: str, **kwargs: Any) -> argparse.ArgumentParser:
+        """One subcommand, always carrying _JSON_PARENT so --json works in
+        both positions on every one of them, not just a hand-picked subset."""
+        return commands.add_parser(name, parents=[_JSON_PARENT], **kwargs)
+
+    add_sub("detect", help="list matching USB serial devices")
+    add_sub("power", help="show the Raspberry Pi power preflight")
+    add_sub("probe", help="query turntable identity and firmware")
+    left = add_sub("left", help="vendor Left (clockwise from above)")
     left.add_argument("degrees", type=_positive_degrees)
-    right = commands.add_parser("right", help="vendor Right (counterclockwise)")
+    right = add_sub("right", help="vendor Right (counterclockwise)")
     right.add_argument("degrees", type=_positive_degrees)
-    set_zero = commands.add_parser(
+    set_zero = add_sub(
         "set-zero",
         help="destructively redefine the saved acoustic-axis zero (requires confirmation)",
     )
@@ -372,14 +393,13 @@ def build_parser() -> argparse.ArgumentParser:
             "required because set-zero cannot be undone"
         ),
     )
-    commands.add_parser("home", help="return to the saved zero position")
-    commands.add_parser(
+    add_sub("home", help="return to the saved zero position")
+    add_sub(
         "offset",
         help="query the signed offset from saved zero; sends no motion command",
     )
-    position = commands.add_parser(
-        "position",
-        help="home, then move to a guarded signed measurement angle",
+    position = add_sub(
+        "position", help="home, then move to a guarded signed measurement angle"
     )
     position.add_argument("degrees", type=_measurement_position)
     position.add_argument(
@@ -392,11 +412,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm saved zero is on-axis and valid since the latest power-on",
     )
-    commands.add_parser(
+    add_sub(
         "hotplug-stop",
         help="internal udev add-hook: probe and stop the matching turntable",
     )
-    commands.add_parser("stop", help="send the vendor stop request")
+    add_sub("stop", help="send the vendor stop request")
     return parser
 
 

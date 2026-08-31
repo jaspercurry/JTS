@@ -322,6 +322,31 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
         assert correction_setup._get_relay_capture()["status"] == "stopped"
     finally:
         release_cleanup.set()
+
+
+def test_a_wired_holder_is_named_wired_not_phone_mic_relay():
+    """A WIRED session's slot-busy refusal must not read as a phone-flow
+    message on a box with no phone in the loop: the raise must read the
+    actual holder rather than assume the phone-mic relay is always the one
+    blocking.
+    """
+    correction_setup._set_relay_capture(None)
+    try:
+        assert correction_setup._begin_relay_capture(
+            "crossover_v2:session", local=True
+        )
+        with pytest.raises(ValueError, match=r"wired capture \(crossover_v2:session\)"):
+            correction_setup._run_relay_capture(
+                correction_setup.RelayCaptureKind(
+                    label="crossover_v2:session",
+                    open=lambda *_a: None,
+                    run_and_consume=lambda *_a: None,
+                ),
+                "https://relay.test",
+                return_url="http://jts.local/correction/crossover/",
+                idle_hold=no_hold,
+            )
+    finally:
         correction_setup._set_relay_capture(None)
 
 
