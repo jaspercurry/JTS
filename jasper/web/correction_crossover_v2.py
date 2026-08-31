@@ -89,17 +89,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     available_stage_priors,
     open_stage,
 )
-# The round's own rollback-anchor provenance (#2537) — what an apply displaced,
-# what it put live, and whether the running graph is still that. A pure leaf
-# like ``journey`` above: it owns the record's shape and the divergence rule,
-# and this module keeps only the wiring (write it on apply, read it on restore).
-from jasper.active_speaker.crossover_v2.round_anchor import (
-    ROUND_ANCHOR_STATE_KEY,
-    restore_target_diverged,
-    displaced_restore_target,
-    round_anchor_record,
-    stashed_restore_target,
-)
 # The position gate's two TERMINAL codes, at module level because the constants
 # they name are module level. A pure-organ leaf like ``journey`` above, so this
 # adds no cycle and no import cost worth deferring — every other flow symbol in
@@ -431,15 +420,14 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     speaker's DSP graph changed.
 
     **The rule for choosing (#2291): durable where power loss would lose the
-    rollback anchor or falsify a receipt; cheap everywhere else.** Three writes
+    way-back pointer or falsify a receipt; cheap everywhere else.** Two writes
     qualify — one per half of that rule:
 
-    * the ANCHOR pair, which own ``pre_apply_profile``, the only pointer Undo
-      restores from. :func:`observe_apply_success` CREATES it in the same
-      moment the new graph goes live, so a lost write leaves a corrected
-      speaker with no way back; :func:`observe_restore` clears it and flips
-      ``applied``, so a lost write leaves the state claiming a correction that
-      is no longer on the speaker.
+    * :func:`observe_apply_success`, which owns
+      ``previous_candidate_fingerprint``, the only pointer the way back
+      (republish-then-apply) resolves its target from. It is created in the
+      same moment the new graph goes live, so a lost write leaves a corrected
+      speaker with no recorded way back.
     * the RECEIPT identity, written by :func:`persist_conductor_state` — but
       **only on a persist that carries a new one**. A receipt lives in the
       write-once evidence bundle, so losing the pointer to it leaves an
@@ -449,8 +437,8 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     :func:`persist_conductor_state`'s ordinary path — it runs after every
     consumed capture, and an fsync per capture buys nothing that the next
     capture's write does not already redo. :func:`reset_v2_journey_state`
-    PRESERVES the anchor, so losing its write leaves the richer previous
-    state — the anchor survives either way, which is why it is not on the
+    PRESERVES the pointer, so losing its write leaves the richer previous
+    state — the pointer survives either way, which is why it is not on the
     durable list.
     """
     payload = {
@@ -538,14 +526,13 @@ def _record_live_model_error(**observation: Any) -> bool:
 
 
 def reset_v2_journey_state() -> None:
-    """Start-over's v2 clear (W6.10, gate-amended for W6.8's Undo).
+    """Start-over's v2 clear (W6.10, gate-amended for the way back).
 
     Clears the measurement-JOURNEY fields (session binding, accepted phases,
     candidate, verify, failure, gain plan, priors, evidence) so the envelope
     serves the clean start screen — but when a candidate is APPLIED, preserves
-    ``applied`` + ``pre_apply_profile``: that stash carries the prior
-    candidate's fingerprint, the ONLY durable pointer the way back
-    (republish-then-apply) resolves its target from. A full
+    ``applied`` + ``previous_candidate_fingerprint``: the ONLY durable pointer
+    the way back (republish-then-apply) resolves its target from. A full
     :func:`clear_v2_state` here would drop it, leaving the applied graph
     playing with no way back. Not applied ⇒ full clear, as before — except that
     the clear carries the ordinal-sequence epoch when one has been set, because
@@ -603,11 +590,9 @@ def reset_v2_journey_state() -> None:
             round_ordinal_epoch=epoch,
         )
         return
-    pre_apply_profile = state.get("pre_apply_profile")
+    previous_candidate = state.get("previous_candidate_fingerprint")
     displaced_by = state.get("previous_candidate_displaced_by")
     attempts_loop = state.get("attempts_loop")
-    sound_declaration_undo = state.get("sound_declaration_undo")
-    round_anchor = state.get(ROUND_ANCHOR_STATE_KEY)
     # This branch drops ``round_receipt`` — the ordinal sequence's only memory
     # — while the applied graph keeps playing, so the next round is round 1
     # again on a speaker that has already been tuned. That is the SAME reset
@@ -653,41 +638,24 @@ def reset_v2_journey_state() -> None:
         "evidence": None,
         # Start over is how the household initiates another tune. Preserve the
         # prior applied-candidate attempts so the next VERIFY is compared with
-        # its immediate predecessor; Undo below clears them because the graph
-        # they describe no longer exists.
+        # its immediate predecessor.
         "attempts_loop": (
             dict(attempts_loop) if isinstance(attempts_loop, Mapping) else None
         ),
-        "pre_apply_profile": (
-            dict(pre_apply_profile)
-            if isinstance(pre_apply_profile, Mapping)
+        # Start over keeps the applied graph playing, so the way back's
+        # pointer survives with it.
+        "previous_candidate_fingerprint": (
+            previous_candidate
+            if isinstance(previous_candidate, str) and previous_candidate
             else None
         ),
-        # The pointer's pairing survives on the stash's own terms: Start over
+        # The pointer's pairing survives on the same terms: Start over
         # keeps the applied graph playing, so the apply that recorded the
         # pointer is still the one under grade.
         "previous_candidate_displaced_by": (
             displaced_by
             if isinstance(displaced_by, str) and displaced_by
             else None
-        ),
-        # Preserved on exactly ``pre_apply_profile``'s terms (#2292): the two
-        # are the graph half and the declaration half of ONE Undo. Start over
-        # keeps the applied graph playing and keeps Undo reachable, so dropping
-        # this here would leave that Undo able to restore the sound but not the
-        # crossover ``/sound`` declares for it.
-        "sound_declaration_undo": (
-            dict(sound_declaration_undo)
-            if isinstance(sound_declaration_undo, Mapping)
-            else None
-        ),
-        # Preserved on the same terms (#2537), and load-bearing for the same
-        # reason: Start over keeps the applied graph playing and keeps Undo
-        # reachable, so dropping the round's own record of what that apply
-        # displaced would leave the restore unable to check whether the graph
-        # it is about to replace is still the one it applied.
-        ROUND_ANCHOR_STATE_KEY: (
-            dict(round_anchor) if isinstance(round_anchor, Mapping) else None
         ),
     })
     log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
@@ -696,49 +664,24 @@ def reset_v2_journey_state() -> None:
 def observe_apply_success(
     candidate_fingerprint: str,
     *,
-    pre_apply_profile: Mapping[str, Any] | None = None,
-    sound_declaration_undo: Mapping[str, Any] | None = None,
+    previous_candidate_fingerprint: str | None = None,
     expected_post_apply_offset_db: float = 0.0,
-    round_anchor: Mapping[str, Any] | None = None,
 ) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
     soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
 
-    ``pre_apply_profile`` is the frozen applied-baseline snapshot the apply
-    replaced (``build_baseline_profile_candidate``'s
-    ``applied_recomposition_profile`` — see ``handle_v2_apply``), stashed here
-    because the apply's own persisted profile pops that field once it becomes
-    the new applied SSOT. Its ``source.measured_candidate_fingerprint`` is the
-    ONLY durable pointer the way back (republish-then-apply) resolves its
-    target from; ``None`` when this was the speaker's first-ever applied
-    crossover (nothing to go back to).
-
-    ``sound_declaration_undo`` (#2292) is the OTHER half of that same Undo: how
-    to put ``/sound``'s declared crossover back to what it said before this
-    apply's accept wrote it, or ``None`` when this apply did not write Sound
-    (every candidate that crosses where ``/sound`` already declares). It is a
-    parameter of THIS call, beside
-    ``pre_apply_profile`` and written in the SAME state write, because the two
-    describe one reversible event and a household undoes both or neither.
-
-    That co-location is the fix for the shape a gate caught in review: while
-    this key was written on the alternative-Fc accept instead, an alternative
-    apply followed by Start over and an ORDINARY apply left the graph half
-    re-stamped here and the declaration half describing the older apply — so
-    Undo restored the recent graph and wrote a two-applies-old frequency into
-    ``/sound``, reporting success. Passing ``None`` is therefore not a default
-    to skip: it is an ordinary apply CLEARING a record that no longer inverts
-    anything.
-
-    ``round_anchor`` (#2537) is
-    :func:`~jasper.active_speaker.crossover_v2.round_anchor.round_anchor_record`'s
-    snapshot of what this apply displaced and what it put live, written in the
-    SAME state write and for exactly ``pre_apply_profile``'s reason: it
-    describes this one reversible event, so it must be re-stamped by every apply
-    and can never outlive the graph its sibling describes. ``None`` clears it,
-    which is what an apply that could not name either path should leave behind —
-    an absent anchor makes the restore's divergence check say "cannot compare",
-    never "matches".
+    ``previous_candidate_fingerprint`` is the measured candidate the applied
+    graph DISPLACED — read off the frozen ``applied_recomposition_profile``'s
+    own ``source.measured_candidate_fingerprint`` by ``handle_v2_apply``. It
+    is the ONLY durable pointer the way back (republish-then-apply) resolves
+    its target from: the status block publishes it, the wizard mints its
+    way-back action from it, and the round's auto-revert republishes it.
+    ``None`` — a first-ever apply, or a displaced profile that was not a
+    measured-candidate apply — is written as such, re-stamped by every
+    successful apply so the pointer can never outlive the apply it describes.
+    A state written before this field existed simply has no way back until
+    the next apply records one (the same no-schema-bump posture
+    ``_record_is_fresh`` takes).
 
     ``expected_post_apply_offset_db`` (#1811) is the whole-band level move the
     emitted graph made and did NOT command as part of the correction's shape —
@@ -774,207 +717,42 @@ def observe_apply_success(
     # clobbering it here would erase the evidence that the household
     # stopped even though the crossover genuinely got applied (this call
     # proves it) — the envelope needs BOTH facts to render an honest
-    # "applied, but you stopped it — undo if you want" screen instead of a
-    # false "nothing happened" or a false "start over, nothing changed."
+    # "applied, but you stopped it" screen instead of a false "nothing
+    # happened" or a false "start over, nothing changed."
     # The reverse race (a stop landing AFTER this call persists) is already
     # handled: persist_conductor_state preserves ``applied`` once it
     # observes it, for the same session.
     state["apply_blocked"] = None
-    state["pre_apply_profile"] = (
-        dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
+    state["previous_candidate_fingerprint"] = (
+        previous_candidate_fingerprint
+        if isinstance(previous_candidate_fingerprint, str)
+        and previous_candidate_fingerprint
+        else None
     )
-    # The way-back pointer's PAIRING: the identity of the apply that recorded
-    # it — this one, named by the candidate it installed. The automatic revert
+    # The pointer's PAIRING: the identity of the apply that recorded it —
+    # this one, named by the candidate it installed. The automatic revert
     # fires only when this equals the candidate the round displaced the prior
     # with (one equality, checked at the seam), which is what refuses a
     # pointer inherited from an OLDER apply (#2559's staleness class) and —
     # because the revert's own success re-stamps this to ``None`` — a second
     # automatic revert inside the [revert…next-apply] window (the ping-pong).
-    # Re-stamped by every successful apply, exactly like the stash above.
+    # Re-stamped by every successful apply, exactly like the pointer above.
     state["previous_candidate_displaced_by"] = (
         str(candidate_fingerprint) if candidate_fingerprint else None
-    )
-    # UNCONDITIONAL, exactly like the stash above — that is the whole
-    # invariant. Both halves of the Undo are re-stamped by every successful
-    # apply, so neither can outlive the graph the other describes.
-    state["sound_declaration_undo"] = (
-        dict(sound_declaration_undo)
-        if isinstance(sound_declaration_undo, Mapping)
-        else None
-    )
-    # UNCONDITIONAL for the same reason as the two above (#2537): three halves
-    # of one reversible event, re-stamped together or the round's own record of
-    # what it displaced starts describing a different apply.
-    state[ROUND_ANCHOR_STATE_KEY] = (
-        dict(round_anchor) if isinstance(round_anchor, Mapping) else None
     )
     offset_db = float(expected_post_apply_offset_db)
     state["expected_post_apply_offset_db"] = (
         round(offset_db, 3) if math.isfinite(offset_db) else 0.0
     )
-    # fsync'd (#2291). This write CREATES the rollback anchor, and it happens
+    # fsync'd (#2291). This write CREATES the way-back pointer, and it happens
     # after the new graph is already live on the speaker: a power cut that
-    # loses it leaves a corrected speaker with nothing to restore to.
+    # loses it leaves a corrected speaker with no recorded way back.
     save_v2_state(state, durable=True)
     log_event(
         logger,
         "correction.crossover_v2_applied",
         expected_post_apply_offset_db=state["expected_post_apply_offset_db"],
     )
-    # #2859: an apply can INHERIT a stale stash. ``jasper-sound
-    # reconcile-current-dsp`` is a legitimate graph writer that is (correctly)
-    # ignorant of the active-speaker profile system, so a deploy moves the live
-    # graph without touching the record ``pre_apply_profile`` is frozen from,
-    # and this apply then stamps a ``displaced`` identity that stash does not
-    # name. Nothing is refused and nothing is re-anchored: the restore door
-    # already refuses the stale target by this same predicate, and re-pointing
-    # the stash is a design question the ticket parks against the 2026-08-15
-    # resurrection. What was missing is the MOMENT — four occurrences, each
-    # diagnosed hours later at a restore that could not say when.
-    stash_path, stash_sha = stashed_restore_target(state["pre_apply_profile"])
-    if restore_target_diverged(state[ROUND_ANCHOR_STATE_KEY], stash_path, stash_sha):
-        log_event(
-            logger,
-            "correction.crossover_v2_apply_inherited_stale_anchor",
-            level=logging.WARNING,
-            stash_config_path=stash_path,
-            displaced_config_path=displaced_restore_target(
-                state[ROUND_ANCHOR_STATE_KEY]
-            )[0],
-        )
-
-
-def observe_restore() -> None:
-    """Clear the durable v2 state after a successful Undo (mirrors
-    :func:`observe_apply_success`). Resets the whole flow to a clean
-    unmeasured state — matching the reset a pre-apply terminal failure
-    already gets (:func:`_persist_terminal_failure`) — so the envelope lands
-    back on the pre-measurement screen rather than a half-consistent
-    "applying" phase pointing at the now-undone candidate.
-
-    Every journey field is cleared EXPLICITLY here because this mutates the
-    loaded state in place, unlike :func:`reset_v2_journey_state`, which writes
-    a whole fresh dict and so drops unlisted fields for free. That asymmetry is
-    a standing trap: a new durable field added anywhere else must be added to
-    this list by hand or it survives an Undo. Three already did —
-    ``session_phases`` left a re-verify session's ``["verify"]`` behind, which
-    ``_phase_from_state`` resolved to the VERIFY screen ("The crossover is
-    applied. Put the microphone back where it started…") moments after the
-    household removed it; ``cloud`` left a geometry verdict describing an
-    undone session for PR-4 to consume as if it were live; and ``evidence``
-    (SF-2 review finding, 2026-07-27) left a stale ``cloud_artifacts`` fingerprint
-    map behind for ``persist_conductor_state``'s own group-phase-less carry-
-    forward (the B1 fix) to resurrect on the very next verify-only re-arm.
-    Cleared wholesale, not by surgically deleting ``cloud_artifacts`` alone —
-    :func:`reset_v2_journey_state` already treats the WHOLE ``evidence`` key
-    as journey-scoped (nulled there unconditionally, applied or not), no other
-    reader expects it to survive past the live measurement/apply flow it is
-    written during, and a key-by-key deletion would leave this exact hole open
-    for the next field someone adds under ``evidence``.
-
-    ``measure`` is the fourth (#2087). It carries G1's ripple reservation — a
-    statement about the capture a now-undone tuning was built from — and the
-    same PR that added it also added a ``prior["measure"]`` carry-forward in
-    :func:`persist_conductor_state`, which is structurally the identical
-    resurrection mechanism the ``evidence`` finding above was filed for. It is
-    listed here rather than left to the reachability argument (post-Undo the
-    envelope resolves ``not_applicable``, and a verify-only prepare refuses
-    without ``applied``) because that argument makes the field correct by
-    accident, and the accident is one screen-routing change away from being a
-    stale caveat on a live session.
-
-    ``round_receipt`` is the fifth (#2698), and the one field here cleared IN
-    PART rather than wholesale — it is the SERIES' memory, not the session's,
-    so the blend instruction is withdrawn while the ordinal that bounds the
-    series survives. The argument for that split is at the line itself. A9's
-    staged prescription is withdrawn on the same rule, and is the one thing this
-    function clears that does not live in ``state`` at all — see its call."""
-    from jasper.active_speaker.crossover_v2.prescription_spool import (
-        withdraw_staged_prescription,
-    )
-
-    # A9's half of the ``round_receipt`` withdrawal below, and it runs FIRST —
-    # ahead of the no-state early return — because it is the one thing this
-    # function clears that does not live in ``state``. An operator staged that
-    # document by reading the evidence of the round this Undo has just reversed,
-    # so it prescribes a correction for a graph the household no longer has,
-    # exactly as the banked instruction does. Whether durable state survived is
-    # a fact about the journey record, not about that document: a lost state
-    # file resolves the next round's ordinal back to 1, which is an ordinal a
-    # stale document could legitimately match. Withdrawn rather than consumed —
-    # nothing ran it — and best-effort in the owner, so a slot that cannot be
-    # cleared never costs the household its Undo.
-    withdraw_staged_prescription()
-    state = load_v2_state()
-    if state is None:
-        return
-    state["applied"] = False
-    state["candidate"] = None
-    state["verify"] = None
-    state["failure"] = None
-    state["apply_blocked"] = None
-    state["pre_apply_profile"] = None
-    state["accepted_phases"] = []
-    state["session_phases"] = []
-    state["cloud"] = None
-    state["gain_plan_db"] = None
-    state["evidence"] = None
-    state["attempts_loop"] = None
-    state["measure"] = None
-    state["sound_design_revision"] = None
-    state["accepted_sound_revision"] = None
-    # Written in the same state write as the revision above and scoped to the
-    # same review, so it is cleared with it. Nothing could read a survivor —
-    # every reader gates on that revision first — but a record of what an
-    # already-reversed accept displaced is exactly the stale-frequency hazard
-    # the next comment block was written about.
-    state["accepted_sound_declaration_change"] = None
-    # The declaration half of the Undo (#2292), cleared for the same reason
-    # ``pre_apply_profile`` above is: both describe how to reverse an apply
-    # that has just been reversed. :func:`handle_v2_restore` reads the record
-    # BEFORE calling this, so the declaration leg has already run (or reported
-    # why it did not) by the time the record goes away.
-    #
-    # Cleared even when that leg reported ``declaration_restore_failed``, which
-    # does cost the household an automatic second chance — deliberately, on two
-    # grounds. Nothing could consume a surviving record: this call sets
-    # ``applied`` False, and ``handle_v2_restore`` refuses outright without it,
-    # so the Undo button is gone and no other caller reads the key. And a
-    # record that outlives its ``pre_apply_profile`` twin is precisely the
-    # asymmetry a gate caught in review — it is what let a stale frequency
-    # reach ``/sound``. The recovery is the household sentence, which names the
-    # exact frequency to set, plus the ERROR journal line.
-    state["sound_declaration_undo"] = None
-    # The third half of the same Undo (#2537): what this apply displaced and
-    # what it put live. Cleared here for exactly ``pre_apply_profile``'s
-    # reason — the apply it describes has just been reversed, so a surviving
-    # record would describe a graph that is no longer live and a displacement
-    # that has already been undone.
-    state[ROUND_ANCHOR_STATE_KEY] = None
-    # ``round_receipt`` is the fifth field to meet the trap above (#2698), and
-    # the only one cleared IN PART. It is the SERIES' memory rather than the
-    # session's — nulling it would send the series back to round 1 and let an
-    # Undo→measure cycle repeat past the round cap forever, so the ordinal, the
-    # objectives that frame it, and the trusted floor all survive an Undo by
-    # design. What cannot is the round's blend INSTRUCTION: since #2698 the
-    # measuring stage builds its candidate from it
-    # (``CrossoverV2Session._blend_prescription``), so a surviving one would
-    # compose a correction onto the graph the household just removed. That is
-    # the same ruling ``coordinator._write_round_receipt`` already applies to a
-    # round that restores its OWN graph — a prescription describes a speaker
-    # measured through a specific incumbent, and this Undo is the other door to
-    # the same state. ``blend`` holds the filters and the residual they were
-    # decided against as one fact, so one clear withdraws both, and ``None`` is
-    # the shape that writer already uses for "this round issues no
-    # instruction".
-    receipt = state.get("round_receipt")
-    if isinstance(receipt, Mapping):
-        state["round_receipt"] = {**receipt, "blend": None}
-    # fsync'd (#2291), the mirror of ``observe_apply_success``: this write
-    # CLEARS the rollback anchor and flips ``applied`` after the previous graph
-    # is already back on the speaker, so a power cut that loses it leaves the
-    # state claiming a correction the speaker is no longer playing.
-    save_v2_state(state, durable=True)
 
 
 #: The one shape a recorded review decision takes, and its only value.
@@ -988,9 +766,9 @@ def observe_review_decline(candidate_fingerprint: str) -> None:
     """Record that the household chose to keep the current sound (#2641).
 
     The write half of the review screen's decline, beside its
-    :func:`observe_restore` sibling and under the same lock, because that is
-    where every durable v2 write lives: a read-modify-write from the HTTP layer
-    would be a second writer racing this one on the state file.
+    :func:`observe_apply_success` sibling and under the same lock, because
+    that is where every durable v2 write lives: a read-modify-write from the
+    HTTP layer would be a second writer racing this one on the state file.
 
     **It clears nothing.** Declining changes nothing on the speaker and does
     not delete the candidate — the review screen's own contract, and the reason
@@ -1734,8 +1512,8 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     probably fine, on evidence that says nothing about the correction at all.
     Worse, express-tier sessions omit the post-apply position group by design,
     so an auto-restore keyed on a missing cloud grade would revert every
-    express session ever run. Undo already exists, is the PRIMARY button on the
-    done screen, and is the household's call. What was missing is being told.
+    express session ever run. The way back already exists on the done screen,
+    and it is the household's call. What was missing is being told.
 
     The returned ``state`` is one of the ``GRADE_*`` constants above;
     ``graded`` answers only "was it checked" — since R19 it is no longer a
@@ -2439,10 +2217,10 @@ def _resolve_measurement_level_trims(
 def _fc_hz_label(hz: float) -> str:
     """A crossover frequency as the household reads it: ``2250``, ``1787.5``.
 
-    One formatter, because the apply path's refusal copy and the Undo path's
-    declaration copy (#2292) name the same numbers to the same person, and two
-    spellings of one frequency in two adjacent sentences is a defect the
-    household is the first to notice.
+    One formatter, because the apply path's refusal copy and the republish
+    door's name the same numbers to the same person, and two spellings of one
+    frequency in two adjacent sentences is a defect the household is the
+    first to notice.
     """
     return f"{hz:.1f}".rstrip("0").rstrip(".")
 
@@ -7484,21 +7262,14 @@ def handle_v2_apply(
                     # The change lands in the SAME state write as the revision
                     # that save produced, for the reason the retry read above
                     # gives: once the declaration carries the candidate's
-                    # crossover, what it displaced is no longer derivable from
-                    # anything live, and a retry still owes Undo that inverse.
+                    # crossover, what it displaced is no longer derivable
+                    # from anything live, and a retry still needs that inverse
+                    # to rebuild its change.
                     {"accepted_sound_revision": accepted_revision,
                      "accepted_sound_declaration_change": change_to_record(change)},
                 )
             ):
                 raise _review_replaced()
-        # How to put ``/sound`` back if the household undoes this (#2292).
-        # Derived here, where the facts are in scope, and CARRIED to
-        # ``observe_apply_success`` rather than persisted here, so it lands in
-        # the same state write as ``pre_apply_profile`` — see that function.
-        # Rebuilt identically on a retry (whose Sound save already happened and
-        # is skipped above) because both attempts read the same ``change``.
-        declaration_undo = {
-            "sound_revision": accepted_revision, **change_to_record(change)}
         # durable=True: this branch just accepted a measured crossover onto the
         # Sound declaration (apply_measured_crossover_geometry above), so the
         # preview regenerated from it is part of the same crossover-accept
@@ -7506,12 +7277,6 @@ def handle_v2_apply(
         preview = _before_dsp(lambda: ensure_crossover_preview_ready(durable=True))
         draft = _before_dsp(lambda: load_design_draft(topology=topology))
     else:
-        # An ordinary as-declared apply writes nothing to Sound, so it has
-        # nothing to invert — and says so explicitly rather than by omission.
-        # ``observe_apply_success`` writes this value, so ``None`` here is what
-        # CLEARS a record left by an earlier declaration-changing apply that
-        # this one has just superseded.
-        declaration_undo = None
         draft = pre_draft
         preview = load_crossover_preview(current_design_draft=draft)
 
@@ -7550,8 +7315,9 @@ def handle_v2_apply(
     # The pre-candidate applied profile, if any (``None`` on the speaker's
     # first-ever apply). ``build_baseline_profile_candidate`` freezes it here
     # as ``applied_recomposition_profile`` before the actual apply below
-    # commits and pops that field off the new applied SSOT — this is the
-    # ONLY place it survives to stash as the way back's pointer.
+    # commits and pops that field off the new applied SSOT — this is the ONLY
+    # moment it survives to read the way back's pointer and the #1811 offset
+    # from.
     pre_apply_profile = reviewed_baseline.get("applied_recomposition_profile")
     if not isinstance(pre_apply_profile, Mapping):
         pre_apply_profile = None
@@ -7636,14 +7402,19 @@ def handle_v2_apply(
                 allow_applied=True,
             ):
                 observe_apply_success(
-                    expected, pre_apply_profile=pre_apply_profile,
-                    sound_declaration_undo=declaration_undo,
+                    expected,
+                    # The identity of the measured candidate this apply
+                    # DISPLACED — the way back's pointer, read off the frozen
+                    # profile's own source record.
+                    previous_candidate_fingerprint=str(
+                        ((pre_apply_profile or {}).get("source") or {}).get(
+                            "measured_candidate_fingerprint"
+                        )
+                        or ""
+                    )
+                    or None,
                     expected_post_apply_offset_db=offset_db,
-                    # Read from the transaction that just completed, so the
-                    # displaced identity is the graph CamillaDSP was actually
-                    # playing a moment ago rather than whatever a global record
-                    # says later (#2537).
-                    round_anchor=round_anchor_record(payload))
+                )
     issue = None
     if payload.get("status") in {"blocked", "apply_failed"}:
         # Finding N: name the blocker compactly (not buried in the full
@@ -7689,7 +7460,7 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     returns True when that candidate is live again. Not a second restore
     mechanism that could drift from the operator's own way back: the target is
     resolved from the SAME field the wizard's "Go back to the previous tuning"
-    action reads (``pre_apply_profile.source.measured_candidate_fingerprint``),
+    action reads (``previous_candidate_fingerprint``),
     and the two doors are the two the operator would press. The only
     difference is who pressed them: here the round's adoption table did,
     because it measured that the applied correction made the speaker worse.

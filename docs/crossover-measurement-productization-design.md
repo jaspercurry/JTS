@@ -325,7 +325,11 @@ this is a page policy, not a protocol change.)
 The VERIFY fail screen leads with one default — "Try again" (internally:
 re-verify once, then re-measure) — plus "Undo (restore previous sound)";
 the explicit Re-verify / Re-measure / Restore trio lives behind the expert
-disclosure. The ±0.3 dB repeat-agreement and drift-agreement thresholds are
+disclosure. *(Superseded 2026-08-31: the product-level Undo verb was
+removed — the way back is "Go back to the previous tuning", a
+republish-then-apply of the prior candidate; see
+[crossover-v2-engine-design.md](crossover-v2-engine-design.md) invariant 8.
+The Undo/restore affordances in this section read historically.)* The ±0.3 dB repeat-agreement and drift-agreement thresholds are
 provisional constants to be re-derived from W6 bench distributions; a
 repeat-level failure reuses the `drift_baselines_disagree` reason code —
 never a new user-facing code.

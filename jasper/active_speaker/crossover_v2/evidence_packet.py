@@ -43,9 +43,9 @@ out here rather than folded into the paragraph above because the two are
 different sizes of claim, and a reader auditing what this module DERIVES is
 owed both.
 
-**Its one impurity, named.**  It reads JSON files under a directory.  That is
-the same bounded impurity :mod:`.round_anchor` declares, and it is the whole
-of it: no clock, no network, no CamillaDSP handle, no session.
+**Its one impurity, named.**  It reads JSON files under a directory, and
+that is the whole of it: no clock, no network, no CamillaDSP handle, no
+session.
 
 **The packet's first duty is to say what is NOT in it.**  Copying the honest
 fields verbatim is necessary and not sufficient — a reader also has to know
@@ -2066,13 +2066,12 @@ def _incumbent_block(
     :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
     which owns WHICH copy of that field is authoritative.
 
-    **The applied-profile SSOT answers both halves; the Undo stash does not.**
-    Only ``observe_apply_success`` writes the flow state's
-    ``pre_apply_profile``, and what it names is the graph Undo restores TO —
-    the one live BEFORE the last v2 apply. Reading it here is therefore one
-    apply behind after any v2 apply, and arbitrarily behind after an apply
-    through a door that never touches v2 state (``/sound/setup``'s is one).
-    Issue #2859.
+    **The applied-profile SSOT answers both halves; the flow state does
+    not.** What the flow state records about the previous apply names the
+    graph live BEFORE the last v2 apply, so reading it here is one apply
+    behind after any v2 apply, and arbitrarily behind after an apply through
+    a door that never touches v2 state (``/sound/setup``'s is one). Issue
+    #2859.
 
     ``identity`` says WHICH profile the answer describes, so a reader can catch
     the next drift of this kind. ``config.path`` is not among its fields — the

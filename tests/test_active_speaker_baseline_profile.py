@@ -38,9 +38,7 @@ from jasper.active_speaker.baseline_profile import (
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
     recompose_applied_baseline_yaml,
-    restore_applied_baseline_profile,
 )
-from jasper.dsp_apply import config_file_sha256
 from jasper.active_speaker import driver_base_trim as dbt
 from jasper.active_speaker.commissioning_coordinator import (
     build_commissioning_view,
@@ -5704,112 +5702,6 @@ async def _linearization_restore_fixture(monkeypatch, tmp_path: Path):
     )
 
 
-async def test_restore_to_linearized_profile_brings_linearization_back(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """Gap 3e (TRACE promote/restore genericity), direction A: apply a
-    linearized profile, capture it as "retained" (a write=False preview
-    always reflects whatever is CURRENTLY applied), apply a plain profile
-    over it, then restore back to the retained linearized snapshot ->
-    linearization is back, in both the JSON SSOT and the reloaded config
-    file. Pins that persist_applied_baseline_profile / restore_applied_
-    baseline_profile are whole-object copies, not field-by-field
-    allowlists, end to end (not just by code reading)."""
-    (
-        topology, draft, preview, state_path, config_path,
-        load_config, current_config_path, linearized_candidate, plain_candidate,
-    ) = await _linearization_restore_fixture(monkeypatch, tmp_path)
-
-    linearized_applied = await apply_baseline_profile(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        load_config=load_config, get_current_config_path=current_config_path,
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-        tuning_owner="automatic", measured_candidate=linearized_candidate,
-    )
-    assert linearized_applied["status"] == "applied"
-    # Captured BEFORE the plain apply below supersedes it -- linearized IS
-    # the currently-applied profile at this point, so this preview build's
-    # own applied_recomposition_profile sidecar reflects it.
-    retained_linearized = build_baseline_profile_candidate(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        write=False, state_path=state_path, config_path=config_path,
-        tuning_owner="automatic", measured_candidate=plain_candidate,
-    )["applied_recomposition_profile"]
-    assert retained_linearized["linearization"]
-
-    plain_applied = await apply_baseline_profile(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        load_config=load_config, get_current_config_path=current_config_path,
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-        tuning_owner="automatic", measured_candidate=plain_candidate,
-    )
-    assert plain_applied["status"] == "applied"
-    assert plain_applied["profile"]["linearization"] == {}
-
-    restored = await restore_applied_baseline_profile(
-        retained_linearized, load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-    )
-    assert restored["status"] == "restored", restored.get("issues")
-    restored_active = load_applied_baseline_profile_state(state_path)
-    assert restored_active is not None
-    assert restored_active["linearization"]
-    assert restored_active["recomposition_snapshot"]["linearization"]
-    restored_text = config_path.read_text(encoding="utf-8")
-    assert "as_tweeter_linearization_shelf" in restored_text
-
-
-async def test_restore_to_pre_linearization_profile_leaves_linearization_gone(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """Gap 3e, direction B: apply a plain profile, capture it as "retained",
-    apply a linearized profile over it, then restore back to the retained
-    plain snapshot -> linearization is gone, in both the JSON SSOT and the
-    reloaded config file (never a phantom carry-forward from the
-    superseded linearized apply)."""
-    (
-        topology, draft, preview, state_path, config_path,
-        load_config, current_config_path, linearized_candidate, plain_candidate,
-    ) = await _linearization_restore_fixture(monkeypatch, tmp_path)
-
-    plain_applied = await apply_baseline_profile(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        load_config=load_config, get_current_config_path=current_config_path,
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-        tuning_owner="automatic", measured_candidate=plain_candidate,
-    )
-    assert plain_applied["status"] == "applied"
-    # Captured BEFORE the linearized apply below supersedes it.
-    retained_plain = build_baseline_profile_candidate(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        write=False, state_path=state_path, config_path=config_path,
-        tuning_owner="automatic", measured_candidate=linearized_candidate,
-    )["applied_recomposition_profile"]
-    assert retained_plain["linearization"] == {}
-
-    linearized_applied = await apply_baseline_profile(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        load_config=load_config, get_current_config_path=current_config_path,
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-        tuning_owner="automatic", measured_candidate=linearized_candidate,
-    )
-    assert linearized_applied["status"] == "applied"
-    assert linearized_applied["profile"]["linearization"]
-
-    restored = await restore_applied_baseline_profile(
-        retained_plain, load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-    )
-    assert restored["status"] == "restored", restored.get("issues")
-    restored_active = load_applied_baseline_profile_state(state_path)
-    assert restored_active is not None
-    assert restored_active["linearization"] == {}
-    restored_text = config_path.read_text(encoding="utf-8")
-    assert "linearization" not in restored_text
-
-
 async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -5862,25 +5754,14 @@ async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
     assert "baseline_candidate_fingerprint_mismatch" in issue_codes
 
 
-# --- v2 Undo — restore the pre-candidate applied profile (W6 run-8 Blocker Q) --
-#
-# The verify_fail screen's Undo posted to the LEGACY /crossover/restore, which
-# expects a pending commissioning-run candidate apply — a v2 apply never
-# creates one (it commits straight through apply_baseline_profile's own
-# atomic transaction), so the legacy path 500s ("there is no pending
-# candidate apply to restore") and the household is stuck on the bad-sounding
-# candidate. restore_applied_baseline_profile is the v2-aware fix: reload the
-# frozen pre-candidate applied_recomposition_profile through the SAME
-# apply_dsp_config transaction the forward apply rides, never recomposed.
-
-
 async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
     """Apply one profile (the household's pre-existing crossover), then a
     SECOND (the run-8-shaped measured candidate) over it. Returns
     ``(state_path, config_path, load_config, current_config_path,
     prior_payload, run8_payload, retained)`` — ``retained`` is the exact
-    frozen snapshot ``handle_v2_apply`` would have stashed as
-    ``pre_apply_profile`` at the moment of the run-8 apply."""
+    frozen ``applied_recomposition_profile`` snapshot ``handle_v2_apply``
+    reads its way-back pointer and #1811 offset from at the moment of the
+    run-8 apply."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
@@ -5967,180 +5848,14 @@ async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
     )
 
 
-async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    (
-        state_path, config_path, load_config, current_config_path,
-        prior_payload, run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    # #1666: every apply lands on its own source-fingerprinted sibling, so
-    # "prior's bytes" live at prior's OWN reported path, not config_path
-    # (the canonical name, which by now holds run-8's post-apply promoted
-    # copy -- see the canonical-tracks-run8 assertion below).
-    prior_config_text = Path(
-        prior_payload["profile"]["config"]["path"]
-    ).read_text(encoding="utf-8")
-    run8_config_text = Path(
-        run8_payload["profile"]["config"]["path"]
-    ).read_text(encoding="utf-8")
-    # Sanity: the two profiles' own delay values are genuinely distinct
-    # before restoring, so a passing restore is proof of REVERSION, not a
-    # no-op.
-    assert "delay: 0.2500" in prior_config_text
-    assert "delay: 0.4048" in run8_config_text
-    assert "delay: 0.4048" not in prior_config_text
-    assert config_path.read_text(encoding="utf-8") == run8_config_text, (
-        "canonical should hold run-8's promoted bytes before the restore"
-    )
-
-    restore_payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    # Reloaded the PRIOR profile's own already-compiled file, unmutated —
-    # never recomposed, so the file's bytes are exactly what they were, and
-    # the run-8 candidate's delay is gone from the ACTIVE config. The restore
-    # ALSO re-promotes canonical back onto prior's bytes (#1666), which is
-    # what this next assertion now proves -- pre-fix, canonical was simply
-    # never touched by run-8's apply in the first place, so this held
-    # trivially; post-fix it holds because restore re-promotes it.
-    assert config_path.read_text(encoding="utf-8") == prior_config_text
-    active = load_applied_baseline_profile_state(state_path)
-    assert active is not None
-    assert (
-        active["candidate_fingerprint"]
-        == prior_payload["profile"]["candidate_fingerprint"]
-    )
-    assert active["candidate_fingerprint"] != run8_payload["profile"]["candidate_fingerprint"]
-    # The JSON SSOT keeps the truthful applied (sibling) path, never canonical.
-    assert active["config"]["path"] == prior_payload["profile"]["config"]["path"]
-    assert active["config"]["path"] != str(config_path)
-
-
-async def test_restore_applied_baseline_profile_reloads_when_target_differs_from_active(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """Restoring a profile whose config differs from what is CURRENTLY active
-    (run-8's, per ``_apply_prior_then_run8``) commands a real reload -- the
-    restore/Undo seam never skips a load based on the target's path (see
-    ``test_apply_baseline_profile_reloads_when_target_config_differs`` for
-    why path equality is not a safe graph-equality proxy)."""
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    calls: list[str] = []
-
-    async def counting_load_config(path: str) -> bool:
-        calls.append(path)
-        return await load_config(path)
-
-    payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=counting_load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "restored", payload.get("issues")
-    assert calls == [retained["config"]["path"]]
-
-
-async def test_restore_applied_baseline_profile_blocked_when_config_missing(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    # #1666: restore reloads retained's OWN reported path (a
-    # source-fingerprinted sibling), never config_path (the canonical name) --
-    # delete the actual restore target, not the unrelated canonical file.
-    Path(retained["config"]["path"]).unlink()
-
-    payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "blocked"
-    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_missing"}
-
-
-async def test_restore_applied_baseline_profile_blocked_on_invalid_snapshot(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    tampered = dict(retained)
-    tampered["candidate_fingerprint"] = "declared-wrong"
-
-    payload = await restore_applied_baseline_profile(
-        tampered,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "blocked"
-    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_invalid"}
-
-
-async def test_restore_applied_baseline_profile_reports_restore_failed(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    (
-        state_path, config_path, _load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-
-    async def failing_load_config(_path: str) -> bool:
-        return False
-
-    payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=failing_load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "restore_failed"
-    assert {issue["code"] for issue in payload["issues"]} == {"restore_apply_failed"}
-    # A failed restore must not clobber the currently-applied (run-8) SSOT.
-    active = load_applied_baseline_profile_state(state_path)
-    assert active is not None
-    assert (
-        active["candidate_fingerprint"]
-        != retained["candidate_fingerprint"]
-    )
-
 
 # --- #1666: apply-promotion durability ---------------------------------- #
 #
 # build_baseline_profile_candidate never writes baseline_config_path()
 # directly; every write=True candidate lands on its own source-fingerprinted
 # sibling. The canonical name is published ONLY by a post-success promote
-# (a byte copy of the just-applied candidate) in _apply_baseline_profile_locked
-# and restore_applied_baseline_profile. Root cause: the OLD parity check
+# (a byte copy of the just-applied candidate) in _apply_baseline_profile_locked.
+# Root cause: the OLD parity check
 # (rename to a sibling only when the previously-applied profile's own path
 # equalled canonical) made an applied profile's path strictly ALTERNATE
 # between canonical and a sibling on every successive apply -- so half the
@@ -6408,36 +6123,6 @@ async def test_promote_failure_from_unicode_decode_error_is_fail_soft(
     assert "result=failed" in warnings[0]
 
 
-async def test_restore_promotes_canonical_to_prior_candidate_bytes(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """#1666: restore_applied_baseline_profile's own post-success promote
-    (not just apply's) republishes canonical -- back onto the RESTORED
-    (prior) candidate's bytes, not whatever the most recent apply left."""
-    (
-        state_path, config_path, load_config, current_config_path,
-        prior_payload, run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    prior_config_text = Path(
-        prior_payload["profile"]["config"]["path"]
-    ).read_text(encoding="utf-8")
-    # Sanity: canonical currently tracks run-8 (the most recent apply), not
-    # prior, before the restore below.
-    assert config_path.read_text(encoding="utf-8") != prior_config_text
-
-    restore_payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert config_path.read_text(encoding="utf-8") == prior_config_text
-
-
 async def test_promote_prunes_old_candidate_siblings_beyond_newest_k(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -6503,161 +6188,6 @@ async def test_promote_prunes_old_candidate_siblings_beyond_newest_k(
     # Canonical itself (no _candidate_ suffix) is untouched by pruning.
     assert config_path.exists()
     assert config_path.name not in survivors
-
-
-def test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest(
-    tmp_path: Path,
-) -> None:
-    """Item 3 (#1605): the Undo target (pre_apply_profile.config.path) is a
-    source-fingerprinted sibling that handle_v2_restore reloads. Even when it is
-    the OLDEST candidate — so the newest-K mtime prune would evict it —
-    passing it via ``also_protect`` keeps it on disk, while the on-disk total
-    stays bounded to K (a protected sibling costs a slot, it does not add to
-    K). Without this, ~K compiles between two applies would silently break
-    Undo."""
-    canonical = tmp_path / "active_speaker_baseline.yml"
-    canonical.write_text("# canonical\n", encoding="utf-8")
-    keep = baseline_profile_mod._MAX_BASELINE_CANDIDATE_FILES
-    now = time.time()
-
-    # The Undo target is the very oldest candidate on disk.
-    undo_target = tmp_path / "active_speaker_baseline_candidate_undo0000.yml"
-    undo_target.write_text("# undo target\n", encoding="utf-8")
-    os.utime(undo_target, (now - 10_000, now - 10_000))
-    # More newer orphans than the keep-count, all newer than the undo target.
-    orphan_count = keep + 5
-    for i in range(orphan_count):
-        sib = tmp_path / f"active_speaker_baseline_candidate_orphan{i:03d}.yml"
-        sib.write_text(f"# orphan {i}\n", encoding="utf-8")
-        os.utime(sib, (now - (orphan_count - i), now - (orphan_count - i)))
-    # The just-applied candidate is the newest.
-    applied = tmp_path / "active_speaker_baseline_candidate_applied.yml"
-    applied.write_text("# applied\n", encoding="utf-8")
-    os.utime(applied, (now, now))
-
-    baseline_profile_mod._prune_baseline_candidate_siblings(
-        canonical, protect=applied, also_protect=[str(undo_target)]
-    )
-
-    remaining = {
-        p.name for p in tmp_path.glob("active_speaker_baseline_candidate_*.yml")
-    }
-    assert applied.name in remaining        # the just-applied candidate survives
-    assert undo_target.name in remaining    # protected despite being the oldest
-    assert len(remaining) == keep           # total still bounded to K
-    # A non-protected old orphan is still pruned — protection is targeted.
-    assert "active_speaker_baseline_candidate_orphan000.yml" not in remaining
-
-
-# ---------------------------------------------------------------------------
-# #2519 — the Undo anchor's integrity belongs to the restore path.
-#
-# The recorded digest is from the apply that wrote the retained file, which can
-# be days old; ``apply_dsp_config``'s proof is a validate-to-load TOCTOU check
-# over the current call. Feeding the stale digest to the TOCTOU proof made
-# every way of failing it report "DSP candidate changed after validation and
-# before load" — the sentence a jts3 Undo refused under, deterministically,
-# over a file nothing had touched since the apply that wrote it.
-# ---------------------------------------------------------------------------
-
-
-async def test_restore_blocks_when_the_retained_config_cannot_be_read(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """Present but unreadable is an operator-actionable fault on a file whose
-    bytes may be intact, and it must say so rather than accuse a writer of
-    racing."""
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    target = Path(retained["config"]["path"])
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "config_file_sha256",
-        lambda path: None if Path(path) == target else "unused",
-    )
-
-    payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "blocked"
-    assert {issue["code"] for issue in payload["issues"]} == {
-        "restore_target_unreadable"
-    }
-    assert "changed after validation" not in payload["issues"][0]["message"]
-
-
-async def test_restore_blocks_when_the_retained_config_no_longer_matches(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """The file really did move since it was applied. That is a fact about the
-    ANCHOR, named as one — not a claim that something raced this call."""
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    target = Path(retained["config"]["path"])
-    target.write_text(
-        target.read_text(encoding="utf-8") + "# a later writer\n", encoding="utf-8"
-    )
-
-    payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "blocked"
-    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_changed"}
-    assert "changed after validation" not in payload["issues"][0]["message"]
-    # A refused restore must not have touched the applied SSOT.
-    active = load_applied_baseline_profile_state(state_path)
-    assert active is not None
-    assert active["candidate_fingerprint"] != retained["candidate_fingerprint"]
-
-
-async def test_restore_threads_the_digest_it_just_computed_into_the_proof(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """One owner for the anchor's integrity, and the apply transaction still
-    gets a REAL TOCTOU proof — the digest of the bytes this call just read, so
-    a writer that moves the file between here and the load is still caught."""
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    target = Path(retained["config"]["path"])
-    seen: dict[str, object] = {}
-    real_apply = baseline_profile_mod.apply_dsp_config
-
-    async def observed_apply(**kwargs):
-        seen["expected"] = kwargs.get("expected_candidate_sha256")
-        return await real_apply(**kwargs)
-
-    monkeypatch.setattr(baseline_profile_mod, "apply_dsp_config", observed_apply)
-
-    payload = await restore_applied_baseline_profile(
-        retained,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "restored", payload.get("issues")
-    assert seen["expected"] == config_file_sha256(target)
-    assert seen["expected"] == retained["config"]["sha256"]
 
 
 # ---------- the measured base trim replaces the datasheet prefill ------------
@@ -7238,46 +6768,6 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     assert [event["result"] for event in events] == [result]
     if reason is not None:
         assert events[0]["reason"] == reason
-
-
-def test_undoing_to_a_measured_profile_re_banks_that_profile_s_trims(
-    tmp_path: Path,
-) -> None:
-    """The Undo leg of single ownership.
-
-    ``restore_applied_baseline_profile`` feeds the frozen
-    ``applied_recomposition_profile`` back through the apply seam, and
-    ``_frozen_applied_profile`` is an ALLOWLIST that never carried
-    ``automatic_candidate``. So every Undo of a measured profile reached the
-    seam unable to name its own measured groups, banked nothing, and left the
-    record describing the profile the Undo had just replaced -- the exact
-    divergence this artifact exists to close, reintroduced by the one path
-    that restores an OLD graph.
-    """
-    a = _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"})
-    b = deepcopy(a)
-    b["corrections"] = deepcopy(a["corrections"])
-    b["corrections"]["tweeter"]["gain_db"] = -7.25
-    b["candidate_fingerprint"] = baseline_candidate_fingerprint(b)
-    state_path = tmp_path / "applied_profile.json"
-
-    applied_a = baseline_profile_mod.persist_applied_baseline_profile(
-        a, apply_state={"result": "success"}, state_path=state_path
-    )
-    a_trims = dict(dbt.load_base_trim()["trims_db"])
-    baseline_profile_mod.persist_applied_baseline_profile(
-        b, apply_state={"result": "success"}, state_path=state_path
-    )
-    assert dbt.load_base_trim()["trims_db"] != a_trims
-
-    # The shape the restore leg actually hands back: the frozen view of the
-    # profile that was applied, not the original candidate.
-    frozen = baseline_profile_mod._frozen_applied_profile(applied_a)
-    baseline_profile_mod.persist_applied_baseline_profile(
-        frozen, apply_state={"result": "success"}, state_path=state_path
-    )
-
-    assert dbt.load_base_trim()["trims_db"] == a_trims
 
 
 def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(

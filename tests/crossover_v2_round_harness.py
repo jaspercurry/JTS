@@ -250,10 +250,10 @@ _PREVIOUS_CANDIDATE_FINGERPRINT = "fp-previous"
 def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     """The durable state a household reaches stage 2 with, post-apply.
 
-    ``previous_candidate`` decides whether the pre-apply stash names a prior
-    measured candidate — the one fact the adoption table's
-    ``rollback_available`` reads, and the fingerprint the restore republishes.
-    ``False`` is every first-ever apply.
+    ``previous_candidate`` decides whether the state records a prior measured
+    candidate — the one fact the adoption table's ``rollback_available``
+    reads, and the fingerprint the restore republishes. ``False`` is every
+    first-ever apply.
     """
     state = _seed_applied_stage_1_state()
     # The seeded entry baseline sits on a five-point grid of its own, which
@@ -262,12 +262,7 @@ def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     # forgets is INDETERMINATE rather than quietly graded against a stranger.
     state["verify_priors"]["entry_baseline"] = None
     if previous_candidate:
-        state["pre_apply_profile"] = {
-            "candidate_fingerprint": "fp-previous-baseline",
-            "source": {
-                "measured_candidate_fingerprint": _PREVIOUS_CANDIDATE_FINGERPRINT,
-            },
-        }
+        state["previous_candidate_fingerprint"] = _PREVIOUS_CANDIDATE_FINGERPRINT
         # The pairing rule's other half: the pointer was recorded by the apply
         # of the candidate this state grades ("fp-stage-1", the seeded
         # published candidate), so the automatic revert is armed.

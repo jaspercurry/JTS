@@ -36,7 +36,6 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
-    config_file_sha256,
     dsp_writer_lock,
     same_config_file,
     validate_camilla_config,
@@ -1343,13 +1342,9 @@ def _frozen_applied_profile(
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
         # WHICH speaker groups the applied profile measured. An allowlist
-        # entry for the Gap 3c reason every neighbour here carries, and the
-        # restore leg is where its absence showed: `restore_applied_baseline_profile`
-        # feeds this frozen view straight back through
-        # `persist_applied_baseline_profile`, so without this key every Undo
-        # of a measured profile reached `_bank_applied_base_trim` unable to
-        # name its own measured groups — and silently banked nothing, leaving
-        # the bank describing the profile the Undo just replaced.
+        # entry for the Gap 3c reason every neighbour here carries: a frozen
+        # view that dropped it would describe a measured profile unable to
+        # name its own measured groups.
         "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
         # Layer-1a driver linearization (#1668 PR-D). Mirrors "corrections"'s
         # own top-level convenience copy — the authoritative copy consumed by
@@ -1714,11 +1709,10 @@ def applied_profile_displacement(
     running = read_camilla_statefile_config_path(statefile_path)
     if not running:
         return APPLIED_PROFILE_RUNNING_UNKNOWN
-    # ``same_config_file`` rather than a comparison here: "do two paths name one
-    # config file" is one rule with two askers (the other is
-    # ``crossover_v2.round_anchor.running_config_diverged``), and it shipped as
-    # two near-verbatim copies until an adversarial gate caught them. Its own
-    # docstring carries the resolve-vs-string-compare reasoning.
+    # ``same_config_file`` rather than a comparison here: "do two paths name
+    # one config file" is one rule, and it shipped as two near-verbatim copies
+    # until an adversarial gate caught them. Its own docstring carries the
+    # resolve-vs-string-compare reasoning.
     return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED
 
 
@@ -2232,9 +2226,9 @@ def build_baseline_profile_candidate(
     # BEFORE validation/activation, and a rejected apply could leave the
     # canonical file holding rejected bytes. The canonical name is now
     # written ONLY by the post-success promote step in
-    # ``_apply_baseline_profile_locked`` / ``restore_applied_baseline_profile``
-    # (and commissioning's ``finalize_retained_candidate_apply``), which runs
-    # after ``apply_dsp_config`` has already proven the candidate live.
+    # ``_apply_baseline_profile_locked`` (and commissioning's
+    # ``finalize_retained_candidate_apply``), which runs after
+    # ``apply_dsp_config`` has already proven the candidate live.
     #
     # ``driver_domain=True`` candidates are deliberately EXCLUDED: they are
     # the multiroom follower/leader bonding machinery's own role-specific
@@ -2244,7 +2238,7 @@ def build_baseline_profile_candidate(
     # clobbered" (this function's own docstring). That state_path never
     # reaches ``persist_applied_baseline_profile`` / ``status="applied"``, so
     # ``applied_anchor`` above is always None for it -- there is no applied
-    # lineage to protect or promote, no Undo-to-a-prior-candidate feature for
+    # lineage to protect or promote, no way back to a prior candidate for
     # it, and its caller re-proves the freshly written file synchronously
     # before ever loading it. Forcing it onto a sibling would silently break
     # that caller's read of its OWN just-written config_path (confirmed by
@@ -3645,7 +3639,6 @@ def promote_applied_baseline_candidate(
     applied: Mapping[str, Any],
     *,
     config_path: str | Path | None = None,
-    also_protect: Sequence[str | Path] = (),
 ) -> None:
     """Publish a just-applied candidate's bytes as the canonical config file.
 
@@ -3695,28 +3688,22 @@ def promote_applied_baseline_candidate(
             canonical_path=canonical,
         )
         return
-    _prune_baseline_candidate_siblings(
-        canonical, protect=applied_path, also_protect=also_protect
-    )
+    _prune_baseline_candidate_siblings(canonical, protect=applied_path)
 
 
 def _prune_baseline_candidate_siblings(
-    canonical: Path, *, protect: Path, also_protect: Sequence[str | Path] = (),
+    canonical: Path, *, protect: Path,
 ) -> None:
     """Bound unconditional candidate-sibling growth to the newest K by mtime.
 
     Deletes ``<stem>_candidate_*<suffix>`` files beside ``canonical`` beyond
-    the newest :data:`_MAX_BASELINE_CANDIDATE_FILES` by mtime. Never deletes a
-    PROTECTED sibling — ``protect`` (the candidate
+    the newest :data:`_MAX_BASELINE_CANDIDATE_FILES` by mtime. Never deletes
+    the PROTECTED sibling — ``protect``, the candidate
     :func:`promote_applied_baseline_candidate` just promoted, always the new
-    applied anchor) or any path in ``also_protect`` — or the canonical file
-    itself (which never matches the glob below; it carries no ``_candidate_``
-    suffix). ``also_protect`` carries the Undo target the apply just stashed as
-    ``pre_apply_profile`` (#1605): a source-fingerprinted sibling like any other
-    that ``handle_v2_restore`` reloads, and would otherwise be prunable by
-    mtime once ~K newer candidates accumulate — silently breaking Undo. A
-    protected sibling costs one of the K slots rather than adding to K, so the
-    on-disk total stays at K.
+    applied anchor — or the canonical file itself (which never matches the
+    glob below; it carries no ``_candidate_`` suffix). A displaced sibling
+    needs no protection: the way back republishes the BANKED candidate
+    artifact and re-emits its config, never a pruned file.
 
     BLAST RADIUS, stated because the code cannot show it: since #2572 the
     CamillaDSP statefile may durably name a candidate sibling. A deploy's
@@ -3731,18 +3718,15 @@ def _prune_baseline_candidate_siblings(
 
     pattern = f"{canonical.stem}_candidate_*{canonical.suffix}"
     try:
-        protected = {protect, *(Path(p) for p in also_protect if p)}
         siblings = list(canonical.parent.glob(pattern))
         prunable = sorted(
-            (p for p in siblings if p not in protected),
+            (p for p in siblings if p != protect),
             key=lambda p: p.stat().st_mtime_ns,
             reverse=True,
         )
-        # Protected siblings always survive; keep enough of the REMAINING files
-        # that protected-present + kept == K total (never negative) -- with no
-        # also_protect this is exactly the prior "keep newest (K - 1) + protect
-        # = K" behaviour.
-        protected_present = sum(1 for p in siblings if p in protected)
+        # The protected sibling always survives and costs one of the K slots,
+        # so the on-disk total stays at K.
+        protected_present = sum(1 for p in siblings if p == protect)
         keep = max(0, _MAX_BASELINE_CANDIDATE_FILES - protected_present)
         for stale in prunable[keep:]:
             stale.unlink()
@@ -4135,22 +4119,7 @@ async def _apply_baseline_profile_locked(
         apply_state=apply_state.to_dict(),
         state_path=state_target,
     )
-    # Protect the Undo target (#1605): the profile this apply replaced is what
-    # v2 Undo reloads. handle_v2_restore restores pre_apply_profile.config.path,
-    # which is exactly this candidate's frozen applied_recomposition_profile
-    # (persist_applied_baseline_profile popped it from the applied copy, not
-    # from ``candidate``). Pass it so the mtime prune can't evict it.
-    _prior = candidate.get("applied_recomposition_profile")
-    _undo_target = (
-        str((_prior.get("config") or {}).get("path") or "")
-        if isinstance(_prior, Mapping)
-        else ""
-    )
-    promote_applied_baseline_candidate(
-        applied,
-        config_path=config_path,
-        also_protect=(_undo_target,) if _undo_target else (),
-    )
+    promote_applied_baseline_candidate(applied, config_path=config_path)
     log_event(
         logger,
         "correction.crossover_apply_succeeded",
@@ -4202,140 +4171,3 @@ async def _apply_baseline_profile_locked(
         "apply": apply_state.to_dict(),
         "issues": applied.get("issues", []),
     }
-
-
-async def restore_applied_baseline_profile(
-    retained_profile: Mapping[str, Any],
-    *,
-    load_config: Callable[[str], Awaitable[bool]],
-    get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
-    state_path: str | Path | None = None,
-    config_path: str | Path | None = None,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Restore one previously-applied baseline profile snapshot (the v2 Undo).
-
-    ``retained_profile`` is the frozen ``applied_recomposition_profile`` a
-    later apply preserved before overwriting the Layer-A SSOT (see
-    :func:`build_baseline_profile_candidate`'s ``finalize`` /
-    ``_frozen_applied_profile``). Its ``config.path`` points at that prior
-    profile's own already-compiled, already-validated YAML, and this reloads
-    THAT exact file — never recomposed — through the same atomic
-    validate-load-confirm-rollback transaction
-    (:func:`jasper.dsp_apply.apply_dsp_config`)
-    :func:`apply_baseline_profile` rides, then persists it back as the
-    applied SSOT via :func:`persist_applied_baseline_profile`.
-
-    **That path is not the graph's identity, so the file is not immutable
-    (#2519).** ``build_baseline_profile_candidate`` names every solo candidate
-    from its SOURCE fingerprint, and :func:`_source_payload` — which owns the
-    list of what that fingerprint covers, and is the only place it should be
-    read — states the consequence outright: several inputs that DO reach the
-    emitted bytes are excluded from it, so "two candidates differing only in
-    one of those land on the SAME filename carrying DIFFERENT bytes."
-
-    A different-fingerprint candidate therefore cannot touch this file, and the
-    mtime pruner cannot evict it (``also_protect``) — but a same-fingerprint
-    recompile can rewrite it underneath the anchor. That is why the integrity
-    check below exists and what ``restore_target_changed`` reports: a live
-    condition, not defensive scaffolding.
-
-    Never raises for an ordinary refusal: returns a ``status`` in
-    ``{"restored", "blocked", "restore_failed"}`` the caller maps to an HTTP
-    code, mirroring :func:`apply_baseline_profile`'s own contract.
-    """
-    if (
-        retained_profile.get("kind") != BASELINE_PROFILE_KIND
-        or retained_profile.get("status") != "applied"
-        or not isinstance(retained_profile.get("recomposition_snapshot"), Mapping)
-        or baseline_candidate_fingerprint(retained_profile)
-        != retained_profile.get("candidate_fingerprint")
-    ):
-        return {
-            "status": "blocked",
-            "issues": [_issue(
-                "blocker",
-                "restore_target_invalid",
-                "the previous crossover profile is not a valid applied snapshot",
-            )],
-        }
-    config = retained_profile.get("config")
-    candidate_path = (
-        str(config.get("path") or "") if isinstance(config, Mapping) else ""
-    )
-    candidate_sha256 = (
-        str(config.get("sha256") or "") if isinstance(config, Mapping) else ""
-    )
-    if not candidate_path or not candidate_sha256 or not Path(candidate_path).is_file():
-        return {
-            "status": "blocked",
-            "issues": [_issue(
-                "blocker",
-                "restore_target_missing",
-                "the previous crossover configuration could not be found on "
-                "disk; a full remeasure is required",
-            )],
-        }
-    # The Undo anchor's integrity is THIS function's to prove, and it is a
-    # different question from the one :func:`~jasper.dsp_apply.apply_dsp_config`
-    # asks (#2519). That proof is a validate-to-load race check over a candidate
-    # compiled seconds earlier; the digest above was recorded by the apply that
-    # wrote this file, which can be days back. Handing the older digest to the
-    # race check made every way of failing it — including an unreadable file —
-    # report "DSP candidate changed after validation and before load", the
-    # sentence a jts3 Undo refused under twice nine minutes apart.
-    #
-    # So the anchor is verified here, under names that say what is wrong with
-    # it, and the digest THIS call computed is what threads into the apply
-    # transaction — which then proves only what it can honestly prove: that the
-    # bytes did not move between validation and load.
-    retained_digest = config_file_sha256(candidate_path)
-    if retained_digest is None:
-        return {
-            "status": "blocked",
-            "issues": [_issue(
-                "blocker",
-                "restore_target_unreadable",
-                "the previous crossover configuration is on disk but could not "
-                "be read; check its permissions, then try again",
-            )],
-        }
-    if retained_digest != candidate_sha256:
-        return {
-            "status": "blocked",
-            "issues": [_issue(
-                "blocker",
-                "restore_target_changed",
-                "the previous crossover configuration file no longer matches "
-                "what was applied from it; a full remeasure is required",
-            )],
-        }
-
-    async with dsp_writer_lock(
-        baseline_config_path(config_path).parent,
-        source="active_speaker_baseline_restore",
-    ):
-        try:
-            apply_state = await apply_dsp_config(
-                source="active_speaker_baseline_restore",
-                candidate_path=candidate_path,
-                load_config=load_config,
-                get_current_config_path=get_current_config_path,
-                expected_candidate_sha256=retained_digest,
-                validate=validate,
-            )
-        except DspApplyError as exc:
-            return {
-                "status": "restore_failed",
-                "issues": [_issue("blocker", "restore_apply_failed", str(exc))],
-            }
-        restored = persist_applied_baseline_profile(
-            dict(retained_profile),
-            apply_state=apply_state.to_dict(),
-            state_path=state_path,
-        )
-        promote_applied_baseline_candidate(restored, config_path=config_path)
-
-    return {"status": "restored", "profile": restored, "apply": apply_state.to_dict()}

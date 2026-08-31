@@ -1089,10 +1089,10 @@ _DRIVERS_HELP = (
 
 
 #: What ``--applied-profile`` is, defaulted on the same terms as ``--drivers``.
-#: NOT interchangeable with ``--state``: the flow state's ``pre_apply_profile``
-#: is the Undo stash, which is one apply behind the graph whenever a round has
-#: applied and arbitrarily behind it whenever a graph was applied through a
-#: door that never touches v2 state.
+#: NOT interchangeable with ``--state``: what the flow state records about a
+#: previous apply is one apply behind the graph whenever a round has applied
+#: and arbitrarily behind it whenever a graph was applied through a door that
+#: never touches v2 state.
 _APPLIED_PROFILE_HELP = (
     "the applied baseline profile JSON — this speaker's record of what it is "
     f"PLAYING. Defaults to {_APPLIED_PROFILE_DEFAULT_PATH}. Without a "

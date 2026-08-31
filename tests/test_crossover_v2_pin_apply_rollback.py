@@ -48,7 +48,7 @@ CURRENT = "fp-current-measured"
 
 
 def _seed_previous_candidate(*, paired: bool = True) -> None:
-    """A durable state whose pre-apply stash names a prior measured candidate.
+    """A durable state that records a prior measured candidate.
 
     ``paired`` stamps the pointer's pairing at the published candidate — the
     armed shape every graded round meets. ``False`` is a pointer inherited
@@ -59,10 +59,7 @@ def _seed_previous_candidate(*, paired: bool = True) -> None:
         "session_id": "cap_x",
         "applied": True,
         "candidate": {"fingerprint": CURRENT},
-        "pre_apply_profile": {
-            "candidate_fingerprint": "fp-previous-baseline",
-            "source": {"measured_candidate_fingerprint": PREVIOUS},
-        },
+        "previous_candidate_fingerprint": PREVIOUS,
         "previous_candidate_displaced_by": CURRENT if paired else "fp-older-apply",
     })
 
@@ -135,7 +132,9 @@ def test_no_recorded_prior_candidate_refuses_before_either_door(monkeypatch):
     reaching this arm means the record changed underneath the round. The seam
     must answer "not restored" without republishing anything — a republish
     aimed by a guess would move the published-candidate slot on a speaker
-    whose way back is already gone.
+    whose way back is already gone. The seeded state carries only a LEGACY
+    pre-apply stash, which is also the migration pin: a state written before
+    the flat pointer existed reads as "no previous candidate".
     """
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -282,11 +281,8 @@ def test_a_successful_revert_consumes_its_own_pairing(monkeypatch):
     state = v2host.load_v2_state()
     assert state["previous_candidate_displaced_by"] is None
     # The pointer itself is untouched here (the stubbed apply door does not
-    # re-stash): the household's way back is still on offer.
-    assert (
-        state["pre_apply_profile"]["source"]["measured_candidate_fingerprint"]
-        == PREVIOUS
-    )
+    # re-stamp): the household's way back is still on offer.
+    assert state["previous_candidate_fingerprint"] == PREVIOUS
 
 
 @pytest.mark.parametrize(

@@ -3060,8 +3060,8 @@ def _record_is_fresh(record: Mapping[str, Any]) -> bool:
     False. That is the migration story and it is the fail-honest direction:
     the state file's schema version is deliberately NOT bumped for this key
     (a bump makes ``load_v2_state`` reject every deployed Pi's file, which
-    would discard ``pre_apply_profile`` and the way back with it), so legacy
-    records simply arrive undated. Undated means "we cannot say this is
+    would discard ``previous_candidate_fingerprint`` and the way back with
+    it), so legacy records simply arrive undated. Undated means "we cannot say this is
     current", and the flow must never assert currency it cannot support.
 
     A clock that has stepped BACKWARD since the write yields a negative age
