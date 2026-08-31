@@ -31,6 +31,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
+from jasper.atomic_io import fsync_directory
 from jasper.log_event import log_event
 
 from .evidence_identity import ArtifactIdentity
@@ -211,7 +212,7 @@ def _remove_empty_directory(path: Path) -> bool:
     except OSError:
         return False
     try:
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
     except OSError:
         return False
     return True
@@ -406,16 +407,6 @@ def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> bytes:
                 pass
 
 
-def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _prepare_artifact_parent(root: Path, parent: Path) -> None:
     try:
         relative = parent.relative_to(root)
@@ -434,9 +425,9 @@ def _prepare_artifact_parent(root: Path, parent: Path) -> None:
         if current.is_symlink() or not current.is_dir():
             raise OSError("artifact parent must be a real directory")
         os.chmod(current, ADMISSION_DIRECTORY_MODE)
-        _fsync_directory(current)
+        fsync_directory(current)
         if created:
-            _fsync_directory(current.parent)
+            fsync_directory(current.parent)
 
 
 def _write_once(path: Path, payload: bytes, *, root: Path) -> None:
@@ -588,8 +579,8 @@ def create_admission_authority(
         ) from exc
     try:
         os.chmod(target, ADMISSION_DIRECTORY_MODE)
-        _fsync_directory(target)
-        _fsync_directory(target.parent)
+        fsync_directory(target)
+        fsync_directory(target.parent)
     except OSError as exc:
         _remove_empty_directory(target)
         raise AdmissionArtifactError(

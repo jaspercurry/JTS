@@ -37,6 +37,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from jasper.atomic_io import fsync_directory
 logger = logging.getLogger(__name__)
 DEFAULT_PATH = "/var/lib/jasper/wifi_guardian.env"
 _KEY_SSID = "JASPER_WIFI_SSID"
@@ -177,15 +178,12 @@ def write_stash(
     # That's the exact failure class the guardian exists to recover
     # from; defending against it on the write path too is consistent.
     try:
-        dir_fd = os.open(str(p.parent), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        fsync_directory(p.parent)
     except OSError as e:
-        # Best-effort — some filesystems (FAT32, tmpfs in tests)
-        # don't support directory fsync. The file contents are still
-        # on disk from step 2; only the rename durability degrades.
+        # Fail-soft beyond the helper's own unsupported-filesystem
+        # tolerance: ANY other error (unreadable parent, EIO) still
+        # only degrades rename durability — the file contents are on
+        # disk from step 2, and the wizard's connect must not fail.
         logger.debug(
             "wifi guardian persistence: parent fsync on %s failed (%s) — "
             "contents written, rename durability degraded",
