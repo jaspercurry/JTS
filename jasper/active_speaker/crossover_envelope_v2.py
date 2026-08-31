@@ -3028,6 +3028,34 @@ def _can_undo(status: Mapping[str, Any]) -> bool:
     return bool(_v2(status).get("can_undo"))
 
 
+# The banked-candidate way back: republish the candidate that was live before
+# the last apply, so the household can bring the previous tuning back through
+# the ORDINARY path (republish -> review -> apply; the operator runbook's
+# republish-then-apply, wizard-shaped). One tap here restores the SLOT, not the
+# graph — the wizard's next poll renders the review screen with Apply, and
+# every admission gate still runs on that apply.
+#
+# A list so call sites can splice it (`*_way_back_action(status)`): empty when
+# the pre-apply stash names no banked candidate — a first-ever apply, or a
+# prior profile that was not a measured-candidate apply — because republish can
+# only reach candidates the bank holds. The fingerprint is a pointer, never a
+# promise: the bank verifies on POST, and a pruned or corrupted artifact gets
+# the endpoint's own typed refusal. A factory rather than a shared constant for
+# `_undo_action`'s reason — the mutable ``body`` must never be shared across
+# envelopes.
+def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
+    fingerprint = _v2(status).get("previous_candidate_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return []
+    return [{
+        "id": "republish_previous",
+        "label": "Go back to the previous tuning",
+        "endpoint": "/correction/crossover/v2/republish",
+        "body": {"fingerprint": fingerprint},
+        "show_during_relay": True,
+    }]
+
+
 #: This layer's Undo promises, and what each becomes when there is nothing to
 #: restore. The REPLACEMENTS are not new copy: they are
 #: ``correction_rollback_failed_message``'s no-anchor arm and
@@ -3403,10 +3431,11 @@ def _aged_failure_envelope(
     env = _entry_envelope(
         status,
         next_action=next_action,
-        alternate_actions=(
-            [*alternate_actions, _undo_action()] if _can_undo(status)
-            else alternate_actions
-        ),
+        alternate_actions=[
+            *alternate_actions,
+            *([_undo_action()] if _can_undo(status) else []),
+            *_way_back_action(status),
+        ],
         nudges=[{
             "code": code,
             # ``info``, never ``warn``: this is history, not a problem the
@@ -3540,6 +3569,7 @@ def _verify_fail_envelope(
             # Omitted entirely (not merely disabled) when there is nothing to
             # restore (#1863) — a first-ever apply has no earlier profile.
             *([_undo_action()] if _can_undo(status) else []),
+            *_way_back_action(status),
             *([remeasure] if retriable else []),
         ],
         status=status,
@@ -4305,6 +4335,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "endpoint": "/correction/crossover/v2/session",
                 "body": {"tier": TIER_FULL},
             })
+        # Last, after the forward-looking exits: the way back is a safety net,
+        # not the recommended next step, and the promotion below inherits this
+        # list's ordering — the head must stay a forward action.
+        alternate_actions.extend(_way_back_action(status))
         # #1863: Undo leads this screen only when there is something to
         # restore; otherwise it would be a guaranteed-400 primary, so the head
         # of ``alternate_actions`` is promoted instead. The HEAD rather than a
