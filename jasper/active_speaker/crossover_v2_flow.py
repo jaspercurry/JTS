@@ -114,6 +114,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -4144,16 +4145,47 @@ class CrossoverV2Session:
         """Analyze one uploaded capture and advance (or reject) the phase."""
         phase = self._phase_of_index(index)
         slot = self._slot_of_index(index)
+        # ONE table answers both "which priors is this capture analyzed
+        # against" and "which consumer grades it" — the chains it replaces
+        # dispatched on the same phase with different arm sets, and their
+        # fallbacks graded a phase neither enumerated as post-apply VERIFY
+        # against empty priors. Group members are keyed per phase because
+        # ``PHASE_LATERAL`` is in ``GROUP_PHASES`` yet reads its own priors
+        # and consumer — never dispatch on group membership here. ``partial``
+        # binds the two phase-aware consumers to the shared call shape.
+        dispatch: dict[
+            str,
+            tuple[
+                Callable[[], MeasurementPriors],
+                Callable[[int, int, ProgramAnalysis, Any], PhaseVerdict],
+            ],
+        ] = {
+            PHASE_CHECK: (self._check_priors, self._consume_check),
+            PHASE_MEASURE: (self._measure_priors, self._consume_measure),
+            PHASE_LATERAL: (self._lateral_priors, self._consume_lateral_pose),
+            PHASE_CLOUD_MEASURE: (
+                self._cloud_priors,
+                partial(self._consume_cloud_position, PHASE_CLOUD_MEASURE),
+            ),
+            PHASE_CLOUD_VERIFY: (
+                self._cloud_priors,
+                partial(self._consume_cloud_position, PHASE_CLOUD_VERIFY),
+            ),
+            PHASE_ENTRY_BASELINE: (
+                self._entry_baseline_priors, self._consume_entry_baseline,
+            ),
+            PHASE_VERIFY: (
+                self._verify_priors,
+                partial(self._consume_verify, phase=PHASE_VERIFY),
+            ),
+        }
+        if phase not in dispatch:
+            raise CrossoverV2FlowError(
+                f"no capture consumer for phase {phase!r}"
+            )
+        priors_of, consume = dispatch[phase]
         program = self.program_for_phase(phase)
-        priors = (
-            self._measure_priors() if phase == PHASE_MEASURE
-            else self._verify_priors() if phase == PHASE_VERIFY
-            else self._lateral_priors() if phase == PHASE_LATERAL
-            else self._cloud_priors() if phase in GROUP_PHASES
-            else self._entry_baseline_priors() if phase == PHASE_ENTRY_BASELINE
-            else self._check_priors() if phase == PHASE_CHECK
-            else MeasurementPriors()
-        )
+        priors = priors_of()
         # The whole CaptureResult crosses the seam (not just wav bytes): the
         # production analyze binding resolves the mic calibration from the
         # phone-reported setup/device, and the session's declared geometry
@@ -4165,26 +4197,7 @@ class CrossoverV2Session:
         analysis = self._seams.analyze(
             program, result, priors, self._geometry, phase=phase,
         )
-        if phase == PHASE_CHECK:
-            verdict = self._consume_check(index, attempt, analysis, result)
-        elif phase == PHASE_MEASURE:
-            verdict = self._consume_measure(index, attempt, analysis, result)
-        elif phase == PHASE_LATERAL:
-            verdict = self._consume_lateral_pose(index, attempt, analysis, result)
-        elif phase in GROUP_PHASES:
-            verdict = self._consume_cloud_position(
-                phase, index, attempt, analysis, result
-            )
-        elif phase == PHASE_ENTRY_BASELINE:
-            # Explicit, ahead of the catch-all below, because that ``else``
-            # routes anything unrecognised into ``_consume_verify`` — which
-            # would grade #2291's pre-apply capture as a post-apply tracking
-            # result, bank it as a tuning attempt, and do it silently.
-            verdict = self._consume_entry_baseline(index, attempt, analysis, result)
-        else:
-            verdict = self._consume_verify(
-                index, attempt, analysis, result, phase=phase,
-            )
+        verdict = consume(index, attempt, analysis, result)
         # THIS capture's pilot evidence, attached to whatever verdict came back
         # — at ONE point, deliberately, rather than at each gate that can
         # produce ``locate_failed``. Three separate gates already refuse on a
@@ -7431,13 +7444,11 @@ class CrossoverV2Session:
         *,
         phase: str,
     ) -> PhaseVerdict:
-        # ``phase`` is REQUIRED and is the flow's OWN phase, not
-        # :data:`PHASE_VERIFY`: this arm is the dispatch's CATCH-ALL, so an
-        # index whose phase nothing else claims lands here too. Banking such a
-        # capture under a hardcoded ``verify`` would file it durably as
-        # post-apply tracking evidence — the same mislabel the entry
-        # baseline's explicit carve-out above exists to prevent, but written
-        # into a write-once record rather than a verdict.
+        # ``phase`` is REQUIRED rather than defaulted: the dispatch table in
+        # ``consume_capture`` binds it, and a hardcoded ``verify`` here would
+        # let a differently-phased caller bank its capture durably as
+        # post-apply tracking evidence — a mislabel written into a write-once
+        # record rather than a verdict.
         verdict = self._consume_unprompted(
             phase, index, attempt, analysis, result,
             self._verify_verdict(analysis), self._log_verify_diag,
