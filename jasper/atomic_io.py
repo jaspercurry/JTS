@@ -62,10 +62,38 @@ __all__ = [
     "advisory_file_lock",
     "atomic_write_json",
     "atomic_write_text",
+    "fsync_directory",
     "locked_transform_env_file",
     "locked_update_env_file",
     "read_regular_bytes_nofollow",
 ]
+
+
+def fsync_directory(path: str | os.PathLike) -> None:
+    """Make a directory entry's creation or removal durable.
+
+    A rename or unlink is metadata: without this the entry can still be
+    present (or absent) after a dirty shutdown even though the file's own
+    contents were synced. Filesystems that do not support directory fsync
+    report it as an argument error rather than a fault, and are tolerated —
+    the caller's durability is best-effort on those, exactly as it is for the
+    ``durable=True`` write path below.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        unsupported = {
+            errno.EINVAL,
+            getattr(errno, "ENOTSUP", errno.EINVAL),
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }
+        if exc.errno not in unsupported:
+            raise
+    finally:
+        os.close(descriptor)
 
 
 @contextmanager
@@ -253,21 +281,7 @@ def atomic_write_text(
                 os.close(file_fd)
         os.replace(tmp, fspath)
         if durable:
-            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            directory_fd = os.open(parent, flags)
-            try:
-                try:
-                    os.fsync(directory_fd)
-                except OSError as exc:
-                    unsupported = {
-                        errno.EINVAL,
-                        getattr(errno, "ENOTSUP", errno.EINVAL),
-                        getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-                    }
-                    if exc.errno not in unsupported:
-                        raise
-            finally:
-                os.close(directory_fd)
+            fsync_directory(parent)
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)

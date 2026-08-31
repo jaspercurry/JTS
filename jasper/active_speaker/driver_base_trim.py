@@ -53,8 +53,9 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.atomic_io import atomic_write_json
+from jasper.atomic_io import atomic_write_json, fsync_directory
 
+from ._common import require_sha256_hex
 from .level_trim import MAX_ATTENUATION_DB
 
 SCHEMA_VERSION = 1
@@ -94,6 +95,20 @@ REFUSE_NO_TRIM_SOURCE = "base_trim_no_trim_source"
 REFUSE_NO_SPEAKER_GROUP = "base_trim_no_speaker_group"
 REFUSE_ROLES_INCOMPLETE = "base_trim_roles_incomplete"
 REFUSE_NOT_ATTENUATION = "base_trim_not_attenuation"
+
+#: What the APPLY SEAM (``baseline_profile._bank_applied_base_trim``) did and
+#: why. A second closed vocabulary, deliberately separate from ``REFUSE_*``
+#: above: those name a writer envelope this module enforces, these name the
+#: seam's own reading of the applied profile. Both live here so one file holds
+#: every word an operator can see about this artifact.
+BANK_CORRECTIONS_UNREADABLE = "corrections_unreadable"
+BANK_READINESS_UNREADABLE = "readiness_unreadable"
+BANK_CORRECTION_ENTRY_UNREADABLE = "correction_entry_unreadable"
+BANK_CLEAR_FAILED = "clear_failed"
+BANK_PARTLY_MEASURED = "partly_measured"
+BANK_UNMEASURED = "unmeasured"
+BANK_WRITE_REFUSED = "write_refused"
+BANK_WRITE_FAILED = "write_failed"
 
 
 class DriverBaseTrimError(ValueError):
@@ -285,6 +300,18 @@ def write_base_trim(
         raise DriverBaseTrimError(
             REFUSE_NO_DECLARATION, "a base trim must name the declaration it measured"
         )
+    # The reader keys on this string by EQUALITY, so a value that is not a
+    # fingerprint at all can never match and banks a record nothing can ever
+    # read back. Validated against the shape the six sibling artifacts share.
+    # Re-raised rather than passed as ``exc_type`` because this module's error
+    # carries the (reason, detail) pair the apply seam logs, unlike the
+    # single-message ValueError subclasses those siblings hand it.
+    try:
+        require_sha256_hex(
+            declaration_fingerprint, "declaration_fingerprint", ValueError
+        )
+    except ValueError as exc:
+        raise DriverBaseTrimError(REFUSE_NO_DECLARATION, str(exc)) from exc
     if not isinstance(trim_source, str) or not trim_source:
         raise DriverBaseTrimError(
             REFUSE_NO_TRIM_SOURCE, "a base trim must name the evidence behind it"
@@ -310,7 +337,11 @@ def write_base_trim(
                 f"{role} trim {trims_db.get(role)!r} dB is outside the "
                 f"[{MAX_ATTENUATION_DB:g}, 0.0] dB attenuation-only envelope",
             )
-        trims[role] = round(value, 1)
+        # FULL precision. The graph is playing the unrounded number (the v2
+        # path's ``committed_db`` comes off numpy), so banking a rounded one
+        # banks a trim nothing applies — the very divergence this artifact
+        # exists to close. Rounding belongs in log rendering, not on disk.
+        trims[role] = value
     path = base_trim_state_path(state_path)
     payload = {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -323,7 +354,13 @@ def write_base_trim(
         "speaker_group_ids": groups,
         "trim_source": trim_source,
     }
-    atomic_write_json(path, payload, mode=0o640, group_from_parent=True)
+    # Durable for the reason the SSOT write in the same seam
+    # (``persist_applied_baseline_profile``) is: this record and that profile
+    # are two halves of one apply, and a power cut that keeps one but not the
+    # other leaves the box levelling by numbers its graph is not playing.
+    atomic_write_json(
+        path, payload, mode=0o640, group_from_parent=True, durable=True
+    )
     return payload
 
 
@@ -345,8 +382,21 @@ def clear_base_trim(*, state_path: str | Path | None = None) -> bool:
     is applied by the time this runs — so the caller LOGS the ``False``
     rather than failing the apply on it.
     """
+    path = base_trim_state_path(state_path)
     try:
-        base_trim_state_path(state_path).unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except OSError:
         return False
+    # The unlink is metadata, so without this the record can come back after a
+    # dirty shutdown — a trim the box has stopped playing, resurrected. The
+    # write side is ``durable=True`` for the mirror of this reason.
+    # Deliberately NOT part of the verdict: by here the record is gone from
+    # the live filesystem, and a parent that cannot even be opened (the
+    # directory itself is absent) is the nothing-to-drop case, which is
+    # success. Only durability is at stake, so a failure here must not be
+    # reported as a banked trim surviving the clear.
+    try:
+        fsync_directory(path.parent)
+    except OSError:
+        pass
     return True

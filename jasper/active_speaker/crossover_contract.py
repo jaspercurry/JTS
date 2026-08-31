@@ -399,20 +399,36 @@ def summed_decision_evidence_state(
     return {"valid": True, "reason": None}
 
 
-def _snapshot_owner(profile: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str:
-    owner = str(snapshot.get("tuning_owner") or profile.get("tuning_owner") or "")
-    if owner in TUNING_OWNERS:
-        return owner
+def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
+    """Does this profile carry an applied level match backed by measurement?
+
+    ANY role sourced ``measured`` is enough, deliberately: an operator pinning
+    one driver does not un-measure the speaker, and the whole profile is still
+    the product of a measured level match.
+
+    Extracted so the two consumers of this question cannot drift apart.
+    :func:`_snapshot_owner` below decides Layer-A ownership with it, and
+    ``baseline_profile._bank_applied_base_trim`` decides whether an applied
+    profile still counts as measured evidence — those answers disagreeing is
+    how a mixed candidate came to CLEAR a bank the contract considered
+    automatic.
+    """
+
     sources = {
         str(value)
         for value in _mapping(snapshot.get("corrections_source")).values()
     }
-    level_match = _mapping(snapshot.get("level_match"))
     return (
-        "automatic"
-        if level_match.get("applied") is True and "measured" in sources
-        else "manual"
+        _mapping(snapshot.get("level_match")).get("applied") is True
+        and "measured" in sources
     )
+
+
+def _snapshot_owner(profile: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str:
+    owner = str(snapshot.get("tuning_owner") or profile.get("tuning_owner") or "")
+    if owner in TUNING_OWNERS:
+        return owner
+    return "automatic" if measured_level_match_applied(snapshot) else "manual"
 
 
 def crossover_snapshot_state(

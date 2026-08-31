@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -343,3 +344,80 @@ def test_the_base_trim_artifact_mints_no_band_averaging_of_its_own():
     # The scanner fails both ways: it must actually SEE band math when band
     # math is there, or a clean result proves nothing about the file above.
     assert _band_math_calls("import numpy\nx = numpy.mean([1.0, 2.0])\n")
+
+
+# ---------- durability, precision, and the declaration's shape ---------------
+
+
+def test_the_banked_trim_is_the_one_the_graph_plays_not_a_rounded_one(
+    tmp_path: Path,
+):
+    """``round(value, 1)`` banked a number no graph is playing.
+
+    The v2 path's committed trim comes off numpy and is applied at full
+    precision, so rounding on the way to disk recreated in miniature the very
+    divergence this artifact exists to close -- the record and the graph
+    disagreeing about what the speaker is doing. Rounding is a rendering
+    concern and stays in the log line.
+    """
+    state = _bank(tmp_path, trims_db={"woofer": 0.0, "tweeter": -12.3456789})
+    record = dbt.load_base_trim(state_path=state)
+    assert record["trims_db"]["tweeter"] == -12.3456789
+    trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    assert trims["tweeter"] == -12.3456789
+    assert meta["status"] == dbt.STATUS_APPLIED
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    ["not-a-fingerprint", "A" * 64, "a" * 63, "a" * 65, "g" * 64],
+    ids=["prose", "uppercase", "short", "long", "non-hex"],
+)
+def test_a_declaration_that_is_not_a_fingerprint_is_refused(
+    tmp_path: Path, fingerprint
+):
+    """The reader keys on this string by EQUALITY, so a value that is not a
+    fingerprint can never match anything -- banking one writes a record no
+    reader can ever accept. Validated to the shape the six sibling artifacts
+    already require of their own fingerprints."""
+    with pytest.raises(dbt.DriverBaseTrimError) as caught:
+        _bank(tmp_path, declaration_fingerprint=fingerprint)
+    assert caught.value.reason == dbt.REFUSE_NO_DECLARATION
+    assert not (tmp_path / "base_trim.json").exists()
+
+
+def test_both_halves_of_the_record_survive_a_dirty_shutdown(
+    tmp_path: Path, monkeypatch
+):
+    """The write and the clear are two halves of one apply, so both are
+    durable. A power cut that keeps one but not the other leaves the box
+    levelling by numbers its graph is not playing -- and an unlink is metadata,
+    so a clear that never syncs its parent directory can be undone by the
+    crash it is supposed to survive."""
+    synced: list[int] = []
+    real_fsync = os.fsync
+
+    def _record(fd: int) -> None:
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _record)
+
+    state = _bank(tmp_path)
+    # A durable write syncs the tempfile AND the directory the rename
+    # publishes into.
+    assert len(synced) == 2
+    synced.clear()
+
+    assert dbt.clear_base_trim(state_path=state) is True
+    # The unlink itself is metadata: one directory sync, no file to sync.
+    assert len(synced) == 1
+    assert dbt.load_base_trim(state_path=state) is None
+
+
+def test_a_clear_with_no_directory_to_sync_is_still_a_success(tmp_path: Path):
+    """Nothing to drop is SUCCESS, and the added durability must not change
+    that: the box is left carrying no record either way, and reporting a
+    failure here would log a banked trim surviving a clear that had nothing
+    to clear."""
+    assert dbt.clear_base_trim(state_path=tmp_path / "gone" / "base_trim.json") is True
