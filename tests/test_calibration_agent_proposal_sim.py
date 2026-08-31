@@ -2,15 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""P6 deterministic simulate-and-reject gate — no paid calls, no hardware.
+"""P6 deterministic proposal simulation — no paid calls, no hardware.
 
-Pins the safety promise: a proposal that would ring, overflow headroom,
-or (in the noise-free simulation) make the room measurably worse is
-rejected BEFORE apply, and a good cut is accepted with a P4 verdict.
+Pins the disclosure promise: the simulation computes what a proposed
+filter set is predicted to do (curve, improvement, ring Q, boost total)
+and REFUSES NOTHING. The strategy caps, the user's confirm, and the
+emitter's re-clip own the real constraints.
 """
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from jasper.calibration_agent import proposal_sim as ps
 
@@ -25,7 +27,12 @@ def _room_with_mode(fc=62.0, gain=8.0, width=0.25):
     return freqs, mags
 
 
-def test_good_cut_accepted_with_accept_verdict():
+def _flat():
+    freqs = np.geomspace(20, 350, 60)
+    return freqs, np.zeros_like(freqs)
+
+
+def test_good_cut_discloses_predicted_improvement():
     freqs, mags = _room_with_mode()
     mc = _curve(freqs, mags)
     tc = _curve(freqs, np.zeros_like(freqs))
@@ -33,45 +40,54 @@ def test_good_cut_accepted_with_accept_verdict():
         [{"freq_hz": 62.0, "q": 3.0, "gain_db": -7.0}],
         measured=mc, baseline=mc, target=tc, max_total_boost_db=0.0,
     )
-    assert r.accepted
-    assert r.acceptance is not None
-    assert r.acceptance["verdict"] == "accept"
+    assert r.issues == ()
     assert r.predicted_curve is not None
+    assert r.predicted_rms_delta_db is not None
+    assert r.predicted_rms_delta_db > 0  # positive = closer to target
 
 
-def test_ringing_boost_rejected():
+@pytest.mark.parametrize(
+    ("peqs", "max_total_boost_db", "code"),
+    [
+        # A narrow high-gain boost: disclosed as ring-prone, not refused.
+        ([{"freq_hz": 62.0, "q": 6.0, "gain_db": 6.0}], 6.0, "boost_would_ring"),
+        # Stacked boost over the headroom ceiling: disclosed, not refused.
+        # Q 1.0 stays under the +2 dB ring ceiling, so headroom is the
+        # only note these two raise.
+        (
+            [
+                {"freq_hz": 80.0, "q": 1.0, "gain_db": 2.0},
+                {"freq_hz": 120.0, "q": 1.0, "gain_db": 2.0},
+            ],
+            0.0,
+            "boost_stack_exceeds_headroom",
+        ),
+    ],
+)
+def test_flagged_sets_are_disclosed_not_refused(peqs, max_total_boost_db, code):
     freqs, mags = _room_with_mode()
     mc = _curve(freqs, mags)
     tc = _curve(freqs, np.zeros_like(freqs))
-    # +6 dB at Q 6 exceeds the gain-scaled ring ceiling.
     r = ps.simulate_correction_proposal(
-        [{"freq_hz": 62.0, "q": 6.0, "gain_db": 6.0}],
-        measured=mc, baseline=mc, target=tc, max_total_boost_db=6.0,
+        peqs, measured=mc, baseline=mc, target=tc,
+        max_total_boost_db=max_total_boost_db,
     )
-    assert not r.accepted
-    assert any(i.code == "boost_would_ring" for i in r.issues)
+    assert [i.code for i in r.issues] == [code]
+    # The full disclosure is still computed for a flagged set.
+    assert r.predicted_curve is not None
+    assert r.predicted_rms_delta_db is not None
+    assert r.max_total_boost_db == max_total_boost_db
 
 
-def test_headroom_overflow_rejected():
-    freqs, mags = _room_with_mode()
-    mc = _curve(freqs, mags)
-    tc = _curve(freqs, np.zeros_like(freqs))
-    r = ps.simulate_correction_proposal(
-        [
-            {"freq_hz": 80.0, "q": 1.5, "gain_db": 2.0},
-            {"freq_hz": 120.0, "q": 1.5, "gain_db": 2.0},
-        ],
-        measured=mc, baseline=mc, target=tc, max_total_boost_db=0.0,
-    )
-    assert not r.accepted
-    assert any(i.code == "boost_stack_exceeds_headroom" for i in r.issues)
+def test_regressing_set_discloses_a_negative_delta_without_an_issue():
+    """The demoted veto. A multi-cut gouging an already-flat room used to
+    be refused by an acceptance verdict on the predicted curve; now the
+    sim reports the predicted regression as a number and raises nothing.
 
-
-def test_catastrophic_proposal_rejected_by_acceptance():
-    # A multi-cut gouging an already-flat room -> the noise-free sim says
-    # revert-class; the gate rejects before apply.
-    freqs = np.geomspace(20, 350, 60)
-    flat = _curve(freqs, np.zeros_like(freqs))
+    **Mutation guard.** Restoring the verdict veto puts a code back in
+    ``issues`` and fails the emptiness assertion."""
+    freqs, mags = _flat()
+    flat = _curve(freqs, mags)
     r = ps.simulate_correction_proposal(
         [
             {"freq_hz": 50.0, "q": 2.0, "gain_db": -10.0},
@@ -81,25 +97,25 @@ def test_catastrophic_proposal_rejected_by_acceptance():
         ],
         measured=flat, baseline=flat, target=flat, max_total_boost_db=0.0,
     )
-    assert not r.accepted
-    assert any(i.code == "simulation_regresses_room" for i in r.issues)
+    assert r.issues == ()
+    assert r.predicted_rms_delta_db is not None
+    assert r.predicted_rms_delta_db < 0  # negative = further from target
 
 
-def test_empty_proposal_rejected():
+@pytest.mark.parametrize(
+    ("peqs", "code"),
+    [
+        ([], "empty_proposal"),
+        ([{"freq_hz": 62.0, "q": 3.0, "gain_db": -7.0}], "missing_measured_curve"),
+    ],
+)
+def test_unsimulatable_input_leaves_the_predictions_empty(peqs, code):
     r = ps.simulate_correction_proposal(
-        [], measured=None, baseline=None, target=None,
+        peqs, measured=None, baseline=None, target=None,
     )
-    assert not r.accepted
-    assert any(i.code == "empty_proposal" for i in r.issues)
-
-
-def test_missing_measured_curve_rejected():
-    r = ps.simulate_correction_proposal(
-        [{"freq_hz": 62.0, "q": 3.0, "gain_db": -7.0}],
-        measured=None, baseline=None, target=None,
-    )
-    assert not r.accepted
-    assert any(i.code == "missing_measured_curve" for i in r.issues)
+    assert [i.code for i in r.issues] == [code]
+    assert r.predicted_curve is None
+    assert r.predicted_rms_delta_db is None
 
 
 def test_ring_ceiling_tightens_with_gain():
@@ -108,24 +124,37 @@ def test_ring_ceiling_tightens_with_gain():
     assert ps.ring_guard_q_ceiling(6.0) >= ps.RING_GUARD_MIN_Q
 
 
-def test_simulation_without_baseline_still_returns_predicted():
-    """Pins the lenient-PREVIEW vs strict-APPLY split.
-
-    The SIM stays lenient without baseline/target: no acceptance verdict,
-    but ring + headroom checks still run and (if clean) the proposal is
-    ``accepted`` with a predicted curve — an honest ring+headroom-only
-    preview for /propose. The APPLY seam is the strict half:
-    _handle_propose_apply requires ``sim.acceptance is not None`` (the P4
-    judge actually ran) and rejects with ``missing_acceptance_basis``
-    otherwise — pinned by tests/test_web_correction_tuning.py::
-    test_propose_apply_fails_closed_without_acceptance_basis.
-    """
+def test_predicted_curve_survives_a_missing_baseline():
+    """Without baseline/target there is nothing to measure improvement
+    against, but the predicted curve is still simulated and disclosed."""
     freqs, mags = _room_with_mode()
     mc = _curve(freqs, mags)
     r = ps.simulate_correction_proposal(
         [{"freq_hz": 62.0, "q": 3.0, "gain_db": -7.0}],
         measured=mc, baseline=None, target=None, max_total_boost_db=0.0,
     )
-    assert r.accepted
-    assert r.acceptance is None
+    assert r.issues == ()
     assert r.predicted_curve is not None
+    assert r.predicted_rms_delta_db is None
+
+
+def test_payload_carries_no_go_no_go_flag():
+    """The wire shape is disclosure-only: no ``accepted`` field for a
+    client (or a future endpoint) to read as a veto.
+
+    **Mutation guard.** Re-adding an ``accepted``/``acceptance`` key to
+    ``SimResult.to_dict`` fails this."""
+    freqs, mags = _room_with_mode()
+    mc = _curve(freqs, mags)
+    tc = _curve(freqs, np.zeros_like(freqs))
+    payload = ps.simulate_correction_proposal(
+        [{"freq_hz": 62.0, "q": 3.0, "gain_db": -7.0}],
+        measured=mc, baseline=mc, target=tc,
+    ).to_dict()
+    assert set(payload) == {
+        "issues",
+        "total_boost_db",
+        "max_total_boost_db",
+        "predicted_curve",
+        "predicted_rms_delta_db",
+    }
