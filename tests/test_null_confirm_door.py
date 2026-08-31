@@ -21,7 +21,7 @@ import pytest
 
 from jasper.active_speaker.program_admission import (
     ProgramAdmissionRefusal,
-    admit_excitation_program,
+    readmit_program_from_wav,
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.audio_measurement.analysis import ShoulderSpan
@@ -204,10 +204,7 @@ def test_admission_judges_each_branch_on_the_band_its_gate_emits():
         sweep_duration_limits_s={"woofer": 6.0, "tweeter": 2.0},
         downstream_gain_db=sv,
     )
-    admission = admit_excitation_program(
-        program, topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=sv,
-    )
+    admission = _admit(program, topology, profile, targets, sv)
     by_role = {s.role: s for s in admission.segments}
     assert set(by_role) == {"woofer", "tweeter"}
     for role, segment_admission in by_role.items():
@@ -228,10 +225,27 @@ def test_admission_judges_each_branch_on_the_band_its_gate_emits():
 
 
 def _admit(program, topology, profile, targets, sv, pcm=None):
-    return admit_excitation_program(
-        program, topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=sv, pcm=pcm,
-    )
+    """Through the production play-time door -- ``admit_excitation_program``
+    had zero production callers and was retired."""
+    import tempfile
+    from pathlib import Path
+
+    from jasper.audio_measurement.program import write_program_wav
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav = Path(tmpdir) / "program.wav"
+        if pcm is None:
+            write_program_wav(wav, program)
+        else:
+            from scipy.io import wavfile
+            clipped = np.clip(pcm, -1.0, 1.0)
+            wavfile.write(
+                str(wav), program.sample_rate_hz, (clipped * 32767.0).astype(np.int16)
+            )
+        return readmit_program_from_wav(
+            program, wav, topology=topology, safety_profile=profile,
+            role_targets=targets, session_volume_db=sv,
+        )
 
 
 def test_admission_verifies_the_rendered_bytes_obey_the_gate():

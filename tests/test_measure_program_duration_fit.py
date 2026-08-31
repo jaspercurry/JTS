@@ -28,7 +28,7 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.program_admission import (
     ProgramAdmissionRefusal,
-    admit_excitation_program,
+    readmit_program_from_wav,
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
@@ -39,6 +39,7 @@ from jasper.audio_measurement.program import (
     PROGRAM_SAMPLE_RATE_HZ,
     RoleBand,
     build_measure_program,
+    write_program_wav,
 )
 from jasper.audio_measurement.sweep import (
     phase_closing_duration_s,
@@ -151,13 +152,22 @@ def _limits_for(profile, targets) -> dict[str, float]:
 
 
 def _admit(topology, profile, targets, program, session_volume_db):
-    return admit_excitation_program(
-        program,
-        topology=topology,
-        safety_profile=profile,
-        role_targets=targets,
-        session_volume_db=session_volume_db,
-    )
+    """Through the production play-time door (write + read back a WAV) --
+    ``admit_excitation_program`` had zero production callers and was retired."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav = Path(tmpdir) / "program.wav"
+        write_program_wav(wav, program)
+        return readmit_program_from_wav(
+            program,
+            wav,
+            topology=topology,
+            safety_profile=profile,
+            role_targets=targets,
+            session_volume_db=session_volume_db,
+        )
 
 
 def _compose(gains, session_volume_db, limits=None):

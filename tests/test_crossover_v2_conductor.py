@@ -6467,29 +6467,32 @@ from tests.crossover_v2_fixtures import (
     # (a tweeter capped above code policy, e.g. -8, cannot be confirmed).
     [(0.0, -65.0), (-8.0, -65.0)],
 )
-def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
+def test_composed_programs_admit_at_shaped_caps(tmp_path, woofer_peak, tweeter_peak):
     """CHECK and MEASURE admit at the JTS3-shaped caps; VERIFY (no admission
     path — it rides the applied graph) is clamped to the most restrictive cap.
 
     This is the pin that was missing (the conductor knew the caps but the fake
-    play seam never admitted). ``admit_excitation_program`` REFUSES VERIFY by
-    design (test_active_speaker_program_admission.test_verify_program_not_admitted_here
+    play seam never admitted). The readmit gate REFUSES VERIFY by design
+    (test_active_speaker_program_admission.test_verify_program_not_admitted_here
     pins that — VERIFY is mono/summed with no per-driver target), so VERIFY's
     equivalent safety proof is its compose-time clamp: no segment can exceed the
     binding cap that its summed signal reaches every driver at.
     """
     from jasper.active_speaker.program_admission import (
         ProgramAdmissionError,
-        admit_excitation_program,
+        readmit_program_from_wav,
     )
+    from jasper.audio_measurement.program import write_program_wav
 
     c, topology, profile, targets, sv = _profiled_conductor(
         woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
     )
 
     def _admit(program):
-        return admit_excitation_program(
-            program, topology=topology, safety_profile=profile,
+        wav = tmp_path / "program.wav"
+        write_program_wav(wav, program)
+        return readmit_program_from_wav(
+            program, wav, topology=topology, safety_profile=profile,
             role_targets=targets, session_volume_db=sv,
         )
 
@@ -6551,22 +6554,24 @@ def test_verify_pilot_pair_preserves_delta_after_clamp():
     assert verify.segment("sweep_verify").effective_peak_dbfs <= -65.0 + 1e-9
 
 
-def test_uncapped_check_program_would_be_refused_regression():
+def test_uncapped_check_program_would_be_refused_regression(tmp_path):
     """The pre-W6.1 shape: a CHECK program composed at the shared reference base
     (ignoring caps) is refused by admission on the JTS3 tweeter — the exact
     program_channel_peak_over_cap refusal hardware run 2 hit."""
     from jasper.active_speaker.program_admission import (
         ProgramAdmissionRefusal,
-        admit_excitation_program,
+        readmit_program_from_wav,
     )
-    from jasper.audio_measurement.program import build_check_program
+    from jasper.audio_measurement.program import build_check_program, write_program_wav
 
     c, topology, profile, targets, sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
     uncapped = build_check_program(c._roles, downstream_gain_db=sv)  # no role bases
-    adm = admit_excitation_program(
-        uncapped, topology=topology, safety_profile=profile,
+    wav = tmp_path / "uncapped.wav"
+    write_program_wav(wav, uncapped)
+    adm = readmit_program_from_wav(
+        uncapped, wav, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
     assert not adm.allowed
@@ -6613,14 +6618,15 @@ def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
 # at the derived cap, then that admission (same declared mapping) agrees.
 
 
-def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
+def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_path):
     from jasper.active_speaker.excitation_safety_plan import (
         resolve_driver_excitation_ceilings,
     )
-    from jasper.active_speaker.program_admission import admit_excitation_program
+    from jasper.active_speaker.program_admission import readmit_program_from_wav
     from jasper.active_speaker.session_volume_plan import (
         session_measurement_volume_db,
     )
+    from jasper.audio_measurement.program import write_program_wav
 
     from tests.test_active_speaker_program_admission import _profile_and_targets
 
@@ -6668,8 +6674,10 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)
     # And the play-time gate (same declared mapping, as bind_production_play
     # now threads it) admits what the conductor composed.
-    adm = admit_excitation_program(
-        c.program_for_phase(PHASE_CHECK), topology=topology, safety_profile=profile,
+    wav = tmp_path / "check.wav"
+    write_program_wav(wav, c.program_for_phase(PHASE_CHECK))
+    adm = readmit_program_from_wav(
+        c.program_for_phase(PHASE_CHECK), wav, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
         declared_sensitivities=declared,
     )
@@ -6678,8 +6686,8 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     assert facts["tweeter"].cap_dbfs == pytest.approx(-33.2)
     # Without the declared mapping (the pre-fix admission view) the SAME
     # composed program is refused — the incoherence the threading closes.
-    stale = admit_excitation_program(
-        c.program_for_phase(PHASE_CHECK), topology=topology, safety_profile=profile,
+    stale = readmit_program_from_wav(
+        c.program_for_phase(PHASE_CHECK), wav, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
     assert not stale.allowed
