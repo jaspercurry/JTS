@@ -395,7 +395,7 @@ def write_base_trim_if_changed(
             if value is None:
                 every_value_finite = False
                 break
-            candidate_trims[str(role)] = round(value, 1)
+            candidate_trims[str(role)] = value
         if (
             every_value_finite
             and existing.get("trims_db") == candidate_trims
