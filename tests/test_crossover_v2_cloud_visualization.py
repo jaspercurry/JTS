@@ -199,7 +199,7 @@ def test_new_js_modules_are_hardware_blind():
         _assert_js_shipped_copy_is_hardware_blind(path)
 
 
-MEASUREMENTS_JS = REPO_ROOT / "deploy/assets/correction/js/crossover/measurements.js"
+MEASUREMENTS_JS = REPO_ROOT / "deploy/assets/correction/js/measurements.js"
 
 _CLOUD_MEASURE_CONST_RE = re.compile(r"PHASE_CLOUD_MEASURE\s*=\s*['\"]([^'\"]+)['\"]")
 _CLOUD_VERIFY_CONST_RE = re.compile(r"PHASE_CLOUD_VERIFY\s*=\s*['\"]([^'\"]+)['\"]")
