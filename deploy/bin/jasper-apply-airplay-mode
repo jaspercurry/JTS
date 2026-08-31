@@ -17,7 +17,7 @@
 #     round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
 #     written by jasper-grouping-reconcile). Absent on solo/follower
 #     => unchanged. The formula is restated once, beside the placeholder
-#     in deploy/shairport-sync.conf.template. Full derivation: ADR-0200.
+#     in deploy/shairport-sync.conf.template. Full derivation: ADR-0205.
 #     Ring A/B each prefer live daemon STATUS, then a jasper.ring_assets
 #     parse of the shipped ALSA ring conf, then a hardcoded default — see
 #     ring_a_latency_frames / ring_b_latency_frames below.
@@ -540,7 +540,7 @@ derive_audio_backend_latency_offset() {
             }
             # Term by term: see the derivation beside
             # audio_backend_latency_offset_in_seconds in
-            # deploy/shairport-sync.conf.template, and ADR-0200 for the
+            # deploy/shairport-sync.conf.template, and ADR-0205 for the
             # full four-term ledger and empirical validation path.
             #
             # NB: any single-quote (apostrophe) in this comment block would

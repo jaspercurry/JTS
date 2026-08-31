@@ -1,4 +1,4 @@
-# ADR-0200: The AirPlay offset ledger is four terms, not three
+# ADR-0205: The AirPlay offset ledger is four terms, not three
 
 - **Date:** 2026-08-31
 - **Status:** Accepted

@@ -51,7 +51,7 @@ general = {
     // The fixed downstream delay the lane's own snd_pcm_delay() cannot
     // see, so video and multi-room sync stay honest. Computed at every
     // render by jasper-apply-airplay-mode, never a constant. Full ledger
-    // and empirical validation path: ADR-0200.
+    // and empirical validation path: ADR-0205.
     //   -( (ring_a_frames + camilla_frames + ring_b_frames + outputd_frames)
     //      / samplerate + bonded_extra_sec )
     // ring_a_frames — Ring A (fan-in -> CamillaDSP), richest evidence
