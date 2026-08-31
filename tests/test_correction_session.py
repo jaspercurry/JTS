@@ -1789,35 +1789,26 @@ async def test_acceptance_verdict_lands_in_result_json(tmp_path: Path):
     assert data["position1"] is not None  # matched-basis curve recorded
 
 
-async def test_verify_accept_downgrades_to_surface_when_verify_snr_warned(
+async def test_verify_accept_discloses_quality_warning_when_verify_snr_warned(
     tmp_path: Path,
 ):
-    """#2058 — the room twin of #1813/#1838. Before this fix, a session could
-    record ``verdict: accept`` on the household's screen from a verify
-    capture whose own acoustic quality was untrustworthy, because
-    ``session.acceptance`` (curve math only) and ``session.acoustic_quality``
-    (capture quality) were computed independently with nothing ever
-    comparing them — confirmed on the pre-fix code with these exact
-    parameters: same curves, same 2.71 dB RMS improvement, ``verdict:
-    accept`` regardless of the verify capture's SNR.
+    """#2058, demoted to a disclosure by owner ruling S8. A warned
+    verify-capture SNR used to downgrade this exact scenario's ``accept`` to
+    ``surface`` (``acceptance.gate_on_acoustic_quality``, since deleted).
+    ``evaluate_acceptance`` is the only judge now — the SAME 2.71 dB RMS
+    improvement stays ``accept`` — and the SNR fact rides along as
+    disclosure instead: ``verify_quality_warned`` / ``verify_quality_reason``
+    on ``session.acceptance``.
 
     This is one of the regression pair with
     ``test_verify_accept_survives_ok_verify_snr`` below: SAME measurement
     and verify curve parameters (same room mode, same correction, same
     near-flat verify) — the ONLY difference is the verify capture's own
-    SNR, forced low via ``noise_floor_db``. If the verdict still read
-    ``accept`` here, the gate would not be wired up; if the companion
-    test's ``accept`` also flipped to ``surface``, the gate would be
-    over-triggering (the mic_uncalibrated false-positive this fix
-    deliberately avoids — see the comment at the gate's call site).
-
-    Mirrors #1845's D2 pattern on the crossover measurement line ("a
-    floor-bound solve is a refusal, not a level") — refuse the confident
-    reading, disclose why. No crossover-line file
-    (jasper/active_speaker/crossover_v2_flow.py,
-    jasper/audio_measurement/program_analysis.py) is touched by this fix;
-    see test_audio_measurement_program_analysis.py for that line's own,
-    unmodified regression coverage of D2.
+    SNR, forced low via ``noise_floor_db``. If ``verify_quality_warned``
+    stayed False here, the disclosure fold would not be wired up; if the
+    companion test's came back True, it would be over-triggering (the
+    mic_uncalibrated false-positive this fix deliberately avoids — see the
+    comment at the call site in ``_evaluate_acceptance``).
     """
     sess = _make_session(tmp_path)
 
@@ -1836,46 +1827,37 @@ async def test_verify_accept_downgrades_to_surface_when_verify_snr_warned(
 
     assert sess.state == SessionState.VERIFIED
     # Positive control: confirm the fixture actually landed in the "low SNR"
-    # regime the gate is supposed to catch, not some other degraded state.
+    # regime this test is about, not some other degraded state.
     assert sess.verify_quality["estimated_snr_db"] < 20.0
     assert sess.acoustic_quality["summary"]["snr_level"] == "low"
 
-    assert sess.acceptance["verdict"] == "surface"
-    assert sess.acceptance["quality_gated"] is True
-    # Disclosure, not replacement (the D2 pattern): the curve-based reason
-    # the pure evaluator computed is still present...
+    # The verdict and its reasons are untouched — no second judge in here.
+    assert sess.acceptance["verdict"] == "accept"
+    assert sess.acceptance_verdict == "accept"
     assert any(
         "overall RMS error dropped" in reason
         for reason in sess.acceptance["reasons"]
     )
-    # ...alongside the new, quality-specific reason.
-    assert any(
-        "acoustic quality" in reason and "estimated_snr_db" in reason
-        for reason in sess.acceptance["reasons"]
+    assert not any(
+        "acoustic quality" in reason for reason in sess.acceptance["reasons"]
     )
-    assert sess.acceptance_verdict == "surface"
+
+    # The disclosure itself, in its own structured fields.
+    assert sess.acceptance["verify_quality_warned"] is True
+    assert "estimated_snr_db" in sess.acceptance["verify_quality_reason"]
 
 
-async def test_verify_accept_downgrades_to_surface_when_verify_snr_unavailable(
+async def test_verify_accept_discloses_quality_warning_when_verify_snr_unavailable(
     tmp_path: Path,
 ):
-    """#2058 SF2. When no noise-floor evidence was recorded for the verify
-    capture at all (``noise_floor_db`` never set — the flow's noise-capture
-    step never ran for this session), the gate ALSO refuses a silent
-    accept — not just for a measured-low SNR.
-
-    Deliberate, not an oversight: mirrors
+    """#2058 SF2, demoted to a disclosure by owner ruling S8. When no
+    noise-floor evidence was recorded for the verify capture at all
+    (``noise_floor_db`` never set — the flow's noise-capture step never ran
+    for this session), the disclosure ALSO fires — not just for a
+    measured-low SNR — mirroring
     jasper.correction.acoustic_quality.build_acoustic_quality_report's own
-    ``snr_level in {"low", "unavailable"}`` grouping (its
-    ``recommended_action`` already treats a missing SNR estimate with the
-    same "remeasure or capture a noise floor" urgency as a measured-low
-    one). Checked for mass-downgrade risk before shipping: this is a
-    genuine capture-time degradation in production, not the common case —
-    multiple real call sites populate ``noise_floor_db``/the per-capture
-    noise report ahead of any verify capture (the household's normal
-    per-position noise-capture step, the client-supplied autolevel value,
-    and the relay-ingestion path all set it); ``None`` reaching here means
-    every one of those genuinely didn't run for THIS session.
+    ``snr_level in {"low", "unavailable"}`` grouping. The verdict still
+    stays ``accept``: this is information, never a gate.
     """
     sess = _make_session(tmp_path)
 
@@ -1892,12 +1874,9 @@ async def test_verify_accept_downgrades_to_surface_when_verify_snr_unavailable(
     assert sess.verify_quality.get("estimated_snr_db") is None
     assert sess.acoustic_quality["summary"]["snr_level"] == "unavailable"
 
-    assert sess.acceptance["verdict"] == "surface"
-    assert sess.acceptance["quality_gated"] is True
-    assert any(
-        "could not be estimated" in reason
-        for reason in sess.acceptance["reasons"]
-    )
+    assert sess.acceptance["verdict"] == "accept"
+    assert sess.acceptance["verify_quality_warned"] is True
+    assert "could not be estimated" in sess.acceptance["verify_quality_reason"]
 
 
 async def test_verify_accept_survives_ok_verify_snr(tmp_path: Path):
@@ -1906,15 +1885,13 @@ async def test_verify_accept_survives_ok_verify_snr(tmp_path: Path):
     the deterministic synthesis produces the same 2.71 dB RMS improvement
     seen in the tests above), with an EXPLICIT, comfortably-healthy verify
     SNR (30 dB, 10 dB clear of acceptance.SNR_WARN_DB) rather than the
-    absence of an SNR estimate. The verdict must stay ``accept`` — proving
-    the gate does not over-trigger on session state shared with the two
-    downgrade tests above (notably, neither test has a mic calibration,
-    which independently makes
-    ``session.acoustic_quality["summary"]["level"] == "warn"`` in all
+    absence of an SNR estimate. ``verify_quality_warned`` must stay False
+    (notably, neither test above has a mic calibration, which independently
+    makes ``session.acoustic_quality["summary"]["level"] == "warn"`` in all
     three via the unrelated ``mic_uncalibrated`` issue — see the comment at
-    the gate's call site in ``_evaluate_acceptance`` for why gating on that
-    aggregate field, instead of the verify capture's own SNR specifically,
-    would have made this test fail too).
+    the call site in ``_evaluate_acceptance`` for why reading the verify
+    capture's own SNR specifically, instead of that aggregate field, is what
+    keeps this test from also coming back warned).
 
     The -45.08 dBFS noise floor is empirically derived, not guessed: this
     scenario's verify capture measures -15.08 dBFS RMS (the same value that
@@ -1939,14 +1916,12 @@ async def test_verify_accept_survives_ok_verify_snr(tmp_path: Path):
     assert sess.acoustic_quality["summary"]["snr_level"] == "high"
     # The whole-session acoustic_quality summary IS "warn" here too
     # (mic_uncalibrated) — pinning that this shared, unrelated fact is not
-    # what the gate reacts to.
+    # what the disclosure reacts to.
     assert sess.acoustic_quality["summary"]["level"] == "warn"
 
     assert sess.acceptance["verdict"] == "accept"
-    assert sess.acceptance.get("quality_gated") is not True
-    assert not any(
-        "acoustic quality" in reason for reason in sess.acceptance["reasons"]
-    )
+    assert sess.acceptance["verify_quality_warned"] is False
+    assert sess.acceptance["verify_quality_reason"] == ""
 
 
 @pytest.mark.parametrize(

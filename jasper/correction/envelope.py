@@ -739,8 +739,10 @@ def _nudges(session: Any) -> list[dict[str, str]]:
 
     Never a block: the strongest nudge is ``warn``. Confidence-report findings
     come first (in the report's own most-impactful-first order); the
-    design-report crossover-region nudge is appended after. A session with a
-    design report but no confidence report still surfaces the crossover nudge.
+    design-report crossover-region nudge and the verify-quality nudge are
+    appended after. A session with a design report but no confidence report
+    still surfaces the crossover nudge, and one with an acceptance verdict but
+    no confidence report still surfaces the verify-quality nudge.
 
     **``fail``-severity findings are nudges too, since the nanny burn-down**
     (docs/measurement-loop-doctrine.md deviation (d)). This used to skip them,
@@ -788,6 +790,13 @@ def _nudges(session: Any) -> list[dict[str, str]]:
     design_nudge = _crossover_region_nudge(session)
     if design_nudge is not None and design_nudge["code"] not in seen:
         nudges.append(design_nudge)
+    # Verify-capture quality (#2058 follow-up): a fact about this verify's
+    # own SNR, disclosed alongside whatever evaluate_acceptance decided —
+    # never a second judge overruling that verdict. See _verdict()'s module
+    # banner and jasper.correction.session._verify_snr_quality_warning.
+    quality_nudge = _verify_quality_nudge(session)
+    if quality_nudge is not None and quality_nudge["code"] not in seen:
+        nudges.append(quality_nudge)
     return nudges
 
 
@@ -848,6 +857,31 @@ def _crossover_region_nudge(session: Any) -> dict[str, str] | None:
     }
 
 
+def _verify_quality_nudge(session: Any) -> dict[str, str] | None:
+    """Disclose a low/unestimable verify-capture SNR, or None.
+
+    Reads ``verify_quality_warned`` off ``session.acceptance`` — the fact
+    :func:`jasper.correction.session._verify_snr_quality_warning` computed
+    for the verify capture behind the current acceptance verdict. This used
+    to downgrade a real ``accept`` to ``surface`` (acceptance.py's deleted
+    ``gate_on_acoustic_quality``, #2058); the verdict is now
+    evaluate_acceptance's alone, and this is the household-visible trace of
+    the same fact, in the same info/never-a-block shape every other nudge
+    uses."""
+    acc = getattr(session, "acceptance", None)
+    if not isinstance(acc, dict) or not acc.get("verify_quality_warned"):
+        return None
+    return {
+        "code": "verify_quality_warned",
+        "severity": "warn",
+        "text": (
+            "The check-measurement was noisier than preferred, so this "
+            "result is a little less certain. You can continue, or "
+            "re-measure for a clean confirmation."
+        ),
+    }
+
+
 # --------------------------------------------------------------------------
 # verdict_text — one plain-language line for the current screen.
 # --------------------------------------------------------------------------
@@ -877,29 +911,6 @@ _VERDICT_HEADLINE: dict[str, str] = {
     "revert_pending_confirm": "That measured worse. Measure once more to be "
     "sure before we undo it.",
 }
-
-# A quality-gated surface's copy, deliberately NOT a row in the map above.
-#
-# It used to be, under the key "surface_quality_gated" — a string that reads
-# exactly like a Verdict member and is not one: the verdict stays the literal
-# "surface", and this copy is selected by verdict["quality_gated"] being True,
-# never by a verdict value. A synthetic key sitting among real ones is a
-# standing invitation to treat it as real; a module constant cannot be
-# mistaken for a member of a map it is not in.
-#
-# Why the copy differs (#2058, B1): the plain "surface" row above ("the change
-# was too small to be sure") is FALSE for this case —
-# acceptance.gate_on_acoustic_quality only ever downgrades a real ACCEPT, so
-# the measured change was large enough to clear the improvement floor; what's
-# untrusted is the EVIDENCE, not the size of the change. Its caller also skips
-# the numeric _headline() append every _VERDICT_HEADLINE row gets: those
-# numbers come from session.verify_before_after, the SAME distrusted verify
-# capture the gate just declined to trust, so printing them would contradict
-# the sentence declining to trust them.
-_QUALITY_GATED_SURFACE_HEADLINE = (
-    "Applied — but the check-measurement was too noisy to trust. Re-measure "
-    "to confirm, or listen and decide."
-)
 
 # The three truthful revert copies, keyed by what ACTUALLY happened — never
 # by intent. Success is only claimed once reset() completed (outcome "ok").
@@ -1045,14 +1056,6 @@ def _verdict_text(
                 # still running. Success moved the session to IDLE, whose
                 # branch below owns the "we removed it" copy.
                 return _revert_result_text(session)
-            if verdict_value == "surface" and verdict.get("quality_gated") is True:
-                # #2058 B1: the quality-gated surface is NOT the generic
-                # "too small to be sure" wash below — it is a real, possibly
-                # large, measured change whose evidence the gate declined to
-                # trust. Standalone return: no _headline() append, because
-                # that append's numbers come from the SAME distrusted verify
-                # capture (session.verify_before_after).
-                return _QUALITY_GATED_SURFACE_HEADLINE
             lead = _VERDICT_HEADLINE.get(verdict_value)
             if lead is not None:
                 headline = _headline(session)

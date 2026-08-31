@@ -1322,14 +1322,13 @@ class MeasurementSession:
         flag — the household was promised "measure once more to be sure", and
         that promise holds for every regression.
 
-        It also owns the acoustic-quality gate (#2058): after the pure
-        evaluator returns, :func:`acceptance.gate_on_acoustic_quality`
-        downgrades an ``accept`` to ``surface`` when this verify capture's own
-        SNR was low or could not be estimated at all (see
-        :func:`_verify_snr_quality_warning`; ``self.verify_quality`` is
-        populated by the caller before this method runs). The evaluator
-        itself cannot do this; it only ever sees curves, never capture
-        quality.
+        It also folds in a disclosure (#2058): this verify capture's own SNR
+        (low or unestimable — see :func:`_verify_snr_quality_warning`;
+        ``self.verify_quality`` is populated by the caller before this method
+        runs) rides along on the returned dict as ``verify_quality_warned`` /
+        ``verify_quality_reason``. It never touches ``result.verdict`` — the
+        pure evaluator's verdict is the one judge; this is information for
+        the household, not a second verdict overruling the first.
 
         Fail-soft: recoverable computation errors return ``None`` (the verdict
         is simply absent) so the acceptance verdict can never break the verify
@@ -1375,10 +1374,8 @@ class MeasurementSession:
                 verify_index=self._verify_count,
                 prior_clear_regression=self._prior_clear_regression,
             )
-            # #2058: refuse a silent accept beside a warned verify-capture
-            # acoustic quality — mirrors #1845's D2 refusal pattern on the
-            # crossover measurement line ("a floor-bound solve is a refusal,
-            # not a level"). self.verify_quality was populated just above
+            # Verify-capture quality rides along as disclosure, never a gate
+            # (#2058 follow-up). self.verify_quality was populated just above
             # this method's call site (on_verify_capture_uploaded), before
             # the verdict, specifically so this is available here.
             #
@@ -1387,22 +1384,11 @@ class MeasurementSession:
             # (including a measurement position) carries ANY warn-severity
             # issue, and jasper.audio_measurement.quality's "mic_uncalibrated"
             # is one such issue on nearly every session that skips a
-            # measurement-mic calibration upload. A shared, uncalibrated
-            # mic's systematic response error does not cancel EXACTLY out of
-            # this verdict's before/after RMS delta (an additive coloration
-            # does not vanish from an RMS computed over the whole curve) —
-            # the weaker claim that actually holds is that the SAME mic
-            # measured both curves in one consistent frame, so the verdict's
-            # DIRECTION (better / worse / a wash) is robust to a shared,
-            # roughly-constant coloration even though an absolute reading
-            # would not be. That is enough to trust the direction, not
-            # evidence the verdict should distrust — gating on it would
-            # silently downgrade most real sessions' accepts to surface for
-            # a reason unrelated to whether THIS verify capture's evidence
-            # was trustworthy. SNR is different: a noisy capture's noise
-            # floor does NOT cancel between before and verify (it is
-            # capture-local, not shared), so it directly bears on whether
-            # the extracted curve shape itself can be trusted.
+            # measurement-mic calibration upload — disclosing that on nearly
+            # every verdict would be noise, not signal. SNR is different: a
+            # noisy capture's noise floor does NOT cancel between before and
+            # verify (it is capture-local, not shared), so it directly bears
+            # on whether the extracted curve shape itself can be trusted.
             verify_snr_db = (
                 self.verify_quality.get("estimated_snr_db")
                 if isinstance(self.verify_quality, dict)
@@ -1416,11 +1402,6 @@ class MeasurementSession:
             quality_warned, quality_reason = _verify_snr_quality_warning(
                 verify_snr_db,
             )
-            result = acceptance.gate_on_acoustic_quality(
-                result,
-                quality_warned=quality_warned,
-                quality_reason=quality_reason,
-            )
             # Record this verify's clear-regression state so the NEXT verify
             # can judge concordance. STRICT ADJACENCY: a clean verify clears
             # the flag — the confirmatory sweep the flow asked for has
@@ -1431,7 +1412,10 @@ class MeasurementSession:
             # adjacency squares it — the plan's false-revert-is-trust-
             # expensive axis.)
             self._prior_clear_regression = result.clear_regression
-            return result.to_dict()
+            result_dict = result.to_dict()
+            result_dict["verify_quality_warned"] = quality_warned
+            result_dict["verify_quality_reason"] = quality_reason
+            return result_dict
         except RECOVERABLE_ERRORS:
             logger.exception("acceptance verdict computation failed")
             return None

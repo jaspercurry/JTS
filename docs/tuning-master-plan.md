@@ -455,10 +455,12 @@ vocabulary; update `docs/doc-map.toml` routing; update
     already unified in `quality_model`; unify the *words* across the six
     verdict sets (`quality.Severity`, `runtime_integrity.Severity`,
     `browser_audio`'s two scales, `acoustic_quality`'s summary,
-    `snr_policy`'s rank); classifier confidence `med` → `medium`; rename
-    `correction/envelope.py`'s synthetic `surface_quality_gated` copy key
-    so it cannot read as a `Verdict` member — it is deliberately never one,
-    and its quality-gated household copy (#2058 B1) is correct and stays. (S–M)
+    `snr_policy`'s rank); classifier confidence `med` → `medium`. The
+    `correction/envelope.py` `surface_quality_gated`-rename clause this item
+    used to carry is moot: ruling S8 deleted `gate_on_acoustic_quality`
+    outright rather than renaming its copy key — a warned verify-capture SNR
+    is now a plain `verify_quality_warned` nudge, and no verdict-downgrade
+    copy exists to rename. (S–M)
 2.11 `setup_status.py`'s private statefile reader (duplicate env-var name,
     literal path, and regex parse) folds onto
     `active_speaker/environment.py`. Its scope was that one duplicate;
