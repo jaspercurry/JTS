@@ -2459,12 +2459,11 @@ function renderStepScreen(ctx, {
 // just-accepted index, on the next attempt, carrying `retake: true` — and
 // ONLY while the next entry's begin has not been seen (its `next_begin_seen`,
 // which flips on an admitted OR merely deferred begin, including the VERIFY
-// hold's auto-posted one). Past that point a retake begin is refused as
-// `begin_out_of_order`, and ANY refusal ends the whole session. So an offer
-// that outlived the window would be a button whose only possible outcome is
-// killing the run: `ctx.retakeSlot` is cleared by every begin this page posts
-// and re-armed only by a fresh accepted verdict, and `canRetake` is checked
-// again inside the tap (a countdown's auto-begin can win the race).
+// hold's auto-posted one). Past that point the runner refuses a marked retake
+// as `retake_too_late`. `ctx.retakeSlot` is therefore cleared by every begin
+// this page posts and re-armed only by a fresh accepted verdict, and
+// `canRetake` is checked again inside the tap (a countdown's auto-begin can
+// win the race).
 // ---------------------------------------------------------------------------
 
 // What a retake actually depends on is HOST-SIDE per-index take retention: an
@@ -2530,10 +2529,8 @@ function retakeControl(ctx, { index, attempt, onTap = null }) {
   const retake = button(RETAKE_LABEL, async () => {
     // Re-checked inside the tap: the next round may have begun between render
     // and tap (a countdown firing its own begin, or the household tapping the
-    // forward primary first), which shuts the window on the Pi — a retake
-    // posted past it is refused as `begin_out_of_order`, which ends the whole
-    // session. So the press must NOT reach the Pi. It must also not vanish:
-    // this branch used to `return` silently, which is issue #2090.
+    // forward primary first), which shuts the window on the Pi. The press must
+    // not overwrite that forward event, and it must not vanish.
     if (!canRetake(ctx, index)) {
       setStatus(RETAKE_TOO_LATE_MESSAGE, "error");
       return;
@@ -2713,6 +2710,9 @@ function renderPlanGroupConfirm(ctx, { index, attempt, target, unresolved = null
 // page to decide whether to apply it.
 async function completePlanCaptureSet(ctx, { index, attempt, target }) {
   const controller = ctx.planController;
+  // Close this before Continue writes the relay's last-write-wins event, or a
+  // concurrent stale Retake can overwrite it before the Pi polls.
+  shutRetakeWindow(ctx);
   try {
     setStatus(CAPTURE_CLOSING_MESSAGE, "info");
     await ctx.client.postEvent({ complete_capture_set: true });
@@ -2765,7 +2765,10 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
   let reconnecting = null;
   while (Date.now() < deadline) {
     if (isAborted()) return { aborted: true };
-    if (!reconnecting) tick();
+    if (
+      !reconnecting &&
+      document.getElementById("status")?.dataset.kind !== "error"
+    ) tick();
     let status;
     try {
       status = await pollPhoneStatus(client);
@@ -2779,10 +2782,7 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
       }
       throw err;
     }
-    if (reconnecting) {
-      reconnecting = null;
-      tick();
-    }
+    if (reconnecting) reconnecting = null;
     const event = (status && status.host_event) || {};
     const phase = String(event.phase || "");
     if (phase === "capture_set_complete") return { setComplete: true };
