@@ -38,6 +38,11 @@ round's receipts.
   generates it — so you can regenerate it for other geometry.
 - **The measurement decides.** A prediction that missed is a learning signal,
   never on its own a reason to retreat.
+- **Depth is pulled, never dumped** (owner ruling 2026-08-31). The banked
+  round already carries the always-relevant facts — the packet and the lab
+  rows arrive pre-analyzed. Everything deeper is its own verb in the
+  runbook's menu, run when a question warrants it. Read the packet first;
+  open one verb per question; do not try to hold every analysis at once.
 
 ## 0. DECLARE before you measure
 
