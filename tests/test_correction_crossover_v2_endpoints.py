@@ -9931,12 +9931,13 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
 
 
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
-    """#2292 scope 2: accepting an alternative Fc fsyncs FOUR writes at the
+    """#2292 scope 2: accepting an alternative Fc fsyncs FIVE writes at the
     accept/apply seam -- the Sound declaration (apply_measured_crossover_geometry),
     the crossover preview regenerated from it (ensure_crossover_preview_ready),
-    the applied baseline profile (persist_applied_baseline_profile), and
-    observe_apply_success's own v2-state write -- one file fsync + one
-    parent-directory fsync each.
+    the applied baseline profile (persist_applied_baseline_profile),
+    observe_apply_success's own v2-state write, and the measured base trim
+    that apply banks (driver_base_trim.write_base_trim) -- one file fsync +
+    one parent-directory fsync each.
 
     The fourth pair is #2291's: that write CREATES the rollback anchor
     (``pre_apply_profile``) and runs after the new graph is already live, so a
@@ -9944,6 +9945,11 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     restore to. Counted here rather than merely asserted elsewhere because the
     count is the only thing that can catch the anchor write quietly losing its
     ``durable=True``.
+
+    The fifth pair is the base trim's, durable for the same reason: it and the
+    applied profile are two halves of one apply, and a power cut keeping one
+    but not the other leaves the box levelling by numbers its graph is not
+    playing.
     """
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
     fsync_calls: list[int] = []
@@ -9956,7 +9962,7 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     )
 
     assert payload["status"] == "applied", payload
-    assert len(fsync_calls) == 8
+    assert len(fsync_calls) == 10
 
 
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
@@ -11666,7 +11672,7 @@ def test_undo_declaration_restore_writes_durably(
 
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     assert restore_payload["sound_declaration"] == "declaration_restored"
-    # 6 = persist_applied_baseline_profile's graph-restore write (always
+    # 8 = persist_applied_baseline_profile's graph-restore write (always
     # durable, file + dir fsync) + apply_measured_crossover_geometry's
     # declaration-restore write (file + dir fsync) -- both halves of Undo --
     # + observe_restore's own v2-state write, durable since #2291 (file + dir).
@@ -11674,7 +11680,13 @@ def test_undo_declaration_restore_writes_durably(
     # pre_apply_profile and flips ``applied`` after the previous graph is
     # already back on the speaker, so losing it to a power cut would leave the
     # state claiming a correction the speaker is no longer playing.
-    assert len(fsync_calls) == 6
+    # The fourth pair is the base trim the Undo RE-BANKS: the restored profile
+    # is measured, so the record must describe the graph now playing rather
+    # than the one Undo just replaced. That pair is only here because the
+    # frozen applied profile now carries `automatic_candidate` -- without it
+    # the restore reached the bank seam unable to name its measured groups and
+    # banked nothing at all.
+    assert len(fsync_calls) == 8
 
 
 def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
