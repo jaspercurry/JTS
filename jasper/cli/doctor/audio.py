@@ -1580,6 +1580,85 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     )
 
 
+@doctor_check(order=31.55, group="audio", label="active speaker applied graph")
+def check_active_speaker_applied_graph() -> CheckResult:
+    """Is the durable graph the one the applied profile names? (finding F-6).
+
+    A crossover-v2 round that ends on a verify rejection banks no adoption and
+    auto-restores nothing, but its apply has already repointed CamillaDSP's
+    persisted ``config_file_path`` at the rejected candidate. The blind run hit
+    exactly that: ``as_woofer_delay: 0.1286`` on the anchor against
+    ``corrections.woofer.delay_ms = 0.0`` in the profile, with no surface
+    naming it. ``setup_status`` already binds the two; this reads the binding
+    out with the values.
+
+    **Compared at the DURABLE anchor, never at the running graph** — with no
+    readback argument the reader resolves its path from the CamillaDSP
+    statefile. Every runtime-only swap (audition, ADR-0193; the measurement
+    session graph; the per-driver commissioning load) installs through
+    ``set_active_config_raw``, which leaves that path and its bytes alone, so
+    none can read as drift here. A staged/commissioning anchor IS a durable
+    repoint, so it is excluded by name instead.
+
+    WARN, never FAIL, and no new gate: the anchor is the audible truth either
+    way, and the choice of remedy is the operator's.
+    """
+
+    from ...active_speaker.setup_status import (
+        IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
+        read_active_speaker_setup_status,
+    )
+
+    label = "active speaker applied graph"
+    try:
+        status = read_active_speaker_setup_status()
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        return CheckResult(label, "warn", f"could not read speaker setup: {exc}")
+    protected = status.get("protected_profile")
+    binding = protected.get("layer_a_binding") if isinstance(protected, dict) else None
+    if not isinstance(binding, dict):
+        return CheckResult(label, "ok", "no applied active-speaker profile to bind")
+    issues = status.get("issues")
+    if any(
+        isinstance(issue, dict)
+        and issue.get("code") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
+        for issue in (issues if isinstance(issues, list) else [])
+    ):
+        return CheckResult(
+            label, "ok",
+            "a commissioning/staged graph is the durable anchor by design; "
+            "applied-profile binding not applicable",
+        )
+    if binding.get("matches") is True:
+        return CheckResult(
+            label, "ok",
+            "the durable graph is the one the applied profile names "
+            f"(layer_a={binding.get('loaded_fingerprint')})",
+        )
+    if binding.get("status") != "mismatch":
+        return CheckResult(
+            label, "ok",
+            "applied-profile graph binding not evaluated "
+            f"({binding.get('status') or 'absent'})",
+        )
+    fields = "; ".join(
+        f"{item.get('field')} profile={item.get('expected')} "
+        f"graph={item.get('loaded')}"
+        for item in (binding.get("differences") or [])
+        if isinstance(item, dict)
+    )
+    return CheckResult(
+        label, "warn",
+        f"the durable graph at {status.get('active_config_path')} is not the one "
+        "the applied profile names: layer_a profile="
+        f"{binding.get('expected_fingerprint')} graph="
+        f"{binding.get('loaded_fingerprint')}"
+        + (f" [{fields}]" if fields else "")
+        + " — apply that crossover again, or republish the banked candidate "
+        "and apply it, to make the two agree",
+    )
+
+
 @doctor_check(order=31.6, group="audio", label="active speaker startup hold")
 def check_active_speaker_startup_hold() -> CheckResult:
     """A staged-startup hold marker with no startup load behind it is stale.

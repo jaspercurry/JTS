@@ -30,6 +30,7 @@ from ._common import (
 )
 from .baseline_profile import (
     active_layer_a_fingerprint,
+    active_layer_a_projection,
     baseline_profile_state_path,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
@@ -646,6 +647,50 @@ def active_config_path_from_statefile(
     return read_camilla_statefile_config_path(path) or ""
 
 
+_LAYER_A_DIFFERENCE_LIMIT = 6
+
+
+def _layer_a_filter_fields(config_text: str) -> dict[str, Any]:
+    """Flatten one graph's Layer-A filters to ``<filter>.<parameter>`` values."""
+
+    filters = active_layer_a_projection(config_text).get("filters")
+    fields: dict[str, Any] = {}
+    for name, definition in (
+        filters.items() if isinstance(filters, Mapping) else ()
+    ):
+        body = _mapping(definition)
+        fields[f"{name}.type"] = body.get("type")
+        for key, value in _mapping(body.get("parameters")).items():
+            fields[f"{name}.{key}"] = value
+    return fields
+
+
+def _layer_a_differences(
+    expected_yaml: str, loaded_yaml: str,
+) -> list[dict[str, str]]:
+    """Name the Layer-A filter parameters two graphs disagree on, with values.
+
+    The fingerprint pair says THAT the loaded driver-domain graph is not the one
+    the applied profile names; an operator acts on WHICH value moved — a
+    rejected delay left on the durable anchor is the worked example. Bounded, so
+    an emitter-wide respelling cannot turn one disclosure into a wall, and
+    partial by construction: a graph that differs only in routing, mixers or
+    devices yields no entries and the fingerprints stand alone.
+    """
+
+    expected = _layer_a_filter_fields(expected_yaml)
+    loaded = _layer_a_filter_fields(loaded_yaml)
+    return [
+        {
+            "field": field,
+            "expected": repr(expected.get(field)),
+            "loaded": repr(loaded.get(field)),
+        }
+        for field in sorted(set(expected) | set(loaded))
+        if expected.get(field) != loaded.get(field)
+    ][:_LAYER_A_DIFFERENCE_LIMIT]
+
+
 def _applied_layer_a_binding(
     topology: Any,
     *,
@@ -660,6 +705,7 @@ def _applied_layer_a_binding(
         "matches": False,
         "expected_fingerprint": None,
         "loaded_fingerprint": None,
+        "differences": [],
     }
     if not isinstance(applied_profile, Mapping) or (
         active_config_text is None and not active_config_path
@@ -686,6 +732,7 @@ def _applied_layer_a_binding(
                 "matches": False,
                 "expected_fingerprint": None,
                 "loaded_fingerprint": None,
+                "differences": [],
             }
         # THE TRANSPORT AXIS IS NEUTRALIZED, not compared. This projection binds
         # ``output_devices``, which carries the playback device and the sink's
@@ -717,14 +764,18 @@ def _applied_layer_a_binding(
             return unavailable
         expected = active_layer_a_fingerprint(expected_yaml)
         loaded = active_layer_a_fingerprint(loaded_yaml)
+        matches = expected == loaded
+        differences = (
+            [] if matches else _layer_a_differences(expected_yaml, loaded_yaml)
+        )
     except _READINESS_DERIVATION_ERRORS:
         return unavailable
-    matches = expected == loaded
     return {
         "status": "current" if matches else "mismatch",
         "matches": matches,
         "expected_fingerprint": expected,
         "loaded_fingerprint": loaded,
+        "differences": differences,
     }
 
 

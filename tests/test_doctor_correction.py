@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 import jasper.active_speaker._common as _common
+import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.cli import doctor
 from jasper.correction import bundles
 
@@ -2807,3 +2808,79 @@ def test_active_speaker_setup_notices_renders_only_non_blockers(
     assert r.status == expected_status
     if expected_status == "warn":
         assert issues[0]["code"] in r.detail
+
+
+def test_check_active_speaker_applied_graph_registered_in_sync_checks():
+    assert "check_active_speaker_applied_graph" in _registered_check_names()
+
+
+@pytest.mark.parametrize(
+    "payload, expected_status",
+    [
+        pytest.param({"protected_profile": None}, "ok", id="nothing_applied_to_bind"),
+        pytest.param(
+            {"protected_profile": {"layer_a_binding": {
+                "status": "current", "matches": True, "loaded_fingerprint": "a",
+            }}},
+            "ok",
+            id="durable_graph_is_the_profiles",
+        ),
+        pytest.param(
+            {"protected_profile": {"layer_a_binding": {
+                "status": "distributed_active_unsupported", "matches": False,
+            }}},
+            "ok",
+            id="grouped_active_is_not_drift",
+        ),
+        pytest.param(
+            {
+                "issues": [{
+                    "severity": "blocker",
+                    "code": setup_status_mod.IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
+                    "message": "commissioning graph is loaded",
+                }],
+                "protected_profile": {"layer_a_binding": {
+                    "status": "mismatch", "matches": False,
+                }},
+            },
+            "ok",
+            id="staged_anchor_mismatch_is_by_design",
+        ),
+        pytest.param(
+            {
+                "active_config_path": "/var/lib/camilladsp/configs/candidate.yml",
+                "protected_profile": {"layer_a_binding": {
+                    "status": "mismatch", "matches": False,
+                    "expected_fingerprint": "a", "loaded_fingerprint": "b",
+                    "differences": [{
+                        "field": "as_woofer_delay.delay",
+                        "expected": "0.0",
+                        "loaded": "0.1286",
+                    }],
+                }},
+            },
+            "warn",
+            id="f6_rejected_delay_left_on_the_durable_anchor",
+        ),
+    ],
+)
+def test_active_speaker_applied_graph_discloses_never_gates(
+    monkeypatch, payload, expected_status,
+):
+    """Blind-run finding F-6 had no surface that named the disagreement.
+
+    WARN, never FAIL, and the two states that legitimately differ — a grouped
+    active runtime, a staged/commissioning anchor — must not read as drift.
+    """
+    monkeypatch.setattr(
+        setup_status_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: payload,
+    )
+
+    r = doctor.check_active_speaker_applied_graph()
+
+    assert r.status == expected_status
+    if expected_status == "warn":
+        assert "as_woofer_delay.delay" in r.detail
+        assert "0.1286" in r.detail

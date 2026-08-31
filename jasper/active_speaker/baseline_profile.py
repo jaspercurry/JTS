@@ -268,8 +268,8 @@ def _canonicalize_camilla_defaults(value: Any) -> Any:
     return value
 
 
-def active_layer_a_fingerprint(config_text: str) -> str:
-    """Fingerprint the exact driver-domain suffix of one active graph.
+def active_layer_a_projection(config_text: str) -> dict[str, Any]:
+    """Project the exact driver-domain suffix of one active graph.
 
     Room and preference EQ are allowed to change the program-domain filter
     prefix before the active split.  Everything from the split onward, plus
@@ -277,6 +277,11 @@ def active_layer_a_fingerprint(config_text: str) -> str:
     polarity, delay, gain, and protection.  This projection lets Active bind
     its immutable applied snapshot to the graph Room is about to preserve
     without making Room reconstruct crossover evidence.
+
+    :func:`active_layer_a_fingerprint` is this projection hashed.  The
+    unhashed form exists so a caller that has already learned the two
+    fingerprints differ can name WHICH member moved, rather than handing an
+    operator two opaque digests.
     """
 
     try:
@@ -345,14 +350,19 @@ def active_layer_a_fingerprint(config_text: str) -> str:
             raise ActiveSpeakerConfigError("active Layer-A mixer is missing")
         referenced_mixers[name] = definition
 
-    return _fingerprint(_canonicalize_camilla_defaults({
+    return _canonicalize_camilla_defaults({
         "schema_version": 1,
         "domain": "jts_active_layer_a_v1",
         "output_devices": output_devices,
         "mixers": referenced_mixers,
         "pipeline_suffix": suffix,
         "filters": referenced_filters,
-    }))
+    })
+
+
+def active_layer_a_fingerprint(config_text: str) -> str:
+    """Hash :func:`active_layer_a_projection` — the Layer-A graph identity."""
+    return _fingerprint(active_layer_a_projection(config_text))
 
 
 def _source_payload(

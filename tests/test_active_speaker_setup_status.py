@@ -733,6 +733,7 @@ def test_manual_room_authority_explicitly_scopes_out_distributed_active(
         "matches": False,
         "expected_fingerprint": None,
         "loaded_fingerprint": None,
+        "differences": [],
     }
 
 
@@ -790,6 +791,51 @@ def test_manual_room_authority_blocks_loaded_layer_a_mismatch(
     assert binding["loaded_fingerprint"] != binding["expected_fingerprint"]
 
 
+def test_durable_anchor_mismatch_names_the_field_and_both_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Blind-run finding F-6: a rejected delay left on the durable anchor.
+
+    The apply repointed CamillaDSP's persisted config at a delayed candidate
+    and the round ended on a rejection, so the applied profile still described
+    the previous graph. Two fingerprints say only THAT they disagree; the
+    operator acts on the delay itself, so the binding names it with both
+    values. Read with no live readback, which is the durable-anchor level a
+    runtime-only `set_active_config_raw` swap never moves.
+    """
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    protected_path = tmp_path / "active_speaker_baseline.yml"
+    anchor_path = tmp_path / "active_speaker_baseline_candidate_60205a8de2bf.yml"
+    manual = _applied_acoustic_profile(measured=False, config_path=protected_path)
+    _write_applied_graph(topology, manual, protected_path)
+    anchor = yaml.safe_load(protected_path.read_text(encoding="utf-8"))
+    anchor["filters"]["as_woofer_delay"]["parameters"]["delay"] = 0.1286
+    anchor_path.write_text(yaml.safe_dump(anchor, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
+    )
+    monkeypatch.setattr(
+        setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
+    )
+    monkeypatch.setattr(
+        setup_mod, "load_applied_baseline_profile_state", lambda _path=None: manual,
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(anchor_path),
+    )
+
+    binding = status["protected_profile"]["layer_a_binding"]
+    assert binding["status"] == "mismatch"
+    assert binding["differences"] == [
+        {"field": "as_woofer_delay.delay", "expected": "0.0", "loaded": "0.1286"},
+    ]
+
+
 def test_manual_room_authority_blocks_unverifiable_loaded_graph(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -839,6 +885,7 @@ def test_manual_room_authority_blocks_unverifiable_loaded_graph(
         "matches": False,
         "expected_fingerprint": None,
         "loaded_fingerprint": None,
+        "differences": [],
     }
 
 
@@ -1247,6 +1294,7 @@ def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
             "matches": False,
             "expected_fingerprint": None,
             "loaded_fingerprint": None,
+            "differences": [],
         },
     }
     assert status["room_correction_allowed"] is False
