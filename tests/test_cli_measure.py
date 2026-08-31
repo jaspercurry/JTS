@@ -486,6 +486,37 @@ def test_a_walk_that_stops_part_way_still_names_what_it_banked(
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
+def test_a_give_back_failure_after_a_clean_batch_still_renders_json(
+    speaker, monkeypatch, capsys,
+):
+    """The verified gap: the whole batch measured and banked, then the door's
+    own exit could not put the entry graph back. ``TuningSession.close`` and
+    the door's own ``finally`` both restore this SAME graph handle on a clean
+    exit, OUTSIDE ``_session_scoped_aborts``'s per-spec catch — which only
+    wraps the loop ``_measured`` already returned from — so this pins that the
+    batch's own record ids are still reported rather than lost to a bare
+    traceback.
+    """
+    from jasper.active_speaker.crossover_v2 import session_graph as graph_mod
+
+    async def _restore(self):
+        raise graph_mod.SessionGraphError(
+            "the measurement graph was played but the entry graph could not "
+            "be restored"
+        )
+
+    monkeypatch.setattr(graph_mod.MeasurementSessionGraph, "restore", _restore)
+
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--position", "0"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "restore_failed"
+    assert payload["restore_error"]["reason"] == REFUSE_GRAPH_LOST
+    assert len(payload["record_ids"]) == 1, "the banked take was not reported"
+    assert len(payload["specs"]) == 1
+
+
 def test_a_banked_take_carries_what_the_microphone_reported(speaker, capsys):
     """N8: a CLI take must not be structurally poorer than a wizard one.
 

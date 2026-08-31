@@ -97,7 +97,8 @@ REFUSE_SPECS_MIXED_POSE = "measure_specs_mixed_pose"
 #: truth for one spec, refused rather than merged behind a precedence rule.
 REFUSE_SPECS_WITH_TAKE_FLAGS = "measure_specs_with_take_flags"
 
-#: The running measurement graph could not be re-proven or put back mid-walk.
+#: The running measurement graph could not be re-proven mid-walk, or could not
+#: be put back at the door's own exit after an otherwise clean batch.
 REFUSE_GRAPH_LOST = "measure_graph_lost"
 #: The measurement isolation window was lost mid-walk, so household audio could
 #: re-enter the mix. ``play_program`` stops before it does.
@@ -125,6 +126,7 @@ __all__ = [
     "BoxNotMeasurable",
     "MeasureFlagError",
     "MeasureInterrupted",
+    "MeasureRestoreFailed",
     "build_parser",
     "main",
     "read_box_declaration",
@@ -184,6 +186,22 @@ class MeasureInterrupted(RuntimeError):
         #: ``(outcome, graph fingerprint)`` per completed spec, so a partial
         #: batch renders the same per-spec shape a whole one does.
         self.done = done
+        super().__init__(f"{reason}: {detail}")
+
+
+class MeasureRestoreFailed(RuntimeError):
+    """The batch measured cleanly; only the door's own exit could not restore.
+
+    Distinct from :class:`MeasureInterrupted`: nothing here stopped a spec in
+    flight, so there is no ``spec``/``spec_index`` to name — every spec the
+    batch asked for is already in ``report``, built the same way a clean run
+    reports it.
+    """
+
+    def __init__(self, reason: str, detail: str, report: dict[str, Any]) -> None:
+        self.reason = reason
+        self.detail = detail
+        self.report = report
         super().__init__(f"{reason}: {detail}")
 
 
@@ -774,6 +792,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     from jasper.active_speaker.crossover_v2.door import measurement_door
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.session import TuningSession
+    from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.wired_capture import resolve_wired_mic
@@ -803,61 +822,81 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     config_dir = str(DEFAULT_CAMILLA_CONFIG_DIR)
     cam_factory = primary_controller
 
-    async with measurement_door(
-        profile=MeasurementGraphProfile(
-            preset=box.preset,
-            topology=box.topology,
-            role_channels={"woofer": 0, "tweeter": 1},
-            playback_device=box.playback_device,
-            protection_sections_by_role=box.protection_sections_by_role,
-        ),
-        measurement_volume_db=box.session_volume_db,
-        camilla_factory=cam_factory,
-        action="measuring",
-        config_dir=config_dir,
-        gate_owner=DOOR_GATE_OWNER,
-    ) as door:
-        info = open_bundle(box.topology, calibration_id="")
-        if not isinstance(info, Mapping) or not info.get("session_id"):
-            raise BoxNotMeasurable(
-                REFUSE_BOX_NOT_READY,
-                "could not open a commissioning evidence bundle for this session",
+    # Set before the door opens, so a restore failure below always has
+    # something to report against — including one at the door's own
+    # open-time install, before which neither name is otherwise bound.
+    outcomes: tuple[tuple[Any, str], ...] = ()
+    store: Any = None
+    try:
+        async with measurement_door(
+            profile=MeasurementGraphProfile(
+                preset=box.preset,
+                topology=box.topology,
+                role_channels={"woofer": 0, "tweeter": 1},
+                playback_device=box.playback_device,
+                protection_sections_by_role=box.protection_sections_by_role,
+            ),
+            measurement_volume_db=box.session_volume_db,
+            camilla_factory=cam_factory,
+            action="measuring",
+            config_dir=config_dir,
+            gate_owner=DOOR_GATE_OWNER,
+        ) as door:
+            info = open_bundle(box.topology, calibration_id="")
+            if not isinstance(info, Mapping) or not info.get("session_id"):
+                raise BoxNotMeasurable(
+                    REFUSE_BOX_NOT_READY,
+                    "could not open a commissioning evidence bundle for this "
+                    "session",
+                )
+            store = CommissioningEvidenceStore.open(
+                Path(str(info["bundle_dir"])),
+                expected_session_id=str(info["session_id"]),
             )
-        store = CommissioningEvidenceStore.open(
-            Path(str(info["bundle_dir"])),
-            expected_session_id=str(info["session_id"]),
-        )
-        capture = WiredStimulusCapture(
-            device=device, bundle_dir=Path(store.bundle_dir),
-        )
-        seams = bind_engine_seams(
-            session_graph=door.graph,
-            records=_CaptureAnnotatedStore(
-                inner=BankedRecordStore(
-                    evidence=store,
-                    relay_session_id=session_id,
+            capture = WiredStimulusCapture(
+                device=device, bundle_dir=Path(store.bundle_dir),
+            )
+            seams = bind_engine_seams(
+                session_graph=door.graph,
+                records=_CaptureAnnotatedStore(
+                    inner=BankedRecordStore(
+                        evidence=store,
+                        relay_session_id=session_id,
+                    ),
+                    capture=capture,
                 ),
-                capture=capture,
-            ),
-            volume_claim=door.claim,
-            session_volume_plan=door.plan,
-            compose_stimulus=_bind_compose(
-                box=box,
-                store=store,
+                volume_claim=door.claim,
+                session_volume_plan=door.plan,
+                compose_stimulus=_bind_compose(
+                    box=box,
+                    store=store,
+                    session_id=session_id,
+                    cam_factory=cam_factory,
+                    config_dir=config_dir,
+                ),
+                capture_stimulus=capture,
+            )
+            async with TuningSession(
                 session_id=session_id,
-                cam_factory=cam_factory,
-                config_dir=config_dir,
-            ),
-            capture_stimulus=capture,
-        )
-        async with TuningSession(
-            session_id=session_id,
-            seams=seams,
-            measurement_level_db=box.session_volume_db,
-            level_match_trims_db=trims,
-        ) as session:
-            outcomes = await _measured(session, specs, store=store)
-            return _report(outcomes, store=store, session_id=session_id)
+                seams=seams,
+                measurement_level_db=box.session_volume_db,
+                level_match_trims_db=trims,
+            ) as session:
+                outcomes = await _measured(session, specs, store=store)
+                return _report(outcomes, store=store, session_id=session_id)
+    except SessionGraphError as exc:
+        if store is None:
+            raise
+        # ``TuningSession.close`` and the door's own `finally` both restore
+        # this SAME graph handle on a clean exit (session.py's own give-back
+        # runs first); either can raise this OUTSIDE
+        # `_session_scoped_aborts`'s per-spec catch, which only wraps the loop
+        # `_measured` already returned from here. `outcomes` already holds
+        # every spec this batch earned.
+        raise MeasureRestoreFailed(
+            REFUSE_GRAPH_LOST, str(exc),
+            _report(outcomes, store=store, session_id=session_id),
+        ) from exc
 
 
 def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type, str]]:
@@ -1083,6 +1122,28 @@ def _interrupted(exc: MeasureInterrupted) -> int:
     return EXIT_REFUSED
 
 
+def _restore_failed(exc: MeasureRestoreFailed) -> int:
+    """The batch's own report, with the give-back failure named beside it.
+
+    Always JSON on stdout, like :func:`_interrupted`: every id in
+    ``exc.report`` is real evidence already on disk, and a refusal line on
+    stderr alone would report the failure and lose it.
+    """
+    log_event(
+        logger,
+        "active_speaker.measure",
+        level=logging.ERROR,
+        action="restore_failed",
+        reason=exc.reason,
+        detail=exc.detail,
+    )
+    payload = dict(exc.report)
+    payload["status"] = "restore_failed"
+    payload["restore_error"] = {"reason": exc.reason, "detail": exc.detail}
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    return EXIT_REFUSED
+
+
 def _cmd_measure(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
 
@@ -1096,6 +1157,8 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         payload = asyncio.run(_measure(specs, read_box_declaration()))
     except MeasureInterrupted as exc:
         return _interrupted(exc)
+    except MeasureRestoreFailed as exc:
+        return _restore_failed(exc)
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(
             exc.reason, exc.detail, json_output=args.json, code=EXIT_REFUSED

@@ -645,6 +645,7 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
 
 async def _run(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import measurement_door
+    from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.audio_measurement.program import NullConfirmUnavailable
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
     from jasper.camilla import primary_controller
@@ -720,64 +721,78 @@ async def _run(args: argparse.Namespace) -> int:
     # before anyone finds out there was nothing to record with.
     mic = _resolve_mic()
 
-    async with measurement_door(
-        profile=MeasurementGraphProfile(
-            preset=context.preset,
-            topology=context.topology,
-            role_channels=context.role_channels,
-            playback_device=context.playback_device,
-            protection_sections_by_role=_protection_sections(context),
-        ),
-        measurement_volume_db=context.session_volume_db,
-        camilla_factory=primary_controller,
-        action="confirming a reverse null",
-        gate_owner=DOOR_GATE_OWNER,
-    ) as door:
-        # INSIDE, and that is #3393's B2 lesson taken rather than restated: a
-        # write that runs before the interlock runs even when the door refuses.
-        # This one publishes `null_programs/stimulus.wav` under a fixed name, so
-        # a refused second run would overwrite the bytes a live run's artifact
-        # sha256 is bound to and fail its verified-WAV check mid-session.
-        artifact = _publish_program(program, work_dir, "null_programs/stimulus.wav")
-        try:
-            for index, (candidate, inverted) in enumerate(coordinates):
-                delays = (
-                    {candidate.delay_target: candidate.delay_us}
-                    if candidate.delay_target
-                    else {}
-                )
-                # Per COORDINATE, not per session: each is a different graph.
-                # `install` is contracted idempotent, so the door's own
-                # open-time install costs one liveness read here rather than a
-                # second load.
-                fingerprint = await door.graph.install(
-                    (args.inverted_role,) if inverted else (),
-                    delays,
-                    trims_db,
-                )
-                captured = await _play_and_capture(
-                    context, door.plan, program, mic, artifact, work_dir,
-                )
-                mic_wav = work_dir / "null_programs" / f"capture_{index:02d}.wav"
-                mic_wav.write_bytes(captured)
-                try:
-                    depth_db, span = _depth(mic_wav, program, plan, fc_hz)
-                    outcome: dict[str, Any] = {"depth_db": depth_db, "span": span}
-                except NullDoorRefused as exc:
-                    outcome = {"refusal": exc}
-                _bank(
-                    candidate, inverted, fingerprint,
-                    wav_sha256=artifact.sha256, **outcome,
-                )
-        except tuple(mid_run) as exc:
-            # #3393's B4 lesson. Any of the three can land BETWEEN two
-            # coordinates with rows already on disk; a traceback would exit
-            # with no JSON while those rows sit in null_runs/ unnamed. The
-            # door's own give-back still runs — this only decides what the
-            # operator reads.
-            raise NullRunInterrupted(
-                _mid_run_reason(mid_run, exc), str(exc), banked,
-            ) from exc
+    try:
+        async with measurement_door(
+            profile=MeasurementGraphProfile(
+                preset=context.preset,
+                topology=context.topology,
+                role_channels=context.role_channels,
+                playback_device=context.playback_device,
+                protection_sections_by_role=_protection_sections(context),
+            ),
+            measurement_volume_db=context.session_volume_db,
+            camilla_factory=primary_controller,
+            action="confirming a reverse null",
+            gate_owner=DOOR_GATE_OWNER,
+        ) as door:
+            # INSIDE, and that is #3393's B2 lesson taken rather than restated:
+            # a write that runs before the interlock runs even when the door
+            # refuses. This one publishes `null_programs/stimulus.wav` under a
+            # fixed name, so a refused second run would overwrite the bytes a
+            # live run's artifact sha256 is bound to and fail its verified-WAV
+            # check mid-session.
+            artifact = _publish_program(
+                program, work_dir, "null_programs/stimulus.wav",
+            )
+            try:
+                for index, (candidate, inverted) in enumerate(coordinates):
+                    delays = (
+                        {candidate.delay_target: candidate.delay_us}
+                        if candidate.delay_target
+                        else {}
+                    )
+                    # Per COORDINATE, not per session: each is a different
+                    # graph. `install` is contracted idempotent, so the door's
+                    # own open-time install costs one liveness read here
+                    # rather than a second load.
+                    fingerprint = await door.graph.install(
+                        (args.inverted_role,) if inverted else (),
+                        delays,
+                        trims_db,
+                    )
+                    captured = await _play_and_capture(
+                        context, door.plan, program, mic, artifact, work_dir,
+                    )
+                    mic_wav = (
+                        work_dir / "null_programs" / f"capture_{index:02d}.wav"
+                    )
+                    mic_wav.write_bytes(captured)
+                    try:
+                        depth_db, span = _depth(mic_wav, program, plan, fc_hz)
+                        outcome: dict[str, Any] = {
+                            "depth_db": depth_db, "span": span,
+                        }
+                    except NullDoorRefused as exc:
+                        outcome = {"refusal": exc}
+                    _bank(
+                        candidate, inverted, fingerprint,
+                        wav_sha256=artifact.sha256, **outcome,
+                    )
+            except tuple(mid_run) as exc:
+                # #3393's B4 lesson. Any of the three can land BETWEEN two
+                # coordinates with rows already on disk; a traceback would
+                # exit with no JSON while those rows sit in null_runs/
+                # unnamed. The door's own give-back still runs — this only
+                # decides what the operator reads.
+                raise NullRunInterrupted(
+                    _mid_run_reason(mid_run, exc), str(exc), banked,
+                ) from exc
+    except SessionGraphError as exc:
+        # `_give_back` can raise this OUTSIDE the loop's own catch above: a
+        # clean walk, then the door's own exit (door.py's `finally`,
+        # body_error=None) failed to put the entry graph back. `banked`
+        # already holds every row this walk earned.
+        raise NullRunInterrupted(REFUSE_GRAPH_LOST, str(exc), banked) from exc
 
     print(json.dumps({"status": "banked", "rows": written}, indent=2, sort_keys=True))
     return EXIT_OK if all(r["status"] == "measured" for r in written) else EXIT_REFUSED

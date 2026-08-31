@@ -792,6 +792,75 @@ def test_a_refused_run_writes_no_stimulus(tmp_path, monkeypatch):
     )
 
 
+def test_a_give_back_failure_after_a_clean_walk_still_renders_json(
+    tmp_path, monkeypatch, capsys,
+):
+    """The verified gap: every coordinate measured and banked, then the door's
+    own exit could not put the entry graph back. ``_give_back`` raises that
+    OUTSIDE the loop's own mid-run catch (door.py's ``finally``,
+    ``body_error=None``) — this pins that the row already on disk is still
+    reported rather than lost to a bare traceback.
+    """
+    import json
+
+    from jasper.active_speaker.crossover_v2 import door as door_mod
+    from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+
+    monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
+    monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
+    monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
+    monkeypatch.setattr(
+        null_door, "_resolve_mic", lambda: SimpleNamespace(pcm=None),
+    )
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+
+    async def _fake_play_and_capture(*_args, **_kwargs) -> bytes:
+        return b"\x00" * 8
+
+    def _fake_depth(*_args, **_kwargs):
+        return -20.0, _span()
+
+    monkeypatch.setattr(null_door, "_play_and_capture", _fake_play_and_capture)
+    monkeypatch.setattr(null_door, "_depth", _fake_depth)
+
+    class _FakeDoor:
+        def __init__(self) -> None:
+            self.plan = None
+            self.graph = SimpleNamespace(install=self._install)
+
+        async def _install(self, *_args, **_kwargs) -> str:
+            return "fingerprint-1"
+
+    class _RestoreFailsOnExit:
+        async def __aenter__(self) -> _FakeDoor:
+            return _FakeDoor()
+
+        async def __aexit__(self, exc_type, exc, _tb) -> bool:
+            if exc_type is None:
+                raise SessionGraphError(
+                    "the measurement graph was played but the entry graph "
+                    "could not be restored"
+                )
+            return False
+
+    monkeypatch.setattr(
+        door_mod, "measurement_door", lambda **_kw: _RestoreFailsOnExit(),
+    )
+
+    code = null_door.main([
+        "--bundle-dir", str(tmp_path),
+        "--polarity", null_door.POLARITY_KEEP,
+        "--delays", "0",
+    ])
+
+    assert code == null_door.EXIT_REFUSED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "partial"
+    assert payload["reason"] == null_door.REFUSE_GRAPH_LOST
+    assert len(payload["banked_row_ids"]) == 1
+    assert (tmp_path / "null_runs" / payload["banked_row_ids"][0]).exists()
+
+
 def test_rows_land_beside_the_takes(tmp_path):
     path = null_door._write_row(tmp_path / "null_runs", _row(depth_db=-9.0, span=_span()))
     assert path.parent == tmp_path / "null_runs"
