@@ -170,7 +170,7 @@ def test_writing_an_unchanged_bank_again_skips_the_write(
     monkeypatch.setattr(dbt, "atomic_write_json", _counting_write)
 
     payload = dict(
-        trims_db={"woofer": 0.0, "tweeter": -20.0},
+        trims_db={"woofer": 0.0, "tweeter": -12.3456789},
         roles=TWO_WAY,
         speaker_group_ids=["mono"],
         declaration_fingerprint="a" * 64,
