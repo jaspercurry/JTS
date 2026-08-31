@@ -1515,15 +1515,18 @@ laptop-side). The figures are that night's evidence, not standing constants.
    back**. Under that comparator every EQ attempt that night lost — a
    deterministic candidate by **+3.3σ**, a one-cut prescription by **+8.2σ**, a
    two-cut by **+15.2σ** — and each was rolled back by the harness rather than
-   argued with. **Status: the comparator itself is MISSING.** The grading
-   implementation is [`flat_spec.py`](../jasper/active_speaker/flat_spec.py)
-   and [`flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py),
-   but `evaluate_flat_spec` computes `reference_db` from whichever curve it is
-   handed and takes no frozen-reference argument — so the honest comparator is
-   a rule this stage ratifies, not behaviour the shipped views have. The frozen
-   *entry-baseline curve* that `round_evidence.EntryBaseline` banks is a
-   different mechanism and does not supply it: each side of that comparison
-   still self-references its own level.
+   argued with. **Status: the comparator itself now SHIPS.** `evaluate_flat_spec`
+   ([`flat_spec.py`](../jasper/active_speaker/flat_spec.py)) takes an explicit
+   `reference_db_override: float | None = None` parameter, threaded through
+   [`flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py)'s
+   `_evaluate_position`;
+   [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views.py)'s
+   `frozen_reference_grade` is the product caller that supplies it, grading a
+   target round both shipped (self-referencing) and frozen to a baseline's
+   per-position reference levels, operator-facing as `jasper-round-views
+   frozen`. The frozen *entry-baseline curve* that `round_evidence.EntryBaseline`
+   banks remains a different mechanism and still does not supply it: each side
+   of that comparison still self-references its own level.
 6. **Respect the audibility floors.** Broad, low-Q deviations are worth
    correcting down to roughly **0.5–1 dB**; a **narrow** feature must be several
    dB before it earns a filter at all; and nothing below the **session noise
@@ -1545,14 +1548,17 @@ this stage reads as more finished than it is.
 | 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (merged). A banked feature's `measured_q` is now *reported* to a prescriber in the packet's classification block, but nothing in the tree chooses a Q from it |
 | 3 correct in the owning branch | routing a defect to per-driver vs shared | **partial** | ships for the **prescribed** path: the two classes have separate gates, separate bands and separate candidate fields, so a per-driver defect can only reach `linearization` and a region-wide one can only reach `blend_correction` — neither gate can accept the other's filter. The **deterministic** path still makes no such routing decision |
 | 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no**, for the evidence half | what ships on the **per-driver prescribed** class is the SPEND half: a per-role composed budget that bounds the maximum-SPL spend at 13.0 dB, plus the per-filter caps and the crossover-knee bar ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)) — 5.0 dB until ruling R8 widened the boost caps to 12 dB on 2026-08-22. The EVIDENCE half shipped in [PR #2754](https://github.com/jaspercurry/JTS/pull/2754) and was withdrawn on 2026-08-23: a nearest `defect-boostable` verdict reporting its own `depth_db`, and a boost no deeper than it, are now disclosed rather than required — the owner ruled that a candidate inside the caps may be tested, and NOT ONE row of the 2026-08-19 record carries a depth, so the bar refused every boost that record could have produced. Layer 1a's boost bounds also ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`. The **blend** stage's own five-condition bar has still never been exercised |
-| 5 frozen reference | a frozen-reference comparator | **no** | `flat_spec` / `flat_spec_views`, which self-reference |
+| 5 frozen reference | a frozen-reference comparator | **yes** | `frozen_reference_grade` in [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views.py), operator-facing as `jasper-round-views frozen` — grades a target round both shipped and frozen to a baseline's per-position references via `flat_spec`'s `reference_db_override` |
 | 6 audibility floors | — | n/a | a review discipline, not code either way |
 
-So **three of six now fail the test outright** (2, 4, 5), and **two more ship
+So **two of six now fail the test outright** (2, 4), and **two more ship
 only on the prescribed path** (1, 3) — a gate that refuses a bad proposal,
-never a stage that derives the right one. For rules 2 and 5 the campaign
-produced its verdicts with laptop-side analysis and none of that analysis has
-been promoted into the product. Rule 4's evidence has a shipped producer —
+never a stage that derives the right one. Rule 5 now ships outright rather
+than only on the prescribed path — `jasper-round-views frozen` grades any
+banked round pair, not just a proposal moving through the prescriber. For
+rule 2 the campaign produced its verdict with laptop-side analysis and none
+of that analysis has been promoted into the product. Rule 4's evidence has a
+shipped producer —
 [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
 emits a `depth_db` per feature — but it runs OFFLINE over a banked round rather
 than inside one, so a round carries a verdict only when somebody classified it,
@@ -1821,8 +1827,11 @@ method are cited to dated session artifacts, not re-derived here.
 
 That pass also checked the section's **negative** claims, which is where its
 first draft was wrong and had to be corrected before merge: `evaluate_flat_spec`
-takes no frozen-reference argument (it derives `reference_db` from whichever
-curve it is handed); `evidence_packet.py` and `blend_prescription.py` both
+took no frozen-reference argument (it derived `reference_db` from whichever
+curve it was handed) — true on 2026-08-19, false now that `evaluate_flat_spec`
+takes an explicit `reference_db_override` consumed by
+`round_views.frozen_reference_grade` (rule 5 above carries the current
+status); `evidence_packet.py` and `blend_prescription.py` both
 disclosed the per-bin minimum-phase instrument as not built, and no
 excess-group-delay or gate-invariance symbol existed anywhere in `jasper/`
 **at that date** — both were true on 2026-08-19 and neither is now, since
