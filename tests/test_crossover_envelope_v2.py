@@ -4559,6 +4559,76 @@ def test_aged_failure_offers_no_undo_when_nothing_was_applied():
     assert not any("Undo" in label for label in _labels(env))
 
 
+_WAY_BACK_FP = "b" * 64
+
+
+@pytest.mark.parametrize(
+    "screen, status",
+    [
+        ("done", _status(
+            phase="done", applied=True, verify={"outcome": "pass"},
+            candidate=_candidate_summary(), can_undo=True,
+            previous_candidate_fingerprint=_WAY_BACK_FP,
+        )),
+        ("verify_fail", _status(
+            phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+            can_undo=True, previous_candidate_fingerprint=_WAY_BACK_FP,
+        )),
+        ("microphone_check", _aged_status(
+            REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
+            previous_candidate_fingerprint=_WAY_BACK_FP,
+        )),
+    ],
+    ids=["done", "verify_fail", "aged_entry"],
+)
+def test_every_undo_screen_offers_the_banked_way_back(screen, status):
+    """Each screen that offers Undo also offers the banked-candidate way back.
+
+    The action carries the PRIOR candidate's fingerprint in its own body, so
+    the tap needs no client-side knowledge — the JS POSTs endpoint+body
+    generically. Republish, not restore: the ordinary republish -> review ->
+    apply path is the route back.
+    """
+    env = build_crossover_envelope_v2(status)
+    assert env["screen"] == screen
+    way_back = [
+        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
+    ]
+    assert len(way_back) == 1
+    assert way_back[0]["endpoint"] == "/correction/crossover/v2/republish"
+    assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
+    # Survives the JS relay-in-flight gate for _undo_action's W6.12 reason: a
+    # get-me-out affordance must stay visible while a failed capture's relay
+    # is still winding down.
+    assert way_back[0]["show_during_relay"] is True
+
+
+@pytest.mark.parametrize("screen_status", [
+    _status(
+        phase="done", applied=True, verify={"outcome": "pass"},
+        candidate=_candidate_summary(), can_undo=True,
+    ),
+    _status(
+        phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        can_undo=True,
+    ),
+    _aged_status(
+        REASON_RELAY_TIMEOUT, phase="verify", applied=True, can_undo=True,
+    ),
+], ids=["done", "verify_fail", "aged_entry"])
+def test_no_way_back_is_minted_without_a_prior_candidate_fingerprint(screen_status):
+    """The control: a stash naming no banked candidate mints no dead button.
+
+    A first-ever apply, and a prior profile that was not a measured-candidate
+    apply, both leave ``previous_candidate_fingerprint`` unset — republish
+    could only refuse, so the action must not appear at all (#1863's rule,
+    pointed at the new affordance)."""
+    env = build_crossover_envelope_v2(screen_status)
+    assert not any(
+        a["id"] == "republish_previous" for a in env["alternate_actions"]
+    )
+
+
 def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     """IA over copy (#1941 design principle 1), pinned over the FULL envelope.
 

@@ -569,6 +569,25 @@ def _prediction_status(state: Any) -> dict[str, Any] | None:
     }
 
 
+def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | None:
+    """The measured candidate behind ``pre_apply_profile``, if it names one.
+
+    Reads the identity the apply path already recorded —
+    ``source.measured_candidate_fingerprint``, written by
+    ``baseline_profile._source_payload`` and preserved through the frozen
+    applied-profile projection — the same field
+    :mod:`jasper.correction.applied_speaker_evidence` keys staleness on.
+    """
+    profile = (state or {}).get("pre_apply_profile")
+    source = profile.get("source") if isinstance(profile, Mapping) else None
+    value = (
+        source.get("measured_candidate_fingerprint")
+        if isinstance(source, Mapping)
+        else None
+    )
+    return value if isinstance(value, str) and value else None
+
+
 def crossover_v2_status_block() -> dict[str, Any] | None:
     """The ``status["crossover_v2"]`` block.
 
@@ -634,6 +653,13 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # :func:`restore_anchor_static_prefix_refusal` for why this reader
         # takes the static prefix and not the full five-gate resolver.
         "can_undo": _host.restore_anchor_static_prefix_refusal(state) is None,
+        # The banked-candidate way back: the fingerprint of the measured
+        # candidate the pre-apply stash was built from, or ``None`` (a
+        # first-ever apply, or a prior profile that was not a measured-
+        # candidate apply). The envelope mints a /crossover/v2/republish
+        # action from it; the bank re-verifies on POST, so this is a pointer,
+        # never a promise that the artifact is still on disk.
+        "previous_candidate_fingerprint": _previous_candidate_fingerprint(state),
         "session_id": session_id,
         # Minimal live-loop observability: no attempt curves/history on the
         # household polling path, only the kernel output the envelope formats

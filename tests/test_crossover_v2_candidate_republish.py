@@ -792,3 +792,69 @@ def test_start_over_banks_the_ordinal_it_reset_from(bank):
     state = v2host.load_v2_state()
     assert coordinator.round_ordinal_epoch_from_state(state) == 1
     assert state.get("round_receipt") is None
+
+
+# --- the wizard's way back rides this door -----------------------------------
+
+
+def test_the_wizard_way_back_action_round_trips_through_this_door(
+    bank, monkeypatch, tmp_path
+):
+    """The real seam a household's tap travels: save_v2_state ->
+    crossover_v2_status_block -> build_crossover_envelope_v2 -> POST the
+    minted body. The done screen's way-back action carries the fingerprint
+    the pre-apply stash recorded, and that exact body must republish the
+    banked candidate — one test over the whole route, so a renamed key at
+    any layer fails here instead of shipping a dead button.
+    """
+    from types import SimpleNamespace
+
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+    from jasper.active_speaker.crossover_v2.journey import (
+        PHASE_CHECK,
+        PHASE_MEASURE,
+        PHASE_VERIFY,
+    )
+    from jasper.web import correction_crossover_v2_status as v2status
+
+    previous = _candidate()
+    _publish(bank, previous)
+    monkeypatch.setattr(
+        v2host, "session_volume_plan",
+        lambda: SimpleNamespace(needs_recovery=False),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
+        str(tmp_path / "model_error.json"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_current",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "verify": {"outcome": "pass"},
+        "pre_apply_profile": {
+            "kind": "prior",
+            "source": {"measured_candidate_fingerprint": previous.fingerprint},
+            "config": {"path": "/tmp/x.yml"},
+        },
+    })
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": v2status.crossover_v2_status_block(),
+    })
+    assert env["screen"] == "done"
+    way_back = next(
+        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
+    )
+    assert way_back["body"] == {"fingerprint": previous.fingerprint}
+
+    result = republish.handle_v2_republish(way_back["body"])
+
+    assert result["status"] == "republished"
+    assert (
+        v2host.load_v2_state()["candidate"]["fingerprint"] == previous.fingerprint
+    )
