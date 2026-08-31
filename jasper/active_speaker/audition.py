@@ -49,11 +49,16 @@ AUDITION_STATE_ENV = "JASPER_ACTIVE_SPEAKER_AUDITION_STATE"
 REFUSE_NO_APPLIED_PROFILE = "audition_no_applied_profile"
 REFUSE_PROFILE_DISPLACED = "audition_applied_profile_displaced"
 REFUSE_MEASUREMENT_ACTIVE = "audition_measurement_session_active"
-REFUSE_COMMISSION_LOAD_ACTIVE = "audition_commission_load_active"
 REFUSE_NO_DURABLE_ANCHOR = "audition_no_durable_anchor"
 REFUSE_EMIT = "audition_emit_refused"
 REFUSE_LOAD = "audition_load_refused"
 REFUSE_RESTORE = "audition_restore_failed"
+
+# Disclosed on the record rather than refused: AGENTS.md's non-negotiable list
+# is hearing and hardware safety, and an armed commissioning config is neither
+# -- it's an A/B-honesty concern about what the baseline layer is actually
+# being compared against underneath, not a reason to block a reversible listen.
+CONFOUND_COMMISSION_LOAD_ACTIVE = "commission_load_active"
 
 # Played THROUGH the graph that was just swapped in, so the announcement is also
 # a liveness proof. A silent wrong-graph state is the failure mode this door has.
@@ -153,17 +158,26 @@ def _refuse_if_graph_is_claimed() -> None:
     """
 
     from jasper.active_speaker.session_volume_plan import live_measurement_session
-    from jasper.active_speaker.startup_load import load_commission_load_state
 
     refusal = live_measurement_session(action="auditioning")
     if refusal is not None:
         raise AuditionRefused(REFUSE_MEASUREMENT_ACTIVE, refusal)
+
+
+def _commission_load_confound() -> str | None:
+    """``confounded_by`` for the audition record, or ``None``.
+
+    A per-driver commissioning config being armed means the applied baseline
+    is not what is actually playing underneath the reduced layer, so the
+    listener's A/B is confounded. Not refused -- the record discloses it
+    instead.
+    """
+
+    from jasper.active_speaker.startup_load import load_commission_load_state
+
     if load_commission_load_state().get("status") == "loaded":
-        raise AuditionRefused(
-            REFUSE_COMMISSION_LOAD_ACTIVE,
-            "a per-driver commissioning config is armed, so the applied baseline "
-            "is not what is playing; run `jasper-active-speaker commission-rollback` first",
-        )
+        return CONFOUND_COMMISSION_LOAD_ACTIVE
+    return None
 
 
 def _household_layers(
@@ -396,6 +410,7 @@ async def start_audition(
     from jasper.output_topology import load_output_topology
 
     _refuse_if_graph_is_claimed()
+    confounded_by = _commission_load_confound()
     applied = load_applied_baseline_profile_state()
     if not applied:
         raise AuditionRefused(
@@ -463,6 +478,7 @@ async def start_audition(
                 # Disclosed, never compensated: compensating would move a trim,
                 # and identical trims are what makes the A/B mean anything.
                 "louder_than_full_db": level_give_back_db(applied),
+                "confounded_by": confounded_by,
             }
             atomic_write_json(
                 audition_state_path(state_path),

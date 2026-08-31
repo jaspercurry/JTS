@@ -4,9 +4,10 @@
 
 """Behaviour pins for the audition door.
 
-Four questions, one altitude each: does the reduced layer differ from the full
+Five questions, one altitude each: does the reduced layer differ from the full
 one on EXACTLY one axis, does the graph always come back, is the durable anchor
-really untouched, and does a measurement session keep the door shut.
+really untouched, does a measurement session keep the door shut, and does an
+armed commission load confound the record instead of blocking the listen.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from jasper.active_speaker.audition import (
     AUDITION_LAYER_BASELINE,
     AUDITION_LAYER_FULL,
     AuditionRefused,
+    CONFOUND_COMMISSION_LOAD_ACTIVE,
     REFUSE_MEASUREMENT_ACTIVE,
     audition_state_path,
     hold_audition,
@@ -714,3 +716,27 @@ def test_a_restore_that_raises_outside_the_old_tuple_is_still_a_refusal(
     assert [r for r in caplog.records if "action=stop" in r.getMessage()]
     # The record stays: /state keeps disclosing, and the next stop can retry.
     assert read_audition_state() is not None
+
+
+# --------------------------------------------------------------------------- #
+# (e) the confound disclosure
+# --------------------------------------------------------------------------- #
+
+
+def test_a_commission_load_confounds_rather_than_refuses(
+    audition_box, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An armed per-driver commissioning config is an A/B-honesty concern, not
+    a hearing or hardware one, so it is stamped on the record rather than
+    refusing a reversible listen."""
+
+    cam, _anchor, _full_text, _state = audition_box
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.startup_load.load_commission_load_state",
+        lambda *_a, **_k: {"status": "loaded"},
+    )
+
+    started = asyncio.run(start_audition(cam=cam, layer=AUDITION_LAYER_BASELINE))
+
+    assert started["confounded_by"] == CONFOUND_COMMISSION_LOAD_ACTIVE

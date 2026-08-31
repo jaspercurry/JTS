@@ -96,6 +96,11 @@ def _print_status(payload: dict[str, Any]) -> None:
             f"up to {float(payload['louder_than_full_db']):.1f} dB where it "
             "was cutting, so this layer plays louder in those bands"
         )
+    if payload.get("confounded_by"):
+        print(
+            "  CONFOUNDED: a per-driver commissioning config is armed, so the "
+            "applied baseline underneath this layer is not what is playing"
+        )
     if payload.get("entry_config_path"):
         print(f"  durable graph (untouched): {payload['entry_config_path']}")
 
