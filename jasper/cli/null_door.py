@@ -48,9 +48,16 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
-REFUSE_NO_OVERLAP = "null_confirm_overlap_excludes_fc"
+#: Compose-time refusals carry the COMPOSER's reason
+#: (``program.NULL_REFUSE_*``) rather than a slug spelled again here — one
+#: vocabulary, owned where the decision is made.
 REFUSE_NO_SHOULDERS = "null_confirm_shoulders_unreadable"
 REFUSE_UNUSABLE_CAPTURE = "null_confirm_capture_unusable"
+#: The microphone half failed: none answered before the run, or the recorder
+#: faulted mid-walk. One slug, two statuses -- "refused" with no rows when it
+#: lands before the door, "partial" with the banked ids when it lands between
+#: two coordinates.
+REFUSE_CAPTURE_FAILED = "null_confirm_capture_failed"
 
 #: The three named mid-run failures (B4). Spelled the way ``jasper-measure``
 #: spells them, because an operator reading two doors' partial payloads is
@@ -87,13 +94,9 @@ CAPTURE_GEOMETRY = "reference_axis"
 POST_ROLL_S = 1.0
 PRE_PLAY_ALLOWANCE_S = 20.0
 
-#: The ambient window the paired-noise report is measured over, taken from the
-#: capture's own silence rather than a separate recording.
-AMBIENT_WINDOW_S = 0.4
-
 
 def _mid_run_failures() -> dict[type[BaseException], str]:
-    """The three named mid-run failures, and the reason each renders as.
+    """The named mid-run failures, and the reason each renders as.
 
     Imported lazily like everything else in this door — and resolved ONCE per
     run rather than per coordinate, so the tuple `except` is built from the
@@ -101,12 +104,17 @@ def _mid_run_failures() -> dict[type[BaseException], str]:
     """
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
+    from jasper.audio_measurement.wired_capture import WiredCaptureError
     from jasper.correction.coordinator import MeasurementWindowError
 
     return {
         SessionGraphError: REFUSE_GRAPH_LOST,
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
         SessionVolumePlanError: REFUSE_VOLUME_LOST,
+        # The mic is the fourth thing that can stop a walk between two
+        # coordinates -- the recorder faults, the device goes away -- and it
+        # left `main` as a bare traceback over k banked rows.
+        WiredCaptureError: REFUSE_CAPTURE_FAILED,
     }
 
 
@@ -194,24 +202,40 @@ def _level_trims(context: Any) -> tuple[dict[str, float], str]:
     )
 
 
-def _gap_ceiling_db(trims_db: Mapping[str, float]) -> float:
-    """The deepest null the trims actually in the graph can produce.
+def _gap_ceiling_db(
+    trims_db: Mapping[str, float], declared_sensitivities: Mapping[str, float],
+) -> float:
+    """The deepest null this speaker's BRANCH LEVELS allow. Disclosure, never a
+    refusal.
 
-    DISCLOSURE, never a refusal. Two branches whose levels differ cannot cancel
-    below ``-20*log10(1 - 10**(-gap/20))`` however right the delay is, so a
-    confirm run on unmatched branches measures its own mismatch. The gap is read
-    off the trims that will be installed, not off a nominal sensitivity table —
-    the graph is what the microphone hears.
+    Two branches whose acoustic outputs differ by ``gap`` cannot cancel below
+    ``-20*log10(1 - 10**(-gap/20))`` however right the delay is, so a confirm
+    run on unmatched branches measures its own mismatch and calls it alignment.
+
+    **The gap is what the level match REMOVED, not what it installed.** Reading
+    it off the installed trims inverts the fact twice over: a well-matched
+    speaker carries the biggest trims and would stamp every row with a false
+    ceiling, while a box with no level evidence at all -- the genuinely
+    unmatched case, the one a reader most needs warned about -- would report
+    unbounded. So:
+
+    * **Trims installed** — the branches were brought to equal output, and the
+      declared spread no longer bounds anything. Unbounded, with the row's own
+      ``trims_db`` and ``trims_source`` disclosing what was applied.
+    * **No trims** — the branches run at their declared sensitivities, and THAT
+      spread is the bound. On the reference 2-way it is the difference the level
+      match exists to remove.
+    * **Fewer than two declared sensitivities** — no evidence either way, so no
+      claim: unbounded, and ``trims_source`` says the evidence was absent.
     """
     from jasper.audio_measurement.interference_nulls import (
         branch_gap_null_depth_ceiling_db,
     )
 
-    values = [float(db) for db in trims_db.values()]
+    if trims_db:
+        return float("inf")
+    values = [float(db) for db in declared_sensitivities.values()]
     if len(values) < 2:
-        # Nothing was trimmed, so nothing here bounds the depth. That is not a
-        # claim the branches are matched -- it is a claim this door has no
-        # evidence either way, which `trims_source` on the row states outright.
         return float("inf")
     return branch_gap_null_depth_ceiling_db(max(values) - min(values))
 
@@ -478,7 +502,14 @@ def _depth(
         _sweep_meta(program.stimulus_segments()[0]),
         crossover_fc_hz=fc_hz,
         capture_geometry=CAPTURE_GEOMETRY,
-        ambient_duration_s=AMBIENT_WINDOW_S,
+        # NO ambient window, and that is a deletion rather than a smaller
+        # number. Any `ambient_duration_s` selects the signal-located branch,
+        # whose guard needs the controlled quiet to reach back PAST the whole
+        # sweep (`ambient_start < controlled_start` otherwise) -- so it would
+        # have to exceed the sweep plus its lead, and this door records no such
+        # quiet. The paired ambient it would produce is discarded here anyway:
+        # `summed_capture_curve` wants the magnitude, and the SNR verdict layer
+        # that consumed the ambient is the part #3390 deleted.
     )
     if curve is None:
         raise NullDoorRefused(
@@ -556,6 +587,15 @@ def _row(
         ),
         "graph_fingerprint": graph_fingerprint,
         "wav_sha256": wav_sha256,
+        # DISCLOSED, not decided (review note 7). The depth is read off an
+        # UNCALIBRATED capture, and unlike a level read the mic's own response
+        # does not cancel here: the shoulders sit an octave either side of Fc,
+        # so any tilt across that span biases the subtraction directly. Whether
+        # both doors should thread the measurement mic's calibration is one
+        # decision for both of them, not something this door settles alone --
+        # so every row says which it was, and a later calibrated run is
+        # distinguishable from these rather than silently comparable.
+        "calibrated": False,
     }
     if refusal is not None:
         row["status"] = "refused"
@@ -605,6 +645,7 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
 
 async def _run(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import measurement_door
+    from jasper.audio_measurement.program import NullConfirmUnavailable
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
     from jasper.camilla import primary_controller
 
@@ -615,7 +656,7 @@ async def _run(args: argparse.Namespace) -> int:
         tuple(args.delays) if args.delays is not None else _default_delays(spec, args)
     )
     trims_db, trims_source = _level_trims(context)
-    gap_ceiling_db = _gap_ceiling_db(trims_db)
+    gap_ceiling_db = _gap_ceiling_db(trims_db, context.declared_sensitivities)
 
     work_dir = Path(args.bundle_dir) if args.bundle_dir else Path.cwd()
     rows_dir = work_dir / "null_runs"
@@ -650,13 +691,16 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         program, plan, gain_db = _compose(context, fc_hz)
-    except ValueError as exc:
-        # The composer refused: the corner's shoulders fall outside the summed
-        # sweep's envelope, or the declared bands leave no overlap bracketing
-        # Fc. Its sentence, verbatim -- the module that decided owns the words.
+    except NullConfirmUnavailable as exc:
+        # The composer's OWN reason, not one slug for all of them. Four distinct
+        # facts refuse a compose -- an invalid corner, no run-up past the
+        # shoulders, a role whose declared band misses the sweep, an overlap that
+        # does not bracket Fc -- and a grader keys on the reason, so collapsing
+        # them would make every unbuildable corner look identical in the bank.
+        # The sentence is verbatim too: the module that decided owns the words.
         _bank(
             spec.dsp_candidate(0.0), False, "",
-            refusal=NullDoorRefused(REFUSE_NO_OVERLAP, str(exc)),
+            refusal=NullDoorRefused(exc.reason, str(exc)),
         )
         print(json.dumps({"status": "refused", "rows": written}, indent=2,
                          sort_keys=True))
@@ -855,6 +899,7 @@ def _delay_list(value: str) -> list[float]:
 def main(argv: Sequence[str] | None = None) -> int:
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
     from jasper.audio_measurement.null_walk import NullWalkError
+    from jasper.audio_measurement.wired_capture import WiredCaptureError
 
     from jasper.env_load import load_env_files
     from jasper.volume_coordinator import install_env_canonical_target_provider
@@ -892,6 +937,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "detail": getattr(exc, "detail", str(exc)),
         }, indent=2, sort_keys=True))
         print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    except WiredCaptureError as exc:
+        # The mic half, landing BEFORE the door — no rows exist, so this is a
+        # refusal rather than a partial. Every exit from this door speaks JSON:
+        # an operator (or the LLM reading a run) must never have to tell a
+        # refusal from a crash by whether stdout was empty.
+        print(json.dumps({
+            "status": "refused",
+            "reason": REFUSE_CAPTURE_FAILED,
+            "detail": str(exc),
+        }, indent=2, sort_keys=True))
+        print(f"refused ({REFUSE_CAPTURE_FAILED}): {exc}", file=sys.stderr)
         return EXIT_REFUSED
     except NullWalkError as exc:
         # A coordinate off the shared walk's grid. The grid is the one the

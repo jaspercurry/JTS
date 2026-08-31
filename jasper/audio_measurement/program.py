@@ -1490,7 +1490,9 @@ def build_verify_program(
     level guard here, exactly like the summed sweep itself.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
-        raise ValueError("fc_hz must be finite and positive")
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
+        )
     f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
     f2_hz = VERIFY_F_HI_HZ
     if not f1_hz < f2_hz:
@@ -1559,6 +1561,31 @@ def build_verify_program(
     return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
 
 
+#: Why a null confirm could not be composed. The REASON is the contract a
+#: grader keys on; the message beside it is operator copy and may be reworded.
+#: Four distinct facts, four slugs -- collapsing them onto one would make every
+#: unbuildable corner look the same to anything reading the banked rows.
+NULL_REFUSE_FC_INVALID = "null_confirm_fc_invalid"
+NULL_REFUSE_NO_SHOULDER_RUN_UP = "null_confirm_no_shoulder_run_up"
+NULL_REFUSE_ROLE_BAND_DISJOINT = "null_confirm_role_band_disjoint"
+NULL_REFUSE_OVERLAP_EXCLUDES_FC = "null_confirm_overlap_excludes_fc"
+NULL_REFUSE_DURATION_UNCLOSEABLE = "null_confirm_duration_uncloseable"
+NULL_REFUSE_LIMITS_INCOMPLETE = "null_confirm_limits_incomplete"
+
+
+class NullConfirmUnavailable(ValueError):
+    """This speaker has no confirmable null at the requested corner.
+
+    A ``ValueError`` subclass so every existing caller's ``except ValueError``
+    still catches it, carrying ``reason`` for callers that must tell the cases
+    apart. Same shape as ``delay_landscape.DelayLandscapeError``.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 def null_confirm_band_hz(
     fc_hz: float,
     *,
@@ -1597,7 +1624,9 @@ def null_confirm_band_hz(
     raises rather than quietly returning a depth read off two clamped edge bins.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
-        raise ValueError("fc_hz must be finite and positive")
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
+        )
     if not shoulder_margin >= 1.0:
         raise ValueError("shoulder_margin must be at least 1.0")
     lower_shoulder_hz = fc_hz / 2.0
@@ -1615,11 +1644,12 @@ def null_confirm_band_hz(
     # exactly) and the high arm dead for 8k <= fc <= 10k (the 20 kHz ceiling
     # binds at or below `2*fc`) -- precisely the corners with no run-up to give.
     if lo >= lower_shoulder_hz or hi <= upper_shoulder_hz:
-        raise ValueError(
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_NO_SHOULDER_RUN_UP,
             f"a null confirm at fc={fc_hz:g} Hz needs run-up PAST the shoulders "
             f"[{lower_shoulder_hz:g},{upper_shoulder_hz:g}] Hz, and the summed "
             f"sweep envelope only reaches [{lo:g},{hi:g}] Hz; a shoulder read at "
-            "the band edge is a clamped endpoint, not a measurement"
+            "the band edge is a clamped endpoint, not a measurement",
         )
     return lo, hi
 
@@ -1651,14 +1681,23 @@ def null_confirm_sweep_duration_s(
     Returns the longest phase-closing duration at or below the binding limit,
     or the nominal when nothing binds.
     """
-    limits = [
-        float(sweep_duration_limits_s[rb.role])
-        for rb in roles
-        if sweep_duration_limits_s and rb.role in sweep_duration_limits_s
-    ]
-    if not limits:
+    if not sweep_duration_limits_s:
         return nominal_s
-    binding = min(limits)
+    # A PARTIAL mapping is refused rather than honoured for the roles it covers.
+    # `min` over a subset leaves every unlisted role unconstrained, so the
+    # composer would fit the sweep to the drivers it knows about and hand the
+    # rest a duration nothing checked -- which admission then refuses per role,
+    # after the program is built. Unreachable through the door (the context
+    # fills every role or the session refuses), and refused anyway: the cost of
+    # being wrong here is a tweeter driven past its protocol duration.
+    missing = sorted(rb.role for rb in roles if rb.role not in sweep_duration_limits_s)
+    if missing:
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_LIMITS_INCOMPLETE,
+            f"sweep duration limits cover only part of the confirm's roles; "
+            f"{', '.join(missing)} would be fitted to no limit at all",
+        )
+    binding = min(float(sweep_duration_limits_s[rb.role]) for rb in roles)
     # Compare the REALIZED length, never the request. A sweep does not run for
     # the duration it was asked for: the kernel rounds to the nearest
     # phase-closing length, which can round UP past the limit. Returning the
@@ -1675,9 +1714,10 @@ def null_confirm_sweep_duration_s(
             sample_rate=PROGRAM_SAMPLE_RATE_HZ,
         )
     except ValueError as exc:
-        raise ValueError(
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_DURATION_UNCLOSEABLE,
             f"a null confirm over [{f1_hz:g},{f2_hz:g}] Hz cannot close its "
-            f"phase within the {binding:g} s limit its drivers allow"
+            f"phase within the {binding:g} s limit its drivers allow",
         ) from exc
 
 
@@ -1743,10 +1783,11 @@ def null_confirm_channel_plan(
         lo_edge = max(f1_hz, float(rb.band.lower_hz))
         hi_edge = min(f2_hz, float(rb.band.upper_hz))
         if not lo_edge < hi_edge:
-            raise ValueError(
+            raise NullConfirmUnavailable(
+                NULL_REFUSE_ROLE_BAND_DISJOINT,
                 f"the {rb.role}'s declared band "
                 f"[{rb.band.lower_hz:g},{rb.band.upper_hz:g}] Hz does not "
-                f"intersect the confirm sweep [{f1_hz:g},{f2_hz:g}] Hz"
+                f"intersect the confirm sweep [{f1_hz:g},{f2_hz:g}] Hz",
             )
         start = _sample_at(lo_edge) if lo_edge > f1_hz else 0
         end = _sample_at(hi_edge) if hi_edge < f2_hz else None
@@ -1765,11 +1806,12 @@ def null_confirm_channel_plan(
     overlap_lo = max(open_lo.values())
     overlap_hi = min(open_hi.values())
     if not overlap_lo < fc_hz < overlap_hi:
-        raise ValueError(
+        raise NullConfirmUnavailable(
+            NULL_REFUSE_OVERLAP_EXCLUDES_FC,
             f"the declared driver bands leave every branch open only over "
             f"[{overlap_lo:g},{overlap_hi:g}] Hz, which does not bracket "
             f"fc={fc_hz:g} Hz with the gate fades clear of it; there is no "
-            "coordinate at which these branches can be measured cancelling"
+            "coordinate at which these branches can be measured cancelling",
         )
     return NullConfirmPlan(
         band_hz=(f1_hz, f2_hz),

@@ -271,12 +271,103 @@ def test_the_branch_gap_bounds_the_depth(gap_db, expected):
         assert ceiling == pytest.approx(expected, abs=0.01)
 
 
-def test_the_gap_ceiling_reads_the_trims_actually_installed():
-    assert null_door._gap_ceiling_db({}) == math.inf
-    assert null_door._gap_ceiling_db({"woofer": 0.0}) == math.inf
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        (dict(fc_hz=-1.0), "NULL_REFUSE_FC_INVALID"),
+        (dict(fc_hz=12_000.0), "NULL_REFUSE_NO_SHOULDER_RUN_UP"),
+        (
+            dict(roles=_roles(woofer=(500.0, 1200.0), tweeter=(3000.0, 10_000.0))),
+            "NULL_REFUSE_OVERLAP_EXCLUDES_FC",
+        ),
+        (
+            dict(roles=_roles(woofer=(6000.0, 9000.0), tweeter=(6000.0, 9000.0))),
+            "NULL_REFUSE_ROLE_BAND_DISJOINT",
+        ),
+        (dict(limits={"woofer": 6.0}), "NULL_REFUSE_LIMITS_INCOMPLETE"),
+    ],
+)
+def test_each_compose_refusal_carries_its_own_reason(kwargs, expected):
+    """Four distinct facts refuse a compose; a grader keys on the REASON.
+
+    One slug for all of them makes an invalid corner, a corner with no run-up,
+    a driver whose declared band misses the sweep, and an overlap that cannot
+    bracket Fc look identical in the bank — and they call for four different
+    actions. The mapping is asserted against `program`'s own constants so the
+    door cannot drift from the module that decides.
+    """
+    from jasper.audio_measurement import program as program_mod
+
+    fc = kwargs.get("fc_hz", FC_HZ)
+    roles = kwargs.get("roles", _roles())
+    limits = kwargs.get("limits", {"woofer": 6.0, "tweeter": 2.0})
+    with pytest.raises(program_mod.NullConfirmUnavailable) as caught:
+        build_null_confirm_program(
+            fc, roles, gain_db=-20.0, sweep_duration_limits_s=limits,
+        )
+    assert caught.value.reason == getattr(program_mod, expected)
+
+
+def test_a_rendered_capture_reads_a_depth_end_to_end(tmp_path):
+    """The door must be able to bank a MEASURED row — verified by execution.
+
+    This is the whole instrument's happy path in one test: compose, render the
+    two branches, sum them the way the air does, and read a depth. It exists
+    because an `ambient_duration_s` on the door's capture call selects the
+    signal-located branch, whose guard needs the controlled quiet to reach back
+    past the entire sweep — structurally impossible for this door, so every
+    first row raised an uncaught ValueError. Nothing short of running it caught
+    that.
+    """
+    import wave
+
+    from jasper.audio_measurement.program import render_program_pcm
+
+    program, plan = _program()
+    pcm = render_program_pcm(program)
+    # What the microphone hears: one acoustic sum of both branches.
+    summed = np.asarray(pcm, dtype=np.float64).sum(axis=1)
+    rng = np.random.default_rng(11)
+    summed = summed + rng.normal(0.0, 1e-4, summed.shape)
+    path = tmp_path / "summed_capture.wav"
+    with wave.open(str(path), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(4)
+        fh.setframerate(48_000)
+        fh.writeframes(
+            (np.clip(summed, -1.0, 1.0) * (2**31 - 1)).astype("<i4").tobytes()
+        )
+
+    depth_db, span = null_door._depth(path, program, plan, FC_HZ)
+
+    assert isinstance(depth_db, float) and math.isfinite(depth_db)
+    assert span.used_hz[0] < FC_HZ < span.used_hz[1]
+
+
+def test_the_gap_ceiling_bounds_the_UNMATCHED_case_not_the_matched_one():
+    """The gap is what the level match REMOVED, not what it installed.
+
+    Reading the installed trims inverts the fact twice: the well-matched
+    speaker carries the biggest trims and would stamp every row with a false
+    ceiling, while the box with no level evidence — the genuinely unmatched
+    case a reader most needs warned about — would report unbounded. Both
+    directions are asserted here, so a fix that swaps only one of them fails.
+    """
+    declared = {"woofer": 88.0, "tweeter": 98.0}
+
+    # No trims: the branches run at their declared sensitivities, and the
+    # 10 dB spread bounds the null at ~3.3 dB.
+    assert null_door._gap_ceiling_db({}, declared) == pytest.approx(3.30, abs=0.01)
+
+    # Trims installed: the branches were levelled, so the declared spread
+    # bounds nothing. The row discloses `trims_db` for the reader instead.
     assert null_door._gap_ceiling_db(
-        {"woofer": 0.0, "tweeter": -10.0}
-    ) == pytest.approx(3.30, abs=0.01)
+        {"woofer": 0.0, "tweeter": -10.0}, declared
+    ) == math.inf
+
+    # No evidence either way — no claim.
+    assert null_door._gap_ceiling_db({}, {}) == math.inf
+    assert null_door._gap_ceiling_db({}, {"woofer": 88.0}) == math.inf
 
 
 # --------------------------------------------------------------------------- #
@@ -372,9 +463,13 @@ def test_a_measured_row_is_self_contained():
     for field in (
         "ts", "fc_hz", "delay_us", "delayed_role", "polarity", "inverted_role",
         "position_deg", "trims_db", "gap_ceiling_db", "graph_fingerprint",
-        "wav_sha256",
+        "wav_sha256", "calibrated",
     ):
         assert field in row, field
+    # The mic response does not cancel across shoulders an octave apart, so a
+    # row must say whether it was corrected. Rows that differ on this are not
+    # comparable, and the flag is what lets a reader tell.
+    assert row["calibrated"] is False
 
 
 def test_an_inverted_row_names_the_flipped_branch():
@@ -467,6 +562,8 @@ def test_the_door_holds_the_fanin_gate_under_its_own_registered_owner():
          null_door.REFUSE_ISOLATION_LOST),
         ("jasper.active_speaker.session_volume_plan", "SessionVolumePlanError",
          null_door.REFUSE_VOLUME_LOST),
+        ("jasper.audio_measurement.wired_capture", "WiredCaptureError",
+         null_door.REFUSE_CAPTURE_FAILED),
     ],
 )
 def test_each_named_mid_run_failure_has_a_reason(module, name, expected):
@@ -506,6 +603,52 @@ def test_an_interrupted_run_reports_the_rows_it_banked():
     )
     assert exc.reason == null_door.REFUSE_GRAPH_LOST
     assert exc.banked == ["a.json", "b.json"]
+
+
+def test_a_missing_microphone_exits_as_json_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """EVERY exit from this door speaks JSON, refusals included.
+
+    The door's own no-mic refusal is a `WiredCaptureError`, and it used to
+    traceback out of `main` with an empty stdout — leaving an operator (or the
+    LLM reading a run) unable to tell a refusal from a crash by anything but
+    the absence of output. The sibling door renders the same case as refusal
+    JSON; this matches it.
+    """
+    import json
+
+    from jasper.audio_measurement.wired_capture import WiredCaptureError
+
+    def _no_mic():
+        raise WiredCaptureError("no measurement microphone answered")
+
+    monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
+    monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
+    monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
+    monkeypatch.setattr(null_door, "_resolve_mic", _no_mic)
+
+    code = null_door.main(["--bundle-dir", str(tmp_path)])
+
+    assert code == null_door.EXIT_REFUSED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == null_door.REFUSE_CAPTURE_FAILED
+
+
+def _fake_context():
+    return SimpleNamespace(
+        fc_hz=FC_HZ,
+        roles_bands=_roles(),
+        driver_caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
+        driver_sweep_duration_limits_s={"woofer": 6.0, "tweeter": 2.0},
+        session_volume_db=-30.0,
+        preset=object(),
+        topology=object(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="plughw:CARD=Loopback,DEV=0",
+        safety_profile={},
+        role_targets={},
+        declared_sensitivities={},
+    )
 
 
 def test_a_refused_run_writes_no_stimulus(tmp_path, monkeypatch):
