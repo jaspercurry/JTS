@@ -126,8 +126,8 @@ assert.equal(
 );
 
 const actionPromise = runAction(
-  { endpoint: "/correction/crossover/level-match", body: {} },
-  element("level-match-button"),
+  { endpoint: "/correction/crossover/v2/session", body: {} },
+  element("restart-session-button"),
 );
 // A poll re-render arrives while the unrelated action's POST is still in
 // flight (busy === true). Stop must stay clickable.
@@ -177,9 +177,9 @@ nextEnvelope = {
   verdict_text: "Restart the complete measurements.",
   candidate_review: null,
   next_action: {
-    id: "level_match",
+    id: "restart_session",
     label: "Restart driver and alignment measurements",
-    endpoint: "/correction/crossover/level-match",
+    endpoint: "/correction/crossover/v2/session",
     body: {},
   },
 };

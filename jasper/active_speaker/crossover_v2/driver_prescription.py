@@ -1968,9 +1968,20 @@ def read_driver_prescription(
             DRIVER_PRESCRIPTION_PACKET_MISMATCH,
             "this prescription answers a different evidence packet "
             f"({fingerprint[:12]}...) than the one supplied "
-            f"({packet_fingerprint[:12]}...)",
+            f"({packet_fingerprint[:12]}...); the fingerprint depends on "
+            "which evidence inputs (--drivers, --applied-profile, --state) "
+            "were present when each packet was built, so two honest builds "
+            "of the same round can disagree",
             prescription_answers=fingerprint,
             packet_is=packet_fingerprint,
+            # Only THIS side's inputs are knowable — the other is a fingerprint,
+            # not a build. Free: these three are already the gate's own answers
+            # to "was this evidence present", read for the checks below.
+            packet_is_evidence_present={
+                "drivers": bool(passbands_hz),
+                "classification": bool(classifications),
+                "incumbent_linearization": incumbent_filters is not None,
+            },
         )
 
     if not passbands_hz:
@@ -1978,8 +1989,9 @@ def read_driver_prescription(
             PASSBAND_UNAVAILABLE,
             "this speaker's evidence declares no per-driver band, so there is "
             "nothing a per-driver prescription could be checked against. The "
-            "bands come from the confirmed driver-safety profile's own "
-            "measurement_band_hz and required_protection_filters",
+            "bands come from --drivers <design draft JSON>'s confirmed "
+            "driver-safety profile — its own measurement_band_hz and "
+            "required_protection_filters",
         )
     passbands = dict(passbands_hz)
 

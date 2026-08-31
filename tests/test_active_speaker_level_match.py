@@ -15,8 +15,8 @@ behaviour through ``build_baseline_profile_candidate`` with real synthesized
 phone captures lives in ``test_active_speaker_baseline_profile.py``.
 
 The second half of this file pins which of the TWO evidence sources wins: a
-banked measured base trim (``jasper-driver-trim``) is preferred over the guided
-captures, and a banked trim measured against a different declaration is refused
+banked measured base trim (written by the apply seam) is preferred over the
+guided captures, and a trim measured against a different declaration is refused
 loudly rather than applied to a speaker it does not describe.
 """
 from __future__ import annotations
@@ -371,12 +371,10 @@ def _bank_base_trim(tmp_path, monkeypatch, *, trims, declaration):
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(state))
     dbt.write_base_trim(
         trims_db=trims,
-        levels_db={"mono": {role: {2000.0: -40.0} for role in trims}},
-        capture_geometries={"mono": {role: "near_field" for role in trims}},
         roles=tuple(trims),
-        regions=[("woofer", "tweeter", 2000.0)],
+        speaker_group_ids=["mono"],
         declaration_fingerprint=declaration,
-        microphone={"sens_factor_db": -12.07, "serial": "8108494"},
+        trim_source="strict_measured_candidate",
         state_path=state,
     )
     return state
@@ -520,10 +518,7 @@ def test_a_banked_trim_reports_the_groups_it_levelled_to_readiness(
         declaration=crossover_preview_fingerprint(PREVIEW),
     )
     record = json.loads(state.read_text())
-    record["levels_db"] = {
-        "left": record["levels_db"]["mono"],
-        "right": record["levels_db"]["mono"],
-    }
+    record["speaker_group_ids"] = ["left", "right"]
     state.write_text(json.dumps(record))
 
     _trims, meta = _measured_level_trims(_preset(2, TWO_WAY), {}, PREVIEW)

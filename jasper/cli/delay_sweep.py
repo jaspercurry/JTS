@@ -18,9 +18,11 @@ step; the second is staging the printed coordinates with
 ``jasper-angle-capture stage --delayed-role R --delay-us N``, which
 ``propose`` prints ready to run.
 
-**A refusal is an output, not an error.** Banked curves that do not span both
-crossover shoulders cannot support a null at Fc, and the sentence saying so is
-printed verbatim from the module that decided it.
+**A refusal is an output, not an error.** Banked curves whose shared band does
+not bracket Fc cannot support a null there, and the sentence saying so is
+printed verbatim from the module that decided it. A band that brackets Fc but
+falls short of the canonical shoulders is NOT refused: it proposes on the span
+it has, and the printed answer says so.
 
 Applying a proposed delay is NOT this tool's job. The prescription door owns
 that, with its own lobe gate and its own receipts.
@@ -41,6 +43,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.delay_landscape import (
+    DelayLandscape,
     DelayLandscapeError,
     compute_landscape,
 )
@@ -161,7 +164,36 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             for coordinate in landscape.confirmation_coordinates_us
         ],
     }, indent=2, sort_keys=True))
+    print(_optimum_line(landscape), file=sys.stderr)
     return EXIT_OK
+
+
+def _optimum_line(landscape: DelayLandscape) -> str:
+    """The answer and the basis it was read on, in one operator line.
+
+    Beside the optimum rather than further down the payload: a coordinate read
+    on clamped shoulders is weaker evidence than the same number read on the
+    canonical span, and nothing else on the line says which one this is.
+    """
+
+    span = landscape.shoulders
+    clamped = [
+        side for side, flag in
+        (("lower", span.lower_clamped), ("upper", span.upper_clamped)) if flag
+    ]
+    basis = (
+        f"shoulders {span.used_hz[0]:g}-{span.used_hz[1]:g} Hz "
+        f"({span.used_octaves:.2f} octaves), "
+    )
+    basis += (
+        f"{'+'.join(clamped)} clamped in from canonical "
+        f"{span.canonical_hz[0]:g}-{span.canonical_hz[1]:g} Hz"
+        if clamped else "canonical"
+    )
+    return (
+        f"optimum {landscape.best_coordinate_us:g} us, predicted null "
+        f"{landscape.best_predicted_null_depth_db:.1f} dB — {basis}"
+    )
 
 
 def _stage_command(candidate: Any, args: argparse.Namespace) -> str:

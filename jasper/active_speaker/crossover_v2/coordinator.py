@@ -345,6 +345,16 @@ class RoundEvidence:
     #: not.
     trusted_floor_hz: float | None = None
     previous_trusted_floor_hz: float | None = None
+    #: Which epoch of the ordinal sequence ``round_ordinal`` counts in — see
+    #: :attr:`SeriesPosition.ordinal_epoch`, which is where it is resolved.
+    #: Carried on the evidence so :func:`_round_identity` can bank it beside
+    #: the ordinal it qualifies; a receipt naming an ordinal with no epoch
+    #: leaves "round 1" ambiguous the moment a republish has run.
+    #:
+    #: Defaulted for the reason the two floors above are, and NOT for
+    #: ``round_ordinal``'s: a forgotten epoch is absent, not wrong. ``0`` is
+    #: what every round before this key shipped honestly was.
+    round_ordinal_epoch: int = 0
     #: The post-apply cloud's per-position residuals, role-labelled, as
     #: JSON-shaped rows (§4.2). Banked on the receipt so the next bite can tell
     #: a position-INVARIANT miss — ours, a model or level defect — from a
@@ -953,6 +963,14 @@ def _round_identity(
         # so the numbers banked for the next round are byte-for-byte the ones
         # this round decided on.
         "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
+        # Which EPOCH that ordinal counts in. Read off the EVIDENCE rather than
+        # the headroom verdict beside it, because the headroom axis does not
+        # branch on the epoch and must not start: this is disclosure, not a
+        # gate. A republish resets the sequence — it replaces durable state
+        # wholesale and the receipt this dict becomes is that sequence's only
+        # memory — so without this field "round 1" reads identically on a fresh
+        # box and on a series whose count was silently restarted.
+        "round_ordinal_epoch": evidence.round_ordinal_epoch,
         "objectives": evaluation.headroom.evidence.get("objectives"),
         "trusted_floor_hz": evaluation.headroom.evidence.get("trusted_floor_hz"),
         # The spec verdict's OWN numbers, beside the two scalars above. The
@@ -1188,15 +1206,69 @@ class SeriesPosition:
     #: objectives from another would be a series remembering two different
     #: pasts, which is precisely the artefact SF5 exists to refuse.
     previous_trusted_floor_hz: float | None = None
+    #: Which EPOCH of the ordinal sequence this round's ``ordinal`` counts in.
+    #: ``0`` is a box whose sequence has never been reset. Both doors that
+    #: replace durable state wholesale while leaving a measured graph on the
+    #: speaker increment it —
+    #: :func:`~jasper.web.correction_crossover_v2_republish.handle_v2_republish`
+    #: and :func:`~jasper.web.correction_crossover_v2.reset_v2_journey_state`'s
+    #: applied branch — because the ``round_receipt`` they drop is the
+    #: sequence's only memory, so the next round is ordinal 1 again. Without
+    #: this the two are indistinguishable: an operator reading "round 1" cannot
+    #: tell a fresh box from a series whose count was reset out from under it.
+    #:
+    #: Defaulted rather than required, on ``previous_trusted_floor_hz``'s
+    #: stated line: a forgotten epoch is merely ABSENT, and ``0`` — "no reset
+    #: recorded" — is what every state file written before this key shipped
+    #: honestly means. It withholds a disclosure; it cannot fabricate one.
+    ordinal_epoch: int = 0
 
     @classmethod
-    def first(cls) -> "SeriesPosition":
-        """The opening round — nothing has run, nothing was measured."""
+    def first(cls, *, ordinal_epoch: int = 0) -> "SeriesPosition":
+        """The opening round — nothing has run, nothing was measured.
+
+        ``ordinal_epoch`` is threaded through rather than defaulted at every
+        call, and that is the whole point: **every** path that resolves to the
+        first round is a path where the sequence restarted, and the honest ones
+        restart it for a reason the state file still records. A republish is
+        one of those, so ``first()`` must be able to say "ordinal 1, epoch 2"
+        or the disclosure dies at exactly the door it exists for.
+        """
 
         return cls(
             ordinal=1, previous_objectives=None, previous_trusted_floor_hz=None,
-            previous_blend_correction=None,
+            previous_blend_correction=None, ordinal_epoch=ordinal_epoch,
         )
+
+
+#: Durable-state key holding :attr:`SeriesPosition.ordinal_epoch`. Top-level
+#: rather than inside ``round_receipt``, because the epoch has to survive
+#: exactly the write that DROPS the receipt — a republish's whole-dict
+#: replacement — and a marker living inside the record it exists to outlive
+#: would be erased by the same line it is there to disclose.
+ROUND_ORDINAL_EPOCH_STATE_KEY = "round_ordinal_epoch"
+
+
+def round_ordinal_epoch_from_state(raw: Any) -> int:
+    """The ordinal sequence's epoch, or ``0`` for "no reset recorded".
+
+    ``0`` for every unreadable shape, on
+    :func:`series_position_from_state`'s own stated direction: a missing,
+    corrupt, or older-build marker means nobody recorded a reset, and claiming
+    one that did not happen is the direction that fabricates. Under-disclosing
+    here restores exactly today's behaviour; over-disclosing would tell an
+    operator their count was reset when it never was.
+
+    ``bool`` is rejected before ``int`` because it subclasses it — a
+    hand-edited ``true`` must not publish as epoch 1.
+    """
+
+    if not isinstance(raw, Mapping):
+        return 0
+    epoch = raw.get(ROUND_ORDINAL_EPOCH_STATE_KEY)
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        return 0
+    return epoch
 
 
 def series_position_from_state(raw: Any) -> SeriesPosition:
@@ -1228,14 +1300,15 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
     that quietly clamped here would be a second enforcer of the same rule.
     """
 
+    epoch = round_ordinal_epoch_from_state(raw)
     receipt = raw.get("round_receipt") if isinstance(raw, Mapping) else None
     if not isinstance(receipt, Mapping):
-        return SeriesPosition.first()
+        return SeriesPosition.first(ordinal_epoch=epoch)
     previous_ordinal = receipt.get("round_ordinal")
     if not isinstance(previous_ordinal, int) or isinstance(previous_ordinal, bool):
-        return SeriesPosition.first()
+        return SeriesPosition.first(ordinal_epoch=epoch)
     if previous_ordinal < 1:
-        return SeriesPosition.first()
+        return SeriesPosition.first(ordinal_epoch=epoch)
     objectives = receipt.get("objectives")
     if not isinstance(objectives, Mapping):
         # A receipt from before #2602 knows its ordinal only if a #2602 build
@@ -1250,9 +1323,11 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
             previous_blend_correction=_blend_from_receipt(receipt),
             previous_blend_residual_db=_blend_residual_from_receipt(receipt),
             previous_trusted_floor_hz=None,
+            ordinal_epoch=epoch,
         )
     return SeriesPosition(
         ordinal=previous_ordinal + 1,
+        ordinal_epoch=epoch,
         previous_objectives=FlatnessObjectives(
             tilt_db=_optional_db(objectives.get("tilt_db")),
             ripple_db=_optional_db(objectives.get("ripple_db")),

@@ -1965,4 +1965,22 @@ def build_conductor_state(
         if receipt_identity is not None
         else prior.get("round_receipt")
     )
+    # How many times the ordinal sequence has been RESET, carried forward
+    # unconditionally like the anchor keys above and for a sharper version of
+    # their reason: the conductor cannot contribute this — only the two reset
+    # doors increment it — and it has to outlive the very session those doors
+    # create. Session-scoping it would erase the disclosure on the first persist
+    # after a reset, which is exactly the round it exists to label.
+    #
+    # Imported here rather than at module scope: ``coordinator`` pulls
+    # ``program_analysis`` and the numpy stack, and this module is on the
+    # socket-activated web host's import path — the package ``__init__``'s own
+    # rule. The two web-side callers of the same pair import it function-local
+    # for the same reason.
+    from .coordinator import (
+        ROUND_ORDINAL_EPOCH_STATE_KEY,
+        round_ordinal_epoch_from_state,
+    )
+
+    state[ROUND_ORDINAL_EPOCH_STATE_KEY] = round_ordinal_epoch_from_state(prior)
     return ConductorState(state, receipt_identity is not None)
