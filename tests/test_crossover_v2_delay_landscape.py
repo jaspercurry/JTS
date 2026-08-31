@@ -11,6 +11,8 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.delay_landscape import (
     MODEL_AGREEMENT_DB,
+    REFUSAL_FC_OUTSIDE_OVERLAP,
+    REFUSAL_SHOULDER_RUN_UP,
     VERDICT_MODEL_BROKE,
     VERDICT_NO_EVIDENCE,
     DelayLandscapeError,
@@ -30,7 +32,7 @@ from jasper.active_speaker.delay_sweep import (
 FC_HZ = 1800.0
 
 
-def _lr4(freqs, *, highpass: bool):
+def _lr4(freqs, *, highpass: bool, fc_hz: float = FC_HZ):
     """A Linkwitz-Riley 4th-order branch — Butterworth 2nd order, squared.
 
     The shape the reverse-null test assumes: an LR4 pair sums FLAT in phase and
@@ -39,19 +41,22 @@ def _lr4(freqs, *, highpass: bool):
     equally, which is a null with no shoulders to measure it against — not what
     a crossover does.
     """
-    s = 1j * (np.asarray(freqs, dtype=float) / FC_HZ)
+    s = 1j * (np.asarray(freqs, dtype=float) / fc_hz)
     butter2 = (s**2 if highpass else 1.0) / (s**2 + math.sqrt(2.0) * s + 1.0)
     return butter2**2
 
 
-def _curve(role: str, *, arrival_us: float, freqs=None, gain_db: float = 0.0):
+def _curve(
+    role: str, *, arrival_us: float, freqs=None, gain_db: float = 0.0,
+    fc_hz: float = FC_HZ,
+):
     """One banked curve for a crossover branch arriving at `arrival_us`.
 
     Serialized exactly as `spatial.pose_curve_record` does, so the reader under
     test reconstructs it the way it reconstructs a real bank.
     """
     freqs = np.linspace(200.0, 12000.0, 512) if freqs is None else np.asarray(freqs)
-    shape = _lr4(freqs, highpass=(role == "tweeter"))
+    shape = _lr4(freqs, highpass=(role == "tweeter"), fc_hz=fc_hz)
     tf = (
         shape
         * 10.0 ** (gain_db / 20.0)
@@ -173,15 +178,95 @@ def test_an_unreadable_curve_refuses_rather_than_inventing_a_landscape(curve):
         )
 
 
-def test_curves_that_do_not_span_both_shoulders_are_refused():
-    narrow = np.linspace(1500.0, 2200.0, 64)  # no Fc/2, no 2*Fc
-    with pytest.raises(DelayLandscapeError):
-        predicted_null_depth_db(
-            _curve("woofer", arrival_us=0.0, freqs=narrow),
-            _curve("tweeter", arrival_us=0.0, freqs=narrow),
-            crossover_fc_hz=FC_HZ, relative_delay_us=0.0,
-            inverted_role="tweeter", lower_role="woofer", upper_role="tweeter",
-        )
+def _banded(
+    role: str, band, *, fc_hz: float, grid_points: int = 1024,
+    arrival_us: float = 0.0,
+):
+    """One curve banked on a wide shared grid but DECLARING a narrower sweep.
+
+    The shape a real bank has: `lateral_pose_curve` resamples every curve onto
+    one evidence grid and keeps the band it actually swept in `band_hz`.
+    """
+
+    curve = _curve(
+        role,
+        arrival_us=arrival_us,
+        freqs=np.linspace(150.0, 20000.0, grid_points),
+        fc_hz=fc_hz,
+    )
+    curve["band_hz"] = [float(band[0]), float(band[1])]
+    return curve
+
+
+# The reference speaker: a woofer declared to 4 kHz against a tweeter declared
+# from 1.6 kHz, so the shared overlap is 1.32 octaves where the canonical
+# shoulders want 2.00. Neither edge is tunable — both are declared driver caps.
+JTS3_BANDS = ((150.0, 4000.0), (1600.0, 20000.0))
+
+
+@pytest.mark.parametrize(
+    ("bands", "fc_hz", "grid_points", "refusal", "used_hz", "clamped"),
+    [
+        # F-3: the blind run's own coordinate. The old rule wanted
+        # `fc > 3200 and fc < 2000` here — empty for every fc, so PROPOSE
+        # never ran once on this speaker.
+        pytest.param(JTS3_BANDS, 2500.0, 1024, None, (1600.0, 4000.0),
+                     (True, True), id="blind_run_f3_both_shoulders_clamped"),
+        # Same speaker, a corner low enough that only the lower shoulder is
+        # short: the upper one reaches its canonical 2*Fc untouched.
+        pytest.param(JTS3_BANDS, 1800.0, 1024, None, (1600.0, 3600.0),
+                     (True, False), id="jts3_lower_shoulder_clamped_only"),
+        pytest.param(((150.0, 20000.0), (150.0, 20000.0)), 2500.0, 1024, None,
+                     (1250.0, 5000.0), (False, False), id="wide_overlap_canonical"),
+        # Genuinely unreadable: no null at Fc lives in a band that excludes it.
+        pytest.param(JTS3_BANDS, 1000.0, 1024, REFUSAL_FC_OUTSIDE_OVERLAP, None,
+                     None, id="fc_below_the_overlap"),
+        # Brackets Fc, but the banked grid puts fewer than two points either
+        # side of it — nothing to interpolate a shoulder from at any span.
+        pytest.param(JTS3_BANDS, 2500.0, 8, REFUSAL_SHOULDER_RUN_UP, None, None,
+                     id="overlap_too_coarse_for_a_shoulder"),
+    ],
+)
+def test_shoulders_clamp_into_the_measured_overlap_instead_of_refusing(
+    bands, fc_hz, grid_points, refusal, used_hz, clamped,
+):
+    """The canonical span is a preference; the overlap is the evidence.
+
+    Where the two meet, the shoulders are the canonical span clamped into the
+    overlap and the clamp is DISCLOSED. Refused is only what no span can read.
+    """
+
+    lower = _banded("woofer", bands[0], fc_hz=fc_hz, grid_points=grid_points,
+                    arrival_us=100.0)
+    upper = _banded("tweeter", bands[1], fc_hz=fc_hz, grid_points=grid_points)
+    spec = sweep_spec(
+        crossover_fc_hz=fc_hz, upper_role="tweeter", lower_role="woofer",
+        signed_acoustic_path_difference_m=0.0,
+    )
+
+    if refusal is not None:
+        with pytest.raises(DelayLandscapeError) as refused:
+            compute_landscape(lower, upper, spec=spec, inverted_role="tweeter")
+        assert refused.value.refusal_reason == refusal
+        # The numbers an operator needs travel as fields, not as prose.
+        assert refused.value.detail["crossover_fc_hz"] == fc_hz
+        assert refused.value.detail["overlap_lo_hz"] == max(bands[0][0], bands[1][0])
+        assert refused.value.detail["overlap_hi_hz"] == min(bands[0][1], bands[1][1])
+        return
+
+    landscape = compute_landscape(lower, upper, spec=spec, inverted_role="tweeter")
+    # Produced, not refused: every coordinate on the grid carries a depth, and
+    # narrower shoulders still locate the fixture's 100 us offset — what the
+    # model claims is WHERE the null is, and clamping does not move it.
+    assert len(landscape.predicted_null_depth_db) == len(landscape.coordinates_us) > 0
+    assert landscape.best_coordinate_us == pytest.approx(100.0, abs=spec.step_us)
+
+    span = landscape.shoulders
+    assert span.used_hz == pytest.approx(used_hz)
+    assert (span.lower_clamped, span.upper_clamped) == clamped
+    assert span.canonical_hz == pytest.approx((fc_hz / 2.0, fc_hz * 2.0))
+    # And the disclosure reaches whoever reads the landscape, not just its caller.
+    assert landscape.to_dict()["shoulders"] == span.to_dict()
 
 
 # --------------------------------------------------------------------------- #
@@ -486,16 +571,21 @@ def test_a_curve_passed_as_the_wrong_branch_is_refused():
 def test_the_shared_band_comes_from_each_curve_s_declared_sweep_not_its_grid():
     """Real banks resample every curve onto ONE evidence grid and keep the band
     actually swept in ``band_hz``. Read from the grid, the overlap would be the
-    same for both drivers, the shoulder-span refusal could never fire, and the
-    sum would include bins neither driver was swept over."""
+    same for both drivers, the shoulders would read as canonical however narrow
+    the real sweep was, and the sum would include bins neither driver was swept
+    over."""
     grid = np.linspace(200.0, 12000.0, 512)
     woofer = _curve("woofer", arrival_us=100.0, freqs=grid)
     tweeter = _curve("tweeter", arrival_us=0.0, freqs=grid)
     # Both on one grid, but the tweeter was only swept from above Fc/2 upward —
-    # so this pair cannot decide a null at the lower shoulder.
+    # so the lower shoulder can only be read as far down as the tweeter went.
     tweeter["band_hz"] = [FC_HZ * 0.75, 12000.0]
 
-    with pytest.raises(DelayLandscapeError):
-        compute_landscape(
-            woofer, tweeter, spec=_spec(), inverted_role="tweeter",
-        )
+    span = compute_landscape(
+        woofer, tweeter, spec=_spec(), inverted_role="tweeter",
+    ).shoulders
+    assert span.used_hz[0] == pytest.approx(FC_HZ * 0.75)
+    assert span.lower_clamped is True
+    # Read from the grid instead, the overlap would start at 200 Hz and nothing
+    # would be clamped at all.
+    assert span.overlap_hz[0] == pytest.approx(FC_HZ * 0.75)
