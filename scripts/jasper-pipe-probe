@@ -82,10 +82,11 @@ latency LANE_PCM [--repeats N]
     just before `aplay` starts. Because both timestamps are taken ON THE
     SAME BOX, they share a clock domain and never cross a laptop<->Pi
     offset. The click's arrival is derived from the sample offset it is
-    first found at (the STRONGEST peak crossing
-    jasper.route_latency.impulse_detect's shared threshold, not the first
-    crossing -- a burst has many samples near its own peak that would all
-    cross a low threshold) in the reassembled capture, converted to a
+    first found at (the single STRONGEST peak across both channels, not
+    the first crossing of a fixed threshold -- a burst has many samples
+    near its own peak that would all cross a low threshold -- and accepted
+    only when relatively prominent against the capture's own background;
+    see locate_click_sample()) in the reassembled capture, converted to a
     time via the tap's fixed 48 kHz rate. Sample 0 of the capture
     corresponds to the sniffer's own bind time only because outputd
     continuously publishes to the tap -- zero-filled during silence,
@@ -150,7 +151,6 @@ from jasper.audio_measurement.gating import analytic_signal
 from jasper.audio_measurement.program_analysis import parabolic_peak
 from jasper.route_latency.click_track import SAMPLE_RATE_HZ as CLICK_TRACK_RATE_HZ
 from jasper.route_latency.click_track import click_samples
-from jasper.route_latency.impulse_detect import DEFAULT_THRESHOLD as CLICK_DETECT_THRESHOLD
 from jasper.route_latency.ref9891_pcap import RATE as TAP_RATE_HZ
 
 # Same tap jasper.route_latency.ref9891_pcap reads from a pcap; its own
@@ -158,7 +158,14 @@ from jasper.route_latency.ref9891_pcap import RATE as TAP_RATE_HZ
 # interpolated into the embedded sniffer below rather than typed twice.
 TAP_UDP_PORT = 9891
 
-_SSH_CONTROL_DIR = Path(tempfile.gettempdir()) / "jasper-pipe-probe-ssh-control"
+# ControlPath lives under /tmp itself, NOT tempfile.gettempdir(): macOS's
+# default TMPDIR is a deep per-user path (/var/folders/.../T/), and
+# AF_UNIX sun_path caps at ~104 bytes -- a real run hit `unix_listener:
+# path "/var/folders/.../jasper-pipe-probe-ssh-control/pi@192.168.1.92:22..."
+# too long for Unix domain socket`. %C is ssh's own fixed-length connection
+# hash (host+port+user), so path length no longer depends on TMPDIR depth
+# or hostname length either.
+_SSH_CONTROL_DIR = Path("/tmp/jasper-pipe-probe-ssh")
 _SSH_CONTROL_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 # ControlMaster/ControlPersist multiplex every ssh/scp call to one host onto
 # one real handshake -- a `latency` run at 5 repeats otherwise pays for 17
@@ -170,7 +177,7 @@ SSH_OPTS = [
     "-o", "ConnectTimeout=10",
     "-o", "ControlMaster=auto",
     "-o", "ControlPersist=15s",
-    "-o", f"ControlPath={_SSH_CONTROL_DIR}/%r@%h:%p",
+    "-o", f"ControlPath={_SSH_CONTROL_DIR}/cm-%C",
 ]
 
 PROBE_SAMPLE_RATE_HZ = 44_100
@@ -213,6 +220,20 @@ CLICK_TRAIL_SILENCE_S = 0.5
 CLICK_PILOT_S = 0.4
 CLICK_PILOT_DBFS = -80.0
 CLICK_PILOT_HZ = 1_000.0
+
+# locate_click_sample(): the tap sits AFTER master volume and the crossover,
+# so a healthy click can arrive at only a few hundred LSB out of 32768 (hit:
+# a click peaking ~700 LSB read as "not found" against a fixed
+# 0.2-of-full-scale absolute threshold, 5/5 repeats, on a healthy chain).
+# Detection is relative instead: the global peak must beat
+# CLICK_PROMINENCE_RATIO x the RMS of the capture outside
+# +/-CLICK_RMS_EXCLUSION_MS of itself (excluded so the click's own energy
+# can't inflate the background it is judged against). CLICK_DETECT_FLOOR_LSB
+# is an absolute backstop so a silent/noise-only capture can never
+# self-trigger off its own noise floor, whatever the ratio says.
+CLICK_PROMINENCE_RATIO = 20.0
+CLICK_DETECT_FLOOR_LSB = 50.0
+CLICK_RMS_EXCLUSION_MS = 20.0
 
 SILENCE_RMS_DBFS = -70.0
 THD_N_BAND_HZ = (2_000.0, 20_000.0)
@@ -871,17 +892,29 @@ def _click_launch_command(lane_pcm: str, session: str) -> str:
     return f"python3 -c {shlex.quote(launch_py)}"
 
 
-def locate_click_sample(ch0: np.ndarray, ch1: np.ndarray, threshold: float = CLICK_DETECT_THRESHOLD) -> int | None:
-    """Sample index of the STRONGEST peak across both channels crossing
-    `threshold` -- not the first crossing: a raised-cosine burst has many
-    samples near its own peak that would all cross a low threshold, so
-    the strongest one is the repeatable anchor. `threshold` is
-    jasper.route_latency.impulse_detect's own shared contract."""
-    peak = np.maximum(np.abs(ch0.astype(np.int64)), np.abs(ch1.astype(np.int64))) / 32768.0
-    hits = np.flatnonzero(peak > threshold)
-    if hits.size == 0:
+def locate_click_sample(ch0: np.ndarray, ch1: np.ndarray, rate: int = TAP_RATE_HZ) -> int | None:
+    """Sample index of the single strongest |sample| peak across both
+    channels -- not the first threshold crossing: a raised-cosine burst has
+    many samples near its own peak that would all cross a low threshold, so
+    the strongest one is the repeatable anchor. Accepted only when RELATIVELY
+    prominent against the capture's own background (see CLICK_PROMINENCE_RATIO
+    for why an absolute full-scale threshold does not work here), with an
+    absolute CLICK_DETECT_FLOOR_LSB floor so pure noise can never trigger."""
+    peak = np.maximum(np.abs(ch0.astype(np.int64)), np.abs(ch1.astype(np.int64)))
+    if peak.size == 0:
         return None
-    return int(hits[np.argmax(peak[hits])])
+    idx = int(np.argmax(peak))
+    peak_val = float(peak[idx])
+    if peak_val <= CLICK_DETECT_FLOOR_LSB:
+        return None
+    exclude = int(round(CLICK_RMS_EXCLUSION_MS / 1000.0 * rate))
+    background_mask = np.ones(peak.size, dtype=bool)
+    background_mask[max(0, idx - exclude):idx + exclude + 1] = False
+    background = peak[background_mask].astype(np.float64)
+    background_rms = float(np.sqrt(np.mean(background ** 2))) if background.size else 0.0
+    if peak_val > CLICK_PROMINENCE_RATIO * background_rms:
+        return idx
+    return None
 
 
 def parse_tagged_ns(stderr_text: str, tag: str) -> int | None:
@@ -950,8 +983,10 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
     sample_index = locate_click_sample(ch0, ch1)
     if sample_index is None:
         print(
-            f"repeat {index + 1}: click not found in capture (nothing above "
-            f"threshold; launch_rc={launch_proc.returncode}, "
+            f"repeat {index + 1}: click not found in capture (no sample "
+            f"cleared both the {CLICK_DETECT_FLOOR_LSB:.0f}-LSB floor and "
+            f"{CLICK_PROMINENCE_RATIO:.0f}x background-RMS prominence; "
+            f"launch_rc={launch_proc.returncode}, "
             f"launch_stderr={launch_proc.stderr.strip()[-300:]!r}) -- check "
             "LANE_PCM names a real, routed device rather than assuming a "
             "routing problem",

@@ -7,9 +7,10 @@
 Most cases go through the real CLI (subprocess + `analyze --json`), not an
 importlib direct-load: the script has no .py suffix, and
 importlib.util.spec_from_file_location returns None for an unrecognized
-suffix without an explicit loader. One case (record pairing/reassembly)
-has no CLI surface at all -- it is exercised via a direct module load
-instead, see _load_module().
+suffix without an explicit loader. A few cases (record pairing/reassembly,
+click-sample location, SSH ControlPath construction) have no CLI surface
+at all -- they are exercised via a direct module load instead, see
+_load_module().
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import json
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -211,3 +213,57 @@ def test_pairing_preserves_count_and_flags_violations() -> None:
     odd_result = jasper_pipe_probe.reassemble_records(odd_stream)
     assert odd_result.pairing_ok is False
     assert len(odd_result.payloads) == 3
+
+
+def test_locate_click_sample_finds_prominent_click_over_near_silence() -> None:
+    """The tap sits after master volume (commonly ~-15 dB) and the
+    crossover, so a healthy click can arrive at only a few hundred LSB out
+    of 32768 (hit: a click peaking ~700 LSB read as "not found" against a
+    fixed 0.2-of-full-scale absolute threshold, 5/5 repeats, on a healthy
+    chain). A ~1%-FS click over a near-silent background must still be
+    located at its exact sample."""
+    n = RATE  # 1 s
+    rng = np.random.default_rng(7)
+    background = rng.integers(-3, 4, size=n)  # bounded: max magnitude 3 LSB
+    ch0 = background.astype(np.int16).copy()
+    ch1 = background.astype(np.int16).copy()
+    click_index = 40_000
+    click_amplitude = round(0.01 * 32768)  # ~1% FS
+    ch0[click_index] = click_amplitude
+    ch1[click_index] = click_amplitude
+
+    found = jasper_pipe_probe.locate_click_sample(ch0, ch1)
+
+    assert found == click_index
+
+
+def test_locate_click_sample_reports_not_found_on_low_level_noise() -> None:
+    """Below CLICK_DETECT_FLOOR_LSB, nothing is ever a click -- the
+    absolute floor exists so pure noise cannot self-trigger no matter how
+    prominently it ratios against its own (even quieter) background."""
+    n = RATE
+    rng = np.random.default_rng(11)
+    ch0 = rng.integers(-10, 11, size=n).astype(np.int16)  # bounded: max 10 LSB < floor
+    ch1 = rng.integers(-10, 11, size=n).astype(np.int16)
+
+    assert jasper_pipe_probe.locate_click_sample(ch0, ch1) is None
+
+
+def test_ssh_control_path_stays_short_regardless_of_tmpdir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ControlPath must not depend on TMPDIR: macOS's default TMPDIR is a
+    deep per-user path, and AF_UNIX sun_path caps at ~104 bytes -- a real
+    run hit 'unix_listener: path ... too long for Unix domain socket'
+    building ControlPath under tempfile.gettempdir(). Reload the module
+    under a deliberately deep TMPDIR and confirm the constructed path
+    (with ssh's own unexpanded %C token) stays well under the sun_path
+    budget and does not embed TMPDIR at all."""
+    deep_tmpdir = "/private/var/folders/" + "x" * 40 + "/T/" + "y" * 40
+    monkeypatch.setenv("TMPDIR", deep_tmpdir)
+    monkeypatch.setattr(tempfile, "tempdir", None)  # force TMPDIR to be re-read, not cached
+
+    reloaded = _load_module()
+
+    control_path_opt = next(opt for opt in reloaded.SSH_OPTS if opt.startswith("ControlPath="))
+    control_path = control_path_opt.removeprefix("ControlPath=")
+    assert len(control_path) < 90
+    assert deep_tmpdir not in control_path
