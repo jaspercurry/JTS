@@ -963,8 +963,51 @@ def _next_actions(
     return out
 
 
+#: Tier 0's front door (ADR-0204): the reading order an SSH-only agent lands
+#: on before any of the three operator docs. Methodology answers HOW
+#: (sequence, traps, thresholds); the runbook answers WHICH TOOL AND HOW TO
+#: RUN IT; the doctrine answers WHAT IS ALLOWED and binds the other two. Names
+#: only -- `_doc_path` resolves each to wherever it actually is on this box.
+_READING_ORDER: tuple[tuple[str, str, str], ...] = (
+    ("methodology guide", "tuning-methodology.md",
+     "sequence, traps, adjudicated thresholds"),
+    ("runbook, per tool", "tuning-operator-runbook.md",
+     "tool mechanics, contracts, exit codes"),
+    ("doctrine", "measurement-loop-doctrine.md",
+     "binds everything: what is allowed, who decides"),
+)
+
+#: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
+#: three operator docs. Existence is checked rather than assumed, so a
+#: laptop checkout that was never deployed falls back to the repo path
+#: instead of pointing an operator at a file that is not there.
+_INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
+_REPO_DOCS_DIR = Path("docs")
+
+
+def _doc_path(filename: str) -> str:
+    """The on-box installed path when this box has one, else the repo path."""
+    installed = _INSTALLED_DOCS_DIR / filename
+    return str(installed) if installed.exists() else str(_REPO_DOCS_DIR / filename)
+
+
+def _print_reading_order() -> None:
+    """The cold-start front door, printed before anything this verb measures.
+
+    Orientation only -- the doctrine's hard stops are enforced in code
+    regardless of whether anyone reads this line (ADR-0204 point 3), so
+    there is nothing here to gate and nothing to get wrong by skipping it.
+    """
+    print("read in order:")
+    for n, (label, filename, gives) in enumerate(_READING_ORDER, start=1):
+        print(f"  {n}. {label:<18} {_doc_path(filename)}  ({gives})")
+    print()
+
+
 def _print_status(payload: dict[str, Any]) -> None:
-    """The report, from the section summaries rather than a second phrasing."""
+    """The front-door reading order, then the report from the section
+    summaries rather than a second phrasing of them."""
+    _print_reading_order()
     print(f"{'speaker:':9} {payload['speaker']['hostname']}")
     for name in ("declared", "banked", "staged", "applied"):
         print(f"{name + ':':9} {payload[name]['summary']}")
