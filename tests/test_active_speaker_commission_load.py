@@ -740,6 +740,9 @@ def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
     )
     assert result["load"]["status"] == "loaded"
 
+    # The rollback derives its target from staged_config_path() directly (not
+    # the statefile), so it must resolve to the same anchor _load() staged.
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(staged_path))
     rollback = asyncio.run(
         rollback_driver_commissioning_config(
             load_config=cam.apply_running_config,

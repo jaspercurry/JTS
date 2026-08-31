@@ -1250,8 +1250,8 @@ def _commission_state_payload(
     status: str,
     candidate_config_path: str | None,
     active_config_path: str | None,
-    previous_config_path: str | None,
     last_action: str,
+    previous_config_path: str | None = None,
     target: dict[str, Any] | None = None,
     audible_evidence: dict[str, Any] | None = None,
     live_evidence: dict[str, Any] | None = None,
@@ -2314,40 +2314,25 @@ async def rollback_driver_commissioning_config(
     """Reload the all-muted staged config, ending a per-driver commissioning load.
 
     Re-applies the durable boot config into the RUNNING graph (inline, same as
-    the load), returning the speaker to everything-muted. The statefile already
-    points at the staged config, so nothing durable changes — this only un-does
-    the transient runtime swap.
+    the load), returning the speaker to everything-muted. The rollback target
+    is always the staged anchor — every commission load records
+    ``previous_config_path`` as exactly this same path, never a distinct one —
+    so it is derived fresh here rather than trusted from a prior load's
+    recorded state.
     """
 
     current_state = load_commission_load_state(state_path=state_path)
-    previous = current_state.get("previous_config_path")
-    if current_state.get("status") != "loaded" or not previous:
-        issue = _issue(
-            "blocker",
-            "commission_rollback_unavailable",
-            "no loaded per-driver commissioning config has a rollback target",
-        )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=current_state.get("candidate_config_path"),
-            active_config_path=current_state.get("active_config_path"),
-            previous_config_path=previous,
-            last_action="rollback_blocked",
-            target=current_state.get("target"),
-            issues=[issue],
-        )
-        return {"rollback": payload}
-    if not Path(str(previous)).exists():
+    staged_path = str(staged_config_path())
+    if not Path(staged_path).exists():
         issue = _issue(
             "blocker",
             "commission_rollback_config_missing",
-            f"rollback config no longer exists: {previous}",
+            f"rollback config no longer exists: {staged_path}",
         )
         payload = _commission_state_payload(
             status="rollback_failed",
             candidate_config_path=current_state.get("candidate_config_path"),
             active_config_path=current_state.get("active_config_path"),
-            previous_config_path=str(previous),
             last_action="rollback_failed",
             target=current_state.get("target"),
             issues=[issue],
@@ -2358,7 +2343,7 @@ async def rollback_driver_commissioning_config(
     try:
         apply_state = await apply_dsp_config(
             source="active_speaker_driver_commission_rollback",
-            candidate_path=str(previous),
+            candidate_path=staged_path,
             prior_config_path=None,
             get_current_config_path=None,
             load_config=load_config,
@@ -2370,7 +2355,6 @@ async def rollback_driver_commissioning_config(
             status="rollback_failed",
             candidate_config_path=current_state.get("candidate_config_path"),
             active_config_path=current_state.get("active_config_path"),
-            previous_config_path=str(previous),
             last_action="rollback_failed",
             target=current_state.get("target"),
             dsp_apply=dsp_state,
@@ -2385,7 +2369,7 @@ async def rollback_driver_commissioning_config(
         _record_commission_state(payload, state_path=state_path)
         logger.warning(
             "event=active_speaker.driver_commission_rollback result=failed target=%s error=%s",
-            previous,
+            staged_path,
             type(exc).__name__,
         )
         return {"rollback": payload}
@@ -2393,8 +2377,7 @@ async def rollback_driver_commissioning_config(
     payload = _commission_state_payload(
         status="rolled_back",
         candidate_config_path=current_state.get("candidate_config_path"),
-        active_config_path=apply_state.active_config_path or str(previous),
-        previous_config_path=str(previous),
+        active_config_path=apply_state.active_config_path or staged_path,
         last_action="rollback",
         target=current_state.get("target"),
         dsp_apply=apply_state.to_dict(),
@@ -2402,7 +2385,7 @@ async def rollback_driver_commissioning_config(
     _record_commission_state(payload, state_path=state_path)
     logger.info(
         "event=active_speaker.driver_commission_rollback result=rolled_back target=%s op_id=%s",
-        previous,
+        staged_path,
         apply_state.op_id,
     )
     return {"rollback": payload}
