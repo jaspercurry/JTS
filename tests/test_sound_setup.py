@@ -7593,25 +7593,33 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
     assert len(fake.active_raw_values) == swaps_after_install
 
 
-async def test_adding_a_band_still_replaces_the_pipeline(
+async def test_adding_and_removing_a_band_writes_parameters_too(
     tmp_path: Path, monkeypatch,
 ):
-    """A new filter is a new graph, and a new graph still ducks."""
+    """The band pool is fixed, so taking a slot into use is a number change.
+
+    Restructuring a pipeline is what makes CamillaDSP rebuild the filter group
+    and reset every filter's state, so keeping the slot count still is what
+    keeps adding a band silent.
+    """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
         ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
     ))
     await _live(fake, one, config_dir)
+    swaps_after_install = len(fake.active_raw_values)
     two = SoundProfile(parametric_bands=(
         ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
         ParametricBand(freq_hz=60.0, gain_db=3.0, q=1.0),
     ))
 
-    payload = await _live(fake, two, config_dir)
+    added = await _live(fake, two, config_dir)
+    removed = await _live(fake, one, config_dir)
 
-    assert payload["live_method"] == "active_config_raw"
-    assert fake.patches == []
-    assert len(fake.active_raw_values) == 2
+    assert added["live_method"] == "patch_config"
+    assert removed["live_method"] == "patch_config"
+    assert len(fake.patches) == 2
+    assert len(fake.active_raw_values) == swaps_after_install
 
 
 async def test_a_redraw_that_changed_nothing_writes_nothing(

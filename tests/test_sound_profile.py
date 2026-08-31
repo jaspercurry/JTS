@@ -14,6 +14,7 @@ from jasper.sound.profile import (
     ProfileLibraryEntry,
     SimpleEq,
     SoundProfile,
+    MAX_PARAMETRIC_BANDS,
     build_sound_filter_slots,
     build_sound_filters,
     delete_named_profile,
@@ -140,15 +141,9 @@ def test_the_graph_keeps_a_bands_slot_while_its_gain_crosses_zero(gain_db):
 
     slots = build_sound_filter_slots(profile)
 
-    assert [spec.name for spec in slots] == [
-        "sound_simple_sub_bass",
-        "sound_simple_bass",
-        "sound_simple_mid",
-        "sound_simple_presence",
-        "sound_simple_treble",
-        "sound_advanced_1",
-    ]
-    assert slots[-1].gain == gain_db
+    band = next(s for s in slots if s.name == "sound_advanced_1")
+    assert band.gain == gain_db
+    assert band.biquad_type == "Peaking"
 
 
 def test_a_neutral_band_holds_a_slot_but_is_not_counted_as_doing_anything():
@@ -158,24 +153,72 @@ def test_a_neutral_band_holds_a_slot_but_is_not_counted_as_doing_anything():
     )
 
     assert build_sound_filters(profile) == ()
-    assert len(build_sound_filter_slots(profile)) == 6
+    assert any(
+        s.name == "sound_advanced_1" for s in build_sound_filter_slots(profile)
+    )
     assert estimate_headroom_db(profile) == 0.0
 
 
-def test_a_band_switched_off_leaves_the_graph():
-    """"Off" cannot be spelled as a value: a Highpass carries no gain."""
-    profile = SoundProfile(
+@pytest.mark.parametrize("band_count", [0, 1, 3, 8])
+def test_the_advanced_pool_is_the_same_size_whatever_the_band_count(band_count):
+    """Adding a band must not change the pipeline, so the slots never move."""
+    profile = SoundProfile(parametric_bands=tuple(
+        ParametricBand(freq_hz=100.0 * (i + 1), gain_db=2.0, q=1.0)
+        for i in range(band_count)
+    ))
+
+    names = [s.name for s in build_sound_filter_slots(profile)]
+
+    assert [n for n in names if n.startswith("sound_advanced_")] == [
+        f"sound_advanced_{i}" for i in range(1, MAX_PARAMETRIC_BANDS + 1)
+    ]
+    # ...and only the declared ones are counted as doing anything.
+    assert len(build_sound_filters(profile)) == band_count
+
+
+def test_an_idle_slot_is_an_exact_identity():
+    """A 0 dB Peaking biquad's zeros cancel its poles, so a spare slot is free."""
+    profile = SoundProfile(parametric_bands=())
+
+    idle = [
+        s for s in build_sound_filter_slots(profile)
+        if s.name.startswith("sound_advanced_")
+    ]
+
+    assert len(idle) == MAX_PARAMETRIC_BANDS
+    assert {s.biquad_type for s in idle} == {"Peaking"}
+    assert {s.gain for s in idle} == {0.0}
+    assert not any(s.active() for s in idle)
+
+
+def test_a_band_switched_off_keeps_its_slot_as_an_idle_identity():
+    """Off is spelled as an idle slot, not as a filter leaving the graph.
+
+    A gainless type carries no gain to zero out, so the slot reverts to the
+    idle Peaking instead — which changes the biquad's recipe, and therefore
+    still costs one ducked swap. What it must NOT do is change the slot COUNT,
+    because that is what rebuilds the whole filter group.
+    """
+    off = SoundProfile(
         parametric_bands=(
             ParametricBand(enabled=False, biquad_type="Highpass", freq_hz=80.0, q=0.7),
         ),
     )
+    on = SoundProfile(
+        parametric_bands=(
+            ParametricBand(enabled=True, biquad_type="Highpass", freq_hz=80.0, q=0.7),
+        ),
+    )
 
-    assert [s.name for s in build_sound_filter_slots(profile)] == [
-        "sound_simple_sub_bass",
-        "sound_simple_bass",
-        "sound_simple_mid",
-        "sound_simple_presence",
-        "sound_simple_treble",
+    off_slots = build_sound_filter_slots(off)
+    slot = next(s for s in off_slots if s.name == "sound_advanced_1")
+
+    assert slot.biquad_type == "Peaking"
+    assert slot.gain == 0.0
+    assert not slot.active()
+    assert build_sound_filters(off) == ()
+    assert [s.name for s in off_slots] == [
+        s.name for s in build_sound_filter_slots(on)
     ]
 
 
