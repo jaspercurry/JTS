@@ -314,6 +314,82 @@ def parse_curve_magnitude(
     return freqs, magnitude, swept
 
 
+def read_pose_curve_pair(
+    bundle_dir: Path,
+    *,
+    phase: str,
+    position_deg: int,
+    roles: tuple[str, str],
+) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
+    """The latest banked take carrying BOTH roles, and the take it came from.
+
+    Selected through the measurement index — :func:`~.record_index.
+    bundle_measurements` narrows the candidates and :func:`read_take_curves`
+    decides — so the delay landscape and the forward model share one answer to
+    "which take speaks for this pose" instead of two that agree until they do
+    not.
+
+    Both roles must ride ONE take: the two transfers are summed against each
+    other, so curves from two different captures would be summed across
+    whatever moved between them.
+
+    **Latest attempt wins.** A superseded take stays on disk as the honest walk
+    record, and ``take_id`` is ``{position}_a{attempt:02d}`` zero-padded so the
+    index's path order is also chronological — so the LAST match is the take a
+    retake produced.
+
+    ``None`` when no take at this pose carries both roles, never a raise: a
+    round that measured one driver is an ordinary shape.
+    """
+
+    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
+    for row in reversed(
+        bundle_measurements(bundle_dir, phase=phase, position_deg=position_deg)
+    ):
+        curves = read_take_curves(artifacts / row.path, phase=phase)
+        if curves is None:
+            continue
+        by_role = {str(curve.get("role")): curve for curve in curves}
+        if roles[0] in by_role and roles[1] in by_role:
+            return by_role[roles[0]], by_role[roles[1]], row.path
+    return None
+
+
+def parse_curve_complex(
+    curve: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray, tuple[float, float]] | None:
+    """One banked curve's complex transfer, reconstructed exactly, or ``None``.
+
+    :func:`parse_curve_magnitude` plus the phase half of ruling S3's banked
+    pair, which is the inverse of :func:`~.spatial.pose_curve_record`'s
+    serialization: ``10 ** (magnitude_db / 20) * exp(1j * radians(phase_deg))``.
+    The one place a banked curve becomes a transfer function, so the delay
+    landscape and the forward model cannot drift apart on what "the banked
+    curve" means.
+
+    ``None`` on everything :func:`parse_curve_magnitude` rejects, plus a curve
+    carrying no ``phase_deg`` or one whose phase disagrees in length with the
+    grid. A consumer that wants a raise, or a role check, layers it on top.
+
+    Phase is banked WRAPPED to (-180, 180]; a consumer needing a continuous
+    phase unwraps it itself, since the branch choice is the consumer's.
+    """
+    parsed = parse_curve_magnitude(curve)
+    if parsed is None:
+        return None
+    freqs, magnitude_db, swept = parsed
+    try:
+        phase_deg = np.asarray(
+            [float(deg) for deg in curve["phase_deg"]], dtype=float
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if phase_deg.size != freqs.size:
+        return None
+    tf = 10.0 ** (magnitude_db / 20.0) * np.exp(1j * np.radians(phase_deg))
+    return freqs, tf, swept
+
+
 def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:
     """One banked ``positions/{take_id}.json`` as the round's "before", or ``None``.
 

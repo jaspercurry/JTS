@@ -34,9 +34,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
     DRIVER_ROLES,
@@ -49,8 +48,7 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
-from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
-from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
+from jasper.active_speaker.crossover_v2.position_cycle import read_pose_curve_pair
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
@@ -73,38 +71,6 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
         signed_acoustic_path_difference_m=args.path_difference_m,
         step_us=args.step_us,
     )
-
-
-def _curve_pair(
-    bundle_dir: Path, *, phase: str, position_deg: int, roles: tuple[str, str],
-) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
-    """The latest banked take carrying BOTH roles, and the take it came from.
-
-    Selected through the measurement index, the shape
-    :func:`~jasper.active_speaker.crossover_v2.position_cycle._banked_take_records`
-    established: the rows narrow the candidates and the take file decides.
-
-    Both roles must ride ONE take: the two transfers are summed against each
-    other, so curves from two different captures would be summed across
-    whatever moved between them.
-
-    **Latest attempt wins.** A superseded take stays on disk as the honest walk
-    record, and ``take_id`` is ``{position}_a{attempt:02d}`` zero-padded so the
-    index's ``ORDER BY path`` is also chronological -- so the FIRST match is
-    the take a retake replaced.
-    """
-
-    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    for row in reversed(bundle_measurements(
-        bundle_dir, phase=phase, position_deg=position_deg
-    )):
-        curves = read_take_curves(artifacts / row.path, phase=phase)
-        if curves is None:
-            continue
-        by_role = {str(curve.get("role")): curve for curve in curves}
-        if roles[0] in by_role and roles[1] in by_role:
-            return by_role[roles[0]], by_role[roles[1]], row.path
-    return None
 
 
 def _refused(reason: str, detail: str) -> int:
@@ -132,7 +98,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             "evidence/v1/artifacts/crossover_v2/<relay>/",
         )
 
-    found = _curve_pair(
+    found = read_pose_curve_pair(
         bundle_dir,
         phase=args.phase,
         position_deg=args.position_deg,

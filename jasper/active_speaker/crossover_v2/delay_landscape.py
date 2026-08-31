@@ -113,9 +113,7 @@ def _curve(
     invert the wrong branches and say nothing.
     """
 
-    import numpy as np
-
-    from .position_cycle import parse_curve_magnitude
+    from .position_cycle import parse_curve_complex
 
     if not isinstance(raw, Mapping):
         raise DelayLandscapeError(f"{field_name} must be a banked curve mapping")
@@ -125,23 +123,13 @@ def _curve(
             f"{field_name} is the {role!r} curve, but was passed as "
             f"{expected_role!r}"
         )
-    # The exact inverse of pose_curve_record's serialization (ruling S3) —
-    # the shared magnitude step, with this reader's phase requirement on top.
-    parsed = parse_curve_magnitude(raw)
+    parsed = parse_curve_complex(raw)
     if parsed is None:
         raise DelayLandscapeError(
-            f"{field_name} does not parse as a banked magnitude curve "
-            "(freqs_hz/magnitude_db/band_hz)"
+            f"{field_name} does not parse as a banked complex curve "
+            "(freqs_hz/magnitude_db/phase_deg/band_hz)"
         )
-    freqs, magnitude_db, swept = parsed
-    try:
-        phase_deg = np.asarray([float(deg) for deg in raw["phase_deg"]], dtype=float)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DelayLandscapeError(f"{field_name} must carry phase_deg") from exc
-    if phase_deg.size != freqs.size:
-        raise DelayLandscapeError(f"{field_name} curve arrays disagree in length")
-    tf = 10.0 ** (magnitude_db / 20.0) * np.exp(1j * np.radians(phase_deg))
-    return freqs, tf, swept
+    return parsed
 
 
 def _shoulders(lower_freqs, lower_band, upper_band, *, crossover_fc_hz: float):
