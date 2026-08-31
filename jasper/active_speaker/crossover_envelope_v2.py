@@ -92,6 +92,7 @@ from .crossover_v2.refusal_copy import (
     TEMPLATE_SESSION_RESTART,
     TEMPLATE_SILENT_AUTO_RETRY,
     TEMPLATE_VERIFY_FAIL,
+    _without_undo_promise,
     reason_message,
     verify_inconclusive_cause,
 )
@@ -3035,52 +3036,6 @@ def _can_undo(status: Mapping[str, Any]) -> bool:
     return bool(_v2(status).get("can_undo"))
 
 
-#: This layer's Undo promises, and what each becomes when there is nothing to
-#: restore. The REPLACEMENTS are not new copy: they are
-#: ``correction_rollback_failed_message``'s no-anchor arm and
-#: ``_DURABLE_STATE_FACTS_NO_ANCHOR`` minus their failure preamble ("the newer
-#: tuning is still applied"), which would read as an alarm on a screen that
-#: just said the speaker is tuned. Same facts, same two remedies, same voice.
-#:
-#: FIVE shapes, not the one that prompted the finding: a grep for the obvious
-#: wording ("you can undo") finds three, and a sweep across every done variant
-#: surfaced the other two ("or undo to restore the previous sound", "or undo if
-#: it sounds worse than before"). Matched as fragments, so each covers its
-#: several call sites. Only sentences MINTED HERE are listed — the four
-#: TEMPLATE_VERIFY_FAIL registry sentences belong to
-#: ``crossover_v2.refusal_copy.reason_message``, which narrates one failure
-#: across surfaces this layer cannot see; it drops their Undo clause itself,
-#: off the same ``can_undo`` this table is gated on (#2849).
-_UNDO_PROMISE_SWAPS = (
-    (
-        "If it sounds worse than before, you can undo.",
-        "This was its first measured crossover, so it has no stored previous "
-        "sound to go back to — clear the tuning from the Sound page to "
-        "remove it.",
-    ),
-    (
-        "if it sounds worse than before, you can undo.",
-        "this was the speaker's first measured crossover, so it has no "
-        "stored previous sound to go back to.",
-    ),
-    (
-        "or undo to restore the previous sound.",
-        "or clear the tuning from the Sound page — this speaker has no "
-        "stored previous sound to go back to.",
-    ),
-    (
-        "or undo if it sounds worse than before.",
-        "or clear the tuning from the Sound page — this speaker has no "
-        "stored previous sound to go back to.",
-    ),
-    (
-        "use Undo if this audition is still applied.",
-        "clear the tuning from the Sound page if this audition is still "
-        "applied — this speaker has no stored previous sound to go back to.",
-    ),
-)
-
-
 def _honest_about_undo(text: str, status: Mapping[str, Any]) -> str:
     """Strip this layer's Undo promises when the button is not being offered.
 
@@ -3090,12 +3045,12 @@ def _honest_about_undo(text: str, status: Mapping[str, Any]) -> str:
     the household could at least press the old button and read the endpoint's
     honest refusal. A first-ever apply is the most ordinary case there is, so
     this is the success screen most new speakers actually see.
+
+    The fragment table itself lives in ``crossover_v2.refusal_copy``
+    (``_UNDO_PROMISE_DROPS``), merged with the registry's own — see that
+    table's comment for the shared vocabulary and the match-order constraint.
     """
-    if _can_undo(status):
-        return text
-    for promise, replacement in _UNDO_PROMISE_SWAPS:
-        text = text.replace(promise, replacement)
-    return text
+    return text if _can_undo(status) else _without_undo_promise(text)
 
 # --- failure recency (issue #1942) -------------------------------------------
 

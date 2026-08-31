@@ -1397,22 +1397,62 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     )
 
 
-#: The registry's Undo promises, and what each sentence says once the control
-#: is not on the screen. NOT new household copy, deliberately: each replacement
-#: is the same sentence MINUS the clause naming a control that is not there,
-#: which is #1924's rule ("every control the sentence names is on this screen")
-#: pointing the way it already points on the done screen — where
-#: ``crossover_envelope_v2._UNDO_PROMISE_SWAPS`` does exactly this for the
-#: promises THAT layer mints. Two entries cover the four TEMPLATE_VERIFY_FAIL
-#: sentences because three of them end the same way; the fourth leads with Undo
-#: and so has to name its whole action clause. Fragments, so a future row that
-#: makes the same promise inherits the drop without an edit here.
+#: Every sentence across both layers that promises Undo, and what each becomes
+#: once the control is not on the screen (#2849's shared ``can_undo`` fact).
+#: NOT new household copy: each replacement is the promise clause swapped for
+#: a manual alternative, or (the registry's own two entries) simply dropped —
+#: #1924's rule ("every control the sentence names is on this screen").
+#: ``reason_message`` reads this for the four TEMPLATE_VERIFY_FAIL sentences
+#: below (two entries cover them: three end the same way, the fourth leads
+#: with Undo and has to name its whole action clause); ``crossover_envelope_v2.
+#: _honest_about_undo`` reads it for the done/session-restart sentences that
+#: layer mints, which is why the entries moved in from there outnumber the
+#: registry's original two.
+#:
+#: ORDER IS LOAD-BEARING for the first two entries. Three of the five moved in
+#: from the envelope are a bare ``"or undo to restore the previous sound."`` —
+#: a strict substring of this table's OWN leading ``", or undo to restore the
+#: previous sound."`` — so every registry sentence that leading entry targets
+#: would also match one of those three. ``str.replace`` cannot honor both
+#: rewrites on the same text, and the registry's two stay first so
+#: REASON_VERIFY_OUT_OF_TOLERANCE / _CROSSOVER_REGION / _LEVEL_SHIFT keep
+#: their existing terse drop rather than silently gaining the envelope's
+#: longer one.
+#:
+#: Fragments, so a future row that makes the same promise inherits the drop
+#: without an edit here.
 _UNDO_PROMISE_DROPS = (
     (", or undo to restore the previous sound.", "."),
     (
         "Undo to restore the previous sound, or re-measure to fit the "
         "crossover again.",
         "Re-measure to fit the crossover again.",
+    ),
+    (
+        "If it sounds worse than before, you can undo.",
+        "This was its first measured crossover, so it has no stored previous "
+        "sound to go back to — clear the tuning from the Sound page to "
+        "remove it.",
+    ),
+    (
+        "if it sounds worse than before, you can undo.",
+        "this was the speaker's first measured crossover, so it has no "
+        "stored previous sound to go back to.",
+    ),
+    (
+        "or undo to restore the previous sound.",
+        "or clear the tuning from the Sound page — this speaker has no "
+        "stored previous sound to go back to.",
+    ),
+    (
+        "or undo if it sounds worse than before.",
+        "or clear the tuning from the Sound page — this speaker has no "
+        "stored previous sound to go back to.",
+    ),
+    (
+        "use Undo if this audition is still applied.",
+        "clear the tuning from the Sound page if this audition is still "
+        "applied — this speaker has no stored previous sound to go back to.",
     ),
 )
 
