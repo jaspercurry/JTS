@@ -617,22 +617,34 @@ def test_an_unbounded_gap_ceiling_serializes():
     json.dumps(row)
 
 
-def test_the_door_holds_the_fanin_gate_under_its_own_registered_owner():
-    """Two facts in one assert, and both bite on-box only.
+@pytest.mark.parametrize(
+    "module,expected_owner",
+    [
+        ("jasper.cli.null_door", "jasper-null"),
+        ("jasper.cli.measure", "jasper-measure"),
+    ],
+)
+def test_the_door_holds_the_fanin_gate_under_its_own_registered_owner(
+    module, expected_owner,
+):
+    """Three facts per door, and all bite on-box only.
 
     ``mux.FANIN_TEST_OWNERS`` is a closed allowlist: an owner missing from it is
     refused the diagnostic gate, the correction lane never reaches the speaker,
     and the door measures silence with every daemon healthy. And the owner must
-    be the door's OWN — borrowing ``correction-measurement`` would pass the
-    allowlist while filing this door's hold under the wizard in every lease and
-    recovery read.
+    be the door's OWN — borrowing ``correction-measurement`` (or a sibling
+    door's name) would pass the allowlist while filing this door's hold under
+    someone else in every lease and recovery read.
     """
-    from jasper.cli.null_door import DOOR_GATE_OWNER
+    import importlib
+
     from jasper.correction.coordinator import MEASUREMENT_GATE_OWNER
     from jasper.mux import FANIN_TEST_OWNERS
 
-    assert DOOR_GATE_OWNER in FANIN_TEST_OWNERS
-    assert DOOR_GATE_OWNER != MEASUREMENT_GATE_OWNER
+    owner = importlib.import_module(module).DOOR_GATE_OWNER
+    assert owner == expected_owner
+    assert owner in FANIN_TEST_OWNERS
+    assert owner != MEASUREMENT_GATE_OWNER
 
 
 @pytest.mark.parametrize(

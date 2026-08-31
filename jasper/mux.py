@@ -129,6 +129,7 @@ FANIN_TEST_OWNERS = frozenset({
     "active-speaker-commissioning",
     "correction-measurement",
     "doctor-aec-probe",
+    "jasper-measure",
     "jasper-null",
     "seat-level",
 })
