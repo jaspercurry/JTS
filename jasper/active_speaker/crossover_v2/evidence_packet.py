@@ -326,15 +326,17 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 #: there rather than restated here.
 _POSITIONS_SUBDIR = "positions"
 
-#: How a FROZEN capture ring's sidecars are found under the ring root, on
+#: How a capture ring's sidecars are found under the ring root, on
 #: :func:`round_program_dir`'s rule that a location fact has ONE owner.
 #:
-#: The ring's producer died with the speaker-side retention seam, so no round
-#: banked from then on has one. What remains are corpora banked before that,
-#: whose ``dumps/wav/`` + ``dumps/sidecar/`` tree still holds the capture
-#: BYTES no banked record carries — which is why the two readers below survive
-#: while this packet's own reader did not: the packet wanted a number the take
-#: record now carries, and they want a WAV.
+#: The SPEAKER-side producer of this layout died with the retention seam, so
+#: no round writes one on the Pi any more. Two kinds of ring reach the readers
+#: below instead: corpora pulled off a Pi before that, and rings
+#: :func:`~.ring_projection.project_ring` re-projects laptop-side out of a
+#: banked round — the bundle carries the capture WAVs and the per-take records,
+#: and what it does not carry is this layout. That is why the two readers below
+#: survive while this packet's own reader did not: the packet wanted a number
+#: the take record now carries, and they want a WAV.
 #:
 #: ``**/`` because the pull split the speaker's flat ring into
 #: ``dumps/wav/`` + ``dumps/sidecar/`` and a per-phase nesting of that shape
