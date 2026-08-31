@@ -1,0 +1,220 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The kernel path an operator door rides: what it takes, and what it gives back.
+
+Every double here is a real seam implementation driven against the REAL plan,
+the REAL owner, the REAL session graph and the REAL emitter — only CamillaDSP
+and the isolation window are replaced, because those are the two things a
+hardware-free run cannot have. A door whose give-back were proven against a fake
+graph would prove nothing about the fader it strands.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from jasper.active_speaker.crossover_v2.door import (
+    REFUSE_NO_VOLUME_OWNER,
+    REFUSE_SESSION_LIVE,
+    MeasurementDoorRefused,
+    measurement_door,
+)
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+from jasper.volume_owner import VolumeOwner, install_volume_owner
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.crossover_v2_fixtures import _preset
+from tests.test_cli_measure import HOUSEHOLD_DB, FakeCam
+
+ENTRY_CONFIG = "entry.yml"
+
+
+@pytest.fixture
+def box(tmp_path, monkeypatch):
+    """A speaker with a fake DSP, a real owner, and no isolation to acquire."""
+    from jasper.correction import coordinator
+
+    class _NoWindow:
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+    monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
+    entry = tmp_path / ENTRY_CONFIG
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    cam = FakeCam(entry)
+    install_volume_owner(
+        VolumeOwner(
+            set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: cam.get_volume_db(best_effort=True),
+        )
+    )
+    try:
+        yield cam
+    finally:
+        install_volume_owner(None)
+
+
+def _profile() -> MeasurementGraphProfile:
+    """The applied speaker, in the PROTECTED-NEUTRAL shape a door always emits.
+
+    The protection sections are not decoration in a test either: the emitter
+    refuses a measurement delay against the unprotected shape, because that one
+    already carries its own zeroed delay lane and a second mapping key would
+    play with no delay and bank as a delayed take.
+    """
+    from jasper.active_speaker.branch_chain import sections_by_role
+
+    preset = _preset()
+    return MeasurementGraphProfile(
+        preset=preset,
+        topology=mono_output_topology(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="plughw:CARD=Loopback,DEV=0",
+        protection_sections_by_role=sections_by_role(preset.crossover_regions),
+    )
+
+
+def _door(tmp_path, cam, **overrides: Any):
+    kwargs: dict[str, Any] = {
+        "profile": _profile(),
+        "measurement_volume_db": -20.0,
+        "camilla_factory": lambda: cam,
+        "action": "measuring",
+        "config_dir": tmp_path,
+        "volume_state_path": tmp_path / "session_volume.json",
+    }
+    kwargs.update(overrides)
+    return measurement_door(**kwargs)
+
+
+async def test_the_door_installs_a_measurement_graph_and_puts_the_entry_back(
+    tmp_path, box,
+):
+    """The whole point: the speaker is held, then left exactly as it was found.
+
+    Both halves are asserted from what the DSP actually received — the last
+    graph loaded is the entry text, and the fader is back on the household
+    level — because a door that reported a restore it did not perform is the
+    one failure this helper exists to make impossible.
+    """
+    async with _door(tmp_path, box) as door:
+        assert door.graph_fingerprint
+        assert box.loaded, "no measurement graph reached the DSP"
+        assert box.loaded[-1] != (tmp_path / ENTRY_CONFIG).read_text()
+        assert box.volume_db == pytest.approx(-20.0)
+
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
+    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_a_body_that_raises_still_gives_the_speaker_back(tmp_path, box):
+    """The give-back is a ``finally``, and the body's failure is what propagates.
+
+    A door that swallowed the body's exception would hide the reason a
+    measurement stopped; one that restored only on the happy path would leave a
+    speaker on a measurement graph at measurement volume after any error.
+    """
+    with pytest.raises(RuntimeError, match="the body failed"):
+        async with _door(tmp_path, box):
+            raise RuntimeError("the body failed")
+
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
+    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_the_interlock_refuses_before_anything_is_taken(tmp_path, box):
+    """A live measurement elsewhere: refused, with nothing touched.
+
+    The refusal carries the interlock's OWN sentence rather than a sentence
+    this module writes, so an operator reads the same words whichever door
+    they tried.
+    """
+    busy = "another measurement holds the speaker"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "jasper.active_speaker.session_volume_plan.live_measurement_session",
+            lambda **kw: busy,
+        )
+        with pytest.raises(MeasurementDoorRefused) as caught:
+            async with _door(tmp_path, box):
+                pytest.fail("the door opened under a live measurement")
+
+    assert caught.value.reason == REFUSE_SESSION_LIVE
+    assert caught.value.detail == busy
+    assert box.loaded == []
+    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_a_process_with_no_fader_owner_refuses_rather_than_minting_one(
+    tmp_path, box,
+):
+    """No owner is a WIRING defect, and the door says so instead of writing.
+
+    A second authority over one fader is the arbitration failure the owner
+    exists to delete, so a door that fell back to writing the fader directly
+    would reintroduce it in the one process least able to arbitrate.
+    """
+    install_volume_owner(None)
+
+    with pytest.raises(MeasurementDoorRefused) as caught:
+        async with _door(tmp_path, box):
+            pytest.fail("the door opened with no fader owner")
+
+    assert caught.value.reason == REFUSE_NO_VOLUME_OWNER
+    assert box.loaded == []
+
+
+async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box):
+    """Three axes, no ``variant`` parameter — the graph seam's own arity.
+
+    Driven through the door's own graph so the axes are proven to survive the
+    binding, not merely to exist on the emitter: a door that bound a
+    profile-only emit would silently drop every flip, delay and trim and bank
+    records naming coordinates that never played.
+    """
+    async with _door(tmp_path, box) as door:
+        base = door.graph_fingerprint
+        flipped = await door.graph.install(("tweeter",), {"woofer": 120.0}, {})
+        levelled = await door.graph.install((), {}, {"tweeter": -9.5})
+
+    assert len({base, flipped, levelled}) == 3, (
+        "each variant axis must make a different graph with its own fingerprint"
+    )
+    assert "# inverted_roles=" in box.loaded[1]
+
+
+def test_the_wizard_emits_through_the_shared_home(tmp_path):
+    """The move landed with no duplication window: one emit, two front ends.
+
+    ``bind_production_play`` built its own closure over five values that were
+    never web vocabulary. It now hands the SAME function
+    ``jasper-measure`` binds, so the emitter's proofs, the both-halves device
+    derivation and the three variant axes cannot diverge between the two doors
+    by anybody editing one of them.
+    """
+    from types import SimpleNamespace
+
+    from jasper.active_speaker.measurement_emit import emit_measurement_graph
+    from jasper.web import correction_crossover_v2 as host
+
+    play = host.bind_production_play(
+        run_async=lambda coro: None,
+        camilla_factory=lambda: object(),
+        evidence_store=SimpleNamespace(bundle_dir=tmp_path),
+        relay_session_id="door_pin",
+        topology=mono_output_topology(),
+        preset=_preset(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="plughw:CARD=Loopback,DEV=0",
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+    )
+
+    assert play.graph._emit.func is emit_measurement_graph

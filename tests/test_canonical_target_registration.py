@@ -105,6 +105,13 @@ _ENTRY_POINTS = {
     # needs the duck release to land on the real target rather than a stale
     # entry snapshot. See ADR-0193.
     "jasper/cli/audition.py": "main",
+    # `jasper-measure` — the operator door onto TuningSession. It swaps the
+    # running graph for a measurement one (through the session graph already
+    # in the frozen set below) AND claims the fader at SESSION_MEASUREMENT
+    # rank, so it needs the registration for both reasons at once — the graph
+    # rows' and the owner rows' — and would refuse to open without the owner
+    # half. See `jasper/active_speaker/crossover_v2/door.py`.
+    "jasper/cli/measure.py": "main",
 }
 
 # Modules holding a call to one of `CamillaController`'s four graph mutators.

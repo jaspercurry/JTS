@@ -2207,12 +2207,10 @@ def _ring_candidate_site(
 
 def _crossover_v2_program_site(
     topology,
-    tmp_path,
-    monkeypatch,
     *,
     playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
 ):
-    """Drive ``bind_production_play``'s CHECK/MEASURE emit — issue #2450.
+    """Drive the session measurement graph's CHECK/MEASURE emit — issue #2450.
 
     Stage 1 of the crossover-v2 flow (the isolated per-driver sweeps that BUILD
     the crossover) is the ONLY phase group that emits its own graph: the four
@@ -2223,83 +2221,43 @@ def _crossover_v2_program_site(
     defaults — playback=ring meeting capture=tap, the fifth instance of the
     subset-forwarding class and the one that reached the DoD box.
 
-    The REAL production binding, not a re-creation of its call: the whole point
-    is that this graph is what an armed jts3 would load. **Re-pointed in wave
-    6b (PC-3)**: the emit moved out of the per-stimulus body and into the
-    session's one measurement graph, so this stops at
-    ``MeasurementSessionGraph.install`` — still the first thing downstream of
-    the emit, and still the one that receives the finished graph. The returned
-    closure carries the exact text on ``.emitted`` and nothing touches
-    CamillaDSP or ALSA. The guard follows the site rather than dying with it:
-    MS-1's blast radius GREW here, because a half-derived device block now
-    poisons every stimulus of the session instead of one.
+    **The guard follows the site rather than dying with it**, twice now. Wave 6b
+    moved the emit out of the per-stimulus body into the session's one
+    measurement graph; the door PR moved it again, out of the web host's closure
+    and into ``active_speaker.measurement_emit``, where the wizard and the
+    ``jasper-measure`` door reach the SAME one. There is exactly one forwarding
+    site left, so this drives it directly — no host, no transport, no
+    monkeypatching of either. MS-1's blast radius is unchanged and still the
+    widest of the seven: a half-derived device block poisons every stimulus of
+    every session that emits through here.
 
     ``playback_device`` is overridable ONLY so a caller can drive the SAME site
     at the ALSA active lane as a control; a ring-specific claim proven without
     one is a claim about the site, not about the ring.
     """
-    import asyncio
-
-    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
-    from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK
-    from jasper.audio_measurement import program as program_mod
-    from jasper.correction import coordinator
-    from jasper.web import correction_crossover_v2 as v2host
-
-    class _StopBeforeTransport(Exception):
-        pass
-
-    class _NoWindow:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
+    from jasper.active_speaker.measurement_emit import (
+        MeasurementGraphProfile,
+        emit_measurement_graph,
+    )
 
     emitted: list[str] = []
-
-    async def _capture_graph(self):
-        emitted.append(self.graph_yaml())
-        raise _StopBeforeTransport("graph emitted; stop before the DSP transport")
-
-    monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
-    monkeypatch.setattr(
-        session_graph_mod.MeasurementSessionGraph, "install", _capture_graph
-    )
-    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
-    v2host.reset_session_measurement_pause_for_tests()
-
-    class _EvidenceStore:
-        bundle_dir = tmp_path / "bundle"
-
-        def identify_artifact(self, rel):
-            return SimpleNamespace(fingerprint="ring-walk")
-
-    play = v2host.bind_production_play(
-        run_async=asyncio.run,
-        camilla_factory=lambda: object(),
-        evidence_store=_EvidenceStore(),
-        relay_session_id="ring_walk",
-        topology=topology,
+    profile = MeasurementGraphProfile(
         preset=_mono_two_way_preset(),
+        topology=topology,
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device=playback_device,
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
     )
 
     def call_site():
-        with pytest.raises(_StopBeforeTransport):
-            play(PHASE_CHECK, object())
+        emitted.append(emit_measurement_graph(profile))
 
     call_site.emitted = emitted
     return call_site
 
 
-def _crossover_v2_program_graph(topology, tmp_path, monkeypatch, **kwargs) -> str:
+def _crossover_v2_program_graph(topology, **kwargs) -> str:
     """The graph text the crossover-v2 CHECK/MEASURE site really emitted."""
-    site = _crossover_v2_program_site(topology, tmp_path, monkeypatch, **kwargs)
+    site = _crossover_v2_program_site(topology, **kwargs)
     site()
     assert len(site.emitted) == 1, (
         f"expected exactly one program emit, saw {len(site.emitted)}"
@@ -2337,9 +2295,7 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     wire = resolve_ring_wire(topology)
 
     # --- ARMED: playback resolves to the active ring. ----------------------
-    ring_graph = _crossover_v2_program_graph(
-        topology, tmp_path / "ring", monkeypatch
-    )
+    ring_graph = _crossover_v2_program_graph(topology)
     ring = parse_camilla_devices_config(ring_graph)
     assert ring["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     assert ring["capture_device"] == RING_CAPTURE_DEVICE
@@ -2359,10 +2315,7 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     # this site made before it derived anything, so a caller naming a non-ring
     # sink cannot notice the derivation at all.
     aloop_graph = _crossover_v2_program_graph(
-        topology,
-        tmp_path / "aloop",
-        monkeypatch,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        topology, playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
     )
     aloop = parse_camilla_devices_config(aloop_graph)
     assert aloop["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
@@ -2502,12 +2455,13 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         # above could have covered it.
         #
         # Wave 6b moved the emit from the per-stimulus body to the session's
-        # one measurement graph (PC-3). Same emitter, same forwarding, one call
-        # per session instead of one per capture — and a subset now poisons
-        # every stimulus rather than one, so the entry stays and gets stricter,
-        # not weaker.
-        "session measurement graph (crossover_v2 CHECK/MEASURE)": (
-            _crossover_v2_program_site(topology, tmp_path / "v2", monkeypatch),
+        # one measurement graph (PC-3); the door PR moved it out of the web
+        # host into ``active_speaker.measurement_emit``, which two front ends
+        # now share. Same emitter, same forwarding, one site — and a subset
+        # poisons every stimulus of every session, so the entry stays and gets
+        # stricter, not weaker.
+        "measurement_emit.emit_measurement_graph": (
+            _crossover_v2_program_site(topology),
             "emit_active_speaker_program_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
