@@ -106,52 +106,19 @@ def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
     assert "event=atomic_io.temp_cleanup_failed" not in caplog.text
 
 
-def test_fsync_directory_reraises_unsupported_filesystem_error(
-    tmp_path, monkeypatch
-):
-    def unsupported_fsync(_fd):
-        raise OSError(errno.EINVAL, "directory fsync not supported")
-
-    monkeypatch.setattr(os, "fsync", unsupported_fsync)
-
-    with pytest.raises(OSError, match="directory fsync not supported"):
-        fsync_directory(tmp_path)
-
-
 @pytest.mark.parametrize(
-    "code", [errno.EINVAL, getattr(errno, "ENOTSUP", errno.EINVAL)]
+    ("code", "tolerated"),
+    [
+        (None, True),
+        (errno.EINVAL, True),
+        (errno.ENOTSUP, True),
+        (errno.EOPNOTSUPP, True),
+        (errno.EIO, False),
+    ],
 )
-def test_durable_write_tolerates_unsupported_directory_fsync(
-    tmp_path, monkeypatch, code
+def test_fsync_directory_tolerance_contract(
+    tmp_path, monkeypatch, caplog, code, tolerated
 ):
-    path = tmp_path / "boot-config.txt"
-
-    def unsupported_directory_fsync(_path):
-        raise OSError(code, "directory fsync not supported")
-
-    monkeypatch.setattr(
-        atomic_io_module,
-        "fsync_directory",
-        unsupported_directory_fsync,
-    )
-
-    atomic_write_text(path, "published\n", durable=True)
-
-    assert path.read_text(encoding="utf-8") == "published\n"
-
-
-def test_fsync_directory_reraises_real_faults(tmp_path, monkeypatch):
-    def failing_fsync(_fd):
-        raise OSError(errno.EIO, "simulated directory fsync fault")
-
-    monkeypatch.setattr(os, "fsync", failing_fsync)
-
-    with pytest.raises(OSError, match="simulated directory fsync fault"):
-        fsync_directory(tmp_path)
-
-
-@pytest.mark.parametrize("code", [None, errno.EIO])
-def test_fsync_directory_closes_descriptor(tmp_path, monkeypatch, code):
     closed: list[int] = []
     fsynced: list[int] = []
     real_close = os.close
@@ -165,10 +132,11 @@ def test_fsync_directory_closes_descriptor(tmp_path, monkeypatch, code):
         if code is not None:
             raise OSError(code, "directory fsync refused")
 
+    monkeypatch.setattr(atomic_io_module, "_unsupported_fsync_logged", False)
     monkeypatch.setattr(os, "close", recording_close)
     monkeypatch.setattr(os, "fsync", recording_fsync)
 
-    if code is None:
+    if tolerated:
         fsync_directory(tmp_path)
     else:
         with pytest.raises(OSError) as raised:
@@ -176,6 +144,9 @@ def test_fsync_directory_closes_descriptor(tmp_path, monkeypatch, code):
         assert raised.value.errno == code
 
     assert closed == fsynced != []
+    assert ("event=atomic_io.dir_fsync_unsupported" in caplog.text) is (
+        tolerated and code is not None
+    )
 
 
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):

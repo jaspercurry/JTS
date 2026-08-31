@@ -236,7 +236,7 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
 
 
 def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
-    """A parent-dir fsync failure logs at DEBUG and the write succeeds."""
+    """A parent-dir fsync failure logs a WARNING and the write succeeds."""
     import jasper.wifi_guardian_persistence as mod
 
     seen_paths = []

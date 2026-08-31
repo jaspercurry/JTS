@@ -184,7 +184,7 @@ def write_stash(
     except OSError as e:
         # Any error only degrades rename durability: the file contents are on
         # disk from step 2, and the wizard's connect must not fail.
-        logger.debug(
+        logger.warning(
             "wifi guardian persistence: parent fsync on %s failed (%s) — "
             "contents written, rename durability degraded",
             p.parent, e,

@@ -848,7 +848,7 @@ def test_directory_fsync_failure_after_link_is_outcome_unknown(
         if path.name == "artifacts":
             artifact_dir_calls += 1
             if artifact_dir_calls == 2:
-                raise OSError(errno.EINVAL, "directory fsync unsupported")
+                raise OSError(errno.EIO, "directory fsync fault")
         real_fsync(path)
 
     monkeypatch.setattr(
