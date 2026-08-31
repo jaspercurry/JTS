@@ -48,9 +48,13 @@ operator could type — the stops are an ordered tuple with no uniqueness rule a
 ``angle_capture.both_at`` already ships adjacent same-angle stops — and the value
 it adds over typing it is the arithmetic a hand-typed list gets wrong:
 ``--complete-after`` counts RELEASES, so it must scale with N, and a short one
-completes the walk partway through at rc 0. It governs a staged MEASURE walk at
-any regime that composes ONE stop per angle (``per_driver`` and ``summed``);
-``both``, at two, is the one regime it is refused for. Both refusals are below.
+completes the walk partway through at rc 0. It governs a staged MEASURE walk;
+this runner's own arithmetic accepts any regime that composes ONE stop per
+angle (``per_driver`` and ``summed`` today) and refuses ``both``, at two,
+below. A session walk plays only ``per_driver`` at every pose, though, and
+refuses any other regime when it opens
+(``angle_capture.session_lateral_walk``) — so ``summed`` clears every gate
+here and still dies at session open.
 
 **Every staged round banks ``position_cycle.json``, cycled or not** — one sorted
 index of the poses this round actually measured, DERIVED from the bundle the
@@ -1308,7 +1312,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--regime", default="per_driver",
-        help="what a staged walk plays at each angle (default: %(default)s)",
+        help=(
+            "what a staged walk plays at each angle. A session walk plays "
+            "only per_driver at every pose today, and refuses any other "
+            "regime when it opens -- this runner does not enforce that "
+            "itself (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--attest-rig-clear", action="store_true",
@@ -1406,27 +1415,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"measure walk"
         )
     elif args.per_position is not None and len(_REGIME_STOPS.get(args.regime, ())) != 1:
-        # `jasper-angle-capture` composes stops as angle x _REGIME_STOPS[regime].
-        # `staged_stops` counts TOKENS, so it is the exact stop count for every
-        # SINGLE-regime entry in that table — each maps to a 1-tuple of itself,
-        # so all of them are ACCEPTED here. `both`, which pairs two regimes, is
-        # the exception at two stops per token: there the count would be half the
-        # real one and the --complete-after floor below only as honest as that
-        # number. An unknown regime lands here too, with a count of zero: this
-        # runner cannot say what it composes, and the seam refuses it moments
-        # later anyway. The TABLE is asked, never a list of regime names — a
-        # named list is what went stale and refused `summed` for no reason.
-        #
-        # Refused rather than multiplied: a multiplier here would be this file's
-        # second opinion about another tool's composition rule.
-        #
-        # NOT a nanny gate (measurement-loop doctrine §5): what is declined is
-        # this FLAG, whose own arithmetic is unsound for the regime — a named
-        # mechanism, not a forecast that the experiment will disappoint. The
-        # experiment itself stays available and the message says how: a staged
-        # list written out by hand takes N captures per pose at any regime,
-        # because the repeat was always the seam's shape rather than this flag's
-        # invention.
+        # `staged_stops` counts TOKENS (angle x _REGIME_STOPS[regime]), the exact
+        # stop count for every single-regime entry in that TABLE. The TABLE is
+        # asked, never a hardcoded list of regime names — a named list is what
+        # went stale and refused `summed` for no reason once before. `both`
+        # pairs two stops per token, so the --complete-after floor below would
+        # be half the real count; an unknown regime composes zero, and the seam
+        # refuses it moments later anyway. Refused rather than multiplied: a
+        # multiplier here would be this file's own opinion about another tool's
+        # composition rule. NOT a nanny gate (measurement-loop doctrine §5): the
+        # FLAG is declined, never the experiment — stage the repeats by hand
+        # (--angles 0,0,0,7,7,7) at any regime.
         composed = len(_REGIME_STOPS.get(args.regime, ()))
         parser.error(
             f"--per-position counts one stop per angle, and --regime "
