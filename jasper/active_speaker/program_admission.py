@@ -95,6 +95,7 @@ class ProgramAdmissionRefusal(str, Enum):
     OUT_OF_SEGMENT_ENERGY = "program_out_of_segment_energy"
     MANIFEST_PEAK_MISMATCH = "program_manifest_peak_mismatch"
     RENDER_SHAPE_MISMATCH = "program_render_shape_mismatch"
+    GATE_NOT_APPLIED = "program_gate_not_applied"
 
 
 class ProgramAdmissionError(ValueError):
@@ -253,6 +254,77 @@ def _requested_segment_plan(
     )
 
 
+def _gate_leak_ratio_ceiling(segment: ProgramSegment) -> float:
+    """Largest out-of-gate RMS the gate's OWN SHAPE can account for, as a
+    fraction of the segment's amplitude.
+
+    Derived, not chosen. A gate silences its outside completely, so the honest
+    bound is the quietest sound the gate is permitted to make anywhere: the
+    first non-zero sample of its raised-cosine ramp,
+    ``0.5*(1 - cos(pi/fade))``. Energy at or above that outside the window is
+    louder than the gate's own quietest legitimate sample and therefore cannot
+    be the gate's doing.
+
+    **A RATIO, because an absolute dBFS floor does not catch this.** These
+    programs are composed at the most restrictive driver cap -- tens of dB down
+    -- so an ungated parent sweep leaking at full segment amplitude can still
+    sit below a fixed -60 dBFS residual floor and pass. Measured against the
+    segment's own amplitude, an unapplied gate reads about -3 dB (RMS of a full
+    sine) against a bound near -93 dB, which is not a close call.
+
+    ``fade == 0`` has no ramp to excuse anything, so only the sample format's
+    own quantization step is allowed.
+    """
+    fade = segment.gate_fade_samples
+    if fade <= 0:
+        return 2.0 ** -31
+    return 0.5 * (1.0 - math.cos(math.pi / float(fade)))
+
+
+def _gate_leak_refusals(program: ExcitationProgram, pcm) -> list[str]:
+    """Verify the RENDERED BYTES obey every gate their metadata claims.
+
+    The second, independent leg of the gate contract. The first is metadata:
+    :func:`segment_emitted_band_hz` narrows a gated segment's declared band and
+    admission judges that band against the driver's permitted one. But that leg
+    reads the SCHEDULE, so a renderer that silently stopped applying gates would
+    leave the narrow claim intact while the full parent sweep -- an octave below
+    a tweeter's declared floor -- reached the driver, and admission would
+    approve it. Metadata cannot verify itself.
+
+    So this measures the samples. Vacuous by construction for every ungated
+    segment: there is no gate claim to verify, so no check runs and the shipped
+    per-driver and summed programs are untouched.
+    """
+    import numpy as np
+
+    refusals: list[str] = []
+    for segment in program.stimulus_segments():
+        if not segment.is_gated or segment.channel is None:
+            continue
+        amplitude = 10.0 ** (float(segment.gain_db) / 20.0)
+        if not amplitude > 0.0:
+            continue
+        start = segment.start_sample
+        stop = start + segment.n_samples
+        if stop > pcm.shape[0]:
+            continue  # RENDER_SHAPE_MISMATCH already speaks for this program
+        window = np.asarray(pcm[start:stop, segment.channel], dtype=np.float32)
+        gate_end = (
+            segment.n_samples if segment.gate_end_sample is None
+            else segment.gate_end_sample
+        )
+        outside = np.concatenate(
+            (window[: segment.gate_start_sample], window[gate_end:])
+        )
+        if outside.size == 0:
+            continue
+        rms = float(np.sqrt(np.mean(np.square(outside), dtype=np.float64)))
+        if rms > amplitude * _gate_leak_ratio_ceiling(segment):
+            refusals.append(segment.segment_id)
+    return refusals
+
+
 def _out_of_segment_mask(program: ExcitationProgram, channel: int, length: int) -> Any:
     """True where a channel is expected to be silent.
 
@@ -392,6 +464,20 @@ def _evaluate_program(
     if pcm.ndim != 2 or pcm.shape[1] != program.channels:
         refusals.append(ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
     else:
+        # The gate contract's SECOND leg, under the metadata one rather than
+        # instead of it: the schedule's narrow band claim is judged above, and
+        # here the rendered samples are made to agree with it.
+        leaked = _gate_leak_refusals(program, pcm)
+        if leaked:
+            log_event(
+                logger,
+                "active_speaker.program_admission",
+                level=logging.ERROR,
+                action="gate_not_applied",
+                program_id=program.program_id,
+                segments=",".join(leaked),
+            )
+            refusals.append(ProgramAdmissionRefusal.GATE_NOT_APPLIED)
         for channel in sorted(channel_roles):
             role = channel_roles[channel]
             target_fingerprint = role_targets.get(role)

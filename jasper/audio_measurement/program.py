@@ -1773,8 +1773,19 @@ def null_confirm_channel_plan(
     fade_n = _seconds_to_samples(fade_s, PROGRAM_SAMPLE_RATE_HZ)
     span = math.log(f2_hz / f1_hz)
 
-    def _sample_at(freq: float) -> int:
-        return int(round(n * math.log(freq / f1_hz) / span))
+    def _sample_at(freq: float, *, inward: str) -> int:
+        """The sample index for one frequency, rounded INTO the declared band.
+
+        `round()` here is a safety bug once the emitted band includes the fade
+        ramps: rounding a low edge DOWN opens the gate a fraction of a sample
+        early, so the band the segment claims starts just below the driver's
+        declared floor and `is_subset_of` refuses a program that is physically
+        fine. Ceil the opening edge and floor the closing one and the gate is
+        conservatively inside the declaration by construction, in the direction
+        that protects the driver either way.
+        """
+        exact = n * math.log(freq / f1_hz) / span
+        return math.ceil(exact) if inward == "up" else math.floor(exact)
 
     gates: dict[str, tuple[int, int | None]] = {}
     open_lo: dict[str, float] = {}
@@ -1789,8 +1800,8 @@ def null_confirm_channel_plan(
                 f"[{rb.band.lower_hz:g},{rb.band.upper_hz:g}] Hz does not "
                 f"intersect the confirm sweep [{f1_hz:g},{f2_hz:g}] Hz",
             )
-        start = _sample_at(lo_edge) if lo_edge > f1_hz else 0
-        end = _sample_at(hi_edge) if hi_edge < f2_hz else None
+        start = _sample_at(lo_edge, inward="up") if lo_edge > f1_hz else 0
+        end = _sample_at(hi_edge, inward="down") if hi_edge < f2_hz else None
         gates[rb.role] = (start, end)
         # The FULL-AMPLITUDE window, fades excluded at both ends.
         stop = n if end is None else end
@@ -2029,15 +2040,24 @@ def segment_sweep_frequency_at(segment: ProgramSegment, sample: int) -> float:
 
 
 def segment_emitted_band_hz(segment: ProgramSegment) -> tuple[float, float]:
-    """The band a segment ACTUALLY emits, gate included.
+    """The SAFETY band: every frequency a gated segment puts on its driver.
 
     An ungated segment emits its whole ``[f1_hz, f2_hz]``. A gated one emits
-    only the frequencies its open window sweeps through, and the fades are
-    excluded from the claim: inside a fade the waveform is attenuated, so
-    counting it as emitted-at-full-level would overstate what reaches the
-    driver, while counting it as silent would understate it. Excluding the fade
-    ramps from the FULL-AMPLITUDE band and letting them sit outside is the
-    conservative reading for a permitted-band check.
+    every frequency its open window sweeps through **including both fade
+    ramps**, because a fade is attenuated, not silent -- energy at those
+    frequencies does reach the driver, and a permitted-band check must account
+    for it. Excluding them (the shape this function shipped with) under-reports
+    the emitted band by a fade width at each cut edge, which is the wrong
+    direction for a driver-cap question.
+
+    **Two bands, deliberately, and this is the wider one.** The narrower
+    FULL-AMPLITUDE band -- fades excluded -- is a MEASUREMENT quantity: it is
+    where both branches play at equal level and therefore where a null depth's
+    shoulders may honestly sit, and it lives on
+    :class:`NullConfirmPlan.overlap_hz`. Reusing one band for both questions
+    forces a choice between under-reporting what the driver hears and
+    over-claiming where a null can be read; they are different questions, so
+    they get different numbers.
 
     This is what admission judges against a driver's permitted band, rather than
     ``f1_hz``/``f2_hz``, which are the parent sweep's -- a gated channel
@@ -2052,12 +2072,10 @@ def segment_emitted_band_hz(segment: ProgramSegment) -> tuple[float, float]:
         segment.n_samples if segment.gate_end_sample is None
         else segment.gate_end_sample
     )
-    fade = segment.gate_fade_samples
-    lo_sample = segment.gate_start_sample + (fade if segment.gate_start_sample else 0)
-    hi_sample = end - (fade if segment.gate_end_sample is not None else 0)
-    lo = segment_sweep_frequency_at(segment, lo_sample)
-    hi = segment_sweep_frequency_at(segment, hi_sample)
-    return lo, hi
+    return (
+        segment_sweep_frequency_at(segment, segment.gate_start_sample),
+        segment_sweep_frequency_at(segment, end),
+    )
 
 
 def render_program_pcm(program: ExcitationProgram):

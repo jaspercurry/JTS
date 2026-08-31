@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker.program_admission import admit_excitation_program
+from jasper.active_speaker.program_admission import (
+    ProgramAdmissionRefusal,
+    admit_excitation_program,
+)
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.audio_measurement.analysis import ShoulderSpan
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -221,6 +225,84 @@ def test_admission_judges_each_branch_on_the_band_its_gate_emits():
     assert tweeter.f1_hz < permitted_lo < segment_emitted_band_hz(tweeter)[0]
     assert admission.allowed, [r.value for r in admission.refusals]
     assert all(s.execution_allowed for s in admission.segments)
+
+
+def _admit(program, topology, profile, targets, sv, pcm=None):
+    return admit_excitation_program(
+        program, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv, pcm=pcm,
+    )
+
+
+def test_admission_verifies_the_rendered_bytes_obey_the_gate():
+    """The gate's SECOND leg: metadata cannot verify itself.
+
+    `segment_emitted_band_hz` narrows a gated segment's claimed band from the
+    SCHEDULE. If the renderer stopped applying gates, that narrow claim would
+    stay intact while the full parent sweep — an octave below the tweeter's
+    declared floor — reached the driver, and admission would approve it. This
+    drives exactly that scenario by handing admission an UNGATED render of a
+    gated program, which is what a broken `segment_stimulus` produces.
+    """
+    from jasper.audio_measurement.program import segment_stimulus
+
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    program, _plan = build_null_confirm_program(
+        FC_HZ,
+        _roles(woofer=(500.0, 3000.0), tweeter=(1500.0, 10_000.0)),
+        gain_db=-65.0 - sv - 0.01,
+        sweep_duration_limits_s={"woofer": 6.0, "tweeter": 2.0},
+        downstream_gain_db=sv,
+    )
+    assert _admit(program, topology, profile, targets, sv).allowed
+
+    # The attack: same schedule, same narrow band claims, gates NOT applied.
+    ungated = np.zeros((program.total_samples, program.channels), dtype=np.float32)
+    for seg in program.stimulus_segments():
+        bare = segment_stimulus(replace(seg, gate_start_sample=0,
+                                        gate_end_sample=None, gate_fade_samples=0))
+        ungated[seg.start_sample:seg.start_sample + seg.n_samples, seg.channel] = bare
+
+    verdict = _admit(program, topology, profile, targets, sv, pcm=ungated)
+    assert not verdict.allowed
+    assert ProgramAdmissionRefusal.GATE_NOT_APPLIED in verdict.refusals
+
+
+def test_the_bytes_leg_is_vacuous_for_the_wizard_summed_program():
+    """Direction two: an ungated program has no gate claim, so nothing to
+    verify. The shipped summed sweep must not start being refused."""
+    from jasper.audio_measurement.program import build_verify_program
+
+    program = build_verify_program(FC_HZ, gain_db=-20.0, downstream_gain_db=-10.0)
+    assert all(not s.is_gated for s in program.stimulus_segments())
+    assert _gate_leaks(program) == []
+
+
+def test_the_bytes_leg_is_vacuous_for_per_driver_programs():
+    """Direction three, the FALSE-REFUSAL one: `jasper-measure`'s per-driver
+    programs are full-band per role and ungated. They legitimately emit across
+    the whole declared band, and a check that fired on them would refuse a
+    correct measurement."""
+    from jasper.audio_measurement.program import build_measure_program
+
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    program = build_measure_program(
+        {"woofer": -6.0, "tweeter": -46.0},
+        _roles(woofer=(500.0, 1600.0), tweeter=(1600.0, 10_000.0)),
+        downstream_gain_db=sv,
+    )
+    assert all(not s.is_gated for s in program.stimulus_segments())
+    assert _gate_leaks(program) == []
+    assert _admit(program, topology, profile, targets, sv).allowed
+
+
+def _gate_leaks(program):
+    from jasper.active_speaker.program_admission import _gate_leak_refusals
+    from jasper.audio_measurement.program import render_program_pcm
+
+    return _gate_leak_refusals(program, render_program_pcm(program))
 
 
 def test_a_measure_phase_program_needs_no_admission_widening():
