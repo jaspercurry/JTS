@@ -22,10 +22,12 @@ NO_OUTPUTD_ENV = object()
 def _outputd_env(dac_buffer_frames: int = 3072) -> str:
     """Production-shape outputd env fixture.
 
-    The AirPlay latency offset compensates CamillaDSP's target_level
-    over chunksize, the fan-in output buffer, plus jasper-outputd's DAC
-    buffer. The old output dmix is retired from the outputd path, and the
-    optional rate-match content bridge (once a fourth term) was deleted.
+    The AirPlay latency offset compensates CamillaDSP's chunk-floor term
+    (target_level over chunksize, floored at one chunk), Ring A (fan-in ->
+    CamillaDSP) and Ring B (CamillaDSP -> outputd) queue depths, plus
+    jasper-outputd's DAC buffer. The old output dmix is retired from the
+    outputd path, and the optional rate-match content bridge (once a
+    fourth term) was deleted.
     """
     return f"JASPER_OUTPUTD_DAC_BUFFER_FRAMES={dac_buffer_frames}\n"
 
@@ -38,6 +40,7 @@ def _render(
     grouping_airplay_content: str | None = None,
     fanin_status_socket: Path | None = None,
     outputd_status_socket: Path | None = None,
+    ring_alsa_conf_content: str | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     template = tmp_path / "shairport-sync.conf.template"
     target = tmp_path / "shairport-sync.conf"
@@ -48,6 +51,7 @@ def _render(
     jasper_env_path = tmp_path / "jasper.env"
     speaker_env = tmp_path / "speaker_name.env"
     grouping_airplay_env = tmp_path / "grouping-airplay.env"
+    ring_alsa_conf = tmp_path / "60-jts-ring.conf"
 
     template.write_text(
         textwrap.dedent(
@@ -76,6 +80,15 @@ def _render(
     else:
         grouping_airplay_env = tmp_path / "no-grouping-airplay.env"
 
+    # Absent by default (a nonexistent sentinel path): ring geometry falls
+    # back to the script's DEFAULT_RING_A/B_LATENCY_FRAMES, which mirror the
+    # shipped 60-jts-ring.conf values (256 / 128) — see
+    # test_airplay_renderer_ring_conf_geometry_propagates for the parsed path.
+    if ring_alsa_conf_content is not None:
+        ring_alsa_conf.write_text(ring_alsa_conf_content)
+    else:
+        ring_alsa_conf = tmp_path / "no-ring-conf.conf"
+
     if outputd_env is NO_OUTPUTD_ENV:
         outputd_env_path = tmp_path / "no-outputd.env"
     else:
@@ -93,6 +106,7 @@ def _render(
             "JASPER_SPEAKER_NAME_FILE": str(speaker_env),
             "JASPER_CAMILLA_STATEFILE": str(statefile),
             "JASPER_CAMILLA_DEFAULT_CONFIG": str(camilla),
+            "JASPER_RING_ALSA_CONF": str(ring_alsa_conf),
             "JASPER_GROUPING_AIRPLAY_ENV_FILE": str(grouping_airplay_env),
             "JASPER_FANIN_STATUS_SOCKET": str(
                 fanin_status_socket or tmp_path / "no-fanin-status.sock"
@@ -111,6 +125,14 @@ def _render(
     result = subprocess.run(
         ["bash", str(SCRIPT)],
         env=env,
+        # cwd=REPO (not pytest's own cwd): the script's ring-conf-parsed
+        # tier shells into `python -` and imports jasper.ring_assets, which
+        # resolves via the interpreter's own site-packages in production
+        # (the runtime venv) but via the empty-string sys.path[0]-as-cwd
+        # rule for the bare-python3 fallback this test environment uses —
+        # pinning cwd here keeps that resolution independent of wherever
+        # the test suite itself happens to be invoked from.
+        cwd=str(REPO),
         check=True,
         capture_output=True,
         text=True,
@@ -120,9 +142,10 @@ def _render(
 
 
 def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: Path):
-    # target_level=4096, chunksize=1024 -> 3072 Camilla frames.
-    # fan-in output=1024; outputd DAC=3072.
-    # Total invisible = 7168 / 48000 = 0.149333 s.
+    # target_level=4096, chunksize=1024 -> Camilla term 3072+1024=4096.
+    # Ring A=256 (no live fanin STATUS, no ring conf -> parsed default);
+    # Ring B=128 (same fallback); outputd DAC=3072 (static default).
+    # Total invisible = 256 + 4096 + 128 + 3072 = 7552 / 48000 = 0.157333 s.
     rendered, result = _render(
         tmp_path,
         """
@@ -137,15 +160,16 @@ def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: P
     assert 'name = "Unit Test";' in rendered
     assert 'disable_synchronization = "no";' in rendered
     assert 'output_device = "shairport_substream";' in rendered
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.157333;" in rendered
     assert "__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__" not in rendered
     assert "renderer device 'shairport_substream'" in result.stderr
-    assert "latency offset -0.149333s" in result.stderr
+    assert "latency offset -0.157333s" in result.stderr
 
 
 def test_airplay_renderer_updates_offset_when_target_level_changes(tmp_path: Path):
-    # target=2048 -> 1024 Camilla frames; fan-in output=1024;
-    # outputd DAC=3072. Total = 5120 / 48000 = 0.106667 s.
+    # target=2048 -> Camilla term 1024+1024=2048. Ring A=256, Ring B=128
+    # (both fallback defaults); outputd DAC=3072.
+    # Total = 256 + 2048 + 128 + 3072 = 5504 / 48000 = 0.114667 s.
     rendered, _ = _render(
         tmp_path,
         """
@@ -157,12 +181,13 @@ def test_airplay_renderer_updates_offset_when_target_level_changes(tmp_path: Pat
         """,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
 
 
 def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path: Path):
-    # target_level absent -> defaults to chunksize -> no Camilla extra.
-    # fan-in output=1024; outputd DAC=3072 -> 0.085333 s.
+    # target_level absent -> defaults to chunksize -> Camilla term is just
+    # one chunk: 1024. Ring A=256, Ring B=128 (fallback defaults);
+    # outputd DAC=3072. Total = 256+1024+128+3072 = 4480 / 48000 = 0.093333 s.
     rendered, _ = _render(
         tmp_path,
         """
@@ -173,12 +198,13 @@ def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path:
         """,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.085333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.093333;" in rendered
 
 
 def test_airplay_renderer_falls_back_when_outputd_env_missing(tmp_path: Path):
-    # No outputd env -> service default DAC buffer=3072. Camilla +
-    # fan-in output + default outputd DAC = -(7168 / 48000) = -0.149333.
+    # No outputd env -> service default DAC buffer=3072. Same total as
+    # test_airplay_renderer_derives_latency_offset_from_camilla_target:
+    # 256 + 4096 + 128 + 3072 = 7552 / 48000 = -0.157333.
     rendered, _ = _render(
         tmp_path,
         """
@@ -191,7 +217,7 @@ def test_airplay_renderer_falls_back_when_outputd_env_missing(tmp_path: Path):
         outputd_env=NO_OUTPUTD_ENV,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.157333;" in rendered
 
 
 def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: Path):
@@ -207,8 +233,8 @@ def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: P
         outputd_env=_outputd_env(dac_buffer_frames=1024),
     )
 
-    # CamillaDSP 3072 + fan-in output 1024 + outputd DAC 1024 = 5120 frames.
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    # Ring A 256 + Camilla 4096 + Ring B 128 + outputd DAC 1024 = 5504 frames.
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
 
 
 def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
@@ -229,8 +255,9 @@ def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
             outputd_status_socket=outputd_status,
         )
 
-    # CamillaDSP 1024 + fan-in fallback 1024 + live outputd DAC 1024.
-    assert "audio_backend_latency_offset_in_seconds = -0.064000;" in rendered
+    # Camilla term 1024+1024=2048 + Ring A fallback 256 + Ring B fallback
+    # 128 + live outputd DAC 1024 = 3456 / 48000 = 0.072000.
+    assert "audio_backend_latency_offset_in_seconds = -0.072000;" in rendered
 
 
 def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
@@ -255,14 +282,15 @@ def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
             outputd_status_socket=outputd_status,
         )
 
-    # CamillaDSP 1024 + live fan-in output 1536 + live outputd DAC 1024.
-    assert "audio_backend_latency_offset_in_seconds = -0.074667;" in rendered
+    # Camilla term 1024+1024=2048 + live fan-in (Ring A) output 1536 +
+    # Ring B fallback 128 + live outputd DAC 1024 = 4736 / 48000 = 0.098667.
+    assert "audio_backend_latency_offset_in_seconds = -0.098667;" in rendered
 
 
 def test_airplay_renderer_adds_no_content_bridge_term(tmp_path: Path):
-    """The offset is CamillaDSP + fan-in + DAC only.
+    """The offset is Ring A + CamillaDSP + Ring B + DAC only.
 
-    No content bridge contributes a fourth term. A box that still carries a
+    No content bridge contributes a fifth term. A box that still carries a
     stale bridge env must get the SAME offset as one that does not — otherwise
     the renderer would compensate for a hold that never happens, pushing
     AirPlay audio early.
@@ -274,8 +302,9 @@ def test_airplay_renderer_adds_no_content_bridge_term(tmp_path: Path):
           queuelimit: 4
           target_level: 4096
         """
-    # CamillaDSP (4096-1024) + fan-in output 1024 + outputd DAC 3072 @ 48 kHz.
-    expected = "audio_backend_latency_offset_in_seconds = -0.149333;"
+    # Ring A 256 + Camilla (4096-1024)+1024=4096 + Ring B 128 + outputd DAC
+    # 3072 @ 48 kHz = 7552 / 48000.
+    expected = "audio_backend_latency_offset_in_seconds = -0.157333;"
 
     rendered, _ = _render(tmp_path, camilla, outputd_env=_outputd_env())
     assert expected in rendered
@@ -313,7 +342,9 @@ def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Pa
 
     # outputd.service applies packaged outputd defaults after /etc/jasper,
     # so the renderer must not let stale /etc outputd knobs add a bridge term.
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    # Ring A 256 + Camilla 2048 + Ring B 128 + outputd DAC default 3072
+    # = 5504 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
 
 
 def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Path):
@@ -329,7 +360,7 @@ def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Pat
         outputd_env='JASPER_OUTPUTD_DAC_BUFFER_FRAMES="not-a-number"\n',
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.157333;" in rendered
 
 
 _PROD_CAMILLA = """
@@ -345,29 +376,30 @@ def test_airplay_solo_offset_unchanged_without_grouping_env(tmp_path: Path):
     # INVARIANT: a solo/follower speaker (no grouping-airplay.env) gets the
     # byte-identical production offset. The bonded Snapcast term must never
     # leak into a non-bonded speaker's AirPlay timing.
+    # Ring A 256 + Camilla 2048 + Ring B 128 + outputd DAC 3072 = 5504/48000.
     rendered, _ = _render(tmp_path, _PROD_CAMILLA)
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
 
 
 def test_airplay_bonded_leader_adds_snapcast_buffer(tmp_path: Path):
     # Active bonded leader: jasper-grouping-reconcile writes the Snapcast
     # playout buffer (400 ms default) as the extra delay. The offset becomes
-    # the solo 0.106667 + 0.400 = 0.506667, so the leader's own output lands
+    # the solo 0.114667 + 0.400 = 0.514667, so the leader's own output lands
     # back on the AirPlay anchor despite the round-trip buffer.
     rendered, result = _render(
         tmp_path,
         _PROD_CAMILLA,
         grouping_airplay_content="JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=0.400000\n",
     )
-    assert "audio_backend_latency_offset_in_seconds = -0.506667;" in rendered
-    assert "latency offset -0.506667s" in result.stderr
+    assert "audio_backend_latency_offset_in_seconds = -0.514667;" in rendered
+    assert "latency offset -0.514667s" in result.stderr
 
 
 def test_airplay_empty_grouping_env_is_solo(tmp_path: Path):
     # A cleared (empty) grouping-airplay.env — the unbonded state the
     # reconciler writes on unbond — is treated as solo, not an error.
     rendered, _ = _render(tmp_path, _PROD_CAMILLA, grouping_airplay_content="")
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
 
 
 def test_airplay_blank_bonded_delay_value_is_solo(tmp_path: Path):
@@ -376,7 +408,7 @@ def test_airplay_blank_bonded_delay_value_is_solo(tmp_path: Path):
         _PROD_CAMILLA,
         grouping_airplay_content="JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=\n",
     )
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
 
 
 def test_airplay_ignores_garbage_bonded_delay(tmp_path: Path):
@@ -391,7 +423,7 @@ def test_airplay_ignores_garbage_bonded_delay(tmp_path: Path):
             ),
         )
         assert (
-            "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+            "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
         ), f"garbage value {bad!r} should fall back to the solo offset"
 
 
@@ -412,3 +444,223 @@ def test_renderer_device_placeholder_validated(tmp_path: Path):
     # byte-identical fleet default. The armed→ring flip is pinned in
     # tests/test_renderer_ring_lanes.py.
     assert 'output_device = "shairport_substream"' in rendered
+
+
+def test_airplay_renderer_pins_ring_topology_offset_formula(tmp_path: Path):
+    """Pins the corrected ring-topology formula against jts3's real active
+    config (deploy/camilladsp/outputd-cutover.yml: chunksize=target_level=
+    128, so the Camilla term is exactly one chunk) plus a live outputd DAC
+    reading. No live fan-in STATUS (a ring box's SHM path reports none —
+    ADR-0100) and no ring conf (falls back to the shipped 60-jts-ring.conf
+    defaults): Ring A=256, Ring B=128.
+    """
+    dac_live = 248
+    with JsonStatusSocket(
+        {"dac": {"snd_pcm_delay_frames": dac_live}}, name="outputd.sock"
+    ) as outputd_status:
+        rendered, _ = _render(
+            tmp_path,
+            """
+            devices:
+              samplerate: 48000
+              chunksize: 128
+              queuelimit: 1
+              target_level: 128
+            """,
+            outputd_status_socket=outputd_status,
+        )
+
+    expected = -(256 + 128 + 128 + dac_live) / 48000
+    assert f"audio_backend_latency_offset_in_seconds = {expected:.6f};" in rendered
+
+
+_PARSED_TIER_CAMILLA = """
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 2048
+"""
+
+
+def test_airplay_renderer_ring_conf_geometry_propagates(tmp_path: Path):
+    """A ring retune (different period_frames/n_slots in the shipped ALSA
+    ring conf) must change the derived offset — the geometry is parsed via
+    jasper.ring_assets at render time, never hardcoded blind, so a future
+    retune needs no code change here. No live STATUS on either socket, so
+    both terms fall through to this parsed tier.
+
+    period_frames is CONSISTENT across both blocks (256): the real conf.d
+    shares one period value fleet-wide (jasper.ring_assets.
+    ring_conf_period_frames scans every block for a single shared value),
+    so a fixture with two different period_frames would be a torn conf.d
+    the parser correctly refuses, not a valid retune — that shape is
+    test_airplay_renderer_torn_ring_conf_falls_back_to_default below.
+    n_slots MAY legitimately differ per block (Ring A's is retuned to 3;
+    Ring B's own n_slots is irrelevant since Ring B's term never multiplies
+    by it — see DEFAULT_RING_B_LATENCY_FRAMES's comment in the script).
+    """
+    ring_conf = textwrap.dedent(
+        """
+        pcm.jts_ring_capture {
+            type jts_ring
+            path "/dev/shm/jts-ring/program.ring"
+            period_frames 256
+            n_slots 3
+            format S32_LE
+        }
+
+        pcm.jts_ring_playback {
+            type jts_ring
+            path "/dev/shm/jts-ring/content.ring"
+            period_frames 256
+            n_slots 2
+            format S32_LE
+        }
+        """
+    ).lstrip()
+
+    rendered, result = _render(
+        tmp_path,
+        _PARSED_TIER_CAMILLA,
+        ring_alsa_conf_content=ring_conf,
+    )
+
+    assert "ring_a tier=parsed frames=768" in result.stderr
+    assert "ring_b tier=parsed frames=256" in result.stderr
+    # Ring A retuned to 256x3=768; Ring B retuned to one slot at 256.
+    # Camilla 2048 + outputd DAC default 3072 unchanged.
+    # Total = 768 + 2048 + 256 + 3072 = 6144 / 48000 = 0.128000.
+    assert "audio_backend_latency_offset_in_seconds = -0.128000;" in rendered
+
+
+def test_airplay_renderer_torn_ring_conf_falls_back_to_default(tmp_path: Path):
+    """A conf.d whose blocks disagree on period_frames (a torn file — a
+    half-applied retune, or hand edit) must never be silently picked from;
+    jasper.ring_assets.ring_conf_period_frames reports indeterminate for
+    it, so both Ring A and Ring B fall all the way through to their
+    DEFAULT_RING_A/B_LATENCY_FRAMES tier — the same total as no conf.d at
+    all, never a guess built from mismatched blocks.
+    """
+    ring_conf = textwrap.dedent(
+        """
+        pcm.jts_ring_capture {
+            type jts_ring
+            path "/dev/shm/jts-ring/program.ring"
+            period_frames 256
+            n_slots 3
+            format S32_LE
+        }
+
+        pcm.jts_ring_playback {
+            type jts_ring
+            path "/dev/shm/jts-ring/content.ring"
+            period_frames 64
+            n_slots 2
+            format S32_LE
+        }
+        """
+    ).lstrip()
+
+    rendered, result = _render(
+        tmp_path,
+        _PARSED_TIER_CAMILLA,
+        ring_alsa_conf_content=ring_conf,
+    )
+
+    assert "ring_a tier=default frames=256" in result.stderr
+    assert "ring_b tier=default frames=128" in result.stderr
+    # Identical total to test_airplay_solo_offset_unchanged_without_grouping_env
+    # (which supplies no ring conf.d at all): 256 + 2048 + 128 + 3072 = 5504.
+    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
+
+
+def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
+    """Ring A's SECOND tier: fanin STATUS output.ring.occupancy (live
+    write_seq-read_seq depth) times output.period_frames, used when the
+    ALSA-delay field (output.snd_pcm_delay_frames — correct on a loopback
+    box) is absent, which is the ring topology's normal case (ADR-0100
+    left no playback PCM there for shairport's own snd_pcm_delay() either).
+    """
+    with JsonStatusSocket(
+        {"output": {"period_frames": 100, "ring": {"occupancy": 3}}},
+        name="fanin.sock",
+    ) as fanin_status:
+        rendered, result = _render(
+            tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
+        )
+
+    assert "ring_a tier=live-status basis=ring-occupancy" in result.stderr
+    # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
+    # DAC default 3072 = 3548 / 48000... actually 300+2048+128+3072=5548.
+    assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered
+
+
+def test_airplay_renderer_alsa_delay_beats_ring_occupancy_for_ring_a(
+    tmp_path: Path,
+):
+    """When fanin STATUS offers BOTH fields (only possible on a genuinely
+    mixed/transitional STATUS shape), the real ALSA delay wins over the
+    occupancy-derived figure — tier order matters, not just tier presence.
+    On a real loopback box output.ring is simply absent, so this pins the
+    PRECEDENCE the two-field case must resolve, not a shape that occurs on
+    a real ring or loopback box today.
+    """
+    with JsonStatusSocket(
+        {
+            "output": {
+                "snd_pcm_delay_frames": 777,
+                "period_frames": 128,
+                "ring": {"occupancy": 2},
+            }
+        },
+        name="fanin.sock",
+    ) as fanin_status:
+        rendered, result = _render(
+            tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
+        )
+
+    assert "ring_a tier=live-status basis=alsa-delay frames=777" in result.stderr
+    # 777 (ALSA delay, NOT the occupancy-derived 2*128=256) + Camilla 2048 +
+    # Ring B default 128 + outputd DAC default 3072 = 6025 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.125521;" in rendered
+
+
+def test_airplay_renderer_prefers_live_ring_b_occupancy(tmp_path: Path):
+    """Ring B's live tier: outputd STATUS shm_ring.occupancy (live
+    write_seq-read_seq depth, refreshed every DAC period) times
+    shm_ring.slot_frames — the true currently-queued frame count, not just
+    a static capacity/floor estimate.
+    """
+    with JsonStatusSocket(
+        {"shm_ring": {"occupancy": 1, "slot_frames": 200}},
+        name="outputd.sock",
+    ) as outputd_status:
+        rendered, result = _render(
+            tmp_path, _PARSED_TIER_CAMILLA, outputd_status_socket=outputd_status
+        )
+
+    assert "ring_b tier=live-status occupancy=1 slot_frames=200" in result.stderr
+    # Ring A default 256 + Camilla 2048 + Ring B live 1*200=200 + outputd
+    # DAC default 3072 (same payload has no "dac" key) = 5576 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.116167;" in rendered
+
+
+def test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets():
+    """DEFAULT_RING_A_LATENCY_FRAMES / DEFAULT_RING_B_LATENCY_FRAMES (the
+    script's own last-tier constants, 256 / 128) must equal what
+    jasper.ring_assets — the production authority — actually parses from
+    the real shipped deploy/alsa/conf.d/60-jts-ring.conf TODAY, so a ring
+    retune that moves the shipped file and forgets these two bash
+    constants is caught here rather than silently drifting.
+    """
+    from jasper import ring_assets
+    from tests.test_ring_assets import SHIPPED_RING_CONF
+
+    conf = str(SHIPPED_RING_CONF)
+    period = ring_assets.ring_conf_period_frames(conf)
+    ring_a_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, conf)
+
+    assert period is not None and ring_a_slots is not None
+    assert period * ring_a_slots == 256  # DEFAULT_RING_A_LATENCY_FRAMES
+    assert period == 128  # DEFAULT_RING_B_LATENCY_FRAMES (one slot, no x n_slots)

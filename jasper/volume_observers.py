@@ -10,12 +10,14 @@ change immediately. We poll those daemons at 1 Hz so the coordinator's
 canonical `listening_level` reflects user-side movements without
 requiring the user to also tell Jarvis.
 
-AirPlay is intentionally different. shairport-sync can observe
-sender-side AirPlay volume, but cannot reliably reflect receiver-side
-volume changes back to modern iOS/macOS AirPlay 2 senders. JTS treats
-AirPlay sender volume as upstream trim and keeps AirPlay speaker volume
-on CamillaDSP, so AirPlay observations are read only for diagnostics and
-are not fed into the canonical volume.
+AirPlay is intentionally different: it is not polled into the canonical
+level at all. shairport-sync pushes every sender-side volume change to
+`deploy/bin/jasper-airplay-volume` the moment it arrives, and that hook
+posts it to jasper-control (ADR-0206) — an event-driven path this 1 Hz
+loop cannot improve on. The AirPlay reading below is therefore read and
+logged for diagnostics only, never dispatched. Receiver→sender reflection
+stays impossible on AirPlay 2 (ADR-0176), so JTS keeps AirPlay speaker
+volume on CamillaDSP.
 
 Why polling (not DBus PropertiesChanged subscriptions). The codebase
 already uses `busctl` subprocess for DBus one-shot calls (renderer.py,
@@ -176,7 +178,8 @@ class VolumeObserver:
             self._last_seen[Source.AIRPLAY] = airplay_db
             logger.debug(
                 "airplay sender volume observed at %.1f dB "
-                "(ignored; AirPlay uses camilla-as-master)",
+                "(diagnostics only; the canonical path is shairport's "
+                "volume hook — ADR-0206)",
                 airplay_db,
             )
         if current_active == Source.SPOTIFY and spotify_pct is not None:
@@ -235,8 +238,13 @@ class VolumeObserver:
 
     async def _read_airplay_db(self) -> Optional[float]:
         """Read shairport-sync's current AirplayVolume (double dB).
-        Returns None on any error. shairport reports -144 when muted —
-        the coordinator clamps that to 0% via its airplay_db_to_listening_level.
+
+        Diagnostics only — this reading is logged, never dispatched. The
+        canonical inbound path is shairport's own volume hook
+        (deploy/bin/jasper-airplay-volume, ADR-0206), which is
+        event-driven rather than polled and owns the dB→percent map.
+        Returns None on any error; -144 (shairport's mute sentinel) is
+        clamped up to AIRPLAY_DB_MIN so the log line stays in-range.
         """
         out = await _busctl_get_property_value(
             "org.gnome.ShairportSync",

@@ -52,6 +52,16 @@ pub const RING_SHM_DIR: &str = "/dev/shm/jts-ring";
 /// hops. Mirrored in Python by `jasper.renderer_lanes.RENDERER_RING_PREFIX`.
 pub const RENDERER_RING_PREFIX: &str = "lane-";
 
+/// Label of the measurement / diagnostic injection lane — the one lane that
+/// carries stimuli rather than program.
+///
+/// Two behaviours key off this identity and must agree about it: the lane is
+/// always mixed regardless of selection, so diagnostics keep working when the
+/// household has pinned a source ([`crate::mixer`]'s selection gate), and its
+/// stimuli are never onset-shaped, because the measurement loop deconvolves
+/// against the signal it believes it played (`mixer::wake_ramp`).
+pub const MEASUREMENT_LANE: &str = "correction";
+
 /// The ring file a renderer-ingress lane reads, derived from the fan-in lane
 /// LABEL — the one identity fan-in already has for that lane. This is the whole
 /// path rule; there is no env override, so the reader's path and the conf.d
@@ -642,6 +652,13 @@ impl Config {
                 "hw:Loopback,1,4",
             ],
         );
+        // Spelled out rather than built from MEASUREMENT_LANE: this array is
+        // read as TEXT by tests/test_renderer_ring_lanes.py, which scrapes the
+        // quoted labels straight out of this file to check that every Python
+        // renderer-lane label is one fan-in will accept. A named constant is
+        // invisible to that scrape. The agreement is pinned behaviourally by
+        // `from_env_uses_documented_defaults` below, which asserts the parsed
+        // `input_renderers[4] == MEASUREMENT_LANE`.
         let input_renderers = env_list(
             "JASPER_FANIN_INPUT_RENDERERS",
             &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
@@ -1406,7 +1423,7 @@ mod tests {
                 assert_eq!(cfg.input_pcms.len(), 5);
                 assert_eq!(cfg.input_renderers.len(), 5);
                 assert_eq!(cfg.input_renderers[0], "spotify");
-                assert_eq!(cfg.input_renderers[4], "correction");
+                assert_eq!(cfg.input_renderers[4], MEASUREMENT_LANE);
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
