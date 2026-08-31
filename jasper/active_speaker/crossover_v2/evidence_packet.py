@@ -162,6 +162,7 @@ from .feature_classification import (
     LAB_ROW_NOT_AN_UNCERTAINTY,
     LAB_ROW_UNCERTAINTY,
     UNCERTAINTY_RANDOM,
+    UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
     finite_number,
@@ -2014,6 +2015,162 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
+def _read_candidate(round_dir: Path) -> dict[str, Any]:
+    """One round's own ``candidate.json``, as a plain mapping, or ``{}``.
+
+    Read the same light way every other banked artifact in this module is —
+    JSON in, fields taken out by name — never through
+    ``MeasuredCrossoverCandidate.from_mapping``'s full validation and
+    fingerprint recompute. This packet does not re-verify an artifact's own
+    integrity; a tampered candidate would still misreport an EQ, which is a
+    different door's problem (``candidate_bank.load_candidate_artifact`` is
+    where that check lives), not a reason to withhold a receipt-derived
+    reading here the way ``round_receipt.json`` and ``cloud_verify.json``
+    already are not re-verified either.
+    """
+    raw, _reason = _read_json(round_dir / "candidate.json")
+    return _mapping(raw)
+
+
+#: Ticket 6.5's own bound: the components this block juxtaposes, and why
+#: neither of the two policy constants below is restated as a new table.
+#: :mod:`~jasper.active_speaker.linearization_envelope` is the ONE place the
+#: mic-tier trust ceiling is defined (design doc "Cold-start priors"); a
+#: second copy here is exactly the duplication the house rule against a
+#: second implementation of one concern forbids. The table is imported
+#: privately rather than promoted to a public name because this is the one
+#: reader outside that module that needs the raw breakpoints rather than the
+#: composed per-bin curve :func:`~.linearization_envelope.mic_trust_limit`
+#: returns.
+def _accuracy_budget_block(
+    *,
+    positions: dict[str, Any],
+    reflections: dict[str, Any],
+    verify: dict[str, Any],
+    round_dir: Path | None,
+) -> dict[str, Any]:
+    """Random beside systematic (ADR-0202) — juxtaposed, never pooled.
+
+    Assembled from fields the packet/bundle already carries: nothing here
+    measures anything new, and no two figures are ever added together —
+    the whole point is that a round's own RANDOM terms (this round's repeat
+    scatter) and the standing SYSTEMATIC bounds (mic-cal tier, gate leakage)
+    answer different questions, so a 0.04 dB repeat floor can never again
+    read as accuracy beside a systematic bound that dwarfs it.
+
+    Four components, each labelled its own kind (the substrate rule — every
+    entry says random / systematic / unseparated) and each honest about
+    absence rather than defaulted:
+
+    * ``cross_seat_position_spread`` — UNSEPARATED. Points at
+      ``positions.cross_seat_sigma`` rather than re-embedding its per-bin
+      array (this block adds no second copy of a figure already published).
+    * ``in_capture_repeat_floor`` — RANDOM, and always ``available=False``
+      today: this round's own repeat-sweep magnitude sigma is not banked
+      anywhere the packet reads (the flat campaign's 0.04 dB median is a
+      one-off comparison of two independent VERIFY rounds, not a durable
+      field), and the master plan's own calibration experiment for it
+      (E2) has not run. Unmeasured, never defaulted to 0.0.
+    * ``gate_leakage`` — SYSTEMATIC (a bias a single capture's window bakes
+      in; more captures at the SAME pose do not shrink it). Points at the
+      reflections/positions/verify gate-disclosure numbers ticket 1.5
+      already banks, rather than re-deriving them.
+    * ``mic_calibration_tier`` — SYSTEMATIC. This round's own tier, read off
+      its banked candidate (``candidate.json``'s ``linearization[*].mic_tier``
+      — carried forward onto every fitted or prescribed role), beside that
+      tier's trust-ceiling breakpoints.
+
+    No score, no recommendation, no verdict: this juxtaposes, an LLM judges.
+    """
+    from jasper.active_speaker.linearization_envelope import (
+        MIC_TIERS,
+        _MIC_TRUST_TABLE_HZ,
+    )
+
+    cross_seat = _mapping(positions.get("cross_seat_sigma"))
+    cross_seat_available = bool(cross_seat.get("available"))
+
+    rows = [row for row in positions.get("positions") or [] if isinstance(row, dict)]
+    gate = _mapping(verify.get("gate"))
+    gate_available = (
+        bool(reflections.get("available"))
+        or any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows)
+        or bool(_VERIFY_GATE_NUMBER_FIELDS & set(gate))
+    )
+
+    candidate = _read_candidate(round_dir) if round_dir is not None else {}
+    linearization = _mapping(candidate.get("linearization"))
+    mic_tier: str | None = None
+    for entry in linearization.values():
+        if isinstance(entry, Mapping) and isinstance(entry.get("mic_tier"), str):
+            mic_tier = entry["mic_tier"]
+            break
+    trust_ceiling_hz: dict[str, float] | None = None
+    breakpoints_hz = None if mic_tier is None else _MIC_TRUST_TABLE_HZ.get(mic_tier)
+    if breakpoints_hz is not None:
+        full_to_hz, taper_zero_hz = breakpoints_hz
+        trust_ceiling_hz = {"full_to_hz": full_to_hz, "taper_zero_hz": taper_zero_hz}
+
+    return {
+        "note": (
+            "juxtaposes this round's RANDOM terms against the standing "
+            "SYSTEMATIC bounds (ADR-0202); built from fields the "
+            "packet/bundle already carries, nothing measured fresh and "
+            "nothing pooled. Every component labels its OWN kind"
+        ),
+        "components": {
+            "cross_seat_position_spread": {
+                "kind": UNCERTAINTY_UNSEPARATED,
+                "available": cross_seat_available,
+                "n_seats": cross_seat.get("n_seats"),
+                "source": "positions.cross_seat_sigma",
+                "reason": (
+                    "" if cross_seat_available
+                    else str(cross_seat.get("reason") or "")
+                ),
+                "note": (
+                    "the per-bin array is "
+                    "positions.cross_seat_sigma.per_bin_sigma_db; not "
+                    "duplicated here"
+                ),
+            },
+            "in_capture_repeat_floor": {
+                "kind": UNCERTAINTY_RANDOM,
+                "available": False,
+                "reason": (
+                    "unmeasured -- experiment E2 pending "
+                    "(docs/tuning-master-plan.md, Calibration experiments)"
+                ),
+            },
+            "gate_leakage": {
+                "kind": UNCERTAINTY_SYSTEMATIC,
+                "available": gate_available,
+                "source": (
+                    "reflections.reflector_path_distance_m, "
+                    "verify.gate.moved_rms_db, positions[].gate_moved_rms_db"
+                ),
+                "reason": (
+                    "" if gate_available
+                    else "no capture in this round carries a gate-disclosure "
+                    "number"
+                ),
+            },
+            "mic_calibration_tier": {
+                "kind": UNCERTAINTY_SYSTEMATIC,
+                "available": mic_tier is not None,
+                "tier": mic_tier,
+                "tier_vocabulary": list(MIC_TIERS),
+                "trust_ceiling_hz": trust_ceiling_hz,
+                "source": "candidate.json linearization[*].mic_tier",
+                "reason": (
+                    "" if mic_tier is not None
+                    else "no banked candidate names a mic tier for this round"
+                ),
+            },
+        },
+    }
+
+
 def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
     """The crossover region a proposal must sit inside.
 
@@ -2823,6 +2980,16 @@ def build_crossover_evidence_packet(
         # because that block is copied verbatim from the cloud artifact and a
         # derived field does not belong inside a verbatim copy.
         "reflections": reflections,
+        # Ticket 6.5: this round's RANDOM terms beside the standing
+        # SYSTEMATIC bounds (ADR-0202) — juxtaposed only, never pooled and
+        # never a score. Reads fields already assembled above
+        # (positions/reflections/verify) plus this round's own candidate.
+        "accuracy_budget": _accuracy_budget_block(
+            positions=positions,
+            reflections=reflections,
+            verify=verify,
+            round_dir=round_dir,
+        ),
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
         # says where a filter may sit, the verdicts say what it may be aimed
