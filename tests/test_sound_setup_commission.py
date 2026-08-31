@@ -63,6 +63,11 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
     arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
+    # rollback_driver_commissioning_config derives its target from
+    # staged_config_path() directly (not the statefile), so it must resolve to
+    # the same anchor _staged() wrote here, not the real /var/lib/camilladsp
+    # default.
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(staged_path))
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {staged_path}\nmute: false\n", encoding="utf-8")
     controller.persisted_path = staged_path
@@ -1413,16 +1418,17 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
 
 
 def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_path):
+    # _summed_test_stubs already installs an aplay-scoped Popen fake that
+    # records into `processes` and passes everything else (e.g. rollback's
+    # own camilladsp --check validation, now reached unconditionally on
+    # teardown) through to the real subprocess -- which lands on the fake
+    # JASPER_CAMILLADSP_BIN stub, not a real binary. A second, unscoped
+    # override here would intercept that validation call too and hand it a
+    # process object with no context-manager protocol, which is not what
+    # this test is pinning.
     summed = _summed_test_stubs(monkeypatch, tmp_path)
     controller = summed["controller"]
     processes = summed["processes"]
-
-    def _record_any_popen(args, *popen_args, **kwargs):
-        proc = _FakeToneProcess(list(args))
-        processes.append(proc)
-        return proc
-
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _record_any_popen)
 
     async def _run_pre_audio_confirm_test():
         load_started = asyncio.Event()
