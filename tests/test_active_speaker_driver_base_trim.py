@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The banked measured per-driver BASE TRIM — solve, record, and re-key.
+"""The banked measured per-driver BASE TRIM — record, re-key, and clear.
 
-These pin the half of the auto-trim step that has no hardware in it: the chain
-from ledger-normalized overlap levels to a per-role attenuation, the record's
-own envelope, and the refusal an operator sees when the declaration has moved
-under a banked trim. The verb that produces the levels lives in
-``test_cli_driver_trim.py``; the profile's preference for this record over the
-guided captures lives in ``test_active_speaker_level_match.py``.
+These pin the artifact's own envelope: what the apply seam may bank, what the
+reader refuses, and the remediation an operator sees when the declaration has
+moved under a banked trim. The seam that WRITES it lives in
+``test_active_speaker_baseline_profile.py``; the profile's preference for this
+record over the guided captures lives in ``test_active_speaker_level_match.py``.
 """
 from __future__ import annotations
 
@@ -20,128 +19,27 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import driver_base_trim as dbt
-from jasper.active_speaker.level_trim import MAX_ATTENUATION_DB
 
 TWO_WAY = ("woofer", "tweeter")
-TWO_WAY_REGIONS = [("woofer", "tweeter", 2000.0)]
 THREE_WAY = ("woofer", "mid", "tweeter")
-THREE_WAY_REGIONS = [("woofer", "mid", 300.0), ("mid", "tweeter", 3000.0)]
-
-MIC = {"sens_factor_db": -12.07, "analog_gain_db": 18.0, "serial": "8108494"}
-
-
-# ---------- solve: deltas -> attenuation ------------------------------------
-
-
-def test_two_way_solve_attenuates_the_hotter_driver_and_normalizes_up():
-    """The tweeter measures 20 dB hotter at the handoff, so it gets -20 dB and
-    the woofer — the quieter driver, hence the reference — sits at unity. The
-    vector's MAXIMUM is 0 dB: that is the normalize-up."""
-    levels = {"mono": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -30.0}}}
-    trims = dbt.solve_base_trims(levels, TWO_WAY, TWO_WAY_REGIONS)
-    assert trims == {"woofer": 0.0, "tweeter": -20.0}
-    assert max(trims.values()) == 0.0
-
-
-def test_a_uniformly_quiet_pair_still_normalizes_up_to_unity():
-    """Both drivers 40 dB down but EQUAL: the trim is a relative answer, so
-    common-mode level is given back rather than charged as attenuation
-    (#2906's invariant, at the one writer this slice adds)."""
-    levels = {"mono": {"woofer": {2000.0: -70.0}, "tweeter": {2000.0: -70.0}}}
-    assert dbt.solve_base_trims(levels, TWO_WAY, TWO_WAY_REGIONS) == {
-        "woofer": 0.0,
-        "tweeter": 0.0,
-    }
-
-
-def test_three_way_chains_both_handoffs_and_leaves_the_quietest_at_unity():
-    """Each handoff is +6 dB hotter than the one below, so the chain compounds:
-    the tweeter needs 12 dB and the reference — the QUIETEST driver, not the
-    loudest — sits at 0 dB, which is what "normalizes up" means here."""
-    levels = {
-        "mono": {
-            "woofer": {300.0: -50.0},
-            "mid": {300.0: -44.0, 3000.0: -44.0},
-            "tweeter": {3000.0: -38.0},
-        }
-    }
-    trims = dbt.solve_base_trims(levels, THREE_WAY, THREE_WAY_REGIONS)
-    assert trims == {"woofer": 0.0, "mid": -6.0, "tweeter": -12.0}
-    assert max(trims.values()) == 0.0
-
-
-def test_two_groups_average_and_a_group_missing_one_role_is_dropped():
-    levels = {
-        "left": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -30.0}},
-        "right": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -40.0}},
-    }
-    assert dbt.solve_base_trims(levels, TWO_WAY, TWO_WAY_REGIONS) == {
-        "woofer": 0.0,
-        "tweeter": -15.0,
-    }
-    levels["right"].pop("tweeter")
-    assert dbt.solve_base_trims(levels, TWO_WAY, TWO_WAY_REGIONS) == {
-        "woofer": 0.0,
-        "tweeter": -20.0,
-    }
-
-
-@pytest.mark.parametrize(
-    "levels, why",
-    [
-        pytest.param({}, "no groups at all", id="empty"),
-        pytest.param(
-            {"mono": {"woofer": {2000.0: -50.0}}},
-            "the upper driver has no level at the handoff",
-            id="missing_role",
-        ),
-        pytest.param(
-            {"mono": {"woofer": {2000.0: -50.0}, "tweeter": {1000.0: -30.0}}},
-            "the tweeter's only level is at a frequency nobody declared",
-            id="wrong_fc",
-        ),
-        pytest.param(
-            {
-                "mono": {
-                    "woofer": {2000.0: -50.0},
-                    "tweeter": {2000.0: float("nan")},
-                }
-            },
-            "a non-finite level is not evidence",
-            id="nan_level",
-        ),
-    ],
-)
-def test_solve_fails_closed_to_empty(levels, why):
-    """Fail-closed in one direction only: an incomplete group is DROPPED, and
-    no qualifying group returns ``{}`` so the caller keeps its estimate."""
-    assert dbt.solve_base_trims(levels, TWO_WAY, TWO_WAY_REGIONS) == {}, why
-
-
-def test_the_attenuation_floor_clamps_an_absurd_delta():
-    levels = {"mono": {"woofer": {2000.0: -200.0}, "tweeter": {2000.0: -30.0}}}
-    trims = dbt.solve_base_trims(levels, TWO_WAY, TWO_WAY_REGIONS)
-    assert trims == {"woofer": 0.0, "tweeter": MAX_ATTENUATION_DB}
-
-
-# ---------- the record: round-trip, envelope, re-key -------------------------
 
 
 def _bank(tmp_path: Path, **overrides) -> Path:
     state = tmp_path / "base_trim.json"
     payload = dict(
         trims_db={"woofer": 0.0, "tweeter": -20.0},
-        levels_db={"mono": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -30.0}}},
-        capture_geometries={"mono": {"woofer": "near_field", "tweeter": "near_field"}},
         roles=TWO_WAY,
-        regions=TWO_WAY_REGIONS,
+        speaker_group_ids=["mono"],
         declaration_fingerprint="a" * 64,
-        microphone=MIC,
+        trim_source="strict_measured_candidate",
         state_path=state,
     )
     payload.update(overrides)
     dbt.write_base_trim(**payload)
     return state
+
+
+# ---------- the record: round-trip, envelope, re-key -------------------------
 
 
 def test_write_then_load_round_trips_every_field(tmp_path: Path):
@@ -153,16 +51,8 @@ def test_write_then_load_round_trips_every_field(tmp_path: Path):
     assert record["trims_db"] == {"woofer": 0.0, "tweeter": -20.0}
     assert record["roles"] == ["woofer", "tweeter"]
     assert record["declaration_fingerprint"] == "a" * 64
-    assert record["microphone"] == MIC
-    assert record["crossovers"] == [
-        {"lower_role": "woofer", "upper_role": "tweeter", "declared_fc_hz": 2000.0}
-    ]
-    assert record["levels_db"] == {
-        "mono": {"woofer": {"2000": -50.0}, "tweeter": {"2000": -30.0}}
-    }
-    # The claim the single mic position can actually support, named so its
-    # absence is a decision rather than an oversight.
-    assert record["geometry_claim"] == "on_axis_single_position"
+    assert record["speaker_group_ids"] == ["mono"]
+    assert record["trim_source"] == "strict_measured_candidate"
     assert record["measured_at"].endswith("Z")
 
 
@@ -192,23 +82,75 @@ def test_load_is_absent_tolerant_and_never_raises(tmp_path: Path, write, why):
 
 
 @pytest.mark.parametrize(
-    "trims",
+    "overrides, reason",
     [
-        pytest.param({"woofer": 0.0, "tweeter": 3.0}, id="a_boost"),
-        pytest.param({"woofer": 0.0, "tweeter": -80.0}, id="below_the_floor"),
-        pytest.param({"woofer": 0.0, "tweeter": float("inf")}, id="not_finite"),
-        pytest.param({"woofer": 0.0}, id="a_role_missing"),
-        pytest.param({"woofer": 0.0, "tweeter": -20.0, "mid": -3.0}, id="a_role_extra"),
+        pytest.param(
+            {"trims_db": {"woofer": 0.0, "tweeter": 3.0}},
+            dbt.REFUSE_NOT_ATTENUATION, id="a_boost",
+        ),
+        pytest.param(
+            {"trims_db": {"woofer": 0.0, "tweeter": -80.0}},
+            dbt.REFUSE_NOT_ATTENUATION, id="below_the_floor",
+        ),
+        pytest.param(
+            {"trims_db": {"woofer": 0.0, "tweeter": float("inf")}},
+            dbt.REFUSE_NOT_ATTENUATION, id="not_finite",
+        ),
+        pytest.param(
+            {"trims_db": {"woofer": 0.0}},
+            dbt.REFUSE_ROLES_INCOMPLETE, id="a_role_missing",
+        ),
+        pytest.param(
+            {"trims_db": {"woofer": 0.0, "tweeter": -20.0, "mid": -3.0}},
+            dbt.REFUSE_ROLES_INCOMPLETE, id="a_role_extra",
+        ),
+        pytest.param(
+            {"declaration_fingerprint": ""},
+            dbt.REFUSE_NO_DECLARATION, id="no_declaration",
+        ),
+        pytest.param({"trim_source": ""}, dbt.REFUSE_NO_TRIM_SOURCE, id="no_source"),
+        pytest.param(
+            {"speaker_group_ids": []},
+            dbt.REFUSE_NO_SPEAKER_GROUP, id="no_speaker_group",
+        ),
+        pytest.param(
+            {"speaker_group_ids": ["mono", 7]},
+            dbt.REFUSE_NO_SPEAKER_GROUP, id="an_unreadable_group",
+        ),
     ],
 )
-def test_write_refuses_a_record_its_own_reader_would_reject(tmp_path: Path, trims):
-    with pytest.raises(dbt.DriverBaseTrimError):
-        _bank(tmp_path, trims_db=trims)
+def test_write_refuses_a_record_its_own_reader_would_reject(
+    tmp_path: Path, overrides, reason
+):
+    """A record the reader would refuse is a silent no-op dressed up as
+    success, so the writer refuses it first — with a typed reason, never
+    prose a caller has to parse."""
+    with pytest.raises(dbt.DriverBaseTrimError) as excinfo:
+        _bank(tmp_path, **overrides)
+    assert excinfo.value.reason == reason
 
 
-def test_write_refuses_a_trim_that_names_no_declaration(tmp_path: Path):
-    with pytest.raises(dbt.DriverBaseTrimError):
-        _bank(tmp_path, declaration_fingerprint="")
+def test_a_positive_trim_is_refused_and_never_banked_as_a_boost(tmp_path: Path):
+    """Attenuation-only BY CONSTRUCTION, and refused rather than clamped.
+
+    No path reaching this writer can produce a positive per-role trim — both
+    measured-candidate types refuse one at construction and
+    ``attenuation_from_group_deltas`` normalizes its maximum to exactly 0 dB —
+    so a positive value is a fault, and clamping it would bank a trim no
+    measurement produced. Downstream, the reverse-null door's branch-gap depth
+    ceiling and the per-role caps argument must stay two independent legs; a
+    banked positive trim would couple them.
+    """
+    state = _bank(tmp_path)  # a good record is already on disk
+    with pytest.raises(dbt.DriverBaseTrimError) as excinfo:
+        _bank(tmp_path, trims_db={"woofer": 0.0, "tweeter": 0.1})
+    assert excinfo.value.reason == dbt.REFUSE_NOT_ATTENUATION
+    # Refused BEFORE the write: the good record is untouched, and no positive
+    # value reached disk under any key.
+    record = dbt.load_base_trim(state_path=state)
+    assert record is not None
+    assert record["trims_db"] == {"woofer": 0.0, "tweeter": -20.0}
+    assert max(record["trims_db"].values()) <= 0.0
 
 
 def test_banked_trims_are_returned_when_the_declaration_matches(tmp_path: Path):
@@ -217,25 +159,28 @@ def test_banked_trims_are_returned_when_the_declaration_matches(tmp_path: Path):
     assert trims == {"woofer": 0.0, "tweeter": -20.0}
     assert meta["status"] == dbt.STATUS_APPLIED
     assert meta["declaration_fingerprint"] == "a" * 64
+    assert meta["speaker_group_ids"] == ["mono"]
+    assert meta["groups_total"] == 1
+    assert meta["trim_source"] == "strict_measured_candidate"
 
 
 @pytest.mark.parametrize(
-    "fingerprint, status",
+    "fingerprint",
     [
-        pytest.param("b" * 64, dbt.STATUS_DECLARATION_CHANGED, id="a_different_one"),
-        pytest.param(None, dbt.STATUS_DECLARATION_CHANGED, id="none_at_all"),
-        pytest.param("", dbt.STATUS_DECLARATION_CHANGED, id="empty"),
+        pytest.param("b" * 64, id="a_different_one"),
+        pytest.param(None, id="none_at_all"),
+        pytest.param("", id="empty"),
     ],
 )
 def test_a_stale_declaration_refuses_loudly_with_one_remediation(
-    tmp_path: Path, fingerprint, status
+    tmp_path: Path, fingerprint
 ):
     """Refused, and it SAYS so. A banked trim silently dropped is
     indistinguishable from a speaker that was never measured."""
     state = _bank(tmp_path)
     trims, meta = dbt.banked_base_trims(fingerprint, TWO_WAY, state_path=state)
     assert trims == {}
-    assert meta["status"] == status
+    assert meta["status"] == dbt.STATUS_DECLARATION_CHANGED
     assert meta["remediation"] == dbt.REMEASURE_REMEDIATION
 
 
@@ -276,22 +221,25 @@ def test_a_tampered_record_can_only_fail_closed(tmp_path: Path, trim, why):
 @pytest.mark.parametrize(
     "field, value, why",
     [
-        pytest.param("levels_db", 7, "a number cannot be walked for groups",
-                     id="levels_numeric"),
-        pytest.param("levels_db", "mono", "a string iterates into four ids",
-                     id="levels_string"),
-        pytest.param("levels_db", None, "no evidence is not 'measured everywhere'",
-                     id="levels_none"),
-        pytest.param("capture_geometries", 7, "geometry must be walkable too",
-                     id="geometries_numeric"),
+        pytest.param("speaker_group_ids", 7, "a number cannot be walked for groups",
+                     id="groups_numeric"),
+        pytest.param("speaker_group_ids", "mono", "a string iterates into characters",
+                     id="groups_string"),
+        pytest.param("speaker_group_ids", ["left", None],
+                     "one unreadable member poisons the whole set",
+                     id="groups_partly_unreadable"),
+        pytest.param("speaker_group_ids", None,
+                     "no group is not 'levelled everywhere'", id="groups_none"),
+        pytest.param("trim_source", None, "a trim with no named evidence",
+                     id="source_missing"),
     ],
 )
-def test_a_record_whose_evidence_is_not_readable_refuses(
+def test_a_record_that_cannot_name_its_footing_refuses(
     tmp_path: Path, field, value, why
 ):
-    """``speaker_group_ids`` gates readiness, so it is derived from the
-    record's evidence and never guessed. Unreadable evidence is refused rather
-    than turned into a group set nobody measured."""
+    """``speaker_group_ids`` gates readiness
+    (``crossover_contract.automatic_candidate_readiness``) and ``trim_source``
+    is what a receipt discloses, so neither may be guessed."""
     state = _bank(tmp_path)
     record = json.loads(state.read_text())
     record[field] = value
@@ -303,63 +251,48 @@ def test_a_record_whose_evidence_is_not_readable_refuses(
     assert "speaker_group_ids" not in meta
 
 
-def test_the_reader_names_only_the_groups_the_record_actually_levelled(
-    tmp_path: Path
-):
-    """The record banks EVERY group it captured, including one the solve
-    dropped for a driver it never got a level for. Readiness gates on the
-    measured-group set, so the right cabinet's half-capture must not read as a
-    levelled cabinet."""
-    state = _bank(
-        tmp_path,
-        levels_db={
-            "left": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -30.0}},
-            "right": {"woofer": {2000.0: -50.0}},  # the tweeter never landed
-        },
-        capture_geometries={
-            "left": {"woofer": "near_field", "tweeter": "near_field"},
-            "right": {"woofer": "near_field"},
-        },
-    )
+def test_the_reader_names_every_group_the_record_covers(tmp_path: Path):
+    """Readiness gates on the measured-group SET against the topology's
+    required one, so a record that levelled only one cabinet of a stereo pair
+    must not read as having levelled both."""
+    state = _bank(tmp_path, speaker_group_ids=["right", "left"])
     _trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
-    assert meta["status"] == dbt.STATUS_APPLIED
-    assert meta["speaker_group_ids"] == ["left"]
+    assert meta["speaker_group_ids"] == ["left", "right"]
     assert meta["groups_total"] == 2
 
 
-def test_a_pair_read_under_two_geometries_is_disclosed_not_refused(tmp_path: Path):
-    """Near-field and reference-axis are different acoustic distances, so a
-    delta taken across them rests on less than the record otherwise claims.
-    The trim still beats the datasheet estimate, so it is applied and the
-    mixture is named."""
-    state = _bank(
-        tmp_path,
-        capture_geometries={
-            "mono": {"woofer": "near_field", "tweeter": "reference_axis"}
-        },
-    )
-    trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
-    assert trims == {"woofer": 0.0, "tweeter": -20.0}
-    assert meta["status"] == dbt.STATUS_APPLIED
-    assert meta["mixed_geometry_group_ids"] == ["mono"]
+def test_clearing_drops_the_record_and_nothing_to_drop_is_success(
+    tmp_path: Path, monkeypatch
+):
+    """The other half of single ownership: an apply with no measured level
+    match must leave no trim behind for a walk to level by.
+
+    ``True`` means "the box carries none", so a second clear still succeeds —
+    an absent record is the state the clear exists to REACH. Only a record
+    that survives the clear is a failure, which is what the apply seam logs.
+    """
+    state = _bank(tmp_path)
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(state))
+    assert dbt.clear_base_trim() is True
+    assert dbt.load_base_trim(state_path=state) is None
+    assert dbt.clear_base_trim() is True
 
 
-def test_one_geometry_throughout_discloses_nothing(tmp_path: Path):
-    _trims, meta = dbt.banked_base_trims(
-        "a" * 64, TWO_WAY, state_path=_bank(tmp_path)
-    )
-    assert meta["mixed_geometry_group_ids"] == []
+def test_a_record_that_survives_the_clear_is_reported_as_a_failure(
+    tmp_path: Path, monkeypatch
+):
+    """A silently failed clear recreates the exact stale record the clear
+    exists to prevent, so it must be distinguishable from nothing-to-drop."""
+    state = _bank(tmp_path)
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(state))
 
+    def _refuse(self, *args, **kwargs):
+        raise PermissionError(13, "read-only")
 
-def test_write_refuses_a_record_no_group_of_which_is_complete(tmp_path: Path):
-    """Same promise as the envelope checks above: a record its own reader would
-    refuse is a silent no-op dressed up as success."""
-    with pytest.raises(dbt.DriverBaseTrimError):
-        _bank(
-            tmp_path,
-            levels_db={"mono": {"woofer": {2000.0: -50.0}}},
-            capture_geometries={"mono": {"woofer": "near_field"}},
-        )
+    monkeypatch.setattr(Path, "unlink", _refuse)
+    assert dbt.clear_base_trim() is False
+    monkeypatch.undo()
+    assert dbt.load_base_trim(state_path=state) is not None
 
 
 def test_the_state_path_honours_the_env_override(tmp_path: Path, monkeypatch):
@@ -374,35 +307,13 @@ _BAND_MATH_NAMES = {
     "mean", "average", "median", "log10", "log2", "sqrt", "trapz",
     "polyfit", "interp", "convolve", "fft", "rfft", "irfft", "welch",
 }
-_ESTIMATOR_OWNERS = {
-    "attenuation_from_group_deltas",
-    "analyze_driver_capture",
-    "usable_overlap_level_db",
-    "verified_driver_excitation",
-    "driver_crossover_fcs",
-    "driver_passband_hz",
-    "solve_base_trims",
-}
+_TRIM_ARTIFACT = "jasper/active_speaker/driver_base_trim.py"
 
 
-@pytest.mark.parametrize(
-    "relative",
-    ["jasper/active_speaker/driver_base_trim.py", "jasper/cli/driver_trim.py"],
-)
-def test_the_auto_trim_files_mint_no_band_averaging_of_their_own(relative):
-    """The one-vocabulary rule, made mechanical.
-
-    The repo already carries three subordinate estimates of one physical
-    quantity (the overlap-band point read, the branch power-band average, and
-    the core-band median) and two live disclosures comparing them. A fourth
-    would be the same defect again, so these two files may CALL the estimator
-    and the chain solver by name and may not do band arithmetic themselves.
-    """
-    tree = ast.parse(
-        (Path(__file__).resolve().parents[1] / relative).read_text(encoding="utf-8")
-    )
+def _band_math_calls(source: str) -> list[str]:
+    """Every call in ``source`` whose name is band arithmetic."""
     offenders = []
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -412,18 +323,23 @@ def test_the_auto_trim_files_mint_no_band_averaging_of_their_own(relative):
             else ""
         )
         if name in _BAND_MATH_NAMES:
-            offenders.append(f"{relative}:{node.lineno} calls {name}()")
-    assert offenders == []
-    called = {
-        (
-            node.func.id if isinstance(node.func, ast.Name)
-            else node.func.attr if isinstance(node.func, ast.Attribute)
-            else ""
-        )
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-    }
-    # A positive control: the guard is only meaningful while these files do in
-    # fact reach the shipped estimator/solver rather than having quietly
-    # stopped calling anyone.
-    assert called & _ESTIMATOR_OWNERS
+            offenders.append(f"{node.lineno}: {name}()")
+    return offenders
+
+
+def test_the_base_trim_artifact_mints_no_band_averaging_of_its_own():
+    """The one-vocabulary rule, made mechanical.
+
+    The repo already carries three subordinate estimates of one physical
+    quantity (the overlap-band point read, the branch power-band average, and
+    the core-band median) and two live disclosures comparing them. A fourth
+    would be the same defect again, so this file banks a level somebody else
+    measured and may not do band arithmetic itself.
+    """
+    source = (
+        Path(__file__).resolve().parents[1] / _TRIM_ARTIFACT
+    ).read_text(encoding="utf-8")
+    assert _band_math_calls(source) == []
+    # The scanner fails both ways: it must actually SEE band math when band
+    # math is there, or a clean result proves nothing about the file above.
+    assert _band_math_calls("import numpy\nx = numpy.mean([1.0, 2.0])\n")

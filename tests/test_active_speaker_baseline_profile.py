@@ -6667,7 +6667,6 @@ def _with_banked_base_trim(
     *,
     trims: dict[str, float],
     declaration: str | None = None,
-    geometries: dict[str, str] | None = None,
 ) -> dict:
     """``_baseline_payload``, with a base trim banked against this speaker's own
     declaration (or, when ``declaration`` is given, against a different one)."""
@@ -6681,17 +6680,13 @@ def _with_banked_base_trim(
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(state))
     dbt.write_base_trim(
         trims_db=trims,
-        levels_db={"mono": {role: {2000.0: -40.0} for role in trims}},
-        capture_geometries={
-            "mono": geometries or {role: "near_field" for role in trims}
-        },
         roles=tuple(trims),
-        regions=[("woofer", "tweeter", 2000.0)],
+        speaker_group_ids=["mono"],
         declaration_fingerprint=(
             declaration if declaration is not None
             else crossover_preview_fingerprint(preview)
         ),
-        microphone={"sens_factor_db": -12.07, "serial": "8108494"},
+        trim_source="strict_measured_candidate",
         state_path=state,
     )
     return build_baseline_profile_candidate(
@@ -6763,39 +6758,143 @@ def test_a_base_trim_for_another_declaration_falls_back_and_says_why(
     assert dbt.REMEASURE_REMEDIATION in message
 
 
-def test_a_trim_whose_drivers_were_read_under_two_geometries_is_disclosed(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Disclosed, NOT refused. A near-field woofer against a reference-axis
-    tweeter is still a measurement, and still a better starting point than the
-    datasheet gap; what the household loses is the claim that the two levels
-    came from one acoustic distance, so JTS applies the trim and says so."""
+def _applied_measured_profile(tmp_path: Path, *, measured: bool) -> tuple:
+    """``(preset, preview, applied profile)`` for a box that just applied one
+    profile — level-matched by its own measurement, or by the datasheet gap."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     topology = _dual_apple_topology()
-    payload = _with_banked_base_trim(
+    draft = build_design_draft(
         topology,
-        _research_with_sensitivity(),
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    # 21 dB measured against the 25.2 dB datasheet gap is a refinement the two
+    # frames still agree on, so the measured trim wins. 12 dB is 13.2 dB apart
+    # — beyond MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB — so the measured value
+    # is refused per role and the profile ships the datasheet estimate.
+    measurements = _acoustic_measurements(
+        topology,
+        preview,
         tmp_path,
-        monkeypatch,
-        trims={"woofer": 0.0, "tweeter": -19.4},
-        geometries={"woofer": "near_field", "tweeter": "reference_axis"},
+        fc=2000.0,
+        tweeter_hotter_db=21.0 if measured else 12.0,
+    )
+    measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
+        "verdict": "blend_ok",
+        "mic_clipping": False,
+    }
+    candidate = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+    preset, _issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    return preset, preview, candidate
+
+
+@pytest.mark.parametrize("measured", [True, False], ids=["measured", "datasheet"])
+def test_the_applied_level_match_is_the_evidence_a_level_matched_walk_reads(
+    tmp_path: Path, monkeypatch, measured: bool
+) -> None:
+    """Ruling S16, and blind-run finding F-1's fix.
+
+    F-1: a box applied a measured level match, reported
+    ``corrections_source: measured`` beside ``level_match.applied: true``, and
+    still refused every ``--level-matched`` walk
+    ``walk_level_match_no_evidence`` — because the resolver those walks ask
+    (``measured_level_trims``) reads the banked base trim and the guided
+    captures, and the applied candidate's own corrections were a THIRD
+    representation neither of them could see. One build, two contradictory
+    answers to "has this speaker measured its per-driver level?".
+
+    The apply seam now banks what it applied, so the two answers are one
+    answer. The final assertion is the contradiction itself, made mechanical:
+    a profile that CLAIMS a measured level match resolves evidence, and one
+    that does not, does not.
+    """
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
+    preset, preview, candidate = _applied_measured_profile(
+        tmp_path, measured=measured
+    )
+    assert candidate["status"] == "ready_to_apply"
+    # Before the apply nothing is banked, and this box has no guided captures
+    # of its own to fall back on — exactly the state F-1 was measured in.
+    assert dbt.load_base_trim() is None
+    assert baseline_profile_mod.measured_level_trims(preset, {}, preview)[0] == {}
+
+    applied = baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
     )
 
-    assert payload["corrections"]["tweeter"]["gain_db"] == -19.4
-    assert payload["corrections_source"]["tweeter"] == "measured"
-    codes = {issue["code"] for issue in payload["issues"]}
-    assert "driver_base_trim_mixed_capture_geometry" in codes
-    assert "driver_base_trim_not_applied" not in codes
-    disclosure = next(
-        issue for issue in payload["issues"]
-        if issue["code"] == "driver_base_trim_mixed_capture_geometry"
+    trims, meta = baseline_profile_mod.measured_level_trims(preset, {}, preview)
+    claims_measured = (
+        applied["level_match"].get("applied") is True
+        and set(applied["corrections_source"].values()) == {"measured"}
     )
-    assert disclosure["severity"] == "info"
-    assert "mono" in disclosure["message"]
+    assert claims_measured is measured
+    assert bool(trims) is claims_measured
+    if not measured:
+        return
+    assert meta["source"] == "banked_base_trim"
+    assert meta["base_trim"]["trim_source"] == applied["level_match"]["comparison"]
+    assert meta["measured_group_ids"] == applied["automatic_candidate"][
+        "measured_group_ids"
+    ]
+    assert trims == {
+        role: pytest.approx(entry["gain_db"], abs=0.05)
+        for role, entry in applied["corrections"].items()
+    }
 
 
-def test_one_geometry_throughout_discloses_nothing(
+def test_applying_an_unmeasured_profile_clears_a_stale_banked_trim(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Single ownership points both ways. A banked trim the box has stopped
+    playing would let a ``--level-matched`` walk level its graph by numbers
+    nothing is applying — the same lie F-1 found, facing the other way."""
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
+    # Both candidates are compiled BEFORE anything is banked: once a measured
+    # trim exists the resolver prefers it, so a datasheet-level profile can
+    # only be built against an empty bank.
+    _preset, _preview, datasheet_candidate = _applied_measured_profile(
+        tmp_path / "second", measured=False
+    )
+    preset, preview, measured_candidate = _applied_measured_profile(
+        tmp_path, measured=True
+    )
+    baseline_profile_mod.persist_applied_baseline_profile(
+        measured_candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+    assert dbt.load_base_trim() is not None
+
+    baseline_profile_mod.persist_applied_baseline_profile(
+        datasheet_candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "second" / "applied_profile.json",
+    )
+
+    assert dbt.load_base_trim() is None
+    assert baseline_profile_mod.measured_level_trims(preset, {}, preview)[0] == {}
+
+
+def test_the_banked_trim_carries_its_own_source_into_the_level_match_ledger(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Ruling S16 (d): a receipt reading the banked trim still names the
+    measurement behind it. The record stamps WHICH evidence the apply levelled
+    by, and the profile's own ``level_match`` repeats that rather than minting
+    a second word for it."""
     payload = _with_banked_base_trim(
         _dual_apple_topology(),
         _research_with_sensitivity(),
@@ -6803,9 +6902,10 @@ def test_one_geometry_throughout_discloses_nothing(
         monkeypatch,
         trims={"woofer": 0.0, "tweeter": -19.4},
     )
-    assert "driver_base_trim_mixed_capture_geometry" not in {
-        issue["code"] for issue in payload["issues"]
-    }
+    level_match = payload["level_match"]
+    assert level_match["source"] == "banked_base_trim"
+    assert level_match["base_trim"]["trim_source"] == "strict_measured_candidate"
+    assert level_match["comparison"] == "strict_measured_candidate"
 
 
 def test_a_banked_trim_far_from_the_datasheet_still_meets_the_existing_frame_check(

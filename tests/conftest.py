@@ -298,8 +298,8 @@ def _isolate_driver_base_trim(tmp_path_factory, monkeypatch):
     """Point the measured driver base trim at a per-test (absent) temp file.
 
     ``baseline_profile._measured_level_trims`` PREFERS this statefile over the
-    guided captures, so on a speaker that has actually run ``jasper-driver-trim``
-    the default /var/lib/jasper path would silently replace the trim every
+    guided captures, so on a speaker that has actually applied a measured level
+    match the default /var/lib/jasper path would silently replace the trim every
     level-match and profile test pins. Absent here means the derivation falls
     back to the guided captures and then the datasheet estimate — the hermetic
     baseline; a test that exercises a BANKED trim re-points the same env var at
