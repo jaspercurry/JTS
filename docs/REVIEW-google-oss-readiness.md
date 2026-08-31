@@ -1,25 +1,25 @@
 # JTS — Staff Engineering Review for Google OSS Ownership
 
 > **Status: historical review.** Snapshot from 2026-05-26 / PR #335.
-> **Superseded by [REVIEW-2026-06-04-deep-dive.md](REVIEW-2026-06-04-deep-dive.md)**
-> (the current assessment — this snapshot predates the
+> **Superseded by the later historical snapshot
+> [REVIEW-2026-06-04-deep-dive.md](REVIEW-2026-06-04-deep-dive.md).** This
+> snapshot predates the
 > `active_speaker`/`output_topology`/DAC8x subsystem, the supply-chain
 > provenance rework, the `http_security` guard, and the canonical-UI
 > migration). Preserved as a point-in-time OSS-readiness assessment, not
 > current operational truth. Current documentation rules live in
 > [AGENTS.md](../AGENTS.md) and [docs/adr/](adr/);
-> the repo doc atlas lives in
-> [README.md#documentation-map](../README.md#documentation-map).
+> the repository documentation index lives in
+> [docs/README.md](README.md).
 >
 > **Refresh against main (2026-05-26, `6d6ff52`).** Main now has an
 > Apache-2.0 [LICENSE](../LICENSE), [CONTRIBUTING.md](../CONTRIBUTING.md),
 > [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md), issue/PR templates,
 > pytest CI, many wizard CSRF helpers, and [CLAUDE.md](../CLAUDE.md) as a
 > thin import shim. This update intentionally leaves the original review
-> body intact; treat stale claims below as review history. Current
-> open work is tracked in the living
-> [OSS readiness top five](OSS-READINESS-TOP-FIVE.md), with attribution
-> details in [LICENSE-third-party.md](../LICENSE-third-party.md).
+> body intact; treat stale claims and its proposed backlog below as review
+> history. Current work is in [PLAN.md](../PLAN.md), with attribution details
+> in [LICENSE-third-party.md](../LICENSE-third-party.md).
 
 *A hypothetical assessment, written as if a Google staff software engineer
 were evaluating this repository for the company to take on open-source
@@ -82,16 +82,16 @@ not redesign.
 2. **Post-incident engineering.** Restart policies, watchdog config, and
    transport choices cite PR numbers and incident dates in the source. The
    UDP-localhost replacement for snd-aloop
-   ([docs/HANDOFF-resilience.md](HANDOFF-resilience.md)) is a textbook
+   (`docs/HANDOFF-resilience.md`) is a textbook
    case of "diagnose root cause before fix." The wake-event telemetry
    ([jasper/wake_events.py](../jasper/wake_events.py)) doubles as a
    *feedback loop on AEC quality* — `bridge_config_json` + per-leg peak
    scores let you ask "did changing `JASPER_AEC_NS_LEVEL` help?" against
    real user attempts. Most embedded voice projects can't.
 
-3. **The HANDOFF discipline.** [docs/HANDOFF-aec.md](HANDOFF-aec.md)
-   (2,372 lines), [docs/HANDOFF-airplay.md](HANDOFF-airplay.md),
-   [docs/HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) — every
+3. **The HANDOFF discipline.** `docs/HANDOFF-aec.md`
+   (2,372 lines), `docs/HANDOFF-airplay.md`,
+   `docs/HANDOFF-voice-providers.md` — every
    nontrivial subsystem has a "what we tried / why it failed / what
    shipped" doc with primary-source citations (XMOS docs, OpenAI cookbook,
    HA core source). New contributors can ramp in days, not weeks.
@@ -173,7 +173,7 @@ not redesign.
 11. **~250 LOC duplication between OpenAI and Gemini adapters** —
     `ConnectionState` enum, `_set_state`, `_maybe_fire_escalation_cue`,
     `_supervisor_loop` scaffold, reconnect-loop boilerplate.
-    [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) defends not
+    `HANDOFF-voice-providers.md` defends not
     sharing the loop *body*, which is correct — but the scaffolding
     around the body should still be lifted. Template-method refactor in
     `_supervisor.py`.

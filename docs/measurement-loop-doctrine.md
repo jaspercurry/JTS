@@ -16,8 +16,12 @@ controls — live in
 
 ## 1. The loop
 
-**measure → analyze → recommend → loop → save.** One vocabulary, in words
-anyone would understand: the engine's verbs *are* the loop's language.
+**measure → analyze → recommend → loop → save.** This is the control loop's
+vocabulary, not a list of methods on `TuningSession`. The engine owns one
+tuning operation, `measure`, inside its `open` / `close` lifetime. The
+doors-and-banks tools analyze the banked evidence, recommend the next action,
+and persist their own accounting under
+[ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md).
 
 - **measure** — a round runs and banks its evidence. Baseline, re-measure and
   candidate-check are the same verb with different arguments, not three things.

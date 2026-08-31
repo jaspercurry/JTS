@@ -1,16 +1,15 @@
 # Crossover-v2 engine design
 
-> **What this file is.** The tuning engine's architecture and contracts: the
-> shape of a session, the seams it plugs into, and the invariants a refactor
-> must preserve. **It does not describe operation** — how to run a round, read
-> a grade, or debug one is
-> [`tuning-operator-runbook.md`](tuning-operator-runbook.md)'s, and the loop's
-> authority model (what may be tried, what stops it, who decides) is
-> [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)'s. Doctrine
-> rules, this file describes, the runbook operates.
-
-This file must live at `docs/` root: its file map and contracts carry ~40
-relative links of the form `../jasper/…`, which only resolve at this depth.
+> **Status: historical design record.** ADR-0198 removed the unwired engine
+> methods and seams described by parts of this file. Current `TuningSession`
+> has an `open` / `measure` / `close` surface and four `EngineSeams` fields;
+> [`session.py`](../jasper/active_speaker/crossover_v2/session.py) and
+> [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)
+> own that shape. Current operation, Apply, verification, and restore behavior
+> lives in the [tuning operator runbook](tuning-operator-runbook.md), with the
+> boundary decision in
+> [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md). The material
+> below is retained as design provenance, not as a specification for new work.
 
 ## The measure verb
 
@@ -53,7 +52,7 @@ calls it *internal to* `measure`: that distinction is about **vocabulary** — t
 front end and the LLM never name a play transaction — not about who owns the
 object. Playing audio is a side effect, and side effects are injected.
 
-None of the four **protocols** is `@runtime_checkable`, deliberately: a runtime
+None of the three **protocols** is `@runtime_checkable`, deliberately: a runtime
 `isinstance` against a `Protocol` compares method *names* only, so an object with
 a `run` of the wrong signature would pass and the check would buy confidence it
 cannot deliver. They are satisfied by shape, checked by mypy and by the call
@@ -65,7 +64,7 @@ ends drive the same verb; a caller reaching `session.seams.graph.patch(…)`
 or `session.seams.records.bank(…)` would be doing engine work outside the
 engine, and the second would bank a record the session never counts in
 `banked_record_ids`. The field is public because construction and testing need
-it. Wave 2 lands the enforcement pin, when there is a front end to point it at.
+it.
 
 **All four seams are `async`, and so is the machinery behind every one.**
 `MeasurementSessionGraph`'s three verbs, `VolumeOwner`'s `acquire_level` /
@@ -549,4 +548,3 @@ owner — and a moved claim is only as fresh as its last pass in that log.
 
 Last verified: 2026-08-26 — the authored sections against the tree; the moved
 sections carry their prior readings unchanged.
-

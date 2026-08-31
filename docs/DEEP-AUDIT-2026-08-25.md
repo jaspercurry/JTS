@@ -91,7 +91,8 @@ Each item below survived adversarial re-reading; LOC figures are the *verifier's
 > re-execution of their negative proofs — `bass_alignment.py` (consumed by
 > tuning-zone contract tests) and `AudioOutChunk.kind` (live: `turn_playback`
 > → `segment_kind` → fanin `SegmentKind` AEC-reference accounting). Do not
-> delete either; see [docs/REFACTOR-2026-08.md](REFACTOR-2026-08.md) Wave 1.
+> delete either; see merged
+> [PR #2970](https://github.com/jaspercurry/JTS/pull/2970).
 
 Also verified dead but leave-in-place unless already editing: `rust/jasper-host-clock` `ObsMode::Fill` machinery (~150, `rust-misc-0#0`), `wake_fusion.py`'s inert threshold-offset seam (74 lines, has a documented future consumer).
 

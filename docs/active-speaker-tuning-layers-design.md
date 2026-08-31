@@ -321,7 +321,9 @@ crossover parameter by measurement today.**
 
 **The household UX does not change.** One commissioning flow, the same
 phone-tap ethos (set the mic, press Go, ~3 captures, fast honest verdicts):
-CHECK → MEASURE → auto-apply → VERIFY, exactly as today. Linearization is
+CHECK → MEASURE → explicit household Apply → VERIFY. Apply is a separate
+`POST /correction/crossover/v2/apply`, and verification follows it.
+Linearization is
 not a separate flow, a second wizard, or an extra sweep — it is a new
 consumer of data every session already records:
 
@@ -344,9 +346,10 @@ consumer of data every session already records:
    backstop**; textbook slopes are never assumed. The candidate grows a
    `linearization` member; re-runs refit atomically; profiles without the
    artifact stay valid (absent = no stage emitted).
-2. **APPLY (one more emitted stage).** The baseline emission gains one
-   per-role linearization filter stage, same transaction, same safety
-   posture (non-positive gains + headroom accounting).
+2. **APPLY (one more emitted stage).** The household explicitly posts the
+   accepted candidate. Baseline emission then gains one per-role linearization
+   filter stage, with the same transaction and safety posture (non-positive
+   gains + headroom accounting).
 3. **VERIFY (same capture, more claims — three honesty levels).** *Fit* to
    the envelope, *verify* roughly an octave above the fit band's top, and
    *observe/report* to 20 kHz — the top octave appears in the technical
@@ -358,7 +361,7 @@ consumer of data every session already records:
    function, never a shared default (research artifact 03, claim K: an
    in-room check against flat over-brightens every result). Closed-loop
    linearization verification (achieved-vs-predicted per band, back off
-   divergent bands, ≤2 iterations) rides the same auto-apply→re-measure
+   divergent bands, ≤2 iterations) rides the same explicit-apply→re-measure
    machinery and is the mechanism that turns every contested modeling
    question into a per-session empirical test.
 

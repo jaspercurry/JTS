@@ -264,8 +264,8 @@ mixer, a second output device, or a new volume model.
    fail-soft behavior, mux preemption, source-handoff safety, volume
    dispatch, and any source wizard toggles.
 13. **Update docs in one place, then link.** This section covers the
-    cross-cutting checklist. README's documentation map should link the
-    current operational truth; historical design notes should be marked
+    cross-cutting checklist. The [documentation index](README.md) should link
+    the current operational truth; historical design notes should be marked
     historical.
 
 Renderer and TTS legs converge inside `jasper-fanin`, then pass through
