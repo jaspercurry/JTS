@@ -279,6 +279,11 @@ def _load(
         arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
+    # rollback_driver_commissioning_config derives its target from
+    # staged_config_path() directly (not the statefile), so every test through
+    # this helper needs that resolution to land on the same anchor _staged()
+    # wrote, not the real /var/lib/camilladsp default.
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(staged_path))
     statefile = _statefile(tmp_path, statefile_target or staged_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
     path_safety = (
