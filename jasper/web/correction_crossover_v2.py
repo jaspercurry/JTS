@@ -2187,7 +2187,8 @@ def _take_staged_angle_walk(
     before any statefile is read. THEN, on a wired source, the evidence: it has
     ONE owner
     (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`,
-    banked base trim before guided captures), and a box neither of those
+    which decides between the banked base trim and the guided captures), and a
+    box neither of those
     answers for refuses with
     :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`
     rather than measuring unmatched branches under a record that says matched.
@@ -2378,7 +2379,7 @@ def _resolve_measurement_level_trims(
 
     The precedence is NOT decided here.
     :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` is the
-    one owner of *banked base trim before guided captures*, and this function
+    one owner of which evidence source wins, and this function
     hands it the same two inputs the applied profile's own build hands it, so
     the graph a measurement plays through is levelled by the same evidence the
     speaker would be levelled by.

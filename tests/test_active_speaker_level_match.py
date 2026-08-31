@@ -15,9 +15,11 @@ behaviour through ``build_baseline_profile_candidate`` with real synthesized
 phone captures lives in ``test_active_speaker_baseline_profile.py``.
 
 The second half of this file pins which of the TWO evidence sources wins: a
-banked measured base trim (written by the apply seam) is preferred over the
-guided captures, and a trim measured against a different declaration is refused
-loudly rather than applied to a speaker it does not describe.
+banked measured base trim (written by the apply seam) is preferred over guided
+captures that are not newer than it (newer captures supersede — ruling S20,
+pinned in ``test_active_speaker_baseline_profile.py``), and a trim measured
+against a different declaration is refused loudly rather than applied to a
+speaker it does not describe.
 """
 from __future__ import annotations
 

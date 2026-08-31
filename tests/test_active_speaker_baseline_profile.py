@@ -6894,6 +6894,150 @@ def test_applying_an_unmeasured_profile_clears_a_stale_banked_trim(
     assert baseline_profile_mod.measured_level_trims(preset, {}, preview)[0] == {}
 
 
+def test_newer_guided_captures_replace_the_banked_trim_and_the_receipt_says_so(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Ruling S20: measurements dispose; the receipt names which measurement.
+
+    A banked base trim for THIS declaration and THESE roles loses to guided
+    level-match captures taken AFTER it was banked: the fresh evidence drives
+    the profile, the ledger stamps the old record superseded, and the next
+    apply re-banks under the new evidence identity."""
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
+    # Banked BEFORE the captures below (their created_at is 12:01/12:02).
+    monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T12:00:45Z")
+    dbt.write_base_trim(
+        trims_db={"woofer": 0.0, "tweeter": -23.0},
+        roles=("woofer", "tweeter"),
+        speaker_group_ids=["mono"],
+        declaration_fingerprint=crossover_preview_fingerprint(preview),
+        trim_source="strict_measured_candidate",
+    )
+    stale = dbt.load_base_trim()
+    assert stale is not None
+
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
+    )
+    measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
+        "verdict": "blend_ok",
+        "mic_clipping": False,
+    }
+    candidate = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+
+    assert candidate["corrections"]["tweeter"]["gain_db"] == -21.0
+    assert candidate["level_match"]["source"] == "guided_captures"
+    assert candidate["level_match"]["base_trim"]["status"] == dbt.STATUS_SUPERSEDED
+
+    monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T12:30:00Z")
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+
+    banked = dbt.load_base_trim()
+    assert banked is not None
+    assert (
+        banked["trim_source"],
+        banked["measured_at"],
+        banked["trims_db"]["tweeter"],
+    ) != (
+        stale["trim_source"],
+        stale["measured_at"],
+        stale["trims_db"]["tweeter"],
+    )
+    assert banked["trim_source"] == candidate["level_match"]["comparison"]
+    assert banked["trims_db"] == {"woofer": 0.0, "tweeter": -21.0}
+
+
+def test_a_frozen_re_persist_re_banks_the_evidence_time_not_the_persist_time(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Ruling S20 at the write seam. ``measured_at`` means when the evidence
+    was measured, so re-persisting a FROZEN candidate (the apply-retry shape:
+    the bank is re-written before the idempotent early-return) cannot re-date
+    the bank past captures taken after its evidence — those captures still
+    supersede on the next resolve."""
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
+    )
+    measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
+        "verdict": "blend_ok",
+        "mic_clipping": False,
+    }
+    candidate = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+    monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T12:30:00Z")
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+    monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T13:00:00Z")
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+
+    banked = dbt.load_base_trim()
+    assert banked is not None
+    # The newest capture that fed the trim — not either persist's wall clock.
+    assert banked["measured_at"] == "2026-06-19T12:02:00Z"
+
+    newer = deepcopy(measurements)
+    newer["latest_by_target"]["mono:woofer"]["created_at"] = "2026-06-19T12:40:00Z"
+    newer["latest_by_target"]["mono:tweeter"]["created_at"] = "2026-06-19T12:41:00Z"
+    relevelled = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=newer,
+        write=True,
+        state_path=tmp_path / "baseline_b.json",
+        config_path=tmp_path / "baseline_b.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T13:10:00Z",
+    )
+    assert relevelled["level_match"]["source"] == "guided_captures"
+    assert relevelled["level_match"]["base_trim"]["status"] == dbt.STATUS_SUPERSEDED
+
+
 def test_the_banked_trim_carries_its_own_source_into_the_level_match_ledger(
     tmp_path: Path, monkeypatch
 ) -> None:

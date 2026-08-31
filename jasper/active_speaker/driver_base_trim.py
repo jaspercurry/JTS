@@ -19,7 +19,8 @@ Ownership, deliberately narrow:
   successfully applied profile is actually playing (and clears the record when
   the applied profile is not level-matched by measurement);
 * **one reader** — ``baseline_profile._measured_level_trims``, which prefers a
-  banked base trim over the guided-capture derivation and falls back to it;
+  banked base trim over the guided-capture derivation — unless the captures
+  are newer than the record (ruling S20) — and falls back to it;
 * **absent is normal.** A speaker that has never applied a measured level match
   behaves exactly as it did before this module existed — the guided captures,
   then the datasheet estimate.
@@ -69,6 +70,13 @@ STATUS_APPLIED = "applied"
 STATUS_DECLARATION_CHANGED = "declaration_changed"
 STATUS_ROLES_CHANGED = "roles_changed"
 STATUS_UNUSABLE = "unusable"
+#: Stamped by the resolver (``baseline_profile._measured_level_trims``), never
+#: by :func:`banked_base_trims` — this reader cannot see the guided captures.
+#: The record validated, but guided captures newer than its ``measured_at``
+#: answered instead (ruling S20: the newest measurement wins). Deliberately not
+#: in :data:`REFUSED_STATUSES`: a refusal demands a re-measure, and here the
+#: re-measure is what already happened.
+STATUS_SUPERSEDED = "superseded"
 
 #: The statuses that mean "a trim was banked and this speaker is NOT using it".
 #: ``absent`` is not one of them — a box that never measured is the ordinary
@@ -273,6 +281,7 @@ def write_base_trim(
     speaker_group_ids: Sequence[str],
     declaration_fingerprint: str,
     trim_source: str,
+    measured_at: str | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish one measured base trim. Called ONLY from the apply seam.
@@ -280,6 +289,12 @@ def write_base_trim(
     Raises :class:`DriverBaseTrimError` when the record would not survive
     :func:`banked_base_trims` — writing a value the reader rejects is a silent
     no-op dressed up as success.
+
+    ``measured_at`` is WHEN THE EVIDENCE WAS MEASURED (the newest capture that
+    fed the trim), not when this record was written — the S20 supersede
+    compares capture times against it, so stamping write time here would let a
+    re-persist of a frozen candidate re-date old evidence past newer captures.
+    Minted as now only when the caller has no dated evidence at all.
 
     **Attenuation-only by construction, and REFUSED rather than clamped.** No
     path that reaches this writer can legitimately produce a positive per-role
@@ -345,7 +360,7 @@ def write_base_trim(
     payload = {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASE_TRIM_KIND,
-        "measured_at": _utc_now(),
+        "measured_at": measured_at or _utc_now(),
         "state_path": str(path),
         "declaration_fingerprint": declaration_fingerprint,
         "roles": list(ordered),
