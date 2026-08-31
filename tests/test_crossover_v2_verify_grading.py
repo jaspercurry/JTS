@@ -165,7 +165,7 @@ def test_deterministic_mismatch_copy_names_the_finding_and_the_live_levers():
     """The copy the phone renders on that terminal screen. It has to do three
     things the retriable sibling's does not: state that this is the speaker
     rather than the measurement, say plainly that another try lands in the same
-    place, and name the two controls that CAN change the outcome. It must not
+    place, and name the control that CAN change the outcome. It must not
     invite the retry the verdict has just ruled out."""
     fakes = FakeSeams()
     c = _conductor(fakes)
@@ -181,7 +181,7 @@ def test_deterministic_mismatch_copy_names_the_finding_and_the_live_levers():
     assert "what your speaker actually does" in reason
     assert "not a bad measurement" in reason
     assert "another try lands in the same place" in reason
-    assert "Undo" in reason and "re-measure" in reason
+    assert "Re-measure" in reason
     # The retriable sibling's invitation, gone.
     assert "Try again" not in reason
 
@@ -1186,8 +1186,7 @@ def test_verify_level_shift_copy_is_true_on_both_surfaces():
     message = REASON_REGISTRY["verify_level_shift"].message
     assert message == (
         "The microphone's levels changed between measurements, so this check "
-        "couldn't settle. Try again — if it repeats, re-measure, or undo to "
-        "restore the previous sound."
+        "couldn't settle. Try again — if it repeats, re-measure."
     )
     # The retired routing: it commanded the retry the phone cannot win.
     assert "re-verify" not in message.lower()
@@ -1196,4 +1195,4 @@ def test_verify_level_shift_copy_is_true_on_both_surfaces():
     assert "Try again" in message
     # …and the escalation is conditional on the retry repeating, never
     # presented as the only way forward.
-    assert "if it repeats, re-measure, or undo" in message
+    assert "if it repeats, re-measure" in message

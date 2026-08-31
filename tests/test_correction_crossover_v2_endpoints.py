@@ -6640,7 +6640,7 @@ def _no_sweep_state(*, fc_selection=None):
     return state
 
 
-def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
+def test_a_paused_walk_commission_still_grades_verified():
     """The coupling the 2026-08-18 lateral pause exposed, pinned end to end.
 
     ``_post_apply_grade`` gated its success verdicts on ``comparison_complete``
@@ -6648,8 +6648,7 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     shipped session no longer banks. Absence read as an unfinished comparison,
     so ``verified_target`` became structurally unreachable and every successful
     commission told the household "not enough complete evidence to grade… this
-    report changed nothing automatically" — false over an applied tune, and
-    without the Undo sentence a dissatisfied household needs.
+    report changed nothing automatically" — false over an applied tune.
 
     The post-apply grade answers "was the applied correction checked
     afterwards". VERIFY answered it here; no selector was consulted, and none
@@ -6667,13 +6666,6 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     assert state["session_phases"][:3] == [
         PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE,
     ]
-
-    # A stashed previous sound, because "keeps its Undo pointer" below is a
-    # claim about a speaker that HAS one. Since #1863 the pointer is derived
-    # from real restore evidence, and this fixture is a first-ever apply
-    # otherwise — which would honestly say there is nothing to go back to,
-    # testing the gate instead of this test's own subject (the paused walk).
-    state["pre_apply_profile"] = {"kind": "prior", "config": {"path": "/tmp/p.yml"}}
 
     v2host.save_v2_state(state)
     block = v2status.crossover_v2_status_block()
@@ -6694,7 +6686,6 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
         "crossover_v2": block,
     })["verdict_text"]
     assert "reached the target" in text
-    assert "you can undo" in text, "the household lost its Undo pointer"
     assert "changed nothing automatically" not in text
 
 
@@ -7060,77 +7051,14 @@ def test_status_block_never_asks_an_unapplied_session_for_a_grade():
     assert grade["graded"] is True
 
 
-def test_status_block_reports_can_undo_only_with_a_real_pre_apply_profile():
-    """#1863: the envelope layer's Undo affordance is gated entirely on this
-    flag, so it must mirror handle_v2_restore's own two refusal gates
-    exactly — applied AND a real stashed pre_apply_profile, never applied
-    alone. A first-ever apply (pre_apply_profile is None) has nothing to
-    restore; the restore endpoint says so plainly and the status block must
-    agree before any button ever reaches the household."""
-    v2host.save_v2_state({
-        "session_id": "cap_first_ever",
-        "applied": True,
-        "pre_apply_profile": None,
-    })
-    assert v2status.crossover_v2_status_block()["can_undo"] is False
-
-    v2host.save_v2_state({
-        "session_id": "cap_with_prior",
-        "applied": True,
-        "pre_apply_profile": {"kind": "prior", "config": {"path": "/tmp/x.yml"}},
-    })
-    assert v2status.crossover_v2_status_block()["can_undo"] is True
-
-    # Defensive: a stashed profile with nothing currently applied (should
-    # not occur in practice — observe_restore clears both together — but
-    # the flag must require BOTH facts, never the profile's presence alone).
-    v2host.save_v2_state({
-        "session_id": "cap_not_applied",
-        "applied": False,
-        "pre_apply_profile": {"kind": "prior", "config": {"path": "/tmp/x.yml"}},
-    })
-    assert v2status.crossover_v2_status_block()["can_undo"] is False
-
-
-def test_can_undo_agrees_with_the_restore_resolvers_first_two_refusals():
-    """#1863's flag and the endpoint's refusal must never answer differently.
-
-    ``can_undo`` deliberately does NOT call the full five-gate resolver — gate
-    3 loads the live output topology and this runs on every household status
-    poll — so the two could drift into disagreeing about whether Undo is worth
-    offering. They are held together structurally, by both asking
-    ``restore_anchor_static_prefix_refusal``; this pins the RELATIONSHIP that
-    structure exists to produce, so re-inlining either side (the shape #1863
-    itself introduced and this review removed) fails here rather than shipping
-    a button whose endpoint disagrees with it.
-    """
-    prefix_codes = {v2host.ANCHOR_NOT_APPLIED, v2host.ANCHOR_NO_PRE_APPLY_PROFILE}
-    profile = {"kind": "prior", "config": {"path": "/tmp/x.yml"}}
-    matrix = [
-        ({"session_id": "m0"}, False),
-        ({"session_id": "m1", "applied": False, "pre_apply_profile": profile}, False),
-        ({"session_id": "m2", "applied": True, "pre_apply_profile": None}, False),
-        ({"session_id": "m3", "applied": True, "pre_apply_profile": profile}, True),
-    ]
-    for state, expected in matrix:
-        v2host.save_v2_state(dict(state))
-        can_undo = v2status.crossover_v2_status_block()["can_undo"]
-        assert can_undo is expected, state
-
-        refusal = v2host.rollback_anchor_refusal(v2host.load_v2_state())
-        blocked_by_prefix = refusal is not None and refusal.code in prefix_codes
-        # The contract, both directions: the button is offered exactly when the
-        # endpoint would not refuse it on one of the two static preconditions.
-        assert can_undo is not blocked_by_prefix, (state, refusal)
-
-
-def test_first_ever_apply_end_to_end_offers_no_undo_but_a_valid_one_does(monkeypatch):
-    """#1863 contract test over the REAL production seam — save_v2_state ->
+def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candidate(
+    monkeypatch,
+):
+    """Contract test over the REAL production seam — save_v2_state ->
     crossover_v2_status_block -> build_crossover_envelope_v2 — exactly what a
     GET /crossover/envelope on the done screen serves, not a hand-built
-    envelope fixture. A first-ever apply (no pre_apply_profile) must not
-    offer Undo as the done screen's primary action; a second apply with a
-    real stashed profile must, at the real restore endpoint."""
+    envelope fixture. A first-ever apply (no pre_apply_profile) offers no way
+    back; a stash naming a measured candidate mints the republish action."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
     monkeypatch.setattr(
@@ -7156,13 +7084,22 @@ def test_first_ever_apply_end_to_end_offers_no_undo_but_a_valid_one_does(monkeyp
     assert first_ever["screen"] == "done"
     assert first_ever["next_action"]["id"] == "room"
     assert not any(
-        a["id"] == "verify_undo" for a in first_ever["alternate_actions"]
+        a["id"] == "republish_previous" for a in first_ever["alternate_actions"]
     )
 
-    with_prior = _envelope_for({"kind": "prior", "config": {"path": "/tmp/x.yml"}})
+    with_prior = _envelope_for({
+        "kind": "prior",
+        "source": {"measured_candidate_fingerprint": "f" * 64},
+        "config": {"path": "/tmp/x.yml"},
+    })
     assert with_prior["screen"] == "done"
-    assert with_prior["next_action"]["id"] == "verify_undo"
-    assert with_prior["next_action"]["endpoint"] == "/correction/crossover/v2/restore"
+    assert with_prior["next_action"]["id"] == "room"
+    way_back = next(
+        a for a in with_prior["alternate_actions"]
+        if a["id"] == "republish_previous"
+    )
+    assert way_back["endpoint"] == "/correction/crossover/v2/republish"
+    assert way_back["body"] == {"fingerprint": "f" * 64}
 
 
 def test_apply_blocked_is_scoped_to_its_producing_session():
@@ -8220,9 +8157,7 @@ def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
     auto-apply's OWN success then lands moments later via
     observe_apply_success, applied flips True but accepted_phases stays
     reset — _phase_from_state resolves that combination to PHASE_CHECK, not
-    PHASE_VERIFY. Both existing interleaving tests
-    (test_stop_before_apply_start_skips_the_dsp_mutation,
-    test_stop_after_apply_start_preserves_applied_and_surfaces_undo) force
+    PHASE_VERIFY. The existing interleaving tests force
     the OTHER ordering (apply-first) and so never exercised this; this test
     drives the REAL persist functions in the stop-first order and pins BOTH
     that the durable state stays coherent (no clobbering either direction)
@@ -8267,8 +8202,6 @@ def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
     # The render must not trust that phase — applied=True is authoritative.
     assert env["screen"] == "verify_fail"
     assert "already applied" in env["verdict_text"].lower()
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
 
 
 # --- W6.1 Finding B: no silent playback failures --------------------------------

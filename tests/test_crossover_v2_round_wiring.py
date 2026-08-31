@@ -568,20 +568,20 @@ def test_the_no_anchor_arm_states_no_cause(monkeypatch):
     assert "Sound page" in sentence
     # …and the other arm is untouched, so this is a narrowing and not a
     # deletion of the branch.
-    assert "Tap Undo" in correction_rollback_failed_message(True)
+    assert "previous tuning" in correction_rollback_failed_message(True)
     assert correction_rollback_failed_message(None) == (
         correction_rollback_failed_message(True)
     )
 
 
-def test_the_attempted_and_failed_arm_keeps_its_undo_pointer(monkeypatch):
+def test_the_attempted_and_failed_arm_keeps_its_way_back_pointer(monkeypatch):
     """The other arm of the same code, and the reason it stays a branch.
 
     Here a stored previous sound DOES exist and the automatic restore failed
-    against it, so Undo is a real remedy and the copy should still offer it.
-    Pinned beside its sibling because a fix that removed the Undo pointer
-    everywhere would satisfy that test and strand this household with no
-    action at all.
+    against it, so going back to the previous tuning is a real remedy and the
+    copy should still offer it. Pinned beside its sibling because a fix that
+    removed the pointer everywhere would satisfy that test and strand this
+    household with no action at all.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -598,7 +598,7 @@ def test_the_attempted_and_failed_arm_keeps_its_undo_pointer(monkeypatch):
     assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
     assert attempts == []  # the stubbed endpoint never reached the DSP leg
     sentence = _household_sentence(conductor, verdict.code)
-    assert "Undo" in sentence
+    assert "previous tuning" in sentence
     assert "STILL APPLIED" in sentence
 
 

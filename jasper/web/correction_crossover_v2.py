@@ -7913,14 +7913,10 @@ def restore_anchor_static_prefix_refusal(
 ) -> RollbackAnchorRefusal | None:
     """The first two of :func:`rollback_anchor_refusal`'s five, or ``None``.
 
-    Split out for the THIRD reader (#1863): the ``can_undo`` flag
-    :func:`crossover_v2_status_block` publishes, which decides whether the
-    envelope layer offers an Undo button at all. That reader cannot call the
-    full resolver — gate 3 loads the live output topology, and this runs on
-    every household status poll — but it must not answer a DIFFERENT question
-    from the endpoint the button posts to, which is exactly the drift
-    :func:`rollback_anchor_refusal`'s own "one owner" argument exists to stop.
-    So the prefix a pure state read CAN answer is owned here and asked by both.
+    Split out (#1863) for a status-poll reader — the wizard's ``can_undo``
+    flag — that could not afford gate 3's live topology load. That reader
+    left with the wizard's Undo affordance; the split survives as the
+    pure-state prefix :func:`rollback_anchor_refusal` delegates to.
 
     Gates 3-5 are deliberately not in this prefix: two compare stored config
     identity and one needs a live CamillaDSP reading. A household that trips
@@ -7954,19 +7950,16 @@ def rollback_anchor_refusal(
 ) -> RollbackAnchorRefusal | None:
     """Why this durable state has no restorable anchor, or ``None`` if it has.
 
-    **One owner for a rule with three readers.** :func:`handle_v2_restore`
+    **One owner for a rule with two readers.** :func:`handle_v2_restore`
     raises on this, and #2291's ``rollback_available`` seam asks it before the
     round's adoption decision commits to a ``restore`` instruction. Before this
     function the two would have been separate transcriptions of the same
-    preconditions, and a round could have promised a restore that Undo then
-    refused — the exact drift #2291 exists to close. #1863 added the third,
-    ``crossover_v2_status_block``'s ``can_undo``, which decides whether the
-    button is offered at all; it cannot afford gate 3's live topology read on
-    every status poll, so it asks
-    :func:`restore_anchor_static_prefix_refusal` — the prefix THIS function
-    also delegates to, rather than a fourth copy of the same two conditions.
+    preconditions, and a round could have promised a restore the endpoint then
+    refused — the exact drift #2291 exists to close. The first two gates live
+    in :func:`restore_anchor_static_prefix_refusal`, the prefix THIS function
+    delegates to rather than keeping a second copy of the same conditions.
 
-    The five are, in the order Undo needs them:
+    The five are, in the order a restore needs them:
 
     * nothing is applied, so there is no apply to reverse;
     * nothing was stashed — a genuine first-ever apply on this speaker;
