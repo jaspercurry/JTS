@@ -123,6 +123,7 @@ __all__ = [
     "RING_NOT_SCOPED_TO_ONE_SESSION",
     "STATE_UNREADABLE",
     "HarmonicEvidenceRefused",
+    "read_banked_capture_mono",
     "read_round_harmonics",
     "rebuild_measure_program",
 ]
@@ -261,12 +262,17 @@ class HarmonicEvidenceRefused(Exception):
         self.evidence = dict(evidence or {})
 
 
-def _read_mono(path: Path) -> np.ndarray:
+def read_banked_capture_mono(path: Path) -> np.ndarray:
     """One WAV as mono float64 in [-1, 1), at whatever width it was written.
 
     Width comes from the container's own ``fmt`` chunk, never assumed: the dump
     ring holds 16-bit phone captures AND 32-bit wired captures, and reading one
     as the other is a 96 dB level error that would read as a distortion finding.
+
+    Public because it has a second consumer: ``jasper-measure`` crunches the
+    take it just placed, and a door with its own decoder would be a second
+    answer to "what level was this capture at" — the 96 dB question above, asked
+    twice.
     """
     with wave.open(str(path)) as handle:
         channels = handle.getnchannels()
@@ -1151,7 +1157,7 @@ def read_round_harmonics(
     for capture in captures:
         sha12 = capture["wav_sha256"][:12]
         try:
-            samples = _read_mono(capture["wav"])
+            samples = read_banked_capture_mono(capture["wav"])
         except (OSError, wave.Error, ValueError) as exc:
             refused.append({
                 "wav_sha256_12": sha12,
