@@ -4400,10 +4400,10 @@ def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
 
 def test_an_unexpected_preflight_failure_fails_closed(caplog):
     """"We could not check" and "we checked and it is fine" must never render
-    as the same screen. An unexpected exception is not permission — it disables
-    Apply on its own honest sentence, because the end state being prevented
-    (applied, then stage 2 refuses at open, box corrected and ungraded) is
-    identical whether the predicate refused or simply could not run."""
+    as the same screen. An unexpected exception writes a not-ok disclosure on
+    its own honest sentence — the Apply control no longer keys on it, but a
+    screen that renders quiet over a check that never ran would be fabricating
+    a clean reading."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     def _explode(status):
@@ -4853,9 +4853,10 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
 def test_the_envelope_route_actually_runs_the_preflight():
     """The wiring, pinned at its one call site.
 
-    The preflight fails CLOSED, so dropping this call does not break loudly —
-    it silently disables Apply on every review screen forever, which looks like
-    a product bug rather than a missing line. ``handle_envelope`` is the only
+    The disclosure fails CLOSED, so dropping this call does not break loudly —
+    every review screen warns with the reader's generic fallback sentence
+    forever (absence is not a clean reading), which looks like a product bug
+    rather than a missing line. ``handle_envelope`` is the only
     path that serves this envelope to the wizard, so the call belongs there and
     a source read is enough to prove it has not been lost in a refactor (same
     shape as ``test_the_session_preparer_rearms_the_walked_away_volume_ceiling``
@@ -4874,9 +4875,10 @@ def test_the_envelope_route_actually_runs_the_preflight():
     )
 
 
-def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
+def test_a_resolvable_context_renders_a_quiet_review_screen():
     """The positive case, end to end through the envelope: a preflight that
-    resolves is what turns the Apply control on, and nothing else does."""
+    resolves writes ``ok: True``, the review screen carries no preflight
+    warning, and Apply is offered."""
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
@@ -4898,6 +4900,8 @@ def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
         env = build_crossover_envelope_v2(status)
         assert env["screen"] == "review"
         assert env["next_action"]["enabled"] is True
+        assert not [n for n in env["nudges"]
+                    if n["code"] == "crossover_v2_stage2_preflight_refused"]
     finally:
         v2host.resolve_conductor_context = original
 
@@ -10022,9 +10026,14 @@ def test_alternative_apply_refuses_stale_sound_before_camilla(
         )
 
 
-def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
+def test_alternative_stage2_refusal_refuses_before_the_sound_save(
     monkeypatch, tmp_path,
 ):
+    """With Apply clickable on a preflight-refusing box, one click must not
+    durably move the Sound declaration: the change arm asserts stage-2
+    openability BEFORE ``apply_measured_crossover_geometry``, so the refusal
+    arrives raw (the predicate's own sentence, not "saved in Sound") and
+    displaces nothing — no declaration write, no Camilla."""
     from jasper.active_speaker.design_draft import load_design_draft
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
@@ -10034,7 +10043,7 @@ def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
 
     monkeypatch.setattr(v2host, "_assert_stage_2_can_open", refuse_stage_2)
     with pytest.raises(
-        v2host.CrossoverV2Refused, match="2750 Hz is saved in Sound but was not applied",
+        v2host.CrossoverV2Refused, match="the safety declaration changed",
     ):
         _apply(
             {"expected_candidate_fingerprint": candidate.fingerprint,
@@ -10043,8 +10052,8 @@ def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
             lambda: (_ for _ in ()).throw(AssertionError("Camilla touched")),
         )
 
-    assert load_design_draft()["revision"] == 2
-    assert (v2host.load_v2_state() or {})["accepted_sound_revision"] == 2
+    assert load_design_draft()["revision"] == 1
+    assert "accepted_sound_revision" not in (v2host.load_v2_state() or {})
 
 
 def test_alternative_camilla_failure_reports_sound_saved_and_allows_retry(
@@ -10199,8 +10208,15 @@ def test_sound_change_during_preflight_refuses_before_camilla(
     from jasper.output_topology import load_output_topology
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    calls = 0
 
     def change_sound(_status):
+        # First call is the change arm's pre-save assert; the subject here is
+        # the AT-COMMIT one (D3), so the mutation lands on the second call.
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return
         draft = load_design_draft()
         save_design_draft(
             load_output_topology(), driver_research=draft.get("driver_research"),

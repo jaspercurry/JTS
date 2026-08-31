@@ -4714,98 +4714,39 @@ STAGE2_PREFLIGHT_KEY = "stage2_preflight"
 
 
 def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
-    """Run the stage-2 openability predicate for the REVIEW screen (D3).
+    """Compute the stage-2 openability DISCLOSURE for the REVIEW screen (D3).
 
-    Two-stage commission work order D3: *"The review screen runs
-    ``resolve_conductor_context``'s predicate — the same fail-closed resolution
-    a verify-only prepare will run — twice: once at review render, and again
-    server-side immediately before the apply commits."* This is the render-time
-    half. **The pre-POST half landed with PR-T3** and lives in
-    :func:`_assert_stage_2_can_open`, which ``handle_v2_apply`` calls
-    immediately before the transaction commits. Neither is redundant: a
-    disabled control is not a security boundary, and a stale page, a second
-    tab, or a direct POST all reach the endpoint without ever rendering this.
+    Runs ``resolve_conductor_context`` — the SAME fail-closed predicate the
+    apply transaction re-runs in :func:`_assert_stage_2_can_open` and stage 2
+    itself will run, never a cheaper lookalike free to disagree with either —
+    and stamps the refusal's own sentence under ``STAGE2_PREFLIGHT_KEY`` for
+    the envelope to render as a warning. It does NOT gate the Apply control;
+    the apply transaction is the boundary that refuses a truly un-openable
+    stage 2. The disclosure stays at render time because the refusal is
+    knowable NOW — #1828 moved this predicate early so a household would not
+    burn a link and walk to the phone to hit a deterministic refusal that was
+    knowable before any of it.
 
-    Without it, the failure mode is exactly the applied-and-ungraded end state
-    the whole work order exists to eliminate — premise 5: a box can be applied
-    and still be unable to open stage 2, because a verify-only prepare reaches
-    ``resolve_conductor_context(status)`` and that carries seven refusal sites
-    of its own plus ``ensure_crossover_preview_ready()``'s. The
-    household applies, stage 2 refuses at open, and the speaker sits corrected
-    with no verdict.
-
-    **The SAME predicate, not a cheaper lookalike.** A second, narrower copy of
-    the rule here would be free to disagree with the one stage 2 actually runs,
-    and agreement is the only thing this control's honesty rests on. Most of
-    the seven gates ARE reachable more cheaply off the status mapping
-    (``active``, ``setup``, ``targets.drivers``, and
-    ``driver_safety_profile_evaluation`` — which ``status_payload`` already
-    computes), but re-deriving them here would rebuild the predicate minus its
-    2-way-preset, excitation-ceiling, playback-device, and preview-readiness
-    gates, which is precisely how a screen ends up promising an apply that
-    stage 2 then refuses.
-
-    **What it costs, re-derived against what the code now does.** PR-T2 argued
-    this cost nothing because ``PHASE_REVIEW`` was unreachable — no
-    ``index_phase_map`` could omit VERIFY — and named T3 as the rung that would
-    falsify that. It did: stage 1's map omits VERIFY by design, so the review
-    phase is real and this predicate runs for it.
-
-    One call is roughly six JSON reads (the topology and design draft are each
-    read more than once through different loaders), a canonical-JSON SHA-256
-    profile fingerprint, and a preset compile. It is not free of side effects:
-    ``ensure_crossover_preview_ready()`` can write BOTH
-    ``active_speaker_crossover_preview.json`` and the topology file, and emits
-    ``correction.crossover_v2_preview_ensured`` on every call, ready or not.
-    The writes are self-limiting rather than per-call, though — that function
-    regenerates only a preview that is absent, stale, or blocked, and leaves an
-    already-ready one byte-untouched. No subprocess, no network, no
-    audio-device probing.
-
-    **T2's second bound was WRONG, and the correction is the gate below.** T2
-    reasoned that the review interlude is never polled because stage 1's
-    session has ended by the time it renders, and named the one shape the
-    design would not survive: a review screen rendering beside a live relay,
-    turning those writes into a 1.5 s loop. That shape was real. Accepting the
-    final cloud position resolves every stage-1 phase, so the phase flipped the
-    instant that capture landed — while the runner was parked in D1's held-set
-    window (up to the full between-step budget) and the wizard was polling at
-    1.5 s. Measured mid-hold: ~80 calls per hold.
-
-    Two things bound it now, both structural rather than a cache. The
-    **candidate gate** below is the real one: with no candidate there is
-    nothing to apply, so there is nothing to preflight — which is exactly the
-    held-set window, the fit-in-flight window, and the refusal lane, and it
-    reduces all three to a dict lookup. (Those first two no longer resolve to
-    ``review`` at all since ``PHASE_CLOSING`` exists, so the gate is
-    belt-and-braces there; it is load-bearing for the refusal lane, where a
-    spec report exists with no candidate behind it.) And it runs ONLY on the
-    review phase, so no other screen pays anything.
-
-    **Fail-closed in both directions.** A refusal disables Apply and hands the
-    screen the refusal's own sentence; an UNEXPECTED exception does the same
-    rather than defaulting to permission, because "we could not check" and "we
-    checked and it is fine" must never render as the same screen. Absence of
-    the key is likewise not permission — see the envelope's own reader.
+    Not free: one call is roughly six JSON reads, a canonical-JSON SHA-256
+    profile fingerprint, and a preset compile, and
+    ``ensure_crossover_preview_ready()`` can WRITE the preview and topology
+    files (self-limiting — an already-ready preview is left byte-untouched).
+    The two gates below keep that off polled screens: review phase only, and
+    no candidate ⇒ nothing to apply ⇒ nothing to disclose (measured before
+    the candidate gate existed: ~80 calls per held-set window at the wizard's
+    1.5 s poll).
 
     Mutates ``status`` in place (the established shape on this path:
     ``handle_status`` sets ``payload["relay"]`` the same way) so the envelope
-    builder stays the pure ``status → envelope`` function it is. It has to be
-    computed HERE, in the web layer, because ``resolve_conductor_context`` is a
-    ``jasper.web`` function and ``jasper.active_speaker`` never imports from
-    ``jasper.web`` — the envelope module reaching for it directly would be the
-    first such import in the package.
+    builder stays the pure ``status → envelope`` function it is. Computed
+    HERE because ``resolve_conductor_context`` is a ``jasper.web`` function
+    and ``jasper.active_speaker`` never imports from ``jasper.web``.
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     v2 = status.get("crossover_v2")
     if not isinstance(v2, MutableMapping) or v2.get("phase") != PHASE_REVIEW:
         return
-    # No candidate ⇒ nothing to apply ⇒ nothing to preflight. See the cost
-    # paragraph above: this is what keeps the predicate off a polled screen.
-    # Absence of the key it would have written is NOT permission — the
-    # envelope's own reader treats it as a refusal — and with no candidate the
-    # Apply control does not render at all, so nothing is being hidden.
     candidate = v2.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
@@ -4819,8 +4760,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
             "next_action": refusal_next_action(exc),
         }
         # A user-visible dead end gets a named line nobody has to guess at —
-        # the household sees a disabled Apply, and this is where an operator
-        # reads why.
+        # this is where an operator reads why the review screen warned.
         log_event(
             logger,
             "correction.crossover_v2_stage2_preflight_refused",
@@ -4830,6 +4770,8 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
         )
         return
     except (OSError, RuntimeError, TypeError, ValueError):
+        # "We could not check" must not render quiet: the disclosure fails
+        # closed even though the Apply control no longer keys on it.
         v2[STAGE2_PREFLIGHT_KEY] = {
             "ok": False,
             "message": (
@@ -7451,6 +7393,16 @@ def handle_v2_apply(
                       selected_fc_hz=selected_fc_hz)
             raise CrossoverV2Refused(str(exc)) from exc
         if not saved_already:
+            # Ordered BEFORE the durable declaration write for the reason the
+            # hearing-safety gate above orders itself the same way: a refused
+            # apply must displace nothing, or ``/sound`` declares a crossover
+            # the speaker is not playing and every retry re-refuses. The D3
+            # assert below stays at commit position (freshness); a retry
+            # (Sound already saved) skips this arm and keeps its "saved in
+            # Sound but was not applied" framing there. Raw on purpose:
+            # ``_before_dsp`` would relabel a pre-write refusal as
+            # saved-not-applied, which is false on this side of the write.
+            _assert_stage_2_can_open(status)
             measured_revision = (state or {}).get("sound_design_revision")
             if (isinstance(measured_revision, bool)
                     or not isinstance(measured_revision, int)):

@@ -177,12 +177,12 @@ def handle_envelope(
     from .correction_crossover_v2 import attach_stage2_preflight
 
     status, _ = handle_status(relay=relay)
-    # Two-stage commission D3 (PR-T2): the review screen's Apply may only be
-    # offered on a box that can actually OPEN stage 2, so the same fail-closed
-    # predicate the verify re-arm will run is resolved here and rides the
-    # status the envelope renders from. A no-op on every phase but `review`;
-    # see attach_stage2_preflight for the cost/side-effect disclosure and for
-    # why it cannot live inside the (jasper.active_speaker) envelope builder.
+    # Two-stage commission D3: a stage-2 openability refusal is knowable now,
+    # so it is resolved here and rides the status the envelope renders from
+    # as a DISCLOSURE (the apply transaction owns the refusal). A no-op on
+    # every phase but `review`; see attach_stage2_preflight for the
+    # cost/side-effect disclosure and for why it cannot live inside the
+    # (jasper.active_speaker) envelope builder.
     attach_stage2_preflight(status)
     envelope = build_crossover_envelope_logged(status)
     # The "Start over" confirm copy is grouping-aware; carry the (cheap,

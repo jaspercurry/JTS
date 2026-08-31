@@ -5259,17 +5259,18 @@ def test_the_refusal_lane_states_its_verdict_and_stages_no_decision():
     ]
 
 
-def test_a_box_that_cannot_open_stage_2_gets_the_named_refusal_and_no_apply():
-    """**D3's stage-2 openability preflight**, the hole premise 5 was hiding.
+def test_a_box_that_cannot_open_stage_2_still_offers_apply_and_discloses():
+    """**D3's stage-2 openability preflight, demoted from gate to disclosure.**
 
-    "Without this, the failure mode is precisely the applied-and-ungraded end
-    state this work order exists to eliminate: a household applies, stage 2
-    refuses at open, and the box sits corrected with no verdict."
+    The refusal renders AS ITSELF — the predicate's own sentence, which
+    already names what to finish first — and its declared resolution control
+    is offered beside it, from the same registry entry the hard-stop screen
+    reads (#1820's precedent). Never a generic "cannot apply". Early, because
+    the refusal is knowable now (#1828).
 
-    The refusal renders AS ITSELF — the predicate's own sentence, which already
-    names what to finish first — and its declared resolution control is offered
-    beside it, from the same registry entry the hard-stop screen reads (#1820's
-    precedent). Never a generic "cannot apply".
+    Apply itself stays ENABLED: a disabled control was never the boundary,
+    and the apply transaction re-runs the same predicate
+    (``_assert_stage_2_can_open``) and refuses a truly un-openable stage 2.
     """
     env = build_crossover_envelope_v2(_review_status(stage2_preflight={
         "ok": False,
@@ -5280,10 +5281,11 @@ def test_a_box_that_cannot_open_stage_2_gets_the_named_refusal_and_no_apply():
             "href": "/sound/#confirm-safety-limits",
         },
     }))
-    assert env["next_action"]["enabled"] is False
+    assert env["next_action"]["enabled"] is True
     refusal = [n for n in env["nudges"]
                if n["code"] == "crossover_v2_stage2_preflight_refused"]
     assert refusal and "could not use this speaker" in refusal[0]["text"]
+    assert "will be refused" in refusal[0]["text"]
     assert env["alternate_actions"][0]["id"] == "review_safety_limits"
 
 
@@ -5293,13 +5295,9 @@ def test_a_refusal_button_never_renders_without_its_explaining_sentence():
     The sentence used to also require a gradeable prediction while the button
     did not, so an ungradeable prediction beside an action-carrying refusal
     rendered a bare "Review safety limits" control with nothing on screen
-    saying why it was there.
-
-    Aligned toward SHOWING both rather than hiding one: the household has two
-    independent blockers, and the stage-2 refusal is still true after they
-    re-measure. Suppressing it would let them walk the whole measurement again
-    only to meet a refusal that was knowable now — the exact cost #1828 moved
-    this predicate earlier to avoid.
+    saying why it was there. Both render: the D4 disable (ungradeable) and
+    the stage-2 disclosure are independent facts, and the disclosure is
+    knowable now (#1828).
     """
     env = build_crossover_envelope_v2(_review_status(
         prediction=_prediction(overall_passed=None, bands=[]),  # ungradeable
@@ -5313,13 +5311,15 @@ def test_a_refusal_button_never_renders_without_its_explaining_sentence():
             },
         },
     ))
+    # Disabled by D4 (ungradeable prediction) — the preflight no longer
+    # disables anything.
     assert env["next_action"]["enabled"] is False
     # The button is there...
     assert env["alternate_actions"][0]["id"] == "review_safety_limits"
     # ...and so is the sentence that explains it.
     assert [n for n in env["nudges"]
             if n["code"] == "crossover_v2_stage2_preflight_refused"]
-    # Both blockers reach the household: the verdict copy names the one the
+    # Both facts reach the household: the verdict copy names the one the
     # nudge does not.
     assert "could not check" in env["verdict_text"]
 
@@ -5349,15 +5349,17 @@ def test_no_refusal_button_survives_when_there_is_no_apply_decision():
                 if n["code"] == "crossover_v2_stage2_preflight_refused"]
 
 
-def test_an_unresolved_preflight_is_not_permission():
-    """Absence is not a pass. An unset key means the predicate never ran, and
-    "we never checked" must render exactly like "we checked and it refused" —
-    the end state being prevented (applied, then stage 2 refuses at open) is
-    identical either way. Only an explicit ``ok: True`` enables Apply."""
+def test_an_unresolved_preflight_still_discloses():
+    """Absence is not a clean reading. An unset key means the predicate never
+    ran, and "we never checked" must disclose exactly like "we checked and it
+    refused" — only an explicit ``ok: True`` renders quiet. Apply stays
+    enabled either way: the disclosure is not a gate, and the apply
+    transaction owns the refusal."""
     for preflight in ({}, None, {"ok": "yes"}, {"message": "..."}):
         env = build_crossover_envelope_v2(_review_status(stage2_preflight=preflight))
-        assert env["next_action"]["enabled"] is False, preflight
-        assert env["nudges"], preflight
+        assert env["next_action"]["enabled"] is True, preflight
+        assert [n for n in env["nudges"]
+                if n["code"] == "crossover_v2_stage2_preflight_refused"], preflight
 
 
 @pytest.mark.parametrize("tier", ("express", "full"))
