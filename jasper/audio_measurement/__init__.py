@@ -48,6 +48,9 @@ Modules:
     ceiling, and its seam with the gated speaker spec.
   - :mod:`~jasper.audio_measurement.analysis` — fractional-octave smoothing,
     log resampling, spatial averaging, deviation metrics.
+  - :mod:`~jasper.audio_measurement.olive_metrics` — NBD and SM, Olive's
+    published audibility-weighted deviation metrics (ADR-0202), on top of
+    ``analysis.smooth_fractional_octave``.
   - :mod:`~jasper.audio_measurement.calibration` — measurement-mic calibration
     registry, parser, and vendor lookup.
   - :mod:`~jasper.audio_measurement.mic_identity` — the measurement-microphone

@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The four round-grading comparison views, ported from a laptop campaign
+"""The round-grading comparison views. Four ported from a laptop campaign
 (issue #2769): frozen-reference grading, per-seat curves including the
-VERIFY pose, session-to-session repeatability, and per-seat agreement.
+VERIFY pose, session-to-session repeatability, and per-seat agreement. A
+fifth, audibility-weighted co-metrics (NBD/SM, Olive 2004), landed with
+ticket 6.13 / ADR-0202.
 
 Every fixture builds its ``cloud_verify.json`` ``spec`` block by calling the
 REAL :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` on a
@@ -23,14 +25,18 @@ from typing import Any
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
     ENTRY_STATE_UNREADABLE,
     RoundViewsError,
     agreement_table,
+    audibility_co_metrics,
     entry_state_grade,
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
+    pooled_window_horizontal,
     repeatability_spread,
     verify_pose_curve,
 )
@@ -1201,3 +1207,185 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
     summary = capsys.readouterr().err
     assert "1 unevaluable" in summary
     assert "0 outside target" in summary
+
+
+# --------------------------------------------------------------------------- #
+# Audibility-weighted co-metrics (ticket 6.13 / ADR-0202)
+# --------------------------------------------------------------------------- #
+
+
+def _bank_lateral_pose(
+    session_dir: Path, *, take_id: str, position_deg: int,
+    curves: list[dict[str, Any]], relay: str = "wired-TEST",
+) -> None:
+    """Directly write a banked ``positions/<take_id>.json`` lateral-pose
+    take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
+    and :func:`~jasper.active_speaker.crossover_v2.position_cycle.read_take_curves`
+    read, real-shaped without going through the retention engine. Mirrors
+    ``test_crossover_v2_feature_classifier.py``'s own fixture builder for
+    the same take shape.
+    """
+    positions_dir = (
+        session_dir / "evidence/v1/artifacts/crossover_v2" / relay / "positions"
+    )
+    positions_dir.mkdir(parents=True, exist_ok=True)
+    (positions_dir / f"{take_id}.json").write_text(json.dumps({
+        "kind": POSITION_EVIDENCE_KIND,
+        "phase": PHASE_LATERAL,
+        "position_deg": position_deg,
+        "curves": curves,
+    }))
+
+
+def _summed_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict[str, Any]:
+    return {
+        "role": "summed",
+        "band_hz": [20.0, 20000.0],
+        "freqs_hz": [float(v) for v in freqs_hz],
+        "magnitude_db": [float(v) for v in magnitude_db],
+        "phase_deg": [0.0] * len(freqs_hz),
+    }
+
+
+def test_pooled_window_horizontal_power_averages_a_hand_computed_two_curve_case(tmp_path):
+    """Two bearings, one 'summed' curve each, fully covering the grid.
+
+    A (0 deg): 0 dB -> power 1.0.  B (+7 deg): 10*log10(3) dB -> power 3.0.
+    Power mean = 2.0 -> pooled dB = 10*log10(2) ~= 3.0103 dB, at every bin.
+    """
+    session_dir = tmp_path / "bundle" / "sess1"
+    grid = np.array([1000.0, 2000.0])
+    a_db, b_db = 0.0, 10.0 * np.log10(3.0)
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_00_a01", position_deg=0,
+        curves=[_summed_curve(grid, np.full_like(grid, a_db))],
+    )
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_02_a01", position_deg=7,
+        curves=[_summed_curve(grid, np.full_like(grid, b_db))],
+    )
+
+    result = pooled_window_horizontal(session_dir, grid_hz=grid)
+
+    assert result is not None
+    assert result.bearings_deg == (0.0, 7.0)
+    assert result.n_curves == 2
+    expected_db = 10.0 * np.log10(2.0)
+    assert result.magnitude_db == pytest.approx([expected_db, expected_db])
+
+
+def test_pooled_window_horizontal_pools_repeats_at_one_bearing_before_pooling_bearings(tmp_path):
+    """A bearing banked twice must not outweigh one banked once.
+
+    The two repeats at 0 deg are DIFFERENT curves (power 0.5 and 1.5) whose
+    power MEAN is exactly 1.0 (0 dB) -- the same value the single +7 deg
+    curve was in the two-curve case above. Pooled two-stage (average the
+    repeats, THEN average across bearings), the answer is unchanged from
+    that case: 10*log10(2) dB. Naive single-stage pooling (flat-average all
+    three curves, powers [0.5, 1.5, 3.0]) would instead give
+    10*log10(5/3) ~= 2.2185 dB -- a different number, which is exactly what
+    this test would catch if the two-stage design regressed to one-stage.
+    """
+    session_dir = tmp_path / "bundle" / "sess1"
+    grid = np.array([1000.0])
+    for take_id, power in (("lateral_00_a01", 0.5), ("lateral_00_a02", 1.5)):
+        _bank_lateral_pose(
+            session_dir, take_id=take_id, position_deg=0,
+            curves=[_summed_curve(grid, 10.0 * np.log10(np.array([power])))],
+        )
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_02_a01", position_deg=7,
+        curves=[_summed_curve(grid, np.array([10.0 * np.log10(3.0)]))],
+    )
+
+    result = pooled_window_horizontal(session_dir, grid_hz=grid)
+
+    assert result is not None
+    assert result.bearings_deg == (0.0, 7.0)
+    assert result.n_curves == 3
+    assert result.magnitude_db == pytest.approx([10.0 * np.log10(2.0)])
+
+
+def test_pooled_window_horizontal_is_none_when_no_lateral_pose_banked_a_summed_curve(tmp_path):
+    session_dir = tmp_path / "bundle" / "sess1"
+    session_dir.mkdir(parents=True)
+    assert pooled_window_horizontal(session_dir, grid_hz=np.array([1000.0])) is None
+
+
+def test_pooled_window_horizontal_ignores_a_per_driver_role(tmp_path):
+    """Only ``role == "summed"`` counts — an isolated driver branch is not
+    the speaker's composed response."""
+    session_dir = tmp_path / "bundle" / "sess1"
+    grid = np.array([1000.0])
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_00_a01", position_deg=0,
+        curves=[{
+            "role": "tweeter", "band_hz": [20.0, 20000.0],
+            "freqs_hz": [1000.0], "magnitude_db": [0.0], "phase_deg": [0.0],
+        }],
+    )
+    assert pooled_window_horizontal(session_dir, grid_hz=grid) is None
+
+
+def test_audibility_co_metrics_reports_on_axis_and_discloses_an_absent_pooled_window(tmp_path):
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    banked = load_banked_round(round_dir)
+
+    result = audibility_co_metrics(banked)
+
+    assert result.round_dir == str(round_dir)
+    assert result.on_axis is not None
+    assert result.on_axis.nbd_db == pytest.approx(0.0, abs=1e-9)
+    assert result.on_axis.sm_r2 == pytest.approx(1.0, abs=1e-9)
+    assert result.on_axis_reason == ""
+    assert result.pooled_window is None
+    assert result.pooled_window_reason
+    assert result.pooled_window_bearings_deg == ()
+
+
+def test_audibility_co_metrics_reports_the_pooled_window_when_the_round_banked_one(tmp_path):
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    banked = load_banked_round(round_dir)
+    _bank_lateral_pose(
+        banked.session_dir, take_id="lateral_00_a01", position_deg=0,
+        curves=[_summed_curve(GRID, _flat_curve())],
+    )
+
+    result = audibility_co_metrics(banked)
+
+    assert result.pooled_window is not None
+    assert result.pooled_window.nbd_db == pytest.approx(0.0, abs=1e-9)
+    assert result.pooled_window.sm_r2 == pytest.approx(1.0, abs=1e-9)
+    assert result.pooled_window_reason == ""
+    assert result.pooled_window_bearings_deg == (0.0,)
+
+
+def test_audibility_co_metrics_discloses_an_absent_on_axis_position(tmp_path):
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("offax", _flat_curve())},
+    )
+    banked = load_banked_round(round_dir)
+
+    result = audibility_co_metrics(banked)
+
+    assert result.on_axis is None
+    assert result.on_axis_reason
+
+
+def test_cli_co_metrics_writes_the_result(tmp_path):
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    rc = main(["co-metrics", str(round_dir)])
+    assert rc == 0
+    payload = json.loads((round_dir / "audibility_co_metrics.json").read_text())
+    assert payload["on_axis"]["nbd_db"] == pytest.approx(0.0, abs=1e-9)
+    assert payload["on_axis"]["sm_r2"] == pytest.approx(1.0, abs=1e-9)
+    assert payload["pooled_window"] is None
+    assert payload["pooled_window_reason"]
