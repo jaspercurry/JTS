@@ -1771,9 +1771,10 @@ removal keep their `dumps/` tree, which `jasper-classify-features` and
 The banked record now carries the ring sidecar's `diagnostic`,
 `capture_integrity` and `frame_ledger` blocks too, so a new round is graded
 on them out of its own bundle — that is where the evidence packet's
-`capture_snr` block reads them from. What no record carries is the capture
-BYTES, which is why the two `--dumps`-taking tools below still open a frozen
-`dumps/` tree and only a frozen one.
+`capture_snr` block reads them from. The capture BYTES ride the bundle as
+well, so the two `--dumps`-taking tools below are not limited to a frozen
+tree: `jasper-project-ring <bundle-dir> --out <ring>` rebuilds the `dumps/`
+layout out of a banked round, and its `--out` path is what they take.
 
 Two things can make the script refuse a run, and neither ever deletes a
 file that was already pulled — the refusal is the exit code plus the
