@@ -682,12 +682,12 @@ class CrossoverLevelLease:
         item: Mapping[str, Any],
         attempt: int | None = None,
     ) -> list[dict[str, Any]]:
-        # ``attempt`` is the RAW durable reservation number
-        # (``web_measurement.record_driver_capture`` passes
-        # reservation_attempt), so a set that survived refunded transport
-        # failures reaches its third accept at an attempt up to MAX_RESERVATIONS —
-        # the audible measurement budget still caps the number of stored (audio-
-        # emitting) items at MAX_ATTEMPTS.
+        # ``attempt`` is the RAW durable reservation number, so a set that
+        # survived refunded transport failures reaches its third accept at an
+        # attempt up to MAX_RESERVATIONS — the audible measurement budget still
+        # caps the number of stored (audio-emitting) items at MAX_ATTEMPTS.
+        # Its only supplier, ``web_measurement.record_driver_capture``, is
+        # itself unreachable, so nothing in production passes ``attempt``.
         from jasper.active_speaker.repeat_admission import MAX_RESERVATIONS
 
         with self._repeat_lock:

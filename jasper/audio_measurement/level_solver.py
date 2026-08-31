@@ -4,12 +4,11 @@
 
 """Shared level-correction constants for crossover-v2 driver measurement.
 
-Everything here is read by
-:class:`~jasper.web.correction_crossover_backend.CrossoverLevelLease`:
-:func:`driver_solve_requirement_db` (paired with :data:`SOLVER_MARGIN_DB`)
-is the worst-band SNR target its completion-time correction sizes against;
-:data:`MIC_TARGET_PEAK_DBFS` and :data:`CLIP_UNDERESTIMATE_ALLOWANCE_DB` are
-its bounded clip-correction targets.
+Nothing in production reads this module today: the ``CrossoverLevelLease``
+correction methods that consumed all of it are gone.
+:func:`driver_solve_requirement_db` is reached only from tests, and
+:data:`MIC_TARGET_PEAK_DBFS` / :data:`CLIP_UNDERESTIMATE_ALLOWANCE_DB` have
+no reader at all.
 """
 from __future__ import annotations
 
@@ -41,10 +40,9 @@ def driver_solve_requirement_db(
     """The worst-band SNR a solve targets: ``snr_warn_db`` + solver margin.
 
     The ONE owner of the "floor + margin" figure (26 dB for the DRIVER
-    quality model today). Read by the completed-insufficient completion
-    path (``jasper.web.correction_crossover_backend.record_driver_capture``),
-    which sizes its correction from this SAME threshold minus the
-    finalized capture's measured worst-band SNR.
+    quality model today). The completed-insufficient completion path that
+    sized its correction against this threshold is gone -- no production
+    caller survives.
     """
 
     return model.snr_warn_db + solver_margin_db
