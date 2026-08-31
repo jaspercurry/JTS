@@ -407,6 +407,11 @@ def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) ->
     arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
+    # rollback_driver_commissioning_config derives its target from
+    # staged_config_path() directly (not the statefile), so it must resolve to
+    # the same anchor _staged() wrote here, not the real /var/lib/camilladsp
+    # default.
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(staged_path))
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {staged_path}\nmute: false\n", encoding="utf-8")
 
