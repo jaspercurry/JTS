@@ -302,6 +302,58 @@ def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
     assert "11" in rungs
 
 
+def test_the_fdw_rungs_carry_pooled_db_and_centre_hz_for_both_cycle_counts(
+    peak_artifact,
+):
+    """6.10: every row publishes both FDW variants, shaped like a gate rung."""
+    row = peak_artifact["rows"][0]
+    rungs = row["fdw_rungs"]
+    assert set(rungs) == {f"{c:.0f}" for c in fx.FDW_CYCLES}
+    for entry in rungs.values():
+        assert isinstance(entry["pooled_db"], float)
+        assert isinstance(entry["centre_hz"], float)
+    assert peak_artifact["measurement"]["fdw_cycles"] == list(fx.FDW_CYCLES)
+    assert peak_artifact["measurement"]["fdw_taper"] == fx.FDW_TAPER
+
+
+#: A reflection at 2 ms sits INSIDE the 7 ms fixed gate -- the ticket's own
+#: known-answer control: a synthetic IR carrying a delayed reflection.
+#: 1750 Hz is an EXACT null of this delay's two-path comb -- (3 + 0.5) / 2 ms
+#: -- chosen over a higher one so the departure survives the fixed gate's own
+#: 1/12-octave smoothing (a comb this dense washes out fast: the SAME fixed
+#: gate reads -2.96 dB at 1750 Hz and only -0.04 dB at 7750 Hz, measured).
+#: FDW-5's window there is 1.429 ms each side of the peak, short of the 2 ms
+#: delay, so a passing FDW-5 read is a near-zero one and a passing fixed-gate
+#: read is a large departure.
+_FDW_REFLECTION_MS = 2.0
+_FDW_REFLECTION_GAIN = 0.5
+_FDW_HF_NULL_HZ = 1750.0
+
+
+def test_fdw_5_excludes_a_reflection_the_fixed_gate_retains(tmp_path):
+    """6.10: the asymmetry ADR-0201 funds FDW to surface, pinned as facts.
+
+    Never a verdict here -- the reading rule ("disagreement is reflection
+    evidence") is guide content, not code (ADR-0201); this only pins that
+    the two windows disagree on this synthetic reflection the way the
+    physics says they must.
+    """
+    ir = fx.add_delayed_copy(
+        _flat_ir(), _FDW_REFLECTION_GAIN, _FDW_REFLECTION_MS, SR
+    )
+    bundle, dumps = _bundle(tmp_path, ir)
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    artifact = fx.classify_round(captures, at=[_FDW_HF_NULL_HZ])
+    row = artifact["rows"][0]
+
+    fixed_gate_db = row["gate_rungs"][f"{fx.DEFAULT_GATE_MS:.0f}"]["pooled_db"]
+    fdw5_db = row["fdw_rungs"]["5"]["pooled_db"]
+    assert abs(fixed_gate_db) > 1.0, fixed_gate_db
+    assert abs(fdw5_db) < abs(fixed_gate_db) / 4.0, (fdw5_db, fixed_gate_db)
+
+
 def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
     """6.1: ``--gates-ms`` is not merely parsed -- it reaches classify_round."""
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))

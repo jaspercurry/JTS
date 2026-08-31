@@ -1754,6 +1754,117 @@ def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any
     }
 
 
+# --------------------------------------------------------------------------- #
+# frequency-dependent windowing -- diagnostic evidence only (ADR-0201)
+# --------------------------------------------------------------------------- #
+
+#: The two cycle counts research 03's Stage 3 names: a narrow one that best
+#: rejects reflections and a wide one closer to the shipped gate ladder's own
+#: primary length. ADR-0201 binds what this buys: re-analysis EVIDENCE only
+#: -- no FDW output here may feed a target or a grade, and the diagnostic
+#: reading rule (a dip that fills in under FDW but stays deep under the
+#: fixed gate is reflection-caused) is guide content, not code.
+FDW_CYCLES: tuple[float, ...] = (5.0, 15.0)
+
+#: Half-width of the band an FDW rung is read over. Reused rather than
+#: re-picked: :data:`NEIGHBOURHOOD_OCT` is already this module's standing
+#: "local context" width, and both :func:`read_feature`'s and
+#: :func:`_extremum_reading`'s search spans fit inside it -- so the exact
+#: readers :func:`_gate_rungs` is built from serve the FDW curve unmodified,
+#: rather than a second "how big is this feature" implementation.
+FDW_BAND_OCT = NEIGHBOURHOOD_OCT
+
+#: Points across that band, log-spaced. Hundreds, not the ~2000/octave main
+#: analysis grid: FDW re-picks its window at EVERY point (unlike the main
+#: grid's one gate shared by all of them), so each point is its own direct
+#: frequency read rather than a shared FFT bin -- an offline, twice-per-
+#: feature cost, not a global one.
+FDW_GRID_POINTS = 300
+
+#: Taper shape for the FDW window. Hann: it is already the family
+#: :func:`gate`'s own tail uses, so this instrument carries one taper family
+#: rather than introducing a second one for a diagnostic reading.
+FDW_TAPER = "hann"
+
+
+def _fdw_read_hz(
+    ir: np.ndarray, sample_rate: int, peak: int, freq_hz: float, cycles: float
+) -> float:
+    """One frequency's FDW magnitude, dB, from a window of ``cycles`` cycles
+    of ``freq_hz`` (``cycles / freq_hz`` seconds) CENTRED on ``peak`` -- the
+    same direct-arrival sample :func:`gate` windows from.
+
+    A direct single-bin read: the window differs at every frequency, so no
+    one FFT serves the whole curve. :data:`FDW_TAPER`, then the exact-
+    frequency DFT term, normalised by the taper's own coherent gain so a
+    window-LENGTH change alone cannot move the level -- what survives that
+    normalisation and the caller's own :func:`detrend` is the feature, not
+    the window's shrinking span.
+    """
+    half = max(1, int(round(cycles / freq_hz * sample_rate / 2.0)))
+    start = max(0, peak - half)
+    end = min(ir.size, peak + half)
+    segment = ir[start:end]
+    if segment.size < 2:
+        return float("-inf")
+    taper = np.hanning(segment.size)
+    coherent_gain = float(taper.sum())
+    if coherent_gain <= 0:
+        return float("-inf")
+    n = np.arange(start, end, dtype=np.float64)
+    phasor = np.exp(-2j * np.pi * freq_hz * n / sample_rate)
+    amplitude = abs(np.sum(segment * taper * phasor)) / coherent_gain
+    return 20.0 * math.log10(max(amplitude, 1e-12))
+
+
+def _fdw_local_curve(
+    ir: np.ndarray, sample_rate: int, peak: int, fc: float, cycles: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """One capture's FDW-``cycles`` curve across ``fc``'s own local band.
+
+    ``(grid, db)``, so the caller reuses :func:`detrend`, :func:`read_feature`
+    and :func:`_extremum_reading` unmodified -- the same readers
+    :func:`_gate_rungs` is built from, rather than a second "how big is this
+    feature" for one more window shape.
+    """
+    grid = np.geomspace(fc * 2**-FDW_BAND_OCT, fc * 2**FDW_BAND_OCT, FDW_GRID_POINTS)
+    db = np.array(
+        [_fdw_read_hz(ir, sample_rate, peak, float(f), cycles) for f in grid]
+    )
+    return grid, db
+
+
+def _fdw_rungs(
+    irs: Sequence[np.ndarray],
+    peaks: Sequence[int],
+    sample_rate: int,
+    fc: float,
+    is_dip: bool,
+) -> dict[str, Any]:
+    """This feature's :data:`FDW_CYCLES` variants, pooled like a gate rung.
+
+    Diagnostic only (ADR-0201) -- shape analogous to :func:`_gate_rungs`
+    (``pooled_db`` / ``centre_hz`` per cycle count), pooled across the
+    round's own captures the identical way the primary curve is. Never a
+    target, never a grade: nothing downstream reads this key for either.
+    """
+    out: dict[str, Any] = {}
+    for cycles in FDW_CYCLES:
+        pooled_values: list[float] = []
+        centre_values: list[float] = []
+        for ir, peak in zip(irs, peaks):
+            grid, db = _fdw_local_curve(ir, sample_rate, peak, fc, cycles)
+            det = detrend(db, grid)
+            pooled_values.append(read_feature(det, grid, fc))
+            _, centre = _extremum_reading(det, grid, fc, is_dip)
+            centre_values.append(centre)
+        out[f"{cycles:.0f}"] = {
+            "pooled_db": float(np.mean(pooled_values)),
+            "centre_hz": float(np.mean(centre_values)),
+        }
+    return out
+
+
 def _compose(
     fc: float,
     egd: Mapping[str, Any],
@@ -2099,6 +2210,9 @@ def classify_round(
             name: _decay_read(decay_host, band)
             for name, band in _decay_bands_hz(fc).items()
         }
+        row["fdw_rungs"] = _fdw_rungs(
+            irs, peaks, sample_rate, fc, pooled_db[key] < 0
+        )
         rows.append(row)
 
     return {
@@ -2125,6 +2239,8 @@ def classify_round(
             "classifiable_band_hz": list(band_hz),
             "magnitude_smooth_fraction": MAGNITUDE_SMOOTH_FRACTION,
             "complex_smooth_oct": COMPLEX_SMOOTH_OCT,
+            "fdw_cycles": list(FDW_CYCLES),
+            "fdw_taper": FDW_TAPER,
             "n_captures": len(captures),
             "phases": sorted({c.phase for c in captures}),
             "captures": [c.wav.name for c in captures],
