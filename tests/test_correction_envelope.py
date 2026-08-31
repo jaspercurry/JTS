@@ -1648,66 +1648,54 @@ def test_surface_verdict_headline():
     assert env["next_action"] == {"label": "Measure again", "endpoint": "/start"}
 
 
-def test_quality_gated_surface_headline_is_not_the_wash_copy():
-    """#2058 B1 pin. acceptance.gate_on_acoustic_quality only ever downgrades
-    a real ACCEPT, so a quality-gated surface is never a small/wash change
-    — here a 2.71 dB RMS improvement, 5x the improvement floor, matching the
-    field scenario this bug was found from. The plain "surface" copy ("the
-    change was too small to be sure") would be a FALSE reason; the envelope
-    must pick the dedicated quality-gated headline instead, and must NOT
-    fold in _headline()'s numbers — those numbers come from
-    session.verify_before_after, the SAME distrusted verify capture the
-    gate declined to trust, so printing them would contradict the sentence
-    declining to trust them.
-
-    Deleting the quality_gated branch in envelope._verdict_text, or letting
-    acceptance.gate_on_acoustic_quality stop setting quality_gated, must
-    fail this test."""
+def test_verify_quality_warned_nudge_does_not_change_verdict():
+    """Owner ruling S8: acceptance.gate_on_acoustic_quality — the second
+    judge that used to downgrade exactly this case (a real 2.71 dB RMS
+    improvement, 5x the improvement floor) from ACCEPT to SURFACE — is
+    deleted. evaluate_acceptance's own verdict is the only judge now, so a
+    warned verify capture must NOT move the verdict off ``accept``; the fact
+    still reaches the household, as an ordinary warn nudge."""
     sess = _FakeSession(SessionState.VERIFIED)
     sess.acceptance = _acceptance(
-        "surface",
+        "accept",
         confirmed=False,
         verify_index=1,
         overall_rms_delta_db=2.71,
-        quality_gated=True,
-        reasons=[
-            "overall RMS error dropped 2.71 dB (>= 0.5 dB) with no band "
-            "regressed",
-            "downgraded from accept — verify capture's acoustic quality "
-            "warned (verify capture estimated_snr_db=-15.1 < 20 dB)",
-        ],
+        verify_quality_warned=True,
+        verify_quality_reason="verify capture estimated_snr_db=-15.1 < 20 dB",
     )
-    sess.verify_before_after = _verify_before_after()
     env = envelope.build_envelope(sess)
-    assert env["verdict_text"] == (
-        "Applied — but the check-measurement was too noisy to trust. "
-        "Re-measure to confirm, or listen and decide."
-    )
-    assert "too small to be sure" not in env["verdict_text"]
-    # No _headline() numbers folded in (the pending-confirm test above pins
-    # the opposite — numbers DO fold in — for the ordinary case).
-    assert "±" not in env["verdict_text"]
-    assert "6" not in env["verdict_text"] and "2" not in env["verdict_text"]
-    # The disclosed reason still rides the relayed verdict block (even
-    # though today's shipped client renders only verdict_text, not reasons
-    # — see the section banner above) — the machine-readable trail is not
-    # lost, only kept out of the headline sentence.
-    assert env["verdict"]["quality_gated"] is True
-    assert any(
-        "acoustic quality" in reason for reason in env["verdict"]["reasons"]
-    )
+    assert env["verdict"]["verdict"] == "accept"
+    assert env["verdict_text"].startswith("Confirmed improved")
+    warned = [n for n in env["nudges"] if n["code"] == "verify_quality_warned"]
+    assert len(warned) == 1
+    assert warned[0]["severity"] == "warn"
 
 
-def test_plain_surface_wash_unaffected_by_quality_gated_branch():
-    """No-op control for the pin above: an ordinary wash surface (no
-    quality_gated key at all — every pre-#2058-SF6 acceptance dict, and
-    every non-downgraded surface verdict) must keep the original "too small
-    to be sure" copy with its numeric fold, unchanged."""
+def test_verify_quality_nudge_absent_when_not_warned():
+    """No-op control: a clean verify SNR must not manufacture the nudge —
+    pairs with the pin above, same acceptance dict, only the boolean flips."""
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "accept",
+        confirmed=False,
+        verify_index=1,
+        overall_rms_delta_db=2.71,
+        verify_quality_warned=False,
+        verify_quality_reason="",
+    )
+    env = envelope.build_envelope(sess)
+    assert env["verdict_text"].startswith("Confirmed improved")
+    assert not any(n["code"] == "verify_quality_warned" for n in env["nudges"])
+
+
+def test_plain_surface_wash_keeps_numeric_fold():
+    """An ordinary wash surface (no verify-quality concern at all) must keep
+    the original "too small to be sure" copy with its numeric fold."""
     sess = _FakeSession(SessionState.VERIFIED)
     sess.acceptance = _acceptance(
         "surface", confirmed=False, verify_index=1, overall_rms_delta_db=0.1,
     )
-    assert "quality_gated" not in sess.acceptance
     sess.verify_before_after = _verify_before_after()
     env = envelope.build_envelope(sess)
     assert "too small to be sure" in env["verdict_text"]

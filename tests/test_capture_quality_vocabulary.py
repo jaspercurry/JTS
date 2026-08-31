@@ -352,12 +352,12 @@ def test_the_snr_refusal_rank_is_deliberately_a_different_vocabulary() -> None:
 def test_the_verdict_headline_map_holds_only_real_verdict_values() -> None:
     """No synthetic key among the real ones.
 
-    The quality-gated surface copy (#2058 B1) used to sit in this map under
+    A quality-gated surface copy (#2058 B1) used to sit in this map under
     ``"surface_quality_gated"`` — a string that reads exactly like a
-    ``Verdict`` member and is not one: the verdict stays the literal
-    ``"surface"`` and the copy is selected by ``quality_gated`` being True.
-    It is a module constant now, so it cannot be mistaken for a member of a
-    map it is not in.
+    ``Verdict`` member and is not one. Owner ruling S8 deleted that whole
+    mechanism (acceptance.gate_on_acoustic_quality never downgrades a
+    verdict now); this pin stays as the general guard against any future
+    synthetic key sneaking into the map.
     """
     real = {verdict.value for verdict in acceptance.Verdict}
     assert set(envelope._VERDICT_HEADLINE) <= real, (
