@@ -1698,6 +1698,13 @@ def _parabolic_peak(values: np.ndarray, idx: int) -> float:
     return idx + offset
 
 
+def parabolic_peak(values: np.ndarray, idx: int) -> float:
+    """Public alias of :func:`_parabolic_peak` for external sub-bin peak
+    refinement (e.g. ``scripts/jasper-pipe-probe``'s FFT dominant-frequency
+    read). Behavior is unchanged -- see :func:`_parabolic_peak`."""
+    return _parabolic_peak(values, idx)
+
+
 def _subsample_separation(
     capture: np.ndarray,
     arrival_a: int,

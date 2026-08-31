@@ -241,6 +241,13 @@ def _click_samples(amplitude_dbfs: float) -> list[int]:
     return samples
 
 
+def click_samples(amplitude_dbfs: float = DEFAULT_AMPLITUDE_DBFS) -> list[int]:
+    """Public alias of :func:`_click_samples` for a caller that wants ONE
+    click's raw samples directly rather than a whole schedule/WAV -- e.g.
+    ``scripts/jasper-pipe-probe``'s latency marker. Behavior unchanged."""
+    return _click_samples(amplitude_dbfs)
+
+
 # Write the WAV one second at a time so peak memory stays bounded regardless
 # of track length. A materialized promotion track (~36 min stereo S16 at
 # 48 kHz) is ~415 MB — too large to build in one bytearray (plus its copy) on
@@ -336,6 +343,7 @@ __all__ = [
     "ClickSchedule",
     "ClickTrackPreset",
     "build_schedule",
+    "click_samples",
     "load_schedule_json",
     "percentile_min_samples",
     "render_wav",

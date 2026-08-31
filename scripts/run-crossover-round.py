@@ -155,6 +155,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    import _pi_target
+except ModuleNotFoundError as exc:
+    if exc.name != "_pi_target":
+        raise
+    from scripts import _pi_target
+
 from jasper.active_speaker.arm_walk import (
     CSRF_PAGE_PATH,
     STATUS_PATH,
@@ -353,20 +360,13 @@ class Target:
         return f"http://{self.host}"
 
 
-#: Read ``scripts/_lib.sh``'s resolution rather than parsing ``.env.local`` a
-#: second time: that file is the checkout's single source of truth for "which
-#: Pi", and a second reader is a second answer waiting to happen.
-_LIB_QUERY = (
-    'set -u; . "$0" >/dev/null 2>&1; '
-    'printf "%s\\n%s\\n%s\\n" "$PI_HOST" "$PI_USER" "${JASPER_HOSTNAME:-}"'
-)
-
-
 def resolve_target(hostname_override: str | None = None,
                    trail: Trail | None = None) -> Target:
     """The speaker, with the caller's own exports winning.
 
-    ``_lib.sh`` owns that precedence (issue #2689). The caller's exports are
+    ``_lib.sh`` owns that precedence (issue #2689), sourced through the
+    shared ``scripts/_pi_target.py`` (one ``.env.local`` reader for every
+    laptop script, rather than a second one here). The caller's exports are
     still read here so the trail can name WHERE each half came from, and so a
     ``_lib.sh`` that could not run at all falls back to them rather than to
     the default speaker.
@@ -381,23 +381,9 @@ def resolve_target(hostname_override: str | None = None,
     # wrong-Pi ending this whole file is trying to make impossible.
     detail = ""
     try:
-        proc = subprocess.run(
-            ["bash", "-c", _LIB_QUERY, str(REPO_ROOT / "scripts" / "_lib.sh")],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        detail = f"{type(exc).__name__}: {exc}"
-    else:
-        if proc.returncode == 0:
-            lines = proc.stdout.splitlines()
-            lib_host, lib_user, lib_hostname = (lines + ["", "", ""])[:3]
-        else:
-            detail = (
-                f"scripts/_lib.sh exited {proc.returncode}: "
-                f"{(proc.stderr or '').strip()[-200:]}"
-            )
+        lib_host, lib_user, lib_hostname = _pi_target.resolve_lib_target()
+    except _pi_target.LibTargetError as exc:
+        detail = str(exc)
     if detail and trail is not None:
         trail.emit(
             "resolve_target", ok=False, detail=detail,
