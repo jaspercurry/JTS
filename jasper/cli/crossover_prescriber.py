@@ -100,6 +100,12 @@ EXIT_EVIDENCE_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). One tool,
+#: one owner: the generator reads this rather than the runbook restating it.
+#: Three of the four verbs only read; `stage` is the one that writes.
+AUTHORITY_TIER = "advisory (`stage` mutates)"
+
 #: Where a human goes to run, apply, or undo a crossover round.
 CROSSOVER_PAGE_PATH = "/sound/crossover/"
 

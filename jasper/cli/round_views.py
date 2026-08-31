@@ -75,6 +75,10 @@ from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
 EXIT_OK = 0
 EXIT_ERROR = 1
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory"
+
 #: A banked round directory is operator-pulled evidence, not a validated
 #: input — the documented failure shapes it can hand back are broader than
 #: the product module's own typed :class:`RoundViewsError`. A malformed

@@ -197,6 +197,12 @@ def _refused(exc: AuditionRefused, *, json_output: bool) -> int:
     return 1
 
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). Runtime
+#: only -- the durable graph is untouched (ADR-0193).
+AUTHORITY_TIER = "mutating (runtime only; durable graph untouched -- ADR-0193)"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-audition",

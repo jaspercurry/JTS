@@ -452,6 +452,11 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     return result, detail + _ambient_phrase(result.ramp)
 
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "measured"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-seat-level",

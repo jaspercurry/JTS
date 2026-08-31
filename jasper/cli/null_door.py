@@ -48,6 +48,10 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "measured"
+
 #: Compose-time refusals carry the COMPOSER's reason
 #: (``program.NULL_REFUSE_*``) rather than a slug spelled again here — one
 #: vocabulary, owned where the decision is made.

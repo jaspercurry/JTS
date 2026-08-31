@@ -63,6 +63,10 @@ EXIT_ROUND_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_WRITE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory"
+
 #: The shipped MEASURE driver bands, as the flow composes them today.
 #:
 #: Defaults rather than constants: a round measured with different bands is read
@@ -88,7 +92,7 @@ def _band(text: str) -> tuple[float, float]:
     return lo, hi
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-read-distortion",
         description=(
@@ -179,7 +183,7 @@ def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
 
     round_dir, why = round_artifact_dir(args.bundle_dir)
     if round_dir is None:

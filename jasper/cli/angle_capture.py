@@ -94,6 +94,11 @@ EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). `stage`
+#: writes the walk for the next session; `plan` and `withdraw` do not.
+AUTHORITY_TIER = "mutating (`stage` writes; `plan`/`withdraw` do not)"
+
 
 def _angle_field(text: str) -> Any:
     """One ``--angles`` field, as the seam should see it.

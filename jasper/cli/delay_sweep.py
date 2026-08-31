@@ -60,6 +60,10 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "advisory (plays nothing)"
+
 REFUSE_NO_ROUND = "delay_propose_no_round"
 REFUSE_NO_CURVES = "delay_propose_no_banked_curves"
 REFUSE_LANDSCAPE = "delay_propose_landscape_unsupported"

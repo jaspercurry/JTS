@@ -430,26 +430,37 @@ Authority tiers: **advisory** = reads only · **measured** = emits sound, change
 nothing durable · **mutating** = changes what the speaker plays ·
 **mutating-with-gates** = as above, behind a refusal vocabulary.
 
+<!-- BEGIN GENERATED TOOL MENU (scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->
 | Tool | Does | Authority | Where |
 |---|---|---|---|
-| `jasper-seat-level` | find the volume that hits a target seat SPL; bank it as the round's reference | measured | `jasper/cli/seat_level.py` |
-| `jasper-angle-capture plan\|stage\|withdraw` | declare a walk shape and leave it for the next session | mutating (`stage`) | `jasper/cli/angle_capture.py` |
-| `jasper-arm-walk` | drive the lab arm through the staged walk | measured | `jasper/cli/arm_walk.py` |
-| `jasper-measure` | take one on-box measurement through a temporary protected graph and bank a standard take that `jasper-round-views frequency` can read directly. Use it for raw-driver plants or ad-hoc work outside a wizard round. A second `--position` is refused, a variant take requires `--candidate-id`, and `--specs FILE` measures a JSON list of `MeasureSpec` mappings at one placement under one session hold | measured | `jasper/cli/measure.py` |
+| `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL, then bank that volume as the crossover session's measurement reference. PRECONDITION: the mic's Sens Factor is quoted at MAXIMUM capture volume — confirm `amixer -c <card>` shows the capture control at 100%, or every absolute SPL below is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
+| `jasper-angle-capture plan\|stage\|withdraw` | State one angle walk, see what it resolves to, and leave it for the next measurement session. | mutating (`stage` writes; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |
+| `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
+| `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
+| `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|agreement\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability, per-seat agreement, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
+| `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
+| `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
+| `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
+| `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
+| `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
+<!-- END GENERATED TOOL MENU -->
+
+Regenerate after touching a tuning CLI's `prog`, `description`, subcommands,
+or `AUTHORITY_TIER`: `PYTHONPATH=. .venv/bin/python
+scripts/generate-tuning-tool-menu.py`. `--check` verifies without writing;
+`tests/test_tuning_tool_menu_generator.py` pins committed == regenerated.
+
+**Other surfaces.** Not CLIs with their own `--help`, so not rendered above —
+the two `scripts/` helpers, the four prescription doors (session-open keys or
+spool, not commands), the review screen's own actions, and the two read-only
+surfaces every tuning tool sits beside:
+
+| Surface | Does | Authority | Where |
+|---|---|---|---|
 | `scripts/run-crossover-round.py` | one measure round end to end; banks it | measured | `scripts/run-crossover-round.py` |
 | ” `--apply <fp>` | put the reviewed candidate on the speaker | mutating-with-gates | → `POST /crossover/v2/apply` |
 | `scripts/bank-crossover-round.sh` | gather a round into `captures/<campaign>/<label>/` | advisory | `scripts/bank-crossover-round.sh` |
-| `jasper-crossover-prescriber status` | declared / banked / staged / applied state, and what each present or absent artifact makes possible | advisory (writes nothing) | `_cmd_status` |
-| `jasper-crossover-prescriber packet` | one banked round → one versioned JSON document | advisory | `_cmd_packet` |
-| `jasper-crossover-prescriber propose` | validate a prescription against the round it answers | advisory (dry run) | `_cmd_propose` |
-| `jasper-crossover-prescriber stage` | place **one** accepted prescription for the next round | mutating | `_cmd_stage` |
-| `jasper-round-views frozen\|per-seat\|repeat\|agreement` | per-seat curves, pooled stats, session-to-session spread, per-feature testimony — each takes a banked ROUND dir, unlike the prescriber family's bundle dir | advisory | `jasper/cli/round_views.py` |
-| `jasper-round-views frequency` | the shared frequency-response view; takes a banked round dir, a session BUNDLE dir, or a raw JSON document | advisory | `jasper/cli/round_views.py` |
-| `jasper-classify-features` | classify a round's features; file the verdict | advisory | `jasper/cli/classify_features.py` |
-| `jasper-read-distortion` | read a round's H2/H3 out of its banked MEASURE captures; file the reading | advisory | `jasper/cli/read_distortion.py` |
-| `jasper-delay-sweep propose` | complex-sum a banked round's per-driver curves across the delay grid; print the computed optimum and the stage lines that confirm it | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
-| `jasper-null` | play the summed reverse null and bank one self-contained JSON row per coordinate under `<bundle>/null_runs/`. Usually reached for at §1a's polarity proof and §4's acoustic confirm, where the computed delay landscape gets disposed by air — `propose` says where the null should be, this says whether the room agrees. It grades nothing: the row carries the depth beside the shoulders it was read at, whether those were clamped, the trims in the graph and the branch-gap ceiling they imply, so comparing rows is the whole grading step. Facts the tool enforces: one bearing per invocation, because nothing here prompts a mover and a second would play from the same placement; `--delays` defaults to the propose door's own confirmation coordinates and a value off that grid is refused, because a coordinate nobody proposed names a graph nobody modelled; and a corner with no confirmable null is refused at compose time under four named reasons — an unusable Fc, no run-up past the shoulders, a driver whose declared band misses the sweep, and a two-branch overlap that does not bracket Fc — which are four different problems and are not collapsed into one | measured | `jasper/cli/null_door.py` |
-| `jasper-audition start\|stop\|status` | listen to the applied graph with the measured driver correction removed, then put it back | mutating (runtime only; the durable graph is untouched — [ADR-0193](adr/0193-the-audition-door-is-a-runtime-only-swap.md)) | `jasper/cli/audition.py` |
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |

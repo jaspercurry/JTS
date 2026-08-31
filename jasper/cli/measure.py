@@ -68,6 +68,10 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "measured"
+
 #: A variant axis was set with no ``--candidate-id`` to select the takes by.
 REFUSE_CANDIDATE_ID_REQUIRED = "measure_candidate_id_required"
 #: The flags do not describe a measurement the engine accepts. The spec's own
