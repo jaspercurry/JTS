@@ -113,6 +113,13 @@ REFUSE_STORE_LOST = "measure_evidence_store_lost"
 #: needs the ids of what already banked.
 REFUSE_CANCELLED = "measure_cancelled"
 
+#: This door's identity on the mux diagnostic gate. ``mux.FANIN_TEST_OWNERS``
+#: is a CLOSED allowlist, so the name must be registered there — and it is this
+#: door's own rather than the wizard's ``correction-measurement``, for the
+#: reason ``jasper.cli.null_door.DOOR_GATE_OWNER`` gives: every lease and
+#: crash-recovery read files the hold under this name.
+DOOR_GATE_OWNER = "jasper-measure"
+
 __all__ = [
     "BoxDeclaration",
     "BoxNotMeasurable",
@@ -808,6 +815,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
         camilla_factory=cam_factory,
         action="measuring",
         config_dir=config_dir,
+        gate_owner=DOOR_GATE_OWNER,
     ) as door:
         info = open_bundle(box.topology, calibration_id="")
         if not isinstance(info, Mapping) or not info.get("session_id"):
