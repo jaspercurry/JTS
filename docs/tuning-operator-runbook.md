@@ -10,7 +10,7 @@
 > | Question | Owner |
 > |---|---|
 > | What may I try? What stops me? Who decides? | [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) |
-> | How is the engine built? Session shape, the four seams, the contracts and invariants a refactor must preserve, the file map | [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) |
+> | What is the current session boundary? `open` / `measure` / `close`, with four seam fields | [`session.py`](../jasper/active_speaker/crossover_v2/session.py), [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py), and [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md) |
 > | Where is the program going? What is funded, deleted, pinned? | [`tuning-master-plan.md`](tuning-master-plan.md) |
 > | Why is it like this? Bench results, decision archaeology, the failure taxonomy, the W6 gotcha catalog | [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md) |
 > | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md) |
@@ -437,7 +437,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-seat-level` | find the volume that hits a target seat SPL; bank it as the round's reference | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|withdraw` | declare a walk shape and leave it for the next session | mutating (`stage`) | `jasper/cli/angle_capture.py` |
 | `jasper-arm-walk` | drive the lab arm through the staged walk | measured | `jasper/cli/arm_walk.py` |
-| `jasper-measure` | one measurement of the applied speaker, banked as a standard take the packet and round views read. Usually reached for at the raw-driver plants (methodology §2), where the substrate every later model computes from gets banked, and for ad-hoc captures outside a wizard round. Two contracts the tool enforces itself: a second `--position` is refused, because nothing here prompts a mover and two bearings would play from one placement and bank a pose nothing moved to; and a variant take (inverted polarity, a delayed branch, a level match) is refused without `--candidate-id`, because the label is what selects those takes apart afterwards. `--specs FILE` measures N configs against ONE placement through one session hold — the file is a JSON list of `MeasureSpec` mappings, which is the preset vocabulary itself rather than a format of its own | measured | `jasper/cli/measure.py` |
+| `jasper-measure` | take one on-box measurement through a temporary protected graph and bank a standard take that `jasper-round-views frequency` can read directly. Use it for raw-driver plants or ad-hoc work outside a wizard round. A second `--position` is refused, and a variant take requires `--candidate-id` | measured | `jasper/cli/measure.py` |
 | `scripts/run-crossover-round.py` | one measure round end to end; banks it | measured | `scripts/run-crossover-round.py` |
 | ” `--apply <fp>` | put the reviewed candidate on the speaker | mutating-with-gates | → `POST /crossover/v2/apply` |
 | `scripts/bank-crossover-round.sh` | gather a round into `captures/<campaign>/<label>/` | advisory | `scripts/bank-crossover-round.sh` |
@@ -566,6 +566,14 @@ vocabulary.
 measured crossover; it carries an `expected_candidate_fingerprint` **freshness
 guard — not a selector**. Measurement-time activation of any graph goes through
 `program_playback.play_program`. No third mechanism exists; do not build one.
+
+Apply reopens and verifies the published candidate, composes without mutating
+state, then uses the baseline apply transaction with rollback. The same durable
+write retains the prior compiled profile and declaration undo; restore proves
+the retained path and digest before loading it. Apply does not move the
+session's commanded measurement level. Its headroom attenuation is instead
+banked as `expected_post_apply_offset_db`, and VERIFY measures at the unchanged
+commanded level.
 
 **The other apply door goes the other way — to the basic profile.** `POST
 /sound/setup/active-speaker/baseline-profile/save-and-apply`, the button the

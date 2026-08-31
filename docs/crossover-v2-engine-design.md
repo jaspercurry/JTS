@@ -1,16 +1,15 @@
 # Crossover-v2 engine design
 
-> **What this file is.** The tuning engine's architecture and contracts: the
-> shape of a session, the seams it plugs into, and the invariants a refactor
-> must preserve. **It does not describe operation** — how to run a round, read
-> a grade, or debug one is
-> [`tuning-operator-runbook.md`](tuning-operator-runbook.md)'s, and the loop's
-> authority model (what may be tried, what stops it, who decides) is
-> [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)'s. Doctrine
-> rules, this file describes, the runbook operates.
-
-This file must live at `docs/` root: its file map and contracts carry ~40
-relative links of the form `../jasper/…`, which only resolve at this depth.
+> **Status: historical design record.** ADR-0198 removed the unwired engine
+> methods and seams described by parts of this file. Current `TuningSession`
+> has an `open` / `measure` / `close` surface and four `EngineSeams` fields;
+> [`session.py`](../jasper/active_speaker/crossover_v2/session.py) and
+> [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)
+> own that shape. Current operation, Apply, verification, and restore behavior
+> lives in the [tuning operator runbook](tuning-operator-runbook.md), with the
+> boundary decision in
+> [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md). The material
+> below is retained as design provenance, not as a specification for new work.
 
 ## The measure verb
 
