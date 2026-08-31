@@ -192,6 +192,7 @@ def applied_profile(
     *,
     blend: list[dict[str, Any]] | None = None,
     baseline_id: str = "baseline-live",
+    corrections: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One applied-profile SSOT file, in the shape its own loader accepts.
 
@@ -211,6 +212,7 @@ def applied_profile(
         "recomposition_snapshot": {
             "linearization": dict(linearization or {}),
             "blend_correction": list(blend or []),
+            "corrections": dict(corrections or {}),
         },
     }
 
