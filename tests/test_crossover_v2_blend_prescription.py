@@ -2840,7 +2840,13 @@ def test_the_cli_emits_a_packet_and_exits_zero(tmp_path):
 
 def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
     session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
+    # Same evidence inputs the bare CLI call below resolves by default, so
+    # this reference packet's fingerprint matches the one the CLI builds.
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     code, out, _ = _run_cli(
         ["propose", str(session), "--prescription", str(path), "--json"]
@@ -2862,7 +2868,11 @@ def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
 
 def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
     payload = json.dumps(_document([_cut(-1.5)], packet)).encode()
     code, out, _ = _run_cli(
         ["propose", str(session), "--prescription", "-", "--json"], stdin=payload
@@ -2909,7 +2919,11 @@ def test_a_refusal_exits_two_and_prints_the_machine_readable_payload(
     which is the payload a prescriber actually reads to correct itself.
     """
     session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
     path = _write_document(tmp_path, _document(filters, packet))
     code, out, err = _run_cli(
         ["propose", str(session), "--prescription", str(path), "--json"]
@@ -2955,7 +2969,11 @@ def test_a_refusal_from_the_candidate_seam_still_exits_two(tmp_path):
     the gate returned.
     """
     session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     with mock.patch.object(
         cli,
