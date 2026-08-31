@@ -61,6 +61,7 @@
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
+| Check a renderer lane's clock integrity (frequency, phase glitches, THD+N, pitch drift in ppm) through outputd's post-DSP reference tap, or measure one lane's launch-to-tap latency | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/jasper-pipe-probe`](../scripts/jasper-pipe-probe) |
 | Measure `usb_low_latency_48k`'s real p95/p99 route latency with click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
 | Read the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency](#usb-microphone-export-latency) |
 | Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
@@ -1012,6 +1013,7 @@ Live Pi state without modifying anything:
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, volume routing, wake/turn boundaries) |
 | [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. |
+| [`scripts/jasper-pipe-probe`](../scripts/jasper-pipe-probe) | Renderer clock-integrity acceptance instrument: `gen-wav`/`gen-click` write the probe/marker WAVs, `capture` pulls outputd's post-DSP `:9891` reference tap (pushes a stdlib-only sniffer to `/tmp/tapsniff.py` every run, dedupes the loopback double-capture laptop-side), `analyze` reports per-second dominant frequency / THD+N / phase-glitch count / pitch-offset ppm (a meter — always exits 0), and `latency` measures one lane's launch-to-tap delay (`aplay` startup cost included; for before/after comparison, not an absolute number). Read-only on the Pi beyond the sniffer file. |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |
 | `jasper-correction-bundle inspect <session> --recompute` | Validate a copied room-correction bundle, summarize confidence/runtime evidence, and replay raw captures into derived curves |
 | `jasper-correction-bundle export <session> --output <dir>` | Write REW-friendly `.frd` / `.txt` curves and impulse-response WAVs from a room-correction bundle |
