@@ -474,12 +474,9 @@ def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
     tmp_path,
 ):
     """Verifies the invalidation machinery a driver-level-check restart relies
-    on (``jasper.web.correction_setup._handle_crossover_relay_level_match``'s
-    inner ``_run()``, the "not fixed_axis_request and not continuing" branch:
-    ``repeat_admission.invalidate()`` then
+    on: ``repeat_admission.invalidate()`` then
     ``measurement.clear_active_comparison_set()`` before a fresh comparison
-    set is minted, logged as ``event=correction.crossover_comparison_set_invalidated
-    reason=new_level_match_started``). A woofer repeat set that completed
+    set is minted. A woofer repeat set that completed
     3/3 with an insufficient median must not survive that restart: the
     ledger itself is wiped, and the stale acoustic record's placement proof
     (bound to the OLD comparison set) fails ``capture_proof_valid`` against
