@@ -1320,10 +1320,7 @@ def record_driver_capture(
         # effective_peak_dbfs is the excitation ledger `raw["excitation"]`
         # already carries from play_driver_capture_sweep's response, echoed
         # back by the phone -- so even an unusable_capture (clipped) rejection
-        # carries the evidence the closed-loop level solver's clip-aware
-        # correction needs (see
-        # jasper.web.correction_crossover_backend.CrossoverLevelLease
-        # .record_solve_correction / .record_measured_gain).
+        # carries the evidence a clip-aware level correction needs.
         raw_excitation = _mapping_value(raw.get("excitation"))
         admission_result = {
             "accepted": latest_attempt.get("accepted"),
