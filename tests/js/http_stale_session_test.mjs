@@ -116,7 +116,7 @@ check(
   nextResponse = jsonResponse(500, { error: "solve failed: singular matrix" });
   let thrown = null;
   try {
-    await postJSON("/correction/crossover/level-match", {});
+    await postJSON("/correction/crossover/v2/session", {});
   } catch (err) {
     thrown = err;
   }
@@ -134,7 +134,7 @@ check(
   nextResponse = jsonResponse(403, { error: "capture_geometry not permitted here" });
   let thrown = null;
   try {
-    await postJSON("/correction/crossover/level-match", {});
+    await postJSON("/correction/crossover/v2/session", {});
   } catch (err) {
     thrown = err;
   }

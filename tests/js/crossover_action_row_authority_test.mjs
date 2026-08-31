@@ -46,9 +46,9 @@ const { render, runAction, stopRelay } = await loadEsm(
 );
 
 const nextAction = {
-  id: "level_match",
+  id: "restart_session",
   label: "Continue",
-  endpoint: "/correction/crossover/level-match",
+  endpoint: "/correction/crossover/v2/session",
   body: {},
   enabled: true,
 };
@@ -343,9 +343,9 @@ assertSinglePrimary("(f) verify_fail during a live relay");
 // renders (exactly what a repeated poll response looks like — same fields,
 // a fresh object each time) must still land.
 const clickAction = {
-  id: "level_match",
+  id: "restart_session",
   label: "Continue",
-  endpoint: "/correction/crossover/level-match",
+  endpoint: "/correction/crossover/v2/session",
   body: {},
   enabled: true,
 };

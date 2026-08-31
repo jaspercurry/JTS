@@ -63,7 +63,10 @@ from .crossover_contract import (
 from .crossover_preview import crossover_preview_fingerprint
 from .driver_base_trim import (
     REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
+    DriverBaseTrimError,
     banked_base_trims,
+    clear_base_trim,
+    write_base_trim,
 )
 from .driver_pad import effective_sensitivity_db
 from .level_trim import (
@@ -530,13 +533,11 @@ def _measured_level_trims(
 
     TWO evidence sources answer that one question, and this function is the
     single owner of which one wins. The PREFERRED source is the base trim
-    :mod:`jasper.active_speaker.driver_base_trim` banks — the headless
-    ``jasper-driver-trim`` step every driver goes through before any crossover
-    or linearization work, whose captures are driven by the speaker itself
-    rather than by a household holding a phone. The FALLBACK, unchanged, is the
-    guided per-driver captures the relay flow promotes. Both feed the same
-    estimator and the same chain solver; a banked trim is preferred only because
-    it is the deliberate measurement, not because it is a better one.
+    :mod:`jasper.active_speaker.driver_base_trim` banks — the level match a
+    successful apply was actually playing, written by the apply seam itself.
+    The FALLBACK, unchanged, is the guided per-driver captures the relay flow
+    promotes. A banked trim is preferred only because it is the level match the
+    speaker last committed to, not because it is a better measurement.
     ``crossover_preview`` is what a banked trim is keyed to, so a caller with
     none has nothing to match a banked record against and gets the guided
     captures alone.
@@ -564,29 +565,22 @@ def _measured_level_trims(
         # reports them under the SAME keys the guided path uses: readiness
         # (``crossover_contract.automatic_candidate_readiness``) and the setup
         # status both gate on those, so a measured speaker reporting zero
-        # measured groups would read as un-measured. ``deltas`` stays empty
-        # because the per-crossover evidence lives in the record itself, which
-        # ``base_trim.state_path`` names.
+        # measured groups would read as un-measured.
         banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
-        banked_groups_total = base_trim_meta.get("groups_total")
         return base_trims, {
             "source": "banked_base_trim",
             "base_trim": base_trim_meta,
-            "comparison": "declared_crossover_gain_ledger_normalized",
-            "groups_total": (
-                banked_groups_total
-                if isinstance(banked_groups_total, int)
-                else len(banked_group_ids)
-            ),
+            # The record's own trim source, not a second word for it: the apply
+            # that banked it stamped WHICH evidence levelled the graph, and this
+            # ledger repeats that rather than minting a comparison of its own.
+            "comparison": base_trim_meta.get("trim_source"),
+            "groups_total": len(banked_group_ids),
             "groups_measured": len(banked_group_ids),
             "measured_group_ids": list(banked_group_ids),
+            # Empty because the record banks an ALREADY-APPLIED level match:
+            # the per-crossover evidence behind it lives with the profile that
+            # was applied, which ``base_trim.trim_source`` names.
             "deltas": [],
-            # Empty because the writer already refused every group that could
-            # populate it: ``jasper-driver-trim`` stops on a capture with no
-            # auditable excitation ledger and on one the analysis cannot use, so
-            # a group that reached the record was comparable. What this path
-            # does NOT carry is placement attestation, which ``comparison``
-            # above names rather than implying by an empty list.
             "incomparable_groups": [],
             "trims": dict(base_trims),
         }
@@ -834,7 +828,7 @@ def _derive_corrections(
     # woofer (the shrill / horn-dominant failure mode, and a diaphragm hazard).
     # These are computed but NOT committed here: a usable MEASURED trim
     # overrides them below — from either evidence source ``_measured_level_trims``
-    # accepts, the banked base trim ``jasper-driver-trim`` writes or the guided
+    # accepts, the banked base trim the apply seam writes or the guided
     # per-driver captures — falling back to this datasheet estimate (marked
     # provisional) when no measurement is available.
     datasheet_trims: dict[str, float] = {}
@@ -876,27 +870,6 @@ def _derive_corrections(
                 "or estimated trim — "
                 + str(base_trim_meta.get("remediation") or "")
             ).strip(),
-        ))
-    if isinstance(base_trim_meta, Mapping) and base_trim_meta.get(
-        "mixed_geometry_group_ids"
-    ):
-        # DISCLOSED, not refused. Two drivers of one group read at different
-        # acoustic distances still produce a trim, and the measured trim still
-        # beats the datasheet estimate; what the household loses is the claim
-        # that the delta came from one geometry, so JTS says so and keeps it.
-        issues.append(_issue(
-            "info",
-            "driver_base_trim_mixed_capture_geometry",
-            (
-                "the banked base trim did not read every driver under one "
-                "capture geometry ("
-                + ", ".join(
-                    str(group_id)
-                    for group_id in base_trim_meta["mixed_geometry_group_ids"]
-                )
-                + "); the trim is applied, and those drivers were not "
-                "compared from a single acoustic distance"
-            ),
         ))
     if level_match.get("incomparable_groups"):
         issues.append(_issue(
@@ -1875,7 +1848,6 @@ def _compare_level_sittings(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
     candidate_trims_db: Mapping[str, float],
-    crossover_preview: Mapping[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """How far apart two SITTINGS place the same level fact, as copy strings.
 
@@ -1896,19 +1868,24 @@ def _compare_level_sittings(
     reports the handover level against the PASSBAND estimate — two physical
     questions on ONE capture; item 3(a)'s measured-vs-datasheet check grades
     one capture against a physical model. Here the definition is shared and the
-    CAPTURE is not: the crossover MEASURE sweep and whichever sitting the
-    point-at-Fc reader accepted (a banked base trim or the guided phone level
-    match) are separate sittings, and the candidate branch below never runs the
-    point-at-Fc path itself.
+    CAPTURE is not: the crossover MEASURE sweep and the GUIDED per-driver
+    captures are separate sittings, and the candidate branch below never runs
+    the point-at-Fc path itself.
+
+    **The guided captures, never the banked base trim**, which is why no
+    crossover preview reaches :func:`_measured_level_trims` here. Since ruling
+    S16 the banked trim is written BY the apply, from the very candidate whose
+    trims this compares — reading it back would compare a number with itself
+    and report agreement that means nothing. Passing no preview is the
+    documented way to ask that resolver for the guided sitting alone.
 
     So a gap here is neither a fault nor a verdict on either number — the
     sittings are taken at different distances and on different axes, which
     ``intervention.LEVEL_MATCH_AXIS`` explains has no single correct answer.
     ``frame`` therefore names both: the MEASURE sweep's axis is that constant,
-    while the other sitting's geometry is per-capture and can even be mixed
-    within one record, which that record discloses itself
-    (``driver_base_trim`` — ``mixed_geometry_group_ids``, ``geometry_claim``).
-    A level gap whose frames the reader cannot recover is unplaceable.
+    while the other sitting's geometry is per-capture and is disclosed by the
+    guided captures' own placement attestation. A level gap whose frames the
+    reader cannot recover is unplaceable.
 
     **Disclosed, never refused**, and nothing is asked for: the candidate's own
     trim ships whatever this says, so there is no remediation to recommend.
@@ -1926,9 +1903,7 @@ def _compare_level_sittings(
     if not candidate_trims_db:
         return [], frame
     try:
-        point_trims, point_meta = _measured_level_trims(
-            preset, measurements, crossover_preview
-        )
+        point_trims, point_meta = _measured_level_trims(preset, measurements)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         # The point-at-Fc reader is fail-closed by design and this is a
         # disclosure path; an unreadable measurements blob means "no second
@@ -2494,7 +2469,6 @@ def build_baseline_profile_candidate(
             preset,
             measurements,
             dict(measured_candidate.role_attenuations_db),
-            crossover_preview,
         )
         if sitting_notes:
             correction_issues.append(_issue(
@@ -3276,6 +3250,107 @@ async def _record_apply_outcome_into_bundle(
     )
 
 
+def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
+    """Bank (or clear) the base trim the applied profile is actually playing.
+
+    The single writer of
+    :mod:`jasper.active_speaker.driver_base_trim`'s record, and the fix for the
+    blind run's F-1: a box could apply a measured level match, report
+    ``corrections_source: measured``, and still refuse a ``--level-matched``
+    walk ``walk_level_match_no_evidence``, because the resolver
+    (:func:`_measured_level_trims`) reads only the banked record and the guided
+    captures — never a candidate's applied corrections. Banking here makes the
+    applied trim the very thing the resolver already looks for, so the walk
+    door and the acoustic confirm unblock with no change of their own.
+
+    The measured predicate is ``crossover_contract._snapshot_owner``'s, spelled
+    the same way: ``level_match.applied`` AND every role's correction sourced
+    ``measured``. A profile applied on anything weaker — a datasheet seed, an
+    operator pin, a preserved manual crossover — CLEARS the record instead,
+    because a banked trim the box is not playing is the same lie pointing the
+    other way.
+
+    Fail-soft by contract, exactly as :func:`promote_applied_baseline_candidate`
+    is: the graph is applied and read back by the time this runs, so a
+    statefile that cannot be written must never turn a successful apply into a
+    failure. The speaker then behaves as it did before this seam existed.
+    """
+    def refused(reason: str, detail: str) -> None:
+        log_event(
+            logger,
+            "dsp.baseline_base_trim_banked",
+            level=logging.WARNING,
+            result="failed",
+            reason=reason,
+            detail=detail,
+        )
+
+    corrections = candidate.get("corrections")
+    sources = candidate.get("corrections_source")
+    level_match = candidate.get("level_match")
+    if not isinstance(corrections, Mapping) or not isinstance(sources, Mapping):
+        refused("profile_unreadable", "the applied profile names no corrections")
+        return
+    measured = (
+        isinstance(level_match, Mapping)
+        and level_match.get("applied") is True
+        and bool(corrections)
+        and all(sources.get(role) == "measured" for role in corrections)
+    )
+    if not measured:
+        if not clear_base_trim():
+            # The clear could not HAPPEN (EACCES, a read-only /var/lib), which
+            # is the opposite of nothing-to-clear: a banked trim survives an
+            # apply that is not playing it, and a --level-matched walk would
+            # level its graph by numbers nothing applies.
+            refused("clear_failed", "a banked trim survived an unmeasured apply")
+        return
+    assert isinstance(level_match, Mapping)  # narrowed by `measured` above
+    readiness = candidate.get("automatic_candidate")
+    source = candidate.get("source")
+    if not isinstance(readiness, Mapping) or not isinstance(source, Mapping):
+        # Fail-soft, but never silent: a measured graph is now playing and
+        # whatever was banked before still stands, so the two representations
+        # have diverged again — the very thing this seam exists to prevent.
+        refused(
+            "profile_unreadable",
+            "the applied profile names no readiness or source block",
+        )
+        return
+    try:
+        record = write_base_trim(
+            trims_db={
+                str(role): float((entry or {}).get("gain_db"))
+                for role, entry in corrections.items()
+            },
+            roles=sorted(str(role) for role in corrections),
+            speaker_group_ids=readiness.get("measured_group_ids") or [],
+            declaration_fingerprint=str(
+                source.get("crossover_preview_fingerprint") or ""
+            ),
+            trim_source=str(level_match.get("comparison") or ""),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        refused(
+            exc.reason
+            if isinstance(exc, DriverBaseTrimError)
+            else type(exc).__name__,
+            str(exc),
+        )
+        return
+    log_event(
+        logger,
+        "dsp.baseline_base_trim_banked",
+        result="ok",
+        trims=" ".join(
+            f"{role}={value:.1f}"
+            for role, value in sorted(record["trims_db"].items())
+        ),
+        trim_source=record["trim_source"],
+        declaration=record["declaration_fingerprint"][:12],
+    )
+
+
 def persist_applied_baseline_profile(
     candidate: Mapping[str, Any],
     *,
@@ -3322,6 +3397,11 @@ def persist_applied_baseline_profile(
     # doctor-honesty fix, not a live-bug fix. Observed on jts3 after a
     # save-and-apply that left the marker set.
     release_staged_startup_hold()
+    # Before the idempotent early-return below, for the reason the hold release
+    # is: an already-applied candidate whose base trim never reached disk (a
+    # first attempt that hit a full or read-only /var/lib) must be banked by
+    # the retry, not skipped by it.
+    _bank_applied_base_trim(candidate)
     target = baseline_profile_state_path(state_path)
     existing = _load_saved_state(target)
     candidate_identity = baseline_candidate_fingerprint(candidate)

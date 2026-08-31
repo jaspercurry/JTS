@@ -2142,6 +2142,40 @@ def test_a_graded_round_banks_what_the_next_one_needs_to_read(
     assert position.ordinal == 2
 
 
+def test_a_graded_round_banks_WHICH_EPOCH_its_ordinal_counts_in(
+    monkeypatch, real_bundle,
+):
+    """The ordinal alone is ambiguous the moment a reset door has run.
+
+    A republish (and Start-Over's applied branch) replaces durable state
+    wholesale and drops ``round_receipt``, so the next round is ordinal 1 again
+    on a speaker that has already been tuned. The epoch is what tells that
+    round apart from a fresh box's first one, and it is only useful if the
+    RECEIPT carries it — the receipt is the series' only memory between
+    sessions, so an epoch that lived anywhere else would not survive to be read.
+
+    Driven end to end: the epoch is seeded into durable state, the REAL
+    preparer resolves the series position off it, and the graded round's own
+    banked identity is what is asserted.
+    """
+
+    state = _seed_round_state()
+    state[coordinator.ROUND_ORDINAL_EPOCH_STATE_KEY] = 2
+    v2host.save_v2_state(state)
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    identity = conductor.round_receipt_identity
+    assert identity is not None
+    # Round ONE — of the third epoch. Both numbers, because either alone is the
+    # ambiguity this exists to remove.
+    assert identity["round_ordinal"] == 1
+    assert identity["round_ordinal_epoch"] == 2
+
+
 def test_the_status_block_forwards_the_receipt_to_the_screen():
     """The projection without which every round sentence is dead on a real box.
 

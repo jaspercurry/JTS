@@ -24,14 +24,17 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.round_views import (
+    ENTRY_STATE_UNREADABLE,
     RoundViewsError,
     agreement_table,
+    entry_state_grade,
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
     repeatability_spread,
     verify_pose_curve,
 )
+from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 #: A log-spaced curve grid spanning all three SPEC_BANDS rows
@@ -858,3 +861,343 @@ def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     rc = main(["per-seat", str(tmp_path / "nope")])
     assert rc == 1
     assert "error:" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# View 0 — entry_state_grade
+# --------------------------------------------------------------------------- #
+
+
+ENTRY_TAKE_ID = "entry_baseline_01_01"
+
+
+def _bank_entry_baseline_take(
+    round_dir: Path,
+    *,
+    magnitude_db: np.ndarray,
+    excluded: np.ndarray | None = None,
+    graph_fingerprint: str = "entrygraph0001",
+    freqs_hz: np.ndarray | None = None,
+) -> None:
+    """One write-once entry-baseline take, in the tree the store banks to.
+
+    ``crossover_v2/<relay>/positions/<take_id>.json`` — the path
+    ``contracts.BANKED_TAKE_GLOB`` selects and
+    ``position_cycle.read_entry_baseline_take`` opens. Written as the real
+    record is shaped rather than as the reader's narrowed view, so a change to
+    either the index columns or the accept rule fails these tests.
+    """
+    grid = GRID if freqs_hz is None else freqs_hz
+    mask = np.zeros(grid.shape, dtype=bool) if excluded is None else excluded
+    positions = (
+        round_dir / "bundle" / "sess1" / "evidence/v1/artifacts"
+        / "crossover_v2" / "cap1" / "positions"
+    )
+    positions.mkdir(parents=True, exist_ok=True)
+    (positions / f"{ENTRY_TAKE_ID}.json").write_text(json.dumps({
+        "kind": "jts_crossover_v2_position_evidence",
+        "schema_version": 1,
+        "session_id": "cap1",
+        "measure_kind": "baseline",
+        "phase": "entry_baseline",
+        "take_id": ENTRY_TAKE_ID,
+        "position_id": ENTRY_TAKE_ID,
+        "index": 1,
+        "attempt": 1,
+        "position_deg": 0,
+        "role": "onax",
+        "program_id": "prog-entry",
+        "reference_mark": "design_axis",
+        "graph_fingerprint": graph_fingerprint,
+        "captured_at": "2026-08-30T00:00:00Z",
+        "freqs_hz": grid.tolist(),
+        "magnitude_db": magnitude_db.tolist(),
+        "excluded": [bool(flag) for flag in mask],
+    }))
+
+
+def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
+    round_dir = _make_round_dir(
+        tmp_path, "r1",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    _bank_entry_baseline_take(round_dir, **kwargs)
+    return round_dir
+
+
+def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):
+    """The door's whole contract: it CONSUMES the grading, never repeats it.
+
+    Asserted against an independent ``evaluate_flat_spec`` call on the same
+    inputs — the take's own curve and mask, in the round's own frame — so the
+    door cannot pass by returning plausible numbers of its own. Field-for-field
+    on the report, not a spot check: a door that graded the right curve in the
+    WRONG frame would agree on the bands and disagree on the reference.
+    """
+    curve = _flat_curve(ripple_db=3.0)
+    banked = load_banked_round(_round_with_entry_baseline(tmp_path, magnitude_db=curve))
+
+    grade = entry_state_grade(banked)
+
+    assert grade.available is True
+    assert grade.reason == ""
+    expected = evaluate_flat_spec(
+        GRID, curve, np.zeros(GRID.shape, dtype=bool),
+        smoothing_fraction=banked.report.smoothing_fraction,
+        trusted_floor_hz=banked.report.trusted_floor_hz,
+        trusted_ceiling_hz=banked.report.trusted_ceiling_hz,
+    )
+    assert grade.report is not None
+    assert grade.report.to_dict() == expected.to_dict()
+
+
+def test_the_entry_grade_carries_a_per_band_table(tmp_path):
+    """The same per-band rows a round's own ``spec`` block carries.
+
+    Structural, not a spot value: every ``SPEC_BANDS`` row is answered for, and
+    each row states its own tolerance and verdict. That is what makes this
+    table readable beside a round's without a translation step.
+    """
+    banked = load_banked_round(
+        _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
+    )
+
+    report = entry_state_grade(banked).report
+
+    assert report is not None
+    assert len(report.bands) == len(flat_spec.SPEC_BANDS)
+    assert [b.tolerance_db for b in report.bands] == [
+        row[2] for row in flat_spec.SPEC_BANDS
+    ]
+    assert all(band.evaluable for band in report.bands)
+    assert report.overall_passed is True
+
+
+def test_a_tilted_entry_state_fails_the_band_it_is_tilted_in(tmp_path):
+    """Discriminating: the grade tracks the curve, not the fixture.
+
+    A treble shelf far outside the top band's tolerance must fail THAT band and
+    leave the others passing — a door returning a canned "passed" report, or
+    grading somebody else's curve, cannot produce this shape.
+    """
+    curve = _flat_curve()
+    curve[GRID >= 8000.0] += 6.0
+    banked = load_banked_round(_round_with_entry_baseline(tmp_path, magnitude_db=curve))
+
+    report = entry_state_grade(banked).report
+
+    assert report is not None
+    assert report.overall_passed is False
+    by_edge = {band.f_lo_hz: band for band in report.bands}
+    assert by_edge[8000.0].passed is False
+    assert all(
+        band.passed is True for lo, band in by_edge.items() if lo != 8000.0
+    )
+
+
+def test_the_entry_grade_reads_the_takes_OWN_exclusion_mask(tmp_path):
+    """The mask belongs to this capture, not to the round's other one.
+
+    A bin the entry-baseline screen flagged must not be graded. Pinned with a
+    curve whose ONLY spec violation sits under the mask: unmasked it fails,
+    masked it passes, so a door that dropped the mask (or reached for the
+    round's post-apply exclusions instead) is a different answer, not a
+    rounding difference.
+    """
+    curve = _flat_curve()
+    spike = GRID >= 8000.0
+    curve[spike] += 6.0
+
+    unmasked = load_banked_round(
+        _round_with_entry_baseline(tmp_path / "a", magnitude_db=curve)
+    )
+    masked = load_banked_round(
+        _round_with_entry_baseline(tmp_path / "b", magnitude_db=curve, excluded=spike)
+    )
+
+    assert entry_state_grade(unmasked).report.overall_passed is False
+    masked_report = entry_state_grade(masked).report
+    assert masked_report is not None
+    # The masked band has no evidence left, so it is UNEVALUABLE — never a
+    # silent pass. That is `BandResult`'s own contract and this door inherits
+    # it rather than restating it.
+    by_edge = {band.f_lo_hz: band for band in masked_report.bands}
+    assert by_edge[8000.0].evaluable is False
+    assert by_edge[8000.0].passed is None
+    assert by_edge[250.0].passed is True
+
+
+def test_the_entry_grade_names_WHICH_entry_state_it_graded(tmp_path):
+    """An unattributed table is not a disclosure.
+
+    The first round's entry graph is the declarations-derived config a fresh
+    box wears; a later round's is whatever the previous round left playing.
+    The fingerprint is what tells them apart, so it rides on the result.
+    """
+    banked = load_banked_round(
+        _round_with_entry_baseline(
+            tmp_path, magnitude_db=_flat_curve(), graph_fingerprint="fresh0000beef",
+        )
+    )
+
+    grade = entry_state_grade(banked)
+
+    assert grade.graph_fingerprint == "fresh0000beef"
+    assert grade.program_id == "prog-entry"
+    assert grade.reference_mark == "design_axis"
+    assert grade.artifact_ref == ENTRY_TAKE_ID
+    assert grade.to_dict()["graph_fingerprint"] == "fresh0000beef"
+
+
+def test_a_round_that_banked_no_entry_baseline_says_so_with_a_reason(tmp_path):
+    """The honest door for the case it cannot answer.
+
+    Retention is fail-soft and never costs the household a retake, so "no take"
+    is a fact to report rather than a failure to raise. It must arrive as a
+    NAMED reason with no report beside it — never an empty table that reads as
+    a clean bill of health.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+
+    grade = entry_state_grade(load_banked_round(round_dir))
+
+    assert grade.available is False
+    assert grade.report is None
+    assert grade.reason  # named, never a bare False
+    assert grade.to_dict()["report"] is None
+
+
+def test_a_banked_take_whose_curve_does_not_rehydrate_is_not_graded(tmp_path):
+    """A mask shorter than its curve is unreadable, not gradeable.
+
+    ``EntryBaseline.from_dict`` owns that rule; this pins that the door takes
+    its ``None`` as a refusal to grade rather than pushing a length-disagreeing
+    pair into the evaluator.
+    """
+    round_dir = _round_with_entry_baseline(
+        tmp_path, magnitude_db=_flat_curve(),
+        excluded=np.zeros(GRID.shape[0] - 3, dtype=bool),
+    )
+
+    grade = entry_state_grade(load_banked_round(round_dir))
+
+    assert grade.available is False
+    assert grade.report is None
+    assert grade.reason == ENTRY_STATE_UNREADABLE
+
+
+def test_the_cli_entry_verb_writes_the_grade_beside_the_evidence(tmp_path, capsys):
+    """The DOOR, not just the view — through ``main`` and the real argv.
+
+    A product view nothing can reach is not a door: before this verb the entry
+    state could only be graded by an operator calling ``evaluate_flat_spec`` by
+    hand. Drives the console script end to end and asserts the artifact it
+    leaves behind.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
+
+    assert cli.main(["entry", str(round_dir)]) == 0
+
+    written = json.loads((round_dir / "entry_state_grade.json").read_text())
+    assert written["available"] is True
+    assert written["graph_fingerprint"] == "entrygraph0001"
+    assert len(written["report"]["bands"]) == len(flat_spec.SPEC_BANDS)
+
+
+def test_the_cli_entry_verb_exits_0_when_there_is_nothing_to_grade(tmp_path):
+    """"No gradeable take" is an ANSWER, not an unreadable round.
+
+    Exit 1 is reserved for a round directory that could not be read at all, so
+    a caller can tell "I looked, and this round banked none" from "I could not
+    look" by the exit code alone.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+
+    assert cli.main(["entry", str(round_dir)]) == 0
+
+    written = json.loads((round_dir / "entry_state_grade.json").read_text())
+    assert written["available"] is False
+    assert written["report"] is None
+    assert written["reason"]
+
+
+def _write_state(round_dir: Path, payload: dict[str, Any]) -> None:
+    (round_dir / "state.json").write_text(json.dumps(payload))
+
+
+def test_the_entry_grade_attributes_the_round_and_its_ordinal_epoch(tmp_path):
+    """An unattributed table is not a disclosure.
+
+    "The entry state was this flat" means one thing at round 1 of a fresh box
+    and another at round 1 after a republish reset the count — so the ordinal
+    and the epoch it counts in ride on the result and its payload.
+    """
+    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
+    _write_state(round_dir, {
+        "round_receipt": {"round_ordinal": 2}, "round_ordinal_epoch": 3,
+    })
+
+    grade = entry_state_grade(load_banked_round(round_dir))
+
+    assert grade.round_ordinal == 2
+    assert grade.round_ordinal_epoch == 3
+    payload = grade.to_dict()
+    assert payload["round_ordinal"] == 2
+    assert payload["round_ordinal_epoch"] == 3
+
+
+def test_an_unrecorded_ordinal_reads_as_not_recorded_never_zero(tmp_path):
+    """``None`` and ``0`` are different facts, and the epoch's whole meaning
+    turns on the difference: ``0`` is "never reset", which a round that simply
+    banked no state file has said nothing about.
+
+    ``bool`` is rejected too — a hand-edited ``true`` must not publish as
+    epoch 1.
+    """
+    no_state = _round_with_entry_baseline(tmp_path / "a", magnitude_db=_flat_curve())
+    grade = entry_state_grade(load_banked_round(no_state))
+    assert grade.round_ordinal is None
+    assert grade.round_ordinal_epoch is None
+
+    booly = _round_with_entry_baseline(tmp_path / "b", magnitude_db=_flat_curve())
+    _write_state(booly, {
+        "round_receipt": {"round_ordinal": True}, "round_ordinal_epoch": True,
+    })
+    boolean = entry_state_grade(load_banked_round(booly))
+    assert boolean.round_ordinal is None
+    assert boolean.round_ordinal_epoch is None
+
+
+def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, capsys):
+    """An UNEVALUABLE band is not a failing band.
+
+    A band whose every bin the take's own gate clamped away has no evidence —
+    ``passed is None``, never ``False`` — and a summary that counted it as
+    failing would report a band nobody could measure as one that measured
+    badly. Driven through the console script, on the same masked fixture the
+    product-level mask test uses.
+    """
+    from jasper.cli import round_views as cli
+
+    curve = _flat_curve()
+    spike = GRID >= 8000.0
+    curve[spike] += 6.0
+    round_dir = _round_with_entry_baseline(
+        tmp_path, magnitude_db=curve, excluded=spike,
+    )
+
+    assert cli.main(["entry", str(round_dir)]) == 0
+
+    summary = capsys.readouterr().err
+    assert "1 unevaluable" in summary
+    assert "0 failing" in summary
