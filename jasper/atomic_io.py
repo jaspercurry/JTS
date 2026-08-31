@@ -69,19 +69,43 @@ __all__ = [
 ]
 
 
+_UNSUPPORTED_DIR_FSYNC = frozenset(
+    {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+_unsupported_fsync_logged = False
+
+
 def fsync_directory(path: str | os.PathLike) -> None:
     """Make a directory entry's creation or removal durable.
 
     A rename or unlink is metadata: without this the entry can still be
     present (or absent) after a dirty shutdown even though the file's own
-    contents were synced. The helper is strict: callers own any policy for
-    filesystems that do not support directory fsync.
+    contents were synced. Filesystems that do not support directory fsync
+    report it as an argument error rather than a fault, and are tolerated —
+    every caller's durability is best-effort on those. The first tolerated
+    call per process logs a WARNING; being a static property of the mount,
+    repeats stay silent (they would evict real diagnostics from the flight
+    recorder). Real faults (EIO, EACCES, a vanished path) always raise.
     """
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
     descriptor = os.open(path, flags)
     try:
         os.fsync(descriptor)
+    except OSError as exc:
+        if exc.errno not in _UNSUPPORTED_DIR_FSYNC:
+            raise
+        global _unsupported_fsync_logged
+        if not _unsupported_fsync_logged:
+            _unsupported_fsync_logged = True
+            log_event(
+                logger,
+                "atomic_io.dir_fsync_unsupported",
+                level=logging.WARNING,
+                path=path,
+                error=exc,
+                note="rename durability is best-effort on this filesystem",
+            )
     finally:
         os.close(descriptor)
 
@@ -271,16 +295,7 @@ def atomic_write_text(
                 os.close(file_fd)
         os.replace(tmp, fspath)
         if durable:
-            try:
-                fsync_directory(parent)
-            except OSError as exc:
-                unsupported = {
-                    errno.EINVAL,
-                    getattr(errno, "ENOTSUP", errno.EINVAL),
-                    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-                }
-                if exc.errno not in unsupported:
-                    raise
+            fsync_directory(parent)
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
