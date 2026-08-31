@@ -452,11 +452,7 @@ def _write_once(path: Path, payload: bytes, *, root: Path) -> None:
             published = True
             os.unlink(temporary)
             temporary = ""
-            directory_descriptor = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
+            fsync_directory(path.parent)
         except OSError as exc:
             raise _PublishOutcomeUnknown(str(exc)) from exc
     finally:
