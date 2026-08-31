@@ -605,8 +605,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Write /var/lib/jasper/voice_provider_ids from the Python voice
      catalog so boot/hotplug shell can validate providers without
      importing Python.
-   - Copy Python source, jasper_aec3, pyproject.toml, landing pages,
-     nginx config, Avahi service templates, systemd
+   - Copy Python source, jasper_aec3, pyproject.toml, the tuning operator
+     docs, landing pages, nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
    - Install the jts_ring device definitions (the /etc/alsa/conf.d
