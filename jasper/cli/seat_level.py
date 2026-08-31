@@ -468,6 +468,27 @@ def build_parser() -> argparse.ArgumentParser:
             "`amixer -c <card>` shows the capture control at 100%, or every "
             "absolute SPL below is wrong by the shortfall."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - a reference is already banked for this session and you are\n"
+            "    not deliberately re-leveling\n"
+            "  - the mic capture control is not confirmed at 100% (see the\n"
+            "    PRECONDITION above) -- level first, then re-run this\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-seat-level --stimulus-wav captures/pink_noise.wav \\\n"
+            "      --calibration-file /var/lib/jasper/mic-cal/umik2-7003219.txt\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  converged and banked; the human line and --json both carry\n"
+            "     the reference dB SPL reached\n"
+            "  1  refused -- \"refused (<reason>): <detail>\" on stderr names\n"
+            "     why (interrupted, or the ramp's own refusal vocabulary);\n"
+            "     --json emits the same reason/detail as structured fields\n"
+            "  2  usage error (argparse) -- most commonly neither\n"
+            "     --calibration-file nor --mic-serial was passed"
+        ),
     )
     parser.add_argument(
         "--stimulus-wav",

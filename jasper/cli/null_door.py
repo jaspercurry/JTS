@@ -852,6 +852,41 @@ def build_parser() -> argparse.ArgumentParser:
             "Play the summed reverse null and bank one row per coordinate. "
             "Measures only; grades nothing."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "PURPOSE\n"
+            "  Play the reverse null and bank one self-contained JSON row per\n"
+            "  coordinate under <bundle>/null_runs/, usually reached for the\n"
+            "  polarity proof and the acoustic confirm after jasper-delay-\n"
+            "  sweep propose has printed where the null should sit --\n"
+            "  propose computes the delay landscape, this plays it and\n"
+            "  reports what the room actually did. Comparing rows across a\n"
+            "  run IS the grading step; this tool grades nothing itself.\n"
+            "\n"
+            "WHEN NOT TO USE\n"
+            "  - before jasper-delay-sweep propose has printed a coordinate\n"
+            "    grid -- a --delays value off that grid is refused (a\n"
+            "    coordinate nobody proposed names a graph nobody modelled)\n"
+            "  - branches at very different sensitivities with no level\n"
+            "    match applied -- an un-level-matched pair caps its own\n"
+            "    null depth, and the depth is the whole reading\n"
+            "\n"
+            "EXAMPLE\n"
+            "  jasper-null --bundle-dir captures/xover-2026-08-30/session-1 \\\n"
+            "      --fc-hz 1800\n"
+            "\n"
+            "EXIT CODES\n"
+            "  Every exit -- ok or refused -- prints one JSON document on\n"
+            "  stdout first, then a one-line human gloss on stderr; a\n"
+            "  refusal is never silent on either channel.\n"
+            "  0  EXIT_OK -- every coordinate played and banked\n"
+            "  1  EXIT_REFUSED -- interrupted mid-walk (JSON status\n"
+            "     \"partial\", with however many rows it banked before\n"
+            "     stopping), the measurement door refused, or the\n"
+            "     capture/mic failed\n"
+            "  2  EXIT_INPUT -- a --delays coordinate off the proposed\n"
+            "     grid, or the state file could not be read"
+        ),
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
