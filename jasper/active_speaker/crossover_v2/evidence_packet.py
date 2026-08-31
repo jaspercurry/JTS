@@ -1885,15 +1885,29 @@ def _reflections_uncertainty() -> dict[str, Any]:
     }
 
 
+def _gate_numbers_present(
+    rows: list[dict[str, Any]], gate: dict[str, Any]
+) -> bool:
+    """Does ANY banked record in the round carry a gate number?
+
+    Over both carriers — the cloud's position rows and ``verify.gate`` —
+    because either one answering settles it. The ONE spelling of the
+    question :func:`_gate_numbers_reason` answers "no" to and the accuracy
+    budget's ``gate_leakage.available`` answers "yes" to.
+    """
+    return any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows) or bool(
+        _VERIFY_GATE_NUMBER_FIELDS & set(gate)
+    )
+
+
 def _gate_numbers_reason(
     positions: dict[str, Any], verify: dict[str, Any]
 ) -> str:
     """Why this round carries no gate numbers, or ``""`` when it does.
 
-    Asks whether ANY banked record in the round carries the fields, over both
-    carriers — the cloud's position rows and ``verify.gate`` — because the two
-    have different absence rules and either one answering settles it.
-    ``verify.gate`` is :func:`~.capture_dispatch._gate_record`'s dict, which
+    Presence is :func:`_gate_numbers_present`'s call; what this function owns
+    is the sentence, and the two carriers' different absence rules are why it
+    hedges. ``verify.gate`` is :func:`~.capture_dispatch._gate_record`'s dict, which
     always spells both keys once the writer shipped, null or not; a position row
     is filtered by :data:`~jasper.attribution.position_evidence._RECORD_FIELDS`,
     which drops a key whose value is ``None``, so an all-ungateable round could
@@ -1915,9 +1929,7 @@ def _gate_numbers_reason(
     gate = gate if isinstance(gate, dict) else {}
     if not rows and not gate:
         return ""
-    if any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows):
-        return ""
-    if _VERIFY_GATE_NUMBER_FIELDS & set(gate):
+    if _gate_numbers_present(rows, gate):
         return ""
     return (
         "no banked record in this round carries gate_moved_rms_db or "
@@ -2075,10 +2087,11 @@ def _accuracy_budget_block(
       in; more captures at the SAME pose do not shrink it). Points at the
       reflections/positions/verify gate-disclosure numbers ticket 1.5
       already banks, rather than re-deriving them.
-    * ``mic_calibration_tier`` — SYSTEMATIC. This round's own tier, read off
-      its banked candidate (``candidate.json``'s ``linearization[*].mic_tier``
-      — carried forward onto every fitted or prescribed role), beside that
-      tier's trust-ceiling breakpoints.
+    * ``mic_calibration_tier`` — SYSTEMATIC. This round's own tier PER ROLE,
+      read off its banked candidate (``candidate.json``'s
+      ``linearization[*].mic_tier``), beside each named tier's trust-ceiling
+      breakpoints. Roles fitted under different tiers are published as the
+      disagreement they are, never collapsed to one entry's answer.
 
     No score, no recommendation, no verdict: this juxtaposes, an LLM judges.
     """
@@ -2092,24 +2105,27 @@ def _accuracy_budget_block(
 
     rows = [row for row in positions.get("positions") or [] if isinstance(row, dict)]
     gate = _mapping(verify.get("gate"))
-    gate_available = (
-        bool(reflections.get("available"))
-        or any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows)
-        or bool(_VERIFY_GATE_NUMBER_FIELDS & set(gate))
+    gate_available = bool(reflections.get("available")) or _gate_numbers_present(
+        rows, gate
     )
 
     candidate = _read_candidate(round_dir) if round_dir is not None else {}
     linearization = _mapping(candidate.get("linearization"))
-    mic_tier: str | None = None
-    for entry in linearization.values():
-        if isinstance(entry, Mapping) and isinstance(entry.get("mic_tier"), str):
-            mic_tier = entry["mic_tier"]
-            break
-    trust_ceiling_hz: dict[str, float] | None = None
-    breakpoints_hz = None if mic_tier is None else _MIC_TRUST_TABLE_HZ.get(mic_tier)
-    if breakpoints_hz is not None:
-        full_to_hz, taper_zero_hz = breakpoints_hz
-        trust_ceiling_hz = {"full_to_hz": full_to_hz, "taper_zero_hz": taper_zero_hz}
+    # Per role, never elected: two roles fitted under different tiers is a
+    # fact this block discloses, not a tie one entry silently wins.
+    tier_by_role = {
+        str(role): str(entry["mic_tier"])
+        for role, entry in linearization.items()
+        if isinstance(entry, Mapping) and isinstance(entry.get("mic_tier"), str)
+    }
+    trust_ceiling_hz_by_tier: dict[str, dict[str, float]] = {}
+    for tier in tier_by_role.values():
+        breakpoints_hz = _MIC_TRUST_TABLE_HZ.get(tier)
+        if breakpoints_hz is not None:
+            full_to_hz, taper_zero_hz = breakpoints_hz
+            trust_ceiling_hz_by_tier[tier] = {
+                "full_to_hz": full_to_hz, "taper_zero_hz": taper_zero_hz,
+            }
 
     return {
         "note": (
@@ -2157,13 +2173,13 @@ def _accuracy_budget_block(
             },
             "mic_calibration_tier": {
                 "kind": UNCERTAINTY_SYSTEMATIC,
-                "available": mic_tier is not None,
-                "tier": mic_tier,
+                "available": bool(tier_by_role),
+                "tier_by_role": tier_by_role,
                 "tier_vocabulary": list(MIC_TIERS),
-                "trust_ceiling_hz": trust_ceiling_hz,
+                "trust_ceiling_hz_by_tier": trust_ceiling_hz_by_tier,
                 "source": "candidate.json linearization[*].mic_tier",
                 "reason": (
-                    "" if mic_tier is not None
+                    "" if tier_by_role
                     else "no banked candidate names a mic tier for this round"
                 ),
             },

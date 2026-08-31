@@ -800,10 +800,12 @@ The two decision rules that ride with it — never route `eq` at an interference
 null, and read every promoted finding as `unsure` until rotation adjudicates —
 are methodology §6's; not restated here.
 
-**Reading the rows for signatures.** `feature_classification.json` carries 26
-columns per feature, published whole as `feature_classification.lab_rows[]`
-beside the 7-key `verdicts[]` a gate reads, each uncertainty labelled random or
-systematic:
+**Reading the rows for signatures.** `feature_classification.json` carries one
+row per feature — every column `LAB_ROW_FIELDS` registers
+([`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
+owns the append-only register; this doc does not count it) — published whole as
+`feature_classification.lab_rows[]` beside the 7-key `verdicts[]` a gate reads,
+each uncertainty labelled random or systematic:
 
 | Signature | Candidate mechanism |
 |---|---|

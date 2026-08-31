@@ -869,21 +869,32 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     """6.2: the reuse this ticket requires, end to end -- ``load_round_pose_curves``
     reaches a REAL banked take file through the same reader
     ``jasper-delay-sweep`` uses, never a second tree-walker.
+
+    The stop is banked TWICE -- a superseded first attempt whose curve never
+    swept the feature, then the retake. Latest attempt wins: exactly one
+    persistence entry, the retake's, resolved. An include-all regression
+    would read two poses; an oldest-wins regression would read unresolved.
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    curve = _pose_curve(_resonant_ir(+3.0), pose_id="ignored", position_deg=-20)
-    _bank_lateral_pose(
-        bundle,
-        take_id="lateral_00_a01",
-        position_deg=-20,
-        curves=[{
-            "role": "woofer",
-            "band_hz": list(curve.band_hz),
-            "freqs_hz": [float(v) for v in curve.freqs_hz],
-            "magnitude_db": [float(v) for v in curve.magnitude_db],
-            "phase_deg": [0.0] * curve.freqs_hz.size,
-        }],
+    superseded = _pose_curve(
+        _flat_ir(), pose_id="ignored", position_deg=-20, band_hz=(20.0, 500.0)
     )
+    curve = _pose_curve(_resonant_ir(+3.0), pose_id="ignored", position_deg=-20)
+    for take_id, banked_curve in (
+        ("lateral_00_a01", superseded), ("lateral_00_a02", curve),
+    ):
+        _bank_lateral_pose(
+            bundle,
+            take_id=take_id,
+            position_deg=-20,
+            curves=[{
+                "role": "woofer",
+                "band_hz": list(banked_curve.band_hz),
+                "freqs_hz": [float(v) for v in banked_curve.freqs_hz],
+                "magnitude_db": [float(v) for v in banked_curve.magnitude_db],
+                "phase_deg": [0.0] * banked_curve.freqs_hz.size,
+            }],
+        )
     code = cli.main([str(bundle), "--dumps", str(dumps), "--at", str(RESONANCE_HZ)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
@@ -892,7 +903,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     assert banked["pose_bank"] == {"available": True, "n_poses": 1}
     persistence = banked["rows"][0]["pose_persistence"]
     assert len(persistence) == 1
-    assert persistence[0]["pose_id"] == "lateral_00_a01"
+    assert persistence[0]["pose_id"] == "lateral_00_a02"
     assert persistence[0]["position_deg"] == -20
     assert persistence[0]["resolved"] is True
 

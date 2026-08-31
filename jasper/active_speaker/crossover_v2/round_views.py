@@ -120,7 +120,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.olive_metrics import nbd, sm
+from jasper.audio_measurement.olive_metrics import nbd_and_sm
 
 __all__ = [
     "AGREEMENT_DISSENT_MAX",
@@ -1233,10 +1233,13 @@ class PooledWindowResult:
       magnitude_db: the power-averaged curve.
       bearings_deg: which banked bearings actually contributed, sorted —
         the round's own coverage, disclosed rather than assumed complete.
-      n_curves: how many banked lateral-walk takes contributed in total.
-        A bearing banking more than one such take is itself power-averaged
-        first (see :func:`pooled_window_horizontal`), so a repeat cannot
-        silently outweigh a bearing measured once.
+      n_curves: how many banked lateral-walk stops contributed in total.
+        A bearing hosting more than one stop is itself power-averaged
+        first (see :func:`pooled_window_horizontal`), so a re-visited
+        bearing cannot silently outweigh one measured once. Superseded
+        retakes never reach this count —
+        :func:`~.feature_classifier.load_round_pose_curves` keeps only the
+        latest attempt per stop.
     """
 
     freqs_hz: np.ndarray
@@ -1274,9 +1277,13 @@ def pooled_window_horizontal(
     is not literally a call to that function. Per curve: resampled onto
     ``grid_hz`` and masked to the curve's OWN driven ``band_hz`` (a point
     outside it was never measured, so it is excluded rather than read as
-    silence). Repeats at the same bearing are power-averaged together
-    FIRST, so one bearing measured three times cannot outweigh one measured
-    once; the per-bearing curves are then power-averaged across bearings.
+    silence). Distinct stops sharing a bearing (a drift re-visit) are
+    power-averaged together FIRST, so a bearing visited three times cannot
+    outweigh one visited once; the per-bearing curves are then
+    power-averaged across bearings. A RETAKE is not such a repeat:
+    :func:`~.feature_classifier.load_round_pose_curves` has already
+    superseded the older attempts, so rejected noise never reaches this
+    pool.
 
     Returns ``None`` when the round's lateral walk banked no
     :data:`_SUMMED_CURVE_ROLE` curve at ANY bearing — not every round has
@@ -1335,19 +1342,27 @@ class AudibilityMetrics:
     sm_r2: float
     band_hz: tuple[float, float]
     smoothing_fraction: int
+    input_smoothing_fraction: int | None
 
     @classmethod
     def compute(
-        cls, freqs_hz: np.ndarray, magnitude_db: np.ndarray,
+        cls,
+        freqs_hz: np.ndarray,
+        magnitude_db: np.ndarray,
         band_hz: tuple[float, float],
+        *,
+        input_smoothing_fraction: int | None = None,
     ) -> "AudibilityMetrics":
-        nbd_result = nbd(freqs_hz, magnitude_db, band_hz)
-        sm_result = sm(freqs_hz, magnitude_db, band_hz)
+        nbd_result, sm_result = nbd_and_sm(
+            freqs_hz, magnitude_db, band_hz,
+            input_smoothing_fraction=input_smoothing_fraction,
+        )
         return cls(
             nbd_db=nbd_result.nbd_db,
             sm_r2=sm_result.sm_r2,
             band_hz=nbd_result.band_hz,
             smoothing_fraction=nbd_result.smoothing_fraction,
+            input_smoothing_fraction=nbd_result.input_smoothing_fraction,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1356,6 +1371,7 @@ class AudibilityMetrics:
             "sm_r2": self.sm_r2,
             "band_hz": list(self.band_hz),
             "smoothing_fraction": self.smoothing_fraction,
+            "input_smoothing_fraction": self.input_smoothing_fraction,
         }
 
 
@@ -1433,7 +1449,15 @@ def audibility_co_metrics(
             [10.0 ** (p.magnitude_db / 10.0) for p in on_axis_positions], axis=0,
         )
         on_axis_db = 10.0 * np.log10(np.maximum(power, 1e-12))
-        on_axis_metrics = AudibilityMetrics.compute(banked.curve_grid_hz, on_axis_db, band)
+        on_axis_metrics = AudibilityMetrics.compute(
+            banked.curve_grid_hz, on_axis_db, band,
+            # The coarsest attested fraction among the contributing curves —
+            # smaller N is coarser, and the coarser pass is the one that
+            # already averaged ripple away (olive_metrics' module docstring).
+            input_smoothing_fraction=min(
+                p.smoothing_fraction for p in on_axis_positions
+            ),
+        )
         on_axis_reason = ""
 
     pooled = pooled_window_horizontal(banked.session_dir, grid_hz=banked.curve_grid_hz)
@@ -1443,6 +1467,8 @@ def audibility_co_metrics(
     if pooled is None:
         pooled_metrics, pooled_reason, bearings = None, _POOLED_WINDOW_UNAVAILABLE, ()
     else:
+        # The lateral bank attests no smoothing fraction on its curves, so
+        # None ("unknown") is the honest statement here — never a guess.
         pooled_metrics = AudibilityMetrics.compute(pooled.freqs_hz, pooled.magnitude_db, band)
         pooled_reason, bearings = "", pooled.bearings_deg
 

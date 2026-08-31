@@ -1372,21 +1372,28 @@ def test_pooled_window_horizontal_power_averages_a_hand_computed_two_curve_case(
     assert result.magnitude_db == pytest.approx([expected_db, expected_db])
 
 
-def test_pooled_window_horizontal_pools_repeats_at_one_bearing_before_pooling_bearings(tmp_path):
-    """A bearing banked twice must not outweigh one banked once.
+def test_pooled_window_horizontal_pools_a_revisited_bearing_before_pooling_bearings(tmp_path):
+    """A bearing visited by two stops must not outweigh one visited once,
+    and a superseded retake must not contribute at all.
 
-    The two repeats at 0 deg are DIFFERENT curves (power 0.5 and 1.5) whose
-    power MEAN is exactly 1.0 (0 dB) -- the same value the single +7 deg
-    curve was in the two-curve case above. Pooled two-stage (average the
-    repeats, THEN average across bearings), the answer is unchanged from
-    that case: 10*log10(2) dB. Naive single-stage pooling (flat-average all
-    three curves, powers [0.5, 1.5, 3.0]) would instead give
-    10*log10(5/3) ~= 2.2185 dB -- a different number, which is exactly what
-    this test would catch if the two-stage design regressed to one-stage.
+    Two DISTINCT stops at 0 deg (a drift re-visit): powers 0.5 and 1.5,
+    whose power MEAN is exactly 1.0 (0 dB) -- the same value the single
+    +7 deg curve was in the two-curve case above, so two-stage pooling
+    (average the bearing's stops, THEN average across bearings) answers
+    10*log10(2) dB. Naive single-stage pooling (flat-average all three
+    curves, powers [0.5, 1.5, 3.0]) would instead give
+    10*log10(5/3) ~= 2.2185 dB. The 0.5 stop is additionally banked with a
+    superseded earlier attempt at a wild power (100.0): were retakes pooled
+    instead of superseded, no two-stage/one-stage arithmetic could land on
+    the expected value either.
     """
     session_dir = tmp_path / "bundle" / "sess1"
     grid = np.array([1000.0])
-    for take_id, power in (("lateral_00_a01", 0.5), ("lateral_00_a02", 1.5)):
+    for take_id, power in (
+        ("lateral_00_a01", 100.0),  # superseded by a02 below
+        ("lateral_00_a02", 0.5),
+        ("lateral_04_a01", 1.5),  # second stop, same 0 deg bearing
+    ):
         _bank_lateral_pose(
             session_dir, take_id=take_id, position_deg=0,
             curves=[_summed_curve(grid, 10.0 * np.log10(np.array([power])))],

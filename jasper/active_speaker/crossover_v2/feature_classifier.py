@@ -620,41 +620,55 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     persistence read is magnitude-only -- so a caller wanting the pair reads
     ``read_take_curves`` directly.
 
-    Returns one entry per (accepted take, role): a pose that measured two
-    driver curves banks two entries sharing one ``pose_id``. Empty when this
-    round ran no lateral walk, or banked none that survived to a curve --
-    never raises, which is what lets :func:`classify_round` tell "no lateral
-    walk" from "a walk that measured nothing usable" apart from a directory
-    error.
+    Returns one entry per (pose stop, role): a stop that measured two driver
+    curves banks two entries sharing one ``pose_id``. **Latest attempt wins,
+    per stop** -- a retake's superseded attempts stay banked as the honest
+    walk record, but only the newest readable take speaks for its stop
+    (:func:`~.spatial.take_stop_id` groups them; the same rule
+    :func:`~.position_cycle.read_pose_curve_pair` applies), so a persistence
+    or pooling read never averages a retake with the noise it replaced.
+    Empty when this round ran no lateral walk, or banked none that survived
+    to a curve -- never raises, which is what lets :func:`classify_round`
+    tell "no lateral walk" from "a walk that measured nothing usable" apart
+    from a directory error.
     """
     from .position_cycle import parse_curve_magnitude, read_take_curves
-    from .record_index import bundle_measurements
+    from .record_index import Measurement, bundle_measurements
+    from .spatial import take_stop_id
 
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    out: list[RoundPoseCurve] = []
+    attempts_by_stop: dict[str, list[Measurement]] = {}
     for row in bundle_measurements(bundle_dir, phase=PHASE_LATERAL):
-        curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
-        if curves is None:
-            continue
-        pose_id = Path(row.path).stem
-        for curve in curves:
-            role = curve.get("role")
-            if not isinstance(role, str):
+        stop = take_stop_id(Path(row.path).stem)
+        attempts_by_stop.setdefault(stop, []).append(row)
+    out: list[RoundPoseCurve] = []
+    for attempts in attempts_by_stop.values():
+        # Path order is chronological (zero-padded attempt ids), so the
+        # newest readable attempt is the first hit walking backwards.
+        for row in reversed(attempts):
+            curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
+            if curves is None:
                 continue
-            parsed = parse_curve_magnitude(curve)
-            if parsed is None:
-                continue
-            freqs_arr, mag_arr, band_tuple = parsed
-            out.append(
-                RoundPoseCurve(
-                    pose_id=pose_id,
-                    position_deg=row.position_deg,
-                    role=role,
-                    freqs_hz=freqs_arr,
-                    magnitude_db=mag_arr,
-                    band_hz=band_tuple,
+            pose_id = Path(row.path).stem
+            for curve in curves:
+                role = curve.get("role")
+                if not isinstance(role, str):
+                    continue
+                parsed = parse_curve_magnitude(curve)
+                if parsed is None:
+                    continue
+                freqs_arr, mag_arr, band_tuple = parsed
+                out.append(
+                    RoundPoseCurve(
+                        pose_id=pose_id,
+                        position_deg=row.position_deg,
+                        role=role,
+                        freqs_hz=freqs_arr,
+                        magnitude_db=mag_arr,
+                        band_hz=band_tuple,
+                    )
                 )
-            )
+            break
     return tuple(out)
 
 

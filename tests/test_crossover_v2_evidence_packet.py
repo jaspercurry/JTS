@@ -104,27 +104,32 @@ def test_mic_calibration_tier_reads_absent_with_no_banked_candidate(tmp_path):
     entry = packet["accuracy_budget"]["components"]["mic_calibration_tier"]
     assert entry["kind"] == UNCERTAINTY_SYSTEMATIC
     assert entry["available"] is False
-    assert entry["tier"] is None
-    assert entry["trust_ceiling_hz"] is None
+    assert entry["tier_by_role"] == {}
+    assert entry["trust_ceiling_hz_by_tier"] == {}
 
 
-def test_mic_calibration_tier_reads_the_banked_candidates_own_tier(tmp_path):
+def test_mic_calibration_tier_publishes_each_roles_own_tier(tmp_path):
+    """Roles fitted under DIFFERENT tiers surface as the disagreement they
+    are — never collapsed to whichever entry a dict happened to yield first.
+    """
     session, _ = _bundle(tmp_path)
     round_dir, _ = round_artifact_dir(session)
     assert round_dir is not None
     (round_dir / "candidate.json").write_text(json.dumps({
         "role_attenuations_db": {"woofer": -2.0, "tweeter": -2.0},
         "linearization": {
+            "woofer": {"filters": [], "mic_tier": "phone"},
             "tweeter": {"filters": [], "mic_tier": "consumer"},
         },
     }))
     packet = build_crossover_evidence_packet(session)
     entry = packet["accuracy_budget"]["components"]["mic_calibration_tier"]
     assert entry["available"] is True
-    assert entry["tier"] == "consumer"
+    assert entry["tier_by_role"] == {"woofer": "phone", "tweeter": "consumer"}
     assert entry["tier_vocabulary"] == list(MIC_TIERS)
-    assert entry["trust_ceiling_hz"] == {
-        "full_to_hz": 6_000.0, "taper_zero_hz": 12_000.0,
+    assert entry["trust_ceiling_hz_by_tier"] == {
+        "phone": {"full_to_hz": 3_000.0, "taper_zero_hz": 8_000.0},
+        "consumer": {"full_to_hz": 6_000.0, "taper_zero_hz": 12_000.0},
     }
 
 

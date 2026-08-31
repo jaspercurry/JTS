@@ -988,13 +988,24 @@ _READING_ORDER: tuple[tuple[str, str, str], ...] = (
 #: laptop checkout that was never deployed falls back to the repo path
 #: instead of pointing an operator at a file that is not there.
 _INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
-_REPO_DOCS_DIR = Path("docs")
+#: The checkout's own docs/, anchored to this package (the repo root is
+#: three parents above this file), never the CWD — status runs from
+#: anywhere. Resolves to a nonexistent site-packages sibling under a venv
+#: install, which the existence check below treats as any other absence.
+_REPO_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 
 
 def _doc_path(filename: str) -> str:
-    """The on-box installed path when this box has one, else the repo path."""
-    installed = _INSTALLED_DOCS_DIR / filename
-    return str(installed) if installed.exists() else str(_REPO_DOCS_DIR / filename)
+    """The first of (installed, checkout) that exists, else the bare repo name.
+
+    The last fallback is an identifier, not a location: a box with neither
+    directory still gets the doc named in repo-relative spelling rather
+    than a path fabricated to look present.
+    """
+    for candidate in (_INSTALLED_DOCS_DIR / filename, _REPO_DOCS_DIR / filename):
+        if candidate.exists():
+            return str(candidate)
+    return f"docs/{filename}"
 
 
 def _print_reading_order() -> None:

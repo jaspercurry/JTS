@@ -202,11 +202,15 @@ def test_the_reading_order_prefers_the_on_box_install_when_present(
 ):
     """Repo path by default (no /opt/jasper/docs here); the installed path
     once deploy/lib/install/python-runtime.sh's install_jasper() has put one
-    there (commit 2's destination) -- never both, never neither."""
+    there (commit 2's destination) -- never both, never neither. The repo
+    fallback is anchored to the package, not the CWD: run from anywhere,
+    the printed path is the checkout's own docs/, absolute."""
     session, _ = _speaker_dirs(tmp_path)
 
+    monkeypatch.chdir(tmp_path)
     _, before = _report([str(session)], capsys)
-    assert "docs/tuning-methodology.md" in before
+    assert cli._REPO_DOCS_DIR.is_absolute()
+    assert str(cli._REPO_DOCS_DIR / "tuning-methodology.md") in before
     assert "/opt/jasper/docs/tuning-methodology.md" not in before
 
     installed = tmp_path / "installed-docs"

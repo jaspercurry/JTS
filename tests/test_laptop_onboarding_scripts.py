@@ -521,10 +521,14 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
 
         calls = fake.calls()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        sha = git_head("--short", "HEAD")
+        # The short sha's auto-abbreviated length differs between this
+        # checkout and the disposable clone the script runs in; pin only
+        # that it is a prefix of the full sha.
         sha_full = git_head("HEAD")
-        self.assertIn(f"sha:    {sha} ({sha_full})", result.stdout)
-        self.assertNotIn(f"sha:    {sha}-dirty", result.stdout)
+        self.assertRegex(
+            result.stdout, rf"sha:    {sha_full[:7]}[0-9a-f]* \({sha_full}\)"
+        )
+        self.assertNotIn("-dirty", result.stdout)
         self.assertIn("alice@jts3.local:/home/alice/jts/", calls)
         self.assertIn("sudo\\ -n\\ JASPER_DEPLOY_SHA=", calls)
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
@@ -541,11 +545,13 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             JASPER_HOSTNAME="jts3.local",
         )
 
-        sha = git_head("--short", "HEAD")
         sha_full = git_head("HEAD")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dirty live-script overlay executed", result.stdout)
-        self.assertIn(f"sha:    {sha}-dirty ({sha_full})", result.stdout)
+        self.assertRegex(
+            result.stdout,
+            rf"sha:    {sha_full[:7]}[0-9a-f]*-dirty \({sha_full}\)",
+        )
 
     def test_deploy_forwards_documented_build_sandbox_knobs(self):
         fake = FakeRemote(self)

@@ -30,6 +30,18 @@ Both functions run the caller's raw curve through
 :func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` at
 :data:`OLIVE_SMOOTHING_FRACTION` themselves — never a second smoother, and
 never a precondition on the caller.
+
+**Pre-smoothed inputs read flattering, and the results say so.** Olive's
+definitions assume the 1/20-octave pass is the ONLY smoothing between the
+measurement and the statistic. A caller whose curve was already smoothed
+coarser than 1/20 octave (a banked 1/6-octave position curve, say) hands
+this module a curve whose narrow-band ripple is pre-averaged away: the
+1/20 pass is then an identity and ``nbd_db`` reads low against Olive's
+published ranges. That input fact cannot be recovered from the samples, so
+the caller states it — ``input_smoothing_fraction`` — and every result
+echoes it beside the fraction this module applied. ``None`` means the
+caller did not say, which a reader must treat as "unknown", never as
+"raw".
 """
 from __future__ import annotations
 
@@ -46,6 +58,7 @@ __all__ = [
     "NBDResult",
     "SMResult",
     "nbd",
+    "nbd_and_sm",
     "sm",
 ]
 
@@ -86,8 +99,13 @@ class NBDResult:
       nbd_db: the metric itself.
       band_hz: the ``(lo, hi)`` band actually scored — the caller's
         ``band_hz``, echoed for provenance.
-      smoothing_fraction: the 1/N-octave fraction actually applied
+      smoothing_fraction: the 1/N-octave fraction THIS module applied
         (:data:`OLIVE_SMOOTHING_FRACTION`), echoed rather than assumed.
+      input_smoothing_fraction: the 1/N-octave fraction the input curve
+        already carried before this module touched it, as stated by the
+        caller — the effective resolution is the coarser of the two, and a
+        coarser input reads flattering against Olive's published ranges
+        (see the module docstring). ``None`` = the caller did not say.
       band_octaves: the band width actually used (:data:`NBD_BAND_OCTAVES`),
         echoed for the same reason.
       n_bands: how many half-octave bands contributed — fewer than the
@@ -101,6 +119,7 @@ class NBDResult:
     nbd_db: float
     band_hz: tuple[float, float]
     smoothing_fraction: int
+    input_smoothing_fraction: int | None
     band_octaves: float
     n_bands: int
     n_samples: int
@@ -110,6 +129,7 @@ class NBDResult:
             "nbd_db": self.nbd_db,
             "band_hz": list(self.band_hz),
             "smoothing_fraction": self.smoothing_fraction,
+            "input_smoothing_fraction": self.input_smoothing_fraction,
             "band_octaves": self.band_octaves,
             "n_bands": self.n_bands,
             "n_samples": self.n_samples,
@@ -138,6 +158,7 @@ class SMResult:
     sm_r2: float
     band_hz: tuple[float, float]
     smoothing_fraction: int
+    input_smoothing_fraction: int | None
     n_samples: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -145,6 +166,7 @@ class SMResult:
             "sm_r2": self.sm_r2,
             "band_hz": list(self.band_hz),
             "smoothing_fraction": self.smoothing_fraction,
+            "input_smoothing_fraction": self.input_smoothing_fraction,
             "n_samples": self.n_samples,
         }
 
@@ -200,7 +222,11 @@ def _half_octave_edges(lo: float, hi: float) -> list[tuple[float, float]]:
 
 
 def nbd(
-    freqs_hz: np.ndarray, magnitude_db: np.ndarray, band_hz: tuple[float, float],
+    freqs_hz: np.ndarray,
+    magnitude_db: np.ndarray,
+    band_hz: tuple[float, float],
+    *,
+    input_smoothing_fraction: int | None = None,
 ) -> NBDResult:
     """Narrow Band Deviation over ``band_hz`` (Olive 2004 / US 8,311,232 B2).
 
@@ -209,6 +235,9 @@ def nbd(
     smoothed value at the band edges), but every sample outside
     ``[band_hz[0], band_hz[1]]`` is excluded from the deviation itself.
 
+    ``input_smoothing_fraction`` is the caller's statement of any smoothing
+    the curve ALREADY carries, echoed into the result (module docstring).
+
     Raises :class:`ValueError` for malformed input (see
     :func:`_smoothed_curve` / :func:`_validated_band`) or a ``band_hz`` that
     selects no sample from ``freqs_hz`` — a caller error, not a measurement
@@ -216,6 +245,19 @@ def nbd(
     """
 
     freqs, smoothed = _smoothed_curve(freqs_hz, magnitude_db)
+    return _nbd_scored(
+        freqs, smoothed, band_hz,
+        input_smoothing_fraction=input_smoothing_fraction,
+    )
+
+
+def _nbd_scored(
+    freqs: np.ndarray,
+    smoothed: np.ndarray,
+    band_hz: tuple[float, float],
+    *,
+    input_smoothing_fraction: int | None,
+) -> NBDResult:
     lo, hi = _validated_band(band_hz)
     edges = _half_octave_edges(lo, hi)
     deviations: list[float] = []
@@ -239,6 +281,7 @@ def nbd(
         nbd_db=float(np.mean(deviations)),
         band_hz=(lo, hi),
         smoothing_fraction=OLIVE_SMOOTHING_FRACTION,
+        input_smoothing_fraction=input_smoothing_fraction,
         band_octaves=NBD_BAND_OCTAVES,
         n_bands=len(deviations),
         n_samples=n_samples,
@@ -246,12 +289,17 @@ def nbd(
 
 
 def sm(
-    freqs_hz: np.ndarray, magnitude_db: np.ndarray, band_hz: tuple[float, float],
+    freqs_hz: np.ndarray,
+    magnitude_db: np.ndarray,
+    band_hz: tuple[float, float],
+    *,
+    input_smoothing_fraction: int | None = None,
 ) -> SMResult:
     """Smoothness over ``band_hz`` (Olive 2004 / US 8,311,232 B2).
 
     Band-clamped exactly as :func:`nbd` is: smoothed over the full input,
     scored only over ``[band_hz[0], band_hz[1]]``.
+    ``input_smoothing_fraction`` as on :func:`nbd`.
 
     Raises :class:`ValueError` for malformed input, a ``band_hz`` selecting
     fewer than 2 samples (a line needs two points), or one selecting samples
@@ -260,6 +308,19 @@ def sm(
     """
 
     freqs, smoothed = _smoothed_curve(freqs_hz, magnitude_db)
+    return _sm_scored(
+        freqs, smoothed, band_hz,
+        input_smoothing_fraction=input_smoothing_fraction,
+    )
+
+
+def _sm_scored(
+    freqs: np.ndarray,
+    smoothed: np.ndarray,
+    band_hz: tuple[float, float],
+    *,
+    input_smoothing_fraction: int | None,
+) -> SMResult:
     lo, hi = _validated_band(band_hz)
     mask = (freqs >= lo) & (freqs <= hi)
     x = np.log2(freqs[mask])
@@ -294,5 +355,33 @@ def sm(
         sm_r2=r2,
         band_hz=(lo, hi),
         smoothing_fraction=OLIVE_SMOOTHING_FRACTION,
+        input_smoothing_fraction=input_smoothing_fraction,
         n_samples=int(x.size),
+    )
+
+
+def nbd_and_sm(
+    freqs_hz: np.ndarray,
+    magnitude_db: np.ndarray,
+    band_hz: tuple[float, float],
+    *,
+    input_smoothing_fraction: int | None = None,
+) -> tuple[NBDResult, SMResult]:
+    """Both metrics off ONE shared smoothing pass.
+
+    Identical results to calling :func:`nbd` and :func:`sm` separately —
+    the smoothing is deterministic — minus the second O(n) pass, which is
+    the whole reason this exists for a caller scoring both.
+    """
+
+    freqs, smoothed = _smoothed_curve(freqs_hz, magnitude_db)
+    return (
+        _nbd_scored(
+            freqs, smoothed, band_hz,
+            input_smoothing_fraction=input_smoothing_fraction,
+        ),
+        _sm_scored(
+            freqs, smoothed, band_hz,
+            input_smoothing_fraction=input_smoothing_fraction,
+        ),
     )

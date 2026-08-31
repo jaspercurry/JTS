@@ -59,6 +59,7 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
@@ -874,6 +875,22 @@ def take_id_for(position_id: str, attempt: int) -> str:
     path and the session's own evidence disagree.
     """
     return f"{position_id}_a{int(attempt):02d}"
+
+
+_ATTEMPT_SUFFIX = re.compile(r"_a\d+$")
+
+
+def take_stop_id(take_id: str) -> str:
+    """The prompted stop a take measured: its id with the attempt struck.
+
+    :func:`take_id_for`'s inverse, kept beside the mint so the two cannot
+    drift. A retake reuses the position id, so this key is what "latest
+    attempt wins" supersedes ACROSS — takes sharing a stop id are attempts
+    at one prompted spot, and only the newest speaks for it
+    (:func:`~.position_cycle.read_pose_curve_pair`). An id carrying no
+    attempt suffix is its own stop.
+    """
+    return _ATTEMPT_SUFFIX.sub("", take_id)
 
 
 #: The graph fingerprints that name no graph.  Both spellings reach a record —
