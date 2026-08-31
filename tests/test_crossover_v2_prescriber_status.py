@@ -218,6 +218,46 @@ def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
     assert payload["applied"]["from_applied_profile"]["reason"] == "source_absent"
 
 
+def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
+    """F-5: the automatic per-driver trim re-solves every round, unannounced.
+
+    Blind-run-v3 measured it drifting -1.361 -> -2.105 -> -3.103 dB on a
+    physically unchanged speaker; the only place the size of a re-solve
+    showed up was the receipt's ``delta_db``, and only after a prescriber
+    already pinned it. Here the packet — evidence read BEFORE that decision —
+    carries both halves, so a next-round prescription can be written with the
+    drift already in view.
+    """
+    session, state_path = _bundle(
+        tmp_path,
+        state={"candidate": {"trims_db": {"tweeter": -2.105}, "trims_pinned": {}}},
+    )
+    applied = tmp_path / "applied-profile.json"
+    applied.write_text(
+        json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
+    )
+
+    code = cli.main([
+        "packet", str(session),
+        "--state", str(state_path),
+        "--applied-profile", str(applied),
+    ])
+    out, err = capsys.readouterr()
+
+    assert code == cli.EXIT_OK
+    trim = json.loads(out)["incumbent"]["trim"]["tweeter"]
+    assert trim == {
+        "applied_db": -1.361,
+        "round_resolved_db": -2.105,
+        "delta_db": pytest.approx(-2.105 - (-1.361)),
+        "pinned_this_round": False,
+    }
+    # The same numbers reach the operator's terminal, not only the JSON.
+    assert "trim tweeter: applied -1.36 dB, round resolved -2.10 dB" in err
+    assert "-0.74 dB" in err
+    assert "pinned" not in err
+
+
 def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
     """Rewrite the banked receipt's incumbent to an arbitrary JSON value."""
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())

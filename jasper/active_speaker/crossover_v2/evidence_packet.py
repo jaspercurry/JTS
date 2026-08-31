@@ -2043,6 +2043,7 @@ def _incumbent_block(
     reason: str,
     profile: dict[str, Any] | None,
     profile_reason: str,
+    state: Mapping[str, Any],
 ) -> dict[str, Any]:
     """What the speaker is PLAYING — three records, two questions.
 
@@ -2080,6 +2081,11 @@ def _incumbent_block(
     incumbent filters are DELETED by any document that names the role and does
     not repeat them — a prescriber shown a stale incumbent silently deletes the
     filters it was never shown (issue #2863).
+
+    ``trim`` is a fourth record, LEVEL rather than shape: the per-driver trim
+    re-solves every round, and :func:`_incumbent_trim_block` is what makes the
+    size of that re-solve visible before a prescriber decides whether to pin
+    it, not only after (on the receipt's own ``delta_db``).
     """
     from jasper.active_speaker.baseline_profile import (
         profile_blend_correction,
@@ -2094,6 +2100,7 @@ def _incumbent_block(
     # applied none) — the distinction this block's two consumers both need.
     from_profile = profile_blend_correction(profile)
     linearization = profile_linearization(profile)
+    trim = _incumbent_trim_block(profile, state)
     return {
         "from_round_receipt": (
             from_receipt
@@ -2170,7 +2177,58 @@ def _incumbent_block(
                 "placement by name"
             ),
         },
+        "trim": trim,
     }
+
+
+def _incumbent_trim_block(
+    profile: dict[str, Any] | None, state: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Per role: what is APPLIED now, and what THIS round's own solve wants.
+
+    ``applied_db`` reads the applied-profile SSOT's ``corrections`` (never the
+    flow state's Undo stash — one apply behind, same as :func:`_incumbent_block`
+    everywhere else). ``round_resolved_db`` reads the flow state's own
+    ``candidate.trims_db`` — the trim this round's measurement produced —
+    except for a role a prescription pinned this round, where that field holds
+    the PIN rather than the solve it displaced; the solve is what
+    ``candidate.trims_pinned[role].displaced_db`` banks instead
+    (``durable_state._candidate_pinned_trims``).
+
+    A role missing either half reports ``None``, never a substituted 0.0.
+    """
+    from jasper.active_speaker.baseline_profile import profile_driver_corrections
+
+    applied = profile_driver_corrections(profile)
+    candidate = _mapping(state.get("candidate"))
+    resolved = _mapping(candidate.get("trims_db"))
+    pinned = _mapping(candidate.get("trims_pinned"))
+    out: dict[str, dict[str, Any]] = {}
+    for role in sorted(set(applied) | set(resolved)):
+        applied_db = _finite_or_none(_mapping(applied.get(role)).get("gain_db"))
+        resolved_db = (
+            _finite_or_none(_mapping(pinned[role]).get("displaced_db"))
+            if role in pinned
+            else _finite_or_none(resolved.get(role))
+        )
+        out[role] = {
+            "applied_db": applied_db,
+            "round_resolved_db": resolved_db,
+            "delta_db": (
+                None if applied_db is None or resolved_db is None
+                else resolved_db - applied_db
+            ),
+            "pinned_this_round": role in pinned,
+        }
+    return out
+
+
+def _finite_or_none(value: Any) -> float | None:
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
 
 
 def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -2712,7 +2770,7 @@ def build_crossover_evidence_packet(
         },
         "crossover_region": _region_block(receipt, receipt_reason),
         "incumbent": _incumbent_block(
-            receipt, receipt_reason, applied_profile, applied_profile_reason
+            receipt, receipt_reason, applied_profile, applied_profile_reason, state
         ),
         # Verbatim, every one of them. `spec.bands[]` carries `evaluable`,
         # `n_excluded` and `graded_lo_hz`; `flatness` carries `n_excluded` and

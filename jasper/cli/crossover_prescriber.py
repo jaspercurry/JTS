@@ -180,12 +180,15 @@ def _cmd_packet(args: argparse.Namespace) -> int:
 
 
 def _print_packet_summary(packet: dict[str, Any]) -> None:
-    """The three things a reader should see before trusting the document.
+    """The four things a reader should see before trusting the document.
 
     Printed to stderr so it never contaminates a piped packet: the fingerprint
-    a prescription must echo, the region a proposal must sit inside, and the
+    a prescription must echo, the region a proposal must sit inside, the
     count of questions this round cannot answer — which is the number most
-    worth noticing and the easiest to skip past in 48 KB of JSON.
+    worth noticing and the easiest to skip past in 48 KB of JSON — and, per
+    role, the trim this round's own measurement resolved beside the trim
+    already applied, so a re-solve is visible before a prescriber decides
+    whether to pin it rather than only after (on the receipt's ``delta_db``).
     """
     region = packet.get("crossover_region") or {}
     print(
@@ -204,6 +207,17 @@ def _print_packet_summary(packet: dict[str, Any]) -> None:
     )
     for entry in packet.get("not_evaluated") or []:
         print(f"  not evaluated: {entry.get('field')} — {entry.get('reason')}", file=sys.stderr)
+    trim = (packet.get("incumbent") or {}).get("trim") or {}
+    for role, numbers in sorted(trim.items()):
+        applied_db, resolved_db = numbers.get("applied_db"), numbers.get("round_resolved_db")
+        if applied_db is None or resolved_db is None:
+            continue
+        pinned = " (pinned this round)" if numbers.get("pinned_this_round") else ""
+        print(
+            f"  trim {role}: applied {applied_db:+.2f} dB, round resolved "
+            f"{resolved_db:+.2f} dB (Δ {numbers['delta_db']:+.2f} dB){pinned}",
+            file=sys.stderr,
+        )
 
 
 def _read_payload(path: str) -> bytes:
