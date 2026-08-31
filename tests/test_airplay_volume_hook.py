@@ -275,7 +275,7 @@ def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     running = []
     for db in messages:
         running.append(subprocess.Popen(["sh", str(HOOK), db], env=env))
-        time.sleep(0.05)
+        time.sleep(0.02)
     for process in running:
         assert process.wait(timeout=60) == 0
 

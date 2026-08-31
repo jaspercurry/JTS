@@ -31,8 +31,9 @@ TimeoutStopSec=5s
 # /var/lib/jasper/airplay_mode.env. The leading `+` lets the
 # pre-start helper run as root so it can write /etc; ExecStart drops
 # back to the unprivileged shairport-sync user. The renderer is
-# idempotent and fast (sed substitution), so running it on every
-# start has negligible cost.
+# idempotent; each render does a config template substitution plus up to
+# two 1 s STATUS reads (one per audio daemon socket) for the live latency
+# terms, still bounded well inside TimeoutStartSec.
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source airplay
 ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode

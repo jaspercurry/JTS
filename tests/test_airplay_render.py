@@ -261,13 +261,15 @@ def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
 
 
 def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
-    with JsonStatusSocket(
+    fanin_socket = JsonStatusSocket(
         {"output": {"snd_pcm_delay_frames": 1536}},
         name="fanin.sock",
-    ) as fanin_status, JsonStatusSocket(
+    )
+    outputd_socket = JsonStatusSocket(
         {"dac": {"snd_pcm_delay_frames": 1024}},
         name="outputd.sock",
-    ) as outputd_status:
+    )
+    with fanin_socket as fanin_status, outputd_socket as outputd_status:
         rendered, _ = _render(
             tmp_path,
             """
@@ -285,6 +287,11 @@ def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
     # Camilla term 1024+1024=2048 + live fan-in (Ring A) output 1536 +
     # Ring B fallback 128 + live outputd DAC 1024 = 4736 / 48000 = 0.098667.
     assert "audio_backend_latency_offset_in_seconds = -0.098667;" in rendered
+    # One STATUS connect per socket per render: the renderer reads every
+    # field it needs from a daemon in a single request, never one connect
+    # per dotted field (status_json_values in jasper-apply-airplay-mode).
+    assert len(fanin_socket.requests) == 1
+    assert len(outputd_socket.requests) == 1
 
 
 def test_airplay_renderer_adds_no_content_bridge_term(tmp_path: Path):
@@ -592,7 +599,7 @@ def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
 
     assert "ring_a tier=live-status basis=ring-occupancy" in result.stderr
     # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
-    # DAC default 3072 = 3548 / 48000... actually 300+2048+128+3072=5548.
+    # DAC default 3072 = 5548 / 48000.
     assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered
 
 
