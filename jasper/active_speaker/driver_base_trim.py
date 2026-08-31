@@ -388,15 +388,16 @@ def write_base_trim_if_changed(
     """
     existing = load_base_trim(state_path=state_path)
     if existing is not None and set(trims_db) == set(roles):
-        candidate_trims: dict[str, float] | None = {}
+        candidate_trims: dict[str, float] = {}
+        every_value_finite = True
         for role in roles:
             value = _finite(trims_db.get(role))
             if value is None:
-                candidate_trims = None
+                every_value_finite = False
                 break
             candidate_trims[str(role)] = round(value, 1)
         if (
-            candidate_trims is not None
+            every_value_finite
             and existing.get("trims_db") == candidate_trims
             and existing.get("roles") == list(roles)
             and existing.get("speaker_group_ids") == _group_ids(speaker_group_ids)
