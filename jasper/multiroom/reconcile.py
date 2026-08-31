@@ -772,10 +772,10 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
 
     The value is the Snapcast buffer in seconds — the DOMINANT new delay
     the bonded leader's own output gains over solo. It is deliberately a
-    first-order estimate: the solo offset's fan-in / CamillaDSP / outputd
-    terms still apply in the bonded path, and the residual (CamillaDSP
-    pipe-sink fill, the member content FIFO) is second-order and
-    acoustically calibrated alongside snapclient --latency.
+    first-order estimate: the solo offset's Ring A / CamillaDSP / Ring B /
+    outputd terms still apply in the bonded path, and the residual
+    (CamillaDSP pipe-sink fill, the member content FIFO) is second-order
+    and acoustically calibrated alongside snapclient --latency.
     jasper-apply-airplay-mode ADDS this to the solo-derived offset.
     """
     if config.is_active_leader(cfg):

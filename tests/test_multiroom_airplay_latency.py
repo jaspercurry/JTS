@@ -49,13 +49,13 @@ def _reset_frames_cache():
 
 def test_default_budget_is_the_free_regime():
     """Absence of a Notified-latency line => default 77175 frames => ~2.0 s
-    budget, which clears the 0.55 s need + 0.045 s shairport backend buffer
-    (~0.595 s threshold) with ~1.41 s to spare."""
+    budget, which clears the 0.56 s need + 0.045 s shairport backend buffer
+    (~0.605 s threshold) with ~1.40 s to spare."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=None)
     assert fit.budget_source == "default"
     assert fit.negotiated_frames == al.AP2_DEFAULT_NOTIFIED_FRAMES
     assert fit.budget_sec == pytest.approx(2.0002, abs=1e-3)
-    assert fit.need_sec == pytest.approx(0.55, abs=1e-9)
+    assert fit.need_sec == pytest.approx(0.56, abs=1e-9)
     assert fit.tight is False
     assert fit.residual_lag_sec == 0.0
 
@@ -65,13 +65,13 @@ def test_high_buffer_is_tight_even_at_the_default_budget():
     a large enough buffer_ms is tight EVEN at the default ~2.0002 s budget,
     and shairport drops the whole offset => residual lag is the FULL need,
     not a shortfall. Pins the adjacent pair straddling the boundary:
-    need + buffer crosses 2.0002 between buffer_ms 1805 and 1806."""
-    tight = al.assess_fit(buffer_ms=1806, notified_frames=None)
+    need + buffer crosses 2.0002 between buffer_ms 1795 and 1796."""
+    tight = al.assess_fit(buffer_ms=1796, notified_frames=None)
     assert tight.need_sec == pytest.approx(1.956, abs=1e-9)
     assert tight.tight is True
     assert tight.residual_lag_sec == pytest.approx(1.956, abs=1e-9)
 
-    fits = al.assess_fit(buffer_ms=1805, notified_frames=None)
+    fits = al.assess_fit(buffer_ms=1795, notified_frames=None)
     assert fits.tight is False
 
 
@@ -80,29 +80,29 @@ def test_small_negotiated_budget_is_tight_residual_is_full_need():
     uncompensated, so residual_lag_sec == need_sec (not need - budget)."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=5000)
     assert fit.budget_source == "journal"
-    # (5000 + 11035) / 44100 ≈ 0.3636 s budget vs 0.55 s need.
+    # (5000 + 11035) / 44100 ≈ 0.3636 s budget vs 0.56 s need.
     assert fit.budget_sec == pytest.approx(0.36361, abs=1e-4)
     assert fit.tight is True
-    assert fit.residual_lag_sec == pytest.approx(0.55, abs=1e-9)
+    assert fit.residual_lag_sec == pytest.approx(0.56, abs=1e-9)
 
 
 def test_backend_buffer_band_is_tight_against_the_production_backend_buffer():
     """The band the old (buffer-omitting) math wrongly called 'fits': a budget
-    between need (0.55 s) and need + the backend buffer (0.595 s). shairport
+    between need (0.56 s) and need + the backend buffer (0.605 s). shairport
     DOES warn and drop the offset there. Pins the fix against the production
     backend buffer, not just the synthetic 0.1 s classifier string."""
-    # frames=14102 -> budget = 25137/44100 = 0.57 s, inside (0.55, 0.595).
-    fit = al.assess_fit(buffer_ms=400, notified_frames=14102)
-    assert fit.budget_sec == pytest.approx(0.57, abs=1e-4)
-    assert fit.tight is True  # old math: 0.55 > 0.57 -> False (the bug)
-    assert fit.residual_lag_sec == pytest.approx(0.55, abs=1e-9)
+    # frames=14543 -> budget = 25578/44100 = 0.58 s, inside (0.56, 0.605).
+    fit = al.assess_fit(buffer_ms=400, notified_frames=14543)
+    assert fit.budget_sec == pytest.approx(0.58, abs=1e-4)
+    assert fit.tight is True  # old math: 0.56 > 0.58 -> False (the bug)
+    assert fit.residual_lag_sec == pytest.approx(0.56, abs=1e-9)
 
 
 def test_budget_just_above_need_plus_backend_buffer_is_not_tight():
-    # frames=15425 -> budget = 26460/44100 = 0.600 s > 0.595 s threshold.
-    assert al.assess_fit(buffer_ms=400, notified_frames=15425).tight is False
-    # frames=14984 -> budget = 26019/44100 = 0.590 s < 0.595 s threshold.
-    assert al.assess_fit(buffer_ms=400, notified_frames=14984).tight is True
+    # frames=15866 -> budget = 26901/44100 = 0.610 s > 0.605 s threshold.
+    assert al.assess_fit(buffer_ms=400, notified_frames=15866).tight is False
+    # frames=15425 -> budget = 26460/44100 = 0.600 s < 0.605 s threshold.
+    assert al.assess_fit(buffer_ms=400, notified_frames=15425).tight is True
 
 
 def test_backend_buffer_constant_tracks_the_shipped_template():
@@ -282,9 +282,9 @@ def test_doctor_warns_when_budget_too_short(monkeypatch):
     assert res.status == "warn"
     assert "residual" in res.detail.lower()
     assert "buffer_ms" in res.detail
-    # residual is the FULL need (shairport drops the offset): 0.55 s -> 550 ms.
+    # residual is the FULL need (shairport drops the offset): 0.56 s -> 560 ms.
     # Pins the s->ms scaling in the doctor f-string.
-    assert "550 ms" in res.detail
+    assert "560 ms" in res.detail
     # Remediation must NOT point at a non-existent /rooms buffer_ms control.
     assert "/rooms" not in res.detail
     assert "JASPER_GROUPING_BUFFER_MS" in res.detail
