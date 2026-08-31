@@ -611,7 +611,7 @@ class RoleSplitFlatness:
 
 
 def _evaluate_position(
-    position: PositionCurve, report: FlatSpecReport,
+    position: PositionCurve, report: FlatSpecReport, *, reference_db_override: float | None = None,
 ) -> tuple[PositionFlatness, float]:
     """Grade-frame one position's curve against the report's own frame.
 
@@ -624,6 +624,10 @@ def _evaluate_position(
     ``trusted_floor_hz``/``trusted_ceiling_hz`` and the report's OWN
     published exclusion intervals, so a per-position number and the pooled
     number are stated in the same frame over the same region of spectrum.
+    ``reference_db_override``, when not ``None``, is passed straight through
+    to the evaluator — grading this position against a reference level from
+    elsewhere (a baseline round's own on-axis level, say) instead of the one
+    its own curve would produce.
     A :class:`ValueError` from the evaluator — an empty
     reference band, a non-ascending axis, a length mismatch — becomes a
     not-evaluated outcome carrying the evaluator's own message, never an
@@ -639,6 +643,7 @@ def _evaluate_position(
             smoothing_fraction=position.smoothing_fraction,
             trusted_floor_hz=report.trusted_floor_hz,
             trusted_ceiling_hz=report.trusted_ceiling_hz,
+            reference_db_override=reference_db_override,
         )
     except ValueError as exc:
         return (

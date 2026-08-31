@@ -520,84 +520,6 @@ def _own_reference_db(position: PositionCurve, report: FlatSpecReport) -> float:
     return float(graded.reference_db)
 
 
-class _FrozenReference:
-    """Substitute ``reference_db`` for ONE ``evaluate_flat_spec`` call.
-
-    Ported verbatim from the campaign's ``frozen_reference.py`` (self-tested
-    there against the linearization campaign's own §8.9 table). The first
-    call to the patched helper returns the frozen value; every later call in
-    the same evaluation delegates to the real helper so band levels stay
-    genuine. The substitution point is
-    :func:`jasper.active_speaker.flat_spec._power_mean_db`, which
-    ``evaluate_flat_spec`` calls FIRST to build ``reference_db`` and only
-    afterwards, inside the band loop, to build each band's own level — so
-    patching only the first call is the whole trick. Landing is asserted by
-    the caller (:func:`_frozen_assert`, run by :func:`frozen_reference_grade`
-    before it trusts a single graded number), never assumed from the call
-    count alone.
-
-    **Not thread-safe or reentrant.** The patch is a module-level attribute
-    on :mod:`jasper.active_speaker.flat_spec`, shared process-wide for the
-    duration of the ``with`` block; two overlapping frozen gradings on
-    different threads (or a nested ``with _FrozenReference(...)`` inside
-    this one) would each restore the OTHER's ``_real`` on exit and corrupt
-    both. This module's own callers only ever use one at a time, synchronously,
-    which is the only usage this class is safe for.
-    """
-
-    def __init__(self, value: float) -> None:
-        self.value = value
-        self.calls = 0
-        self._real = flat_spec._power_mean_db
-
-    def __enter__(self) -> "_FrozenReference":
-        def patched(values_db: np.ndarray) -> float:
-            self.calls += 1
-            if self.calls == 1:
-                return self.value
-            return self._real(values_db)
-
-        flat_spec._power_mean_db = patched
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        flat_spec._power_mean_db = self._real
-
-
-def _frozen_assert(
-    positions: tuple[PositionCurve, ...], report: FlatSpecReport, frozen_refs: Mapping[str, float]
-) -> None:
-    """Prove the substitution lands: a frozen call must report exactly the
-    reference it was given.
-
-    Restored from the campaign's own ``frozen_reference.py`` (the same four
-    lines, same failure mode named). ``_grade_positions``'s ``patch.calls <
-    1`` check only proves ``_power_mean_db`` was called at all — it is
-    silent about whether ``evaluate_flat_spec``'s internal call order still
-    puts the REFERENCE computation first. This function is the independent,
-    fail-loud proof of that stronger claim, run once per grading pass before
-    any frozen number is trusted.
-    """
-    for position in positions:
-        seat = position.position_id
-        with _FrozenReference(frozen_refs[seat]):
-            got = evaluate_flat_spec(
-                np.asarray(position.freqs_hz, dtype=float),
-                np.asarray(position.magnitude_db, dtype=float),
-                _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
-                smoothing_fraction=position.smoothing_fraction,
-                trusted_floor_hz=report.trusted_floor_hz,
-                trusted_ceiling_hz=report.trusted_ceiling_hz,
-            )
-        if got.reference_db != frozen_refs[seat]:
-            raise RoundViewsError(
-                f"{seat}: frozen reference did not land — asked {frozen_refs[seat]!r}, "
-                f"evaluator reports {got.reference_db!r}. evaluate_flat_spec's internal "
-                "call order has changed; this module must be re-derived before any "
-                "number it prints is used."
-            )
-
-
 def _grade_positions(
     positions: tuple[PositionCurve, ...],
     report: FlatSpecReport,
@@ -612,16 +534,8 @@ def _grade_positions(
     per_position: dict[str, float] = {}
     for position in positions:
         seat = position.position_id
-        if frozen_refs is None:
-            flatness, _octaves = _evaluate_position(position, report)
-        else:
-            with _FrozenReference(frozen_refs[seat]) as patch:
-                flatness, _octaves = _evaluate_position(position, report)
-            if patch.calls < 1:
-                raise RoundViewsError(
-                    f"{seat}: frozen reference never consumed — the evaluator "
-                    "did not call _power_mean_db"
-                )
+        override = None if frozen_refs is None else frozen_refs[seat]
+        flatness, _octaves = _evaluate_position(position, report, reference_db_override=override)
         if not flatness.evaluable or flatness.rms_db is None:
             raise RoundViewsError(f"{seat}: position not evaluable under this report's frame")
         per_position[seat] = float(flatness.rms_db)
@@ -674,9 +588,8 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
     construction in that case — the freeze changes nothing when a round is
     compared against itself). Raises :class:`RoundViewsError` when a
     position present in ``target`` has no counterpart
-    (matched by ``position_id``) in ``baseline``, when any position is not
-    evaluable under its own report's frame, or when :func:`_frozen_assert`
-    finds the substitution did not land.
+    (matched by ``position_id``) in ``baseline``, or when any position is
+    not evaluable under its own report's frame.
     """
     baseline_refs = {
         position.position_id: _own_reference_db(position, baseline.report)
@@ -692,7 +605,6 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
         position.position_id: _own_reference_db(position, target.report)
         for position in target.positions
     }
-    _frozen_assert(target.positions, target.report, baseline_refs)
     shipped_pooled, shipped_positions = _grade_positions(target.positions, target.report, None)
     frozen_pooled, frozen_positions = _grade_positions(target.positions, target.report, baseline_refs)
     return FrozenReferenceResult(
