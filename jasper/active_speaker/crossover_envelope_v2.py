@@ -234,15 +234,15 @@ _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
     PHASE_CLOUD_MEASURE: "measure",
-    # Still measuring. Registered even while R16's flag is off: an unmapped
-    # phase falls back to ``microphone_check``, and the REJECTION screens use
-    # this as their step (silent-auto-retry, as their SCREEN).
+    # Still measuring. Registered even while R16's flag is off: this map is
+    # exhaustive now (an unmapped phase raises, it no longer falls back), and
+    # the REJECTION screens use whatever step it produces as their own.
     PHASE_LATERAL: "measure",
     # #2291's entry baseline is the LAST thing stage 1 measures, and it is still
     # measuring: nothing has been applied and the apply decision has not been
-    # put to the household yet. Registered rather than left to the unmapped
-    # fallback, which is ``microphone_check`` — the stepper would walk BACKWARDS
-    # to step 1 on the final capture of the session.
+    # put to the household yet. Left out of this map, the phase now raises
+    # (rather than silently walking the stepper BACKWARDS to step 1 on the
+    # final capture of the session, as an unmapped phase once did).
     PHASE_ENTRY_BASELINE: "measure",
     # The review interlude sits on the APPLY step: measuring is finished and
     # what the household is now doing IS the apply decision (two-stage D3).
@@ -3833,7 +3833,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
 
     v2 = _v2(status)
     phase = str(v2.get("phase") or PHASE_CHECK)
-    active_step = _PHASE_STEP.get(phase, "microphone_check")
+    active_step = _PHASE_STEP[phase]
 
     # Volume recovery keys on needs_recovery, NOT unresolved_volume_safety alone
     # (the W2 gate ruling — a crash-hydrated active plan surfaces no unresolved

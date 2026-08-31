@@ -172,7 +172,7 @@ def _every_screen_envelope() -> dict[str, dict]:
         ),
         "done": build_crossover_envelope_v2(_done_status()),
     }
-    for phase in ("check", "measure", "apply", "verify", "done"):
+    for phase in ("check", "measure", "applying", "verify", "done"):
         envelopes[f"phase_{phase}"] = build_crossover_envelope_v2(
             _status(phase=phase)
         )
@@ -187,6 +187,31 @@ def test_schema_8_and_v2_step_tuple():
     assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
+
+
+def test_every_journey_phase_has_a_phase_step_entry():
+    """``build_crossover_envelope_v2`` now does a direct ``_PHASE_STEP[phase]``
+    lookup (a bare ``.get(phase, "microphone_check")`` used to paper over a
+    gap by walking the stepper BACKWARDS to step 1 on the final capture — see
+    the table's own comments), so a phase missing from the table raises
+    instead of mis-stepping.
+
+    This is the reverse direction from the ``set(_PHASE_STEP)`` tests below
+    (search ``others = set(_PHASE_STEP)``): those walk the table's OWN keys
+    and assume they are exhaustive. This one walks ``journey``'s ``PHASE_*``
+    names — the vocabulary's actual source — and checks the table covers
+    every one of them, so a phase added there without a matching entry here
+    fails at test time rather than at runtime.
+    """
+    from jasper.active_speaker.crossover_v2 import journey
+
+    phase_values = {
+        value for name, value in vars(journey).items()
+        if name.startswith("PHASE_") and isinstance(value, str)
+    }
+    assert phase_values, "journey should export at least one PHASE_* constant"
+    missing = phase_values - set(_PHASE_STEP)
+    assert not missing, f"_PHASE_STEP has no entry for: {sorted(missing)}"
 
 
 def test_legacy_env_still_serves_v2_envelope(monkeypatch):
@@ -1564,7 +1589,7 @@ def test_a_session_that_graded_no_round_reports_an_absence_not_an_empty_row(
 def test_the_round_key_is_present_on_every_screen():
     """Always-present, so a driver never has to tell "no round yet" from "this
     build predates the key"."""
-    for phase in ("check", "measure", "apply", "verify", "done"):
+    for phase in ("check", "measure", "applying", "verify", "done"):
         env = build_crossover_envelope_v2(_status(phase=phase))
         assert "round" in env
     inactive = build_crossover_envelope_v2({"active": False})
