@@ -1,4 +1,4 @@
-# Group weekly version updates to limit review and CI bursts. Security updates
+# Group monthly version updates to limit review and CI bursts. Security updates
 # remain ungrouped because `applies-to` keeps its default of `version-updates`.
 # Python changes update `uv.lock`; changes on the Pi pin chain must also update
 # `deploy/constraints-pi.txt` with `python3 scripts/align-pi-constraint-pins.py`.
@@ -8,7 +8,7 @@ updates:
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
     groups:
       # First match wins. Keep development tools ahead of the runtime catch-all
@@ -26,7 +26,7 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
     groups:
       github-actions:
@@ -43,7 +43,7 @@ updates:
       - "/rust/jasper-host-clock"
       - "/rust/jasper-dual-dac-lab"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
     groups:
       rust-alsa-crates:
