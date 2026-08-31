@@ -1103,10 +1103,11 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
             or tolerance_db is None or not isinstance(passed, bool)
         ):
             continue
-        verdict = "pass" if passed else "fail"
+        margin_db = abs(deviation_db) - tolerance_db
+        compare = f"{margin_db:.1f} dB outside" if not passed else "within"
         parts.append(
             f"{lo:.0f}–{hi:.0f} Hz {deviation_db:+.2f} dB "
-            f"({verdict}, tolerance ±{tolerance_db:.1f} dB)"
+            f"({compare} the ±{tolerance_db:.1f} dB target)"
         )
     if not parts:
         return []
@@ -3133,7 +3134,7 @@ FAILURE_FRESH_WINDOW_S = 30 * 60.0
 # advice. Keying on the template also means #1942 adds no field to
 # REASON_REGISTRY — that registry's copy is explicitly out of scope.
 _FAILURE_HISTORY_REASONS = {
-    TEMPLATE_VERIFY_FAIL: "the check didn't pass",
+    TEMPLATE_VERIFY_FAIL: "it wasn't confirmed",
     TEMPLATE_SESSION_RESTART: "it stopped before finishing",
     TEMPLATE_HARD_STOP: "it couldn't continue",
 }
@@ -4168,8 +4169,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 # group since #2464 capped the grade.
                 done_verdict = (
                     "Your speaker is tuned, but the check that confirms it did "
-                    "not pass, so this result is unconfirmed. Re-verify to try "
-                    "again, or undo to restore the previous sound."
+                    "not match its prediction, so this result is unconfirmed. "
+                    "Re-verify to try again, or undo to restore the previous "
+                    "sound."
                 )
             else:
                 done_verdict = (

@@ -74,24 +74,14 @@ def fsync_directory(path: str | os.PathLike) -> None:
 
     A rename or unlink is metadata: without this the entry can still be
     present (or absent) after a dirty shutdown even though the file's own
-    contents were synced. Filesystems that do not support directory fsync
-    report it as an argument error rather than a fault, and are tolerated —
-    the caller's durability is best-effort on those, exactly as it is for the
-    ``durable=True`` write path below.
+    contents were synced. The helper is strict: callers own any policy for
+    filesystems that do not support directory fsync.
     """
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
     descriptor = os.open(path, flags)
     try:
         os.fsync(descriptor)
-    except OSError as exc:
-        unsupported = {
-            errno.EINVAL,
-            getattr(errno, "ENOTSUP", errno.EINVAL),
-            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-        }
-        if exc.errno not in unsupported:
-            raise
     finally:
         os.close(descriptor)
 
@@ -281,7 +271,16 @@ def atomic_write_text(
                 os.close(file_fd)
         os.replace(tmp, fspath)
         if durable:
-            fsync_directory(parent)
+            try:
+                fsync_directory(parent)
+            except OSError as exc:
+                unsupported = {
+                    errno.EINVAL,
+                    getattr(errno, "ENOTSUP", errno.EINVAL),
+                    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+                }
+                if exc.errno not in unsupported:
+                    raise
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)

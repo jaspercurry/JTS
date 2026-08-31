@@ -32,7 +32,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-from jasper.web import correction_crossover_v2 as host
 from tests.test_crossover_v2_record_store import (
     RELAY,
     _bundle,
@@ -46,16 +45,12 @@ ARTIFACTS = "evidence/v1/artifacts"
 def store(tmp_path):
     """The production store over a real bundle — what the rescan reads."""
     info = _bundle(tmp_path)
-    host.set_state_path_for_tests(tmp_path / "state.json")
-    yield BankedRecordStore(
+    return BankedRecordStore(
         evidence=CommissioningEvidenceStore.open(
             info["bundle_dir"], expected_session_id=info["session_id"],
         ),
         relay_session_id=RELAY,
-        load_state=host.load_v2_state,
-        save_state=host.save_v2_state,
     )
-    host.set_state_path_for_tests(None)
 
 
 def _found(store: BankedRecordStore, **filters: Any):

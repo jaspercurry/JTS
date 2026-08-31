@@ -273,21 +273,8 @@ def test_uc4_the_declarations_are_internally_consistent():
 
 
 # --------------------------------------------------------------------------- #
-# UC-5 — read the bank back
+# UC-5 — the bank outlives its session
 # --------------------------------------------------------------------------- #
-
-
-async def test_uc5_every_banked_record_reads_back_by_its_id():
-    """Ruling S3's return: a banked session is re-analyzable offline, forever.
-    The twin implements ``read`` rather than stubbing it, so a test can prove
-    the door works instead of assuming it."""
-    async with open_session() as (session, fakes):
-        outcome = await session.measure(_walk())
-
-    read_back = [await fakes.records.read(rid) for rid in outcome.record_ids]
-
-    assert [r["position_deg"] for r in read_back] == list(decl.WALK_DEG)
-    assert await fakes.records.read("rec-999") is None
 
 
 async def test_uc5_the_bank_outlives_the_session_that_wrote_it():
@@ -296,7 +283,7 @@ async def test_uc5_the_bank_outlives_the_session_that_wrote_it():
         outcome = await session.measure(_walk())
 
     assert not session.is_open
-    assert await fakes.records.read(outcome.record_ids[0]) is not None
+    assert len(fakes.records.banked) == len(outcome.record_ids)
     assert len(fakes.records.by_position(0)) == 1
 
 

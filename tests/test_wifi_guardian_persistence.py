@@ -236,32 +236,19 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
 
 
 def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
-    """Some filesystems (tmpfs in CI) don't support directory fsync.
-    The file contents are already on disk from the per-FD fsync; the
-    parent-dir fsync failure logs at DEBUG and the write succeeds."""
+    """A parent-dir fsync failure logs at DEBUG and the write succeeds."""
     import jasper.wifi_guardian_persistence as mod
 
-    real_fsync = os.fsync
-    seen_calls = []
+    seen_paths = []
 
-    def selective_fsync(fd):
-        # Fail only the directory fsync (the one on a dir FD, which we
-        # detect by checking that the FD is a directory). Per-file
-        # fsync (during contents write) still works normally.
-        try:
-            st = os.fstat(fd)
-        except OSError:
-            return real_fsync(fd)
-        import stat
-        if stat.S_ISDIR(st.st_mode):
-            seen_calls.append("dir")
-            raise OSError("simulated parent-dir fsync failure")
-        return real_fsync(fd)
+    def fail_directory_fsync(path):
+        seen_paths.append(Path(path))
+        raise OSError("simulated parent-dir fsync failure")
 
-    monkeypatch.setattr(mod.os, "fsync", selective_fsync)
+    monkeypatch.setattr(mod, "fsync_directory", fail_directory_fsync)
     with caplog.at_level("DEBUG"):
         write_stash(_path(tmp_path), "X", "y", "wpa-psk")
     # File was still written successfully.
     assert read_stash(_path(tmp_path)) is not None
     # The dir fsync was attempted and failed gracefully.
-    assert "dir" in seen_calls
+    assert seen_paths == [tmp_path]

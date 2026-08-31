@@ -2,17 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The production ``RecordStore``: what it writes, and what reads it back.
+"""The production ``RecordStore``: what it writes, and where.
 
-The round-trip pins run against BOTH implementations — ``FakeRecords`` from
-the engine twin and the real store — because the twin is what every engine
-test states its "before" through, and two banks that disagree about what
-``read`` returns would make a green suite mean nothing about the real one.
-
-The acceptance pin is :func:`test_a_banked_walk_reads_back_by_the_ids_it_returned`:
-bank a walk, ``persist``, drop the session, and resolve every id again. It is
-the only pin that catches a ``bank`` returning a useless id, which empties
-``record_ids`` and silently leaves a later reader with nothing to fetch.
+The seam is write-only since ADR-0198, so every pin here states its "after"
+against the BYTES on disk (:func:`_banked_file`) rather than through a reader
+the store no longer has. That is the altitude the bundle's own readers work
+at — ``position_cycle``, ``evidence_packet``, ``candidate_bank`` glob these
+files — so a pin that passes here is a pin about what they will find.
 """
 
 from __future__ import annotations
@@ -52,9 +48,7 @@ from jasper.attribution.session_identity import (
     SESSION_IDENTITY_KEY,
     SessionIdentity,
 )
-from jasper.web import correction_crossover_v2 as host
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.engine_twin import FakeRecords
 from tests.test_active_speaker_profile import _two_way_preset
 
 RELAY = "cap-relay-1"
@@ -72,24 +66,14 @@ def _bundle(tmp_path: Path) -> Mapping[str, Any]:
 
 @pytest.fixture
 def real_store(tmp_path):
-    """The production store over a real bundle and a temp state file."""
+    """The production store over a real bundle."""
     info = _bundle(tmp_path)
-    host.set_state_path_for_tests(tmp_path / "state.json")
-    yield BankedRecordStore(
+    return BankedRecordStore(
         evidence=CommissioningEvidenceStore.open(
             info["bundle_dir"], expected_session_id=info["session_id"],
         ),
         relay_session_id=RELAY,
-        load_state=host.load_v2_state,
-        save_state=host.save_v2_state,
     )
-    host.set_state_path_for_tests(None)
-
-
-@pytest.fixture(params=["twin", "real"])
-def store(request, real_store):
-    """Both implementations of the seam, so they cannot drift apart."""
-    return FakeRecords() if request.param == "twin" else real_store
 
 
 def _take(
@@ -126,34 +110,10 @@ def _take(
     }
 
 
-def _as_json(value: Any) -> Any:
-    return json.loads(json.dumps(value))
-
-
 def _banked_file(store: BankedRecordStore, record_id: str) -> dict[str, Any]:
     """The bytes on disk, read without going through the store's own reader."""
     path = Path(store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
     return json.loads(path.read_text())
-
-
-# --------------------------------------------------------------------------- #
-# P1-P4 — the contract both implementations owe
-# --------------------------------------------------------------------------- #
-
-
-async def test_bank_then_read_round_trips(store):
-    """P1: what comes back out is what went in, field for field."""
-    record = _take()
-
-    record_id = await store.bank(record)
-
-    assert record_id
-    assert await store.read(record_id) == record
-
-
-async def test_read_of_an_unknown_id_is_none(store):
-    """P2: a missing record is a fact ``analyze`` discloses, not a raise."""
-    assert await store.read("crossover_v2/other/positions/nope_a01.json") is None
 
 
 #: What the analyze seam carries onto a banked take, with a real value each.
@@ -176,44 +136,18 @@ _EVIDENCE_BLOCKS = {
 }
 
 
-@pytest.mark.parametrize("block", sorted(_EVIDENCE_BLOCKS))
-async def test_a_take_carries_its_capture_evidence_block(store, block):
-    """The additive half of the reader flip: the blocks BANK.
-
-    Since the capture-dump ring died, ``diagnostic``, ``capture_integrity``
-    and ``frame_ledger`` are computed at the analyze seam and land in no file
-    at all — the banked record is the only retention path left, so it has to
-    carry them or a round banked from here on cannot be graded on them.
-
-    Pinned at the store because the store is what a nested mapping has to
-    survive: every other field on a take record is a scalar, and canonical
-    JSON plus the envelope strip is where a whole sub-document would be
-    flattened, reordered or dropped without anything upstream noticing.
-    Round-tripped field for field, and asserted against the bytes so a reader
-    opening the file — not this store — sees the same block.
-    """
-    record = {**_take(), block: _EVIDENCE_BLOCKS[block]}
-
-    record_id = await store.bank(record)
-
-    assert await store.read(record_id) == record
-
-
-async def test_a_take_with_no_evidence_blocks_stays_exactly_as_readable(store):
-    """Additive, not required: a record from before the carry still reads.
+async def test_a_take_with_no_evidence_blocks_stays_exactly_as_bankable(real_store):
+    """Additive, not required: a record from before the carry still banks.
 
     Every take banked before this change carries none of the three, and the
     engine's own ``_record`` still banks none — it names its capture at PLAY
     time, before any analysis exists. Neither is a defect and neither may
-    become one, so the absence is pinned rather than left to the round-trip
-    pin's silence.
+    become one, so the absence is pinned rather than left to the
+    block-carrying pin's silence: the store invents no empty block.
     """
-    record_id = await store.bank(_take())
+    record_id = await real_store.bank(_take())
 
-    read_back = await store.read(record_id)
-
-    assert read_back is not None
-    assert not set(read_back) & set(_EVIDENCE_BLOCKS)
+    assert not set(_banked_file(real_store, record_id)) & set(_EVIDENCE_BLOCKS)
 
 
 async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
@@ -237,104 +171,32 @@ async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
     assert [row.path for row in found] == [record_id]
 
 
-async def test_persist_then_read_state_round_trips(store):
-    """P4: a session state's keys come back as they were written."""
-    state = {
-        "session_id": "engine-session",
-        "graph_fingerprint": "graph-abc",
-        "measurement_level_db": -18.0,
-        "record_ids": ("a", "b"),
-        "disclosures": ({"code": "mic_only_regime", "captured": False},),
-    }
+async def test_a_banked_walk_returns_a_usable_id_for_every_take(real_store):
+    """The acceptance pin: bank a walk, and every id resolves to its own file.
 
-    state_id = await store.persist(state)
-    read_back = await store.read_state(state_id)
-
-    assert read_back is not None
-    # Compared through JSON on both sides: the state crosses a file in
-    # production, so a tuple coming back as a list is the contract holding,
-    # not the twin and the real store disagreeing.
-    for key, value in state.items():
-        assert _as_json(read_back[key]) == _as_json(value)
-
-
-async def test_a_banked_walk_reads_back_by_the_ids_it_returned(store):
-    """P8: bank a walk, persist it, drop the session, resolve every id again.
-
-    The acceptance pin. A ``bank`` that returns a useless id passes every
-    other pin here and fails this one, because ``session.py`` drops falsy ids
-    out of ``record_ids`` and a later reader is left with nothing to fetch.
+    A ``bank`` that returns a useless id passes every other pin here and fails
+    this one, because ``session.py`` drops falsy ids out of ``record_ids`` and
+    a later reader is left with nothing to fetch.
     """
     ids = [
-        await store.bank(_take(position_deg=degrees))
+        await real_store.bank(_take(position_deg=degrees))
         for degrees in (0, 30)
     ]
-    ids.append(await store.bank(_take(kind=MEASURE_KIND_CANDIDATE, attempt=2)))
-    state_id = await store.persist({
-        "session_id": "engine-session",
-        "graph_fingerprint": "graph-abc",
-        "measurement_level_db": -18.0,
-        "record_ids": tuple(identifier for identifier in ids if identifier),
-    })
+    ids.append(
+        await real_store.bank(_take(kind=MEASURE_KIND_CANDIDATE, attempt=2))
+    )
 
-    state = await store.read_state(state_id)
-
-    # Asserted before the reads, and load-bearing: a ``bank`` that returns
-    # ``""`` drops every id out of ``record_ids``, and a read compared against
-    # that same ``""`` would agree with itself and pass.
     assert all(ids)
-    assert state is not None
-    assert _as_json(state["record_ids"]) == _as_json(tuple(ids))
-    assert state["measurement_level_db"] == -18.0
+    assert len(set(ids)) == len(ids)
     assert [
-        (await store.read(identifier))["position_deg"] for identifier in ids[:2]
+        _banked_file(real_store, identifier)["position_deg"]
+        for identifier in ids[:2]
     ] == [0, 30]
 
 
 # --------------------------------------------------------------------------- #
-# P3, P5-P7 — what only the real store can be asked
+# P5-P7 — the rest of what the store owes
 # --------------------------------------------------------------------------- #
-
-
-async def test_read_state_of_an_outlived_id_is_none(real_store):
-    """P3: the file is overwritten every persist, so an id can outlive it."""
-    base = {
-        "session_id": "engine-session",
-        "graph_fingerprint": "graph-abc",
-        "measurement_level_db": -18.0,
-        "disclosures": (),
-    }
-
-    first = await real_store.persist({**base, "record_ids": ("a",)})
-    second = await real_store.persist({**base, "record_ids": ("a", "b")})
-
-    assert first != second
-    assert await real_store.read_state(first) is None
-    assert await real_store.read_state(second) is not None
-
-
-async def test_two_persists_that_banked_nothing_are_still_two(real_store):
-    """F7: the id counts PERSISTS, not the records the state accounts for.
-
-    A walk can persist twice with nothing new banked between them — a capture
-    that did not play, a save after a refusal — and an id derived from the
-    state's own contents would be the same both times, handing back the newer
-    document under the older id. That is the one thing this id detects.
-    """
-    state = {
-        "session_id": "engine-session",
-        "graph_fingerprint": "graph-abc",
-        "measurement_level_db": -18.0,
-        "record_ids": ("a",),
-        "disclosures": (),
-    }
-
-    first = await real_store.persist(state)
-    second = await real_store.persist(state)
-
-    assert first != second
-    assert await real_store.read_state(first) is None
-    assert await real_store.read_state(second) is not None
 
 
 async def test_the_banked_kind_is_the_readers_discriminator(real_store):
@@ -350,7 +212,7 @@ async def test_the_banked_kind_is_the_readers_discriminator(real_store):
     banked = _banked_file(real_store, record_id)
 
     assert banked["kind"] == position_cycle.POSITION_EVIDENCE_KIND
-    assert (await real_store.read(record_id))["kind"] == MEASURE_KIND_BASELINE
+    assert banked["measure_kind"] == MEASURE_KIND_BASELINE
 
 
 async def test_an_identical_re_bank_is_idempotent(real_store):
@@ -454,17 +316,19 @@ def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
 async def test_a_folded_kind_lands_where_its_reader_looks(
     real_store, record, filename,
 ):
-    """Every folded kind lands at the shipped publisher's path, and reads back.
+    """Every folded kind lands at the shipped publisher's path.
 
     Whether the store envelopes differs per route and is not a style choice:
     ``MeasuredCrossoverCandidate.from_mapping`` refuses any key it does not
     know, so wrapping a candidate the way a position take is wrapped would
-    make the file unreadable by its own reader.
+    make the file unreadable by its own reader. The candidate and receipt
+    routes run that reader at the write, so a wrongly-enveloped payload raises
+    out of ``bank`` here rather than landing — which is why this pin asserts
+    the path and lets the route's own verify carry the envelope.
     """
     record_id = await real_store.bank(record)
 
     assert record_id == f"crossover_v2/{RELAY}/{filename}"
-    assert await real_store.read(record_id) == record
 
     found, why = round_artifact_dir(Path(real_store.evidence.bundle_dir))
     assert found is not None, why
@@ -476,8 +340,8 @@ async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
 
     ``publish_cloud`` stamps the session identity so a finding can cite the
     artifact across two id namespaces. The store is the writer now, so the
-    stamp is the store's — and ``read`` takes it back off, because the caller
-    never put it there.
+    stamp is the store's, and it names both namespaces because the relay id is
+    minted after the bundle id and is not derivable from it.
     """
     record = {
         "kind": CLOUD_EVIDENCE_KIND, "phase": "cloud_measure", "ripple_db": 3.0,
@@ -485,10 +349,11 @@ async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
 
     record_id = await real_store.bank(record)
 
-    stamped = _banked_file(real_store, record_id)[SESSION_IDENTITY_KEY]
+    banked = _banked_file(real_store, record_id)
+    stamped = banked[SESSION_IDENTITY_KEY]
     assert stamped["session_id"] == real_store.evidence.session_id
     assert RELAY in stamped["aliases"].values()
-    assert await real_store.read(record_id) == record
+    assert banked["ripple_db"] == 3.0
 
 
 async def test_a_banked_candidate_is_where_candidate_bank_globs(real_store):
@@ -519,7 +384,6 @@ async def test_a_builder_shaped_record_routes_on_its_measure_kind(real_store):
     banked = _banked_file(real_store, record_id)
     assert banked["kind"] == position_cycle.POSITION_EVIDENCE_KIND
     assert banked["measure_kind"] == MEASURE_KIND_BASELINE
-    assert (await real_store.read(record_id))["kind"] == MEASURE_KIND_BASELINE
 
 
 async def test_a_take_whose_measure_kind_is_unresolved_still_banks(real_store):
@@ -541,7 +405,6 @@ async def test_a_take_whose_measure_kind_is_unresolved_still_banks(real_store):
     banked = _banked_file(real_store, record_id)
     assert banked["kind"] == position_cycle.POSITION_EVIDENCE_KIND
     assert banked["measure_kind"] == ""
-    assert (await real_store.read(record_id))["kind"] == ""
 
 
 async def test_a_candidate_that_changed_on_readback_refuses(real_store):

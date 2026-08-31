@@ -161,7 +161,10 @@ def test_banked_trims_are_returned_when_the_declaration_matches(tmp_path: Path):
     assert meta["status"] == dbt.STATUS_APPLIED
     assert meta["declaration_fingerprint"] == "a" * 64
     assert meta["speaker_group_ids"] == ["mono"]
-    assert meta["groups_total"] == 1
+    # Derivable from `speaker_group_ids` by construction (post-#3388); the
+    # one caller (`baseline_profile._measured_level_trims`) already computes
+    # its own count rather than reading this one.
+    assert "groups_total" not in meta
     assert meta["trim_source"] == "strict_measured_candidate"
 
 
@@ -259,7 +262,6 @@ def test_the_reader_names_every_group_the_record_covers(tmp_path: Path):
     state = _bank(tmp_path, speaker_group_ids=["right", "left"])
     _trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
     assert meta["speaker_group_ids"] == ["left", "right"]
-    assert meta["groups_total"] == 2
 
 
 def test_clearing_drops_the_record_and_nothing_to_drop_is_success(
@@ -290,9 +292,13 @@ def test_a_record_that_survives_the_clear_is_reported_as_a_failure(
     def _refuse(self, *args, **kwargs):
         raise PermissionError(13, "read-only")
 
-    monkeypatch.setattr(Path, "unlink", _refuse)
-    assert dbt.clear_base_trim() is False
-    monkeypatch.undo()
+    # A scoped context, not `monkeypatch.undo()`: the outer `monkeypatch`
+    # fixture is shared with conftest's autouse isolations, and `.undo()`
+    # would roll those back too for the rest of the test, not just this
+    # one `Path.unlink` patch.
+    with monkeypatch.context() as unlink_patch:
+        unlink_patch.setattr(Path, "unlink", _refuse)
+        assert dbt.clear_base_trim() is False
     assert dbt.load_base_trim(state_path=state) is not None
 
 

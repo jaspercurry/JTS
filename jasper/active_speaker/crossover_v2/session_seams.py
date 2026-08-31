@@ -222,25 +222,15 @@ class VolumeClaim(Protocol):
 class RecordStore(Protocol):
     """Where this session's evidence lands — the one shape, one writer.
 
-    Two pairs, because the store holds two things and each must come back out:
-    :meth:`bank` / :meth:`read` for ONE record (wave 4's five blocks —
-    identity · place · stimulus-and-path · honesty · **the curve**), and
-    :meth:`persist` / :meth:`read_state` for the session's own durable state
-    (wave 3's ``persist_conductor_state``, now a write wrapper over
-    :func:`~.durable_state.build_conductor_state`, which owns the schema).
-
     **ONE record, not one capture record** (the 2026-08-26 FOLD ruling): the
     five ``V2FlowSeams`` publishers fold onto :meth:`bank`, discriminated by
     the record's own ``kind``, so a check, a candidate, a cloud result, a
     finding set and a round receipt land through the same seam a capture does.
     Fail-soft stays in a named wrapper at the caller, never in the store.
 
-    **The read halves are what make the bank re-readable offline.** Ruling S3: a
-    banked session can be re-analyzed by any analysis that did not exist when it
-    was captured, which is the whole return on banking ``DriverResponse`` with
-    its phase instead of re-deriving it from WAVs. A store that could only be
-    written to would make that a promise nothing could keep. Since ADR-0198 that
-    reading is the tuning tools' — no engine verb calls these two.
+    **Write-only, since ADR-0198.** Reading a bank back belongs to the
+    doors-and-banks tools, over the bundle's own files. This declares the one
+    slot the engine drives, and nothing else.
 
     **An integrity refusal still banks.** The discriminator is #2087's: would
     measuring again plausibly fix it? Yes, and the capture is a defect that is
@@ -250,29 +240,6 @@ class RecordStore(Protocol):
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         """Write one record; return the id that finds it again."""
-        raise NotImplementedError
-
-    async def read(self, record_id: str) -> Mapping[str, Any] | None:
-        """One banked record by id, or ``None`` when the store has no such id.
-
-        ``None`` rather than a raise: a missing record is a fact an offline
-        reader discloses, not an exception that strands the run.
-        """
-        raise NotImplementedError
-
-    async def persist(self, state: Mapping[str, Any]) -> str:
-        """Write the session's durable state; return the id that finds it."""
-        raise NotImplementedError
-
-    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
-        """One persisted session state by id, or ``None`` when there is none.
-
-        ``None`` for :meth:`read`'s reason and for one more: a state id may
-        outlive the state it named. The store this replaces overwrites its one
-        file every persist, so *"the prior round's state is gone"* is an
-        ordinary outcome, and a session that raised on it would refuse the
-        round rather than disclose the missing "before" (ruling S10).
-        """
         raise NotImplementedError
 
 

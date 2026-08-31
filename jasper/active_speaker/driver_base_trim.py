@@ -259,7 +259,6 @@ def banked_base_trims(
         "status": STATUS_APPLIED,
         "trims": dict(trims),
         "speaker_group_ids": measured,
-        "groups_total": len(measured),
         # WHICH evidence the applied profile levelled by, carried through to
         # the profile's own ``level_match`` ledger so a receipt reading the
         # banked trim still names the measurement behind it (ruling S16 (d)).
