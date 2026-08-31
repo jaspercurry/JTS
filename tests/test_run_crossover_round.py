@@ -417,7 +417,7 @@ def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
     walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
     assert "stage --mover arm" in stage_cmd
-    assert "--angles 0,7,-7" in stage_cmd and "--regime per_driver" in stage_cmd
+    assert "--angles=0,7,-7" in stage_cmd and "--regime=per_driver" in stage_cmd
     assert "--attest-rig-clear" in walk_cmd
     assert "--expect-angles 7,-7" in walk_cmd
     assert "--complete-after 3" in walk_cmd
@@ -426,6 +426,28 @@ def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
     assert "--polarity" not in stage_cmd and "--inverted-role" not in stage_cmd
     assert "--delayed-role" not in stage_cmd and "--delay-us" not in stage_cmd
     assert "--level-matched" not in stage_cmd
+
+
+def test_a_leading_negative_angle_list_reaches_the_staging_seam_as_equals_form(
+    checkout, wizard, tmp_path
+):
+    """Python 3.12's argparse (still what ships on the Pi) rejects a
+    SPACE-form value that starts with ``-`` and is not itself a bare negative
+    number -- "expected one argument" -- while 3.14's accepts it; a
+    comma-joined angle list beginning with a negative angle is exactly that
+    shape. ``stage_walk`` emits ``--angles=...``/``--regime=...`` (equals-form)
+    so the remote command parses identically on either interpreter.
+    """
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--tier", "remote", "--angles=-22,-7,0,7,22", "--regime", "per_driver",
+         "--attest-rig-clear", "--expect-angles=-22,22", "--complete-after", "5"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--angles=-22,-7,0,7,22" in stage_cmd
 
 
 def test_the_reverse_null_pair_is_forwarded_to_the_staging_seam(
@@ -442,8 +464,8 @@ def test_the_reverse_null_pair_is_forwarded_to_the_staging_seam(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--polarity inverted" in stage_cmd
-    assert "--inverted-role tweeter" in stage_cmd
+    assert "--polarity=inverted" in stage_cmd
+    assert "--inverted-role=tweeter" in stage_cmd
 
 
 def test_the_confirmation_coordinate_is_forwarded_to_the_staging_seam(
@@ -461,7 +483,7 @@ def test_the_confirmation_coordinate_is_forwarded_to_the_staging_seam(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--delayed-role tweeter" in stage_cmd
+    assert "--delayed-role=tweeter" in stage_cmd
     assert "--delay-us 250.0" in stage_cmd
 
 
@@ -544,7 +566,7 @@ def test_per_position_stages_each_angle_that_many_times_adjacently(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--angles 0,0,0,7,7,7,-7,-7,-7" in stage_cmd
+    assert "--angles=0,0,0,7,7,7,-7,-7,-7" in stage_cmd
 
 
 def test_the_walk_gets_the_expectations_the_operator_wrote_not_the_expansion(
@@ -739,7 +761,7 @@ def test_takes_are_taken_for_every_regime_that_stages_ONE_stop_per_angle(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--angles 0,0,0,7,7,7" in stage_cmd and f"--regime {regime}" in stage_cmd
+    assert "--angles=0,0,0,7,7,7" in stage_cmd and f"--regime={regime}" in stage_cmd
 
 
 def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
@@ -792,7 +814,7 @@ def test_a_hand_staged_repeat_list_is_taken_at_any_regime(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--angles 0,0,0,7,7,7" in stage_cmd and "--regime both" in stage_cmd
+    assert "--angles=0,0,0,7,7,7" in stage_cmd and "--regime=both" in stage_cmd
 
 
 def test_takes_are_refused_on_the_verify_stage_which_serves_its_own_poses(
@@ -861,7 +883,7 @@ def test_an_empty_angle_field_is_DROPPED_exactly_as_the_seam_drops_it(
 
     assert proc.returncode == 0, proc.stderr
     stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
-    assert "--angles 0,0,7,7" in stage_cmd
+    assert "--angles=0,0,7,7" in stage_cmd
 
 
 @pytest.mark.parametrize("per_position", ["3", "1", "0"])
