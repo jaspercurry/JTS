@@ -231,22 +231,6 @@ def band_levels_dbfs(
     return out
 
 
-def ambient_band_report(
-    samples: np.ndarray,
-    sample_rate: int,
-    bands: Sequence[tuple[str, float, float]] = CROSSOVER_SNR_BANDS_HZ,
-) -> dict[str, Any]:
-    """Return a non-stationary-robust ambient report.
-
-    The stored ambient window is split into one-second frames and each band's
-    95th percentile is retained.  This deliberately does not select one lucky
-    quiet instant: a fan, furnace, or traffic burst that is present during the
-    commissioning window remains part of the noise evidence.
-    """
-
-    return framed_ambient_band_report(samples, sample_rate, bands=bands, percentile=95)
-
-
 def framed_ambient_band_report(
     samples: np.ndarray,
     sample_rate: int,

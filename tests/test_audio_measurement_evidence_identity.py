@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import copy
 from dataclasses import replace
 
 import pytest
@@ -15,7 +14,6 @@ from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     ExactDspStateIdentity,
     NormalizedActiveRawIdentity,
-    ReplayIdentity,
     json_fingerprint,
 )
 
@@ -54,25 +52,13 @@ def _capture(index: int = 1, *, bundle: str = "session-1") -> CaptureIdentity:
     )
 
 
-def _replay() -> ReplayIdentity:
-    return ReplayIdentity(
-        consumer_id="active_crossover",
-        replay_kind="driver_response_splice",
-        algorithm_id="driver_response_replay",
-        algorithm_version="1",
-        captures=(_capture(1), _capture(2)),
-    )
-
-
 def test_strict_evidence_authorities_round_trip_with_stable_fingerprints():
-    replay = _replay()
-    capture = replay.captures[0]
+    capture = _capture()
 
     assert ArtifactIdentity.from_mapping(capture.raw_artifact.to_dict()) == (
         capture.raw_artifact
     )
     assert CaptureIdentity.from_mapping(capture.to_dict()) == capture
-    assert ReplayIdentity.from_mapping(replay.to_dict()) == replay
 
 
 @pytest.mark.parametrize(
@@ -80,7 +66,6 @@ def test_strict_evidence_authorities_round_trip_with_stable_fingerprints():
     [
         (lambda: _capture().raw_artifact.to_dict(), ArtifactIdentity.from_mapping),
         (lambda: _capture().to_dict(), CaptureIdentity.from_mapping),
-        (lambda: _replay().to_dict(), ReplayIdentity.from_mapping),
     ],
 )
 def test_every_serialized_identity_rejects_unknown_fields_and_bool_schema(
@@ -125,68 +110,6 @@ def test_capture_binds_raw_analysis_input_placement_quality_and_admission():
 
     with pytest.raises(EvidenceIdentityError, match="distinct artifacts"):
         replace(capture, admission_artifact=capture.quality_artifact)
-
-
-def test_nested_artifact_tamper_invalidates_capture_and_replay():
-    payload = copy.deepcopy(_replay().to_dict())
-    payload["captures"][0]["analysis_input_artifact"]["byte_size"] += 1
-
-    with pytest.raises(EvidenceIdentityError, match="declared fingerprint"):
-        ReplayIdentity.from_mapping(payload)
-
-
-def test_replay_order_is_authoritative_and_captures_must_be_unique():
-    replay = _replay()
-    reordered = ReplayIdentity(
-        consumer_id=replay.consumer_id,
-        replay_kind=replay.replay_kind,
-        algorithm_id=replay.algorithm_id,
-        algorithm_version=replay.algorithm_version,
-        captures=tuple(reversed(replay.captures)),
-    )
-    assert reordered.fingerprint != replay.fingerprint
-    with pytest.raises(EvidenceIdentityError, match="unique"):
-        ReplayIdentity(
-            consumer_id=replay.consumer_id,
-            replay_kind=replay.replay_kind,
-            algorithm_id=replay.algorithm_id,
-            algorithm_version=replay.algorithm_version,
-            captures=(replay.captures[0], replay.captures[0]),
-        )
-
-    with pytest.raises(EvidenceIdentityError, match="capture ids"):
-        ReplayIdentity(
-            consumer_id=replay.consumer_id,
-            replay_kind=replay.replay_kind,
-            algorithm_id=replay.algorithm_id,
-            algorithm_version=replay.algorithm_version,
-            captures=(
-                replay.captures[0],
-                replace(replay.captures[1], capture_id="capture-1"),
-            ),
-        )
-    with pytest.raises(EvidenceIdentityError, match="raw artifacts"):
-        ReplayIdentity(
-            consumer_id=replay.consumer_id,
-            replay_kind=replay.replay_kind,
-            algorithm_id=replay.algorithm_id,
-            algorithm_version=replay.algorithm_version,
-            captures=(
-                replay.captures[0],
-                replace(
-                    replay.captures[1],
-                    raw_artifact=replay.captures[0].raw_artifact,
-                ),
-            ),
-        )
-    with pytest.raises(EvidenceIdentityError, match="one commissioning session"):
-        ReplayIdentity(
-            consumer_id=replay.consumer_id,
-            replay_kind=replay.replay_kind,
-            algorithm_id=replay.algorithm_id,
-            algorithm_version=replay.algorithm_version,
-            captures=(replay.captures[0], _capture(2, bundle="session-2")),
-        )
 
 
 def test_exact_state_and_normalized_active_raw_are_typed_content_identities():

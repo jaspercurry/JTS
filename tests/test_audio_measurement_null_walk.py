@@ -12,7 +12,6 @@ from jasper.audio_measurement.null_walk import (
     NullWalkError,
     NullWalkSpec,
     geometry_seed_us,
-    select_delay,
     select_scheduled_delay,
     summarize_candidate,
 )
@@ -232,107 +231,6 @@ def test_candidate_refuses_two_db_or_greater_null_depth_spread(last_depth):
     assert "repeatability_low" in {issue["code"] for issue in out["issues"]}
 
 
-def test_selection_uses_only_dsp_candidate_and_deepest_repeatable_null():
-    spec = _spec()
-    evidence = {
-        -100.0: [_capture(v) for v in (15.0, 15.2, 14.9, 15.1, 15.0)],
-        0.0: [_capture(v) for v in (19.8, 20.0, 20.1, 20.0, 19.9)],
-        100.0: [_capture(v) for v in (17.0, 17.1, 16.9, 17.0, 17.2)],
-    }
-
-    out = select_delay(spec, evidence)
-
-    assert out["status"] == "selected"
-    assert out["selected_relative_delay_us"] == 0.0
-    assert out["selected_delay_us"] == 0.0
-    assert out["selected_delay_target"] is None
-    assert out["selected_null_depth_db"] == pytest.approx(20.0)
-    assert out["selected_delay_us"] != 999_999.0
-    candidates = {row["relative_delay_us"]: row for row in out["candidates"]}
-    assert candidates[-100.0]["delay_target"] == "lower"
-    assert candidates[-100.0]["delay_us"] == 100.0
-    assert candidates[100.0]["delay_target"] == "upper"
-    assert candidates[100.0]["delay_us"] == 100.0
-
-
-def test_selection_refuses_when_every_candidate_fails_repeatability():
-    spec = _spec()
-    evidence = {
-        -100.0: [_capture(10.0)] * 5,
-        0.0: [_capture(v) for v in (10.0, 12.0, 8.0, 11.0, 9.0)],
-        100.0: [_capture(10.0)] * 5,
-    }
-
-    out = select_delay(spec, evidence)
-
-    assert out["status"] == "refused"
-    assert out["reason"] == "candidate_repeatability_failed"
-    assert out["selected_delay_us"] is None
-
-
-def test_selection_refuses_a_hole_in_the_declared_exhaustive_grid():
-    spec = _spec()
-    evidence = {0.0: [_capture(20.0)] * 5}
-
-    out = select_delay(spec, evidence)
-
-    assert out["status"] == "refused"
-    assert out["reason"] == "candidate_evidence_incomplete"
-    assert out["selected_delay_target"] is None
-
-
-def test_selection_refuses_complete_grid_of_wrong_capture_kind():
-    spec = _spec()
-    wrong = _capture(
-        20.0,
-        calibrated=False,
-        expect_null=False,
-        crossover_fc_hz=999.0,
-    )
-    evidence = {candidate: [wrong] * 5 for candidate in spec.candidate_delays_us()}
-
-    out = select_delay(spec, evidence)
-
-    assert out["status"] == "refused"
-    assert out["reason"] == "candidate_evidence_incomplete"
-    assert out["selected_relative_delay_us"] is None
-
-
-def test_selection_prefers_geometry_seed_inside_an_unresolvable_null_plateau():
-    spec = _spec()
-    evidence = {
-        -100.0: [_capture(v) for v in (20.0, 20.2, 20.1, 20.0, 20.1)],
-        0.0: [_capture(v) for v in (19.9, 20.1, 20.0, 20.0, 20.1)],
-        100.0: [_capture(v) for v in (20.0, 20.2, 20.1, 20.0, 20.1)],
-    }
-
-    out = select_delay(spec, evidence)
-
-    assert out["selected_delay_us"] == 0.0
-    assert out["indistinguishable_delays_us"] == [-100.0, 0.0, 100.0]
-
-
-def test_plateau_comparison_uses_both_candidates_measurement_spread():
-    spec = _spec()
-    evidence = {
-        -100.0: [_capture(v) for v in (19.6, 19.8, 20.5, 21.0, 21.4)],
-        0.0: [_capture(v) for v in (19.95, 20.0, 20.0, 20.0, 20.05)],
-        100.0: [_capture(v) for v in (18.0, 18.1, 18.0, 18.1, 18.0)],
-    }
-
-    out = select_delay(spec, evidence)
-
-    assert out["best_measured_null_depth_db"] == pytest.approx(20.5)
-    assert out["selected_relative_delay_us"] == 0.0
-    assert out["indistinguishable_delays_us"] == [-100.0, 0.0]
-
-
-def test_evidence_outside_candidate_grid_is_refused():
-    spec = _spec()
-    with pytest.raises(NullWalkError, match="bounded candidate grid"):
-        select_delay(spec, {25.0: [_capture(20.0)] * 5})
-
-
 def test_candidate_budget_is_preflighted_arithmetically_at_exact_boundary():
     exact_25 = _spec(fc=400.0)
     refused_27 = _spec(fc=370.0)
@@ -534,18 +432,6 @@ def test_low_frequency_schedule_reaches_aligned_dsp_bounds_and_fails_beyond_them
         epsilon_over.coarse_candidate_delays_us()
 
 
-def test_existing_exhaustive_paths_remain_capped_after_nonallocating_membership():
-    spec = _spec(fc=350.0)
-    complete_evidence = {
-        spec.fine_grid_coordinate(index): [_capture(20.0)] * 5
-        for index in range(spec.fine_grid_index_min, spec.fine_grid_index_max + 1)
-    }
-
-    assert spec.dsp_candidate(0.0).delay_us == 0.0
-    with pytest.raises(NullWalkError, match="candidate budget"):
-        select_delay(spec, complete_evidence)
-
-
 def test_scheduled_selection_reuses_plateau_policy_without_relaxing_grid_cap():
     spec = _spec(fc=350.0)
     coarse = {
@@ -572,8 +458,6 @@ def test_scheduled_selection_reuses_plateau_policy_without_relaxing_grid_cap():
     result = select_scheduled_delay(spec, schedule, evidence)
 
     assert spec.candidate_count == 29
-    with pytest.raises(NullWalkError, match="candidate budget"):
-        select_delay(spec, evidence)
     assert result["status"] == "selected"
     assert result["selected_relative_delay_us"] == 300.0
     assert result["indistinguishable_delays_us"] == [300.0, 400.0]

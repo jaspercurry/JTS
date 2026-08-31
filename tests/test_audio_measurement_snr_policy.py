@@ -326,30 +326,6 @@ def test_band_snr_verdicts_are_unchanged_by_the_band_power_rescale():
         )
 
 
-def test_ambient_report_uses_upper_percentile_across_one_second_frames():
-    rng = np.random.default_rng(91)
-    quiet = rng.normal(0.0, 0.001, SR * 11)
-    noisy = rng.normal(0.0, 0.02, SR)
-
-    report = snr_policy.ambient_band_report(
-        np.concatenate([quiet, noisy]),
-        SR,
-        (("wide", 20.0, 12000.0),),
-    )
-    quiet_report = snr_policy.ambient_band_report(
-        quiet,
-        SR,
-        (("wide", 20.0, 12000.0),),
-    )
-
-    assert report["duration_s"] == 12.0
-    assert report["method"] == "one_second_p95"
-    assert (
-        report["bands"][0]["level_dbfs"]
-        > quiet_report["bands"][0]["level_dbfs"] + 10.0
-    )
-
-
 def test_paired_signal_window_deconvolution_is_trusted_for_alignment():
     noise = [{
         "band_id": "wide",
