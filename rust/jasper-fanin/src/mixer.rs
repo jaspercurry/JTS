@@ -48,6 +48,7 @@
 
 mod direct_capture;
 mod ring_capture;
+mod wake_ramp;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
@@ -76,6 +77,7 @@ use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
+use wake_ramp::LaneWakeRamp;
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
@@ -1423,6 +1425,11 @@ pub struct Input {
     /// `ring{}` block from it. `None` (and absent from STATUS) for every other
     /// lane — the same optional-block idiom as `direct_obs` and `resampler`.
     ring_obs: Option<ring_capture::RingLaneObservability>,
+    /// Per-lane WAKE FADE-IN state (issue #3443). Held by every lane and usable
+    /// at both lane scales, because it runs over this lane's rendered period —
+    /// the one thing all four read arms produce. Inert on the measurement lane;
+    /// [`wake_ramp::LaneWakeRamp::for_lane`] owns that decision.
+    wake_ramp: LaneWakeRamp,
 }
 
 impl Mixer {
@@ -1901,6 +1908,27 @@ impl Mixer {
             // RMS_DBFS_FLOOR. `active` is the exact slice this lane contributes
             // to the sum (0 when it read nothing), reused by the mix below.
             let active = frames * (CHANNELS as usize);
+            // 3a1. WAKE FADE-IN (issue #3443): shape an onset that lands after a
+            // long stretch of digital zero, so a sender resuming mid-waveform
+            // cannot hand the crossover a full-scale step. Runs for EVERY lane,
+            // at both lane scales, BEFORE the selection gate below — the
+            // zero-run tracker follows what the lane CAPTURES, so a de-selected
+            // lane keeps tracking rather than freezing a stale run and arming on
+            // the first period mux passes it. Ahead of the meter, so the level
+            // reported is the level contributed. Only the read side is touched;
+            // the TTS/cue path enters post-sum and never passes here.
+            let woke = if input.read_buf_wide.is_empty() {
+                input
+                    .wake_ramp
+                    .observe(&mut input.read_buf[..active], self.period_frames)
+            } else {
+                input
+                    .wake_ramp
+                    .observe(&mut input.read_buf_wide[..active], self.period_frames)
+            };
+            if woke {
+                info!("event=fanin.lane_wake_ramp lane={}", input.label);
+            }
             // Read the level off whichever buffer actually holds this lane's
             // period. The two RMS functions report the SAME dBFS for the same
             // signal (they differ only in the full-scale normalizer), so mux's
@@ -2842,6 +2870,7 @@ fn open_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: None,
+        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
     })
 }
 
@@ -2985,6 +3014,7 @@ fn open_direct_input(
             drain_stats: DrainStats::new(),
         }),
         ring_obs: None,
+        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
     }
 }
 
