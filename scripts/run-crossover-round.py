@@ -49,9 +49,12 @@ operator could type — the stops are an ordered tuple with no uniqueness rule a
 it adds over typing it is the arithmetic a hand-typed list gets wrong:
 ``--complete-after`` counts RELEASES, so it must scale with N, and a short one
 completes the walk partway through at rc 0. It governs a staged MEASURE walk;
-``--regime`` takes only ``per_driver`` — a session walk plays that program at
-every pose (``angle_capture.session_lateral_walk``), so nothing else is ever
-served.
+this runner's own arithmetic accepts any regime that composes ONE stop per
+angle (``per_driver`` and ``summed`` today) and refuses ``both``, at two,
+below. A session walk plays only ``per_driver`` at every pose, though, and
+refuses any other regime when it opens
+(``angle_capture.session_lateral_walk``) — so ``summed`` clears every gate
+here and still dies at session open.
 
 **Every staged round banks ``position_cycle.json``, cycled or not** — one sorted
 index of the poses this round actually measured, DERIVED from the bundle the
@@ -176,6 +179,15 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_PRESCRIPTION_KEY,
 )
+# The seam's OWN composition table — how many stops one angle becomes at a given
+# regime. Imported rather than restated because a second copy is precisely the
+# defect the refusal below exists to prevent: this runner's stop count IS the
+# `--complete-after` floor, and a table that drifted from the one
+# `jasper-angle-capture` actually composes with would make the floor silently
+# wrong. Private on purpose at its own module — it is one tool's internal rule —
+# and read here rather than copied for the same reason a bound is asked of its
+# owner everywhere else in this file.
+from jasper.cli.angle_capture import _REGIME_STOPS
 from jasper.active_speaker.crossover_v2_flow import TIERS
 from jasper.web.correction_crossover_v2 import (
     VERIFY_STAGE_KEY,
@@ -1290,18 +1302,21 @@ def build_parser() -> argparse.ArgumentParser:
             "take N captures at EACH staged angle, adjacently, in one walk — "
             "the arm settles and releases N times without travelling, so what "
             "varies between the takes is time and whatever you changed between "
-            "them, never the pose. Requires --angles and --stage measure. "
-            "There is no ceiling here: how many stops a session can carry is "
-            "the relay's own, and it refuses by name. --complete-after counts "
-            "RELEASES, so it must scale with N (default: 1)"
+            "them, never the pose. Requires --angles, --stage measure, and a "
+            "regime that composes one stop per angle (per_driver or summed; "
+            "both composes two, so it is refused). There is no ceiling here: "
+            "how many stops a session can carry is the relay's own, and it "
+            "refuses by name. --complete-after counts RELEASES, so it must "
+            "scale with N (default: 1)"
         ),
     )
     parser.add_argument(
-        "--regime", default="per_driver", choices=("per_driver",),
+        "--regime", default="per_driver",
         help=(
-            "what a staged walk plays at each angle. Only per_driver: a "
-            "session walk plays that program at every pose, so no other "
-            "regime is ever served (default: %(default)s)"
+            "what a staged walk plays at each angle. A session walk plays "
+            "only per_driver at every pose today, and refuses any other "
+            "regime when it opens -- this runner does not enforce that "
+            "itself (default: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -1399,6 +1414,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"would take a staged walk; --per-position governs a staged "
             f"measure walk"
         )
+    elif args.per_position is not None and len(_REGIME_STOPS.get(args.regime, ())) != 1:
+        # `staged_stops` counts TOKENS (angle x _REGIME_STOPS[regime]), the exact
+        # stop count for every single-regime entry in that TABLE. The TABLE is
+        # asked, never a hardcoded list of regime names — a named list is what
+        # went stale and refused `summed` for no reason once before. `both`
+        # pairs two stops per token, so the --complete-after floor below would
+        # be half the real count; an unknown regime composes zero, and the seam
+        # refuses it moments later anyway. Refused rather than multiplied: a
+        # multiplier here would be this file's own opinion about another tool's
+        # composition rule. NOT a nanny gate (measurement-loop doctrine §5): the
+        # FLAG is declined, never the experiment — stage the repeats by hand
+        # (--angles 0,0,0,7,7,7) at any regime.
+        composed = len(_REGIME_STOPS.get(args.regime, ()))
+        parser.error(
+            f"--per-position counts one stop per angle, and --regime "
+            f"{args.regime} composes "
+            + (f"{composed} stops per angle"
+               if composed
+               else "a stop count this runner cannot read")
+            + ", so the --complete-after floor below would be wrong. The WALK "
+              "is not refused — stage the repeats yourself "
+              "(--angles 0,0,0,7,7,7) and this runner counts nothing on your "
+              "behalf"
+        )
     elif args.angles and not args.attest_rig_clear:
         # A staged walk is an ARM walk, and without the attestation no arm walk
         # is launched — so the session would open, hold at its first position
@@ -1424,8 +1463,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         # (the count is the tier's, decided on the speaker). Refusing the
         # arithmetic it CAN do beats refusing none.
         #
-        # `staged_stops` counts TOKENS, which is the exact stop count: --regime
-        # is per_driver-only, and every per_driver stop is exactly one token.
+        # `staged_stops` counts TOKENS, which is the exact stop count for every
+        # regime composing ONE stop per angle — every single-regime entry in
+        # `_REGIME_STOPS`. For `both` it is half, and this still runs there,
+        # safely: a regime that
+        # stages MORE stops per angle can only make the real count larger, so
+        # this can never refuse a `--complete-after` that would have been fine —
+        # it just catches less. `--per-position` is refused outright for `both`
+        # (above), because there the floor is what the flag's whole arithmetic
+        # rests on rather than a bonus.
         stops = staged_stops(expand_angle_spec(args.angles, args.per_position))
         if args.complete_after < stops:
             parser.error(
