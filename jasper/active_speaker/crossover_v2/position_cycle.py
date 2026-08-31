@@ -335,8 +335,9 @@ def read_pose_curve_pair(
 
     **Latest attempt wins.** A superseded take stays on disk as the honest walk
     record, and ``take_id`` is ``{position}_a{attempt:02d}`` zero-padded so the
-    index's path order is also chronological — so the LAST match is the take a
-    retake produced.
+    index's path order is also chronological. The rows are therefore walked
+    newest-first and the first match returned, which is the retake rather than
+    what it replaced.
 
     ``None`` when no take at this pose carries both roles, never a raise: a
     round that measured one driver is an ordinary shape.
