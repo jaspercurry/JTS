@@ -267,16 +267,15 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
         aloop_device="shairport_substream",
         ring_device="shairport_ring_lane",
         conf_renderer="deploy/bin/jasper-apply-airplay-mode",
-        # Printed at arm time. Drift tolerance has SHM-ring evidence for the
-        # observed out-of-date/order event class. The other sync settings were
-        # held unchanged and still need ring reliability and A/V validation.
+        # Printed at arm time. Restates the template's shipped sync values;
+        # deploy/shairport-sync.conf.template owns them.
         arm_advisory=(
-            "AirPlay's shipped drift_tolerance=0.002 has SHM-ring validation "
-            "for the observed out-of-date/order event class. Keep "
-            "resync_threshold at 0.2 and "
-            "audio_backend_buffer_desired_length at 0.5; those settings and "
-            "the latency offset were held unchanged and still need their own "
-            "ring reliability and A/V validation."
+            "AirPlay's sync values are sized against this lane's geometry: "
+            "drift_tolerance=0.010 clears the 5.333 ms delay grain, and "
+            "audio_backend_buffer_desired_length at 0.045 sits mid-lane "
+            "inside the 85.333 ms depth so the servo keeps two-sided "
+            "headroom. Keep resync_threshold at 0.2. Re-check ring "
+            "occupancy and A/V sync on the box after arming."
         ),
     ),
 )

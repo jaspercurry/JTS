@@ -10,12 +10,14 @@
 #   - AirPlay device name based on JASPER_SPEAKER_NAME (in
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
-#     CamillaDSP config's samplerate/chunksize/target_level, the
-#     fan-in output buffer, jasper-outputd's optional content bridge,
-#     plus jasper-outputd's DAC buffer; AND, only while this speaker is
-#     an active bonded leader, the Snapcast round-trip playout buffer
-#     (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC, written by
-#     jasper-grouping-reconcile). Absent on solo/follower => unchanged.
+#     CamillaDSP config's samplerate/chunksize/target_level, jasper-fanin's
+#     live output delay (else the ring-queue stand-in), and jasper-outputd's
+#     live DAC delay (else JASPER_OUTPUTD_DAC_BUFFER_FRAMES); AND, only
+#     while this speaker is an active bonded leader, the Snapcast
+#     round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
+#     written by jasper-grouping-reconcile). Absent on solo/follower
+#     => unchanged. The formula is restated once, beside the placeholder
+#     in deploy/shairport-sync.conf.template.
 #   - output_device from the renderer-lane map (U3/P6d):
 #     /var/lib/jasper/renderer_lanes.env's JASPER_SHAIRPORT_DEVICE line,
 #     written by `jasper-audio-config renderer-lanes` — shairport_ring_lane
@@ -44,8 +46,9 @@
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
 #                                   Default: /etc/camilladsp/outputd-cutover.yml.
 #   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
-#                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES
-#                                 and content-bridge latency knobs. The
+#                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES,
+#                                 the fallback when outputd STATUS offers
+#                                 no live DAC delay. The
 #                                 renderer intentionally ignores
 #                                 outputd knobs from /etc/jasper/jasper.env
 #                                 and the process environment because the

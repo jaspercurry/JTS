@@ -6,15 +6,18 @@
 // `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env,
 // and `__RENDERER_DEVICE__` from the renderer-lane map (see the alsa
 // block below).
-// Default = no (synced). The shipped sync set is
-// drift_tolerance_in_seconds=0.002, resync_threshold_in_seconds=0.2, and
-// audio_backend_buffer_desired_length_in_seconds=0.5. Toggle via
-// http://jts.local/airplay/ or `jasper-airplay-mode set
-// [free-running|synced]`. See jasper/web/airplay_setup.py for the toggle UX.
-// SYNC-CONSTANT PROVENANCE: drift tolerance has SHM-ring evidence for the
-// regular out-of-date/order event class. The resync threshold, backend target,
-// and latency offset are unchanged and still need their own ring reliability
-// and A/V validation; see the U3 note above drift_tolerance.
+// Default = no (synced). Toggle via http://jts.local/airplay/ or
+// `jasper-airplay-mode set [free-running|synced]`. See
+// jasper/web/airplay_setup.py for the toggle UX.
+//
+// LANE GEOMETRY — every seconds-valued sync knob below is sized against
+// it (c/jts-ring-ioplug, at the fan-in lane's 48 kHz):
+//   16 slots x 256 frames = 4096 frames = 85.333 ms of depth, and the
+//   consumer drains exactly one slot per 5.333 ms, DAC-locked.
+// So the lane's snd_pcm_delay() reports pure ring fill: it steps in
+// 5.333 ms grains and saturates near 90.6 ms. A knob that does not clear
+// that grain servos on quantization noise, and a target above 85.333 ms
+// can never be reached.
 //
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
@@ -22,58 +25,59 @@
 
 general = {
     name = "__AIRPLAY_NAME__";
-    // "auto" picks soxr when CPU has slack, falls back to "basic"
-    // (linear) when the audio_backend_buffer is shallow. soxr alone
-    // bogged down during voice + AEC concurrency and produced the
-    // 17-second underrun cadence visible in the journal.
-    interpolation = "auto";
+    // "auto" benchmarks soxr at startup and can silently settle on
+    // "basic" — a single inserted/dropped sample per correction, which
+    // is the click — on Pi-class CPUs. soxr is compiled in
+    // (--with-soxr, deploy/lib/install/renderers.sh), so pin it.
+    interpolation = "soxr";
     output_backend = "alsa";
-    // U3/P6d RING PROVENANCE — read before retuning the sync values below.
-    // The SHM ioplug reports honest occupancy-derived delay (jts_ring_delay,
-    // c/jts-ring-ioplug/pcm_jts_ring.c). drift_tolerance has direct ring
-    // evidence for the event class below. resync_threshold, the latency
-    // offset, and buffer_desired_length were held unchanged in that trial;
-    // keep them unchanged until their own ring reliability and A/V validation.
-    // The arm CLI prints the same advisory.
-    //
-    // A JTS4 SHM-ring A/B trial on 2026-08-18 isolated 0.002 s for its regular
-    // out-of-date/order pairs: lowering drift eliminated them while the ring
-    // stayed at the same 15/16 occupancy, so that occupancy was not sufficient
-    // to produce the events. Ring-validation gaps remain.
-    drift_tolerance_in_seconds = 0.002;
-    // shairport's drift correction has two paths:
-    // - Continuous ±1-sample stuffing (gated by drift_tolerance) —
-    //   smooth, inaudible.
-    // - Discrete do_flush + silence injection (gated by
-    //   resync_threshold) — drops ~6,600 source frames + injects up
-    //   to 250 ms of zeros = audible "tear".
-    // resync_threshold=0.2 prevents the historical large-error path from
-    // flushing early. It was held constant in the JTS4 ring A/B and still
-    // needs its own long-run ring validation.
+    // Continuous ±1-frame-per-packet stuffing, the smooth correction path.
+    // shairport draws a per-packet random threshold uniform in [1x, 2x]
+    // this value: under 1x it never corrects, over 2x it always does.
+    // LOWER BOUND: 2x must exceed one 5.333 ms lane grain, or a single
+    // slot of ring-fill quantization reads as drift and parks the
+    // corrector in its always-correct regime with nothing to correct.
+    // 0.010 => never under 10 ms (1.9 grains), always over 20 ms (3.8).
+    drift_tolerance_in_seconds = 0.010;
+    // The other correction path: discrete do_flush + silence injection,
+    // which drops ~6,600 source frames and injects up to 250 ms of zeros
+    // = an audible tear. Stays far above the stuffing band so only a
+    // genuine large error reaches it.
     resync_threshold_in_seconds = 0.2;
-    // Derived by jasper-apply-airplay-mode as:
-    //   -((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)
-    // where target_level/chunksize/samplerate come from the active
-    // CamillaDSP config, fanin_output_buffer comes from jasper-fanin's
-    // output buffer setting, and outputd_dac_buffer
-    // comes from JASPER_OUTPUTD_DAC_BUFFER_FRAMES. While this speaker is an
-    // active bonded leader, jasper-grouping-reconcile also folds in the
-    // Snapcast round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC);
-    // it is absent on solo/follower, so the solo value is unchanged. The retired renderer-side and
-    // final-output dmix path is gone from the outputd topology; shairport
-    // writes its private fan-in lane while jasper-fanin handles
-    // WiFi burst absorption and jasper-outputd owns the DAC.
-    // This offset tells shairport about the fixed downstream delay
-    // invisible to its ALSA handle so video/multi-room sync stays
-    // honest. It was unchanged in the JTS4 ring A/B; end-to-end ring A/V
-    // validation remains open. Renders as -0.106667 with production values
-    // (chunksize=1024, target_level=2048, fan-in output=1024,
-    // outputd DAC=3072).
+    // The fixed downstream delay the lane's own snd_pcm_delay() cannot
+    // see, so video and multi-room sync stay honest. Computed at every
+    // render by jasper-apply-airplay-mode, never a constant:
+    //   -( ((target_level - chunksize) + fanin_frames + outputd_frames)
+    //      / samplerate + bonded_extra_sec )
+    // samplerate/chunksize/target_level — the ACTIVE CamillaDSP config
+    //   (target_level defaults to chunksize when absent, so the term is
+    //   the buffer ABOVE Camilla's implicit one-chunk baseline).
+    // fanin_frames — jasper-fanin STATUS output.snd_pcm_delay_frames,
+    //   else the script's ring-queue stand-in; fan-in reaches CamillaDSP
+    //   over SHM (ADR-0100), which has no ALSA delay to sample, so a ring
+    //   box always takes the stand-in.
+    // outputd_frames — jasper-outputd STATUS dac.snd_pcm_delay_frames,
+    //   else JASPER_OUTPUTD_DAC_BUFFER_FRAMES. The live delay can exceed
+    //   the requested buffer, so it wins when offered.
+    // bonded_extra_sec — Snapcast round-trip playout, written by
+    //   jasper-grouping-reconcile only while this speaker is an active
+    //   bonded leader; 0 on solo and followers.
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
-    // Held at 0.5 s in the JTS4 ring A/B. A 64 ms trial changed occupancy but
-    // is not adopted: longer WiFi-disruption, reliability, and A/V validation
-    // is required first.
-    audio_backend_buffer_desired_length_in_seconds = 0.5;
+    // Servo target for lane fill. Must be reachable INSIDE the 85.333 ms
+    // lane with room on both sides, or the servo saturates one-sided and
+    // the ring pins near full with nothing left to give back.
+    // 0.045 s = 2160 frames = 8.4 of the lane's 16 slots (53 % depth):
+    // ~40 ms of growth room, 45 ms of drain room, both far over the
+    // 5.333 ms grain.
+    audio_backend_buffer_desired_length_in_seconds = 0.045;
+    // Under this delay shairport abandons soxr for "basic" stuffing (the
+    // click). The ALSA-backend default of 0.120 exceeds the lane's
+    // ~90.6 ms saturation, so it can never be met and soxr never engages
+    // at all. 0.020 sits 25 ms (4.7 grains) under the target above, so a
+    // multi-slot dip keeps soxr.
+    // HARD CONSTRAINT: shairport die()s at startup when this exceeds
+    // audio_backend_buffer_desired_length_in_seconds (audio.c).
+    audio_backend_buffer_interpolation_threshold_in_seconds = 0.020;
 };
 
 sessioncontrol = {
@@ -112,12 +116,10 @@ alsa = {
     // is S24_3LE, not S16_LE.
     output_format = "S32";
     use_mmap_if_available = "no";
-    // Templated — see file header. With JTS's snd-aloop -> CamillaDSP
-    // -> outputd -> USB DAC chain, shairport's sample-stuffing fires
-    // audible glitches every ~60s before the resync_threshold fix
-    // (mikebrady/shairport-sync#1980). Free-running ("yes") is kept
-    // as a fallback — it trades A/V sync for video AirPlay and inter-
-    // speaker sync for multi-room. Default for JTS is "no" (synced).
+    // Templated — see file header. Free-running ("yes") is the fallback
+    // that stops chasing the sender clock entirely: it trades A/V sync
+    // for video AirPlay and inter-speaker sync for multi-room. JTS
+    // defaults to "no" (synced).
     disable_synchronization = "__DISABLE_SYNCHRONIZATION__";
 };
 

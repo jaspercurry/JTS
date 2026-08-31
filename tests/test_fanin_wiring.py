@@ -163,14 +163,47 @@ def test_shairport_template_keeps_renderer_placeholder():
     assert "output_rate = 44100" in conf
 
 
-def test_shairport_template_ships_two_ms_drift_tolerance():
+def test_shairport_drift_tolerance_clears_the_lane_delay_grain():
+    """shairport corrects when the error exceeds a per-packet random
+    threshold uniform in [1x, 2x] drift_tolerance. The lane's delay only
+    moves in 5.333 ms grains (256 frames at 48 kHz), so 2x the tolerance
+    must exceed one grain or quantization alone parks the corrector in
+    its always-correct regime."""
     conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
     assignments = re.findall(
         r"^\s*drift_tolerance_in_seconds\s*=\s*([0-9]+(?:\.[0-9]+)?);\s*$",
         conf,
         re.MULTILINE,
     )
-    assert assignments == ["0.002"]
+    assert len(assignments) == 1
+    assert 2 * float(assignments[0]) > 256 / 48_000
+
+
+def test_shairport_buffer_target_is_reachable_inside_the_lane():
+    """The servo target must fit the 4096-frame lane with room on both
+    sides, and the interpolation threshold must stay under it — shairport
+    die()s at startup when the threshold exceeds the desired length."""
+    conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
+
+    def only_value(setting: str) -> float:
+        matches = re.findall(
+            rf"^\s*{setting}\s*=\s*([0-9]+(?:\.[0-9]+)?);\s*$",
+            conf,
+            re.MULTILINE,
+        )
+        assert len(matches) == 1, f"expected one live {setting} assignment"
+        return float(matches[0])
+
+    lane_depth_s = 4096 / 48_000
+    grain_s = 256 / 48_000
+    desired = only_value("audio_backend_buffer_desired_length_in_seconds")
+    threshold = only_value(
+        "audio_backend_buffer_interpolation_threshold_in_seconds"
+    )
+
+    assert grain_s < desired < lane_depth_s - grain_s
+    assert threshold < desired
+    assert re.search(r'^\s*interpolation = "soxr";', conf, re.MULTILINE)
 
 
 def test_install_writes_fanin_asound_conf_and_ships_no_switcher():

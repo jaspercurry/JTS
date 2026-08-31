@@ -2227,14 +2227,10 @@ def test_arming_airplay_prints_the_transport_advisory(
     monkeypatch, tmp_path, capsys
 ):
     """A NEWLY armed lane with an `arm_advisory` prints it — the operator
-    carries AirPlay's ring validation boundary to the box's source pass from
-    this terminal, not from remembering to open a doc."""
+    carries AirPlay's sync boundary to the box's source pass from this
+    terminal, not from remembering to open a doc."""
     out = _arm_via_cli(monkeypatch, tmp_path, capsys, ["airplay"])
     assert "advisory airplay: " in out
-    assert "drift_tolerance" in out
-    assert "SHM-ring validation" in out
-    assert "those settings and the latency offset were held unchanged" in out
-    assert "ring reliability and A/V validation" in out
     lane = rl.lane_by_label("airplay")
     assert lane is not None and lane.arm_advisory
     assert lane.arm_advisory in out, (
