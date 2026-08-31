@@ -1311,16 +1311,14 @@ _STAGE2_PREFLIGHT_KEY = "stage2_preflight"
 
 def _stage2_preflight(status: Mapping[str, Any]) -> tuple[bool, str, dict[str, Any] | None]:
     """``(can_open_stage_2, refusal_message, refusal_action)`` for the review
-    screen's Apply control (D3's render-time preflight).
+    screen's refusal DISCLOSURE (D3's render-time preflight, demoted from gate
+    to disclosure — the apply transaction's ``_assert_stage_2_can_open`` is the
+    boundary that refuses a truly un-openable stage 2).
 
-    **Absence is not permission.** An unset key means the predicate never ran —
-    an envelope built off a path that does not attach it, a durable state read
-    by an older build — and "we never checked" must render exactly like "we
-    checked and it refused", because the failure this control exists to prevent
-    (apply succeeds, stage 2 refuses at open, the speaker sits corrected and
-    ungraded forever) is identical in both cases. Only an explicit ``ok: True``
-    enables Apply. Same rule the compact cloud block states for its own fields:
-    never fabricate a clean reading.
+    **Absence is not a clean reading.** An unset key means the predicate never
+    ran — an envelope built off a path that does not attach it — and "we never
+    checked" must disclose exactly like "we checked and it refused". Only an
+    explicit ``ok: True`` renders quiet.
 
     The message is passed through verbatim — every one of
     ``resolve_conductor_context``'s refusals is already household-facing and
@@ -1628,24 +1626,20 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # purpose — presenting improved-but-failing rather than applying it is the
     # entire point of this screen (D3.4). `None` is not `False` here.
     gradeable = bool(prediction and prediction.get("overall_passed") is not None)
-    apply_enabled = has_candidate and gradeable and can_open_stage_2
-
-    # ONE condition owns both the refusal sentence and the refusal's own
-    # resolution button below (review N-2). They were gated differently — the
-    # sentence also required `gradeable` — so an ungradeable prediction beside
-    # an action-carrying refusal rendered a bare "Review safety limits" button
-    # with nothing explaining why it was there.
-    #
-    # Aligned toward SHOWING both, not hiding one. A household in that state
-    # has two independent blockers, and the stage-2 refusal stays true after
-    # they re-measure: suppressing it would let them walk the whole
-    # measurement again only to meet a refusal that was knowable now. That is
-    # the exact cost #1828 moved this predicate earlier to avoid — "burned a
+    # Stage-2 openability does NOT disable Apply: a disabled control was never
+    # the boundary, and the apply transaction re-runs the same predicate
+    # (`_assert_stage_2_can_open`) and refuses a truly un-openable stage 2.
+    # The preflight stays a render-time DISCLOSURE (the nudge below), early
+    # and loud, because suppressing a refusal that is knowable now is the
+    # exact cost #1828 moved this predicate earlier to avoid — "burned a
     # link, walked to the phone, and hit a deterministic refusal that was
     # knowable before any of it".
-    #
-    # `has_candidate` stays in the gate: with no candidate there is no Apply
-    # control at all, so a note about why Apply is unavailable is noise.
+    apply_enabled = has_candidate and gradeable
+
+    # ONE condition owns both the refusal sentence and the refusal's own
+    # resolution button below (review N-2), so the button never renders
+    # unexplained. `has_candidate` stays in the gate: with no candidate there
+    # is no Apply control at all, so a note about applying is noise.
     show_preflight_refusal = has_candidate and not can_open_stage_2
     nudges: list[dict[str, str]] = []
     if show_preflight_refusal:
@@ -1656,9 +1650,8 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "code": "crossover_v2_stage2_preflight_refused",
             "severity": "warn",
             "text": (
-                f"{preflight_message} Applying now would leave this speaker "
-                "corrected but unchecked, so Apply is unavailable until that "
-                "is sorted."
+                f"{preflight_message} Applying now will be refused until "
+                "that is sorted."
             ),
         })
     if prediction is not None and prediction.get("overall_passed") is False:

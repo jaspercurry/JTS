@@ -4400,10 +4400,10 @@ def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
 
 def test_an_unexpected_preflight_failure_fails_closed(caplog):
     """"We could not check" and "we checked and it is fine" must never render
-    as the same screen. An unexpected exception is not permission — it disables
-    Apply on its own honest sentence, because the end state being prevented
-    (applied, then stage 2 refuses at open, box corrected and ungraded) is
-    identical whether the predicate refused or simply could not run."""
+    as the same screen. An unexpected exception writes a not-ok disclosure on
+    its own honest sentence — the Apply control no longer keys on it, but a
+    screen that renders quiet over a check that never ran would be fabricating
+    a clean reading."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     def _explode(status):
@@ -4853,9 +4853,10 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
 def test_the_envelope_route_actually_runs_the_preflight():
     """The wiring, pinned at its one call site.
 
-    The preflight fails CLOSED, so dropping this call does not break loudly —
-    it silently disables Apply on every review screen forever, which looks like
-    a product bug rather than a missing line. ``handle_envelope`` is the only
+    The disclosure fails CLOSED, so dropping this call does not break loudly —
+    every review screen warns with the reader's generic fallback sentence
+    forever (absence is not a clean reading), which looks like a product bug
+    rather than a missing line. ``handle_envelope`` is the only
     path that serves this envelope to the wizard, so the call belongs there and
     a source read is enough to prove it has not been lost in a refactor (same
     shape as ``test_the_session_preparer_rearms_the_walked_away_volume_ceiling``
@@ -4874,9 +4875,10 @@ def test_the_envelope_route_actually_runs_the_preflight():
     )
 
 
-def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
+def test_a_resolvable_context_renders_a_quiet_review_screen():
     """The positive case, end to end through the envelope: a preflight that
-    resolves is what turns the Apply control on, and nothing else does."""
+    resolves writes ``ok: True``, the review screen carries no preflight
+    warning, and Apply is offered."""
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
@@ -4898,6 +4900,8 @@ def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
         env = build_crossover_envelope_v2(status)
         assert env["screen"] == "review"
         assert env["next_action"]["enabled"] is True
+        assert not [n for n in env["nudges"]
+                    if n["code"] == "crossover_v2_stage2_preflight_refused"]
     finally:
         v2host.resolve_conductor_context = original
 
