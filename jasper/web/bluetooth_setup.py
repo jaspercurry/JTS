@@ -936,18 +936,23 @@ def _start_device_mutation(
     if action not in _DEVICE_ACTIONS:
         raise ValueError(f"unsupported Bluetooth device action: {action}")
     mac_u = mac.upper()
+    hold = contextlib.ExitStack()
+    hold.enter_context(idle_hold(f"bluetooth:{action}"))
     with _DEVICE_COORDINATION_LOCK:
         previous = _DEVICE_MUTATIONS.get(mutation_id)
         if previous is not None:
+            hold.close()
             if previous.action == action and previous.mac == mac_u:
                 return previous, True
             return None, False
         active = _ACTIVE_BLUETOOTH_ACTION
         if isinstance(active, _DeviceMutation):
+            hold.close()
             if active.action == action and active.mac == mac_u:
                 return active, True
             return None, False
         if active is not None:
+            hold.close()
             return None, False
         attempt = _DeviceMutation(
             mutation_id=mutation_id,
@@ -957,8 +962,6 @@ def _start_device_mutation(
         )
         _DEVICE_MUTATIONS[mutation_id] = attempt
         _ACTIVE_BLUETOOTH_ACTION = attempt
-
-    hold = contextlib.ExitStack()
 
     def _interrupt_start() -> None:
         try:
@@ -972,12 +975,6 @@ def _start_device_mutation(
                     "interrupted",
                 ),
             )
-
-    try:
-        hold.enter_context(idle_hold(f"bluetooth:{action}"))
-    except Exception:  # noqa: BLE001
-        _interrupt_start()
-        raise
 
     async def _drive() -> None:
         result = BluetoothActionResult(
@@ -1034,7 +1031,7 @@ def _start_device_mutation(
     driver = _drive()
     try:
         _dispatch().submit(driver)
-    except Exception:  # noqa: BLE001
+    except (RuntimeError, TypeError):
         _close_awaitable(driver)
         _interrupt_start()
         raise
