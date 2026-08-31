@@ -22,7 +22,12 @@ import stat
 import pytest
 
 from jasper import atomic_io as atomic_io_module
-from jasper.atomic_io import advisory_file_lock, atomic_write_json, atomic_write_text
+from jasper.atomic_io import (
+    advisory_file_lock,
+    atomic_write_json,
+    atomic_write_text,
+    fsync_directory,
+)
 
 
 def test_write_read_round_trip(tmp_path):
@@ -99,6 +104,30 @@ def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
     assert path.read_text(encoding="utf-8") == "published\n"
     assert list(tmp_path.iterdir()) == [path]
     assert "event=atomic_io.temp_cleanup_failed" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "code", [errno.EINVAL, getattr(errno, "ENOTSUP", errno.EINVAL)]
+)
+def test_fsync_directory_tolerates_unsupported_filesystems(
+    tmp_path, monkeypatch, code
+):
+    def unsupported_fsync(_fd):
+        raise OSError(code, "directory fsync not supported")
+
+    monkeypatch.setattr(os, "fsync", unsupported_fsync)
+
+    fsync_directory(tmp_path)
+
+
+def test_fsync_directory_reraises_real_faults(tmp_path, monkeypatch):
+    def failing_fsync(_fd):
+        raise OSError(errno.EIO, "simulated directory fsync fault")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+
+    with pytest.raises(OSError, match="simulated directory fsync fault"):
+        fsync_directory(tmp_path)
 
 
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):

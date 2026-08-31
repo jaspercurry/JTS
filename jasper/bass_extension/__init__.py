@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_text, fsync_directory
 
 BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})
 BASS_EXTENSION_APPLY_INTENT_PATH = Path(
@@ -41,12 +41,7 @@ def _durable_unlink(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         return
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    fd = os.open(path.parent, flags)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    fsync_directory(path.parent)
 
 
 def _profile_entry(raw: bytes | None) -> dict[str, Any]:

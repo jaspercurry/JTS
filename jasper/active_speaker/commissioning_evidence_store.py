@@ -33,6 +33,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, TypeVar
 
+from jasper.atomic_io import fsync_directory
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_artifacts import (
@@ -339,16 +340,6 @@ def _max_bytes_for_path(relative_path: str) -> int:
     return MAX_TYPED_EVIDENCE_BYTES
 
 
-def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 @dataclass(slots=True)
 class _ReadBudget:
     byte_limit: int = MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES
@@ -479,9 +470,9 @@ class CommissioningEvidenceStore:
                 )
             try:
                 os.chmod(current, 0o750)
-                _fsync_directory(current)
+                fsync_directory(current)
                 if created:
-                    _fsync_directory(current.parent)
+                    fsync_directory(current.parent)
             except OSError as exc:
                 raise CommissioningEvidenceStoreError(
                     CommissioningEvidenceStoreErrorCode.PERSIST_FAILED,
@@ -684,7 +675,7 @@ class CommissioningEvidenceStore:
                     "write-once evidence path already contains different bytes",
                 )
             try:
-                _fsync_directory(path.parent)
+                fsync_directory(path.parent)
             except OSError as exc:
                 raise CommissioningEvidenceStoreError(
                     CommissioningEvidenceStoreErrorCode.PERSIST_OUTCOME_UNKNOWN,
@@ -745,7 +736,7 @@ class CommissioningEvidenceStore:
                 try:
                     os.unlink(temporary)
                     temporary = ""
-                    _fsync_directory(path.parent)
+                    fsync_directory(path.parent)
                 except OSError as exc:
                     raise _PublishOutcomeUnknown(str(exc)) from exc
                 return self._verified_payload_identity(relative_path, payload)
@@ -753,7 +744,7 @@ class CommissioningEvidenceStore:
             try:
                 os.unlink(temporary)
                 temporary = ""
-                _fsync_directory(path.parent)
+                fsync_directory(path.parent)
             except OSError as exc:
                 raise _PublishOutcomeUnknown(str(exc)) from exc
         except CommissioningEvidenceStoreError:
