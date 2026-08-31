@@ -33,21 +33,10 @@
 # "version-updates", so SECURITY updates are structurally ungrouped and are
 # exempt from open-pull-requests-limit.
 #
-# BUT that channel is currently inert on this repository: Dependabot alerts
-# and security updates are both DISABLED
-# (`gh api repos/jaspercurry/JTS/automated-security-fixes` reports
-# `enabled:false`; `.../vulnerability-alerts` 404s), and none of the ~45
-# dependabot PRs raised to date has been a security update. So today the
-# grouped version-update PRs below are the ONLY path by which a CVE fix
-# reaches this repo, which means a red group PR can hold one up — the
-# opposite of what the ungrouped-security design intends.
-#
-# Both features are free on a public repository. Enabling them restores the
-# separate fast channel this grouping assumes:
-#   gh api -X PUT repos/jaspercurry/JTS/vulnerability-alerts
-#   gh api -X PUT repos/jaspercurry/JTS/automated-security-fixes
-# Until then, treat the python-runtime group as security-relevant and do not
-# let it sit red.
+# A uv-side bump here moves `uv.lock` but cannot touch the Pi's
+# `deploy/constraints-pi.txt`, so any bump on the #1275 cross-ecosystem pin
+# chain lands red until both sides are co-resolved with
+# `python3 scripts/align-pi-constraint-pins.py`.
 version: 2
 updates:
   - package-ecosystem: "uv"

@@ -58,6 +58,7 @@ unresolvable combination shipped. These three guards close that gap:
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -104,30 +105,83 @@ def _parse_uv_lock() -> dict[str, str]:
     }
 
 
-# Packages whose constraints-pi.txt pin must track the co-resolved uv.lock.
-# Reasons are load-bearing — verified
-# against live PyPI metadata on 2026-07-11 (#1275). Names are PEP 503
-# canonical.
-_CROSS_ECOSYSTEM_PIN_CHAIN: dict[str, str] = {
-    # pydantic hard-pins pydantic-core to an EXACT ==version
-    # (pydantic 2.13.4 -> pydantic-core==2.46.4). Bumping pydantic-core
-    # alone (dependabot #745) is ResolutionImpossible.
-    "pydantic": "drives the pydantic-core exact pin",
-    "pydantic-core": "pydantic pins this with ==; must track pydantic (#745)",
-    # Protobuf is an explicit [full] pin shared by the MTA parser, ONNX
-    # Runtime, and the Google API proto stack. Keep every member aligned
-    # across uv and the Pi overlay so Dependabot cannot move one side alone.
-    "protobuf": "explicit shared runtime pin",
-    "gtfs-realtime-bindings": "subway fallback wire-schema binding",
-    "google-api-core": "2.31.0+ admits protobuf 7 (<8)",
-    "googleapis-common-protos": "1.74.0+ floor protobuf>=4.25.8",
-    "proto-plus": "1.28.0+ floor protobuf>=4.25.8",
-    "onnxruntime": "1.27.0+ floor protobuf>=4.25.8",
-    # CamillaController deliberately uses websocket-client's private _ws
-    # handle plus abort()/default-timeout semantics to stop and drain pinned
-    # pycamilladsp workers. CI and the Pi must exercise the same version.
-    "websocket-client": "private CamillaDSP abort/timeout transport contract",
-}
+# The pin-chain table lives with the tool that repairs the drift, so the
+# guard and the fix can never disagree about which packages are in scope.
+# Guards 2 and 3 below are what catch anything the table does not enumerate.
+_ALIGN_SCRIPT = _ROOT / "scripts" / "align-pi-constraint-pins.py"
+_spec = importlib.util.spec_from_file_location(
+    "align_pi_constraint_pins", _ALIGN_SCRIPT
+)
+assert _spec is not None and _spec.loader is not None
+_align = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_align)
+_CROSS_ECOSYSTEM_PIN_CHAIN: dict[str, str] = _align.CROSS_ECOSYSTEM_PIN_CHAIN
+
+
+def _alignment_fixture(
+    *,
+    drift: str | None = None,
+    missing_constraint: str | None = None,
+    missing_lock: str | None = None,
+) -> tuple[str, str]:
+    constraints = ["# preserved header"]
+    lock_packages: list[str] = []
+    for name in sorted(_CROSS_ECOSYSTEM_PIN_CHAIN):
+        if name != missing_constraint:
+            spelling = "pydantic_core" if name == "pydantic-core" else name
+            constraints.append(f"{spelling}==1")
+        if name != missing_lock:
+            version = "2" if name == drift else "1"
+            lock_packages.append(
+                f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+            )
+    constraints.append("unrelated==7")
+    return "\n".join(constraints) + "\n", "\n".join(lock_packages)
+
+
+def test_alignment_command_rewrites_only_target_pins_and_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constraints_text, lock_text = _alignment_fixture(drift="pydantic-core")
+    constraints = tmp_path / "constraints-pi.txt"
+    lock = tmp_path / "uv.lock"
+    constraints.write_text(constraints_text, encoding="utf-8")
+    lock.write_text(lock_text, encoding="utf-8")
+    monkeypatch.setattr(_align, "CONSTRAINTS", constraints)
+    monkeypatch.setattr(_align, "UV_LOCK", lock)
+
+    assert _align.main(["--check"]) == 1
+    assert constraints.read_text(encoding="utf-8") == constraints_text
+
+    assert _align.main([]) == 0
+    expected = constraints_text.replace("pydantic_core==1", "pydantic_core==2")
+    assert constraints.read_text(encoding="utf-8") == expected
+
+    assert _align.main([]) == 0
+    assert constraints.read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize("missing_from", ["constraints", "lock"])
+def test_alignment_command_refuses_a_missing_required_pin(
+    missing_from: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = "pydantic-core"
+    constraints_text, lock_text = _alignment_fixture(
+        missing_constraint=missing if missing_from == "constraints" else None,
+        missing_lock=missing if missing_from == "lock" else None,
+    )
+    constraints = tmp_path / "constraints-pi.txt"
+    lock = tmp_path / "uv.lock"
+    constraints.write_text(constraints_text, encoding="utf-8")
+    lock.write_text(lock_text, encoding="utf-8")
+    monkeypatch.setattr(_align, "CONSTRAINTS", constraints)
+    monkeypatch.setattr(_align, "UV_LOCK", lock)
+
+    assert _align.main([]) == 2
+    assert constraints.read_text(encoding="utf-8") == constraints_text
 
 
 def test_cross_ecosystem_pin_chain_matches_uv_lock() -> None:
@@ -155,8 +209,9 @@ def test_cross_ecosystem_pin_chain_matches_uv_lock() -> None:
         "cross-ecosystem pin-chain packages — a fresh deploy's "
         "`pip install -c deploy/constraints-pi.txt -e .[full]` will fail with "
         "ResolutionImpossible (see #1275).\n"
-        "Fix: regenerate from a coherent Pi via scripts/generate-pi-constraints.sh, "
-        "or align these pins to uv.lock as one co-resolved change:\n  "
+        "Fix: `python3 scripts/align-pi-constraint-pins.py` co-resolves exactly "
+        "these pins, or regenerate the whole overlay from a coherent Pi via "
+        "scripts/generate-pi-constraints.sh:\n  "
         + "\n  ".join(mismatches)
     )
 
