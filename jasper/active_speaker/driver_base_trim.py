@@ -363,58 +363,6 @@ def write_base_trim(
     return payload
 
 
-def write_base_trim_if_changed(
-    *,
-    trims_db: Mapping[str, float],
-    roles: Sequence[str],
-    speaker_group_ids: Sequence[str],
-    declaration_fingerprint: str,
-    trim_source: str,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """:func:`write_base_trim`, skipped when the bank already holds this exact
-    trim. Re-applying an unchanged level match — the common re-apply, nothing
-    measured moved — must not churn `/var/lib` on every apply.
-
-    Lives beside ``write_base_trim`` rather than inside it, so that function's
-    validation stays the one and only envelope check: this only ever decides
-    whether to call it, on a comparison against the ALREADY-VALIDATED stored
-    record. An unchanged write can only be identical to a record
-    ``write_base_trim`` accepted once already, so skipping it validates
-    nothing new. Falls through to ``write_base_trim`` (and its refusals)
-    whenever the trims' own role set does not even match ``roles`` — the
-    comparison below is keyed on ``roles`` and would otherwise miss an extra,
-    invalid key ``write_base_trim`` must still see and reject.
-    """
-    existing = load_base_trim(state_path=state_path)
-    if existing is not None and set(trims_db) == set(roles):
-        candidate_trims: dict[str, float] = {}
-        every_value_finite = True
-        for role in roles:
-            value = _finite(trims_db.get(role))
-            if value is None:
-                every_value_finite = False
-                break
-            candidate_trims[str(role)] = value
-        if (
-            every_value_finite
-            and existing.get("trims_db") == candidate_trims
-            and existing.get("roles") == list(roles)
-            and existing.get("speaker_group_ids") == _group_ids(speaker_group_ids)
-            and existing.get("declaration_fingerprint") == declaration_fingerprint
-            and existing.get("trim_source") == trim_source
-        ):
-            return existing
-    return write_base_trim(
-        trims_db=trims_db,
-        roles=roles,
-        speaker_group_ids=speaker_group_ids,
-        declaration_fingerprint=declaration_fingerprint,
-        trim_source=trim_source,
-        state_path=state_path,
-    )
-
-
 def clear_base_trim(*, state_path: str | Path | None = None) -> bool:
     """Drop the banked record. ``True`` when the box is left carrying none.
 
