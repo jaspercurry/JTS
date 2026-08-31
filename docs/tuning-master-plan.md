@@ -5,7 +5,8 @@
 > the prior plans it supersedes are listed in "Supersessions and standing
 > docs" below. Wave 0 landed 2026-08-21 (all five PRs merged); Waves 1–3 are
 > underway (tracking: epics #2824/#2825/#2826 carry per-ticket state — not
-> enumerated here; one planning authority, one tracker). The 2026-08-21
+> enumerated here; one planning authority, one tracker). Wave 6 (toolbox
+> hardening after the flat campaign) was adopted 2026-08-31. The 2026-08-21
 > adversarial gate review of this document returned 1 blocker and 7
 > should-fixes, all folded into this revision (see Provenance).
 
@@ -567,6 +568,79 @@ prescribe path converges onto the doors; program model extends to the
 listening-position regime; `position_index` unifies with the pose ruling;
 moving-mic decision made then.
 
+**Wave 6 — toolbox hardening after the flat campaign (adopted 2026-08-31;
+sequenced now, not behind Wave 5's pin).** Evidence:
+[`historical/flat-campaign-2026-08-31.md`](historical/flat-campaign-2026-08-31.md)
+and the owner-commissioned independent methodology review of it, reconciled
+against the tree on 2026-08-31 — roughly half the review's "missing" list
+turned out to be shipped, which is why these tickets are this small.
+Standing rule for the wave, owner-restated 2026-08-31: **tools compute
+facts; the LLM judges** (invariants 3–4) — no ticket ships a score, a
+recommendation, or a veto; new discriminating evidence lands as fields.
+Elevation stays sequenced behind this wave by the same ruling: the
+campaign's delay findings raise the vertical tilt check's value, and that
+work is already planned (#2880's `(azimuth, elevation)` axis, the `verify`
+program's tilt check, experiment E1) — deliberately not promoted into this
+wave. Impedance measurement is dead, not parked:
+[ADR-0200](adr/0200-the-measurement-toolbox-is-microphone-only.md).
+6.1 Gate-ladder exposure: `jasper-classify-features` grows a gates-list
+    flag wired to `classify_round(gates_ms=...)`, and the artifact's
+    per-rung rows (center/depth per gate, per feature) are verified
+    readable — rungs above `SEARCH_T_MAX_MS` deliberately re-admit
+    reflections; convergence vs fan-out across the ladder is the read.
+    The shipped 3/5/7 default and the gate-invariance verdict semantics
+    are untouched. (S)
+6.2 Off-axis persistence as a field: per detected feature, the classifier
+    artifact gains per-pose depth/center rows read from the round's banked
+    lateral pose curves (`spatial.pose_curve_record`'s Wave-4a
+    magnitude+phase bank — never raw lateral WAVs;
+    `LATERAL_CAPTURE_SHAPE`'s refusal to pool laterals into detection
+    stands). A discriminating field under the skip-ledger's rule, not a
+    mechanism detector. (M)
+6.3 Decay as a field: per-feature narrow-band decay from already-banked
+    IRs — band-limited analytic envelope, time-to-−20 dB at the feature
+    center and at flanking bands — promoting the campaign's out-of-repo
+    898 Hz ridge method into the classifier's field set, with known-answer
+    controls in the shipped control-suite style. (M)
+6.4 Toolbox legibility: the runbook tool menu gains inputs/outputs
+    columns; a hardware-free test pins that every tuning `jasper-*` entry
+    point in `pyproject.toml` appears in the menu; one front-door
+    paragraph states the reading order for a fresh driving LLM (runbook →
+    methodology → doctrine). (S)
+6.5 Accuracy beside precision: one packet summary block juxtaposing the
+    round's measured repeat floor (random) against the standing systematic
+    bounds (mic-cal tier, position sensitivity, gate leakage), building on
+    the Wave-1 random/systematic labeling rule — so a 0.04 dB repeat floor
+    can never again read as accuracy. (S)
+6.6 Trim-drift visibility: the packet carries the re-solved trim pair's
+    recent per-round history from banked receipts, so a monotonic walk
+    (the campaign's −1.4 → −2.1 → −3.1 runaway signature) is readable
+    evidence. No verdict — the pin fields are the shipped remedy. (S)
+6.7 `forward_model` lands now: 3.8 + 4.5 promoted into this wave, scope
+    unchanged, plus one acceptance case each from the campaign bank —
+    postdict the r8 regression (measured delay under held EQ → the ~−3 dB
+    crossover-region dip) and track the C5→final measured delta within
+    the model's stated tolerance, before any prediction triages a
+    candidate. (M)
+6.8 Prescription-door bounds audit: run the doctrine's nanny test over
+    every refusal bound in the four door envelopes (blend's count/Q/depth
+    caps, driver-envelope terms beyond the hard-stop-derived ones,
+    alignment/topology bounds). 2.7 burned down the doctrine's deviation
+    table; this sweep covers the door bounds specifically, post-campaign.
+    Output is a proposal table — each bound names its damage/hearing
+    mechanism (stays), re-tags as integrity under the ADR-0002 test
+    (stays), or is proposed for demotion to disclosure; demotions land
+    only after owner ruling, as their own PRs. (M)
+6.9 Research intake: four owner research assignments are out as of
+    2026-08-31 (correction granularity/audibility; reference axis and
+    position artifacts; gating/windowing; structure/alignment and
+    automation prior art); results land under `docs/research/` (the
+    2026-07-24 bass-extension pattern); each re-adjudication they force
+    is its own ADR — named candidates: the FDW not-built entry, the flat
+    ±dB `SPEC_BANDS` tolerances (audibility/Q weighting), the 0°
+    reference axis for the horn class. Until a result lands, the standing
+    ledger entries hold. (S)
+
 ## The operator session, end to end
 
 SSH in (cloud agent, laptop, or on-Pi) → `jasper-crossover-prescriber
@@ -607,4 +681,10 @@ per-decision. The 2026-08-21 adversarial gate review of this document
 (1 blocker, 7 should-fixes) is fully folded into this revision; the delta
 re-review verdict is recorded in the session/PR disposition.
 
-Last verified: 2026-08-21
+Wave 6 inputs (2026-08-31): the frozen flat-campaign record; an
+owner-commissioned independent methodology review of it; three
+tree-reconciliation recon reports over `0bcdd95d2`; owner rulings in chat —
+facts-not-judgments restated, impedance ruled out (ADR-0200), elevation
+kept sequenced behind the wave.
+
+Last verified: 2026-08-21 (Wave 6 additions verified 2026-08-31)
