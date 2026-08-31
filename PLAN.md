@@ -8,7 +8,7 @@ belongs in Git, issues, pull requests, and
 ## Now
 
 - Complete the active tuning cutover around the production session path:
-  `open` → `measure` → `close`. The web flow drives those calls. The
+  `open` → `measure` → `close`. Web and CLI entry points drive those calls. The
   doors-and-banks tools analyze banked evidence, recommend the next action,
   and record the round, as defined by
   [ADR-0198](docs/adr/0198-the-unwired-engine-verb-half-is-deleted.md).
