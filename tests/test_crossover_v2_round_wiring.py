@@ -32,11 +32,9 @@ What is pinned, in the order a round meets it:
    conductor persist does not;
 7. **every round banks its receipt.**
 
-**Undo lives next door.** The restore/undo/anchor pins moved to
-``tests/test_crossover_v2_undo_and_anchor.py`` — their subject is the
-apply/rollback transaction, which ``docs/REFACTOR-TUNING-2026-08.md`` §3 marks
-*"not a target. Ever."*, and it must not sit inside a suite the strangler
-dissolves.
+**The rollback seam's own door-level pins live next door**, in
+``tests/test_crossover_v2_pin_apply_rollback.py`` — this suite drives the
+round OUTCOMES through it.
 
 This module drives the REAL preparers through
 :mod:`tests.crossover_v2_round_harness` over
@@ -119,9 +117,8 @@ from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 
 # The round harness: one staging of "a real stage 2, post-apply, with a
-# comparable before". Shared with ``tests/test_crossover_v2_undo_and_anchor.py``
-# through a module that is a fixture library rather than a test file, so
-# neither suite depends on the other's collection.
+# comparable before" — a fixture library rather than a test file, so no
+# suite depends on another's collection.
 from tests.crossover_v2_round_harness import (
     _bg_run_async,
     _consume_verify,

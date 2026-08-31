@@ -2752,12 +2752,9 @@ def apply_measured_crossover_geometry(
     """Write a measured crossover onto the Sound declaration. Durable: every
     write through this function is fsynced before it is visible.
 
-    Two production callers, both accept/apply-seam actions on the Sound
-    declaration: ``handle_v2_apply``'s measured-crossover accept (the forward
-    write), and ``_restore_sound_declaration``'s Undo leg (the SAME write run
-    backwards, with ``configured``/``selected`` swapped, to put the
-    declaration back to what it said before the accept). Both correctly get
-    the durable write -- there is no separate, cheaper path into this
+    One production caller, an accept/apply-seam action on the Sound
+    declaration: ``handle_v2_apply``'s measured-crossover accept. It correctly
+    gets the durable write -- there is no separate, cheaper path into this
     function.
 
     **Frequency AND slope, through one writer.** The declaration states a

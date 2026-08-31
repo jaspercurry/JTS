@@ -334,11 +334,8 @@ def test_a_pre_envelope_record_round_trips_instead_of_stranding_the_declaration(
     for as long as the applied graph is
     (``correction_crossover_v2.observe_apply_success`` /
     ``persist_conductor_state``) — so a record on a live speaker RIGHT NOW can
-    be exactly this pre-envelope shape. Refusing it outright would silently
-    strand ``/sound``'s declaration against a graph the speaker is no longer
-    playing the next time Undo tries to read it back, the exact P0
-    :func:`~jasper.web.correction_crossover_v2._restore_sound_declaration`'s
-    own docstring names.
+    be exactly this pre-envelope shape. Refusing it outright would strand a
+    reader against a record an older build legitimately wrote.
 
     Generated from the CURRENT :func:`change_to_record` output with the two
     envelope keys removed, not hand-typed, so this is exactly the shape the

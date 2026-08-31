@@ -337,19 +337,16 @@ def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
 
     ``kind`` and ``artifact_schema_version`` are checked on the same terms as
     every other field, with ONE exception: a record naming NEITHER is exactly
-    the pre-envelope shape #2743's own shipped builds wrote, and
-    ``sound_declaration_undo`` is carried unconditionally across a deploy for
-    as long as the applied graph is (``correction_crossover_v2.
-    observe_apply_success`` / ``persist_conductor_state``) — so refusing it
-    outright would silently strand ``/sound``'s declaration against a graph
-    the speaker is no longer playing the next time Undo tries to read it back,
-    which is the exact P0
-    :func:`~jasper.web.correction_crossover_v2._restore_sound_declaration`'s
-    own docstring names. That one shape reads as this module's own kind and
-    version 1 rather than raising. A record naming EITHER field, even if the
-    other is missing or wrong, is NOT that legacy shape — it tried to speak
-    the envelope and got it wrong — and reads as ``None`` under both postures,
-    exactly like the seven fields beside it.
+    the pre-envelope shape #2743's own shipped builds wrote, and such records
+    are carried unconditionally across a deploy for as long as the applied
+    graph is (``correction_crossover_v2.observe_apply_success`` /
+    ``persist_conductor_state``) — so refusing it outright would strand a
+    reader against a record an older build legitimately wrote. That one shape
+    reads as this module's own kind and version 1 rather than raising. A
+    record naming EITHER field, even if the other is missing or wrong, is NOT
+    that legacy shape — it tried to speak the envelope and got it wrong — and
+    reads as ``None`` under both postures, exactly like the seven fields
+    beside it.
     """
 
     if not isinstance(record, Mapping):
