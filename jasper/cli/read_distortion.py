@@ -20,10 +20,13 @@ carrying more than one round is refused rather than guessed at.
 ``--dumps`` is the banked capture ring, which lives outside the bundle, and
 ``--state`` is the round's flow state — required, because the MEASURE program is
 rebuilt from its ``gain_plan_db`` and proved against its ``candidate.program_id``
-before any capture is read. ``--woofer-band`` / ``--tweeter-band`` supply the
-driver bands the rebuild needs; they default to the shipped MEASURE bands and a
-wrong pair simply fails the program-id proof rather than producing a wrong
-reading.
+before any capture is read. ``--applied-profile`` is the round's own banked
+applied-baseline-profile SSOT, and is where the crossover corner is read from —
+never from ``--state``, whose ``pre_apply_profile`` is the Undo stash and can be
+stale by one apply or arbitrarily many. ``--woofer-band`` / ``--tweeter-band``
+supply the driver bands the rebuild needs; they default to the shipped MEASURE
+bands and a wrong pair simply fails the program-id proof rather than producing a
+wrong reading.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
 read and filed, ``1`` the round could not be read, ``2`` the instrument refused
@@ -114,6 +117,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "That proof is program-vs-STATE only: pass a state from a DIFFERENT "
             "round than <bundle-dir> and the drive comes out wrong with no "
             "refusal, so pass the one belonging to this round"
+        ),
+    )
+    parser.add_argument(
+        "--applied-profile",
+        type=Path,
+        default=None,
+        help=(
+            "the applied baseline profile JSON — this speaker's record of what "
+            "it is PLAYING, and where the round's crossover corner is read "
+            "from. NOT the flow state's pre_apply_profile: that Undo stash can "
+            "be one apply behind or arbitrarily behind the graph the round "
+            "actually measured through. Without it (or if it cannot be read) "
+            "the round is refused rather than read"
         ),
     )
     parser.add_argument(
@@ -216,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             session_id=session_id,
             orders=HARMONIC_ORDERS,
             calibration_text=calibration_text,
+            applied_profile_path=args.applied_profile,
         )
     except HarmonicEvidenceRefused as refusal:
         return _fail(

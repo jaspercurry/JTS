@@ -1224,20 +1224,24 @@ pre-arrival offsets in each deconvolution. The math lives in the product module
 this script is the lab driver over a banked corpus.
 
 **For a banked ROUND, reach for the product instrument instead.**
-`jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>`
+`jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>
+--applied-profile <applied-profile.json>`
 ([`jasper/cli/read_distortion.py`](../jasper/cli/read_distortion.py) over
 [`harmonic_evidence.py`](../jasper/active_speaker/crossover_v2/harmonic_evidence.py))
 is the promotion of this script's method: same two gates (program-id proof,
 analysis-fidelity comparison) and same band arithmetic, but it takes a bundle
-rather than three loose directories, derives the crossover corner and the driver
-gains from the round's own state, and files `harmonic_distortion.json` where the
-evidence packet reads it. This script stays as the exploratory bench — it prints
-a table, takes `--captures`/`--dumps` as separate paths, and reads corpora that
+rather than three loose directories, derives the driver gains from the round's
+own state and the crossover corner from its applied-profile SSOT (never from
+the state's `pre_apply_profile` Undo stash, which can be stale by one apply or
+arbitrarily many), and files `harmonic_distortion.json` where the evidence
+packet reads it. This script stays as the exploratory bench — it prints a
+table, takes `--captures`/`--dumps` as separate paths, and reads corpora that
 were never banked as rounds.
 
 ```sh
 PYTHONPATH=. .venv/bin/python scripts/harmonic-distortion-replay.py \
   --state captures/xover-series2-2026-08-17/series2-state-r1b-preapply.json \
+  --applied-profile captures/xover-series2-2026-08-17/applied-profile-r1b.json \
   --captures captures/xover-series2-2026-08-17/e0-r1b \
   --dumps captures/xover-series2-2026-08-17/dumps-r1b \
   --calibration captures/flat-linearization-20260725/umik2-cal/umik2-b7343c0c625b.txt

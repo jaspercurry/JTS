@@ -102,7 +102,11 @@ from typing import Any
 
 import numpy as np
 
-from .evidence_packet import HARMONICS_ARTIFACT, RING_SIDECAR_GLOB
+from .evidence_packet import (
+    HARMONICS_ARTIFACT,
+    RING_SIDECAR_GLOB,
+    _applied_profile_source,
+)
 from .journey import PHASE_MEASURE
 
 __all__ = [
@@ -533,22 +537,28 @@ def _state_relay_session_id(state: Mapping[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _crossover_fc_hz(state: Mapping[str, Any]) -> float:
-    """The round's declared crossover corner, read out of its own flow state.
+def _crossover_fc_hz(
+    applied_profile: Mapping[str, Any] | None, profile_reason: str
+) -> float:
+    """The round's declared crossover corner, read from the applied-profile SSOT.
 
     ``analyze_program_capture`` REFUSES a MEASURE capture without one
     (``"MEASURE analysis requires priors.crossover_fc_hz"``), and the fidelity
     gate runs that analysis, so this is a precondition rather than a nicety.
 
-    Read from the state rather than taken as an argument on purpose: the corner
-    is a fact about the round, the state is where the round records it, and a
-    flag would let an operator hand this instrument a different corner from the
-    one the captures were taken through — which would move the analysis's
-    per-driver expectations without moving anything a reader could see.
+    Read from :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
+    (via :func:`~.evidence_packet._applied_profile_source`), never from a flow
+    state's ``pre_apply_profile``: that field is the Undo stash, written only by
+    ``observe_apply_success`` and naming the graph Undo restores TO, so it is one
+    apply behind after any v2 apply and arbitrarily behind after an apply through
+    a door that never touches v2 state. A caller that wants a specific round's
+    corner passes that round's own banked applied-profile file, never a flow
+    state.
     """
-    profile = state.get("pre_apply_profile")
     snapshot = (
-        profile.get("recomposition_snapshot") if isinstance(profile, Mapping) else None
+        applied_profile.get("recomposition_snapshot")
+        if isinstance(applied_profile, Mapping)
+        else None
     )
     preset = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
     regions = preset.get("crossover_regions") if isinstance(preset, Mapping) else None
@@ -559,14 +569,15 @@ def _crossover_fc_hz(state: Mapping[str, Any]) -> float:
             STATE_UNREADABLE,
             {
                 "missing": (
-                    "pre_apply_profile.recomposition_snapshot.preset."
+                    "applied_baseline_profile.recomposition_snapshot.preset."
                     "crossover_regions[0].fc_hz"
                 ),
+                "reason": profile_reason,
                 "note": (
                     "the shipped MEASURE analysis refuses a capture without the "
                     "round's crossover corner, and the fidelity gate runs that "
-                    "analysis, so a round whose state does not record one cannot "
-                    "be read for harmonics at all"
+                    "analysis, so a round whose applied profile does not record "
+                    "one cannot be read for harmonics at all"
                 ),
             },
         )
@@ -1062,13 +1073,25 @@ def read_round_harmonics(
     session_id: str | None = None,
     orders: Sequence[int] = HARMONIC_ORDERS,
     calibration_text: str | None = None,
+    applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     """One round's H2/H3 reading, as the document the packet carries.
 
     ``round_dir`` names the reading in the artifact (nothing is read from it
     here — the captures live in the ring), ``dumps_dir`` is the ring root,
-    ``state`` is the flow state's parsed contents, and ``bands`` maps each
-    driver role to its ``(f1, f2)``.
+    ``state`` is the flow state's parsed contents (its ``gain_plan_db`` and
+    ``candidate.program_id`` are what the MEASURE program is rebuilt from and
+    proved against — see ``applied_profile_path`` for where the crossover
+    corner comes from instead), and ``bands`` maps each driver role to its
+    ``(f1, f2)``.
+
+    ``applied_profile_path`` is the applied-baseline-profile SSOT, which is
+    where the round's crossover corner is read from (see
+    :func:`_crossover_fc_hz`). Its absence, or an unreadable file, is reported
+    through :class:`HarmonicEvidenceRefused` rather than falling back to
+    ``state``'s ``pre_apply_profile`` — that field is the Undo stash, which can
+    be one apply behind or arbitrarily behind the graph a round actually
+    measured through.
 
     ``session_id`` is the BUNDLE session id, and it is what says which of the
     ring's captures this round's program was played through. Omitting it is NOT
@@ -1096,7 +1119,8 @@ def read_round_harmonics(
     cycle banked duration used to escape as a raw ``ValueError`` instead).
     """
     orders = tuple(int(order) for order in orders)
-    fc_hz = _crossover_fc_hz(state)
+    applied_profile, profile_reason = _applied_profile_source(applied_profile_path)
+    fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
     program, downstream_db, prelude = rebuild_measure_program(state, bands)
     captures, scope = _scope_captures(
         _bind_measure_captures(dumps_dir), session_id
