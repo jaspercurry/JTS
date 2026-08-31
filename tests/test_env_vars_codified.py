@@ -39,12 +39,33 @@ experiment knob) — say which, in the comment.
 """
 from __future__ import annotations
 
+import ast
+import io
 import re
 from pathlib import Path
-
-from tests.test_voice_provider_ssot_reader import code_only
+import tokenize
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def code_only(source: str) -> str:
+    """Remove comments and standalone strings before scanning env reads."""
+    lines = source.splitlines()
+    strings: set[int] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            strings.update(range(node.lineno - 1, node.end_lineno))
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            line = token.start[0] - 1
+            lines[line] = lines[line][: token.start[1]]
+    return "\n".join(
+        "" if index in strings else line for index, line in enumerate(lines)
+    )
 
 # An env *read* of a JASPER_ name: os.environ access, the config
 # module's _env* helpers, or a Mapping read (`env.get(...)` — the

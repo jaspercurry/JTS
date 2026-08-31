@@ -2,24 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run the capture-page JS harnesses inside the pytest CI lane.
+"""Execute the capture-page modules and verify the published bundle."""
 
-The static capture page (Cloudflare Pages) is JavaScript, but its security- and
-contract-critical pieces are pure modules exercised by Node harnesses:
-
-  - the fixed DATA renderer (XSS-inert: <script>/onerror=/javascript:/hostile
-    component types render inert) — the plan §15 acceptance test;
-  - the E2E crypto wire format (AES-256-GCM, IV-prepended, plaintext integrity);
-  - the relay client request contract; and
-  - the fragment parser.
-
-Bridging them through pytest (mirroring ``tests/test_sound_setup.py``) keeps the
-page covered by the existing Python CI matrix with no extra CI wiring.
-"""
 from __future__ import annotations
 
-import ast
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 import re
@@ -29,12 +17,18 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_measurement.calibration import SUPPORTED_MODELS
-from jasper.capture_relay import session
+from jasper.audio_measurement.program import COURTESY_TONE_BEEP_COUNT
+from jasper.capture_relay.session import RETAKE_TOO_LATE_MESSAGE
+
 
 _JS_DIR = Path(__file__).resolve().parent / "js"
 _NODE = shutil.which("node")
 _REPO = Path(__file__).resolve().parents[1]
+
+_CAPTURE_PAGE_JS_DIGEST = (
+    "ba79c733416fcae806a2964dd3749f185b34824c343bbf262fb30feb966c5a0b"
+)
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260830.1"
 
 _HARNESSES = [
     "capture_render_test.mjs",
@@ -50,45 +44,101 @@ _HARNESSES = [
     "capture_protocol_test.mjs",
     "capture_transport_integrity_test.mjs",
     "capture_host_stop_lifecycle_test.mjs",
-    "capture_stop_and_ambient_countdown_test.mjs",
     "capture_ambient_stats_test.mjs",
-    "capture_plan_loop_test.mjs",
-    "capture_calibration_confirm_test.mjs",
     "capture_defect_fixes_test.mjs",
     "capture_time_budget_test.mjs",
     "capture_integrity_test.mjs",
+    "capture_boot_contract_test.mjs",
 ]
 
 
-@pytest.mark.parametrize("harness", _HARNESSES)
-def test_capture_page_harness(harness: str):
+class _CaptureIndexParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: set[str] = set()
+        self.csp = ""
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attributes = dict(attrs)
+        if attributes.get("id"):
+            self.ids.add(str(attributes["id"]))
+        if tag == "meta" and attributes.get("http-equiv") == "Content-Security-Policy":
+            self.csp = str(attributes.get("content") or "")
+
+
+def _assert_capture_index_contract(index: str) -> None:
+    parser = _CaptureIndexParser()
+    parser.feed(index)
+    assert {
+        "screen",
+        "status",
+        "wakelock-hint",
+        "stop-confirm",
+        "stop-confirm-cancel",
+        "stop-confirm-accept",
+    } <= parser.ids
+    directives = {
+        parts[0]: set(parts[1:])
+        for raw in parser.csp.split(";")
+        if (parts := raw.split())
+    }
+    assert {"'self'", "https://relay.jasper.tech"} <= directives["connect-src"]
+    assert {"'self'", "blob:"} <= directives["script-src"]
+
+
+def _run_capture_page_harness(
+    harness: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, object]:
     if _NODE is None:
-        # A developer without node gets a skip; CI does not. Mirrors
-        # ``tests/test_crossover_wizard_js.py`` verbatim, and for the same
-        # reason: this lane is the ONLY place these harnesses execute (the
-        # workflow's `js` job runs an explicit list that includes just one of
-        # them), so "node disappeared from the runner" would silently turn the
-        # whole family from covered into uncovered and still report green.
         if os.environ.get("CI"):
-            pytest.fail(
-                "node is not on PATH in CI — these harnesses are the only "
-                "automated execution of capture-page/js/*, and skipping them "
-                "would report a green build over an untested capture page"
-            )
+            pytest.fail("node is not on PATH in CI")
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_JS_DIR / harness)],
         capture_output=True,
         text=True,
         timeout=60,
+        env={**os.environ, **(extra_env or {})},
     )
     assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert out["ok"] is True, out
-    assert out["passed"] >= 1, out
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["ok"] is True, result
+    assert result["passed"] >= 1, result
+    return result
 
 
-def test_shared_runner_terminates_promptly_when_a_failed_test_leaks_a_handle():
+@pytest.mark.parametrize("harness", _HARNESSES)
+def test_capture_page_harness(harness: str) -> None:
+    _run_capture_page_harness(harness)
+
+
+def test_capture_page_upload_never_declares_a_sign_convention() -> None:
+    _run_capture_page_harness("capture_calibration_confirm_test.mjs")
+
+
+def test_capture_page_beep_copy_matches_the_composed_beep_count() -> None:
+    _run_capture_page_harness(
+        "capture_stop_and_ambient_countdown_test.mjs",
+        extra_env={
+            "JTS_EXPECTED_COURTESY_BEEP_COUNT": str(COURTESY_TONE_BEEP_COUNT),
+        },
+    )
+
+
+def test_a_late_retake_reads_the_same_whichever_side_answers_it() -> None:
+    _run_capture_page_harness(
+        "capture_plan_loop_test.mjs",
+        extra_env={"JTS_EXPECTED_RETAKE_TOO_LATE_MESSAGE": RETAKE_TOO_LATE_MESSAGE},
+    )
+
+
+def test_shared_runner_terminates_promptly_when_a_failed_test_leaks_a_handle() -> None:
     if _NODE is None:
         pytest.skip("node not on PATH")
     helper_uri = (_JS_DIR / "run_test_functions.mjs").resolve().as_uri()
@@ -102,204 +152,23 @@ await runTestFunctions(
   () => 0,
 );
 """
-
     proc = subprocess.run(
         [_NODE, "--input-type=module", "--eval", script],
         capture_output=True,
         text=True,
         timeout=2,
     )
-
     assert proc.returncode == 1
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert out["ok"] is False
-    assert out["test"] == "leaksHandle"
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["ok"] is False
+    assert result["test"] == "leaksHandle"
 
 
-def test_capture_page_expired_link_message_points_back_to_speaker():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert 'message === "not_found"' in main_js
-    assert "This one-time capture link has expired." in main_js
-    assert "Return to the speaker page" in main_js
-
-
-def test_capture_page_records_the_link_deadline_on_every_status_poll():
-    """One writer for the link deadline, and a pinned set of readers (#2083).
-
-    ``renderSessionExpired`` decides whether it may call a dead session an
-    EXPIRY by reading the deadline the relay published, so that fact is only as
-    good as its coverage: a polling loop that read the status directly would
-    stop refreshing it, and the screen would drift back to guessing.
-
-    This asserts across **capture-page/js/\\*\\*, not just main.js**. The first
-    version of this guard read main.js alone and asserted "the recorder is the
-    sole caller" — which was already false when it landed, because
-    level-events.js has its own direct reader, and a main.js-only guard is
-    blind to exactly the sibling-module drift it exists to catch. Pinning the
-    whole set means a NEW direct reader anywhere on the page fails here and has
-    to justify itself, rather than silently joining the exception.
-    """
-    js_dir = _REPO / "capture-page/js"
-    main_js = (js_dir / "main.js").read_text(encoding="utf-8")
-
-    assert "async function pollPhoneStatus(client)" in main_js
-    assert "function notePhoneStatus(status)" in main_js
-    assert "return notePhoneStatus(await client.fetchPhoneStatus());" in main_js
-    # …and the screen actually consults it rather than asserting a lapse.
-    assert "function linkDeadlinePassed()" in main_js
-    assert "const lapsed = linkDeadlinePassed();" in main_js
-
-    # Every reader of the relay's phone-status on the page, by module. The
-    # deadline has ONE writer (notePhoneStatus); this pins who may read without
-    # going through it.
-    def invocations(source: str) -> int:
-        # Real call sites only: `.fetchPhoneStatus(` skips relay-client.js's own
-        # method DEFINITION (no leading dot) and level-events.js's
-        # `typeof client.fetchPhoneStatus` capability probe (no paren), and
-        # dropping `//` lines keeps prose ABOUT the call — including the
-        # explanatory comment at pollPhoneStatus — from counting as one.
-        return sum(
-            line.count(".fetchPhoneStatus(")
-            for line in source.splitlines()
-            if not line.lstrip().startswith("//")
-        )
-
-    callers = {
-        path.name: invocations(path.read_text(encoding="utf-8"))
-        for path in sorted(js_dir.glob("*.js"))
-        if invocations(path.read_text(encoding="utf-8"))
-    }
-    assert callers == {
-        # The recorder itself — main.js's five polling loops all route here.
-        "main.js": 1,
-        # The DECLARED exception: runLevelRampProtocol polls directly. Safe
-        # because `expires_at` is minted once at registration and never
-        # refreshed, and every reachable path into the ramp records the
-        # deadline first (waitForSetupValidation → pollPhoneStatus). Documented
-        # at main.js's pollPhoneStatus.
-        "level-events.js": 1,
-    }, (
-        "a capture-page module gained or lost a direct phone-status read. If "
-        "this is a NEW polling loop, route it through main.js's "
-        "pollPhoneStatus() so it records the link deadline — a loop that reads "
-        "the status without recording is how renderSessionExpired goes back to "
-        "guessing that a dead session means an expired link."
-    )
-    # …and the screen actually consults it rather than asserting a lapse.
-    assert "function linkDeadlinePassed()" in main_js
-    assert "const lapsed = linkDeadlinePassed();" in main_js
-
-
-def test_capture_page_distinguishes_invalid_link_from_network_failure():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function relayBootFailureMessage(err)" in main_js
-    assert "[401, 403, 404].includes(status)" in main_js
-    assert 'message.includes("capture spec integrity")' in main_js
-    assert "This authenticated measurement link is invalid" in main_js
-    assert "Can't reach the measurement relay" in main_js
-    assert "setStatus(relayBootFailureMessage(err), \"error\")" in main_js
-
-
-def test_capture_page_version_contract_is_published_and_cache_busted():
-    version = json.loads((_REPO / "capture-page/version.json").read_text())
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-    build_sh = (_REPO / "capture-page/build.sh").read_text(encoding="utf-8")
-
-    assert version == {
-        "schema_version": 1,
-        "capture_protocol_version": 3,
-        # ONE protocol. The supported list is not a negotiation surface any
-        # more — protocols 1 and 2 were deleted (the flow has never shipped
-        # outside the lab and no lab Pi emits them), so a page advertising
-        # anything else is stale. NOTE this is a REMOVAL: the currently
-        # deployed page still advertises [1, 2, 3], so this page build must
-        # publish AFTER the Pis stop emitting 1 and 2, not before.
-        "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260830.1",
-    }
-    # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
-    # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
-    # holding the previous bundle would be accepted silently. Bumping
-    # version.json without bumping this is therefore a shipping hazard, not a
-    # cosmetic mismatch: that is what this pairing exists to catch.
-    assert "main.js?v=20260830-1" in index_html
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    # Every import stamp below must move whenever that module's content moves,
-    # and the move must CASCADE to each module that imports it — otherwise a
-    # warm-cache phone pairs the new main.js with an old module and either
-    # silently loses the feature or fails to boot at all.
-    assert 'from "./render.js?v=20260802-1"' in main_js
-    assert 'from "./measurement-audio.js?v=20260815-4"' in main_js
-    assert 'from "./capture-integrity.js?v=20260815-5"' in main_js
-    assert 'from "./constraints.js?v=20260731-1"' in main_js
-    assert 'from "./relay-client.js?v=20260808-1"' in main_js
-    # These two carry a SECURITY tightening (mandatory spec MAC; a version-less
-    # spec is refused rather than read as legacy protocol 1), so a stale stamp
-    # means a warm-cache phone keeps the permissive module.
-    assert 'from "./capture-protocol.js?v=20260727-1"' in main_js
-    assert 'from "./transport-integrity.js?v=20260727-1"' in main_js
-    # Both import measurement-audio.js, so both stamps ride its cascade.
-    assert 'from "./level-events.js?v=20260815-4"' in main_js
-    assert 'from "./ambient-stats.js?v=20260828-1"' in main_js
-    assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
-
-
-def _published_capture_page_js() -> list[tuple[str, Path]]:
-    """Every JS file ``build.sh`` publishes, keyed by the name it ships as.
-
-    ``capture-page/js/*.js`` plus the ONE module the build copies in from the
-    Pi's shared assets (``cp "${SHARED}" "${DIST}/js/"``). That copied module
-    was outside this digest until #2094, which is a hole in the guard's own
-    promise: a change confined to ``measurement-audio.js`` — the recorder, and
-    the source of the frame counters the host's ledger now grades — would ship
-    to phones with every cache stamp stale and nothing failing. It is published
-    bytes like any other file in the bundle, so it is digested like any other.
-    """
-    files = {p.name: p for p in (_REPO / "capture-page/js").glob("*.js")}
-    shared = _REPO / "deploy/assets/shared/js/measurement-audio.js"
-    assert shared.name not in files, (
-        f"{shared.name} is copied into the bundle by build.sh; a second copy "
-        "under capture-page/js/ is a fork of the single source of truth"
-    )
-    files[shared.name] = shared
-    return sorted(files.items())
-
-
-def _capture_page_js_digest() -> str:
-    """A stable digest over every published capture-page JS module."""
-    digest = hashlib.sha256()
-    for name, path in _published_capture_page_js():
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-def test_the_digest_covers_the_shared_module_the_build_copies_in():
-    """The bundle is not the same set of files as ``capture-page/js/``.
-
-    Pins the #2094 widening above so a later simplification back to a plain
-    glob restores the hole rather than looking like tidying.
-    """
-    published = dict(_published_capture_page_js())
-    assert "measurement-audio.js" in published
-    assert published["measurement-audio.js"] == (
-        _REPO / "deploy/assets/shared/js/measurement-audio.js"
-    )
-    build_sh = (_REPO / "capture-page/build.sh").read_text(encoding="utf-8")
-    assert 'cp "${SHARED}" "${DIST}/js/measurement-audio.js"' in build_sh
-
-
-def _build_capture_page_bundle(tmp_path: Path) -> tuple[Path, subprocess.CompletedProcess]:
-    """Run the real ``build.sh`` against a throwaway copy of the two trees it reads.
-
-    Hermetic on purpose: the script hardcodes ``capture-page/dist`` and opens
-    with ``rm -rf``, so running it in the checkout would race any other test and
-    churn the developer's own bundle.
-    """
+def _build_capture_page_bundle(
+    tmp_path: Path,
+    *,
+    include_shared_helper: bool = True,
+) -> tuple[Path, subprocess.CompletedProcess[str], Path]:
     fake_repo = tmp_path / "repo"
     shutil.copytree(
         _REPO / "capture-page",
@@ -307,1549 +176,151 @@ def _build_capture_page_bundle(tmp_path: Path) -> tuple[Path, subprocess.Complet
         ignore=shutil.ignore_patterns("dist"),
     )
     shared = fake_repo / "deploy/assets/shared/js/measurement-audio.js"
-    shared.parent.mkdir(parents=True)
-    shutil.copy2(_REPO / "deploy/assets/shared/js/measurement-audio.js", shared)
-    proc = subprocess.run(
-        ["bash", str(fake_repo / "capture-page" / "build.sh")],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return fake_repo / "capture-page" / "dist", proc
-
-
-def test_the_build_actually_emits_every_file_the_bundle_publishes(tmp_path):
-    """#1961: the vendoring step is checked against the ARTIFACT, not the source.
-
-    The sibling above greps ``build.sh`` for the ``cp`` line, which cannot see
-    a build that stops producing the file for any other reason — a moved
-    ``DIST``, an ``rm -rf`` that lands after the copy, a rename of the shared
-    asset. CI only ever ran ``bash -n`` and ``shellcheck`` over this script, so
-    nothing executed it at all. The failure mode is a 404 on the phone capture
-    page, which is loud but only after a deploy.
-    """
-    dist, proc = _build_capture_page_bundle(tmp_path)
-
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert (dist / "index.html").is_file()
-    assert (dist / "version.json").is_file()
-    for name, source in _published_capture_page_js():
-        published = dist / "js" / name
-        assert published.is_file(), f"build.sh did not publish js/{name}"
-        assert published.read_bytes() == source.read_bytes(), (
-            f"js/{name} in the bundle differs from {source}"
+    if include_shared_helper:
+        shared.parent.mkdir(parents=True)
+        shutil.copy2(
+            _REPO / "deploy/assets/shared/js/measurement-audio.js",
+            shared,
         )
-
-
-def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_path):
-    """``build.sh`` promises an error when the canonical helper is missing.
-
-    Pinned because the alternative — publishing a bundle whose page imports a
-    file that is not there — is exactly the 404 this guard exists to prevent.
-    """
-    dist, _ = _build_capture_page_bundle(tmp_path)
-    # Cleanup, not an assertion: `ignore_errors` so a build that failed to
-    # produce `dist` at all fails on THIS test's own assertions below rather
-    # than on a FileNotFoundError here, which names the wrong defect.
-    shutil.rmtree(dist, ignore_errors=True)
-    (dist.parent.parent / "deploy/assets/shared/js/measurement-audio.js").unlink()
-
     proc = subprocess.run(
-        ["bash", str(dist.parent / "build.sh")],
+        ["bash", str(fake_repo / "capture-page/build.sh")],
         capture_output=True,
         text=True,
         timeout=60,
     )
-
-    assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert "canonical measurement-audio.js not found" in proc.stderr
-    assert not dist.exists(), "a refused build must not leave a partial bundle"
+    return fake_repo / "capture-page/dist", proc, shared
 
 
-# The published state of capture-page/js/**, paired with the build stamp it
-# ships under. See the test below for why a digest rather than a rule.
-#
-# The digest moved without the stamps, which is the decision this guard exists
-# to force: the only change was a comment repointing a doc citation, so the
-# bundle's behaviour is byte-for-byte what a warm-cache phone already runs and
-# there is nothing to invalidate. A change that alters behaviour still owes the
-# stamp bumps capture-page/README.md's publish step 1 describes.
-_CAPTURE_PAGE_JS_DIGEST = (
-    "ba79c733416fcae806a2964dd3749f185b34824c343bbf262fb30feb966c5a0b"
+def _published_javascript() -> dict[str, Path]:
+    files = {path.name: path for path in (_REPO / "capture-page/js").glob("*.js")}
+    shared = _REPO / "deploy/assets/shared/js/measurement-audio.js"
+    assert shared.name not in files
+    files[shared.name] = shared
+    return files
+
+
+def _published_javascript_digest() -> str:
+    digest = hashlib.sha256()
+    for name, path in sorted(_published_javascript().items()):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def test_build_emits_the_complete_browser_bundle(tmp_path: Path) -> None:
+    dist, proc, shared = _build_capture_page_bundle(tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (dist / "index.html").read_bytes() == (
+        _REPO / "capture-page/index.html"
+    ).read_bytes()
+    assert json.loads((dist / "version.json").read_text(encoding="utf-8")) == (
+        json.loads((_REPO / "capture-page/version.json").read_text(encoding="utf-8"))
+    )
+    expected_js = _published_javascript()
+    assert shared.name in expected_js
+    assert {path.name for path in (dist / "js").iterdir()} == set(expected_js)
+    for name, source in expected_js.items():
+        assert (dist / "js" / name).read_bytes() == source.read_bytes()
+
+
+def test_built_page_contains_the_dom_and_relay_policy_used_by_main(
+    tmp_path: Path,
+) -> None:
+    dist, proc, _shared = _build_capture_page_bundle(tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    _assert_capture_index_contract((dist / "index.html").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import { safeReturnUrl } from "./missing-return-url.js";',
+        'import { resolveTheme } from "./theme.js";',
+        'import { safeReturnUrl } from "./config.js";',
+        'import { missingReturnUrl } from "./return-url.js";',
+    ],
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260830.1"
-
-
-def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
-    """A JS change with STALE stamps must not be able to pass CI (issue #2083).
-
-    The version contract above pins the literals, which catches a HALF bump —
-    `version.json` moved but `index.html` didn't. It cannot catch a MISSING
-    one: leave both stamps alone, change `main.js` freely, and every literal
-    still matches. PR #2084 did exactly that and went green, which would have
-    published a page fix that no warm-cache phone could ever receive (the
-    stamps are the only cache-invalidation mechanism — `build.sh` is a plain
-    `cp` with no content hashing and there is no service worker).
-
-    **What this guard is, stated honestly.** It is a content digest, not a
-    proof. It fails the moment `capture-page/js/**` differs from what was
-    published, and its message names the publish procedure — so the stamps
-    cannot be forgotten in silence. It canNOT mechanically prove the stamps
-    ADVANCED: someone can update the digest below and leave the stamps alone.
-    Nothing hardware-free can close that last step (a git-history check would
-    be CI-only and wrong under shallow clones / rebases), so the guard buys a
-    forced, visible decision rather than an enforcement, and says so here
-    rather than implying more.
-    """
-    assert json.loads((_REPO / "capture-page/version.json").read_text())[
-        "capture_page_build"
-    ] == _CAPTURE_PAGE_JS_DIGEST_BUILD, (
-        "the digest below was recorded against build "
-        f"{_CAPTURE_PAGE_JS_DIGEST_BUILD}; version.json has moved on. Update "
-        "_CAPTURE_PAGE_JS_DIGEST_BUILD in the same edit that updates the digest."
+def test_capture_module_loader_rejects_wrong_dependency_ownership(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    main = tmp_path / "synthetic-main.mjs"
+    main.write_text(source, encoding="utf-8")
+    loader_uri = (_JS_DIR / "_capture_page_module.mjs").resolve().as_uri()
+    script = f"""
+import {{ loadCapturePage }} from {json.dumps(loader_uri)};
+await loadCapturePage({{ mainUrl: {json.dumps(main.as_uri())} }});
+"""
+    proc = subprocess.run(
+        [_NODE, "--input-type=module", "--eval", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
-    actual = _capture_page_js_digest()
-    assert actual == _CAPTURE_PAGE_JS_DIGEST, (
-        "capture-page/js/** changed. Before this can ship, follow "
-        "capture-page/README.md's publish step 1: bump `capture_page_build` in "
-        "version.json, bump `main.js?v=` in index.html, and bump the `?v=` on "
-        "the import of any module whose own content changed — a warm-cache "
-        "phone keeps the old bundle otherwise. Then record the new state here:\n"
-        f"    _CAPTURE_PAGE_JS_DIGEST = \"{actual}\"\n"
-        f"    _CAPTURE_PAGE_JS_DIGEST_BUILD = \"<the new capture_page_build>\""
+    assert proc.returncode != 0
+
+
+def test_build_refuses_to_publish_without_the_shared_recorder(tmp_path: Path) -> None:
+    dist, proc, _shared = _build_capture_page_bundle(
+        tmp_path,
+        include_shared_helper=False,
     )
+    assert proc.returncode != 0
+    assert not dist.exists()
 
 
-def test_capture_page_js_modules_have_one_cache_key_each():
-    """Every ``?v=``-stamped module import across capture-page/js/*.js must
-    use the SAME stamp everywhere that module is imported.
-
-    Originally written for #1975 as a measurement-audio.js-only check;
-    generalized to the whole bug class (adversarial-gate SF1/SF3, PR #2028)
-    after the gate proved the narrow version was blind to a same-shaped
-    split in a DIFFERENT module: level-events.js has two importers of its
-    own (ambient-stats.js and main.js), and nothing guarded THEM before this
-    — splitting level-events.js's stamp between its two importers stayed
-    green under the old measurement-audio.js-only test.
-
-    The ``?v=`` query is a cache key, not decoration — two importers pinned
-    to different stamps means the browser treats them as two different
-    module URLs, so a warm cache can end up running two different copies of
-    the SAME module in one page load depending on load order. This is a
-    convergence guard over the WHOLE module inventory, not a snapshot of
-    today's values: it fails on any future stamp split in any stamped
-    module, not only the specific measurement-audio.js/level-events.js
-    regressions #1975 happened to find.
-    """
-    js_dir = _REPO / "capture-page/js"
-    pattern = re.compile(r'from\s+["\']\./([\w-]+\.js)\?v=([\w.\-]+)["\']')
-    # {imported_module: {stamp: [importer filenames using that stamp]}}
-    inventory: dict[str, dict[str, list[str]]] = {}
-    for path in sorted(js_dir.glob("*.js")):
-        for module, stamp in pattern.findall(path.read_text(encoding="utf-8")):
-            inventory.setdefault(module, {}).setdefault(stamp, []).append(path.name)
-    assert inventory, "expected at least one ?v=-stamped import in capture-page/js/*.js"
-    split = {module: stamps for module, stamps in inventory.items() if len(stamps) > 1}
-    assert not split, (
-        "capture-page/js/*.js modules must be imported at ONE ?v= cache key "
-        f"everywhere they're imported, found a split stamp: {split}"
-    )
-
-
-def test_capture_page_existing_field_rollout_order_is_pinned():
-    """A protocol handshake cannot see a semantic change where a new page
-    consumes a field old pages ignored. DA-0005 is exactly that shape:
-    20260729.1 consumes Room ui.screen copy. The Pi producer must land first,
-    and rollback must restore the tolerant page first."""
-    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
-
-    assert "Reinterpreting an existing spec field (Pi first)" in readme
-    assert "**Forward rollout → Pi first, page second.**" in readme
-    assert "**Rollback → page first, Pi second.**" in readme
-    assert "build `20260729.1` starts\nrendering Room" in readme
-
-
-def test_capture_page_result_wait_rollout_order_is_pinned():
-    """Build 20260818.1 moves the post-upload result wait off the page and onto
-    the spec, and the two directions were NOT symmetric — which is the whole
-    reason the entry has to exist.
-
-    While a Pi minted that wait, an OLD page against a NEW Pi held a 90 s wall
-    against a sweep whose ceiling had grown to 96 s: `waitForCaptureResult`
-    throws a terminal `sweepFailed` and the household loses a completed capture.
-    Nothing gates the pair — `validate_capture_page` checks the stamp's FORMAT,
-    never a minimum — so the documented order was the only safeguard, and an
-    undocumented order is how it gets got wrong.
-
-    **The current Pi mints no wait at all** (the corner sweep whose ceiling it
-    published was deleted — `docs/tuning-master-plan.md` ticket 2.3), so it
-    behaves exactly like the "old Pi" row and every pairing is safe again. The
-    entry and this pin stay because the INTERMEDIATE Pi generation still mints a
-    sweep-sized wait, and because the asymmetry is a property of the mechanism
-    rather than of one build: any future Pi that lengthens its wall re-opens it.
-    """
-    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "Build `20260818.1` moves a number OFF this page" in readme
-    assert "**Forward rollout → page first, Pi second**" in readme
-    assert "**Old page + new Pi: UNSAFE.**" in readme
-    # The tolerance the page-first order rests on is a BRANCH, not a hope: a
-    # spec with no published wait falls back rather than reading NaN.
-    assert "published > 0 ? published * 1000 : CAPTURE_RESULT_WAIT_BUDGET_MS" in main_js
-
-
-def test_capture_page_new_phone_event_rollout_order_is_pinned():
-    """The sharper class the two-stage split introduced: the page starts
-    SENDING something the Pi requires, on a plan shape only the new Pi emits.
-    Neither the protocol list nor the build stamp detects it, so the ordering
-    (page first) and the tolerance requirement it rests on are documented and
-    pinned — and the tolerance itself is a branch in the page, not a hope
-    about timing."""
-    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "A new phone event both sides need (page first)" in readme
-    assert "**Page first, Pi second**" in readme
-    assert "build `20260729.2` is the fixture" in readme.lower()
-    # The branch the ordering rests on: an entry past the group means the
-    # confirmation still rides that next begin (an older conductor's plan).
-    assert "if (entryForIndex(ctx.spec, index + 1)) {" in main_js
-    assert "complete_capture_set: true" in main_js
-
-
-# The build that first shipped a page tolerant of a terminal `capture_result`
-# (#2097). A frozen historical marker, not the current build — see the test.
-_TERMINAL_RESULT_FIXTURE_BUILD = "20260803.4"
-
-
-def _build_stamp_key(stamp: str) -> tuple[int, int]:
-    """Order a ``YYYYMMDD.N`` build stamp NUMERICALLY.
-
-    String compare is wrong for exactly the case a busy release day produces:
-    ``"20260803.10" < "20260803.4"`` lexically, so a tenth same-day build would
-    read as older than the fourth.
-    """
-    date, _, serial = stamp.partition(".")
-    return (int(date), int(serial or 0))
-
-
-def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
-    """#2097's terminal result is a page-first compatibility cut.
-
-    The protocol number did not move and the Pi validates only the build
-    stamp's format, so the release contract itself is load-bearing: publish
-    the tolerant page before any conductor can end on ``terminal: true``;
-    roll back in the inverse order. The JS harness behaviorally pins both skew
-    directions, while this guard pins the public artifact and exact ordering
-    words an operator follows.
-
-    **What the build assertion means, restated (issue #2151).** It was written
-    as strict equality while ``20260803.4`` was the tip, which read as "the
-    published build IS the fixture" — true then, but it would have failed the
-    next ordinary page fix for no safety reason. The property #2097 actually
-    needs is that the published page is NOT BELOW the tolerant fixture, since
-    rolling under it recreates the unsafe skew. That is what is asserted now,
-    ordered on the parsed stamp rather than on string compare — ``20260803.10``
-    sorts BELOW ``20260803.4`` lexically, which would have silently inverted
-    the very check this line exists to make.
-    """
-    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+def test_capture_page_build_stamp_matches_the_main_module_cache_key() -> None:
     version = json.loads(
         (_REPO / "capture-page/version.json").read_text(encoding="utf-8")
     )
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    harness = (
-        _REPO / "tests/js/capture_plan_loop_test.mjs"
-    ).read_text(encoding="utf-8")
+    index = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+    match = re.search(r'<script type="module" src="\./js/main\.js\?v=([^"]+)"', index)
+    assert match
+    assert match.group(1) == version["capture_page_build"].replace(".", "-")
 
-    assert _build_stamp_key(version["capture_page_build"]) >= _build_stamp_key(
-        _TERMINAL_RESULT_FIXTURE_BUILD
-    ), (
-        "the published capture page must never roll below "
-        f"{_TERMINAL_RESULT_FIXTURE_BUILD}, the build that tolerates a "
-        "conductor's terminal capture_result (#2097). Rolling under it "
-        "recreates the unsafe skew: the older parser reads a terminal "
-        "rejection as retryable and offers a live Try again after the runner "
-        "has already returned."
+
+def test_published_version_identifies_the_live_capture_protocol() -> None:
+    version = json.loads(
+        (_REPO / "capture-page/version.json").read_text(encoding="utf-8")
     )
-    assert f"Build `{_TERMINAL_RESULT_FIXTURE_BUILD}` is the terminal-result fixture" in readme
-    assert "**Forward rollout → page first, Pi second.**" in readme
-    assert "**Rollback → Pi first, page second.**" in readme
-    assert "**Do not deploy the Pi first.**" in readme
-    # New page + old conductor: omission is deliberately false, not inferred.
-    assert "terminal: event.terminal === true" in main_js
-    # Old page + new conductor: the frozen .3 decision must stay in the
-    # behavioral suite, or the unsafe half can disappear while prose passes.
-    assert "legacy202608033Verdict" in harness
-    assert "testTerminalResultRequiresThe202608034PageFirstRollout" in harness
+    assert {
+        "schema_version": version["schema_version"],
+        "capture_protocol_version": version["capture_protocol_version"],
+        "supported_capture_protocol_versions": version[
+            "supported_capture_protocol_versions"
+        ],
+    } == {
+        "schema_version": 1,
+        "capture_protocol_version": 3,
+        "supported_capture_protocol_versions": [3],
+    }
 
 
-def test_capture_page_auto_retake_is_page_only_and_bounded():
-    """#2557 phase B: the page presses its own Try again, and only there.
-
-    Two claims worth a guard beyond the behavioral harness, which pins the
-    four bounds themselves (``tests/js/capture_plan_loop_test.mjs``, tests
-    61-65):
-
-    * **The release class.** Consuming the witness is page-internal — the same
-      begin the button posts, no new host event, no protocol move — plus one
-      additive key inside the report the Pi already retains verbatim. That is
-      the "degrades on its own" class, where neither order is unsafe, and it is
-      only true while no Pi branches on the key. This asserts the second half
-      mechanically: if a Pi ever starts reading ``auto_retake``, the page and
-      the speaker acquire an ordering the README does not describe.
-    * **The trigger is the page's own witness, never "the host said no."** The
-      predicate lives beside the scan that produced the evidence, and the page
-      asks it rather than re-deriving a rule of its own.
-    """
-    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    integrity_js = (
-        _REPO / "capture-page/js/capture-integrity.js"
-    ).read_text(encoding="utf-8")
-    harness = (
-        _REPO / "tests/js/capture_plan_loop_test.mjs"
-    ).read_text(encoding="utf-8")
-
-    assert "Build `20260815.5` is that decision" in readme
-    assert "witnessedZeroFillSplice" in integrity_js
-    assert "witnessedZeroFillSplice(integrity)" in main_js
-    # The four bounds, each named where the reader of one will look for the
-    # rest, and each behaviorally pinned next door.
-    assert "if (prompt) return false;" in main_js
-    assert "autoRetakeLedger(ctx).has(index)" in main_js
-    assert "attempts.left <= 0 || attempt + 1 > maxAttempts" in main_js
-    for test_name in (
-        "testAWitnessedSpliceRetakesItselfWithNoTap",
-        "testAGeometryPromptStillWaitsForAThumb",
-        "testTheAutomaticRetakeFiresOncePerMeasurement",
-        "testASpentBudgetRefusesRatherThanAutoRetaking",
-        "testACleanRejectionAndAnUncountedBudgetBothWaitForAThumb",
-    ):
-        assert harness.count(test_name) == 2, (
-            f"{test_name} must be defined AND registered in the harness's "
-            "`tests` array — an unregistered test never runs"
-        )
-
-    # No Pi reads the disclosure. The page-posted report is stored verbatim
-    # (jasper/web/correction_crossover_v2.py writes the whole dict into the
-    # operator sidecar), so naming the key on the Pi side is a BRANCH on it,
-    # which is what would give this page a release order it does not have.
-    def _naming(key: str) -> list[str]:
-        return sorted(
-            str(path.relative_to(_REPO))
-            for path in (_REPO / "jasper").rglob("*.py")
-            if key in path.read_text(encoding="utf-8")
-        )
-
-    # The instrument first: a null from a walk that cannot see anything is not
-    # evidence. `capture_integrity` IS named on the Pi side, so a search that
-    # finds it proves this one is looking where it claims to.
-    assert _naming("capture_integrity"), "the Pi-side walk found nothing at all"
-    readers = _naming("auto_retake")
-    assert readers == [], (
-        "a Pi-side reader of capture_integrity.auto_retake appeared: the page's "
-        "disclosure has become something the speaker depends on, so it needs a "
-        "release order in capture-page/README.md rather than the either-order "
-        f"class it claims today. {readers}"
+def test_published_javascript_change_requires_a_build_stamp_decision() -> None:
+    version = json.loads(
+        (_REPO / "capture-page/version.json").read_text(encoding="utf-8")
     )
+    assert version["capture_page_build"] == _CAPTURE_PAGE_JS_DIGEST_BUILD
+    assert _published_javascript_digest() == _CAPTURE_PAGE_JS_DIGEST
 
 
-def test_capture_page_auto_retake_never_answers_a_geometry_ask():
-    """#2557 phase B, gate S3a: the page's `prompt` filter rests on THIS.
-
-    The page declines to auto-retake a rejection carrying a ``prompt``, because
-    a geometry ask is answered by MOVING, not by re-measuring the same spot.
-    That filter is complete only while every geometry rejection is one of two
-    shapes:
-
-    * **prompted** — ``cloud_geometry_locked``'s wider-spot ask, which the
-      page's filter sees; or
-    * **terminal** — ``geometry_retake_unreachable`` (any GATED session: an arm
-      that cannot reach the pose, or a held walk whose gate would go on naming
-      the old bearing) carries no prompt at all, and is safe only because
-      its ``retry_budget`` of 0 puts it in ``NON_RETRIABLE_CODES``, so the page
-      returns at ``verdict.terminal`` long before the auto-retake branch.
-
-    A third geometry reason that was retriable AND prompt-less would reach the
-    page as an ordinary rejection and could be auto-retaken from the spot the
-    host just said was wrong. Asserted over the reason names rather than a
-    hand-listed pair, so that third one is covered the day it is written —
-    and it is the *grant of a retry budget* that would trip this, which is the
-    edit least likely to be made by someone thinking about the capture page.
-    """
-    from jasper.active_speaker.crossover_v2 import refusal_copy
-
-    flow_src = (
-        _REPO / "jasper/active_speaker/crossover_v2_flow.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(flow_src)
-
-    def _is_geometry_reason(name: str) -> bool:
-        return name.startswith("REASON_") and "GEOMETRY" in name
-
-    # Every rejection verdict the flow builds for a geometry reason, with the
-    # payload keys it carries.
-    built: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "PhaseVerdict"
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Name)
-            and _is_geometry_reason(node.args[1].id)
-        ):
-            continue
-        keys: set[str] = set()
-        for keyword in node.keywords:
-            if keyword.arg != "payload" or not isinstance(keyword.value, ast.Dict):
-                continue
-            keys |= {
-                k.value
-                for k in keyword.value.keys
-                if isinstance(k, ast.Constant) and isinstance(k.value, str)
-            }
-        built[node.args[1].id] = keys
-
-    # The instrument first (half-guarded-sites rule): a walk that found no
-    # geometry verdicts would assert nothing at all in the loop below and still
-    # report green. These two are the shipped pair, one of each shape.
-    assert set(built) == {
-        "REASON_CLOUD_GEOMETRY_LOCKED",
-        "REASON_GEOMETRY_RETAKE_UNREACHABLE",
-    }, f"the geometry-verdict walk found {sorted(built)}"
-
-    for name, payload_keys in sorted(built.items()):
-        code = getattr(refusal_copy, name)
-        prompted = "prompt" in payload_keys
-        terminal = code in refusal_copy.NON_RETRIABLE_CODES
-        assert prompted or terminal, (
-            f"{name} is a geometry rejection that is neither prompted nor "
-            "terminal, so the capture page's auto-retake (#2557 phase B) would "
-            "treat it as an ordinary glitch and re-measure from the spot the "
-            "speaker just said was wrong. Give it a prompt, or keep its "
-            "retry_budget at 0."
-        )
-
-    # …and membership DISCRIMINATES: the prompted one is genuinely retriable,
-    # so `in NON_RETRIABLE_CODES` above is not a set that swallows everything.
-    assert refusal_copy.REASON_CLOUD_GEOMETRY_LOCKED not in refusal_copy.NON_RETRIABLE_CODES
-    assert refusal_copy.REASON_GEOMETRY_RETAKE_UNREACHABLE in refusal_copy.NON_RETRIABLE_CODES
-
-
-def test_capture_page_beep_copy_matches_the_composed_beep_count():
-    """#1824 N3: the prelude line says "Listen for three beeps", which mirrors
-    the composer's COURTESY_TONE_BEEP_COUNT. Spelled out rather than sent over
-    the wire — a household counts beeps, it does not parse a field — so this is
-    what stops the two from drifting into a page that miscounts the sound the
-    speaker actually makes."""
-    from jasper.audio_measurement.program import COURTESY_TONE_BEEP_COUNT
-
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert COURTESY_TONE_BEEP_COUNT == 3, (
-        "the composed beep count moved — update the capture page's prelude copy "
-        "(main.js, 'Listen for three beeps') and the guided consent screen's "
-        "orientation step (capture_relay/spec.py, 'three short beeps') to "
-        "match, then this pin"
-    )
-    assert "Listen for three beeps" in main_js
-    # The ORIENTATION screen says it too, before the first tone (work order D7
-    # / issue #1804): an unexplained burst of beeps at measurement level is the
-    # moment a first-time household stops the session. Same spelled-out
-    # convention as the page's line, and pinned in the same place so the two
-    # cannot drift apart from the composer or from each other.
-    spec_py = (_REPO / "jasper/capture_relay/spec.py").read_text(encoding="utf-8")
-    assert "three short beeps" in spec_py
-
-
-def test_capture_page_classifies_relay_timeouts_by_tag_not_by_message():
-    """#1824 B1. `_controlFetch` aborts with a NAMED reason (the run-19 fix), so
-    per the AbortController spec fetch rejects with that value — an ordinary
-    Error whose name is not "AbortError" and whose message says nothing about
-    aborting. Classifying on either of those therefore stopped matching real
-    timeouts, silently, and every connectivity branch on the page became
-    unreachable in production. The tag is the contract; these pins keep the
-    two halves of it wired together."""
-    relay_js = (_REPO / "capture-page/js/relay-client.js").read_text(encoding="utf-8")
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    # Producer: the abort reason is the tagged class, not a bare Error.
-    assert "export class RelayTimeoutError extends Error" in relay_js
-    assert "this.relayTimeout = true;" in relay_js
-    assert "controller.abort(\n        new RelayTimeoutError(" in relay_js
-    # Consumer: the classifier keys on the tag FIRST; the name/text checks
-    # remain only as the bare-abort fallback.
-    assert "err.relayTimeout === true" in main_js
-
-
-def test_capture_page_step_screens_render_one_instruction_grammar():
-    """Flow-simplification §2.1: every page-owned plan screen renders the SAME
-    grammar in the SAME DOM slots — the counter as a small eyebrow, the
-    instruction as the headline, one supporting clause, a single full-width
-    primary, and Stop demoted to a text link. The behavior is exercised in
-    capture_plan_loop_test.mjs; these pins keep the wiring (and the styles the
-    grammar depends on) from silently regressing."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-
-    assert "function renderStepScreen(ctx, {" in main_js
-    # The counter is server-derived and rendered once, in the eyebrow.
-    assert 'el("p", { class: "cap-eyebrow", text: String(progress) })' in main_js
-    assert 'String(screenCopy.progress || "")' in main_js
-    assert ".cap-eyebrow {" in index_html
-    # The one primary label: the tap IS the placement confirmation.
-    assert 'const STEP_PRIMARY_LABEL = "I’m there — play the tone";' in main_js
-    # …and the D8 budget line rides UNDER the action, in its own quieter slot,
-    # so "how long can I pause?" never competes with the instruction for the
-    # headline/detail slots the grammar reserves.
-    assert 'el("p", { class: "cap-note cap-budget", text: budget })' in main_js
-    assert ".cap-budget {" in index_html
-
-
-def test_capture_page_stop_is_a_text_link_behind_a_danger_confirm():
-    """§2.1 reverses render.js's documented "Stop is the one danger button"
-    styling for the PAGE-OWNED step screens only: Stop appears on all 16 of a
-    full session's screens, and at equal weight with the primary a stray tap
-    could abandon the session outright. The destructiveness moves to a
-    page-local <dialog> (the capture page shares nothing with the Pi's
-    dialog.js — different origin, different bundle, strict CSP), which the
-    browser cannot suppress the way it can window.confirm()."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-
-    assert "function stopLinkEl() {" in main_js
-    assert 'class: "cap-stop-link"' in main_js
-    assert "function confirmStopMeasuring() {" in main_js
-    assert "if (await confirmStopMeasuring()) await stopCapture();" in main_js
-    assert '<dialog id="stop-confirm" class="cap-dialog">' in index_html
-    assert 'id="stop-confirm-accept"' in index_html
-    assert 'id="stop-confirm-cancel"' in index_html
-    # Native popups stay out (they can be suppressed); no inline handlers
-    # either — the CSP admits no inline script.
-    assert "window.confirm(" not in main_js
-    assert "onclick=" not in index_html
-    # The page never renders relay-supplied text inside the dialog: its copy
-    # is static markup.
-    assert "Stop measuring?" in index_html
-
-
-def test_capture_page_status_line_stops_counting_the_walk():
-    """§2.1: `#status` used to number the same walk a second time, in its own
-    vocabulary, and disagree with the screen's counter. It is the transient
-    STATE channel now — the removed counter strings must not come back."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-
-    assert "function clearStatus() {" in main_js
-    assert "Measurement ${index} of ${target} done. Tap Next measurement" not in main_js
-    assert "Requesting measurement ${index} of ${target}" not in main_js
-    assert "Next measurement starts in ${seconds}s" not in main_js
-    assert '"Asking the speaker to start…"' in main_js
-    # Transient state survives — those lines are the channel's whole job.
-    assert '"Speaker is checking this measurement…"' in main_js
-    assert "#status:empty {" in index_html
-
-
-def test_capture_page_retake_offer_never_outlives_the_runners_window():
-    """§2.6 + review finding N4. jasper/capture_relay/session.py's
-    `_poll_capture_plan` admits a retake ONLY for the just-accepted index, on
-    the next attempt, carrying the marker, and ONLY while the next entry's
-    begin has not been seen (its `next_begin_seen`, which flips on an admitted
-    OR merely deferred begin — including the VERIFY hold's auto-posted one).
-    Past that the begin is refused as out-of-order, and ANY refusal ends the
-    session, so an offer that outlived the window would be a button whose only
-    outcome is killing the run. Behavior is exercised end-to-end against a fake
-    relay that enforces the runner's ordering (capture_plan_loop_test.mjs);
-    these pins keep the three mechanisms in place."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    # 1. Every begin this page posts shuts the window…
-    start = main_js.index("async function runPlanCapture(ctx, { index, attempt, retake = false }) {")
-    end = main_js.index("async function onPlanStart(ctx)", start)
-    run_body = main_js[start:end]
-    assert "shutRetakeWindow(ctx);" in run_body
-    # …and only an accepted verdict re-arms it, within the plan's own budget
-    # AND the position's own extra-try budget (owner ruling #2086: a retake IS
-    # one of the position's three extras).
-    assert "armRetakeSlot(ctx, { index, attempt, attempts: verdict.attempts });" in run_body
-    assert "planSupportsRetake(ctx.spec) && extrasLeft && attempt + 1 <= maxAttempts" in main_js
-    # 2. The tap re-checks (a countdown's auto-begin can win the race) — and
-    # SAYS SO. The re-check used to `return` silently, and shutting the window
-    # used to disable the button; between them a retake press produced no
-    # retake and no explanation at all (issue #2090, owner's 2026-08-03 verify).
-    assert "function canRetake(ctx, index) {" in main_js
-    assert "if (!canRetake(ctx, index)) return null;" in main_js
-    assert 'setStatus(RETAKE_TOO_LATE_MESSAGE, "error");' in main_js
-    assert "ctx.retakeButtonEl.disabled = true;" not in main_js, (
-        "a disabled control cannot report why it refused — #2090"
-    )
-    # 3. The marker is a distinct wire shape, and a rejected retake keeps it.
-    assert "function beginCapturePayload({ index, attempt, retake = false }) {" in main_js
-    assert "return retake ? { index, attempt, retake: true } : { index, attempt };" in main_js
-    assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
-
-
-def test_a_late_retake_reads_the_same_whichever_side_answers_it():
-    """The page and the Pi both answer a lost retake race, and must say the
-    same thing (#2090).
-
-    Two answers exist because two things can catch the press. The page's own
-    mirror of the runner's window catches it with no round-trip at all
-    (``RETAKE_TOO_LATE_MESSAGE`` → ``setStatus``); a press that outran that
-    mirror — an older independently-deployed page, or one whose bookkeeping
-    drifted — reaches the Pi, which refuses it as ``retake_too_late`` and posts
-    the reason as the ``error`` string the page renders VERBATIM.
-
-    A household must not be able to tell which one answered, so the sentence
-    has to be byte-identical on both sides. It cannot be imported across the
-    language boundary, so it is pinned here instead — the same drift guard
-    ``AUTO_ADVANCE_ON_APPLY`` gets where it is mirrored into
-    jasper/capture_relay/session.py.
-    """
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    match = re.search(
-        r"const RETAKE_TOO_LATE_MESSAGE\s*=\s*\n?\s*\"([^\"]+)\";", main_js
-    )
-    assert match, "the page must still carry a RETAKE_TOO_LATE_MESSAGE constant"
-    assert match.group(1) == session.RETAKE_TOO_LATE_MESSAGE
-    # …and the Pi's refusal code is the one the page batch will make the
-    # page's comments name (#2458).
-    assert session.BEGIN_REFUSED_RETAKE_TOO_LATE == "retake_too_late"
-
-
-def test_capture_page_rejected_retake_can_keep_the_earlier_take():
-    """Review blocker B1. A voluntary retake re-measures an ALREADY-ACCEPTED
-    slot, and the design's fail-safe is that a rejected one leaves the original
-    take standing — so the retry screen cannot offer only "Try again", or the
-    household re-measures something that does not need it and can burn the
-    attempt budget until the session dies with the fit and apply never fired.
-    The forward begin is legal at that point (a rejected retake leaves
-    `accepted_count` unchanged, `attempts_used` at this attempt, and
-    `next_begin_seen` false), which is what makes the escape safe rather than
-    merely kind. Exercised end-to-end in capture_plan_loop_test.mjs against a
-    fake relay that enforces the runner's ordering."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function keepEarlierTakeControl(ctx, { index, attempt, target }) {" in main_js
-    assert 'button("Keep the earlier measurement and continue"' in main_js
-    # Offered only on a RETAKE's rejection — an ordinary failure retry has no
-    # earlier take to keep.
-    assert (
-        "secondary: retake ? keepEarlierTakeControl(ctx, { index, attempt, target }) : null,"
-        in main_js
-    )
-    # It returns to the screen the acceptance belonged on: the group-close
-    # confirm keeps the fit behind the same tap it was behind. Since the
-    # two-stage split (work order D1) the awaiting-confirm branch is FIRST in
-    # the completion ladder rather than a nested else, so the flag is set from
-    # inside it — the ordering itself is pinned by
-    # tests/js/capture_plan_loop_test.mjs's
-    # testTheFinalHeldCaptureRendersTheConfirmNotAllDone.
-    assert "if (verdict.accepted && verdict.awaitingConfirm) {" in main_js
-    assert "ctx.retakeAwaitingConfirm = true;" in main_js
-    assert "if (ctx.retakeAwaitingConfirm) {" in main_js
-
-
-def test_capture_page_pre_arm_failure_never_strands_a_fatal_affordance():
-    """Review S2. A pre-arm failure leaves the previous screen up, which is
-    only safe when its live control re-posts a pair the Pi still accepts. Two
-    cases where it does not: during a RETAKE the visible primary is the forward
-    path (posting it while the Pi sits in awaiting_arm on the retake is
-    `begin_out_of_order` — fatal), and a countdown screen has no begin
-    affordance at all (the copy would name a button that does not exist)."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {" in main_js
-    # The retake repair re-arms the offer whose closure re-posts the IDENTICAL
-    # pair, and names that control instead of the forward primary.
-    assert "const restore = { index, attempt: attempt - 1, target };" in main_js
-    assert "armRetakeSlot(ctx, restore);" in main_js
-    assert "return RETAKE_LABEL;" in main_js
-    # …AND PUTS IT BACK ON SCREEN (gate blocker B1). Re-arming alone sufficed
-    # only while a retake left the OFFERING screen up; since the retake round
-    # renders its own affordance-free in-progress screen, this arm has to
-    # re-render one that carries the control the copy names — the group-close
-    # confirm when the retake was of the final position, the manual next screen
-    # otherwise. Behaviour is pinned in capture_plan_loop_test.mjs against
-    # ON-SCREEN labels; these keep the wiring visible here.
-    assert "renderPlanGroupConfirm(ctx, restore);" in main_js
-    assert "renderPlanNext(ctx, restore);" in main_js
-    # …routed by the SAME flag keepEarlierTakeControl already returns on, so a
-    # retake of the cloud's final position lands back on the confirm rather
-    # than on a next-measurement screen the held set has no next entry for.
-    assert main_js.count("if (ctx.retakeAwaitingConfirm) {") == 2
-    # The no-affordance repair drops back to the manual screen the countdown's
-    # own Cancel produces, which has one…
-    assert "if (!hasBegin) {" in main_js
-    assert "renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });" in main_js
-    # …and has a FLOOR at the first measurement, where there is no earlier
-    # position to drop back to (#2557 phase B gate blocker B1: the auto-retake
-    # is the first affordance-free begin reachable at index 1, and the
-    # `index > 1` drop-back rendered nothing at all there — heading, copy naming
-    # a button, and no button). The retry screen for that same measurement is
-    # the floor; its primary re-posts the pair that just failed.
-    assert "if (index > 1) {" in main_js
-    assert "reason: PRE_ARM_NOT_STARTED_NOTE," in main_js
-    assert 'const PRE_ARM_NOT_STARTED_NOTE = "That measurement didn\'t start.";' in main_js
-
-
-def test_capture_page_verify_confirms_after_the_hold_before_the_tone():
-    """§2.2, the step-11 fix. VERIFY is BEGIN-FIRST, THEN CONFIRM: the begin
-    posts immediately (each deferred re-post re-arms the host's hold clock —
-    sitting tap-first in `awaiting_begin` would hit REVIEW_HOLD_BUDGET_S and
-    kill the session as a relay timeout), the hold screen instructs the walk
-    back, and the tone waits for the household's tap once authorization lands.
-    The confirmation copy rides NEW screen keys, which is what keeps a cached
-    pre-redesign bundle rendering today's exact flow."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function entryConfirmsBeforeArming(spec, index) {" in main_js
-    assert "return Boolean(screenCopy.confirm_title);" in main_js
-    assert "String(screenCopy.confirm_body || \"\")" in main_js
-    assert "await awaitPlanConfirmation(ctx, { index });" in main_js
-    # The gate sits AFTER admission and BEFORE the mic/ambient/armed leg.
-    run_start = main_js.index("async function runPlanCapture(ctx, { index, attempt, retake = false }) {")
-    gate = main_js.index("await awaitPlanConfirmation(ctx, { index });", run_start)
-    assert main_js.index("const admission = await beginAndAwaitAuthorization(", run_start) < gate
-    assert gate < main_js.index("armedPosted = true;", run_start)
-    # A parked confirmation is released by Stop / teardown rather than left
-    # suspended on a promise nothing resolves.
-    assert "function resolvePendingConfirm(ctx) {" in main_js
-    abort_start = main_js.index("function makePlanController(ctx) {")
-    abort_end = main_js.index("async function endPlanSession(ctx)", abort_start)
-    assert "resolvePendingConfirm(ctx);" in main_js[abort_start:abort_end]
-    release_start = main_js.index("async function releasePlanSessionResources(ctx) {")
-    release_end = main_js.index("async function reacquireSessionWakeLock", release_start)
-    assert "resolvePendingConfirm(ctx);" in main_js[release_start:release_end]
-
-
-def test_capture_page_consent_announces_the_plan_before_the_first_tone():
-    """§2.3: the consent screen IS the announcement — how many measurements
-    and how long, DERIVED from the signed plan (never hardcoded), above the
-    placement instruction. The page derives it rather than only rendering the
-    speaker's own consent line because the page ships FIRST (README "Release
-    order"): against a speaker that predates the tier line this is the whole
-    announcement. tests/test_capture_relay_spec.py pins the per-capture
-    allowance across the two derivations."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-
-    assert "function planEstimatedMinutes(spec) {" in main_js
-    assert "function planAnnouncementText(spec) {" in main_js
-    assert 'const sentence = `${target} measurements, about ${minutes} minutes`;' in main_js
-    # …and stands down when the speaker's own consent copy already carries that
-    # exact derived sentence, so the household never reads it twice.
-    assert "return specScreenSays(spec, sentence) ? \"\" : `${sentence}.`;" in main_js
-    assert "insertPlanAnnouncement(screenEl, spec);" in main_js
-    assert ".cap-announce {" in index_html
-    # One derivation, shared with the wake-lock hint — not a second estimate.
-    hint_start = main_js.index("function wakeLockHintText(spec) {")
-    hint_end = main_js.index("function planAnnouncementText", hint_start)
-    assert "planEstimatedMinutes(spec)" in main_js[hint_start:hint_end]
-    # The mic picker collapses once the session's one mic stream exists — from
-    # then on it cannot change anything.
-    assert "function collapseMicPicker() {" in main_js
-    assert "collapseMicPicker();" in main_js
-
-
-def test_capture_page_announcement_matches_the_speakers_own_consent_line():
-    """The de-dup in `planAnnouncementText` is a CROSS-BOUNDARY claim: the page
-    stands its announcement down only because the speaker's consent copy
-    already carries the identical derived sentence. Nothing else would notice
-    if a server-side reword broke that match — the page would silently render
-    both, and the household would read one sentence twice, two lines apart
-    (which is exactly what a browser pass caught during PR-U2).
-
-    So build a REAL guided consent screen with the REAL server builder, render
-    the PAGE's announcement template against the same plan, and assert the
-    speaker's copy contains it."""
-    import re
-
-    from jasper.capture_relay.spec import (
-        CapturePlan,
-        CapturePlanEntry,
-        build_crossover_sweep_spec,
-    )
-
-    plan = CapturePlan(
-        capture_target=7,
-        max_attempts=14,
-        schema_version=2,
-        entries=tuple(
-            CapturePlanEntry(index=i, kind_label="cloud_measure", duration_ms=ms)
-            for i, ms in enumerate((23000, 41000, 16000, 16000, 16000, 16000, 16000))
-        ),
-    )
-    spec = build_crossover_sweep_spec(
-        driver_label="crossover",
-        driver_role="summed",
-        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
-        capture_plan=plan,
-        guided_captures=plan.capture_target,
-        # A walk must name the captures that announce themselves — see
-        # ``_courtesy_beeps_step``. Stage 1's shape: first and last.
-        announced_captures=(1, plan.capture_target),
-        guided_tier="express",
-    )
-    steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
-
-    # The page's own template, read out of its source rather than restated.
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    template = re.search(
-        r"const sentence = `([^`]+)`;", main_js
-    )
-    assert template is not None, "the capture page no longer derives an announcement"
-    rendered = (
-        template.group(1)
-        .replace("${target}", str(plan.capture_target))
-        .replace("${minutes}", str(plan.estimated_minutes()))
-    )
-    assert any(rendered in step for step in steps), (
-        f"the speaker's consent copy no longer contains the page's announcement "
-        f"({rendered!r}); the page will now render it a second time — either "
-        f"restore the wording or revisit capture-page/js/main.js's de-dup"
-    )
-
-
-def test_capture_page_treats_host_stop_as_expected_control_flow():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert 'phase === "sweep_cancelled"' in main_js
-    assert "Measurement stopped safely. The speaker page shows what happens next." in main_js
-    assert "if (sweepCompleted === false) return;" in main_js
-
-
-def test_capture_page_csp_allows_version_handshake_and_relay():
-    """The compatibility handshake is same-origin; relay traffic is not."""
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert 'connect-src \'self\' https://relay.jasper.tech' in index_html
-    assert 'new URL("../version.json", import.meta.url)' in main_js
-
-
-def test_capture_page_completion_renders_return_cta():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
-
-    assert "safeReturnUrl" in main_js
-    assert "Back to speaker" in main_js
-    assert "renderCaptureComplete(ctx)" in main_js
-    assert "display: inline-flex;" in index_html
-
-
-def test_capture_page_waits_for_pi_sweep_completion():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert 'phase === "ambient_started"' in main_js
-    assert "Measuring room noise — stay quiet and keep the microphone still." in main_js
-    assert "fetchPhoneStatus" in main_js
-    assert 'phase === "sweep_complete"' in main_js
-    assert "recordWindowMs" not in main_js
-
-
-def test_capture_page_serial_models_match_pi_registry_keys():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "spec.calibration_models" in main_js
-    for key in SUPPORTED_MODELS:
-        assert f'value: "{key}"' not in main_js
-        assert f'value: \'{key}\'' not in main_js
-    for stale in (
-        "minidsp_umik_1",
-        "minidsp_umik_2",
-        "dayton_imm_6c",
-        "dayton_umm_6",
-    ):
-        assert stale not in main_js
-
-
-def test_capture_page_upload_never_declares_a_sign_convention():
-    """The phone's calibration upload posts exactly {mode, filename, content}.
-
-    Because it declares no sign convention, the Pi does not read one from a
-    relay setup: `_relay_calibration_from_setup` in
-    ``jasper/web/correction_setup.py`` states the ecosystem convention
-    outright (`DEFAULT_SIGN_CONVENTION`) instead of defaulting a key nobody
-    sends. That pairing is the invariant this test guards — the day the page
-    grows a sign control, this fails, and whoever adds it must wire the Pi
-    side rather than have the phone's declaration silently ignored (the
-    version-skew failure that would put a household's measurements back on
-    the wrong sign with no signal).
-    """
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    offenders = [
-        f"capture-page/js/main.js:{n}: {line.strip()}"
-        for n, line in enumerate(main_js.splitlines(), start=1)
-        if "sign_convention" in line
-    ]
-    assert not offenders, (
-        "the capture page now declares a sign convention; wire it through "
-        "_relay_calibration_from_setup in jasper/web/correction_setup.py in "
-        "the same change, or the household's declaration is silently ignored:"
-        + "\n".join(["", *offenders])
-    )
-
-
-def test_capture_page_preflights_guided_setup_before_start():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "validateSetupBeforeContinue(ctx)" in main_js
-    assert "setup_validate: true" in main_js
-    assert "setup_token" in main_js
-    assert 'event.phase === "setup_validation_failed"' in main_js
-    assert 'event.phase === "setup_validated"' in main_js
-    assert "renderPositionCount(screenEl, ctx)" in main_js
-
-
-def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert (
-        'import { runLevelRampProtocol } from "./level-events.js?v=20260815-4"'
-        in main_js
-    )
-    assert 'spec.kind === "level_ramp"' in main_js
-    assert "onLevelRampStart(ctx)" in main_js
-
-    start = main_js.index("async function onLevelRampStart")
-    end = main_js.index("async function waitForSweepComplete", start)
-    level_path = main_js[start:end]
-    assert "runLevelRampProtocol" in level_path
-    assert "float32ToWavBlob" not in level_path
-    assert "encryptWav" not in level_path
-    assert "putBlob" not in level_path
-
-
-def test_capture_page_compares_spec_to_normalized_mono_capture_width():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    constraints_js = (_REPO / "capture-page/js/constraints.js").read_text(
-        encoding="utf-8",
-    )
-    measurement_js = (
+def test_shared_recorder_participates_in_the_published_digest() -> None:
+    published = _published_javascript()
+    assert published["measurement-audio.js"] == (
         _REPO / "deploy/assets/shared/js/measurement-audio.js"
-    ).read_text(encoding="utf-8")
-
-    assert "capturedChannelCount: 1" in measurement_js
-    assert "var ch=inp[0]&&inp[0][0]" in measurement_js
-    assert "recorder.capturedChannelCount" in main_js
-    assert "source_channel_count: realized.sourceChannelCount" in main_js
-    assert "captured_channel_count: realized.capturedChannelCount" in main_js
-    assert "capturedChannelCount = null" in constraints_js
-    assert "checkedChannelCount === wantChannels" in constraints_js
-
-
-def test_capture_page_level_ramp_uses_guided_mic_calibration_setup():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert 'spec.kind === "room_sweep" || spec.kind === "level_ramp"' in main_js
-    assert 'ctx.spec.kind === "level_ramp"' in main_js
-    assert "renderMicChoice(screenEl, ctx, inputs)" in main_js
-    assert "renderCalibration(screenEl, ctx)" in main_js
-    assert "renderLevelReady(screenEl, ctx)" in main_js
-    level_ready_start = main_js.index("function renderLevelReady")
-    level_ready_end = main_js.index("function renderRoomReady", level_ready_start)
-    level_ready_path = main_js[level_ready_start:level_ready_end]
-    assert "renderScreen(screenEl, ctx.spec" in level_ready_path
-    assert "onLevelRampStart(ctx)" in level_ready_path
-    assert "Place the microphone as shown" not in level_ready_path
-
-    start = main_js.index("async function onLevelRampStart")
-    end = main_js.index("async function waitForSweepComplete", start)
-    level_path = main_js[start:end]
-    assert "setup: setupWirePayload()" in level_path
-    assert "device: capture.device" in level_path
-
-
-def test_capture_page_supports_bound_and_pi_owned_capture_only_setup():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    level_js = (_REPO / "capture-page/js/level-events.js").read_text(
-        encoding="utf-8",
-    )
-
-    setup_store_js = (_REPO / "capture-page/js/setup-store.js").read_text(
-        encoding="utf-8",
-    )
-
-    assert 'SETUP_STORAGE_KEY = "jts.capture.bound-setup.v2"' in setup_store_js
-    assert "SETUP_IDLE_TTL_MS" in setup_store_js
-    assert "SETUP_ABSOLUTE_TTL_MS" in setup_store_js
-    assert "refreshBoundSetup(spec)" in main_js
-    assert "setup_binding_id" in setup_store_js
-    assert "setup_collect_positions" in main_js
-    assert 'spec.kind === "room_sweep" && spec.setup_validation === false' in main_js
-    assert "if (setupCaptureOnly)" in main_js
-    assert "renderRoomReady(screenEl, ctx)" in main_js
-    assert "setup_identity: identity" in main_js
-    assert "persistBoundSetup(ctx.spec, identity)" in main_js
-    assert "setup: setupWirePayload()" in main_js
-    assert "Raw serials/calibration text are forbidden" in level_js
-    assert "validated compact setup binding" in level_js
-
-
-def test_capture_page_names_the_signed_room_trust_repeat():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-    spec_py = (_REPO / "jasper/capture_relay/spec.py").read_text(encoding="utf-8")
-
-    assert 'ctx.spec.presentation_variant === "trust_repeat"' not in main_js
-    assert "Ready to repeat the main seat" not in main_js
-    assert 'if presentation_variant == "trust_repeat":' in spec_py
-    assert "Ready to repeat the main seat" in spec_py
-    assert "This extra capture checks that the result" in spec_py
-
-
-def test_capture_page_rejects_oversize_calibration_and_unproven_agc():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "MAX_CALIBRATION_TEXT_BYTES" in main_js
-    assert "file.size" in main_js
-    assert "utf8Size(content)" in main_js
-    assert "smaller than 256 KiB" in main_js
-    assert 'reason: "agc_not_proven_off"' in main_js
-    assert "JTS will not play the level tone" in main_js
-
-
-def test_capture_page_level_ramp_agc_gate_only_refuses_explicit_on():
-    """iOS/WebKit never reports autoGainControl (getSettings() omits the key),
-    so gating on `!== false` refused every iPhone. Only an explicit `true`
-    (the browser affirmatively reports AGC on) refuses now; undefined/null
-    proceeds as unattested and is empirically verified server-side from the
-    ramp's own staircase (jasper/audio_measurement/ramp.py) instead."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index("async function onLevelRampStart")
-    end = main_js.index("async function waitForSweepComplete", start)
-    level_path = main_js[start:end]
-
-    assert "capture.settings.autoGainControl !== false" not in level_path
-    assert "const realizedAgc = capture.settings.autoGainControl;" in level_path
-    assert "if (realizedAgc === true) {" in level_path
-    assert "const agcAttested = realizedAgc === false;" in level_path
-    assert "agcFrozen: agcAttested," in level_path
-    assert "agcUnattested: !agcAttested," in level_path
-    # The explicit-on refusal copy is unchanged — only the gate condition
-    # narrowed from "not proven false" to "proven true".
-    assert (
-        "This browser cannot prove automatic microphone gain is off, so JTS "
-        "will not play the level tone." in level_path
     )
 
 
-def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
-    """The Pi's empirical slope-verification failure (agc_suspected) gets a
-    phone-facing explanation instead of the raw server error code — and the
-    INDETERMINATE outcome (agc_indeterminate: insufficient evidence, no AGC
-    observed) gets its own honest copy that does not claim AGC was seen."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index("function renderLevelRampComplete")
-    end = main_js.index("async function enumerateAudioInputs", start)
-    ramp_complete = main_js[start:end]
-
-    assert 'terminalError === "agc_suspected"' in ramp_complete
-    # "browser or device", not "browser" alone (#1941 delta-gate NIT-A): on iOS
-    # every browser is WebKit, so browser-switching is not a remedy there and
-    # the copy would otherwise leave an iPhone household with nothing to try.
-    # The sibling agc_indeterminate line below already named the device — these
-    # two now agree.
-    assert (
-        "This browser is adjusting the microphone level, which prevents "
-        "accurate measurement. Try a different browser or device, or a USB "
-        "measurement microphone." in ramp_complete
-    )
-    assert 'terminalError === "agc_indeterminate"' in ramp_complete
-    assert (
-        "JTS couldn't gather enough measurement evidence to verify this "
-        "microphone's level accuracy. Try again, or use a different "
-        "microphone or device." in ramp_complete
-    )
-
-
-def test_capture_page_infers_calibration_from_pi_registry_without_serial():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "inferCalibrationModel(" in main_js
-    assert "calibrationModels," in main_js
-    assert 'mode: "serial"' in main_js
-    assert "model: inferred.key" in main_js
-    assert "umik-2" not in main_js.lower()
-    assert "minidsp_umik2" not in main_js
-    assert 'serial: ""' in main_js
-    assert "if (!setupState.calibration.serial)" in main_js
-    assert "Enter the microphone serial number." in main_js
-    assert "sessionStorage" not in main_js
-
-
-def test_capture_page_level_completion_does_not_promise_wrong_next_step():
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "ready for the measurement sweep" not in main_js
-    assert "Level matched. The speaker continues on its own." in main_js
-
-
-def test_capture_page_terminal_screens_describe_outcome_not_command_return():
-    """Owner-directed reframe: terminal screens describe what happens next —
-    the household never needs to physically return to the speaker, since the
-    wizard auto-advances on its own. Pins the PHONE-1/XOVER-6 copy."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index("function renderLevelRampComplete")
-    end = main_js.index("async function enumerateAudioInputs", start)
-    ramp_complete = main_js[start:end]
-    assert "Return to the speaker" not in ramp_complete
-    assert (
-        "Level matched. The speaker will continue on its own — "
-        "you can put the microphone down." in ramp_complete
-    )
-    assert "The speaker page shows what happens next." in ramp_complete
-
-    assert (
-        "Measurement uploaded. The speaker will continue automatically."
-        in main_js
-    )
-    assert "You can close this tab." in main_js
-
-
-def test_capture_page_sweep_failed_renders_terminal_screen_not_dead_start():
-    """XOVER-6 interim: sweep_failed used to leave the Start-button screen
-    visible with a retry that replays a stale spec/run_token. It must now
-    render a terminal outcome screen instead, like ramp failures do."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function renderSweepFailed(ctx, err)" in main_js
-    assert "failure.sweepFailed = true" in main_js
-    assert "if (err && err.sweepFailed) {" in main_js
-    assert "renderSweepFailed(ctx, err);" in main_js
-
-    start = main_js.index("function renderSweepFailed")
-    end = main_js.index("async function enumerateAudioInputs", start)
-    sweep_failed_path = main_js[start:end]
-    assert "Tap Start to try again" not in sweep_failed_path
-    assert "The speaker page shows what happens next." in sweep_failed_path
-
-
-def test_capture_page_no_return_link_falls_back_to_close_tab_copy():
-    """PHONE-2: when safeReturnUrl() is empty, the terminal screens that
-    otherwise render a Back-to-speaker button must not silently drop the CTA
-    with no replacement copy. 3 pre-existing call sites (capture complete,
-    ramp complete, bound-setup-expired), the XOVER-6 sweep_failed screen, the
-    phone-initiated Stop terminal screen (renderStoppedScreen), the run-19
-    dead-session terminal (renderSessionExpired), and the four v3
-    session-plan terminals (renderPlanAllDone, renderPlanRefused,
-    renderPlanExhausted, renderPlanTerminal) all need the same fallback."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 10
-    assert main_js.count('text: "You can close this tab."') == 10
-
-
-def test_capture_page_setup_continue_and_fragment_errors_use_friendly_helper():
-    """PHONE-3: the calibration-continue, position-count-continue, and
-    fragment-parse error paths used to surface raw exception text with their
-    own ad hoc ternary instead of the shared captureFailureMessage() helper."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert (
-        'setStatus(err && err.message ? String(err.message) : String(err), "error")'
-        not in main_js
-    )
-
-    start = main_js.index("handle = parseFragment(")
-    end = main_js.index("client = new RelayClient(", start)
-    boot_fragment_path = main_js[start:end]
-    assert "setStatus(captureFailureMessage(err), \"error\");" in boot_fragment_path
-
-
-def test_capture_page_names_the_device_instead_of_ambiguous_this_page():
-    """Item 6: backgrounded-abort copy said 'stay on this page', ambiguous
-    about which device. Name the phone explicitly."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "must stay on this page" not in main_js
-    assert "this screen must stay on" in main_js
-
-
-def test_crossover_candidate_review_collapses_provenance_hashes():
-    """renderCandidateReview() lives in the Pi-served /correction/ crossover
-    wizard (deploy/assets/correction/js/crossover/main.js), not capture-page/ —
-    that file is what actually renders the candidate to the household. The raw
-    fingerprint + alignment confidence sit behind a collapsed <details>
-    disclosure; the plain-language trims / delay / polarity rows stay primary."""
-    crossover_js = (
-        _REPO / "deploy/assets/correction/js/crossover/main.js"
-    ).read_text(encoding="utf-8")
-
-    assert "el('details', {class: 'candidate-provenance'}" in crossover_js
-    assert "el('summary', {text: 'Technical details'})" in crossover_js
-    # The raw candidate fingerprint is provenance, behind the disclosure.
-    assert "review.fingerprint" in crossover_js
-
-
-# ---------------------------------------------------------------------------
-# Wave 2 (SPEC W2.3 session-spanning relay + W2.1 ambient stats + W2.2
-# one-tap mic confirm — the no-ping-pong batch)
-# ---------------------------------------------------------------------------
-
-
-def test_capture_page_plan_routes_begin_capture_to_the_plan_loop():
-    """A `capture_plan` — and ONLY a `capture_plan` — wires the spec-rendered
-    Start button to onPlanStart(); a plan-free spec keeps the single-capture
-    onStart(). The protocol number is deliberately NOT part of this test: with
-    one protocol, every spec carries the same version, so a
-    `capture_protocol_version === 3` conjunct would be dead weight that reads
-    as if plan-ness were still version-encoded."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "const isPlanSpec = Boolean(spec.capture_plan);" in main_js
-    assert "capture_protocol_version === 3" not in main_js
-    # Phone-event signing is unconditional. The old
-    # `requiredCaptureProtocol(spec) >= 2` let a protocol-1 spec — including a
-    # version-less one — disable the authenticated envelope entirely.
-    assert "client.setTransportIntegrity(verified.integrity, { required: true });" in main_js
-    assert "requiredCaptureProtocol(spec) >= 2" not in main_js
-    # The helper is no longer imported at all — nothing left branches on the
-    # protocol number. (Checked on the import list, not the whole file, so the
-    # explanatory comment above the call site does not satisfy it.)
-    assert "  requiredCaptureProtocol," not in main_js
-    assert "begin_capture: () => (isPlanSpec ? onPlanStart(ctx) : onStart(ctx))," in main_js
-    # The single-capture path keeps its exact behavior — the "retry" action
-    # (which a plan spec never emits) is untouched, still onStart.
-    assert "retry: () => onStart(ctx)," in main_js
-
-
-def test_capture_page_plan_loop_derives_named_screens_for_every_outcome():
-    """Pins the plan loop's screen vocabulary: accepted-but-not-final (Next),
-    rejected (Try again, SAME slot next attempt), refused (terminal, no
-    retry), exhausted (terminal, distinct from success), and the final
-    success terminal — matching SPEC W2.3's choreography."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    # §5.7 wraps these in a per-entry screen-copy fallback (heading/message
-    # variables) rather than an inline `text:` template literal — the
-    # fallback strings themselves are unchanged.
-    assert '`Measurement ${index} of ${target} ✓`' in main_js
-    # The retry screen's entry-less fallback headline no longer counts — the
-    # eyebrow above it already carries "Measurement N of T — one more try", and
-    # saying it twice was the §2.1 double-counter in miniature.
-    assert '"Take that measurement again"' in main_js
-    # (the only surviving mention is the comment recording what it replaced)
-    assert main_js.count("needs another try") == 1
-    # The same-slot retry keeps its slot; `retake` rides along so a rejected
-    # VOLUNTARY retake's retry stays a retake (§2.6 — without the marker the
-    # runner refuses it as out-of-order, which ends the session).
-    assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
-    assert "await runPlanCapture(ctx, { index: index + 1, attempt: attempt + 1 });" in main_js
-    # RE-DERIVED for PR-T4 (work order D7): the shared completion screen's
-    # fallback stopped promising an automatic continuation that a stage-1
-    # session deliberately does not make.
-    assert (
-        '"All measurements done — the speaker page shows what happens next."'
-        in main_js
-    )
-    # (the only surviving mention is the comment recording what it replaced)
-    assert main_js.count("the speaker continues automatically") == 1
-    assert 'text: "Measurement refused"' in main_js
-    # The exhausted terminal keeps the attempt-limit copy for a genuine attempt
-    # limit, but PR-T4 gave it a second, honest face: when the Pi says WHICH
-    # clock expired, calling a timeout an attempt limit is simply false (work
-    # order D8). The heading is now selected rather than literal.
-    assert '"Reached the attempt limit"' in main_js
-    assert "expiredBudgetCopy(ctx, verdict)" in main_js
-    # Refusal and exhaustion never route through the success text.
-    refused_start = main_js.index("function renderPlanRefused")
-    refused_end = main_js.index("function renderPlanExhausted", refused_start)
-    assert "All measurements done" not in main_js[refused_start:refused_end]
-
-
-def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
-    """A begin-authorization or result-poll timeout in the plan loop must
-    render a terminal screen (renderSweepFailed's shape — no button), not
-    leave the previous "Next measurement"/"Try again" screen up with a
-    button closure still bound to an (index, attempt) the Pi's own state may
-    have already moved past. Retrying that stale pair risks a fatal
-    begin_replayed refusal (run_capture_plan ends the whole session on ANY
-    capture_refused)."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index("async function waitForCaptureAuthorized(")
-    end = main_js.index("async function waitForCaptureResult(", start)
-    authorized_body = main_js[start:end]
-    assert "failure.sweepFailed = true;" in authorized_body
-    assert "throw failure;" in authorized_body
-
-    start = main_js.index("async function waitForCaptureResult(")
-    end = main_js.index("async function runPlanCapture(", start)
-    result_body = main_js[start:end]
-    assert "failure.sweepFailed = true;" in result_body
-    assert "throw failure;" in result_body
-    # The wait is the Pi's to publish (`CaptureSpec.result_wait_s`), and the
-    # constant is the fallback for a Pi that publishes none — which, since the
-    # corner sweep was deleted, is EVERY current Pi. So this is the wall every
-    # round actually runs under, and the value is pinned here rather than left
-    # to a reader of `main.js` who might size it for the old fallback-only role.
-    # It clears the slowest round the ten-round jts3 corpus measured (81.28 s,
-    # scoring six corners) by 8.7 s, and a round now scores none.
-    assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;" in main_js
-    assert "resultWaitMs(spec), Number(spec.duration_ms) || 0" in result_body
-
-
-def test_capture_page_plan_loop_post_arm_errors_are_terminal_pre_arm_retries():
-    """runPlanCapture's generic catch-all used to leave the previous
-    "Next measurement"/"Try again" button live and
-    bound to the SAME (index, attempt) already posted — a re-tap after e.g. a
-    transient putBlob failure posts a begin the Pi refuses (begin_replayed /
-    out_of_order → session-ending CaptureFailed), or worse re-records a
-    sweep-less window. The catch now splits on whether `armed` was posted:
-    post-arm generic errors render the terminal failure screen (mirroring
-    the timeout paths); pre-arm errors (mic permission denied, a begin-post
-    hiccup) keep the live retry — correct there, the round never started on
-    the Pi — with Stop still wired and copy naming the ACTUAL on-screen
-    affordance (N3). Behavior exercised in capture_plan_loop_test.mjs; these
-    pins keep the wiring from silently regressing."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index(
-        "async function runPlanCapture(ctx, { index, attempt, retake = false }) {"
-    )
-    end = main_js.index("async function onPlanStart(ctx)", start)
-    run_body = main_js[start:end]
-    assert "let armedPosted = false;" in run_body
-    assert "armedPosted = true;" in run_body
-    # armedPosted is set BEFORE the armed post's await — a lost response may
-    # still have armed the Pi, so a failed post must classify as post-arm.
-    assert run_body.index("armedPosted = true;") < run_body.index("armed: true,")
-    assert "} else if (armedPosted) {" in run_body
-    assert "repairPreArmAffordance(ctx, { index, attempt, target, retake })" in run_body
-    # The post-arm upload-cap refusal is terminal too (sweepFailed routing),
-    # and the pre-arm clean-capture refusal keeps the session alive: exactly
-    # the sweepFailed/deadSession/armedPosted terminal branches call
-    # endPlanSession inside the catch, never the pre-arm else.
-    assert "failure.sweepFailed = true;" in run_body
-    assert "function planRetryAffordance(ctx) {" in main_js
-    # captureFailureMessage's affordance parameter defaults to the v1/v2
-    # flows' real Start button.
-    assert 'function captureFailureMessage(err, retryAction = "Start") {' in main_js
-
-
-def test_capture_page_plan_loop_blob_upload_carries_the_capture_index():
-    """Each admitted attempt's blob rides capture_index = attempt - 1 (SPEC
-    W2.3) — a retried slot must never clobber the prior attempt's upload."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "await client.putBlob(blob, plaintextLen, sha256, attempt - 1);" in main_js
-
-
-def test_capture_page_plan_loop_acknowledgement_captured_once_not_per_round():
-    """The placement acknowledgement is derived ONCE at plan start (from the
-    spec-rendered checkbox) and threaded through every round's armed event —
-    there is no per-round checkbox on the page-owned Next/Try-again screens."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index("async function onPlanStart(ctx)")
-    end = main_js.index("// The whole capture leg, behind the single Start tap.", start)
-    plan_start_body = main_js[start:end]
-    assert "acceptedAcknowledgement(ctx.spec, ctx.captureRefs)" in plan_start_body
-    assert "ctx.planAcknowledgement = acknowledgement;" in plan_start_body
-    assert "acknowledgement: ctx.planAcknowledgement," in main_js
-
-
-def test_capture_page_plan_loop_stop_stays_wired_across_rounds():
-    """activeAbort is set ONCE in onPlanStart and persists across every
-    round's async gaps (the idle time between "Next measurement" taps), only
-    clearing at a genuine terminal outcome (endPlanSession) or Stop itself —
-    never per-round, which would leave Stop dead while idling between
-    captures."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "activeAbort = controller.abort;" in main_js
-    assert "function endPlanSession(ctx) {" in main_js
-    assert "if (activeAbort === state.abort) activeAbort = null;" in main_js
-
-
-def test_capture_page_ambient_stats_rides_the_armed_event_not_a_separate_post():
-    """The relay's phone-event slot is last-write-wins: a standalone
-    ambient_stats event posted before `armed` would almost always be
-    overwritten before the Pi's ~0.75s poll ever saw it. ambientStatsFieldsFor
-    is spread directly into the SAME already-awaited armed postEvent call in
-    both onStart (v1/v2) and the plan loop (v3) — zero extra network round
-    trips, "must not delay the capture sequence" for free."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert main_js.count("...ambientStatsFieldsFor(spec, noise),") == 2
-    assert 'spec.kind !== "crossover_sweep"' in main_js
-
-
-def test_capture_page_one_tap_mic_confirm_renders_when_hint_is_valid():
-    """Wave-2 household-mic prefill hint (CaptureSpec.default_setup_calibration,
-    #1540, adjudicated stored-submit amendment): the calibration screen shows
-    "Using {label}{· serial}" as the primary action with a safe "Use a
-    different microphone" fallback to today's full picker. Only offered when
-    the Pi marked the hint `resolvable: true` (the stored-mode Pi build mints
-    that only when the calibration_id currently resolves); a hint without the
-    marker — an older Pi — renders the plain full picker (compat pin)."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function validDefaultSetupHint(spec) {" in main_js
-    assert "if (hint.resolvable !== true) return null;" in main_js
-    assert "function renderCalibrationConfirm(screenEl, ctx, hint) {" in main_js
-    assert (
-        "const heading = serialDisplay ? `Using ${label} · ${serialDisplay}` : `Using ${label}`;"
-        in main_js
-    )
-    assert 'button("One tap to confirm", async () => {' in main_js
-    assert 'button("Use a different microphone", () => {' in main_js
-    assert "renderCalibration(screenEl, ctx, { skipHint: true });" in main_js
-    # The gate: renderCalibration only shows the hint screen on a FRESH
-    # visit (calibration.mode still "none"), never after the household has
-    # already picked something (Back navigation from a later step).
-    assert (
-        'if (hint && String((setupState.calibration || {}).mode || "none") === "none") {'
-        in main_js
-    )
-
-
-def test_capture_page_one_tap_confirm_submits_stored_and_falls_back_on_rejection():
-    """Adjudicated stored-submit contract (amendment to the original
-    stop-and-report): Confirm submits setup.calibration = {mode: "stored",
-    calibration_id} (+ model, display-only) through the SAME shared
-    post-calibration advance the picker's Continue uses
-    (continueFromCalibration → validateSetupBeforeContinue /
-    bindSetupBeforeLevel), and a Pi rejection (the household-mic record went
-    stale between spec mint and submit) falls back to the full picker with a
-    plain sentence — never a dead end — including the one DEFERRED-validation
-    path (a position-collecting level_ramp validates at the position screen's
-    bind). A failed one-tap is not re-offered within the page session
-    (storedHintFailed). Behavior is exercised end-to-end in
-    tests/js/capture_calibration_confirm_test.mjs; these pins keep the wiring
-    from silently regressing."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    start = main_js.index("function renderCalibrationConfirm(screenEl, ctx, hint) {")
-    end = main_js.index("function renderCalibration(screenEl, ctx", start)
-    confirm_body = main_js[start:end]
-    assert 'mode: "stored",' in confirm_body
-    assert "calibration_id: String(hint.calibration_id)," in confirm_body
-    assert 'model: String(hint.model || ""),' in confirm_body
-    assert "await continueFromCalibration(screenEl, ctx);" in confirm_body
-    assert "fallBackFromStoredCalibration(screenEl, ctx);" in confirm_body
-
-    # One shared advance for both the picker Continue and the stored Confirm.
-    assert "async function continueFromCalibration(screenEl, ctx) {" in main_js
-    assert main_js.count("await continueFromCalibration(screenEl, ctx);") == 2
-
-    # The rejection fallback: plain sentence, picker re-render, no re-offer.
-    assert "function fallBackFromStoredCalibration(screenEl, ctx) {" in main_js
-    assert (
-        "The speaker couldn't use the saved microphone calibration. "
-        "Set up the microphone manually instead." in main_js
-    )
-    assert "let storedHintFailed = false;" in main_js
-    assert "storedHintFailed = true;" in main_js
-    assert (
-        "const hint = !skipHint && !storedHintFailed ? validDefaultSetupHint(ctx.spec) : null;"
-        in main_js
-    )
-
-    # The deferred-validation path (position-collecting level_ramp) keeps the
-    # same rejection contract at its bind.
-    assert "if (usedStoredCalibration()) {" in main_js
-
-
-def test_capture_page_upload_note_requires_actually_loaded_content():
-    """The upload-mode picker's "Choose the file again only if you want to
-    replace the current selection" note requires calibration.content, not
-    just mode === "upload" — the note must only appear after a REAL upload
-    landed in setupState.calibration this session, never for a mode value
-    that arrived without file content (saveAndContinue's reuse branch also
-    requires .content, so the two stay consistent)."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert (
-        '(setupState.calibration || {}).mode === "upload" && (setupState.calibration || {}).content'
-        in main_js
-    )
-
-
-def test_capture_page_mic_picker_never_erases_the_stored_preference():
-    """Run-19 defect (a): renderMicChoice/buildMicPicker used to call
-    rememberDeviceId("") the moment the remembered device wasn't in THIS
-    render's enumerated list (unplugged right now, or a browser-rotated
-    deviceId) — permanently erasing a good preference even though the same
-    physical mic would have matched again next session. The in-memory
-    fallback to Automatic stays (selectedDeviceId = ""); only the
-    destructive localStorage write is gone."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert main_js.count('rememberDeviceId("");') == 0
-    assert main_js.count("selectedDeviceId = \"\";") >= 2
-    assert "never erase the stored" in main_js or "do NOT erase the stored" in main_js
-
-
-def test_capture_page_reboot_clears_the_stale_mic_picker_not_appends():
-    """W6.11 cosmetic fix: buildMicPicker() inserts its "Microphone:" selector
-    as a SIBLING just before `screenEl`, not as a child of it, so it lives
-    outside what setScreen()'s replaceChildren() clears on every fresh
-    boot(). A hashchange re-boot (onHashChange -> bootFromHash -> boot) used
-    to leave the PRIOR boot's picker in place and stack a second one beside
-    it. boot() now removes the tracked picker before rendering the fresh
-    loading screen, instead of appending on top of it."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "let micPickerEl = null;" in main_js
-    assert "micPickerEl = wrap;" in main_js
-    boot_start = main_js.index("async function boot() {")
-    boot_body = main_js[boot_start: boot_start + 1200]
-    assert "micPickerEl.remove()" in boot_body
-    # The removal must happen BEFORE setScreen() clears the loading screen,
-    # not after.
-    assert boot_body.index("micPickerEl.remove()") < boot_body.index("setScreen(screenEl")
-
-
-def test_capture_page_dead_relay_session_never_offers_a_doomed_retry():
-    """Run-19 defect (c): every phone-facing relay endpoint 404s "not_found"
-    once a session's TTL lapses or the Pi purges it, so "Tap Start to try
-    again" against a dead session is a guaranteed second failure.
-    isDeadSessionError() is checked before the generic captureFailureMessage
-    fallback in onStart, onLevelRampStart, and the plan loop's begin/result
-    polls + top-level catch."""
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "function isDeadSessionError(err) {" in main_js
-    assert "function renderSessionExpired(ctx) {" in main_js
-    assert (
-        "This measurement link expired — return to the speaker page to start again."
-        in main_js
-    )
-    assert main_js.count("isDeadSessionError(err)") >= 4
-    assert main_js.count("renderSessionExpired(ctx);") >= 4
-
-
-def test_capture_page_abort_signal_never_leaks_the_raw_dom_exception():
-    """Run-19 defect (b): relay-client.js's _controlFetch now aborts with a
-    named Error so a timed-out control request never surfaces the browser's
-    default "signal is aborted without reason." text; main.js additionally
-    normalizes ANY AbortError defensively (isRelayConnectivityAbort)."""
-    relay_client_js = (_REPO / "capture-page/js/relay-client.js").read_text(encoding="utf-8")
-    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
-
-    assert "controller.abort(" in relay_client_js
-    assert "new Error(" in relay_client_js
-    assert "function isRelayConnectivityAbort(err, message) {" in main_js
-    assert (
-        "Lost the connection to the speaker's measurement relay for a moment."
-        in main_js
-    )
-
-
-def test_capture_page_blob_put_supports_an_optional_capture_index():
-    """relay-client.js's putBlob() gains an optional 4th `captureIndex` arg
-    that appends `?index=N`; omitted stays byte-identical to the pre-Wave-2
-    single-capture request (no query string at all)."""
-    relay_client_js = (_REPO / "capture-page/js/relay-client.js").read_text(encoding="utf-8")
-
-    assert "async putBlob(blob, plaintextLen, sha256Hex, captureIndex) {" in relay_client_js
-    assert '`/blob?index=${captureIndex}`' in relay_client_js
+def test_published_modules_have_one_cache_key_each() -> None:
+    pattern = re.compile(r'from\s+["\']\./([\w-]+\.js)\?v=([\w.\-]+)["\']')
+    inventory: dict[str, dict[str, list[str]]] = {}
+    for path in sorted((_REPO / "capture-page/js").glob("*.js")):
+        for module, stamp in pattern.findall(path.read_text(encoding="utf-8")):
+            inventory.setdefault(module, {}).setdefault(stamp, []).append(path.name)
+    assert inventory
+    split = {module: stamps for module, stamps in inventory.items() if len(stamps) > 1}
+    assert not split, split

@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
+from jasper import wake_legs
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.audio_profile_state import profile_env_updates
 from jasper.cli import aec_init
 from jasper.control import aec_endpoints
+from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.usb_mic import (
@@ -202,11 +204,13 @@ def _write_env(
     mic_device: str,
     extra: str = "",
     voice_provider: str = "gemini",
+    aec_port: int | None = 9876,
 ) -> Path:
     env_file = tmp_path / "jasper.env"
+    port_line = "" if aec_port is None else f"JASPER_AEC_UDP_PORT={aec_port}\n"
     env_file.write_text(
         f"JASPER_MIC_DEVICE={mic_device}\n"
-        "JASPER_AEC_UDP_PORT=9876\n"
+        f"{port_line}"
         "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
         f"{extra}"
     )
@@ -692,21 +696,22 @@ def test_reconcile_parks_if_bridge_fails_after_alignment_reapply(
 def test_reconcile_repairs_capture_mixer_before_arming_six_channel_aec(
     tmp_path: Path,
 ) -> None:
+    channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
     expected = [
-        "amixer -c Array cset name=Headset Capture Switch "
-        "on,on,on,on,on,on",
-        "amixer -c Array cset name=Headset Capture Volume "
-        "60,60,60,60,60,60",
+        f"amixer -c Array cset name={xvf3800.MIXER_CAPTURE_SWITCH} "
+        + ",".join(["on"] * channels),
+        f"amixer -c Array cset name={xvf3800.MIXER_CAPTURE_VOLUME} "
+        + ",".join([str(xvf3800.MIXER_VOLUME_MAX)] * channels),
         "alsactl store",
     ]
 
-    for channels, should_repair in ((6, True), (2, False)):
-        root = tmp_path / str(channels)
+    for detected_channels, should_repair in ((channels, True), (2, False)):
+        root = tmp_path / str(detected_channels)
         root.mkdir()
         bin_dir, mixer_log = _fake_mixer_tools(root)
         _write_env(root, "Array")
         _write_mode(root)
-        _write_card(root, channels=channels)
+        _write_card(root, channels=detected_channels)
 
         result = _run_reconcile(
             root,
@@ -2010,13 +2015,14 @@ def test_aec_on_dual_stream_writes_raw_clears_dtln(tmp_path: Path) -> None:
 def test_aec_on_triple_stream_writes_all_three(tmp_path: Path) -> None:
     """AEC auto + RAW=1 + DTLN=1 → writes raw UDP device, DTLN UDP
     device, and DTLN_ENABLED=1. The opt-in 2 GB Pi config."""
-    _write_env(tmp_path, "udp:9876")
+    _write_env(tmp_path, "Array", aec_port=None)
     _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1")
     _write_card(tmp_path, channels=6)
     _run_reconcile(tmp_path, "--reason", "test")
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
-    assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
+    assert f"JASPER_MIC_DEVICE=udp:{wake_legs.by_token('on').udp_port}" in body
+    assert f"JASPER_MIC_DEVICE_RAW=udp:{wake_legs.by_token('off').udp_port}" in body
+    assert f"JASPER_MIC_DEVICE_DTLN=udp:{wake_legs.by_token('dtln').udp_port}" in body
     assert "JASPER_AEC_DTLN_ENABLED=1" in body
 
 
@@ -2156,7 +2162,12 @@ def test_chip_aec_on_sets_carrier_and_clears_raw_dtln(tmp_path: Path) -> None:
 
 
 def test_chip_aec_extra_beam_toggles_set_chip_device_vars(tmp_path: Path) -> None:
-    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n",
+        aec_port=None,
+    )
     _write_mode_with_legs(
         tmp_path,
         mode="auto",
@@ -2177,8 +2188,15 @@ def test_chip_aec_extra_beam_toggles_set_chip_device_vars(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888" in body
+    assert f"JASPER_MIC_DEVICE=udp:{wake_legs.by_token('on').udp_port}" in body
+    assert (
+        f"JASPER_MIC_DEVICE_CHIP_AEC_150="
+        f"udp:{wake_legs.by_token('chip_aec_150').udp_port}"
+    ) in body
+    assert (
+        f"JASPER_MIC_DEVICE_CHIP_AEC_210="
+        f"udp:{wake_legs.by_token('chip_aec_210').udp_port}"
+    ) in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
 

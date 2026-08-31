@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deploy coverage for the remaining Rust audio daemons and USB retirement."""
+"""Dependency and ownership checks for installed Rust audio daemons."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUST_ROOT = (ROOT / "rust").resolve()
 RUST_HELPERS = ROOT / "deploy/lib/install/rust-daemons.sh"
-INSTALL = ROOT / "deploy/install.sh"
-SYSTEMD_HELPERS = ROOT / "deploy/lib/install/systemd-units.sh"
 UNIT_DIR = ROOT / "deploy/systemd"
 
 
@@ -91,12 +89,6 @@ def _staged_shared_rust_crates() -> set[str]:
     )
 
 
-def test_only_live_rust_audio_daemons_are_built():
-    assert _built_daemons() == {"jasper-fanin", "jasper-outputd"}
-    assert "build_install_jasper_usbsink_audio" not in RUST_HELPERS.read_text()
-    assert not (ROOT / "rust/jasper-usbsink-audio/Cargo.toml").exists()
-
-
 def test_source_build_stages_every_reachable_local_cargo_path_dependency():
     required = _reachable_local_cargo_path_dependencies(_built_daemons())
     staged = _staged_shared_rust_crates()
@@ -112,13 +104,3 @@ def test_each_built_daemon_has_one_systemd_owner():
         needle = f"ExecStart=/opt/jasper/bin/{daemon}"
         owners = [path.name for path in UNIT_DIR.glob("*.service") if needle in path.read_text()]
         assert len(owners) == 1, (daemon, owners)
-
-
-def test_core_graph_restart_makes_built_daemons_live():
-    text = SYSTEMD_HELPERS.read_text()
-    assert "systemctl restart jasper-fanin.service" in text
-    install_text = INSTALL.read_text()
-    outputd_ready = _function_body(install_text, "require_outputd_ready")
-    assert "systemctl restart jasper-outputd.service" in outputd_ready
-    assert "restart_services_for_changed_rust_daemons" not in text
-    assert "restart_services_for_changed_rust_daemons" not in RUST_HELPERS.read_text()

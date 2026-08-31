@@ -6,8 +6,17 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from pathlib import Path
 
+from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
+from jasper.ring_assets import (
+    RING_A_PROGRAM_FILE,
+    RING_ACTIVE_CONTENT_FILE,
+    RING_B_CONTENT_FILE,
+)
 from tests.install_surface import INSTALL_LIB_DIR, INSTALL_SH
 
 
@@ -27,86 +36,41 @@ def _call_pos(body: str, name: str) -> int:
     return match.start()
 
 
-def test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units():
-    """A first deploy to an already-armed box must not reboot mid-install.
-
-    Reboot trap: an old 8-slot /dev/shm/jts-ring/program.ring can survive until
-    the deploy restarts jasper-fanin. If the binary default has flipped to 2
-    slots and install_systemd_units restarts fan-in before the step-5 coupling
-    reconciler deletes the stale ring, fan-in fatally attaches the old geometry,
-    burns through StartLimitBurst, and jasper-fanin.service escalates to
-    StartLimitAction=reboot before the install can write its build manifest. The
-    ring files are tmpfs transport state, never user data, so the platform step
-    must remove the explicit ring files before any systemd unit restart can
-    observe stale geometry.
-
-    #2285 P2 added the ACTIVE ring to the set. Its other deleter
-    (``_delete_stale_ring_files``, inside ``_converge_ring``) is bypassed on an
-    operator-pinned box, and every armed fleet box is pinned — so before this,
-    the one ring file a roleful box actually runs on was the one ring file no
-    deploy cleared.
-
-    The set is asserted EXACTLY, not by membership: a new ring must join this
-    contract deliberately rather than inherit a stale-geometry deploy by
-    omission, which is the shape of the gap this closed. #3118 added the
-    DAC-content return ring that way — its reader is outputd, which carries the
-    same ``StartLimitAction=reboot`` as the fan-in case above.
-    """
-
-    body = _function_body(
-        RING_PLATFORM_SH.read_text(encoding="utf-8"),
-        "install_jts_ring_platform",
+def test_ring_platform_clears_owned_rings_after_installing_assets(
+    tmp_path: Path,
+) -> None:
+    """Run the shipped function with command shims and observe its effects."""
+    log = tmp_path / "calls.log"
+    script = f"""
+set -euo pipefail
+set -f
+REPO_DIR={RING_PLATFORM_SH.parents[3]}
+source {RING_PLATFORM_SH}
+build_install_jts_ring_ioplug() {{ echo build >> "$JTS_TEST_LOG"; }}
+install_jts_ring_conf_assets() {{ echo conf >> "$JTS_TEST_LOG"; }}
+rm() {{ printf 'rm' >> "$JTS_TEST_LOG"; printf ' %s' "$@" >> "$JTS_TEST_LOG"; printf '\n' >> "$JTS_TEST_LOG"; }}
+install_jts_ring_platform
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "JTS_TEST_LOG": str(log)},
     )
 
-    unlinked = re.findall(r"^\s*rm -f (\S+)$", body, re.M)
-    assert unlinked == [
-        "/dev/shm/jts-ring/program.ring",
-        "/dev/shm/jts-ring/content.ring",
-        "/dev/shm/jts-ring/active-content.ring",
-        "/dev/shm/jts-ring/dac-content.ring",
-    ]
-    assert "/dev/shm/jts-ring/*" not in body, "ring cleanup must not use globs"
-    # RING FILES ONLY. A `.writer.lock` / `.open.lock` unlink would open a
-    # silent inode-tear window between two holders, so the deleter must never
-    # grow one.
-    assert all(path.endswith(".ring") for path in unlinked), unlinked
-    assert body.index("install_jts_ring_conf_assets") < body.index(
-        "rm -f /dev/shm/jts-ring/program.ring"
-    )
-
-
-def test_the_installer_clears_every_ring_the_platform_knows_about():
-    """The unlink set is the ring-asset SSOT's own set, not a hand-kept list.
-
-    Derived from ``jasper.ring_assets`` rather than restated, so a ring added
-    there and not here fails HERE — the direction that matters, since the file
-    that motivated this (the ACTIVE ring) was added to the platform years after
-    the deleter was written and silently never joined it.
-
-    The DAC-content return ring (#3118) is named separately because it is
-    deliberately NOT a registry member — like the grouping ring it is neither the
-    coupling's wire nor a renderer lane, so it owns its identity in
-    :mod:`jasper.multiroom.dac_content_ring`. Naming it here keeps the derived
-    half derived: a registry ring that skips the deleter still fails.
-    """
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
-    from jasper.ring_assets import (
-        RING_ACTIVE_CONTENT_FILE,
-        RING_B_CONTENT_FILE,
-        RING_A_PROGRAM_FILE,
-    )
-
-    body = _function_body(
-        RING_PLATFORM_SH.read_text(encoding="utf-8"),
-        "install_jts_ring_platform",
-    )
-    unlinked = set(re.findall(r"^\s*rm -f (\S+)$", body, re.M))
-    assert unlinked == {
+    assert result.returncode == 0, result.stderr
+    rings = (
         RING_A_PROGRAM_FILE,
         RING_B_CONTENT_FILE,
         RING_ACTIVE_CONTENT_FILE,
         DAC_CONTENT_RING_FILE,
-    }
+    )
+    assert log.read_text().splitlines() == [
+        "build",
+        "conf",
+        *(f"rm -f {ring}" for ring in rings),
+    ]
 
 
 def test_full_install_runs_ring_platform_before_systemd_units():
