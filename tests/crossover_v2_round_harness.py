@@ -2,19 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One post-apply round, staged: the harness two test modules drive it through.
+"""One post-apply round, staged: the harness the round suites drive it through.
 
-A fixture library that IS a fixture library. These helpers were private to
-``tests/test_crossover_v2_round_wiring.py`` until the round's
-restore/undo/anchor pins moved to
-``tests/test_crossover_v2_undo_and_anchor.py`` — a subject that
-``docs/REFACTOR-TUNING-2026-08.md`` §3 marks *"not a target. Ever."* and that
-therefore must not be sitting inside a suite the strangler will dissolve.
-Putting the harness here rather than importing it from one test module into
-another is the point: the census's recurring finding is test files doubling as
+A fixture library that IS a fixture library, kept OUT of any collected test
+module on purpose: the census's recurring finding is test files doubling as
 fixture libraries (S7 step b, *"deleting a 'dead' file can break a class-A
-survivor"*), and a shared harness that lives in a collected test module is how
-that happens.
+survivor"*), and a shared harness that lives in a collected test module is
+how that happens.
 
 **Nothing here asserts.** Every function stages a fact — a durable state, a
 conductor, a comparable "before", an applied graph, one post-apply capture —
@@ -60,7 +54,6 @@ __all__ = [
     "_install_applied_graph",
     "_install_entry_baseline",
     "_post_apply_analysis",
-    "_restored_ok",
     "_restoring_stage_2",
     "_seed_round_state",
     "_stub_restore_doors",
@@ -281,17 +274,6 @@ def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
         state["previous_candidate_displaced_by"] = "fp-stage-1"
     v2host.save_v2_state(state)
     return state
-
-
-async def _restored_ok(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-    """The DSP half of ``handle_v2_restore``, stubbed — and ONLY that half.
-
-    Everything else on the endpoint's path runs for real: the anchor
-    predicate, the refusal, and ``observe_restore``'s durable clear. For the
-    ROUND's own restore — republish-then-apply — see
-    :func:`_stub_restore_doors` instead.
-    """
-    return {"status": "restored"}
 
 
 def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:

@@ -6219,143 +6219,6 @@ def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
-def test_restore_refuses_when_nothing_applied():
-    """``camilla_factory`` still has to be CALLABLE. #2537 made
-    ``handle_v2_restore`` read the running config's path (the fourth anchor
-    precondition's live half) BEFORE it reaches this refusal, so the factory
-    is invoked unconditionally now — a bare ``None`` raises ``TypeError``
-    before the refusal ever fires. ``SimpleNamespace()`` has no
-    ``get_config_file_path``, so the probe's own guarded read swallows that
-    as an ``AttributeError`` and resolves to "could not compare", which is
-    exactly the no-live-reading case this test does not care about."""
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [],
-        "applied": False,
-    })
-    with pytest.raises(v2host.CrossoverV2Refused, match="nothing is applied"):
-        v2host.handle_v2_restore(None, lambda: SimpleNamespace())
-
-
-def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
-    """The speaker's first-ever apply has no predecessor to undo back to —
-    a policy refusal, never a 500 (the legacy path's failure mode).
-
-    ``camilla_factory`` must still be callable — see the sibling test above
-    for why a bare ``None`` no longer reaches this refusal at all."""
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": True,
-        "pre_apply_profile": None,
-    })
-    with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
-        v2host.handle_v2_restore(None, lambda: SimpleNamespace())
-
-
-def test_restore_refuses_across_a_topology_change(monkeypatch):
-    """Item 2 (#1605): the stashed Undo target was composed for the output
-    topology live at apply time; restoring it after the topology changed would
-    realize the wrong graph. handle_v2_restore refuses with a re-measure nudge
-    when the current topology's config fingerprint differs from the one stashed
-    in pre_apply_profile.source. (The matching-topology pass-through is proven
-    end-to-end by test_apply_stashes_pre_apply_profile_and_restore_reverts_
-    through_real_seams, which restores under one unchanged topology.)
-
-    ``camilla_factory`` must still be callable — see
-    test_restore_refuses_when_nothing_applied for why a bare ``None`` no
-    longer reaches this refusal at all."""
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": True,
-        "pre_apply_profile": {
-            "status": "applied",
-            "source": {"topology_fingerprint": "topo-A"},
-            "config": {"path": "/tmp/whatever.yml"},
-        },
-    })
-    monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology", lambda: object()
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.topology_config_fingerprint",
-        lambda _topology: "topo-B",
-    )
-    with pytest.raises(
-        v2host.CrossoverV2Refused, match="output configuration changed"
-    ):
-        v2host.handle_v2_restore(None, lambda: SimpleNamespace())
-
-
-def test_restore_never_loads_a_graph_the_round_did_not_displace(tmp_path, caplog):
-    """#2559, end to end: the 2026-08-15 14:47 jts3 firing, refused.
-
-    The round applied at 14:45:41, displacing ``sound_current.yml``. Its stash
-    was frozen from an applied-baseline-profile record stale since 00:34, so it
-    names run 2's candidate. The seam fired ninety-seven seconds later; the
-    running graph was still the round's own, so #2537's divergence check passed
-    correctly — and the restore loaded the stale candidate.
-
-    What must NOT happen is the load. Asserted on the CamillaDSP handle rather
-    than on the exception alone: a refusal raised after the graph moved would
-    satisfy ``pytest.raises`` and still have changed the household's sound.
-    """
-    displaced = tmp_path / "sound_current.yml"
-    displaced.write_text("the sound the round displaced\n", encoding="utf-8")
-    stale = tmp_path / "active_speaker_baseline_candidate_3298558b817e.yml"
-    stale.write_text("run 2's candidate, applied at 00:34\n", encoding="utf-8")
-    applied = tmp_path / "round1_candidate.yml"
-    applied.write_text("what the round put live\n", encoding="utf-8")
-
-    loaded: list[str] = []
-
-    class _RecordingCam:
-        async def get_config_file_path(self, best_effort=False):
-            return str(applied)
-
-        async def set_config_file_path(self, path, best_effort=False):
-            loaded.append(str(path))
-            return True
-
-    v2host.save_v2_state({
-        "session_id": "cap_1447",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": True,
-        "pre_apply_profile": {
-            "status": "applied",
-            "source": {},
-            "config": {
-                "path": str(stale),
-                "sha256": hashlib.sha256(stale.read_bytes()).hexdigest(),
-            },
-        },
-        "round_anchor": {
-            "displaced": {"config_path": str(displaced), "sha256": ""},
-            "applied": {"config_path": str(applied), "sha256": ""},
-        },
-    })
-    caplog.set_level(logging.ERROR, logger=v2host.logger.name)
-
-    with pytest.raises(
-        v2host.CrossoverV2Refused, match="which sound to put back"
-    ):
-        v2host.handle_v2_restore(_bg_run_async, _RecordingCam)
-
-    assert loaded == [], "the speaker's graph must not move on a refused restore"
-    # The journal is the only record an automatic rollback leaves — it has no
-    # household screen at all — so the refusal names BOTH paths there.
-    line = next(
-        record.getMessage() for record in caplog.records
-        if "event=correction.crossover_v2_restore_stash_not_displaced " in
-        record.getMessage()
-    )
-    assert str(stale) in line and str(displaced) in line
-
-
 def test_status_block_surfaces_apply_blocked():
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -11120,23 +10983,18 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
     assert saved_state["apply_blocked"] == payload["issue"]
 
 
-# --- W6 run-8 Blocker Q: the v2-aware Undo, through the REAL apply/restore seams --
+# --- the pre-apply stash, through the REAL apply seams ------------------------
 #
-# The verify_fail screen's "Undo" posted to the legacy /crossover/restore,
-# which expects a PENDING candidate-apply transaction from the per-driver
-# commissioning-run machinery. handle_v2_apply commits straight through
-# apply_baseline_profile's own atomic transaction and never creates one, so
-# the legacy path 500s ("there is no pending candidate apply to restore")
-# and a household stuck on a bad-sounding measured candidate has no way
-# back. These tests drive handle_v2_apply then handle_v2_restore through
-# the REAL seams (same fixture shape as the Blocker M tests above) — not a
-# faked apply gate — so the fix is proven end to end.
+# The stash (``pre_apply_profile``) is the way back's only durable pointer:
+# its ``source.measured_candidate_fingerprint`` is what a republish-then-apply
+# resolves. These tests drive handle_v2_apply through the REAL seams (same
+# fixture shape as the Blocker M tests above) — not a faked apply gate.
 
 
 def _prior_measured_candidate(preset):
     """The household's pre-existing applied crossover — deliberately a
     DIFFERENT measured candidate from the run-8 shape below, so a passing
-    restore is proof of reversion rather than a no-op."""
+    revert is proof of reversion rather than a no-op."""
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverAlignment,
         MeasuredCrossoverCandidate,
@@ -11153,304 +11011,6 @@ def _prior_measured_candidate(preset):
             delay_us=250.0, delay_role="tweeter", polarity="keep",
         ),
     )
-
-
-def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
-    monkeypatch, tmp_path,
-):
-    """Apply the household's pre-existing crossover, apply a run-8-shaped
-    measured candidate over it (landing on a source-fingerprinted sibling file
-    — the prior config is never overwritten), then Undo. The active config,
-    the applied-baseline identity, and the durable v2 state must all revert
-    — never the legacy path's 500."""
-    from jasper.active_speaker.baseline_profile import (
-        apply_baseline_profile,
-        load_applied_baseline_profile_state,
-    )
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-
-    from tests.test_active_speaker_baseline_profile import _draft
-
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    state_path = tmp_path / "baseline_profile.json"
-
-    prior_candidate = _prior_measured_candidate(preset)
-    prior_cam = _FakeApplyCam()
-    prior_payload = _bg_run_async(
-        apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements={},
-            load_config=prior_cam.set_config_file_path,
-            get_current_config_path=prior_cam.get_config_file_path,
-            tuning_owner="automatic",
-            measured_candidate=prior_candidate,
-        )
-    )
-    assert prior_payload["status"] == "applied", prior_payload.get("issues")
-    # #1666: "prior's own file" is prior's OWN source-fingerprinted sibling,
-    # not config_path (the canonical name, which the successful apply above
-    # just promoted a copy onto -- still prior's bytes at this point, but via
-    # a promote, not because nothing ever touched it).
-    prior_config_text = Path(
-        prior_payload["profile"]["config"]["path"]
-    ).read_text(encoding="utf-8")
-    assert config_path.read_text(encoding="utf-8") == prior_config_text
-
-    # Item 3 (#1605): make the candidate pruner ACTIVE at the run-8 apply below,
-    # with the prior (the Undo target) the OLDEST candidate on disk. Without
-    # _apply_baseline_profile_locked passing it as also_protect, the newest-K
-    # mtime prune would evict it and the Undo at the end of this test would fail
-    # with restore_target_missing — so the prior surviving + the restore
-    # succeeding is the END-TO-END proof that the real extraction protects the
-    # real Undo-target path (the isolated pruner half is pinned by
-    # test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest).
-    import os as _os
-    import time as _time
-
-    from jasper.active_speaker import baseline_profile as _bp
-    prior_config_path = Path(prior_payload["profile"]["config"]["path"])
-    _now = _time.time()
-    _os.utime(prior_config_path, (_now - 10_000, _now - 10_000))
-    for _i in range(_bp._MAX_BASELINE_CANDIDATE_FILES + 2):
-        _orphan = config_path.with_name(
-            f"active_speaker_baseline_candidate_orphan{_i:03d}.yml"
-        )
-        _orphan.write_text(f"# orphan {_i}\n", encoding="utf-8")
-        _os.utime(_orphan, (_now - 1000, _now - 1000))
-
-    run8_candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
-        "session_id": "cap_run8",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": run8_candidate.fingerprint},
-        "applied": False,
-    })
-    apply_payload = _apply(
-        {
-            "expected_candidate_fingerprint": run8_candidate.fingerprint,
-            "candidate": run8_candidate.to_dict(),
-        },
-        _bg_run_async,
-        _FakeApplyCam,
-    )
-    assert apply_payload["status"] == "applied", apply_payload.get("issues")
-    # The prior (Undo target) survived the run-8 prune despite being the oldest
-    # candidate on disk — protected by also_protect (#1605).
-    assert prior_config_path.exists()
-    run8_config_path = Path(apply_payload["profile"]["config"]["path"])
-    assert run8_config_path != config_path
-    run8_config_text = run8_config_path.read_text(encoding="utf-8")
-    # The run-8 apply must not have clobbered the prior profile's own file --
-    # it landed on its own sibling, still readable unmutated.
-    assert prior_config_text == Path(
-        prior_payload["profile"]["config"]["path"]
-    ).read_text(encoding="utf-8")
-    # The canonical name is a promoted COPY of whichever candidate applied
-    # most recently -- it now tracks run-8, not prior.
-    assert config_path.read_text(encoding="utf-8") == run8_config_text
-
-    state_after_apply = v2host.load_v2_state()
-    assert state_after_apply["applied"] is True
-    pre_apply_profile = state_after_apply.get("pre_apply_profile")
-    assert isinstance(pre_apply_profile, dict)
-    assert (
-        pre_apply_profile["candidate_fingerprint"]
-        == prior_payload["profile"]["candidate_fingerprint"]
-    )
-
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    # #2292: this apply is the ordinary configured-Fc shape — it never wrote a
-    # crossover into the Sound declaration, so the Undo has no declaration to
-    # reverse and says exactly that rather than staying silent about a leg it
-    # did not run.
-    assert restore_payload["sound_declaration"] == "declaration_not_applicable"
-    assert "sound_declaration_message" not in restore_payload
-    # Restore reloads prior's own sibling and re-promotes canonical onto it.
-    assert config_path.read_text(encoding="utf-8") == prior_config_text
-    active = load_applied_baseline_profile_state(state_path)
-    assert active is not None
-    assert (
-        active["candidate_fingerprint"]
-        == prior_payload["profile"]["candidate_fingerprint"]
-    )
-
-    state_after_restore = v2host.load_v2_state()
-    assert state_after_restore["applied"] is False
-    assert state_after_restore["candidate"] is None
-    assert state_after_restore["pre_apply_profile"] is None
-    assert state_after_restore["accepted_phases"] == []
-    # The envelope lands back on the pre-measurement screen — a clean
-    # measure/review state, never a half-consistent review_apply pointing at
-    # the now-undone candidate.
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
-
-
-# --- #2292: Undo owes the /sound DECLARATION the same reversal it owes the -----
-# DSP graph.
-#
-# #2290 gave the alternative-Fc apply a Sound write: it CASes the winning Fc
-# into the design draft before it touches DSP. Undo reloaded only the graph, so
-# the speaker went back to the previous sound while /sound kept declaring the
-# undone crossover — and the next measurement session reads that declaration as
-# its configured Fc. These tests drive apply → Undo through the REAL seams
-# (real design draft, real save_design_draft CAS, real restore transaction).
-
-
-def _seed_alternative_apply_over_a_prior(
-    monkeypatch, tmp_path, *, selected_hz=2750.0, selected_order=None,
-):
-    """``_seed_alternative_apply`` plus a pre-existing applied profile.
-
-    The alternative seed alone puts the speaker one apply away from its
-    FIRST-ever applied crossover, and ``handle_v2_restore`` refuses that case
-    outright ("no earlier one to restore"). An Undo that reaches the
-    declaration leg needs a graph to go back to as well, so this applies the
-    household's CONFIGURED (2500 Hz, 24 dB/octave) crossover first — which is
-    also what makes a passing declaration restore proof of reversion rather
-    than a coincidence: the graph and the declaration go back to the same
-    crossover.
-
-    ``selected_hz`` / ``selected_order`` pass straight through, so the Undo
-    tests can drive BOTH halves of the geometry the writer now owns; see
-    :func:`_seed_alternative_apply` for why the corner moves up rather than
-    down.
-    """
-    from jasper.active_speaker import compile_preset_from_crossover_preview
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.output_topology import load_output_topology
-
-    candidate = _seed_alternative_apply(
-        monkeypatch, tmp_path,
-        selected_hz=selected_hz, selected_order=selected_order,
-    )
-    topology = load_output_topology()
-    draft = load_design_draft(topology=topology)
-    preview = load_crossover_preview(current_design_draft=draft)
-    configured_preset, issues, _gates = compile_preset_from_crossover_preview(
-        topology, preview,
-    )
-    assert configured_preset is not None, issues
-    prior_cam = _FakeApplyCam()
-    prior = _bg_run_async(
-        apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements={},
-            load_config=prior_cam.set_config_file_path,
-            get_current_config_path=prior_cam.get_config_file_path,
-            tuning_owner="automatic",
-            measured_candidate=_prior_measured_candidate(configured_preset),
-        )
-    )
-    assert prior["status"] == "applied", prior.get("issues")
-    # The prior apply must not have moved Sound — the whole point of the
-    # record under test is that the ALTERNATIVE apply is the only writer here.
-    assert load_design_draft()["revision"] == 1
-    return candidate
-
-
-def _declared_fc_hz():
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    return load_design_draft()["manual_settings"]["crossover_candidates"][0][
-        "frequency_hz"
-    ]
-
-
-def _declared_slope_db_per_octave():
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    return load_design_draft()["manual_settings"]["crossover_candidates"][0][
-        "slope_db_per_octave"
-    ]
-
-
-#: The two shapes of declaration change one apply can ask for. Sound declares a
-#: crossover as three fields and ONE writer owns all three, so every "Undo puts
-#: the declaration back" pin has to say it for both halves — a slope-only
-#: reversal that silently no-ops leaves ``/sound`` declaring a slope the speaker
-#: is not playing, which is the #2292 defect wearing a different field.
-#: ``(seed kwargs, applied_hz, applied_slope_db_per_octave)``.
-_DECLARATION_CHANGES = [
-    pytest.param({"selected_hz": 2750.0}, 2750.0, 24.0, id="frequency"),
-    pytest.param(
-        {"selected_hz": 2500.0, "selected_order": 2}, 2500.0, 12.0, id="slope",
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    "seed_kwargs,applied_hz,applied_slope", _DECLARATION_CHANGES,
-)
-def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
-    monkeypatch, tmp_path, caplog, seed_kwargs, applied_hz, applied_slope,
-):
-    """The #2292 defect, end to end: apply a measured crossover that moves what
-    ``/sound`` declares (2500 → 2750 Hz, or 24 → 12 dB/octave at the same
-    corner), then Undo. Both halves must come back — the DSP graph AND the
-    crossover ``/sound`` declares — through Sound's own revision-checked
-    writer.
-    """
-    candidate = _seed_alternative_apply_over_a_prior(
-        monkeypatch, tmp_path, **seed_kwargs,
-    )
-    regions = candidate.source_preset.crossover_regions
-
-    apply_payload = _apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-    assert apply_payload["status"] == "applied", apply_payload.get("issues")
-    assert _declared_fc_hz() == applied_hz
-    assert _declared_slope_db_per_octave() == applied_slope
-    # The accept recorded the inverse of the write it just made — the revision
-    # it produced plus the geometry Sound declared a moment earlier. Nothing
-    # else on the speaker remembers the latter.
-    assert v2host.load_v2_state()["sound_declaration_undo"] == {
-        "kind": "jts_crossover_declaration_change",
-        "artifact_schema_version": 1,
-        "sound_revision": 2,
-        "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
-        "applied_hz": applied_hz,
-        "previous_hz": 2500.0,
-        "applied_filter_type": "Linkwitz-Riley",
-        "previous_filter_type": "Linkwitz-Riley",
-        "applied_slope_db_per_octave": applied_slope,
-        "previous_slope_db_per_octave": 24.0,
-    }
-
-    with caplog.at_level(logging.INFO):
-        restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert restore_payload["sound_declaration"] == "declaration_restored"
-    # Nothing for the household to act on, so nothing is said to them.
-    assert "sound_declaration_message" not in restore_payload
-    assert _declared_fc_hz() == 2500.0
-    assert _declared_slope_db_per_octave() == 24.0
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    # Written THROUGH save_design_draft's CAS, not patched into the file: the
-    # revision advanced, which is what makes the next accept's optimistic
-    # concurrency honest.
-    assert load_design_draft()["revision"] == 3
-    assert (
-        "event=correction.crossover_v2_restore_sound_declaration" in caplog.text
-    )
-    assert "outcome=declaration_restored" in caplog.text
-    # The record is spent — it describes an apply that no longer exists.
-    assert v2host.load_v2_state()["sound_declaration_undo"] is None
 
 
 def test_entry_graph_fingerprint_names_the_applied_profile(monkeypatch):
@@ -11544,257 +11104,6 @@ def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
     assert "surface=commanded_axis" in caplog.text
 
 
-@pytest.mark.parametrize(
-    "seed_kwargs,applied_hz,applied_slope", _DECLARATION_CHANGES,
-)
-def test_undo_declaration_restore_writes_durably(
-    monkeypatch, tmp_path, seed_kwargs, applied_hz, applied_slope,
-):
-    """#2292 scope 2 SF2: apply_measured_crossover_geometry has TWO
-    production callers -- handle_v2_apply's accept (pinned by
-    test_alternative_apply_saves_sound_and_preview_durably) and
-    _restore_sound_declaration, the Undo leg exercised here. Both get the
-    same durable write; there is no separate, cheaper path into the writer.
-    fsync counting starts AFTER the apply so this isolates the Undo leg's
-    own write from the accept's.
-
-    Counted for a moved corner AND a moved slope because the durability of a
-    write is a property of the writer, not of which field changed -- a
-    slope-only reversal that reached a cheaper path would lose exactly the
-    same power-cut guarantee, silently."""
-    candidate = _seed_alternative_apply_over_a_prior(
-        monkeypatch, tmp_path, **seed_kwargs,
-    )
-    apply_payload = _apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-    assert apply_payload["status"] == "applied", apply_payload.get("issues")
-    assert (_declared_fc_hz(), _declared_slope_db_per_octave()) == (
-        applied_hz, applied_slope,
-    )
-
-    fsync_calls: list[int] = []
-    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
-
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert restore_payload["sound_declaration"] == "declaration_restored"
-    # 8 = persist_applied_baseline_profile's graph-restore write (always
-    # durable, file + dir fsync) + apply_measured_crossover_geometry's
-    # declaration-restore write (file + dir fsync) -- both halves of Undo --
-    # + observe_restore's own v2-state write, durable since #2291 (file + dir).
-    # That third pair is the anchor bookkeeping: the write CLEARS
-    # pre_apply_profile and flips ``applied`` after the previous graph is
-    # already back on the speaker, so losing it to a power cut would leave the
-    # state claiming a correction the speaker is no longer playing.
-    # The fourth pair is the base trim the Undo RE-BANKS: the restored profile
-    # is measured, so the record must describe the graph now playing rather
-    # than the one Undo just replaced. That pair is only here because the
-    # frozen applied profile now carries `automatic_candidate` -- without it
-    # the restore reached the bank seam unable to name its measured groups and
-    # banked nothing at all.
-    assert len(fsync_calls) == 8
-
-
-def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
-    monkeypatch, tmp_path,
-):
-    """The gate's blocker repro, as a regression: alternative apply (2500 →
-    2750) → Start over → ORDINARY as-declared apply → Undo.
-
-    ``pre_apply_profile`` is re-stamped by every successful apply, so after the
-    second one the graph's Undo target is the 2750 graph. While the declaration
-    record was written on the alternative ACCEPT instead of beside
-    ``pre_apply_profile``, it survived that second apply untouched — and the
-    Undo restored the 2750 graph while writing 2500 back into ``/sound`` and
-    calling it ``declaration_restored``. Worse than doing nothing: the next
-    session reads ``/sound`` as its configured Fc.
-
-    The two halves are now written in one state write, so an ordinary apply
-    clears the record it supersedes.
-    """
-    from jasper.active_speaker import compile_preset_from_crossover_preview
-    from jasper.output_topology import load_output_topology
-
-    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
-    _apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-    assert _declared_fc_hz() == 2750.0
-    assert v2host.load_v2_state()["sound_declaration_undo"] is not None
-
-    # Start over keeps the applied graph and both Undo halves alive.
-    v2host.reset_v2_journey_state()
-    assert v2host.load_v2_state()["sound_declaration_undo"] is not None
-
-    # A second, ORDINARY apply: the declaration now carries 2750 Hz, so this
-    # review's candidate crosses exactly where Sound declares and the apply
-    # never touches Sound.
-    preview = v2host.ensure_crossover_preview_ready()
-    configured_preset, issues, _gates = compile_preset_from_crossover_preview(
-        load_output_topology(), preview,
-    )
-    assert configured_preset is not None, issues
-    ordinary = _prior_measured_candidate(configured_preset)
-    v2host.save_v2_state({
-        "session_id": "cap_ordinary",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": ordinary.fingerprint},
-        "applied": True,
-        "pre_apply_profile": v2host.load_v2_state()["pre_apply_profile"],
-        "sound_declaration_undo": v2host.load_v2_state()["sound_declaration_undo"],
-    })
-    second = _apply(
-        {"expected_candidate_fingerprint": ordinary.fingerprint,
-         "candidate": ordinary.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-    assert second["status"] == "applied", second.get("issues")
-    # The ordinary apply cleared the record in the same write that re-stamped
-    # the graph's Undo target. Neither half can now describe a different apply
-    # from the other.
-    assert v2host.load_v2_state()["sound_declaration_undo"] is None
-    assert v2host.load_v2_state()["pre_apply_profile"] is not None
-
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert restore_payload["sound_declaration"] == "declaration_not_applicable"
-    # Sound still declares what the alternative apply left it declaring — the
-    # Undo reversed the SECOND apply, which never wrote Sound.
-    assert _declared_fc_hz() == 2750.0
-
-
-@pytest.mark.parametrize("edit,expected_fc_hz", [
-    # Two genuinely different shapes of "Sound moved", caught by two different
-    # authorities — the parametrization is what keeps both alive:
-    #   * an edit that leaves the crossover alone is caught only by
-    #     ``save_design_draft``'s CAS (the pre-read sees the bumped revision
-    #     first, and the writer's own conflict is the backstop for the race);
-    #   * an edit that CHANGES the declared crossover is caught by the
-    #     pre-read. Without it, ``apply_measured_crossover_geometry``'s value
-    #     guard raises a plain ValueError first and the outcome would be
-    #     mis-reported as a failed write rather than a household edit.
-    ("notes", 2750.0),
-    ("crossover", 1900.0),
-])
-def test_undo_refuses_the_declaration_when_sound_moved_and_leaves_it_untouched(
-    monkeypatch, tmp_path, caplog, edit, expected_fc_hz,
-):
-    """Somebody edited Sound between the apply and the Undo. The declaration
-    is NOT reverted — reverting it would silently discard that edit — and the
-    household is told so instead of the refusal living in the journal alone.
-    The DSP graph is still restored: the two legs answer separately."""
-    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
-    from jasper.output_topology import load_output_topology
-
-    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
-    _apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-    draft = load_design_draft()
-    manual = dict(draft["manual_settings"])
-    operator_inputs = None
-    if edit == "notes":
-        operator_inputs = {"notes": "edited in Sound after the apply"}
-    else:
-        manual["crossover_candidates"] = [
-            {**dict(item), "frequency_hz": expected_fc_hz}
-            for item in manual["crossover_candidates"]
-        ]
-    save_design_draft(
-        load_output_topology(), driver_research=draft.get("driver_research"),
-        manual_settings=manual, operator_inputs=operator_inputs,
-        expected_revision=draft["revision"],
-    )
-    draft_path = tmp_path / "design_draft.json"
-    before = draft_path.read_bytes()
-
-    with caplog.at_level(logging.INFO):
-        restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert restore_payload["sound_declaration"] == "declaration_refused_sound_moved"
-    message = restore_payload["sound_declaration_message"]
-    assert "2750 Hz" in message and "2500 Hz" in message
-    # Byte-identical: the refusal costs no write at all, not even a no-op
-    # re-serialization that would bump the revision under the other editor.
-    assert draft_path.read_bytes() == before
-    assert _declared_fc_hz() == expected_fc_hz
-    assert "outcome=declaration_refused_sound_moved" in caplog.text
-    assert "accepted_revision=2" in caplog.text
-    assert "current_revision=3" in caplog.text
-
-
-def test_a_failed_graph_restore_never_touches_the_declaration(
-    monkeypatch, tmp_path,
-):
-    """Leg order is load-bearing. The declaration is reverted only AFTER the
-    graph is back: reverting it first and then failing the restore would
-    invent the same inconsistency this PR removes, pointing the other way —
-    the speaker playing the new crossover while ``/sound`` declares the old
-    one."""
-    import jasper.active_speaker.baseline_profile as baseline
-
-    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
-    _apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-
-    async def _restore_failed(*_args, **_kwargs):
-        return {"status": "restore_failed", "issues": []}
-
-    monkeypatch.setattr(
-        baseline, "restore_applied_baseline_profile", _restore_failed,
-    )
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restore_failed"
-    assert "sound_declaration" not in restore_payload
-    assert _declared_fc_hz() == 2750.0
-    # The record survives an Undo that did not happen, so a later retry can
-    # still put the declaration back.
-    assert v2host.load_v2_state()["sound_declaration_undo"] is not None
-
-
-def test_undo_reports_a_failed_declaration_restore_beside_a_restored_graph(
-    monkeypatch, tmp_path, caplog,
-):
-    """The writer itself failed (a full disk, a vanished draft). The graph is
-    already back by then, so this is reported beside the successful restore —
-    never raised, which would turn a working Undo into a 500 and hide it."""
-    import jasper.web.sound_setup as sound
-
-    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
-    _apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, _FakeApplyCam,
-    )
-
-    def _explode(**_kwargs):
-        raise OSError("read-only file system")
-
-    monkeypatch.setattr(sound, "apply_measured_crossover_geometry", _explode)
-    with caplog.at_level(logging.INFO):
-        restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert restore_payload["sound_declaration"] == "declaration_restore_failed"
-    assert "2500 Hz" in restore_payload["sound_declaration_message"]
-    assert "outcome=declaration_restore_failed" in caplog.text
-    assert "error_type=OSError" in caplog.text
-
-
 def test_the_declaration_undo_record_survives_the_deferred_verify_rearm():
     """The W6.12 P0 shape, one field over. The VERIFY that auto-arms after
     every apply persists under a BRAND-NEW session id, so a session-scoped
@@ -11854,64 +11163,6 @@ def test_start_over_keeps_the_declaration_undo_record_with_the_applied_graph():
     assert state["sound_declaration_undo"] == record
 
 
-#: Everything a readable record carries, so each case below can break exactly
-#: ONE field. Spelled out rather than derived: a case that is unreadable for two
-#: reasons at once proves neither of them, and every field the writer gained is
-#: a new way for these cases to go quietly redundant.
-_READABLE_DECLARATION_UNDO = {
-    "kind": "jts_crossover_declaration_change",
-    "artifact_schema_version": 1,
-    "sound_revision": 2,
-    "between_roles": ["woofer", "tweeter"],
-    "applied_hz": 2750.0,
-    "previous_hz": 2500.0,
-    "applied_filter_type": "Linkwitz-Riley",
-    "previous_filter_type": "Linkwitz-Riley",
-    "applied_slope_db_per_octave": 24.0,
-    "previous_slope_db_per_octave": 24.0,
-}
-
-
-@pytest.mark.parametrize("record", [
-    None,
-    {},
-    {**_READABLE_DECLARATION_UNDO, "between_roles": ["woofer"]},
-    {**_READABLE_DECLARATION_UNDO, "sound_revision": True},
-    {**_READABLE_DECLARATION_UNDO, "between_roles": "woofer,tweeter"},
-    {**_READABLE_DECLARATION_UNDO, "applied_hz": float("nan")},
-    {k: v for k, v in _READABLE_DECLARATION_UNDO.items() if k != "previous_hz"},
-    # The slope half is required on exactly the same terms as the frequency
-    # half, and for a sharper reason: a record with no declared slope would
-    # have to invent one to write back into ``/sound``, and no accept ever
-    # chose it.
-    {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
-     if k != "previous_slope_db_per_octave"},
-    {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
-     if k != "applied_filter_type"},
-    # The envelope is part of the shape too: a record from before it existed,
-    # or one naming a version this build does not speak, is unreadable on the
-    # same terms as any other missing field.
-    {k: v for k, v in _READABLE_DECLARATION_UNDO.items() if k != "kind"},
-    {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
-     if k != "artifact_schema_version"},
-    {**_READABLE_DECLARATION_UNDO, "kind": "nope"},
-    {**_READABLE_DECLARATION_UNDO, "artifact_schema_version": 2},
-])
-def test_an_unusable_declaration_undo_record_is_not_applicable_not_a_guess(record):
-    """A record this build cannot read is ``not_applicable``, never a
-    best-effort write against a half-understood shape: the values name a
-    crossover, and guessing one is the failure mode this whole record exists
-    to prevent.
-
-    Every case starts from a record that IS readable and breaks one field, so
-    each one proves the defect it names rather than tripping over a field the
-    case never meant to be about.
-    """
-    assert v2host._restore_sound_declaration(record) == (
-        "declaration_not_applicable", "",
-    )
-
-
 def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     monkeypatch, tmp_path,
 ):
@@ -11934,9 +11185,6 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     reproduces that exact rebind call (a real ``CrossoverV2Session``, not a
     mock) between each apply and the next, and pins that the stash survives
     it."""
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-    )
     from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
     from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams
 
@@ -11944,7 +11192,6 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     config_path = tmp_path / "active_speaker_baseline.yml"
-    state_path = tmp_path / "baseline_profile.json"
 
     def _simulate_deferred_verify_rearm(*, verify_session_id: str) -> None:
         """Exactly what the verify-only prepare's ``_open`` does: mint a fresh
@@ -12057,34 +11304,16 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         == run1_payload["profile"]["candidate_fingerprint"]
     )
 
-    # Undo must now succeed, through the real restore seam, reverting to run 1.
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    # Restore reloads run 1's own sibling and re-promotes canonical onto it.
-    assert config_path.read_text(encoding="utf-8") == run1_config_text
-    active = load_applied_baseline_profile_state(state_path)
-    assert active is not None
-    assert (
-        active["candidate_fingerprint"] == run1_payload["profile"]["candidate_fingerprint"]
-    )
-    state_after_restore = v2host.load_v2_state()
-    assert state_after_restore["applied"] is False
-    assert state_after_restore["pre_apply_profile"] is None
 
-
-def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
+def test_start_over_while_applied_keeps_the_way_back_pointers(
     monkeypatch, tmp_path,
 ):
-    """W6.10 gate should-fix, driven through the REAL restore seam: apply the
-    prior crossover, apply a measured candidate over it, Start-over
-    (reset_v2_journey_state — what handle_reset calls under the v2 flow), then
-    Undo. The reset must serve the clean start screen WITHOUT unlinking the
-    `applied`/`pre_apply_profile` pointers, so handle_v2_restore still reverts
-    the active config to the prior profile afterward."""
-    from jasper.active_speaker.baseline_profile import (
-        apply_baseline_profile,
-        load_applied_baseline_profile_state,
-    )
+    """W6.10 gate should-fix: apply the prior crossover, apply a measured
+    candidate over it, Start-over (reset_v2_journey_state — what handle_reset
+    calls under the v2 flow). The reset must serve the clean start screen
+    WITHOUT unlinking the `applied`/`pre_apply_profile` pointers — the stash
+    is the way back's only durable pointer."""
+    from jasper.active_speaker.baseline_profile import apply_baseline_profile
     from jasper.active_speaker.crossover_preview import build_crossover_preview
 
     from tests.test_active_speaker_baseline_profile import _draft
@@ -12092,8 +11321,6 @@ def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-19T09:00:00Z")
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    state_path = tmp_path / "baseline_profile.json"
 
     prior_candidate = _prior_measured_candidate(preset)
     prior_cam = _FakeApplyCam()
@@ -12110,7 +11337,6 @@ def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
         )
     )
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
-    prior_config_text = config_path.read_text(encoding="utf-8")
 
     run8_candidate = _run6_measured_candidate(preset)
     v2host.save_v2_state({
@@ -12140,46 +11366,6 @@ def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
     assert state["candidate"] is None
     # The envelope serves the clean start screen…
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
-
-    # …AND Undo still works, through the real restore seam.
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert config_path.read_text(encoding="utf-8") == prior_config_text
-    active = load_applied_baseline_profile_state(state_path)
-    assert active is not None
-    assert (
-        active["candidate_fingerprint"]
-        == prior_payload["profile"]["candidate_fingerprint"]
-    )
-
-
-def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
-    monkeypatch, tmp_path,
-):
-    """No pre-existing applied profile ⇒ nothing to Undo back to — a named
-    policy refusal (never a 500), through the REAL apply seam."""
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
-        "session_id": "cap_run8",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-
-    payload = _apply(
-        {
-            "expected_candidate_fingerprint": candidate.fingerprint,
-            "candidate": candidate.to_dict(),
-        },
-        _bg_run_async,
-        _FakeApplyCam,
-    )
-    assert payload["status"] == "applied", payload.get("issues")
-    assert v2host.load_v2_state()["pre_apply_profile"] is None
-
-    with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
-        v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
 
 
 # --- W6.11: the real session-start preview-ensure seam, end to end ---
@@ -12818,25 +12004,6 @@ def _rearm_verify():
     v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
 
 
-def test_a_verify_rearm_leaves_the_undo_anchor_restorable(monkeypatch, tmp_path):
-    """The anchor is a ``(path, digest)`` pair, and BOTH halves have to come
-    through the re-arm still describing the file on disk — a preserved record
-    pointing at bytes that moved is an anchor in name only."""
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-
-    _rearm_verify()
-
-    rearmed = (v2host.load_v2_state() or {}).get("pre_apply_profile")
-    assert rearmed == anchor
-    target = Path(rearmed["config"]["path"])
-    assert config_file_sha256(target) == rearmed["config"]["sha256"]
-
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert restore_payload["status"] == "restored", restore_payload.get("issues")
-    assert (v2host.load_v2_state() or {})["applied"] is False
-
-
 def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
     monkeypatch, tmp_path,
 ):
@@ -12927,43 +12094,6 @@ def test_an_unrecognised_proof_result_is_not_assumed_inactive():
     }
 
     assert v2host._dsp_apply_is_known_inactive(payload) is False
-
-
-def test_a_refused_undo_journals_the_issue_code_behind_its_status(
-    monkeypatch, tmp_path, caplog,
-):
-    """``blocked`` is the same word four different refusals return, and an
-    anchor-integrity refusal never enters ``apply_dsp_config``, so
-    ``dsp_apply_state.json`` records nothing either. Without the code on this
-    line the next jts3-shaped failure is again a status with no cause."""
-    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    target = Path(anchor["config"]["path"])
-    target.write_text(
-        target.read_text(encoding="utf-8") + "# a later writer\n", encoding="utf-8"
-    )
-
-    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
-        payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert payload["status"] == "blocked"
-    assert (
-        "event=correction.crossover_v2_restored status=blocked "
-        "code=restore_target_changed" in caplog.text
-    )
-
-
-def test_a_successful_undo_journals_an_empty_code(monkeypatch, tmp_path, caplog):
-    """The code is a refusal's reason, not a field that invents one. A restore
-    that worked has no issue to name."""
-    _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-
-    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
-        payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
-    assert payload["status"] == "restored", payload.get("issues")
-    assert 'event=correction.crossover_v2_restored status=restored code=""' in (
-        caplog.text
-    )
 
 
 def test_a_corrupted_bank_refuses_the_automatic_way_back_loudly(

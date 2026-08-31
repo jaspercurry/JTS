@@ -280,7 +280,7 @@ assertSinglePrimary("(e) show_during_relay primary during hold");
 // fix the relay gate blanket-cleared EVERY alternate action during that
 // window, so the household saw NO buttons at all on the verify_fail screen
 // and had no obvious reason to guess "hit Stop" to make them reappear.
-// verify_undo and verify_remeasure now carry show_during_relay (the same
+// The way back and verify_remeasure carry show_during_relay (the same
 // escape hatch (e) uses for Apply); verify_retry ("Try again") deliberately
 // does not, since it starts a brand-new relay session and racing the one
 // still tearing down is exactly what the gate exists to prevent.
@@ -290,11 +290,11 @@ const verifyRetryAction = {
   endpoint: "/correction/crossover/v2/verify",
   body: {},
 };
-const verifyUndoAction = {
-  id: "verify_undo",
-  label: "Undo (restore previous sound)",
-  endpoint: "/correction/crossover/v2/restore",
-  body: {},
+const wayBackAction = {
+  id: "republish_previous",
+  label: "Go back to the previous tuning",
+  endpoint: "/correction/crossover/v2/republish",
+  body: { fingerprint: "fp-previous" },
   show_during_relay: true,
 };
 const verifyRemeasureAction = {
@@ -311,16 +311,16 @@ render({
   nudges: [{ code: "verify_out_of_tolerance", severity: "warn", text: "x" }],
   relay: { status: "finishing" },
   next_action: verifyRetryAction,
-  alternate_actions: [verifyUndoAction, verifyRemeasureAction],
+  alternate_actions: [wayBackAction, verifyRemeasureAction],
 });
 const fLabels = actionRowChildren().map((child) => child.textContent);
 check(
   actionRowChildren().length === 2,
-  "(f) verify_fail during a live relay: exactly Undo + Re-measure render",
+  "(f) verify_fail during a live relay: exactly the way back + Re-measure render",
 );
 check(
-  fLabels.includes("Undo (restore previous sound)"),
-  "(f) verify_fail during a live relay: Undo renders",
+  fLabels.includes("Go back to the previous tuning"),
+  "(f) verify_fail during a live relay: the way back renders",
 );
 check(
   fLabels.includes("Re-measure"),

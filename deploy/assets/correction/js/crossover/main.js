@@ -988,29 +988,8 @@ async function runAction(action, button) {
       renderActionRow({relay: response.relay, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    // A mutation can succeed and still owe the household a caveat: Undo
-    // restores the DSP graph and the /sound declaration through two different
-    // writers, and the declaration half can honestly refuse on its own (#2292
-    // — someone edited Sound after the crossover was applied). The server
-    // names that in `sound_declaration_message`; without this it would land in
-    // the journal only and the screen would say "Updated." over a speaker
-    // whose declared crossover is still the undone one.
-    const caveat = response && response.sound_declaration_message
-      ? String(response.sound_declaration_message)
-      : '';
-    if (caveat) {
-      setStatus(caveat, 'bad');
-    } else {
-      setStatus(response && response.relay ? 'The measurement page is ready.' : 'Updated.', 'ok');
-    }
+    setStatus(response && response.relay ? 'The measurement page is ready.' : 'Updated.', 'ok');
     await refresh();
-    // Re-assert AFTER the refresh, mirroring the catch branch below and for
-    // the same reason: render() → renderRelay()'s terminal branch calls
-    // setStatus('Capture complete.') on the envelope this refresh just
-    // fetched, which is the DOMINANT shape after an Undo (the post-apply
-    // VERIFY's relay is sitting there complete). Setting the caveat only
-    // before the refresh puts it on screen for one turn of the event loop.
-    if (caveat) setStatus(caveat, 'bad');
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
     const issues = error && error.body && Array.isArray(error.body.issues)

@@ -240,11 +240,10 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
 
 def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
     """Gate ruling (W6.10 should-fix): Start-over while a candidate is APPLIED
-    must preserve `applied` + `pre_apply_profile` — the only durable pointers
-    W6.8's Undo (handle_v2_restore) restores from — while clearing the journey
-    fields so the envelope serves the clean start screen. A full clear here
-    would strand the household on the applied graph with Undo permanently
-    unreachable."""
+    must preserve `applied` + `pre_apply_profile` — the stash carrying the way
+    back's pointer — while clearing the journey fields so the envelope serves
+    the clean start screen. A full clear here would strand the household on
+    the applied graph with no way back."""
     from jasper.web import correction_crossover_v2 as v2
     from jasper.web import correction_crossover_v2_status as v2status
 

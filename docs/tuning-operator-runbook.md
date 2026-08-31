@@ -147,11 +147,9 @@ POST https://<speaker>/correction/crossover/v2/republish   # compatibility alias
 The tool menu below gives the backend path the wizard registers on
 `127.0.0.1:8770`; prefix it as above from anywhere but the Pi's loopback.
 
-**No CLI withdraw for a staged prescription.** `withdraw_staged_prescription`
-exists in `prescription_spool.py` but only `restore` calls it; the prescriber
-has no `withdraw` verb. To clear the slot, stage over it or restore.
-(`jasper-angle-capture withdraw` is a different thing — it pulls a staged
-*walk*.)
+**No CLI withdraw for a staged prescription.** The prescriber has no
+`withdraw` verb; to clear the slot, stage over it. (`jasper-angle-capture
+withdraw` is a different thing — it pulls a staged *walk*.)
 
 ## Running it from the household surface
 
@@ -305,7 +303,7 @@ seconds of every remote session.
    with `{"index": …}`. `index` must be a JSON integer (a malformed body is a
    400) and is checked against what is actually pending, so a retry that crossed
    a capture starting is refused (409) rather than releasing the *next* position.
-5. Repeat. Analysis, apply, verify and restore are unchanged.
+5. Repeat. Analysis, apply and verify are unchanged.
 
 **Steps 3–5 have a shipped implementation for the lab turntable arm:**
 `jasper-arm-walk` ([`arm_walk.py`](../jasper/active_speaker/arm_walk.py), CLI in
@@ -457,7 +455,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |
 | **driver door** | per-driver cuts and boosts, and an optional per-role trim pin (`pinned_trim_db` — a trim you name is carried, not re-solved) | mutating-with-gates | spool |
 | republish a banked candidate | make any banked candidate live again by its own fingerprint | mutating-with-gates | `POST /crossover/v2/republish` |
-| restore | the v2-aware undo; withdraws any staged prescription first | mutating | `POST /crossover/v2/restore` |
+| go back to the previous tuning | republish the prior candidate by its fingerprint, then apply it — the same two doors above, aimed backwards | mutating-with-gates | `POST /crossover/v2/republish` + `POST /crossover/v2/apply` |
 | decline | reject a reviewed candidate ("keep current sound") | mutating | `POST /crossover/v2/decline` |
 | `jasper-doctor` | health and config drift, including correction / audio-runtime / active-speaker checks | advisory | `--json` for a parseable report; no per-check selector |
 | `GET :8780/state` | cross-daemon snapshot: voice, volume, sources, `audio_graph`, `active_speaker_setup`, `sound_profile.last_dsp_apply` | advisory | per-section fail-soft; **no round section** — round evidence is file-based |
@@ -748,10 +746,7 @@ the operator's:
   incumbent that cannot be ESTABLISHED, which prescribes none.
 - **A round that does not KEEP its graph issues no instruction**, because a
   prescription describes a speaker measured through a specific incumbent. What
-  the round commanded is still banked — history survives a restore. A household
-  **Undo** takes the same withdrawal: `observe_restore` clears the receipt's
-  `blend` sub-object while keeping `round_ordinal`, so the series does not lose
-  its place against the round cap.
+  the round commanded is still banked — history survives a restore.
 - **`benefit` reports twice.** The pooled verdict is unchanged and is still the
   only adoption input; beside it `evaluate_region_benefit` runs the same
   estimator with only the band narrowed, because a win confined to two octaves

@@ -576,7 +576,6 @@ _POST_ROUTES = frozenset({
     # single-valued and every measure session overwrites it; this is the lookup
     # it never had.
     "/crossover/v2/republish",
-    "/crossover/v2/restore",
     # The review screen's "Keep current sound", which #2641 found inert.
     "/crossover/v2/decline",
     # A GATED session's position release — the report that the microphone has
@@ -5438,15 +5437,6 @@ def _handle_crossover_v2_republish(
     return republish.handle_v2_republish(raw)
 
 
-def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /crossover/v2/restore: the v2-aware Undo (W6 run-8 Blocker Q)."""
-    _read_json_body(handler)  # no fields consumed; drains the request body
-
-    from . import correction_crossover_v2 as v2host
-
-    return v2host.handle_v2_restore(_run_async, _camilla)
-
-
 def _handle_crossover_v2_decline(
     handler: BaseHTTPRequestHandler,
 ) -> tuple[dict[str, Any], HTTPStatus]:
@@ -6437,8 +6427,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # A release that names the wrong (or no) pending capture is a
                 # CONFLICT, not a malformed request: the driver's view of the
                 # session is simply stale, which is the ordinary outcome of a
-                # retry that crossed a capture starting. Same ValueError→409
-                # shape /crossover/v2/restore uses for a refused transition.
+                # retry that crossed a capture starting — so it answers 409,
+                # the same status a refused transition maps to elsewhere here.
                 try:
                     self._send_json(_handle_crossover_v2_position_ready(self))
                 except BadRequest as e:
@@ -6572,29 +6562,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # success only moves a pointer, so there is no third
                     # "blocked" outcome to classify like apply/restore have.
                     self._send_json(_handle_crossover_v2_republish(self))
-                except ValueError as e:
-                    self._send_json(
-                        {"ok": False, "error": str(e)},
-                        status=HTTPStatus.BAD_REQUEST,
-                    )
-                except (OSError, RuntimeError, TypeError) as e:
-                    logger.exception("%s failed", path)
-                    self._send_json({"ok": False, "error": str(e)}, status=500)
-                return
-
-            if path == "/crossover/v2/restore":
-                try:
-                    payload = _handle_crossover_v2_restore(self)
-                    # Mirrors /crossover/v2/apply: a refused/failed restore
-                    # must not read as success.
-                    self._send_json(
-                        payload,
-                        status=(
-                            HTTPStatus.OK
-                            if payload.get("status") == "restored"
-                            else HTTPStatus.CONFLICT
-                        ),
-                    )
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},
