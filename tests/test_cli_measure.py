@@ -37,10 +37,13 @@ from jasper.cli.measure import (
     REFUSE_NO_MIC,
     REFUSE_ONE_POSITION_PER_RUN,
     REFUSE_SPEC_INVALID,
+    REFUSE_SPECS_MIXED_POSE,
+    REFUSE_SPECS_WITH_TAKE_FLAGS,
     BoxDeclaration,
     MeasureFlagError,
     build_parser,
     spec_from_args,
+    specs_from_args,
 )
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import _preset, _roles
@@ -221,7 +224,11 @@ def _declaration() -> BoxDeclaration:
 
 
 #: What the wired half's own minter puts on an answer, in its shape.
-CAPTURE_INTEGRITY = {"encoded_frames": 192000, "zero_run_count": 0, "xruns": 0}
+#: The wired minter's report shape, minus any frame count: this double does not
+#: encode the capture the way the minter does, and a claimed count that
+#: disagreed with the bytes would make the frame ledger report a loss that
+#: belongs to the double rather than to the door.
+CAPTURE_INTEGRITY = {"zero_run_count": 0, "xruns": 0}
 CAPTURE_DEVICE = {"label": "UMIK-2 (card1)", "wired": True, "channel_selected": 0}
 CAPTURE_SETUP = {"calibration": {"mode": "stored", "calibration_id": "cal-1"}}
 
@@ -233,6 +240,37 @@ class _Answer:
     setup = CAPTURE_SETUP
 
 
+def _driver_ir(seed: int = 3):
+    """A short decaying impulse response — a speaker, near enough to analyse."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    ir = rng.normal(0.0, 1.0, 256) * np.exp(-np.arange(256) / 40.0)
+    ir[0] += 1.0
+    return ir / np.max(np.abs(ir))
+
+
+def _synthesize(program):
+    """The capture the room would have made of ``program``, offset and coloured.
+
+    The same shape ``test_capture_frame_ledger`` synthesises: render the
+    program's own PCM, convolve one driver IR through it, and start it late.
+    Real enough for the analyser to locate every segment and deconvolve a
+    transfer function, which is what makes the crunch assertion mean something.
+    """
+    import numpy as np
+    from scipy.signal import fftconvolve
+
+    from jasper.audio_measurement.program import render_program_pcm
+
+    pcm = render_program_pcm(program)
+    mono = pcm.sum(axis=1) if pcm.ndim > 1 else pcm
+    body = fftconvolve(mono, _driver_ir())[: mono.size]
+    out = np.zeros(3_000 + body.size)
+    out[3_000:] = body * 0.4
+    return out
+
+
 class _Capture:
     """The host's capture half, minus the microphone.
 
@@ -241,16 +279,33 @@ class _Capture:
     bundle-relative path so the banked record carries a real pointer.
     ``take_answer`` is take-and-CLEAR like the real one, which is what the
     record annotation relies on.
+
+    It writes a REAL capture WAV, 32-bit like the wired minter's, because the
+    door crunches the bytes it just placed: a double that wrote nothing would
+    let the crunch fail soft and the curve assertion would pass on an empty
+    list forever.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, bundle_dir: Path) -> None:
+        self.bundle_dir = Path(bundle_dir)
         self.arounds = 0
         self._pending: list[_Answer] = []
 
     async def around(self, play, *, program) -> str:
+        import numpy as np
+        from scipy.io import wavfile
+
         self._pending.clear()
         self.arounds += 1
         await play()
+        path = self.bundle_dir / CAPTURE_RELPATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        captured = _synthesize(program)
+        wavfile.write(
+            path,
+            int(program.sample_rate_hz),
+            (np.clip(captured, -1.0, 1.0) * (2**31 - 1)).astype(np.int32),
+        )
         self._pending.append(_Answer())
         return CAPTURE_RELPATH
 
@@ -274,29 +329,53 @@ def speaker(tmp_path, monkeypatch):
         async def __aexit__(self, *exc: Any) -> bool:
             return False
 
+    captures: dict[str, Any] = {}
+    played = measure._PlayedProgram()
     entry = tmp_path / "entry.yml"
     entry.write_text("devices: {}\n", encoding="utf-8")
     cam = FakeCam(entry)
-    played: list[Any] = []
-    capture = _Capture()
+    played_programs: list[Any] = []
 
     async def _play_program(program, **_seams: Any) -> Any:
         # The seam under the seam: everything above it — the door, the plan's
         # readiness assertion, the graph install, the capture roll and the bank
         # — is the production path.
-        played.append(program)
+        played_programs.append(program)
         return object()
 
+    def _measure_program():
+        """A REAL per-driver MEASURE program — the crunch analyses its schedule."""
+        from jasper.audio_measurement.excitation_admission import FrequencyBand
+        from jasper.audio_measurement.program import RoleBand, build_measure_program
+
+        return build_measure_program(
+            {"woofer": -11.0, "tweeter": -13.0},
+            [
+                RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+                RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
+            ],
+            sweep_durations={"woofer": 1.0, "tweeter": 0.8},
+            leading_pilot_gains_db=(-22.0, -12.0),
+            pilot_duration_s=0.5,
+        )
+
+    program = _measure_program()
+
     async def _compose(**_kwargs: Any) -> ProgramForStimulus:
-        return ProgramForStimulus(program=object(), seams={})
+        played.program = program
+        return ProgramForStimulus(program=program, seams={})
 
     real_open_bundle = bundles.open_bundle
 
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
+    monkeypatch.setattr(measure, "_PlayedProgram", lambda: played)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
-    monkeypatch.setattr(wired, "WiredStimulusCapture", lambda **kw: capture)
+    monkeypatch.setattr(
+        wired, "WiredStimulusCapture",
+        lambda **kw: captures.setdefault("one", _Capture(kw["bundle_dir"])),
+    )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
         lambda **kw: object(),
@@ -329,7 +408,7 @@ def speaker(tmp_path, monkeypatch):
         )
     )
     try:
-        yield {"cam": cam, "played": played, "capture": capture}
+        yield {"cam": cam, "played": played_programs, "captures": captures}
     finally:
         install_volume_owner(None)
 
@@ -351,9 +430,10 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
     assert payload["status"] == "measured"
     assert len(payload["record_ids"]) == 1
     assert payload["graph_fingerprint"]
-    assert [s["position_deg"] for s in payload["stimuli"]] == [0]
-    assert [s["incident"] for s in payload["stimuli"]] == [""]
-    assert speaker["capture"].arounds == 1
+    assert len(payload["specs"]) == 1
+    assert [s["position_deg"] for s in payload["specs"][0]["stimuli"]] == [0]
+    assert [s["incident"] for s in payload["specs"][0]["stimuli"]] == [""]
+    assert speaker["captures"]["one"].arounds == 1
     assert len(speaker["played"]) == 1
     # Given back: the entry graph is what the DSP last loaded, and the fader is
     # off the measurement level.
@@ -375,9 +455,10 @@ def test_a_level_ladder_plays_every_rung_against_one_open_session(speaker, capsy
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK
-    assert [s["stimulus_dbfs"] for s in payload["stimuli"]] == [-12.0, -18.0]
+    stimuli = payload["specs"][0]["stimuli"]
+    assert [s["stimulus_dbfs"] for s in stimuli] == [-12.0, -18.0]
     assert len(payload["record_ids"]) == 2
-    assert all(s["level_db"] == pytest.approx(-20.0) for s in payload["stimuli"])
+    assert all(s["level_db"] == pytest.approx(-20.0) for s in stimuli)
 
 
 def test_a_box_with_no_microphone_refuses_before_it_takes_the_speaker(
@@ -454,13 +535,13 @@ def test_a_walk_that_stops_part_way_still_names_what_it_banked(
     from jasper.active_speaker.crossover_v2 import session_graph as graph_mod
 
     real_install = graph_mod.MeasurementSessionGraph.install
-    capture = speaker["capture"]
+    played = speaker["played"]
 
     async def _install(self, *args, **kwargs):
         # Keyed on "a stimulus has already played" rather than a call ordinal:
         # the door and the session each prove the graph once at open, and a
         # magic count would silently move if either stopped doing so.
-        if capture.arounds:
+        if played:
             raise graph_mod.SessionGraphError("the measurement graph was stomped")
         return await real_install(self, *args, **kwargs)
 
@@ -504,3 +585,241 @@ def test_a_banked_take_carries_what_the_microphone_reported(speaker, capsys):
     # The engine's own fields are untouched by the annotation.
     assert banked["level_db"] == pytest.approx(-20.0)
     assert banked["wav_path"] == CAPTURE_RELPATH
+
+
+# --------------------------------------------------------------------------- #
+# a batch: N configs against ONE microphone placement
+# --------------------------------------------------------------------------- #
+
+
+def _specs_file(tmp_path: Path, entries: list[dict[str, Any]]) -> str:
+    path = tmp_path / "specs.json"
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--position", "0"],
+        ["--polarity", POLARITY_INVERTED, "--inverted-role", "tweeter"],
+        ["--delayed-role", "woofer", "--delay-us", "120"],
+        ["--level-matched"],
+        ["--candidate-id", "null_a1"],
+    ],
+)
+def test_specs_and_the_per_take_flags_are_refused_together(tmp_path, flag):
+    """Two sources of truth for one spec, refused rather than merged.
+
+    Parametrized over the whole set because the rule is about the SET: a check
+    that named only ``--candidate-id`` would let a polarity typed on the command
+    line silently lose to, or silently override, the file. Either way one of the
+    two is a lie, and a precedence rule would only decide which.
+    """
+    argv = ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, [{}]), *flag]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(argv))
+
+    assert caught.value.reason == REFUSE_SPECS_WITH_TAKE_FLAGS
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"positions": [30]},
+        {"vertical_deg": 15},
+        {"position_axis": "vertical", "positions": []},
+    ],
+)
+def test_a_batch_whose_specs_disagree_about_the_pose_is_refused_at_parse(
+    tmp_path, second,
+):
+    """The WHOLE pose, not just the bearing — axis and elevation are pose too.
+
+    A batch exists because the microphone move is the expensive part, so every
+    spec in it measures the SAME placement. A file mixing bearings is B3 arriving
+    through a file; one mixing elevations is the same defect stood on its end,
+    and nothing between two specs raises the microphone either.
+    """
+    entries = [{"positions": [0]}, {"positions": [0], **second}]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+        ))
+
+    assert caught.value.reason == REFUSE_SPECS_MIXED_POSE
+
+
+def test_every_spec_in_the_file_needs_its_own_candidate_id(tmp_path):
+    """C3 holds per ENTRY: the file is preset vocabulary, not an exemption.
+
+    The second entry is a variant with no label, which is the take that would
+    bank unfindable — and in a batch it would sit beside a labelled sibling it
+    could never be told apart from.
+    """
+    entries = [
+        {"candidate_id": "null_a1", "polarity": POLARITY_INVERTED,
+         "inverted_role": "tweeter"},
+        {"polarity": POLARITY_INVERTED, "inverted_role": "woofer"},
+    ]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+        ))
+
+    assert caught.value.reason == REFUSE_CANDIDATE_ID_REQUIRED
+
+
+def test_a_batch_measures_every_spec_against_one_open_session(
+    speaker, tmp_path, capsys,
+):
+    """The capability the batch exists for: N configs, ONE microphone move.
+
+    Three variants of one pose, banked under three labels a reader can select
+    apart. The session is opened once — the entry graph goes back exactly once
+    at the end — which is what makes the batch cheaper than three invocations
+    rather than merely shorter to type.
+    """
+    entries = [
+        {"candidate_id": "plain"},
+        {"candidate_id": "inv_tw", "polarity": POLARITY_INVERTED,
+         "inverted_role": "tweeter"},
+        {"candidate_id": "dly_wf", "delayed_role": "woofer", "delay_us": 120.0},
+    ]
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(tmp_path, entries),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert [s["candidate_id"] for s in payload["specs"]] == [
+        "plain", "inv_tw", "dly_wf",
+    ]
+    assert len(payload["record_ids"]) == 3
+    assert all(s["record_ids"] for s in payload["specs"])
+    # ONE session: the entry graph is restored once, at the end.
+    cam = speaker["cam"]
+    entry = cam.entry_path.read_text()
+    assert cam.loaded[-1] == entry
+    assert cam.loaded.count(entry) == 1
+
+
+def test_a_spec_scoped_refusal_discloses_and_the_batch_carries_on(
+    speaker, monkeypatch, tmp_path, capsys,
+):
+    """Arm B of the scope split: one refused take is not the placement's fault.
+
+    An admission refusal is a property of ONE stimulus — the play transaction
+    turns it into a typed ``incident`` and never raises — so the batch measures
+    the next spec. Giving the whole placement back over one refused take would
+    throw away the microphone move that the batch exists to amortize.
+    """
+    from jasper.active_speaker.crossover_v2 import program_transaction
+    from jasper.active_speaker.program_admission import ProgramAdmission
+    from jasper.active_speaker.program_playback import ProgramPlaybackRefused
+
+    played = speaker["played"]
+    real_play = program_transaction.play_program
+
+    async def _play(program, **seams: Any) -> Any:
+        if not played:
+            played.append(program)
+            raise ProgramPlaybackRefused(ProgramAdmission(
+                program_id="p", phase="measure", session_volume_db=-20.0,
+                segments=(), channels=(), refusals=(),
+            ))
+        return await real_play(program, **seams)
+
+    monkeypatch.setattr(program_transaction, "play_program", _play)
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(
+            tmp_path, [{"candidate_id": "refused"}, {"candidate_id": "kept"}],
+        ),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK, "a spec-scoped refusal must not end the batch"
+    refused, kept = payload["specs"]
+    assert refused["record_ids"] == []
+    assert [s["incident"] for s in refused["stimuli"]] == [
+        program_transaction.STIMULUS_ADMISSION_REFUSED
+    ]
+    assert kept["record_ids"], "the batch did not carry on to the next spec"
+
+
+def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
+    speaker, monkeypatch, tmp_path, capsys,
+):
+    """Arm A: the speaker stopped being held, so the rest would be guesswork.
+
+    The remaining specs would measure through a graph nobody can re-prove, so
+    the batch stops — and says WHICH spec it stopped at, because in a batch the
+    banked ids alone cannot locate the boundary and the next attempt needs to
+    know what is still owed.
+    """
+    from jasper.active_speaker.crossover_v2 import session_graph as graph_mod
+
+    real_install = graph_mod.MeasurementSessionGraph.install
+    played = speaker["played"]
+
+    async def _install(self, *args, **kwargs):
+        if played:
+            raise graph_mod.SessionGraphError("the measurement graph was stomped")
+        return await real_install(self, *args, **kwargs)
+
+    monkeypatch.setattr(graph_mod.MeasurementSessionGraph, "install", _install)
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(
+            tmp_path, [{"candidate_id": "first"}, {"candidate_id": "second"}],
+        ),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "partial"
+    assert payload["reason"] == REFUSE_GRAPH_LOST
+    assert payload["stopped_at"]["candidate_id"] == "second"
+    assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
+    assert len(payload["record_ids"]) == 1
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_a_banked_take_carries_the_curves_it_was_crunched_into(speaker, capsys):
+    """Capture and analysis are ONE act — a take arrives already crunched.
+
+    There is no point measuring what nobody turns into numbers: a take banked as
+    a WAV reference alone makes every later reader re-derive what the box
+    already knew, and ruling S3's whole return on banking the complex response
+    is that the bank can be re-analysed by an analysis that did not exist when
+    it was captured.
+
+    Asserted on the banked BYTES and on the CONTENT, not merely the key: an
+    empty ``curves`` list is what a failed crunch banks, so a test that only
+    checked the key was present would pass forever against a door that had
+    stopped crunching. Both magnitude and phase are required — phase is the half
+    a later alignment read cannot recompute from a magnitude trace.
+    """
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    banked = json.loads(
+        (Path(payload["bundle_dir"]) / ARTIFACTS / payload["record_ids"][0])
+        .read_text()
+    )
+    curves = banked["curves"]
+    assert curves, "the take banked no curve — it was measured and not crunched"
+    assert {curve["role"] for curve in curves} == {"woofer", "tweeter"}
+    for curve in curves:
+        assert curve["magnitude_db"], f"{curve['role']} banked no magnitude"
+        assert curve["phase_deg"], f"{curve['role']} banked no phase"
+        assert len(curve["magnitude_db"]) == len(curve["phase_deg"])
