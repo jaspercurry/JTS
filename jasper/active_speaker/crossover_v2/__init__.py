@@ -62,8 +62,8 @@ order — so this list is what exists, not a plan:
   VERIFY) must clear, and in what order.
 * :mod:`.capture_source` — the capture-source seam: what any capture provider
   owes the conductor.
-* :mod:`.attempt_grading` — whether a VERIFY capture is a new *tuning* attempt,
-  and whether the loop may grade it.
+* :mod:`.attempt_grading` — the tuning-attempt ledger's constants: the
+  ungraded status and the two improvement thresholds.
 * :mod:`.commanded` — what an apply asks the summed response to CHANGE: the
   applied graph's predicted sum minus the predicted sum of the graph it
   replaces, which is the delta probe's commanded axis.
