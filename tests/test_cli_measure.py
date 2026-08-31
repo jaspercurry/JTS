@@ -37,10 +37,13 @@ from jasper.cli.measure import (
     REFUSE_NO_MIC,
     REFUSE_ONE_POSITION_PER_RUN,
     REFUSE_SPEC_INVALID,
+    REFUSE_SPECS_MIXED_POSE,
+    REFUSE_SPECS_WITH_TAKE_FLAGS,
     BoxDeclaration,
     MeasureFlagError,
     build_parser,
     spec_from_args,
+    specs_from_args,
 )
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import _preset, _roles
@@ -350,9 +353,10 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
     assert code == EXIT_OK
     assert payload["status"] == "measured"
     assert len(payload["record_ids"]) == 1
-    assert payload["graph_fingerprint"]
-    assert [s["position_deg"] for s in payload["stimuli"]] == [0]
-    assert [s["incident"] for s in payload["stimuli"]] == [""]
+    assert len(payload["specs"]) == 1
+    assert payload["specs"][0]["graph_fingerprint"]
+    assert [s["position_deg"] for s in payload["specs"][0]["stimuli"]] == [0]
+    assert [s["incident"] for s in payload["specs"][0]["stimuli"]] == [""]
     assert speaker["capture"].arounds == 1
     assert len(speaker["played"]) == 1
     # Given back: the entry graph is what the DSP last loaded, and the fader is
@@ -375,9 +379,10 @@ def test_a_level_ladder_plays_every_rung_against_one_open_session(speaker, capsy
 
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK
-    assert [s["stimulus_dbfs"] for s in payload["stimuli"]] == [-12.0, -18.0]
+    stimuli = payload["specs"][0]["stimuli"]
+    assert [s["stimulus_dbfs"] for s in stimuli] == [-12.0, -18.0]
     assert len(payload["record_ids"]) == 2
-    assert all(s["level_db"] == pytest.approx(-20.0) for s in payload["stimuli"])
+    assert all(s["level_db"] == pytest.approx(-20.0) for s in stimuli)
 
 
 def test_a_box_with_no_microphone_refuses_before_it_takes_the_speaker(
@@ -454,13 +459,13 @@ def test_a_walk_that_stops_part_way_still_names_what_it_banked(
     from jasper.active_speaker.crossover_v2 import session_graph as graph_mod
 
     real_install = graph_mod.MeasurementSessionGraph.install
-    capture = speaker["capture"]
+    played = speaker["played"]
 
     async def _install(self, *args, **kwargs):
         # Keyed on "a stimulus has already played" rather than a call ordinal:
         # the door and the session each prove the graph once at open, and a
         # magic count would silently move if either stopped doing so.
-        if capture.arounds:
+        if played:
             raise graph_mod.SessionGraphError("the measurement graph was stomped")
         return await real_install(self, *args, **kwargs)
 
@@ -504,3 +509,344 @@ def test_a_banked_take_carries_what_the_microphone_reported(speaker, capsys):
     # The engine's own fields are untouched by the annotation.
     assert banked["level_db"] == pytest.approx(-20.0)
     assert banked["wav_path"] == CAPTURE_RELPATH
+
+
+# --------------------------------------------------------------------------- #
+# a batch: N configs against ONE microphone placement
+# --------------------------------------------------------------------------- #
+
+
+def _specs_file(tmp_path: Path, entries: list[dict[str, Any]]) -> str:
+    path = tmp_path / "specs.json"
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--position", "0"],
+        ["--prompt", "stand at the mark"],
+        ["--polarity", POLARITY_INVERTED, "--inverted-role", "tweeter"],
+        ["--inverted-role", "tweeter"],
+        ["--delayed-role", "woofer", "--delay-us", "120"],
+        ["--delay-us", "120"],
+        ["--level-matched"],
+        ["--level-dbfs", "-12"],
+        ["--candidate-id", "null_a1"],
+    ],
+)
+def test_specs_and_the_per_take_flags_are_refused_together(tmp_path, flag):
+    """Two sources of truth for one spec, refused rather than merged.
+
+    Parametrized over the whole set because the rule is about the SET: a check
+    that named only ``--candidate-id`` would let a polarity typed on the command
+    line silently lose to, or silently override, the file. Either way one of the
+    two is a lie, and a precedence rule would only decide which.
+    """
+    argv = ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, [{}]), *flag]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(argv))
+
+    assert caught.value.reason == REFUSE_SPECS_WITH_TAKE_FLAGS
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"positions": [30]},
+        {"vertical_deg": 15},
+        {"position_axis": "vertical", "positions": []},
+        {"positions": [0], "pose_prompts": ["stand by the couch"]},
+    ],
+)
+def test_a_batch_whose_specs_disagree_about_the_pose_is_refused_at_parse(
+    tmp_path, second,
+):
+    """The WHOLE pose — bearing, prompts, axis and elevation are all placement.
+
+    A batch exists because the microphone move is the expensive part, so every
+    spec in it measures the SAME placement, and nothing between two specs moves
+    or raises the microphone. A differing prompt is a differing placement too:
+    the prompt is what the mover was told.
+    """
+    entries = [{"positions": [0]}, {**second}]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+        ))
+
+    assert caught.value.reason == REFUSE_SPECS_MIXED_POSE
+
+
+def test_an_omitted_bearing_and_an_explicit_zero_are_one_design_axis_pose(
+    tmp_path,
+):
+    """``positions: []`` and ``positions: [0]`` must not read as two placements.
+
+    MeasureSpec's own contract: both spell the design axis. A set keyed on the
+    raw tuples would refuse a file whose entries mean the same pose.
+    """
+    entries = [{"positions": []}, {"positions": [0]}]
+
+    specs = specs_from_args(build_parser().parse_args(
+        ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+    ))
+
+    assert len(specs) == 2
+
+
+def test_a_file_entry_that_names_two_bearings_is_refused(tmp_path):
+    """One entry, one placement — the flag rule holds through the file.
+
+    ``positions: [0, 30]`` in one entry would play two stimuli from wherever
+    the microphone already is and bank a pose nothing moved to, exactly what a
+    second ``--position`` is refused for.
+    """
+    entries = [{"positions": [0, 30]}]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+        ))
+
+    assert caught.value.reason == REFUSE_ONE_POSITION_PER_RUN
+
+
+@pytest.mark.parametrize(
+    "unlabelled",
+    [
+        {},
+        # Whitespace only: trimmed at parse, so it cannot pass as a truthy label.
+        {"candidate_id": "   "},
+    ],
+)
+def test_every_spec_in_the_file_needs_its_own_candidate_id(tmp_path, unlabelled):
+    """The candidate-id rule holds per ENTRY, and a blank label is no label.
+
+    The second entry is a variant with no usable label, which is the take that
+    would bank unfindable — and in a batch it would sit beside a labelled
+    sibling it could never be told apart from.
+    """
+    entries = [
+        {"candidate_id": "null_a1", "polarity": POLARITY_INVERTED,
+         "inverted_role": "tweeter"},
+        {"polarity": POLARITY_INVERTED, "inverted_role": "woofer", **unlabelled},
+    ]
+
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
+        ))
+
+    assert caught.value.reason == REFUSE_CANDIDATE_ID_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"positions": 30},
+        {"positions": "030"},
+        {"pose_prompts": "one prompt"},
+        {"pose_prompts": [7]},
+        {"level_matched": "false"},
+        {"candidate_id": 7},
+        {"delayed_role": "woofer", "delay_us": True},
+        {"delayed_role": "woofer", "delay_us": "120"},
+        {"level_ladder_dbfs": ["-12"]},
+        {"level_ladder_dbfs": [float("nan")]},
+    ],
+)
+def test_a_file_entry_with_untyped_fields_is_refused_at_parse(tmp_path, entry):
+    """Raw JSON gets argparse's typing, as the same typed refusal.
+
+    Each of these is a value no flag could ever produce — a bare string where
+    an array belongs, a truthy string for a boolean, a numeric label, a
+    non-finite rung — and each once crashed outside the typed refusal or flowed
+    through as a silently different measurement.
+    """
+    with pytest.raises(MeasureFlagError) as caught:
+        specs_from_args(build_parser().parse_args(
+            ["--kind", MEASURE_KIND_BASELINE,
+             "--specs", _specs_file(tmp_path, [entry])]
+        ))
+
+    assert caught.value.reason == REFUSE_SPEC_INVALID
+
+
+def test_a_batch_measures_every_spec_against_one_open_session(
+    speaker, tmp_path, capsys,
+):
+    """The capability the batch exists for: N configs, ONE microphone move.
+
+    Three variants of one pose, banked under three labels a reader can select
+    apart. The session is opened once — the entry graph goes back exactly once
+    at the end — which is what makes the batch cheaper than three invocations
+    rather than merely shorter to type.
+    """
+    entries = [
+        {"candidate_id": "plain"},
+        {"candidate_id": "inv_tw", "polarity": POLARITY_INVERTED,
+         "inverted_role": "tweeter"},
+        {"candidate_id": "dly_wf", "delayed_role": "woofer", "delay_us": 120.0},
+    ]
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(tmp_path, entries),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert [s["candidate_id"] for s in payload["specs"]] == [
+        "plain", "inv_tw", "dly_wf",
+    ]
+    assert len(payload["record_ids"]) == 3
+    assert all(s["record_ids"] for s in payload["specs"])
+    # Three specs, three VARIANT graphs: the fingerprint is per spec, and one
+    # value could not name them all.
+    fingerprints = [s["graph_fingerprint"] for s in payload["specs"]]
+    assert all(fingerprints)
+    assert len(set(fingerprints)) == 3
+    # ONE session: the entry graph is restored once, at the end.
+    cam = speaker["cam"]
+    entry = cam.entry_path.read_text()
+    assert cam.loaded[-1] == entry
+    assert cam.loaded.count(entry) == 1
+
+
+def test_a_spec_scoped_refusal_discloses_and_the_batch_carries_on(
+    speaker, monkeypatch, tmp_path, capsys,
+):
+    """Arm B of the scope split: one refused take is not the placement's fault.
+
+    An admission refusal is a property of ONE stimulus — the play transaction
+    turns it into a typed ``incident`` and never raises — so the batch measures
+    the next spec. Giving the whole placement back over one refused take would
+    throw away the microphone move that the batch exists to amortize.
+    """
+    from jasper.active_speaker.crossover_v2 import program_transaction
+    from jasper.active_speaker.program_admission import ProgramAdmission
+    from jasper.active_speaker.program_playback import ProgramPlaybackRefused
+
+    played = speaker["played"]
+    real_play = program_transaction.play_program
+
+    async def _play(program, **seams: Any) -> Any:
+        if not played:
+            played.append(program)
+            raise ProgramPlaybackRefused(ProgramAdmission(
+                program_id="p", phase="measure", session_volume_db=-20.0,
+                segments=(), channels=(), refusals=(),
+            ))
+        return await real_play(program, **seams)
+
+    monkeypatch.setattr(program_transaction, "play_program", _play)
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(
+            tmp_path, [{"candidate_id": "refused"}, {"candidate_id": "kept"}],
+        ),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK, "a spec-scoped refusal must not end the batch"
+    refused, kept = payload["specs"]
+    assert refused["record_ids"] == []
+    assert [s["incident"] for s in refused["stimuli"]] == [
+        program_transaction.STIMULUS_ADMISSION_REFUSED
+    ]
+    assert kept["record_ids"], "the batch did not carry on to the next spec"
+
+
+def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
+    speaker, monkeypatch, tmp_path, capsys,
+):
+    """Arm A: the speaker stopped being held, so the rest would be guesswork.
+
+    The remaining specs would measure through a graph nobody can re-prove, so
+    the batch stops — and says WHICH spec it stopped at, because in a batch the
+    banked ids alone cannot locate the boundary and the next attempt needs to
+    know what is still owed.
+    """
+    from jasper.active_speaker.crossover_v2 import session_graph as graph_mod
+
+    real_install = graph_mod.MeasurementSessionGraph.install
+    played = speaker["played"]
+
+    async def _install(self, *args, **kwargs):
+        if played:
+            raise graph_mod.SessionGraphError("the measurement graph was stomped")
+        return await real_install(self, *args, **kwargs)
+
+    monkeypatch.setattr(graph_mod.MeasurementSessionGraph, "install", _install)
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(
+            tmp_path, [{"candidate_id": "first"}, {"candidate_id": "second"}],
+        ),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "partial"
+    assert payload["reason"] == REFUSE_GRAPH_LOST
+    assert payload["stopped_at"]["candidate_id"] == "second"
+    assert payload["stopped_at"]["index"] == 1
+    assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
+    assert len(payload["record_ids"]) == 1
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
+    speaker, monkeypatch, tmp_path, capsys,
+):
+    """The bank stopped taking writes: later specs would play and keep nothing.
+
+    A store failure lands AFTER earlier specs banked, so a traceback would exit
+    with no JSON while their takes sit on disk unnamed. It aborts through the
+    same partial payload the other session-scoped failures use — one shape,
+    with the banked ids and the zero-based index of the spec in flight.
+    """
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+        CommissioningEvidenceStoreError,
+        CommissioningEvidenceStoreErrorCode,
+    )
+
+    real_publish = CommissioningEvidenceStore.publish_json_artifact
+    banked: list[str] = []
+
+    def _publish(self, relative_path, payload):
+        if banked:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.PERSIST_FAILED,
+                "the bundle volume went away",
+            )
+        banked.append(relative_path)
+        return real_publish(self, relative_path, payload)
+
+    monkeypatch.setattr(
+        CommissioningEvidenceStore, "publish_json_artifact", _publish,
+    )
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(
+            tmp_path, [{"candidate_id": "first"}, {"candidate_id": "second"}],
+        ),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "partial"
+    assert payload["reason"] == measure.REFUSE_STORE_LOST
+    assert payload["stopped_at"]["index"] == 1
+    assert [s["candidate_id"] for s in payload["specs"]] == ["first"]
+    assert len(payload["record_ids"]) == 1
+    # Still given back: a partial result is not a stranded speaker.
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)

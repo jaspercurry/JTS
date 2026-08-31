@@ -17,15 +17,22 @@ Usage::
     jasper-measure --kind candidate --position -30
     jasper-measure --kind candidate --polarity inverted --inverted-role tweeter \\
         --candidate-id null_a1
+    jasper-measure --kind candidate --specs nulls.json   # N configs, one move
 
-**One placement per run, and one bearing with it.** The engine walks several
-bearings because the wizard prompts a mover between them; this door prompts
-nobody, so a second ``--position`` would play both stimuli from wherever the
-microphone already is and bank two poses nothing moved to. A walk is N runs,
-one per placement — and so are N configs at one placement, or N specs against
-one open session by a caller that loops. Nothing here batches variants: the
-variant emit-cache makes each swap one ``SetConfig``, so the loop costs a graph
-load and nothing else.
+**One placement per run — and as many configs against it as you like.** The
+engine walks several bearings because the wizard prompts a mover between them;
+this door prompts nobody, so a second ``--position`` would play both stimuli
+from wherever the microphone already is and bank two poses nothing moved to. A
+walk is therefore N runs, one per placement.
+
+Within one placement the opposite is true, and ``--specs`` is how: the physical
+cost is the microphone move, so the door holds ONE session and measures every
+spec in the file through it. **A preset is a saved**
+:class:`~jasper.active_speaker.crossover_v2.measure_spec.MeasureSpec` **and
+nothing more**, so the file is a JSON list of exactly that mapping and invents
+no vocabulary. The graph's variant emit-cache makes each swap a single
+``SetConfig``, so the batch costs one graph load per distinct variant and
+nothing else.
 
 Run it as root (``sudo``): the CamillaDSP socket and the session-volume record
 are root-owned.
@@ -45,6 +52,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import secrets
 import sys
 from dataclasses import dataclass
@@ -80,6 +88,15 @@ REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
 #: different ``position_deg`` values — a silently wrong measurement (S12).
 REFUSE_ONE_POSITION_PER_RUN = "measure_one_position_per_run"
 
+#: ``--specs`` could not be read, or does not hold a non-empty list of mappings.
+REFUSE_SPECS_UNREADABLE = "measure_specs_file_unreadable"
+#: A specs file whose entries disagree about the pose — bearing, prompts, axis
+#: or elevation. A batch measures ONE microphone placement.
+REFUSE_SPECS_MIXED_POSE = "measure_specs_mixed_pose"
+#: ``--specs`` given beside the flags that describe one take. Two sources of
+#: truth for one spec, refused rather than merged behind a precedence rule.
+REFUSE_SPECS_WITH_TAKE_FLAGS = "measure_specs_with_take_flags"
+
 #: The running measurement graph could not be re-proven or put back mid-walk.
 REFUSE_GRAPH_LOST = "measure_graph_lost"
 #: The measurement isolation window was lost mid-walk, so household audio could
@@ -87,6 +104,14 @@ REFUSE_GRAPH_LOST = "measure_graph_lost"
 REFUSE_ISOLATION_LOST = "measure_isolation_lost"
 #: The measurement volume stopped being open, confirmed and fresh mid-walk.
 REFUSE_VOLUME_LOST = "measure_volume_lost"
+#: The evidence store stopped accepting writes mid-walk. Later specs would
+#: play sweeps whose takes nothing keeps, so the batch aborts as a partial
+#: result instead of letting the store's exception escape as a traceback.
+REFUSE_STORE_LOST = "measure_evidence_store_lost"
+#: The operator interrupted the run. Named like the other three because it ends
+#: the batch the same way, and because whoever pressed Ctrl-C is exactly who
+#: needs the ids of what already banked.
+REFUSE_CANCELLED = "measure_cancelled"
 
 __all__ = [
     "BoxDeclaration",
@@ -97,6 +122,7 @@ __all__ = [
     "main",
     "read_box_declaration",
     "spec_from_args",
+    "specs_from_args",
 ]
 
 
@@ -127,13 +153,30 @@ class MeasureInterrupted(RuntimeError):
     that it prints the names.
     """
 
-    def __init__(self, reason: str, detail: str, session: Any, store: Any) -> None:
+    def __init__(
+        self,
+        reason: str,
+        detail: str,
+        session: Any,
+        store: Any,
+        *,
+        spec: Any,
+        spec_index: int,
+        done: tuple[tuple[Any, str], ...] = (),
+    ) -> None:
         self.reason = reason
         self.detail = detail
         self.record_ids = list(session.banked_record_ids)
-        self.graph_fingerprint = str(session.graph_fingerprint)
         self.bundle_dir = str(store.bundle_dir)
         self.session_id = str(session.session_id)
+        #: WHICH spec was in flight, and its zero-based place in the batch. In
+        #: a batch the ids alone cannot say where the run stopped, and repeated
+        #: or unlabelled entries cannot be told apart by their fields.
+        self.spec = spec
+        self.spec_index = int(spec_index)
+        #: ``(outcome, graph fingerprint)`` per completed spec, so a partial
+        #: batch renders the same per-spec shape a whole one does.
+        self.done = done
         super().__init__(f"{reason}: {detail}")
 
 
@@ -303,33 +346,46 @@ def read_box_declaration() -> BoxDeclaration:
 # --------------------------------------------------------------------------- #
 
 
-def spec_from_args(args: argparse.Namespace) -> Any:
-    """One :class:`MeasureSpec` from the flags, with the C3 rule in front of it.
+def _variant_axes(spec: Any) -> tuple[str, ...]:
+    """The axes that make a take a VARIANT rather than the plain measurement.
 
-    **The candidate-id rule lives HERE, in the flag layer, and not on the
-    spec.** A spec constructed by the wizard already carries a candidate id from
-    the round it belongs to; an engine-side refusal would be a new gate on a
-    shipped shape rather than a door telling its own operator that the take they
-    are about to bank would be unfindable.
+    Read off the built spec rather than off flags, so the one rule serves both
+    the flag layer and the ``--specs`` file. A second copy keyed on argparse
+    names would be free to disagree with this one about what a variant is.
     """
     from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERTED
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
-    variant_axes = tuple(
+    return tuple(
         axis
         for axis, chosen in (
-            (f"--polarity {POLARITY_INVERTED}", args.polarity == POLARITY_INVERTED),
-            ("--delayed-role", bool(args.delayed_role)),
-            ("--level-matched", bool(args.level_matched)),
+            ("polarity=inverted", spec.polarity == POLARITY_INVERTED),
+            ("delayed_role", bool(spec.delayed_role)),
+            ("level_matched", bool(spec.level_matched)),
         )
         if chosen
     )
-    if variant_axes and not args.candidate_id.strip():
+
+
+def _require_candidate_id(spec: Any, *, where: str) -> None:
+    """A variant spec must name the candidate id that selects its takes.
+
+    The rule lives in the door, not on the spec: a spec constructed by the
+    wizard already carries a candidate id from the round it belongs to, and an
+    engine-side refusal would be a new gate on a shipped shape.
+    """
+    axes = _variant_axes(spec)
+    if axes and not spec.candidate_id:
         raise MeasureFlagError(
             REFUSE_CANDIDATE_ID_REQUIRED,
-            "a variant take needs --candidate-id to select it from its "
-            f"siblings; {', '.join(variant_axes)} names no candidate",
+            f"a variant take needs a candidate id to select it from its "
+            f"siblings; {where} sets {', '.join(axes)} and names no candidate",
         )
+
+
+def spec_from_args(args: argparse.Namespace) -> Any:
+    """One :class:`MeasureSpec` from the flags, candidate-id rule included."""
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+
     if len(args.position) > 1:
         # The ENGINE walks bearings because the wizard prompts a mover between
         # them. This door has no mover seam: N bearings here would play N
@@ -345,7 +401,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             "per placement",
         )
     try:
-        return MeasureSpec(
+        spec = MeasureSpec(
             kind=args.kind,
             positions=tuple(args.position),
             pose_prompts=tuple(args.prompt),
@@ -362,6 +418,168 @@ def spec_from_args(args: argparse.Namespace) -> Any:
         )
     except ValueError as exc:
         raise MeasureFlagError(REFUSE_SPEC_INVALID, str(exc)) from exc
+    _require_candidate_id(spec, where="the flags")
+    return spec
+
+
+#: The flags that describe ONE take. ``--specs`` describes several, so the two
+#: together would be two sources of truth for one spec — refused rather than
+#: merged, which is the shape a silent precedence rule hides. ``--kind``,
+#: ``--axis``, ``--vertical-deg`` and ``--regime`` stay off this list on
+#: purpose: they are the shared defaults a file entry may omit.
+_PER_TAKE_FLAGS = ("position", "prompt", "polarity", "inverted_role",
+                   "delayed_role", "delay_us", "level_matched", "level_dbfs",
+                   "candidate_id")
+
+
+def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
+    """Every spec this invocation measures, against ONE microphone placement.
+
+    Without ``--specs`` that is the single spec the flags describe. With it, the
+    file is the batch: **a preset is a saved** :class:`MeasureSpec` **and
+    nothing more** (``measure_spec``'s own words), so the file needs no
+    vocabulary of its own — each entry is that mapping, and the flags supply the
+    defaults an entry does not name.
+
+    The batch measures one PLACEMENT, which is the whole reason it exists: the
+    physical cost is the mic move, so N configs against one move is the win. A
+    file whose entries disagree about the pose — bearing, prompts, axis or
+    elevation — is therefore refused here rather than measured.
+    """
+    if not args.specs:
+        return (spec_from_args(args),)
+    # Compared against the parser's OWN defaults, not against truthiness:
+    # ``--polarity`` defaults to ``normal``, which is a perfectly truthy string,
+    # so a truthiness test would refuse every batch ever written.
+    stated = build_parser()
+    named = [
+        flag for flag in _PER_TAKE_FLAGS
+        if getattr(args, flag) != stated.get_default(flag)
+    ]
+    if named:
+        raise MeasureFlagError(
+            REFUSE_SPECS_WITH_TAKE_FLAGS,
+            "--specs names every take in the batch, so the per-take flags have "
+            f"nothing left to describe; drop {', '.join('--' + flag.replace('_', '-') for flag in named)} "
+            "or drop --specs",
+        )
+    specs = _specs_from_file(args)
+    poses = {
+        # ``positions=()`` and ``positions=(0,)`` name the same design-axis
+        # pose — :class:`MeasureSpec`'s own contract — so the two spellings
+        # must not read as two placements. The prompt is part of the placement
+        # too: it is what the mover was told, and nothing moves between specs.
+        (spec.positions or (0,), spec.pose_prompts, spec.position_axis,
+         spec.vertical_deg)
+        for spec in specs
+    }
+    if len(poses) > 1:
+        raise MeasureFlagError(
+            REFUSE_SPECS_MIXED_POSE,
+            "a batch measures ONE microphone placement, and nothing here moves "
+            f"the microphone between specs; this file names {len(poses)} poses "
+            "(bearing, prompts, axis, elevation). Split it into one file per "
+            "placement",
+        )
+    return specs
+
+
+#: The spec fields a file entry must state as JSON strings. Each is trimmed,
+#: so a whitespace-only candidate id cannot pass the variant rule as a truthy
+#: label.
+_STRING_FIELDS = (
+    "kind", "position_axis", "regime", "polarity", "inverted_role",
+    "delayed_role", "candidate_id",
+)
+
+
+def _typed_entry(index: int, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """argparse's typing, for a mapping that never went through argparse.
+
+    Raw JSON can hand :class:`MeasureSpec` what no flag ever could — a truthy
+    string for ``level_matched``, a numeric candidate id, a bare string where a
+    tuple field expects an array (``tuple("030")`` is three character
+    bearings), a non-finite or non-numeric delay or ladder rung. Each is
+    refused here with the entry's index, instead of crashing outside the typed
+    refusal or flowing through as a silently different measurement.
+    """
+
+    def refuse(what: str) -> MeasureFlagError:
+        return MeasureFlagError(REFUSE_SPEC_INVALID, f"spec {index}: {what}")
+
+    fields = dict(entry)
+    for key in ("positions", "pose_prompts", "level_ladder_dbfs"):
+        if key in fields:
+            if not isinstance(fields[key], list):
+                raise refuse(f"{key} must be a JSON array")
+            fields[key] = tuple(fields[key])
+    for key in _STRING_FIELDS:
+        if key in fields:
+            if not isinstance(fields[key], str):
+                raise refuse(f"{key} must be a string")
+            fields[key] = fields[key].strip()
+    if not all(isinstance(p, str) for p in fields.get("pose_prompts", ())):
+        raise refuse("pose_prompts entries must be strings")
+    if not isinstance(fields.get("level_matched", False), bool):
+        raise refuse("level_matched must be true or false")
+    for name, values in (
+        ("delay_us", (fields.get("delay_us", 0.0),)),
+        ("level_ladder_dbfs", fields.get("level_ladder_dbfs", ())),
+    ):
+        for value in values:
+            # ``bool`` is an ``int``; JSON itself can carry NaN/Infinity.
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise refuse(f"{name} must be a finite number, got {value!r}")
+    return fields
+
+
+def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
+    """The file's entries as specs, each one held to the same rules as a flag run."""
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+
+    try:
+        document = json.loads(Path(args.specs).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise MeasureFlagError(REFUSE_SPECS_UNREADABLE, str(exc)) from exc
+    if not isinstance(document, list) or not document:
+        raise MeasureFlagError(
+            REFUSE_SPECS_UNREADABLE,
+            "a specs file is a non-empty JSON list of MeasureSpec mappings",
+        )
+    defaults = {
+        "kind": args.kind,
+        "position_axis": args.axis,
+        "vertical_deg": args.vertical_deg,
+        "regime": args.regime,
+    }
+    specs = []
+    for index, entry in enumerate(document):
+        if not isinstance(entry, dict):
+            raise MeasureFlagError(
+                REFUSE_SPECS_UNREADABLE,
+                f"spec {index} is not a mapping",
+            )
+        fields = {**defaults, **_typed_entry(index, entry)}
+        try:
+            spec = MeasureSpec(**fields)
+        except (TypeError, ValueError) as exc:
+            raise MeasureFlagError(
+                REFUSE_SPEC_INVALID, f"spec {index}: {exc}",
+            ) from exc
+        if len(spec.positions) > 1:
+            # The same rule a second ``--position`` meets: nothing here moves
+            # the microphone, so one entry states at most one placement.
+            raise MeasureFlagError(
+                REFUSE_ONE_POSITION_PER_RUN,
+                f"spec {index} names {len(spec.positions)} bearings "
+                f"({', '.join(str(deg) for deg in spec.positions)}), and "
+                "nothing here moves the microphone between them; one entry "
+                "measures one placement",
+            )
+        _require_candidate_id(spec, where=f"spec {index}")
+        specs.append(spec)
+    return tuple(specs)
 
 
 # --------------------------------------------------------------------------- #
@@ -522,8 +740,13 @@ class _CaptureAnnotatedStore:
         }
         return await self.inner.bank(annotated)
 
-async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
-    """Open the door, measure what the spec asks for, close, and report.
+
+async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any]:
+    """Open the door once, measure every spec through it, close, and report.
+
+    **One session hold for the whole batch**, which is the point: the physical
+    cost is the microphone move, so N configs against one placement is the win,
+    and the graph's variant emit-cache makes each swap a single ``SetConfig``.
 
     The engine's own give-back runs inside the door's: ``TuningSession.close``
     puts the graph back and drops the claim, and the door's ``finally`` then
@@ -550,8 +773,13 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
     from jasper.camilla import primary_controller
     from jasper.web.correction_crossover_v2_wired import WiredStimulusCapture
 
-    trims = _level_match_trims(box) if spec.level_matched else {}
-    if spec.level_matched and not trims:
+    # Resolved ONCE for the batch, and asked for by ANY spec in it: the trims
+    # are a property of the speaker, not of a take, and the session applies the
+    # one answer to whichever specs asked. Refused before the door opens, where
+    # an operator can still act on it.
+    wants_level_match = any(spec.level_matched for spec in specs)
+    trims = _level_match_trims(box) if wants_level_match else {}
+    if wants_level_match and not trims:
         raise BoxNotMeasurable(
             REFUSE_NO_LEVEL_EVIDENCE,
             "this box has banked no per-driver level evidence, so a "
@@ -620,50 +848,99 @@ async def _measure(spec: Any, box: BoxDeclaration) -> dict[str, Any]:
             measurement_level_db=box.session_volume_db,
             level_match_trims_db=trims,
         ) as session:
-            outcome = await _measured(session, spec, store=store)
-            return _report(session, outcome, store=store, session_id=session_id)
+            outcomes = await _measured(session, specs, store=store)
+            return _report(outcomes, store=store, session_id=session_id)
 
 
-async def _measured(session: Any, spec: Any, *, store: Any) -> Any:
-    """``measure``, with a mid-walk failure turned into a PARTIAL result.
+def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type, str]]:
+    """The failures that end the BATCH, by TYPE, and the reason each reports.
 
-    Three named failures can land between two stimuli of one walk: the running
-    graph could not be put back or re-proven, the isolation window was lost, and
-    the measurement volume stopped being open. None of them is a programming
-    error and all three can arrive after ``k`` takes are already on disk.
-    Letting one traceback out would exit with no JSON while those takes sit in
-    the bundle unnamed — evidence the operator has no id for and the next run
-    cannot find. So the ids the session DID bank are carried out with the
-    reason, and the caller renders both.
+    **The scope split is drawn by exception type at this one site, and nowhere
+    else** — no string matching and no runtime judgement about how bad a failure
+    was. Everything here is a property of what the whole batch stands on: the
+    graph nobody can re-prove, the volume that stopped being open, the lost
+    isolation window, the evidence store that stopped accepting writes, the
+    operator's own cancel. The next spec would measure through a speaker — or
+    into a bank — this process no longer holds. A failure scoped to one
+    stimulus (an admission refusal, a dead aplay, a capture that could not be
+    placed) never raises here at all: the play transaction turns it into a
+    typed ``incident`` on its own stimulus, which is what lets the batch carry
+    on and disclose it per spec.
     """
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStoreError,
+    )
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.correction.coordinator import MeasurementWindowError
 
-    try:
-        return await session.measure(spec)
-    except SessionGraphError as exc:
-        raise MeasureInterrupted(
-            REFUSE_GRAPH_LOST, str(exc), session, store,
-        ) from exc
-    except MeasurementWindowError as exc:
-        raise MeasureInterrupted(
-            REFUSE_ISOLATION_LOST, str(exc), session, store,
-        ) from exc
-    except SessionVolumePlanError as exc:
-        raise MeasureInterrupted(
-            REFUSE_VOLUME_LOST, str(exc), session, store,
-        ) from exc
+    reasons: dict[type, str] = {
+        SessionGraphError: REFUSE_GRAPH_LOST,
+        SessionVolumePlanError: REFUSE_VOLUME_LOST,
+        MeasurementWindowError: REFUSE_ISOLATION_LOST,
+        CommissioningEvidenceStoreError: REFUSE_STORE_LOST,
+        asyncio.CancelledError: REFUSE_CANCELLED,
+    }
+    return tuple(reasons), reasons
 
 
-def _report(
-    session: Any, outcome: Any, *, store: Any, session_id: str,
-) -> dict[str, Any]:
-    """What this run measured, in the caller's own words.
+async def _measured(
+    session: Any, specs: tuple[Any, ...], *, store: Any,
+) -> tuple[tuple[Any, str], ...]:
+    """Every spec against one open session, as ``(outcome, graph fingerprint)``.
+
+    A session-scoped failure ABORTS: the speaker is no longer held the way the
+    remaining specs would be measured through, so continuing would bank takes
+    whose provenance is a guess. It leaves through :class:`MeasureInterrupted`
+    naming the spec that was in flight, carrying every id banked so far.
+
+    A spec-scoped failure does not reach here at all: the play transaction
+    reports it as a typed ``incident`` on the stimulus, so that spec's entry in
+    the result says what happened and the batch measures the next one. The
+    physical cost is the mic move, and one refused admission is no reason to
+    give the placement back.
+    """
+    aborting, reasons = _session_scoped_aborts()
+    done: list[tuple[Any, str]] = []
+    for index, spec in enumerate(specs):
+        try:
+            outcome = await session.measure(spec)
+        except aborting as exc:
+            # ``isinstance`` and not ``reasons[type(exc)]``: a subclass of any
+            # of these is still that failure, and a KeyError here would replace
+            # the operator's answer with a lookup error.
+            reason = next(
+                code for cls, code in reasons.items() if isinstance(exc, cls)
+            )
+            # A cancellation is CONVERTED rather than re-raised, deliberately:
+            # the operator interrupting a long batch is exactly who most needs
+            # the ids of what already banked, and the batch has stopped either
+            # way. The door's own give-back still runs shielded on the way out,
+            # so the speaker is handed back before this is rendered.
+            raise MeasureInterrupted(
+                reason, str(exc) or type(exc).__name__,
+                session, store, spec=spec, spec_index=index, done=tuple(done),
+            ) from exc
+        # Read per spec, before the next spec swaps the install: the session
+        # re-proves the graph per stimulus, so its fingerprint at this moment
+        # names the variant graph THIS spec measured through.
+        done.append((outcome, str(session.graph_fingerprint)))
+    return tuple(done)
+
+
+def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
+    """One spec's own answer, in the caller's words.
+
+    ``graph_fingerprint`` rides per spec and never once per run: each spec may
+    install a different variant graph, and the fingerprint is which graph THIS
+    spec's takes measured through.
 
     Every stimulus is reported, not only the banked ones: a rung that played and
     could not be banked is the fact a reader most needs, and a bare list of ids
-    would hide it behind a shorter list.
+    would hide it behind a shorter list. ``incident`` is where a SPEC-scoped
+    failure lands — a refused admission, a dead emission, a lost capture — each
+    already carrying the play transaction's own typed reason, which is what lets
+    the batch carry on past one and still say what happened.
 
     ``stubs`` names every capability this spec asked for that the engine has not
     built, so a reader knows which banked evidence is still owed an analysis
@@ -672,10 +949,9 @@ def _report(
     from jasper.active_speaker.crossover_v2.measure_spec import stubbed_capabilities
 
     return {
-        "status": "measured",
-        "session_id": session_id,
-        "bundle_dir": str(store.bundle_dir),
-        "graph_fingerprint": session.graph_fingerprint,
+        "candidate_id": outcome.spec.candidate_id,
+        "kind": outcome.spec.kind,
+        "graph_fingerprint": graph_fingerprint,
         "record_ids": list(outcome.record_ids),
         "stimuli": [
             {
@@ -694,6 +970,33 @@ def _report(
                 "captured": stub.captured,
             }
             for stub in stubbed_capabilities(outcome.spec)
+        ],
+    }
+
+
+def _report(
+    outcomes: tuple[tuple[Any, str], ...], *, store: Any, session_id: str,
+) -> dict[str, Any]:
+    """What this run measured — ONE shape whether it ran one spec or ten.
+
+    A single-spec run reports a one-entry ``specs`` list rather than a flatter
+    payload of its own: two shapes would make every reader branch on a count,
+    and the batch is the general case the door now has. The graph fingerprint
+    lives on each ``specs`` entry, never at the top: one value could not name
+    the several variant graphs a batch installs.
+    """
+    return {
+        "status": "measured",
+        "session_id": session_id,
+        "bundle_dir": str(store.bundle_dir),
+        "record_ids": [
+            record_id
+            for outcome, _fingerprint in outcomes
+            for record_id in outcome.record_ids
+        ],
+        "specs": [
+            _spec_report(outcome, fingerprint)
+            for outcome, fingerprint in outcomes
         ],
     }
 
@@ -726,12 +1029,17 @@ def _refused(reason: str, detail: str, *, json_output: bool, code: int) -> int:
 
 
 def _interrupted(exc: MeasureInterrupted) -> int:
-    """A walk that stopped part-way, printed as a PARTIAL result.
+    """A run that stopped part-way, printed as a PARTIAL result.
 
     Always JSON, and always on stdout beside the ordinary result, because the
     ids in it are the only handle anybody has on takes that are already on
     disk. A refusal line on stderr would be honest about the failure and lose
     the evidence.
+
+    ``specs`` carries the same per-spec shape a whole run reports, and
+    ``stopped_at`` names the one that was in flight — by zero-based ``index``
+    in the file as well as by its fields, because repeated or unlabelled
+    entries cannot be told apart by their fields alone.
     """
     log_event(
         logger,
@@ -749,8 +1057,16 @@ def _interrupted(exc: MeasureInterrupted) -> int:
             "detail": exc.detail,
             "session_id": exc.session_id,
             "bundle_dir": exc.bundle_dir,
-            "graph_fingerprint": exc.graph_fingerprint,
             "record_ids": exc.record_ids,
+            "specs": [
+                _spec_report(outcome, fingerprint)
+                for outcome, fingerprint in exc.done
+            ],
+            "stopped_at": {
+                "index": exc.spec_index,
+                "candidate_id": exc.spec.candidate_id,
+                "kind": exc.spec.kind,
+            },
         },
         indent=2,
         sort_keys=True,
@@ -763,13 +1079,13 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
 
     try:
-        spec = spec_from_args(args)
+        specs = specs_from_args(args)
     except MeasureFlagError as exc:
         return _refused(
             exc.reason, exc.detail, json_output=args.json, code=EXIT_INPUT
         )
     try:
-        payload = asyncio.run(_measure(spec, read_box_declaration()))
+        payload = asyncio.run(_measure(specs, read_box_declaration()))
     except MeasureInterrupted as exc:
         return _interrupted(exc)
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
@@ -857,6 +1173,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-id",
         default="",
         help="required whenever a variant axis is set",
+    )
+    parser.add_argument(
+        "--specs",
+        metavar="FILE",
+        default="",
+        help=(
+            "a JSON list of MeasureSpec mappings to measure against ONE "
+            "microphone placement — a preset IS a saved MeasureSpec, so the "
+            "file needs no vocabulary of its own. --kind/--axis/--vertical-deg/"
+            "--regime supply the defaults an entry does not name; every other "
+            "per-take flag above is refused beside it, and every entry needs "
+            "its own candidate id once it sets a variant axis"
+        ),
     )
     parser.add_argument(
         "--json",
