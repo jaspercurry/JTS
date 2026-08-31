@@ -40,6 +40,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.web.correction_crossover_flow import render_page
 
 # Mirrors tests/test_crossover_v2_cloud_pipeline.py's own
@@ -196,3 +197,34 @@ def test_new_js_modules_are_hardware_blind():
     exactly the device-taxonomy guess the plan forbids in shipped copy."""
     for path in (CHART_JS, CLOUD_JS):
         _assert_js_shipped_copy_is_hardware_blind(path)
+
+
+MEASUREMENTS_JS = REPO_ROOT / "deploy/assets/correction/js/crossover/measurements.js"
+
+_CLOUD_MEASURE_CONST_RE = re.compile(r"PHASE_CLOUD_MEASURE\s*=\s*['\"]([^'\"]+)['\"]")
+_CLOUD_VERIFY_CONST_RE = re.compile(r"PHASE_CLOUD_VERIFY\s*=\s*['\"]([^'\"]+)['\"]")
+_SERIES_KIND_RE = re.compile(r"series\.kind\s*===\s*['\"]([^'\"]+)['\"]")
+
+
+def test_js_phase_slugs_pinned_to_journey_constants():
+    """cloud.js's PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY and measurements.js's
+    ``series.kind === 'entry_baseline'`` are unpinned literal copies of three
+    journey.py phase slugs, with no import connecting them. Renaming a slug in
+    journey.py would leave the wizard rendering nothing, silently, with both
+    the Python and JS suites green — this pins the JS literals to the Python
+    constants so a rename fails loudly here instead.
+    """
+    cloud_text = CLOUD_JS.read_text(encoding="utf-8")
+    cloud_measure = _CLOUD_MEASURE_CONST_RE.search(cloud_text)
+    cloud_verify = _CLOUD_VERIFY_CONST_RE.search(cloud_text)
+    assert cloud_measure is not None and cloud_verify is not None
+    assert cloud_measure.group(1) == journey.PHASE_CLOUD_MEASURE
+    assert cloud_verify.group(1) == journey.PHASE_CLOUD_VERIFY
+
+    # measurements.js compares series.kind against several literals (e.g.
+    # 'average'); membership rather than the first match, since the intent is
+    # "entry_baseline appears as a kind check", not "it's the first one".
+    series_kinds = set(_SERIES_KIND_RE.findall(
+        MEASUREMENTS_JS.read_text(encoding="utf-8")
+    ))
+    assert journey.PHASE_ENTRY_BASELINE in series_kinds
