@@ -72,6 +72,7 @@ from .driver_base_trim import (
     BANK_WRITE_FAILED,
     BANK_WRITE_REFUSED,
     REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
+    STATUS_SUPERSEDED as BASE_TRIM_STATUS_SUPERSEDED,
     DriverBaseTrimError,
     banked_base_trims,
     clear_base_trim,
@@ -546,7 +547,10 @@ def _measured_level_trims(
     successful apply was actually playing, written by the apply seam itself.
     The FALLBACK, unchanged, is the guided per-driver captures the relay flow
     promotes. A banked trim is preferred only because it is the level match the
-    speaker last committed to, not because it is a better measurement.
+    speaker last committed to, not because it is a better measurement — so a
+    usable guided answer whose captures postdate the record's ``measured_at``
+    supersedes it (ruling S20: the newest measurement wins), and the handoff is
+    disclosed as ``dsp.baseline_base_trim_superseded`` naming both evidences.
     ``crossover_preview`` is what a banked trim is keyed to, so a caller with
     none has nothing to match a banked record against and gets the guided
     captures alone.
@@ -569,30 +573,8 @@ def _measured_level_trims(
         else None
     )
     base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
-    if base_trims:
-        # The banked record names the speaker groups it levelled, and the ledger
-        # reports them under the SAME keys the guided path uses: readiness
-        # (``crossover_contract.automatic_candidate_readiness``) and the setup
-        # status both gate on those, so a measured speaker reporting zero
-        # measured groups would read as un-measured.
-        banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
-        return base_trims, {
-            "source": "banked_base_trim",
-            "base_trim": base_trim_meta,
-            # The record's own trim source, not a second word for it: the apply
-            # that banked it stamped WHICH evidence levelled the graph, and this
-            # ledger repeats that rather than minting a comparison of its own.
-            "comparison": base_trim_meta.get("trim_source"),
-            "groups_total": len(banked_group_ids),
-            "groups_measured": len(banked_group_ids),
-            "measured_group_ids": list(banked_group_ids),
-            # Empty because the record banks an ALREADY-APPLIED level match:
-            # the per-crossover evidence behind it lives with the profile that
-            # was applied, which ``base_trim.trim_source`` names.
-            "deltas": [],
-            "incomparable_groups": [],
-            "trims": dict(base_trims),
-        }
+    # A valid banked trim does NOT return here: whether it wins depends on the
+    # guided walk below — captures newer than the record supersede it (S20).
 
     active_comparison_set = measurements.get("active_comparison_set")
     latest = measurements.get("latest_by_target")
@@ -626,6 +608,10 @@ def _measured_level_trims(
     per_group_delta_chains: list[list[tuple[str, str, float]]] = []
     deltas: list[dict[str, Any]] = []
     incomparable_groups: list[dict[str, Any]] = []
+    # Newest ``created_at`` across the records the ACCEPTED chains consumed.
+    # ISO-8601 UTC strings compare lexicographically; an undated record
+    # contributes "" and so can never claim to be newer than the banked trim.
+    newest_capture_at = ""
     for group_id, group_records in sorted(by_group.items()):
         if not any(
             isinstance(record.get("acoustic"), Mapping)
@@ -702,6 +688,10 @@ def _measured_level_trims(
             continue
         per_group_delta_chains.append(adjacent_deltas)
         deltas.extend(group_deltas)
+        for record in group_records.values():
+            newest_capture_at = max(
+                newest_capture_at, str(record.get("created_at") or "")
+            )
 
     meta: dict[str, Any] = {
         "source": "guided_captures",
@@ -723,14 +713,65 @@ def _measured_level_trims(
         ),
         "incomparable_groups": incomparable_groups,
     }
-    if not per_group_delta_chains:
-        return {}, meta
+    trims: dict[str, float] = {}
+    if per_group_delta_chains:
+        try:
+            trims = attenuation_from_group_deltas(
+                roles, per_group_delta_chains, minimum_db=MAX_ATTENUATION_DB
+            )
+        except LevelTrimError:
+            trims = {}
 
-    try:
-        trims = attenuation_from_group_deltas(
-            roles, per_group_delta_chains, minimum_db=MAX_ATTENUATION_DB
+    if base_trims:
+        banked_measured_at = str(base_trim_meta.get("measured_at") or "")
+        if not trims or newest_capture_at <= banked_measured_at:
+            # The banked record names the speaker groups it levelled, and the
+            # ledger reports them under the SAME keys the guided path uses:
+            # readiness (``crossover_contract.automatic_candidate_readiness``)
+            # and the setup status both gate on those, so a measured speaker
+            # reporting zero measured groups would read as un-measured.
+            banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
+            return base_trims, {
+                "source": "banked_base_trim",
+                "base_trim": base_trim_meta,
+                # The record's own trim source, not a second word for it: the
+                # apply that banked it stamped WHICH evidence levelled the
+                # graph, and this ledger repeats that rather than minting a
+                # comparison of its own.
+                "comparison": base_trim_meta.get("trim_source"),
+                "groups_total": len(banked_group_ids),
+                "groups_measured": len(banked_group_ids),
+                "measured_group_ids": list(banked_group_ids),
+                # Empty because the record banks an ALREADY-APPLIED level
+                # match: the per-crossover evidence behind it lives with the
+                # profile that was applied, which ``base_trim.trim_source``
+                # names.
+                "deltas": [],
+                "incomparable_groups": [],
+                "trims": dict(base_trims),
+            }
+        # Ruling S20: the captures behind this guided answer postdate the
+        # banked record, so the newest measurement wins. Disclosed with both
+        # evidence identities, so the receipt trail shows the handoff.
+        log_event(
+            logger,
+            "dsp.baseline_base_trim_superseded",
+            superseded_measured_at=banked_measured_at,
+            superseded_trim_source=str(base_trim_meta.get("trim_source") or ""),
+            declaration=str(
+                base_trim_meta.get("declaration_fingerprint") or ""
+            )[:12],
+            newest_capture_at=newest_capture_at,
+            comparison=str(meta["comparison"]),
+            comparison_set_id=str(meta["active_comparison_set_id"] or ""),
         )
-    except LevelTrimError:
+        meta["base_trim"] = {
+            **base_trim_meta,
+            "status": BASE_TRIM_STATUS_SUPERSEDED,
+            "superseded_by_capture_at": newest_capture_at,
+        }
+
+    if not trims:
         return {}, meta
     meta["trims"] = dict(trims)
     return trims, meta

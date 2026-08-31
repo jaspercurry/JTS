@@ -616,7 +616,7 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
     """This box's own per-driver level offsets, from its banked evidence.
 
     Asked of :func:`~jasper.active_speaker.baseline_profile.measured_level_trims`
-    — the one owner of *banked base trim before guided captures* — so the graph
+    — the one owner of which evidence source wins — so the graph
     a measurement plays through is levelled by the same evidence the speaker
     itself would be. Empty means the box has nothing to level by, and the caller
     refuses rather than measuring unmatched branches under a matched label.

@@ -19,7 +19,8 @@ Ownership, deliberately narrow:
   successfully applied profile is actually playing (and clears the record when
   the applied profile is not level-matched by measurement);
 * **one reader** — ``baseline_profile._measured_level_trims``, which prefers a
-  banked base trim over the guided-capture derivation and falls back to it;
+  banked base trim over the guided-capture derivation — unless the captures
+  are newer than the record (ruling S20) — and falls back to it;
 * **absent is normal.** A speaker that has never applied a measured level match
   behaves exactly as it did before this module existed — the guided captures,
   then the datasheet estimate.
@@ -69,6 +70,13 @@ STATUS_APPLIED = "applied"
 STATUS_DECLARATION_CHANGED = "declaration_changed"
 STATUS_ROLES_CHANGED = "roles_changed"
 STATUS_UNUSABLE = "unusable"
+#: Stamped by the resolver (``baseline_profile._measured_level_trims``), never
+#: by :func:`banked_base_trims` — this reader cannot see the guided captures.
+#: The record validated, but guided captures newer than its ``measured_at``
+#: answered instead (ruling S20: the newest measurement wins). Deliberately not
+#: in :data:`REFUSED_STATUSES`: a refusal demands a re-measure, and here the
+#: re-measure is what already happened.
+STATUS_SUPERSEDED = "superseded"
 
 #: The statuses that mean "a trim was banked and this speaker is NOT using it".
 #: ``absent`` is not one of them — a box that never measured is the ordinary
