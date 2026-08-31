@@ -54,6 +54,9 @@ from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
 
+from jasper.active_speaker.baseline_profile import (
+    DEFAULT_STATE_PATH as _APPLIED_PROFILE_DEFAULT_PATH,
+)
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -86,6 +89,9 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
     prescription_spool_path,
     stage_prescription,
     staged_prescription_pending,
+)
+from jasper.active_speaker.design_draft import (
+    DEFAULT_DESIGN_DRAFT_PATH as _DRIVERS_DEFAULT_PATH,
 )
 from jasper.identity import read_identity
 
@@ -1040,31 +1046,34 @@ _STATE_HELP_REQUIRED = (
 )
 
 
-#: What ``--drivers`` is. Optional for BOTH verbs, unlike ``--state``: a blend
-#: prescription never needs it, and a per-driver one is refused by name without
-#: it — which is the packet's own honesty rule applied to a second evidence
-#: source, not a reason to make every operator pass a path they do not use.
+#: What ``--drivers`` is, and where it points when not given. A blend
+#: prescription never needs it, and a per-driver one is refused by name
+#: without a readable file here — which is the packet's own honesty rule
+#: applied to a second evidence source. Defaulted to the on-speaker path
+#: (rather than left ``None``) so an operator running this CLI on the speaker
+#: itself does not have to name a file that is already sitting there; a
+#: laptop or a speaker that was never commissioned reads it as unavailable,
+#: same as before.
 _DRIVERS_HELP = (
     "the active-speaker design draft JSON, which carries the confirmed "
-    "driver-safety profile (default location on a speaker: "
-    "/var/lib/jasper/active_speaker_design_draft.json). Optional; without it "
-    "the packet cannot say where each driver's own band starts and ends, and "
-    "a per-driver prescription has no bound to be checked against"
+    f"driver-safety profile. Defaults to {_DRIVERS_DEFAULT_PATH}. Without a "
+    "readable file there, the packet cannot say where each driver's own band "
+    "starts and ends, and a per-driver prescription has no bound to be "
+    "checked against"
 )
 
 
-#: What ``--applied-profile`` is. Optional on the same terms as ``--drivers``,
-#: and NOT interchangeable with ``--state``: the flow state's
-#: ``pre_apply_profile`` is the Undo stash, which is one apply behind the graph
-#: whenever a round has applied and arbitrarily behind it whenever a graph was
-#: applied through a door that never touches v2 state.
+#: What ``--applied-profile`` is, defaulted on the same terms as ``--drivers``.
+#: NOT interchangeable with ``--state``: the flow state's ``pre_apply_profile``
+#: is the Undo stash, which is one apply behind the graph whenever a round has
+#: applied and arbitrarily behind it whenever a graph was applied through a
+#: door that never touches v2 state.
 _APPLIED_PROFILE_HELP = (
     "the applied baseline profile JSON — this speaker's record of what it is "
-    "PLAYING (default location on a speaker: "
-    "/var/lib/jasper/active_speaker_baseline_profile.json). Optional; without "
-    "it the packet cannot name the correction the graph already carries, so a "
-    "per-driver prescription's displacement is reported unknown rather than "
-    "guessed"
+    f"PLAYING. Defaults to {_APPLIED_PROFILE_DEFAULT_PATH}. Without a "
+    "readable file there, the packet cannot name the correction the graph "
+    "already carries, so a per-driver prescription's displacement is "
+    "reported unknown rather than guessed"
 )
 
 
@@ -1082,9 +1091,16 @@ def _add_evidence_args(
     # two speaker-level questions are asked, and the command owns a sentence
     # that says WHY the flag matters here. The check lives in `_cmd_stage`.
     parser.add_argument("--state", default=None, help=state_help)
-    parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
+    # TRUE argparse defaults: `--help` has always printed these on-Pi paths as
+    # though they were defaults; omitting the flag now actually reads them,
+    # rather than silently carrying no per-driver evidence.
     parser.add_argument(
-        "--applied-profile", default=None, help=_APPLIED_PROFILE_HELP
+        "--drivers", default=str(_DRIVERS_DEFAULT_PATH), help=_DRIVERS_HELP
+    )
+    parser.add_argument(
+        "--applied-profile",
+        default=str(_APPLIED_PROFILE_DEFAULT_PATH),
+        help=_APPLIED_PROFILE_HELP,
     )
 
 
