@@ -162,23 +162,10 @@ class _Volume:
 @dataclass
 class _Records:
     banked: list[Mapping[str, Any]] = field(default_factory=list)
-    persisted: list[Mapping[str, Any]] = field(default_factory=list)
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         self.banked.append(record)
         return f"rec-{len(self.banked)}"
-
-    async def read(self, record_id: str) -> Mapping[str, Any] | None:
-        index = int(record_id.removeprefix("rec-")) - 1
-        return self.banked[index] if 0 <= index < len(self.banked) else None
-
-    async def persist(self, state: Mapping[str, Any]) -> str:
-        self.persisted.append(state)
-        return f"state-{len(self.persisted)}"
-
-    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
-        index = int(state_id.removeprefix("state-")) - 1
-        return self.persisted[index] if 0 <= index < len(self.persisted) else None
 
 
 @dataclass
@@ -1151,7 +1138,7 @@ async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
 
     assert parts["play"].calls != []
     assert len(outcome.record_ids) == 1
-    banked = await records.read(outcome.record_ids[0])
+    banked = records.banked[0]
     assert banked["position_axis"] == POSITION_AXIS_VERTICAL
     assert banked["vertical_deg"] == 22
     assert banked["position_deg"] is None
@@ -1181,22 +1168,6 @@ async def test_the_outcome_carries_the_spec_it_answers():
 
     assert isinstance(outcome, MeasureOutcome)
     assert outcome.spec is spec
-
-
-async def test_a_banked_record_can_be_read_back_by_its_id():
-    """The read door is what makes an offline reader possible (ruling S3)."""
-    session, parts = _session()
-
-    async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, positions=(22,),
-        ))
-
-    record = await parts["records"].read(outcome.record_ids[0])
-
-    assert record is not None
-    assert record["position_deg"] == 22
-    assert await parts["records"].read("rec-99") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1469,22 +1440,6 @@ async def test_a_banked_level_matched_record_says_what_levelled_it():
     assert plain["kind"] == matched["kind"], "same kind, different level match"
 
 
-async def test_a_level_matched_record_reads_back_like_any_other_take():
-    session, parts = _session(level_match_trims_db={DRIVER_ROLE_TWEETER: -9.5})
-
-    async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, level_matched=True,
-        ))
-
-    read = await parts["records"].read(outcome.record_ids[0])
-
-    assert read is not None
-    assert read["level_matched"] is True
-    assert read["level_match_trims_db"] == {DRIVER_ROLE_TWEETER: -9.5}
-    assert read["take_id"] and read["kind"] == MEASURE_KIND_BASELINE
-
-
 async def test_a_stage_with_no_measurement_graph_refuses_the_level_match():
     """``NoRoutedPhasesGraph`` measures through the APPLIED graph and has no
     per-driver branch to trim. Dropping the request silently would bank an
@@ -1518,25 +1473,6 @@ async def test_a_banked_inverted_record_says_which_branch_was_flipped():
     )
     assert normal["graph_fingerprint"] != flipped["graph_fingerprint"]
     assert normal["kind"] == flipped["kind"], "same kind, different polarity"
-
-
-async def test_an_inverted_record_reads_back_like_any_other_take():
-    """R-1's offline half is owed, not blocked: the bank is readable today."""
-    session, parts = _session()
-
-    async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_TWEETER,
-        ))
-
-    read = await parts["records"].read(outcome.record_ids[0])
-
-    assert read is not None
-    assert read["polarity"] == POLARITY_INVERTED
-    assert read["inverted_role"] == DRIVER_ROLE_TWEETER
-    assert read["take_id"] and read["kind"] == MEASURE_KIND_BASELINE
 
 
 async def test_a_stage_with_no_measurement_graph_refuses_the_flip():

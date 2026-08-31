@@ -49,7 +49,7 @@ substitute rather than a partial one:
 |---|---|---|---|
 | `graph` | `SessionGraph` | `install` · `patch` · `restore` | the measurement graph for the whole session |
 | `volume` | `VolumeClaim` | `acquire` · `prove` · `release` | this session's one hold on the fader |
-| `records` | `RecordStore` | `bank` · `read` · `persist` · `read_state` | banked evidence, and the session's own durable state (wave 3's `persist_conductor_state`) — not the phase snapshot/hydrate pair |
+| `records` | `RecordStore` | `bank` | banked evidence. Write-only since ADR-0198: reading a bank back is the doors-and-banks tools', over the bundle's files |
 | `play` | `PlaybackTransaction` | `run` | ready → admit → lock → play → restore, for ONE stimulus |
 | `recommend` | `Recommender` | — (a callable) | the prescription side |
 

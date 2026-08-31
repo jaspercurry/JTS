@@ -13,11 +13,9 @@ owns **both directions**: :func:`build_conductor_state` assembles the document,
 and the ``*_from_state`` readers take it apart again.
 
 **Both directions, deliberately.** ``docs/REFACTOR-TUNING-2026-08.md`` §1 makes
-``analyze`` an offline verb — a banked session must be re-readable by an
-analysis that did not exist when it was captured — and
-:class:`~.session_seams.RecordStore` pairs ``persist`` with ``read_state`` for
-exactly that reason. A writer whose readers lived somewhere else would make one
-document have two owners, which is how the keys drift.
+analysis offline — a banked session must be re-readable by an analysis that did
+not exist when it was captured. A writer whose readers lived somewhere else
+would make one document have two owners, which is how the keys drift.
 
 **What is NOT here: the file.** The host owns where the state lives, when it is
 written and how durably —

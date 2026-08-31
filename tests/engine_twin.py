@@ -196,22 +196,9 @@ def _mint(
     return f"{prefix}-{len(into)}"
 
 
-def _find(
-    prefix: str, among: list[Mapping[str, Any]], wanted: str,
-) -> Mapping[str, Any] | None:
-    """The item :func:`_mint` gave ``wanted`` to, or ``None``."""
-    for index, item in enumerate(among, start=1):
-        if wanted == f"{prefix}-{index}":
-            return item
-    return None
-
-
 @dataclass
 class FakeRecords:
-    """The record slot: an in-memory bank that reads back.
-
-    :meth:`read` and :meth:`read_state` are what make a bank re-readable
-    offline (ruling S3), so the twin implements both rather than stubbing them.
+    """The record slot: an in-memory bank a test can read straight off.
 
     :meth:`bank` takes ONE record of any kind, not one capture record (the
     2026-08-26 FOLD ruling): the five ``V2FlowSeams`` publishers land through
@@ -219,25 +206,19 @@ class FakeRecords:
     round receipt are all banked records here. The twin keeps them in one list
     because ids are opaque and nothing reads them by kind — the real store's
     kind table is what decides where each one lands.
+
+    :attr:`banked` IS the read-back door. The seam is write-only since
+    ADR-0198, so a test states its "after" over the list rather than through a
+    reader the engine does not have.
     """
 
     banked: list[Mapping[str, Any]] = field(default_factory=list)
-    persisted: list[Mapping[str, Any]] = field(default_factory=list)
     bank_raises: bool = False
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         if self.bank_raises:
             raise SeamFailure("twin record bank failed")
         return _mint("rec", self.banked, record)
-
-    async def read(self, record_id: str) -> Mapping[str, Any] | None:
-        return _find("rec", self.banked, record_id)
-
-    async def persist(self, state: Mapping[str, Any]) -> str:
-        return _mint("state", self.persisted, state)
-
-    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
-        return _find("state", self.persisted, state_id)
 
     def by_position(self, position_deg: int | None) -> list[Mapping[str, Any]]:
         """Every banked record taken at one pose, in bank order."""
