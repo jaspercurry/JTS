@@ -1076,7 +1076,7 @@ def check_grouping_airplay_latency() -> CheckResult:
     budget_desc = (
         f"budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs "
         f"need ~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms}) + "
-        f"shairport backend buffer {SHAIRPORT_BACKEND_BUFFER_SEC:.1f}s"
+        f"shairport backend buffer {SHAIRPORT_BACKEND_BUFFER_SEC:.3f}s"
     )
     if fit.tight:
         # No local control grows the budget (AP2 latency is sender-authored)

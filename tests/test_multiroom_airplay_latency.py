@@ -17,6 +17,7 @@ import pytest
 
 from jasper.multiroom import airplay_latency as al
 from jasper.multiroom.config import GroupingConfig
+from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
 
 def _cfg(**over) -> GroupingConfig:
@@ -48,8 +49,8 @@ def _reset_frames_cache():
 
 def test_default_budget_is_the_free_regime():
     """Absence of a Notified-latency line => default 77175 frames => ~2.0 s
-    budget, which clears the 0.55 s need + 0.5 s shairport backend buffer
-    (~1.05 s threshold) with ~0.95 s to spare."""
+    budget, which clears the 0.55 s need + 0.045 s shairport backend buffer
+    (~0.595 s threshold) with ~1.41 s to spare."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=None)
     assert fit.budget_source == "default"
     assert fit.negotiated_frames == al.AP2_DEFAULT_NOTIFIED_FRAMES
@@ -60,17 +61,17 @@ def test_default_budget_is_the_free_regime():
 
 
 def test_high_buffer_is_tight_even_at_the_default_budget():
-    """Corrected math: shairport's tight condition is budget < need + 0.5 s
-    backend buffer. So a buffer_ms near its max is tight EVEN at the default
-    ~2.0 s budget (need 1.65 + 0.5 = 2.15 > 2.0002), and shairport drops the
-    whole offset => residual lag is the FULL need, not a shortfall. A mid-high
-    buffer_ms (1300) still fits, pinning the ~1350 ms boundary."""
-    tight = al.assess_fit(buffer_ms=1500, notified_frames=None)
-    assert tight.need_sec == pytest.approx(1.65, abs=1e-9)
+    """shairport's tight condition is budget < need + the backend buffer, so
+    a large enough buffer_ms is tight EVEN at the default ~2.0002 s budget,
+    and shairport drops the whole offset => residual lag is the FULL need,
+    not a shortfall. Pins the adjacent pair straddling the boundary:
+    need + buffer crosses 2.0002 between buffer_ms 1805 and 1806."""
+    tight = al.assess_fit(buffer_ms=1806, notified_frames=None)
+    assert tight.need_sec == pytest.approx(1.956, abs=1e-9)
     assert tight.tight is True
-    assert tight.residual_lag_sec == pytest.approx(1.65, abs=1e-9)
+    assert tight.residual_lag_sec == pytest.approx(1.956, abs=1e-9)
 
-    fits = al.assess_fit(buffer_ms=1300, notified_frames=None)
+    fits = al.assess_fit(buffer_ms=1805, notified_frames=None)
     assert fits.tight is False
 
 
@@ -85,23 +86,33 @@ def test_small_negotiated_budget_is_tight_residual_is_full_need():
     assert fit.residual_lag_sec == pytest.approx(0.55, abs=1e-9)
 
 
-def test_backend_buffer_band_is_tight_against_production_05s_buffer():
+def test_backend_buffer_band_is_tight_against_the_production_backend_buffer():
     """The band the old (buffer-omitting) math wrongly called 'fits': a budget
-    between need (0.55 s) and need + 0.5 s (1.05 s). shairport DOES warn and
-    drop the offset there. Pins the fix against the production 0.5 s backend
-    buffer, not just the synthetic 0.1 s classifier string."""
-    # frames=24245 -> budget = (24245+11035)/44100 = 0.8 s, inside (0.55, 1.05).
-    fit = al.assess_fit(buffer_ms=400, notified_frames=24245)
-    assert fit.budget_sec == pytest.approx(0.8, abs=1e-4)
-    assert fit.tight is True  # old math: 0.55 > 0.8 -> False (the bug)
+    between need (0.55 s) and need + the backend buffer (0.595 s). shairport
+    DOES warn and drop the offset there. Pins the fix against the production
+    backend buffer, not just the synthetic 0.1 s classifier string."""
+    # frames=14102 -> budget = 25137/44100 = 0.57 s, inside (0.55, 0.595).
+    fit = al.assess_fit(buffer_ms=400, notified_frames=14102)
+    assert fit.budget_sec == pytest.approx(0.57, abs=1e-4)
+    assert fit.tight is True  # old math: 0.55 > 0.57 -> False (the bug)
     assert fit.residual_lag_sec == pytest.approx(0.55, abs=1e-9)
 
 
 def test_budget_just_above_need_plus_backend_buffer_is_not_tight():
-    # frames=40000 -> budget = 51035/44100 ≈ 1.157 s > 1.05 s threshold.
-    assert al.assess_fit(buffer_ms=400, notified_frames=40000).tight is False
-    # frames=30000 -> budget = 41035/44100 ≈ 0.930 s < 1.05 s threshold.
-    assert al.assess_fit(buffer_ms=400, notified_frames=30000).tight is True
+    # frames=15425 -> budget = 26460/44100 = 0.600 s > 0.595 s threshold.
+    assert al.assess_fit(buffer_ms=400, notified_frames=15425).tight is False
+    # frames=14984 -> budget = 26019/44100 = 0.590 s < 0.595 s threshold.
+    assert al.assess_fit(buffer_ms=400, notified_frames=14984).tight is True
+
+
+def test_backend_buffer_constant_tracks_the_shipped_template():
+    """SHAIRPORT_BACKEND_BUFFER_SEC restates the template's desired-length
+    key (see the constant's own comment), so a retune there must move it."""
+    text = SHAIRPORT_TEMPLATE.read_text(encoding="utf-8")
+    shipped = float(
+        template_value(text, "audio_backend_buffer_desired_length_in_seconds")
+    )
+    assert al.SHAIRPORT_BACKEND_BUFFER_SEC == pytest.approx(shipped, abs=1e-12)
 
 
 @pytest.mark.parametrize("bad", [0, -1, -77175])

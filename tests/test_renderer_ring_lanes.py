@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from jasper import renderer_lanes as rl
+from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
 REPO = Path(__file__).resolve().parent.parent
 FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
@@ -2227,14 +2228,10 @@ def test_arming_airplay_prints_the_transport_advisory(
     monkeypatch, tmp_path, capsys
 ):
     """A NEWLY armed lane with an `arm_advisory` prints it — the operator
-    carries AirPlay's ring validation boundary to the box's source pass from
-    this terminal, not from remembering to open a doc."""
+    carries AirPlay's sync boundary to the box's source pass from this
+    terminal, not from remembering to open a doc."""
     out = _arm_via_cli(monkeypatch, tmp_path, capsys, ["airplay"])
     assert "advisory airplay: " in out
-    assert "drift_tolerance" in out
-    assert "SHM-ring validation" in out
-    assert "those settings and the latency offset were held unchanged" in out
-    assert "ring reliability and A/V validation" in out
     lane = rl.lane_by_label("airplay")
     assert lane is not None and lane.arm_advisory
     assert lane.arm_advisory in out, (
@@ -2260,24 +2257,16 @@ def test_the_advisorys_sync_numbers_match_the_templates_live_values():
     The advisory is operator-facing but the template owns the values. Pin all
     three restated numbers so retuning any one cannot leave stale arm guidance.
     """
-    template = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
-
-    def live_value(setting: str) -> str:
-        matches = re.findall(
-            rf"^\s*{re.escape(setting)}\s*=\s*([0-9.]+);\s*$",
-            template,
-            re.MULTILINE,
-        )
-        assert len(matches) == 1, f"expected one live {setting} assignment"
-        return matches[0]
+    template = SHAIRPORT_TEMPLATE.read_text(encoding="utf-8")
 
     lane = rl.lane_by_label("airplay")
     assert lane is not None and lane.arm_advisory
     expected = (
-        f"drift_tolerance={live_value('drift_tolerance_in_seconds')}",
-        f"resync_threshold at {live_value('resync_threshold_in_seconds')}",
+        f"drift_tolerance={template_value(template, 'drift_tolerance_in_seconds')}",
+        "resync_threshold at "
+        f"{template_value(template, 'resync_threshold_in_seconds')}",
         "audio_backend_buffer_desired_length at "
-        f"{live_value('audio_backend_buffer_desired_length_in_seconds')}",
+        f"{template_value(template, 'audio_backend_buffer_desired_length_in_seconds')}",
     )
     for claim in expected:
         assert claim in lane.arm_advisory, (

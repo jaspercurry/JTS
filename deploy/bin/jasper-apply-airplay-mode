@@ -10,12 +10,14 @@
 #   - AirPlay device name based on JASPER_SPEAKER_NAME (in
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
-#     CamillaDSP config's samplerate/chunksize/target_level, the
-#     fan-in output buffer, jasper-outputd's optional content bridge,
-#     plus jasper-outputd's DAC buffer; AND, only while this speaker is
-#     an active bonded leader, the Snapcast round-trip playout buffer
-#     (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC, written by
-#     jasper-grouping-reconcile). Absent on solo/follower => unchanged.
+#     CamillaDSP config's samplerate/chunksize/target_level, jasper-fanin's
+#     live output delay (else the ring-queue stand-in), and jasper-outputd's
+#     live DAC delay (else JASPER_OUTPUTD_DAC_BUFFER_FRAMES); AND, only
+#     while this speaker is an active bonded leader, the Snapcast
+#     round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
+#     written by jasper-grouping-reconcile). Absent on solo/follower
+#     => unchanged. The formula is restated once, beside the placeholder
+#     in deploy/shairport-sync.conf.template.
 #   - output_device from the renderer-lane map (U3/P6d):
 #     /var/lib/jasper/renderer_lanes.env's JASPER_SHAIRPORT_DEVICE line,
 #     written by `jasper-audio-config renderer-lanes` — shairport_ring_lane
@@ -44,8 +46,9 @@
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
 #                                   Default: /etc/camilladsp/outputd-cutover.yml.
 #   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
-#                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES
-#                                 and content-bridge latency knobs. The
+#                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES,
+#                                 the fallback when outputd STATUS offers
+#                                 no live DAC delay. The
 #                                 renderer intentionally ignores
 #                                 outputd knobs from /etc/jasper/jasper.env
 #                                 and the process environment because the
@@ -361,24 +364,14 @@ derive_audio_backend_latency_offset() {
                 printf "0.000000"
                 exit
             }
-            # Total invisible-to-shairport delay budget in frames:
-            #   (target_level - chunksize)   ← CamillaDSP playback buffer
-            #                                   above its implicit one-chunk
-            #                                   baseline.
-            #   + fanin_output_latency       ← jasper-fanin output queue
-            #                                   between the private AirPlay
-            #                                   lane and CamillaDSP/AEC.
-            #   + outputd_dac_latency        ← jasper-outputd direct-DAC
-            #                                   playback queue.
+            # Term by term: see the derivation beside
+            # audio_backend_latency_offset_in_seconds in
+            # deploy/shairport-sync.conf.template.
             #
             # NB: any single-quote (apostrophe) in this comment block would
             # close the surrounding awk single-quoted string and break
-            # the script — bash 2026-05-25 lesson, do not paraphrase.
-            # shairport feeds this many frames early so audio still emerges
-            # from the speaker at the AirPlay-scheduled time.
+            # the script — do not paraphrase.
             invisible_frames = (target_level - chunksize) + fanin_output_latency + outputd_dac_latency
-            # bonded_extra_sec is a wall-clock buffer (the Snapcast round-
-            # trip on a bonded leader), added in seconds; 0 on solo.
             offset = -((invisible_frames / sample_rate) + bonded_extra_sec)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0
