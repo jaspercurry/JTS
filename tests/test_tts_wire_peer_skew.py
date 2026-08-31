@@ -2,53 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What protects the wide assistant wire from a stale peer (U2 PR-3, #2223).
+"""Pin the wide assistant wire's stale-peer failure and safe orderings.
 
-PR-2 gave the assistant IPC a second payload verb, ``AUDIO32``, spoken only by
-a box whose declaration is wide on both halves. Its review banked one exposure
-for this PR, and it is the worst failure class this repo has: **a fan-in binary
-that predates ``AUDIO32`` does not mis-read it — it rejects it and hangs up.**
-``read_command`` returns ``Err("unknown TTS command: AUDIO32 …")``, the
-connection task logs ``event=fanin.tts_socket.protocol_error`` and returns,
-dropping the stream.
+A fan-in binary that predates ``AUDIO32`` rejects the command and closes the
+socket, so that connection loses the reply and its failure cue. Boot and a
+successful deploy order ``jasper-fanin`` before ``jasper-voice``. An aborted
+fan-in build can still leave new Python beside the old binary before either
+ordering runs; a later voice-only restart can reach the stale peer.
 
-The consequence is not a degraded reply, it is **silence including the failure
-cue**, because cues travel the same socket. Nothing announces it. So the
-question this file answers is not "does the width convert correctly" (PR-2 owns
-that) but "can a box ever reach the state where a new ``jasper-voice`` speaks
-to an old ``jasper-fanin``".
-
-**It can — on one path, and this file does NOT close it.** Say that plainly,
-because an earlier revision of this docstring claimed the guarantee was
-structural and it is not. What the two orderings below actually cover is the
-SUCCESSFUL deploy and the boot transaction; both were INHERITED from code
-written for other reasons, and a future edit could drop either without any
-current test noticing, which is what they are asserted for here:
-
-1. **Boot** — ``jasper-voice.service`` declares ``After=jasper-fanin.service``.
-2. **Deploy (success)** — the installer STOPS ``jasper-voice`` (first entry of
-   the canonical park set) before it restarts ``jasper-fanin``, so the voice
-   daemon that comes back is always newer than the fan-in it talks to.
-
-**The residual, stated rather than waived.** An **aborted** deploy — a fan-in
-build failure on a Pi 5-class box, which never reaches the park step — can
-leave the new Python installed beside a still-running old fan-in binary. Any
-lone ``jasper-voice`` restart after that (a routine event: the AEC reconciler,
-a wizard save, a watchdog) then puts a new voice against an old peer. Nothing
-holds it closed: fan-in is not in the park set, ``jasper-voice.service``
-declares ``Wants=`` and not ``Requires=``, and — the part that makes it
-genuinely invisible — the ``Err`` arm that logs
-``event=fanin.tts_socket.protocol_error`` bumps **no metric**, so the skew does
-not reach ``/state`` or the doctor either. On a wide-declared box that is a
-silent assistant, cue included.
-
-Detecting it is [#2378](https://github.com/jaspercurry/JTS/issues/2378) and is
-deliberately NOT solved here. A capability handshake was the obvious reach and
-was declined for this PR: R-WIDTH forbids cross-daemon format negotiation, and
-a fan-in STATUS read at voice startup would add a runtime dependency whose own
-failure mode — STATUS unreadable while fan-in restarts — silently narrows the
-fleet's one wide box. That is a design decision #2378 owns, not a line this
-file can add.
+The skew is observable. The current doctor warns when an active fan-in STATUS
+lacks ``tts.protocol_errors``, which identifies a pre-counter peer. After the
+new binary is installed, each rejected wire command increments that counter;
+fan-in publishes it in STATUS and the doctor warns while it is nonzero.
 """
 
 from __future__ import annotations
