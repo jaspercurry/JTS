@@ -301,8 +301,8 @@ def predicted_minus_measured_db(
 
     ``band_hz`` defaults to the prediction's own :attr:`PredictedSum.sum_band_hz`
     intersected with the measured curve's extent, and is reported as
-    ``compared_band_hz``. Fields, not a grade: the caller decides what a
-    3 dB ``max_abs_db`` means, and this returns no verdict, tolerance or score.
+    ``compared_band_hz``. Fields, not a grade: what any of these numbers MEANS
+    is the reader's judgement, and this returns no verdict, tolerance or score.
     """
     measured_grid = np.asarray(measured_freqs_hz, dtype=float)
     measured_curve = np.asarray(measured_db, dtype=float)
