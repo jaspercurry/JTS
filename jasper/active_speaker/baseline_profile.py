@@ -240,15 +240,28 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
 
     source = candidate.get("source")
     snapshot = candidate.get("recomposition_snapshot")
+    hashed_snapshot = dict(snapshot) if isinstance(snapshot, Mapping) else None
+    if hashed_snapshot is not None and isinstance(
+        hashed_snapshot.get("level_match"), Mapping
+    ):
+        # ``newest_capture_at`` is evidence-recency metadata for the banked
+        # trim's clock, not graph identity: the measured-candidate arm mints it
+        # from the compose instant, and the seams that compare this fingerprint
+        # across two composes of the same inputs (review -> apply, the
+        # idempotent re-apply) must hash equal across a second boundary.
+        # Absent-key candidates (pre-field artifacts) hash unchanged.
+        hashed_snapshot["level_match"] = {
+            key: value
+            for key, value in hashed_snapshot["level_match"].items()
+            if key != "newest_capture_at"
+        }
     return _fingerprint({
         "artifact_schema_version": candidate.get("artifact_schema_version"),
         "kind": candidate.get("kind"),
         "source_fingerprint": (
             source.get("fingerprint") if isinstance(source, Mapping) else None
         ),
-        "recomposition_snapshot": (
-            dict(snapshot) if isinstance(snapshot, Mapping) else None
-        ),
+        "recomposition_snapshot": hashed_snapshot,
     })
 
 
@@ -2567,9 +2580,12 @@ def build_baseline_profile_candidate(
                 "incomparable_groups": [],
                 "applied": True,
                 # Evidence recency for the bank's ``measured_at``: the v2
-                # session carries no capture clock at this seam, so the build
-                # instant is the upper bound — stamped ONCE here and frozen
-                # into the candidate, so a re-persist cannot re-date the bank.
+                # session carries no capture clock at this seam, so the compose
+                # instant is the upper bound. Minted per compose — excluded
+                # from ``baseline_candidate_fingerprint`` for exactly that
+                # reason — and frozen only once the applied profile persists,
+                # which is what a frozen re-persist re-reads instead of
+                # re-dating the bank.
                 "newest_capture_at": now,
                 "sitting_differences": list(sitting_notes),
                 "sitting_frame": sitting_frame,

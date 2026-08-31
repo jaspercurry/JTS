@@ -7038,6 +7038,56 @@ def test_a_frozen_re_persist_re_banks_the_evidence_time_not_the_persist_time(
     assert relevelled["level_match"]["base_trim"]["status"] == dbt.STATUS_SUPERSEDED
 
 
+def test_the_compose_clock_never_enters_the_candidate_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """Two composes of the same inputs are one candidate, whatever the clock
+    did between them. The apply seams compare ``baseline_candidate_fingerprint``
+    across two composes (``handle_v2_apply``'s review compose against
+    ``apply_baseline_profile``'s recompose, and the idempotent re-apply against
+    the persisted profile), while the measured-candidate arm stamps its compose
+    instant into ``level_match.newest_capture_at`` for the bank's evidence
+    clock — a second boundary between composes must not turn that stamp into
+    ``baseline_candidate_fingerprint_mismatch``."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    def compose(created_at: str) -> dict:
+        return build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=False,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+            created_at=created_at,
+        )
+
+    reviewed = compose("2026-07-18T12:20:00Z")
+    recomposed = compose("2026-07-18T12:20:01Z")
+
+    # The recency stamp itself still tracks each compose's clock (the bank
+    # seam reads it off whichever compose gets persisted)…
+    assert (
+        reviewed["recomposition_snapshot"]["level_match"]["newest_capture_at"]
+        == "2026-07-18T12:20:00Z"
+    )
+    assert (
+        recomposed["recomposition_snapshot"]["level_match"]["newest_capture_at"]
+        == "2026-07-18T12:20:01Z"
+    )
+    # …and candidate identity does not move with it.
+    assert reviewed["candidate_fingerprint"] == recomposed["candidate_fingerprint"]
+
+
 def test_the_banked_trim_carries_its_own_source_into_the_level_match_ledger(
     tmp_path: Path, monkeypatch
 ) -> None:
