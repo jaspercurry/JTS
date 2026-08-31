@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import time
 from copy import deepcopy
 from dataclasses import replace
@@ -1625,10 +1626,13 @@ async def test_apply_baseline_profile_persists_applied_state_durably(
     )
 
     assert payload["status"] == "applied"
-    # Exactly one durable write (file fsync + parent-dir fsync) across the
+    # Exactly one durable WRITE (file fsync + parent-dir fsync) across the
     # whole apply -- persist_applied_baseline_profile's, not the earlier
-    # pre-apply candidate review write to the same path.
-    assert len(fsync_calls) == 2
+    # pre-apply candidate review write to the same path. The third fsync is
+    # the base-trim seam's: this profile is not level-matched by measurement,
+    # so the apply CLEARS the banked trim, and that unlink is made durable by
+    # its own parent-dir fsync (no file fsync -- there is no file to sync).
+    assert len(fsync_calls) == 3
 
 
 async def test_apply_baseline_profile_releases_the_staged_startup_hold(
@@ -6849,9 +6853,11 @@ def test_the_applied_level_match_is_the_evidence_a_level_matched_walk_reads(
     assert meta["measured_group_ids"] == applied["automatic_candidate"][
         "measured_group_ids"
     ]
+    # EXACT, not approximate. The banked record is the trim the graph is
+    # playing; a tolerance here would let the writer round the value it banks
+    # and still pass, which is the divergence this artifact exists to close.
     assert trims == {
-        role: pytest.approx(entry["gain_db"], abs=0.05)
-        for role, entry in applied["corrections"].items()
+        role: entry["gain_db"] for role, entry in applied["corrections"].items()
     }
 
 
@@ -6937,3 +6943,284 @@ def test_a_banked_trim_far_from_the_datasheet_still_meets_the_existing_frame_che
     assert payload["level_match"]["frame_tolerance_db"] == (
         MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
     )
+
+
+def _bank_events(caplog) -> list[dict[str, str]]:
+    """The base-trim seam's events as FIELDS, never as prose.
+
+    ``log_event`` renders logfmt, so one ``shlex.split`` recovers the
+    structured pairs a consumer actually reads — the result and reason codes —
+    without pinning the wording of any detail string.
+    """
+    out: list[dict[str, str]] = []
+    for message in _events(caplog, "dsp.baseline_base_trim_banked"):
+        fields: dict[str, str] = {}
+        for token in shlex.split(message):
+            key, _, value = token.partition("=")
+            fields[key] = value
+        out.append(fields)
+    return out
+
+
+def _applied_with_sources(
+    tmp_path: Path, sources: dict[str, str]
+) -> dict[str, object]:
+    """A really-applied measured candidate, re-sourced one role at a time.
+
+    Built by the real compiler and re-fingerprinted, so it still passes every
+    guard ``persist_applied_baseline_profile`` puts in front of the seam —
+    only the per-role evidence differs between arms.
+    """
+    _preset, _preview, candidate = _applied_measured_profile(tmp_path, measured=True)
+    candidate = deepcopy(candidate)
+    candidate["corrections_source"] = dict(sources)
+    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
+    return candidate
+
+
+@pytest.mark.parametrize(
+    "sources, banked, result, reason",
+    [
+        (
+            {"woofer": "measured", "tweeter": "measured"},
+            True,
+            "ok",
+            None,
+        ),
+        (
+            {"woofer": "measured", "tweeter": "operator_pinned"},
+            True,
+            "left_standing",
+            "partly_measured",
+        ),
+        (
+            {"woofer": "sensitivity", "tweeter": "sensitivity"},
+            False,
+            "cleared",
+            "unmeasured",
+        ),
+    ],
+    ids=["all-measured", "one-operator-pin", "none-measured"],
+)
+def test_a_partly_pinned_profile_neither_banks_nor_clears(
+    tmp_path: Path, caplog, sources, banked, result, reason
+) -> None:
+    """Three answers, not two.
+
+    ``_bank_applied_base_trim`` required EVERY role to be sourced ``measured``
+    while ``crossover_contract._snapshot_owner`` — the predicate the seam's own
+    docstring claims to mirror — needs only ANY. A candidate with one
+    operator-pinned driver therefore read as ``automatic`` to the contract and
+    as unmeasured to the bank, and the apply DESTROYED a good banked record on
+    the strength of a single pin. A pin does not un-measure a speaker: the
+    prior full measurement is still the best evidence anyone has, so the
+    middle arm leaves it alone and says so.
+
+    The third arm is unchanged and deliberately so: a role that fell back to
+    the DATASHEET is weaker evidence, not a pin, and still clears.
+    """
+    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
+    candidate = _applied_with_sources(tmp_path, sources)
+    # A record from an earlier, fully measured apply is standing before each
+    # arm runs -- the arms differ only in what they do to it.
+    baseline_profile_mod.persist_applied_baseline_profile(
+        _applied_with_sources(
+            tmp_path / "prior", {"woofer": "measured", "tweeter": "measured"}
+        ),
+        apply_state={"result": "success"},
+        state_path=tmp_path / "prior_applied.json",
+    )
+    assert dbt.load_base_trim() is not None
+    caplog.clear()
+
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+
+    assert (dbt.load_base_trim() is not None) is banked
+    events = _bank_events(caplog)
+    assert [event["result"] for event in events] == [result]
+    if reason is not None:
+        assert events[0]["reason"] == reason
+
+
+def test_undoing_to_a_measured_profile_re_banks_that_profile_s_trims(
+    tmp_path: Path,
+) -> None:
+    """The Undo leg of single ownership.
+
+    ``restore_applied_baseline_profile`` feeds the frozen
+    ``applied_recomposition_profile`` back through the apply seam, and
+    ``_frozen_applied_profile`` is an ALLOWLIST that never carried
+    ``automatic_candidate``. So every Undo of a measured profile reached the
+    seam unable to name its own measured groups, banked nothing, and left the
+    record describing the profile the Undo had just replaced -- the exact
+    divergence this artifact exists to close, reintroduced by the one path
+    that restores an OLD graph.
+    """
+    a = _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"})
+    b = deepcopy(a)
+    b["corrections"] = deepcopy(a["corrections"])
+    b["corrections"]["tweeter"]["gain_db"] = -7.25
+    b["candidate_fingerprint"] = baseline_candidate_fingerprint(b)
+    state_path = tmp_path / "applied_profile.json"
+
+    applied_a = baseline_profile_mod.persist_applied_baseline_profile(
+        a, apply_state={"result": "success"}, state_path=state_path
+    )
+    a_trims = dict(dbt.load_base_trim()["trims_db"])
+    baseline_profile_mod.persist_applied_baseline_profile(
+        b, apply_state={"result": "success"}, state_path=state_path
+    )
+    assert dbt.load_base_trim()["trims_db"] != a_trims
+
+    # The shape the restore leg actually hands back: the frozen view of the
+    # profile that was applied, not the original candidate.
+    frozen = baseline_profile_mod._frozen_applied_profile(applied_a)
+    baseline_profile_mod.persist_applied_baseline_profile(
+        frozen, apply_state={"result": "success"}, state_path=state_path
+    )
+
+    assert dbt.load_base_trim()["trims_db"] == a_trims
+
+
+def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
+    tmp_path: Path, caplog
+) -> None:
+    """Absent beats wrong.
+
+    A refused write left the PREVIOUS apply's record standing, so the box went
+    on levelling a ``--level-matched`` walk by numbers describing a graph it
+    had stopped playing. The resolver's fallback (guided captures, then the
+    datasheet) is conservative; a stale record is not.
+    """
+    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
+    baseline_profile_mod.persist_applied_baseline_profile(
+        _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+    assert dbt.load_base_trim() is not None
+    caplog.clear()
+
+    doomed = _applied_with_sources(
+        tmp_path / "next", {"woofer": "measured", "tweeter": "measured"}
+    )
+    # The declaration the record would be keyed by is unreadable, so the
+    # writer refuses -- the seam must not leave the prior record behind.
+    doomed["source"] = {**doomed["source"], "crossover_preview_fingerprint": ""}
+    doomed["candidate_fingerprint"] = baseline_candidate_fingerprint(doomed)
+    baseline_profile_mod.persist_applied_baseline_profile(
+        doomed,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "next_applied.json",
+    )
+
+    assert dbt.load_base_trim() is None
+    results = [event["result"] for event in _bank_events(caplog)]
+    assert results == ["failed", "cleared"]
+    assert _bank_events(caplog)[0]["reason"] == dbt.REFUSE_NO_DECLARATION
+    assert _bank_events(caplog)[1]["reason"] == dbt.BANK_WRITE_REFUSED
+
+
+def test_a_malformed_correction_entry_refuses_instead_of_escaping(
+    tmp_path: Path, caplog
+) -> None:
+    """The seam promises never to fail a successful apply, and broke it.
+
+    ``float((entry or {}).get("gain_db"))`` raises AttributeError on a
+    correction entry that is not a Mapping, and AttributeError was not in the
+    seam's except tuple -- so a malformed entry propagated out of
+    ``persist_applied_baseline_profile`` and turned an apply whose graph was
+    already live and read back into a failure.
+    """
+    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
+    candidate = _applied_with_sources(
+        tmp_path, {"woofer": "measured", "tweeter": "measured"}
+    )
+    candidate["corrections"] = {**candidate["corrections"], "tweeter": "-12.0"}
+    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
+
+    payload = baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+
+    assert payload["status"] == "applied"
+    events = _bank_events(caplog)
+    assert [event["result"] for event in events] == ["left_standing"]
+    assert events[0]["reason"] == dbt.BANK_CORRECTION_ENTRY_UNREADABLE
+
+
+def test_the_two_unreadable_guards_no_longer_share_one_slug(
+    tmp_path: Path, caplog
+) -> None:
+    """``profile_unreadable`` meant two unrelated things -- a profile naming no
+    corrections at all, and a measured profile whose readiness block was not
+    kept -- so an operator reading the reason could not tell which had
+    happened, and the two arms now behave differently besides."""
+    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
+    base = _applied_with_sources(
+        tmp_path, {"woofer": "measured", "tweeter": "measured"}
+    )
+
+    no_corrections = deepcopy(base)
+    no_corrections["corrections"] = "not-a-mapping"
+    no_corrections["candidate_fingerprint"] = baseline_candidate_fingerprint(
+        no_corrections
+    )
+    baseline_profile_mod.persist_applied_baseline_profile(
+        no_corrections,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "a.json",
+    )
+    no_readiness = deepcopy(base)
+    no_readiness.pop("automatic_candidate", None)
+    no_readiness["candidate_fingerprint"] = baseline_candidate_fingerprint(no_readiness)
+    baseline_profile_mod.persist_applied_baseline_profile(
+        no_readiness,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "b.json",
+    )
+
+    reasons = [event["reason"] for event in _bank_events(caplog)]
+    assert reasons == [
+        dbt.BANK_CORRECTIONS_UNREADABLE,
+        dbt.BANK_READINESS_UNREADABLE,
+    ]
+
+
+def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
+    tmp_path: Path,
+) -> None:
+    """A driver-domain candidate is a wireless follower's Layer-A-only graph.
+    It has no solo lineage, and ``build_baseline_profile_candidate`` already
+    excludes it from the solo artifacts for that reason. This artifact is one
+    of those, so a consolidation that ever routes such a graph through the
+    apply seam must not be able to clear a measurement it knows nothing about.
+    """
+    baseline_profile_mod.persist_applied_baseline_profile(
+        _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+    banked = deepcopy(dbt.load_base_trim())
+    assert banked is not None
+
+    follower = _applied_with_sources(
+        tmp_path / "follower", {"woofer": "sensitivity", "tweeter": "sensitivity"}
+    )
+    follower["recomposition_snapshot"] = {
+        **follower["recomposition_snapshot"], "domain": "driver",
+    }
+    follower["candidate_fingerprint"] = baseline_candidate_fingerprint(follower)
+    baseline_profile_mod.persist_applied_baseline_profile(
+        follower,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "follower_applied.json",
+    )
+
+    assert dbt.load_base_trim() == banked

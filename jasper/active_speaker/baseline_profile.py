@@ -59,9 +59,18 @@ from .crossover_contract import (
     automatic_candidate_readiness,
     crossover_snapshot_state,
     legacy_manual_preservation_state,
+    measured_level_match_applied,
 )
 from .crossover_preview import crossover_preview_fingerprint
 from .driver_base_trim import (
+    BANK_CLEAR_FAILED,
+    BANK_CORRECTION_ENTRY_UNREADABLE,
+    BANK_CORRECTIONS_UNREADABLE,
+    BANK_PARTLY_MEASURED,
+    BANK_READINESS_UNREADABLE,
+    BANK_UNMEASURED,
+    BANK_WRITE_FAILED,
+    BANK_WRITE_REFUSED,
     REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
     DriverBaseTrimError,
     banked_base_trims,
@@ -1272,6 +1281,15 @@ def _frozen_applied_profile(
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
+        # WHICH speaker groups the applied profile measured. An allowlist
+        # entry for the Gap 3c reason every neighbour here carries, and the
+        # restore leg is where its absence showed: `restore_applied_baseline_profile`
+        # feeds this frozen view straight back through
+        # `persist_applied_baseline_profile`, so without this key every Undo
+        # of a measured profile reached `_bank_applied_base_trim` unable to
+        # name its own measured groups — and silently banked nothing, leaving
+        # the bank describing the profile the Undo just replaced.
+        "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
         # Layer-1a driver linearization (#1668 PR-D). Mirrors "corrections"'s
         # own top-level convenience copy — the authoritative copy consumed by
         # recompose_applied_baseline_yaml lives inside recomposition_snapshot
@@ -3263,33 +3281,82 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     applied trim the very thing the resolver already looks for, so the walk
     door and the acoustic confirm unblock with no change of their own.
 
-    The measured predicate is ``crossover_contract._snapshot_owner``'s, spelled
-    the same way: ``level_match.applied`` AND every role's correction sourced
-    ``measured``. A profile applied on anything weaker — a datasheet seed, an
-    operator pin, a preserved manual crossover — CLEARS the record instead,
-    because a banked trim the box is not playing is the same lie pointing the
-    other way.
+    Three answers, not two, and the middle one is the whole point:
+
+    * **every** role sourced ``measured`` (beside ``level_match.applied``) —
+      BANK. The profile is levelled by measurement end to end.
+    * **some measured, and every other role OPERATOR-PINNED** — leave the bank
+      ALONE, neither banking nor clearing. Pinning one driver by hand does not
+      un-measure the speaker, so the prior full measurement is still the best
+      evidence anyone has and destroying it on the strength of a pin loses
+      real information. This is the arm that was missing: such a candidate
+      reads ``automatic`` to
+      :func:`~jasper.active_speaker.crossover_contract._snapshot_owner`, the
+      predicate this seam claims to mirror, and used to CLEAR here.
+    * **anything else** — CLEAR. No measured role at all, or a role that fell
+      back to the datasheet (``sensitivity``/``estimate``) or to a preserved
+      manual crossover. That is weaker evidence, not a pin, and a banked trim
+      the box is not playing is the same lie pointing the other way.
+
+    The pin/fallback line is drawn by this module's own
+    ``_GAIN_SOURCE_TO_PROVENANCE`` map rather than by the ANY predicate alone,
+    because ``level_match.applied`` is ITSELF only "some role was measured" —
+    see the ANY-arm comment below.
 
     Fail-soft by contract, exactly as :func:`promote_applied_baseline_candidate`
     is: the graph is applied and read back by the time this runs, so a
     statefile that cannot be written must never turn a successful apply into a
     failure. The speaker then behaves as it did before this seam existed.
     """
-    def refused(reason: str, detail: str) -> None:
+    def emit(result: str, reason: str, detail: str, *, level: int) -> None:
         log_event(
             logger,
             "dsp.baseline_base_trim_banked",
-            level=logging.WARNING,
-            result="failed",
+            level=level,
+            result=result,
             reason=reason,
             detail=detail,
         )
+
+    def refused(reason: str, detail: str) -> None:
+        emit("failed", reason, detail, level=logging.WARNING)
+
+    def left_standing(reason: str, detail: str) -> None:
+        emit("left_standing", reason, detail, level=logging.INFO)
+
+    def cleared(reason: str, detail: str) -> None:
+        if clear_base_trim():
+            # A successful clear is a state change an operator must be able to
+            # see: without this, the only evidence that a bank was dropped was
+            # the absence of the file.
+            emit("cleared", reason, detail, level=logging.INFO)
+            return
+        # The clear could not HAPPEN (EACCES, a read-only /var/lib), which is
+        # the opposite of nothing-to-clear: a banked trim survives an apply
+        # that is not playing it, and a --level-matched walk would level its
+        # graph by numbers nothing applies.
+        refused(BANK_CLEAR_FAILED, "a banked trim survived an apply it does not match")
+
+    # A follower's Layer-A-only graph, excluded for the reason
+    # `build_baseline_profile_candidate` already documents at its own
+    # `if not driver_domain:` guard: that flow compiles and immediately
+    # consumes its own config, never reaching `status="applied"`, and it must
+    # never clobber the SOLO artifacts. This artifact is one of those. The
+    # gate is unreachable today (no driver-domain candidate reaches this
+    # function); remove it if that exclusion is ever retired deliberately
+    # rather than by a multiroom consolidation nobody re-read this seam for.
+    snapshot = candidate.get("recomposition_snapshot")
+    if isinstance(snapshot, Mapping) and snapshot.get("domain") == "driver":
+        return
 
     corrections = candidate.get("corrections")
     sources = candidate.get("corrections_source")
     level_match = candidate.get("level_match")
     if not isinstance(corrections, Mapping) or not isinstance(sources, Mapping):
-        refused("profile_unreadable", "the applied profile names no corrections")
+        refused(
+            BANK_CORRECTIONS_UNREADABLE,
+            "the applied profile names no corrections",
+        )
         return
     measured = (
         isinstance(level_match, Mapping)
@@ -3298,45 +3365,93 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
         and all(sources.get(role) == "measured" for role in corrections)
     )
     if not measured:
-        if not clear_base_trim():
-            # The clear could not HAPPEN (EACCES, a read-only /var/lib), which
-            # is the opposite of nothing-to-clear: a banked trim survives an
-            # apply that is not playing it, and a --level-matched walk would
-            # level its graph by numbers nothing applies.
-            refused("clear_failed", "a banked trim survived an unmeasured apply")
+        # The middle arm, and it is narrower than "not every role measured".
+        # `level_match.applied` is ALREADY only "some role was measured" (see
+        # this module's own `level_match["applied"] = bool(measured_notes)`),
+        # so the contract's ANY predicate alone cannot tell an operator PIN
+        # from a measurement that was REFUSED and fell back to the datasheet.
+        # Those are opposites: a pin leaves the speaker measured, while a
+        # `sensitivity`/`estimate` fallback IS the weaker evidence the clear
+        # exists for. The existing `_GAIN_SOURCE_TO_PROVENANCE` vocabulary
+        # already draws that line, so it is consumed here rather than a third
+        # classifier being minted for it.
+        unmeasured_provenance = {
+            _GAIN_SOURCE_TO_PROVENANCE.get(str(sources.get(role) or ""))
+            for role in corrections
+            if sources.get(role) != "measured"
+        }
+        if (
+            measured_level_match_applied(candidate)
+            and unmeasured_provenance <= {PROVENANCE_MANUAL}
+        ):
+            left_standing(
+                BANK_PARTLY_MEASURED,
+                "some roles are operator-pinned; the prior banked trim "
+                "remains the best measurement of this speaker",
+            )
+            return
+        cleared(
+            BANK_UNMEASURED,
+            "the applied profile is not level-matched by measurement",
+        )
         return
     assert isinstance(level_match, Mapping)  # narrowed by `measured` above
     readiness = candidate.get("automatic_candidate")
     source = candidate.get("source")
-    if not isinstance(readiness, Mapping) or not isinstance(source, Mapping):
-        # Fail-soft, but never silent: a measured graph is now playing and
-        # whatever was banked before still stands, so the two representations
-        # have diverged again — the very thing this seam exists to prevent.
-        refused(
-            "profile_unreadable",
+    if (
+        not isinstance(readiness, Mapping)
+        or not readiness.get("measured_group_ids")
+        or not isinstance(source, Mapping)
+    ):
+        # Leave the bank standing rather than clearing it. A frozen applied
+        # profile persisted before `_frozen_applied_profile` carried
+        # `automatic_candidate` reaches the restore leg in exactly this shape,
+        # and it is a MEASURED profile whose readiness block simply was not
+        # kept — not evidence that the speaker was never measured.
+        left_standing(
+            BANK_READINESS_UNREADABLE,
             "the applied profile names no readiness or source block",
         )
         return
+    trims_db: dict[str, float] = {}
+    for role, entry in corrections.items():
+        gain = (
+            _finite_float(entry.get("gain_db"))
+            if isinstance(entry, Mapping)
+            else None
+        )
+        if gain is None:
+            # Typed refusal, never an exception: `float((entry or {}).get(...))`
+            # raised AttributeError on a non-Mapping entry, and AttributeError
+            # is not something a fail-soft seam catches — it escaped past
+            # `persist_applied_baseline_profile` and failed a successful apply.
+            left_standing(
+                BANK_CORRECTION_ENTRY_UNREADABLE,
+                f"correction {str(role)!r} names no finite gain_db",
+            )
+            return
+        trims_db[str(role)] = gain
     try:
         record = write_base_trim(
-            trims_db={
-                str(role): float((entry or {}).get("gain_db"))
-                for role, entry in corrections.items()
-            },
-            roles=sorted(str(role) for role in corrections),
+            trims_db=trims_db,
+            roles=sorted(trims_db),
             speaker_group_ids=readiness.get("measured_group_ids") or [],
             declaration_fingerprint=str(
                 source.get("crossover_preview_fingerprint") or ""
             ),
             trim_source=str(level_match.get("comparison") or ""),
         )
-    except (OSError, TypeError, ValueError) as exc:
+    except (OSError, DriverBaseTrimError) as exc:
         refused(
-            exc.reason
-            if isinstance(exc, DriverBaseTrimError)
-            else type(exc).__name__,
+            exc.reason if isinstance(exc, DriverBaseTrimError) else BANK_WRITE_FAILED,
             str(exc),
         )
+        # A measured graph is now playing and could not be banked, so whatever
+        # was banked before describes some OTHER apply. Absent beats wrong:
+        # the resolver's fallback (guided captures, then the datasheet) is
+        # conservative, while a stale record levels the graph by numbers
+        # nothing is playing.
+        cleared(BANK_WRITE_REFUSED, "the measured trim could not be banked")
         return
     log_event(
         logger,
