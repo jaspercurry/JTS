@@ -180,7 +180,7 @@ def write_stash(
     try:
         fsync_directory(p.parent)
     except OSError as e:
-        logger.debug(
+        logger.warning(
             "wifi guardian persistence: parent fsync on %s failed (%s) — "
             "contents written, rename durability degraded",
             p.parent, e,

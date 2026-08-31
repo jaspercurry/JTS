@@ -34,13 +34,11 @@ _JASPER = _REPO / "jasper"
 # endorsement — migrate entries to atomic_write_text when touching them
 # (preserving each writer's published mode), EXCEPT where noted.
 _ALLOWLIST = {
-    # Deliberately different — KEEP. This writer's durability policy is
-    # fail-soft at the call site: a real parent-dir fsync fault (EIO, an
-    # unreadable parent) logs at DEBUG and the write still succeeds
-    # (pinned by test_wifi_guardian_persistence's fsync-failure test),
-    # because degraded rename-durability beats failing the wizard's
-    # connect. atomic_write_text(durable=True) raises on those same
-    # faults, so converging would change the observable failure mode.
+    # Deliberately different — KEEP. Fail-soft: a real parent-dir fsync
+    # fault logs a WARNING and the write still succeeds (pinned by
+    # test_wifi_guardian_persistence's fsync-failure test), because
+    # degraded rename-durability beats failing the wizard's connect.
+    # atomic_write_text(durable=True) raises on those faults instead.
     "jasper/wifi_guardian_persistence.py",
     # Plain burn-down candidate (no fsync; text/JSON with an explicit
     # chmod) — an exact fit for atomic_write_text(mode=...). Sits in the

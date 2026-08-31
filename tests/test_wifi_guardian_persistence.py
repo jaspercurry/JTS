@@ -18,7 +18,9 @@ inode metadata.
 """
 from __future__ import annotations
 
+import errno
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -236,10 +238,8 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
 
 
 def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
-    """A real parent-dir fsync fault (EIO — not one of the unsupported-
-    filesystem errnos the shared helper swallows itself) reaches this
-    module's fail-soft except: the contents are already on disk from the
-    per-FD fsync, and the write succeeds."""
+    """A real parent-dir fsync fault (EIO — the shared helper swallows the
+    unsupported-filesystem errnos itself) is fail-soft: the write succeeds."""
     import jasper.wifi_guardian_persistence as mod
 
     real_fsync = os.fsync
@@ -253,8 +253,6 @@ def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
             st = os.fstat(fd)
         except OSError:
             return real_fsync(fd)
-        import errno
-        import stat
         if stat.S_ISDIR(st.st_mode):
             seen_calls.append("dir")
             raise OSError(errno.EIO, "simulated parent-dir fsync failure")

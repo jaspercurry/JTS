@@ -109,35 +109,32 @@ def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
 @pytest.mark.parametrize(
     ("code", "tolerated"),
     [
+        (None, True),
         (errno.EINVAL, True),
         (errno.ENOTSUP, True),
         (errno.EOPNOTSUPP, True),
         (errno.EIO, False),
     ],
 )
-def test_fsync_directory_tolerance_contract(tmp_path, monkeypatch, code, tolerated):
-    opened: list[int] = []
+def test_fsync_directory_tolerance_contract(
+    tmp_path, monkeypatch, caplog, code, tolerated
+):
     closed: list[int] = []
     fsynced: list[int] = []
-    real_open = os.open
     real_close = os.close
-
-    def recording_open(*args, **kwargs):
-        descriptor = real_open(*args, **kwargs)
-        opened.append(descriptor)
-        return descriptor
 
     def recording_close(descriptor):
         closed.append(descriptor)
         real_close(descriptor)
 
-    def failing_fsync(descriptor):
+    def recording_fsync(descriptor):
         fsynced.append(descriptor)
-        raise OSError(code, "directory fsync refused")
+        if code is not None:
+            raise OSError(code, "directory fsync refused")
 
-    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(atomic_io_module, "_unsupported_fsync_logged", False)
     monkeypatch.setattr(os, "close", recording_close)
-    monkeypatch.setattr(os, "fsync", failing_fsync)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
 
     if tolerated:
         fsync_directory(tmp_path)
@@ -146,8 +143,10 @@ def test_fsync_directory_tolerance_contract(tmp_path, monkeypatch, code, tolerat
             fsync_directory(tmp_path)
         assert raised.value.errno == code
 
-    assert fsynced == opened
-    assert closed == opened
+    assert closed == fsynced != []
+    assert ("event=atomic_io.dir_fsync_unsupported" in caplog.text) is (
+        tolerated and code is not None
+    )
 
 
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):

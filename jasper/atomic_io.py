@@ -69,6 +69,12 @@ __all__ = [
 ]
 
 
+_UNSUPPORTED_DIR_FSYNC = frozenset(
+    {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+_unsupported_fsync_logged = False
+
+
 def fsync_directory(path: str | os.PathLike) -> None:
     """Make a directory entry's creation or removal durable.
 
@@ -77,7 +83,9 @@ def fsync_directory(path: str | os.PathLike) -> None:
     contents were synced. Filesystems that do not support directory fsync
     report it as an argument error rather than a fault, and are tolerated —
     the caller's durability is best-effort on those, exactly as it is for the
-    ``durable=True`` write path below.
+    ``durable=True`` write path below. The first tolerated call per process
+    logs a WARNING; being a static property of the mount, repeats stay
+    silent (they would evict real diagnostics from the flight recorder).
     """
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
@@ -85,20 +93,19 @@ def fsync_directory(path: str | os.PathLike) -> None:
     try:
         os.fsync(descriptor)
     except OSError as exc:
-        unsupported = {
-            errno.EINVAL,
-            getattr(errno, "ENOTSUP", errno.EINVAL),
-            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-        }
-        if exc.errno not in unsupported:
+        if exc.errno not in _UNSUPPORTED_DIR_FSYNC:
             raise
-        log_event(
-            logger,
-            "atomic_io.dir_fsync_unsupported",
-            level=logging.DEBUG,
-            path=os.fspath(path),
-            error=exc,
-        )
+        global _unsupported_fsync_logged
+        if not _unsupported_fsync_logged:
+            _unsupported_fsync_logged = True
+            log_event(
+                logger,
+                "atomic_io.dir_fsync_unsupported",
+                level=logging.WARNING,
+                path=path,
+                error=exc,
+                note="rename durability is best-effort on this filesystem",
+            )
     finally:
         os.close(descriptor)
 
