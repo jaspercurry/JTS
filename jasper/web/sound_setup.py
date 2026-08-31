@@ -88,6 +88,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 if TYPE_CHECKING:  # import-time cost paid by nobody; the value crosses at runtime
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+    from jasper.sound.live_edit import LiveEditPlan
 
 # correction_play_device: the lane's one transport reader (P6c-ii) — the
 # static COMMISSION_TONE_ALSA_DEVICE alias dissolved with the ring-lane flip;
@@ -1992,6 +1993,30 @@ async def audition_profile(
     )
 
 
+async def _live_edit_plan(cam: Any, wanted_yaml: str) -> "LiveEditPlan":
+    """How this edit should reach the DSP: a parameter write, or a swap.
+
+    Both graphs are read back in CamillaDSP's OWN normalization before they are
+    compared — the running config, and the wanted one through ``ReadConfig``,
+    which parses and default-fills without applying. Comparing the emitter's
+    raw text against the running readback would differ on every edit (the
+    readback is a default-filled superset) and quietly never patch.
+
+    A controller that cannot do all three calls gets the swap, so a
+    test double or an older controller keeps today's behaviour.
+    """
+    from jasper.sound.live_edit import LiveEditPlan, plan_live_edit
+
+    read_active = getattr(cam, "get_active_config_raw", None)
+    normalize = getattr(cam, "normalize_config_raw", None)
+    patcher = getattr(cam, "patch_config", None)
+    if read_active is None or normalize is None or patcher is None:
+        return LiveEditPlan(None, "controller_cannot_patch")
+    running = await read_active(best_effort=True)
+    wanted = await normalize(wanted_yaml, best_effort=True)
+    return plan_live_edit(running, wanted)
+
+
 async def _live_draft_profile(
     profile: SoundProfile,
     *,
@@ -2106,12 +2131,24 @@ async def _live_draft_profile(
             fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
         )
         yaml = result.yaml
+        plan = await _live_edit_plan(cam, yaml)
+        if plan.patch is None:
+            method = "active_config_raw"
+        elif plan.patch:
+            method = "patch_config"
+        else:
+            # The running graph already IS the wanted one. Writing it again
+            # would buy nothing and cost a ducked swap.
+            method = "unchanged"
 
         try:
-            await loader(yaml, best_effort=False)
+            if method == "active_config_raw":
+                await loader(yaml, best_effort=False)
+            elif method == "patch_config":
+                await cam.patch_config(plan.patch, best_effort=False)
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
-                reason="active_config_raw_failed",
+                reason=f"{method}_failed",
                 output_trim_db=output_trim_db,
                 room_peq_count=result.room_peq_count,
                 sound_filter_count=sound_filter_count,
@@ -2119,7 +2156,7 @@ async def _live_draft_profile(
             )
             return _live_payload(
                 status="unavailable",
-                method="active_config_raw_failed",
+                method=f"{method}_failed",
                 current_epoch=current_epoch,
                 room_peq_count=result.room_peq_count,
                 active_config_path=current_path,
@@ -2129,6 +2166,11 @@ async def _live_draft_profile(
             logger,
             "sound.live_draft",
             result="live",
+            method=method,
+            # Empty unless the edit had to fall back to a ducked pipeline
+            # replace, and then it says which section moved -- the one field
+            # that explains an audible fade to whoever reads this line.
+            swap_reason=plan.reason,
             output_trim=f"{output_trim_db:.1f}",
             room_peqs=result.room_peq_count,
             sound_filters=sound_filter_count,
@@ -2137,7 +2179,7 @@ async def _live_draft_profile(
         )
         return _live_payload(
             status="live",
-            method="active_config_raw",
+            method=method,
             current_epoch=current_epoch,
             room_peq_count=result.room_peq_count,
             active_config_path=current_path,

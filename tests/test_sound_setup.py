@@ -275,6 +275,51 @@ class FakeCamilla:
         return True
 
 
+class FakePatchableCamilla(FakeCamilla):
+    """A controller that can do what CamillaDSP 4.1 actually does.
+
+    Enough of one to tell a parameter write from a pipeline replace: it keeps
+    the graph it is running, hands it back the way CamillaDSP's readback does,
+    and normalizes a candidate through the same round-trip so the two are
+    comparable — which is the property ``_live_edit_plan`` depends on.
+    """
+
+    def __init__(self, current_path: str, **kwargs) -> None:
+        super().__init__(current_path, **kwargs)
+        self.running: str | None = None
+        self.patches: list[dict] = []
+
+    @staticmethod
+    def _normalized(text: str) -> str:
+        import yaml as _yaml
+
+        return str(_yaml.safe_dump(_yaml.safe_load(text)))
+
+    async def set_active_config_raw(
+        self, config: str, *, best_effort: bool = False, duck: bool = True,
+    ) -> bool:
+        self.running = self._normalized(config)
+        return await super().set_active_config_raw(config, best_effort=best_effort)
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
+        return self.running
+
+    async def normalize_config_raw(
+        self, config: str, *, best_effort: bool = False,
+    ) -> str | None:
+        return self._normalized(config)
+
+    async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
+        import yaml as _yaml
+
+        self.patches.append(patch)
+        running = _yaml.safe_load(self.running or "")
+        for name, definition in (patch.get("filters") or {}).items():
+            running["filters"][name] = definition
+        self.running = str(_yaml.safe_dump(running))
+        return True
+
+
 class FakeCamillaWithoutLiveRaw:
     def __init__(self, current_path: str) -> None:
         self.current_path = current_path
@@ -7477,6 +7522,113 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert payload["preserved_room_peqs"] == 1
     assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
+
+
+async def _live(fake, draft, config_dir):
+    return await sound_setup._live_draft_profile(
+        draft,
+        expected_dsp_write_epoch=dsp_write_epoch(),
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+
+def _eq_box(monkeypatch, tmp_path):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    state_path = tmp_path / "dsp_apply_state.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
+    _record_dsp_epoch(state_path, "epoch-1")
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "sound_current.yml"
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
+    return config_dir, FakePatchableCamilla(str(current))
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=5.0, q=1.0),
+            )),
+            id="gain",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=120.0, gain_db=2.0, q=1.0),
+            )),
+            id="frequency",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=4.5),
+            )),
+            id="q",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),
+            )),
+            id="gain_dragged_to_zero",
+        ),
+    ],
+)
+async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
+    tmp_path: Path, monkeypatch, moved,
+):
+    """The whole point: a drag must not reach the ducked swap path."""
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    start = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, start, config_dir)
+    swaps_after_install = len(fake.active_raw_values)
+
+    payload = await _live(fake, moved, config_dir)
+
+    assert payload["live_status"] == "live"
+    assert payload["live_method"] == "patch_config"
+    assert len(fake.patches) == 1
+    assert len(fake.active_raw_values) == swaps_after_install
+
+
+async def test_adding_a_band_still_replaces_the_pipeline(
+    tmp_path: Path, monkeypatch,
+):
+    """A new filter is a new graph, and a new graph still ducks."""
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    one = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, one, config_dir)
+    two = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+        ParametricBand(freq_hz=60.0, gain_db=3.0, q=1.0),
+    ))
+
+    payload = await _live(fake, two, config_dir)
+
+    assert payload["live_method"] == "active_config_raw"
+    assert fake.patches == []
+    assert len(fake.active_raw_values) == 2
+
+
+async def test_a_redraw_that_changed_nothing_writes_nothing(
+    tmp_path: Path, monkeypatch,
+):
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    draft = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, draft, config_dir)
+
+    payload = await _live(fake, draft, config_dir)
+
+    assert payload["live_status"] == "live"
+    assert payload["live_method"] == "unchanged"
+    assert fake.patches == []
+    assert len(fake.active_raw_values) == 1
 
 
 async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(

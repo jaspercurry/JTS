@@ -45,7 +45,7 @@ from jasper.camilla_stereo_prefix import build_stereo_prefix
 
 from .profile import (
     SoundProfile,
-    build_sound_filters,
+    build_sound_filter_slots,
 )
 
 if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
@@ -541,10 +541,10 @@ def emit_sound_config(
         )
     program_dests = _program_dests(dest_map)
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
-    # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
-    # preference filters once and pass them in (it drops inactive specs);
-    # reuse the same list for the summary log below.
-    sound_filters = build_sound_filters(profile)
+    # room-PEQ -> headroom -> preamp -> preference assembly. Hand it a slot per
+    # declared band so the graph's shape follows the profile's declaration and
+    # not its values; reuse the same list for the summary log below.
+    sound_filters = build_sound_filter_slots(profile)
     filter_yaml, chain_names, chain_names_right, trim_db = build_stereo_prefix(
         sound_filters,
         room_peqs or [],

@@ -14,6 +14,7 @@ from jasper.sound.profile import (
     ProfileLibraryEntry,
     SimpleEq,
     SoundProfile,
+    build_sound_filter_slots,
     build_sound_filters,
     delete_named_profile,
     estimate_headroom_db,
@@ -123,6 +124,69 @@ def test_build_filters_uses_curve_then_simple_then_advanced():
         "sound_simple_treble",
         "sound_advanced_1",
     ]
+
+
+@pytest.mark.parametrize("gain_db", [2.0, 0.02, 0.0, -0.02, -2.0])
+def test_the_graph_keeps_a_bands_slot_while_its_gain_crosses_zero(gain_db):
+    """Shape follows the declaration, so a drag never adds or drops a filter.
+
+    This is what lets a live edit ride ``PatchConfig``: if a neutral band left
+    the graph, dragging one through 0 dB would be a new pipeline, and a new
+    pipeline ducks the speaker for ~0.85 s.
+    """
+    profile = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=gain_db, q=1.0),),
+    )
+
+    slots = build_sound_filter_slots(profile)
+
+    assert [spec.name for spec in slots] == [
+        "sound_simple_sub_bass",
+        "sound_simple_bass",
+        "sound_simple_mid",
+        "sound_simple_presence",
+        "sound_simple_treble",
+        "sound_advanced_1",
+    ]
+    assert slots[-1].gain == gain_db
+
+
+def test_a_neutral_band_holds_a_slot_but_is_not_counted_as_doing_anything():
+    """The two questions stay separate: what the graph holds vs what it does."""
+    profile = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),),
+    )
+
+    assert build_sound_filters(profile) == ()
+    assert len(build_sound_filter_slots(profile)) == 6
+    assert estimate_headroom_db(profile) == 0.0
+
+
+def test_a_band_switched_off_leaves_the_graph():
+    """"Off" cannot be spelled as a value: a Highpass carries no gain."""
+    profile = SoundProfile(
+        parametric_bands=(
+            ParametricBand(enabled=False, biquad_type="Highpass", freq_hz=80.0, q=0.7),
+        ),
+    )
+
+    assert [s.name for s in build_sound_filter_slots(profile)] == [
+        "sound_simple_sub_bass",
+        "sound_simple_bass",
+        "sound_simple_mid",
+        "sound_simple_presence",
+        "sound_simple_treble",
+    ]
+
+
+def test_a_disabled_profile_holds_no_slots_either():
+    profile = SoundProfile(
+        enabled=False,
+        curve_id="harman",
+        simple_eq=SimpleEq(bass_db=6.0),
+    )
+
+    assert build_sound_filter_slots(profile) == ()
 
 
 def test_disabled_profile_emits_no_sound_filters():

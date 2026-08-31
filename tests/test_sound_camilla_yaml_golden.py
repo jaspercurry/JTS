@@ -4,21 +4,22 @@
 
 """Byte-identity golden for ``emit_sound_config``.
 
-PR-2 extracts the program-domain room-PEQ → preference →
-headroom assembly out of ``jasper.sound.camilla_yaml`` into the neutral
-``jasper.camilla_stereo_prefix.build_stereo_prefix``. The refactor must be
-**behavior-neutral**: every existing case must emit the SAME BYTES.
+These goldens pin the full emitted YAML for a representative set of profiles
+covering every prefix branch (flat, simple boost + preamp, custom PEQ + room
+cuts, room boost → headroom, leader-bake L/R + delays, bonded-leader pipe
+sink), as fixtures under ``tests/fixtures/stereo_prefix_golden/``. Their job is
+to make any change to the emitted graph deliberate and reviewable, so the
+diff — not just the test result — is the thing to read when one moves.
 
-These goldens pin the full emitted YAML for a representative set of
-profiles covering every prefix branch (flat, simple boost + preamp,
-custom PEQ + room cuts, room boost → headroom, leader-bake L/R + delays,
-bonded-leader pipe sink). The expected outputs were captured from the
-pre-refactor emitter and live as fixtures under
-``tests/fixtures/stereo_prefix_golden/``.
+Every enabled profile carries a slot per declared band, neutral bands included
+(``jasper.sound.profile.build_sound_filter_slots``): the graph's shape follows
+the profile's declaration, never its values. A bypassed profile still emits
+nothing at all.
 
-Regenerate (only after a *deliberate*, reviewed output change):
+Regenerate (only after a *deliberate*, reviewed output change), from the repo
+root so ``jasper`` resolves to THIS checkout rather than an installed copy:
 
-    .venv/bin/python tests/test_sound_camilla_yaml_golden.py
+    PYTHONPATH=$PWD .venv/bin/python tests/test_sound_camilla_yaml_golden.py
 
 A plain ``pytest`` run never regenerates — it only compares.
 """
