@@ -115,20 +115,10 @@ call and neither extends:
   the take files on every read, so a reader can ask for one instead of globbing
   a directory. No file, no authority — the takes decide.
 
-Offline evaluation, deliberately not a search:
-
-* :mod:`.forward_model` — what a candidate nothing has played WILL measure,
-  from per-driver plants and the shipped filter arithmetic, together with the
-  :class:`~jasper.active_speaker.crossover_v2.forward_model.XoverCandidate`
-  value it predicts for. Corners are DECLARED by the operator; this module
-  predicts what a variation of one would measure, at zero capture cost, and
-  nothing here ranks candidates or recommends a corner.
-
-Only :mod:`.contracts` is re-exported below, and :mod:`.forward_model` is
-deliberately not added to it: it pulls ``numpy`` and the measurement stack at
-import, so re-exporting it would make every importer of this package pay for a
-prediction it is not running. The rest are imported by module path for the
-same reason.
+Only :mod:`.contracts` is re-exported below. Several of the rest pull
+``numpy`` and the measurement stack at import, so re-exporting them would make
+every importer of this package pay for work it is not running; all of them are
+imported by module path instead.
 
 The list above is deliberately unnumbered.  A stated count goes stale the next
 time a module arrives or leaves — as one did in #2291 Phase 5c-iii — and a

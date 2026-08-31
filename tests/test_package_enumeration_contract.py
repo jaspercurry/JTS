@@ -19,7 +19,7 @@ The check is deliberately cheap and import-free: it globs the package
 directory and reads the ``__init__``'s docstring out of the AST. Importing
 either package would pull ``numpy`` and the measurement stack, which is the
 same cost the ``crossover_v2`` docstring explains it avoids by not
-re-exporting :mod:`~jasper.active_speaker.crossover_v2.forward_model`.
+re-exporting its own numpy-heavy modules.
 
 Scope is these two packages by name. This is not a repo-wide convention —
 most packages have no such list and owe none. Extending it is one entry in

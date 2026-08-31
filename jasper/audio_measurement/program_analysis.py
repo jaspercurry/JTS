@@ -83,10 +83,8 @@ DBFS_FLOOR = -120.0
 ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding"
 # Conditioning floor on the emitted protection `P`, dB: below it, dividing `P`
 # out amplifies the capture's noise faster than it recovers signal, so the
-# ratio is refused rather than saturated. TWO readers divide by the same `P`
-# and must agree where that becomes dishonest — `_compose_configured_path_ir`
-# below and `active_speaker.crossover_v2.forward_model.driver_plants`. One
-# number, one owner.
+# ratio is refused rather than saturated. `_compose_configured_path_ir` below
+# is the one reader that divides by `P`. One number, one owner.
 CONFIGURED_PATH_PROTECTION_FLOOR_DB: float = -12.0
 
 

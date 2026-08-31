@@ -1447,9 +1447,9 @@ REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 # --------------------------------------------------------------------------- #
 #
 # These live HERE rather than beside the engine's `MeasureSpec` for the reason
-# this package's own `__init__` gives for not re-exporting `forward_model`:
-# reaching a handful of string literals must not drag `numpy` and the analysis
-# stack into every importer. Read from their owning modules
+# this package's own `__init__` gives for keeping its numpy-heavy modules
+# unexported: reaching a handful of string literals must not drag `numpy` and
+# the analysis stack into every importer. Read from their owning modules
 # (`spatial.POSITION_AXES`, `driver_acoustics.CAPTURE_GEOMETRIES`,
 # `program_analysis.polarity_label`) the vocabulary costs ~1,100 modules to
 # quote; declared here it costs none beyond this module, and
