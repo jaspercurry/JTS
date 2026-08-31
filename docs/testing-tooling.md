@@ -53,7 +53,7 @@
 | Take more than one capture at each pose of one walk — so what differs between them is time and whatever you changed, never the pose | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --per-position` |
 | Read back which pose each take of a banked walk was measured at, as one sorted index | [Crossover round runner](#crossover-round-runner) — `position_cycle.json`, derived from the banked bundle (the evidence packet's `lateral_poses` block carries the same bearings) |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
-| Level every driver against the others with the measurement mic and bank the result as the speaker's base trim, so no driver ships the level its datasheet claimed on somebody else's cabinet | [Measured driver base trim](#measured-driver-base-trim) — `jasper-driver-trim` |
+| Find out whether this speaker ships a MEASURED per-driver level or the one its datasheet claimed on somebody else's cabinet | [Measured driver base trim](#measured-driver-base-trim) — banked by the apply, no verb to run |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -2763,15 +2763,17 @@ round can never measure one Pi and bank another.
 
 ## Measured driver base trim
 
-`jasper-driver-trim` ([`jasper/cli/driver_trim.py`](../jasper/cli/driver_trim.py))
-answers one question: **how much quieter must each driver be so the acoustic
-sum is level across every declared crossover?** It reads each driver's own
-capture, takes both drivers' level in the one-octave band centred on the
-crossover they share, chains the deltas into a per-driver attenuation, and
-banks the result as the speaker's base trim
-(`/var/lib/jasper/active_speaker_driver_base_trim.json`). The profile then
-ships that measurement instead of the trim it derives from the drivers'
-declared datasheet sensitivities.
+**How much quieter must each driver be so the acoustic sum is level across
+every declared crossover?** There is no separate verb to run: the answer is
+banked by the apply itself. When a profile whose per-driver level match came
+from measurement is applied, `baseline_profile.persist_applied_baseline_profile`
+writes the trim it just applied to
+`/var/lib/jasper/active_speaker_driver_base_trim.json` — per-role trim, the
+speaker groups it covers, the evidence that produced it, and the crossover
+declaration it was measured under. Applying a profile levelled on anything
+weaker (the datasheet sensitivity gap, an operator pin, a preserved manual
+crossover) CLEARS the record instead, so the artifact only ever describes a
+level match the speaker is actually playing.
 
 **Where it sits, and why there.** Commissioning runs *rough config at `/sound`
 -> measured auto-trim -> seat-level -> crossover candidates -> driver
@@ -2786,78 +2788,52 @@ it rather than after. On 2026-08-23 a compression driver rated on a different
 horn seeded a −10.8 dB trim nobody had measured, and seat-level then refused
 4.2 dB short of its target on a ceiling built from that declaration.
 
-```sh
-# analyse per-driver captures already on disk and bank the trim
-jasper-driver-trim --captures-dir /var/lib/jasper/driver-trim-2026-08-23 \
-    --mic-serial 810-8494
-
-# an explicit calibration file, machine-readable
-jasper-driver-trim --captures-dir ./captures --calibration-file umik2.txt --json
-```
-
-**It mints no estimator.** The per-driver level is
-`driver_acoustics.analyze_driver_capture`'s overlap-band read — the same
-instrument the guided phone level match uses — and the chain from
-adjacent-driver deltas to a per-role attenuation is
+**It mints no estimator, and no solver.** The trim is whatever the applied
+profile resolved — a crossover-v2 measured candidate's own
+`role_attenuations_db`, or the guided per-driver captures chained through
 `level_trim.attenuation_from_group_deltas`. The repo already carries three
 subordinate estimates of one physical quantity and two live disclosures
 comparing them; a fourth would be that defect again, and
-`tests/test_active_speaker_driver_base_trim.py` fails if either new file grows
-band arithmetic of its own. Each level is normalized by that capture's own
-excitation ledger (`sweep peak + commissioning gain + locked main volume`), so
-captures taken at different protected drive levels are comparable. The trim
-vector is normalized up: every value is an attenuation and the maximum is
+`tests/test_active_speaker_driver_base_trim.py` fails if the artifact grows
+band arithmetic of its own. Every trim is an attenuation and the maximum is
 exactly 0 dB, so the quietest driver is the reference and nothing is attenuated
-further than the level match requires.
-
-**It captures nothing yet.** This build reads captures that already exist; the
-verb driving the sweeps itself (solo graph, admitted excitation,
-play-and-capture, rollback) is the next change. Until then the input is a
-`captures.json` manifest in `--captures-dir` naming, per driver, its WAV, the
-`sweep_meta` the sweep was generated with, and its `excitation` ledger — the
-docstring at the top of `driver_trim.py` carries the exact shape.
-
-| refusal | what to do |
-|---|---|
-| `driver_captures_missing` / `driver_captures_invalid` | the manifest is absent, unparseable, names a role this speaker does not declare, captures one driver twice, or names a `capture_geometry` the analysis does not read |
-| `excitation_ledger_invalid` | a capture's gain ledger does not add up, so its level cannot be put on a common reference |
-| `driver_declaration_unavailable` | no staging-ready crossover preview to key the trim to — save the base config at `/sound` |
-| `capture_unusable` | a driver analysed as silent, out-of-band, or unusable, or its overlap band was gated out — capture it again |
-| `level_solve_incomplete` | no speaker group carries a usable level for both drivers of every declared crossover |
-| `mic_calibration_unavailable` | the same slug and sentence `jasper-seat-level` uses, owned by `audio_measurement.calibration` |
+further than the level match requires. **Attenuation-only is enforced by
+refusal, not by clamping**: no path that reaches the writer can legitimately
+produce a positive per-role trim, so one is a fault rather than a reading, and
+the writer refuses it (`base_trim_not_attenuation`) instead of banking a number
+no measurement produced.
 
 **What the profile does with it.** `baseline_profile._measured_level_trims` is
-the single owner of "what is the measured per-role trim" and now has two
-evidence sources: a banked base trim is preferred, the guided captures are the
-fallback, and `level_match.source` says which one produced the number. The
-record names the declaration it was measured against (the crossover preview's
-fingerprint), so a speaker whose declaration has moved — a different Fc, a
-different driver, a re-save at `/sound` — gets a `driver_base_trim_not_applied`
-warning and keeps its safe existing trim rather than silently wearing a
-measurement of some other speaker. **Absent is normal**: a box that never runs
-this behaves exactly as it did before the verb existed.
+the single owner of "what is the measured per-role trim" and has two evidence
+sources: a banked base trim is preferred, the guided captures are the fallback,
+and `level_match.source` says which one produced the number while
+`level_match.base_trim.trim_source` names the measurement the banked record was
+written from. The record names the declaration it was measured against (the
+crossover preview's fingerprint), so a speaker whose declaration has moved — a
+different Fc, a different driver, a re-save at `/sound` — gets a
+`driver_base_trim_not_applied` warning and keeps its safe existing trim rather
+than silently wearing a measurement of some other speaker. **Absent is
+normal**: a box that has never applied a measured level match behaves exactly
+as it did before the artifact existed.
 
-**What it deliberately does not claim.** One mic position per driver measures
-the ON-AXIS ratio, and a waveguide's on-axis level overstates its power output
-against a cone's, so the record carries `geometry_claim:
-on_axis_single_position` and the listening-window average stays the arm-walk
-program's question. The record also names the geometry each driver was read
-under, and a group whose drivers were not all read under one geometry gets a
-`driver_base_trim_mixed_capture_geometry` disclosure on the profile — the trim
-is still applied, because a measurement across two distances still beats the
-datasheet gap; what it loses is the claim that both levels came from one. It is a magnitude answer only — never a phase, delay, or
-polarity decision — and a single level, so thermal compression is out of
-frame.
+**Why it exists at all.** Before ruling S16 the box carried three
+representations of "has this speaker measured its per-driver level" that never
+read each other, and a `--level-matched` walk was refused
+`walk_level_match_no_evidence` on a speaker that was, at that moment, playing a
+measured level match (blind run v3, finding F-1). Banking what the apply
+applied is what makes the walk door's evidence check and §4's acoustic confirm
+find the level match the speaker already has.
 
-Hardware-free coverage: the solve, the record's envelope, the re-key refusal
+**What it deliberately does not claim.** It is a magnitude answer only — never
+a phase, delay, or polarity decision — and a single level, so thermal
+compression is out of frame.
+
+Hardware-free coverage: the record's envelope, the re-key refusal, the clear,
 and the no-new-estimator guard in
 [`tests/test_active_speaker_driver_base_trim.py`](../tests/test_active_speaker_driver_base_trim.py);
-the verb's ledger normalize, its refusals, and one end-to-end pass over real
-synthesized captures with a known 12 dB gap in
-[`tests/test_cli_driver_trim.py`](../tests/test_cli_driver_trim.py); the
-profile's preference between the two evidence sources in
-[`tests/test_active_speaker_level_match.py`](../tests/test_active_speaker_level_match.py)
-and the provenance flip end to end in
+the profile's preference between the two evidence sources in
+[`tests/test_active_speaker_level_match.py`](../tests/test_active_speaker_level_match.py);
+the apply seam's bank/clear and the F-1 contradiction pin in
 [`tests/test_active_speaker_baseline_profile.py`](../tests/test_active_speaker_baseline_profile.py).
 
 ---

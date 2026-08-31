@@ -602,7 +602,7 @@ def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
 
     This is the wall a virgin blind-run box hits when it stages a level-matched
     reverse-null before it has measured its per-driver trims — the refusal that
-    teaches it to run the driver-trim step first. Pinning it through the real
+    teaches it to measure and apply a level match first. Pinning it through the real
     path, not a resolver mock, is what makes that lesson real: a regression that
     let an empty box resolve non-empty trims would sail past every test that
     stubs the resolver.
