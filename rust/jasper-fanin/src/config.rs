@@ -4,13 +4,8 @@
 
 //! Configuration loaded from `JASPER_FANIN_*` environment variables.
 //!
-//! Source of truth for defaults: `docs/HANDOFF-fan-in-daemon.md`
-//! "Configuration" section for the original knobs, plus
-//! `docs/HANDOFF-usb-low-latency.md` for the
-//! ring/cushion-decay/auto-trim/usb-direct/host-clock knobs
-//! (each field's own comment below points at the doc that actually
-//! documents it). If you change a default here, update the matching
-//! HANDOFF too — the doc is what operators read.
+//! This module owns the defaults. If a default changes, update its matching
+//! entry in `.env.example`.
 //!
 //! All knobs have sensible defaults so a fresh deploy works without
 //! any wizard interaction. Operator overrides go in
@@ -120,8 +115,8 @@ pub const CUSHION_DECAY_FLOOR_MARGIN_FRAMES: u32 = 32;
 
 /// The SHIPPED decay-floor default (the P3/P4 default-flip value). This is the
 /// hardware-VALIDATED floor from the jts.local combo-armed product-path gate
-/// (2026-07: Apple USB-C dongle, target 512 / period 256 / ±500 ppm — see
-/// `docs/HANDOFF-usb-low-latency.md`), NOT a bare `target + margin`. The tighter
+/// (Apple USB-C dongle, target 512 / period 256 / ±500 ppm), NOT a bare
+/// `target + margin`. The tighter
 /// derived minimum `max(target, minimum_safe_fill) + 32` (= 544 at the default
 /// geometry) stays the HARD floor the armed guard rejects below; this constant is
 /// only what an out-of-box combo box descends TO when it sets no explicit
@@ -129,8 +124,7 @@ pub const CUSHION_DECAY_FLOOR_MARGIN_FRAMES: u32 = 32;
 /// `[derived_min, ceiling]` at parse time so a small-target geometry (ceiling <
 /// 576) still constructs. Shipping the validated 576 (not 544) means a
 /// default-flip box that arms the combo lands on the exact floor the gate proved
-/// stable — the campaign default-coherence fix (P3). MUST agree with
-/// `.env.example`'s documented default and the HANDOFF's floor value.
+/// stable. MUST agree with `.env.example`'s documented default.
 pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = 576;
 
 /// The jitter headroom the STATIC held target (`target + warm-up cushion`) must
@@ -1466,7 +1460,7 @@ mod tests {
                 assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 18);
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
                 // Cascade-margin invariant (pins the 375-vs-400 ppm claim documented
-                // in config.rs, .env.example, and the HANDOFF): the default decay
+                // in config.rs and .env.example): the default decay
                 // step's demanded rate (step_frames dropped over interval_ms, as a
                 // fraction of the frames that pass in that interval) must sit INSIDE
                 // the DLL cascade-stability guard, or a settled decay step could

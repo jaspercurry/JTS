@@ -138,8 +138,7 @@ pub enum SinkMode {
 impl SinkMode {
     /// The `/state` wire value. The composite shape KEEPS the stable
     /// `dual_apple` wire string through this type rename — the documented
-    /// lower-risk option (HANDOFF-speaker-output-reference.md Observability:
-    /// "keep the wire value stable while the type is renamed"), so the doctor,
+    /// lower-risk option, so the doctor,
     /// `/state` consumers, and snapshot contracts are untouched here. The wire
     /// migration to a width-agnostic `composite` block is a separate change.
     pub fn as_str(self) -> &'static str {
@@ -168,8 +167,7 @@ impl ContentBridgeMode {
 /// `/var/lib/jasper/outputd.env` still asks for.
 ///
 /// `direct` carries no audio, so there is no fallback to fail safe to: a
-/// matching spelling bails here, parking at exit 78 and naming the key. See
-/// docs/HANDOFF-audio-latency-foundation.md for the removal history.
+/// matching spelling bails here, parking at exit 78 and naming the key.
 pub const REMOVED_RATE_MATCH_BRIDGE_SPELLINGS: &[&str] =
     &["rate_match", "ratematch", "rate-matched", "rate_matched"];
 
@@ -244,8 +242,7 @@ pub struct Config {
     pub chip_ref_tee_path: Option<String>,
     pub reference_udp_target: Option<String>,
     pub control_socket_path: Option<String>,
-    /// OPTIONAL multi-room round-trip lane (Increment 3,
-    /// HANDOFF-multiroom.md §2): a raw-PCM FIFO a grouping member's
+    /// OPTIONAL multi-room round-trip lane: a raw-PCM FIFO a grouping member's
     /// snapclient writes (`--player file:`). When set, the DAC loop is
     /// fed from it via `dac_content::DacContentSource`, falling back to
     /// the direct content PCM whenever the FIFO starves (inv-B — never
@@ -282,8 +279,7 @@ pub struct Config {
     /// periods, so a starvation transition never jumps in level.
     /// Reconciler-derived from JASPER_GROUPING_TRIM_DB; 0.0 = no trim.
     pub dac_content_trim_db: f32,
-    /// OPTIONAL bonded-member TTS socket (Increment 5 PR-2,
-    /// HANDOFF-multiroom.md §2): when set, outputd listens for the
+    /// OPTIONAL bonded-member TTS socket: when set, outputd listens for the
     /// jasper-voice TTS protocol and mixes assistant audio at the final
     /// output stage via OutputCore — downstream of the round-trip,
     /// upstream of the reference publish (inv-A). `None` (default —
@@ -759,8 +755,7 @@ impl Config {
 
         // Distributed-active belt-and-suspenders: the reconciler marks a
         // 2-channel active-crossover sink — the one active case channel width
-        // cannot distinguish from a full-range stereo L/R sink. See the
-        // latent-guard hazard in docs/HANDOFF-distributed-active.md.
+        // cannot distinguish from a full-range stereo L/R sink.
         let active_lane = env_bool("JASPER_OUTPUTD_ACTIVE_LANE", false);
 
         // The reconciler's declaration that this box's post-DSP endpoint is the
@@ -1630,8 +1625,7 @@ mod tests {
 
     #[test]
     fn active_lane_rejects_post_crossover_tts_mixer_even_at_two_channels() {
-        // distributed-active Stage B belt-and-suspenders (the recorded latent
-        // guard hazard, HANDOFF-distributed-active.md): an active 2-way speaker
+        // Distributed-active belt-and-suspenders: an active 2-way speaker
         // (woofer/tweeter) is ALSO a 2-channel single-ALSA sink, so the bare
         // `content_channels == 2` check would WRONGLY permit the post-crossover
         // outputd TTS mixer on it — sending full-range speech to the tweeter.

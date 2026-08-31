@@ -188,8 +188,8 @@ def test_a_drifted_fader_is_disclosed_and_then_refused_without_a_write(caplog):
 def test_an_unprovable_fader_refuses_rather_than_returning(value, why, observed):
     """...and reports the observation it ACTUALLY made in each case.
 
-    ``observed_db`` is the documented discriminator — refusal_copy and the
-    HANDOFF row both say an empty one means "could not read". It only
+    ``observed_db`` is the discriminator: an empty value means "could not
+    read". It only
     discriminates because the proving re-read is unconditional and independent:
     the refusal names a reading JTS actually took, not one inferred from an
     earlier round-trip. That is the ``locate_failed`` #2085 class — copy

@@ -25,8 +25,8 @@
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–3 merged, AND the
 operator has confirmed the crossover program's measurement machinery
-has had its on-device burn-in. That prerequisite is met by the JTS3 campaign
-recorded in `docs/HANDOFF-crossover-measurement-v2.md`.
+has had its on-device burn-in. The JTS3 campaign record is
+[`../historical/crossover-measurement-v2-campaign-record.md`](../historical/crossover-measurement-v2-campaign-record.md).
 
 > ⚠ **Mandatory stop — limiter bench-evidence prerequisite.** Do not
 > create or modify backend, persistence, playback, graph, or other production

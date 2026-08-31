@@ -17,10 +17,9 @@
 > and phased implementation plan for the feature; it was produced by a
 > six-agent survey of the codebase at `origin/main` `7dd803c8d`
 > (2026-07-16) plus external loudspeaker-science research. Every code
-> claim below was verified against that commit. When implementation
-> begins, each wave's PR should update the **Wave status** table and,
-> once the feature ships, this plan gets the historical tag and a
-> living `HANDOFF-bass-extension.md` takes over as operational truth.
+> claim below was verified against that commit. Each wave's PR updates
+> the **Wave status** table. Once the feature ships, current operator
+> references take over and this plan becomes historical.
 >
 > **Revision 2026-07-16b:** integrated an external deep-research
 > prior-art/validation report (patents, T/S-drift data, port-compression
@@ -1716,9 +1715,9 @@ status display.
 
 The §11 hardware program on the lab boxes; threshold tuning from real
 ladders (expect the §7.5 numbers to move — they ride
-`algorithm_version`); `docs/HANDOFF-bass-extension.md` operational
-doc (current-state-first, this plan gets the historical tag); README
-atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
+`algorithm_version`); current operator references and
+`docs/doc-map.toml` entries. This plan becomes historical after the
+feature ships. No scheduler env knob is planned.
 
 ---
 

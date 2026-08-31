@@ -249,16 +249,11 @@ The repo has a large Markdown corpus in a layered structure:
 - **[BRINGUP.md](BRINGUP.md)** — flash a fresh Pi to working speaker.
 - **[PLAN.md](PLAN.md)** — roadmap.
 
-**If you touch a subsystem, scan its HANDOFF first.** Those docs
-capture hardware-specific footguns that aren't obvious from the code.
-If you find something stale, fix it inline in the same PR.
-
 ## Working on a sensitive subsystem
 
 A few subsystems have explicit design constraints that aren't
 obvious from the code alone. If you're proposing changes here,
-**read the HANDOFF first** — it captures decisions that have
-already been made and what's NOT a reviewable trade-off.
+read the current references and relevant ADRs first.
 
 - **AEC / mic pipeline.** Engine swaps and tuning parameters are
   reviewable; architectural changes (PipeWire fanout, hardware

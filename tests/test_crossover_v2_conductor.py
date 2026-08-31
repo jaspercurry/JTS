@@ -5104,9 +5104,9 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
 
 def test_a_failed_publish_is_retried_on_the_next_close_not_locked_out():
     """#1872 resilience, pinned: ``_group_cloud_published`` marks a phase
-    only on a SUCCESSFUL publish, not a bare attempt — stated three times
-    (the ``__init__`` field comment, the publish guard's own comment, and
-    the HANDOFF doc) and asserted nowhere until this test. Marking on the
+    only on a SUCCESSFUL publish, not a bare attempt — stated in the
+    ``__init__`` field comment and the publish guard's own comment, but
+    asserted nowhere until this test. Marking on the
     attempt instead (so a FAILED publish also marks) would leave every
     other conductor test green, because none of them drives a publish
     failure followed by a second close.

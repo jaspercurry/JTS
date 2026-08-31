@@ -50,8 +50,8 @@
 //! corrected, R = follower-seat corrected). A stereo-pair leader plays
 //! only ITS channel, and — unlike a follower, whose snapclient plays
 //! through an ALSA `ttable` plug — this lane has no ALSA hop to do the
-//! drop. `ChannelPick` therefore mirrors the channel-split vocabulary
-//! (docs/HANDOFF-multiroom.md §4): `left`/`right` duplicate that program
+//! drop. `ChannelPick` therefore mirrors the channel-split vocabulary:
+//! `left`/`right` duplicate that program
 //! channel onto both DAC channels; `mono` averages (the clip-safe L+R sum
 //! at −6.02 dB, matching `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo`
 //! is passthrough. Both transports carry the same shared-stream format, so

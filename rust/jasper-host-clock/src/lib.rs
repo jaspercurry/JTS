@@ -44,9 +44,9 @@
 //!
 //! With the feature enabled, the fan-in `lane_resampler` (fast inner loop) and
 //! this pitch DLL (slow outer loop) both discipline the same audio chain. JTS
-//! has a documented oscillation failure class when two rate controllers fight
-//! (`docs/HANDOFF-usb-low-latency.md`; the CamillaDSP `rate_adjust` +
-//! `AsyncSinc` incident). This is NOT that: it is a legitimate CASCADE —
+//! has an oscillation failure class when two rate controllers fight: the
+//! CamillaDSP `rate_adjust` + `AsyncSinc` incident. This is NOT that: it is a
+//! legitimate CASCADE —
 //! a fast inner loop that absorbs residual + jitter, and a slow outer loop that
 //! removes the standing rate offset at its source (the host). The defense is in
 //! the numbers, derived from the actual inner-loop constant:

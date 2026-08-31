@@ -4,15 +4,13 @@
 
 //! Core for the JTS outputd final-output owner.
 //!
-//! This crate models the contracts from
-//! `docs/HANDOFF-speaker-output-reference.md`: production audio is already
-//! mixed and processed before outputd, then outputd writes the final
-//! electrical samples to the selected sink and publishes bounded monitor/
+//! Production audio is already mixed and processed before outputd. Outputd writes
+//! the final electrical samples to the selected sink and publishes bounded monitor/
 //! reference taps. SOLO assistant/TTS ingress is owned by `jasper-fanin`
 //! (pre-CamillaDSP). On a BONDED multiroom member, outputd itself serves
 //! the TTS socket (`tts` module — fanin's wire-protocol twin) so the
 //! member's own assistant voice mixes locally, post-round-trip, instead of
-//! riding the synced stream; see HANDOFF-multiroom.md Increment 5 PR-2.
+//! riding the synced stream.
 //! The outputd systemd unit enables the ALSA transport.
 
 pub mod aec_clock;
@@ -29,10 +27,8 @@ pub mod assistant_source;
 pub mod config;
 pub mod core;
 // outputd's multi-room role: the `dac_content` reader (Increment 3) — the
-// round-trip lane a grouping member's snapclient feeds. (The former
-// `snapfifo` module — outputd-as-PRODUCER — was removed 2026-06-11: the
-// canonical design has CamillaDSP feed the snapserver pipe, not outputd.
-// See HANDOFF-multiroom.md §2 "Canonical signal flow".)
+// round-trip lane a grouping member's snapclient feeds. The canonical design
+// has CamillaDSP feed the snapserver pipe, not outputd.
 pub mod dac_content;
 pub mod fake;
 mod json;

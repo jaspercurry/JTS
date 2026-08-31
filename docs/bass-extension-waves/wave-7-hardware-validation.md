@@ -40,13 +40,9 @@ the bottom, each as a small scoped task.
 
 ## Codex-assist tasks (one small PR each, normal charter rules)
 
-- **Operational doc**: write `docs/HANDOFF-bass-extension.md`
-  (current-state-first, <400 lines, `Last verified:` footer) from the
-  as-built system; add the historical tag to
-  `HANDOFF-bass-extension-plan.md` pointing at it; update the README
-  atlas entry and `docs/doc-map.toml` (add the `jasper/bass_extension/**`
-  glob to the correction/measurement subsystem or a new subsystem
-  entry — whichever the doc-map's granularity note prefers).
+- **Operator references**: update the existing current references from
+  the as-built system, mark `HANDOFF-bass-extension-plan.md` historical,
+  and update `docs/doc-map.toml` for `jasper/bass_extension/**`.
 - **Threshold tuning PRs** from operator data: `MarginPolicy` /
   mic-moved-correlation / sustain-duration changes, each bumping
   `BASS_EXTENSION_ALGORITHM_VERSION` and updating the pinned
@@ -58,7 +54,7 @@ the bottom, each as a small scoped task.
 
 ## Exit criteria
 
-Plan §12's Wave-status table marked done; the operational HANDOFF is
-canonical; at least one sealed AND one ported-or-PR speaker
+Plan §12's Wave-status table marked done; current operator references
+describe the as-built flow; at least one sealed AND one ported-or-PR speaker
 commissioned on hardware with the week-long soak logged; every
 deliberately-wrong run refused with its typed refusal.

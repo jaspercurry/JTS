@@ -1092,10 +1092,7 @@ broken wake path during a round.
 
 ---
 
-**Scope of this file's warranty.** It is a merge of `llm-operator-runbook.md`
-and the live spine of `HANDOFF-crossover-measurement-v2.md`, not a fresh
-re-derivation: every claim carries the reading its source carried, and the
-per-pass record of what each of those readings did and did not re-verify is
+The per-pass record of what was and was not re-verified is
 [`historical/crossover-measurement-v2-verification-log.md`](historical/crossover-measurement-v2-verification-log.md).
 Read a claim against the symbol it names before you rely on it.
 

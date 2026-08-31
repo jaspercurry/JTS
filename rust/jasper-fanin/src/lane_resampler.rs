@@ -17,8 +17,7 @@
 //! that discards a chunk of audio whenever the lane backs up past a high-water
 //! (`CATCHUP_HIGH_WATER_PERIODS`). That high-water is sized to never false-fire
 //! on a healthy AirPlay burst, so it inherently lets the USB ring sit anywhere
-//! from 1 to ~14 periods — a **5–75 ms latency sawtooth** (see
-//! `docs/HANDOFF-usb-low-latency.md`).
+//! from 1 to ~14 periods — a **5–75 ms latency sawtooth**.
 //!
 //! This module is the drop-FREE alternative: a per-lane windowed-sinc
 //! resampler, DLL-steered to the DAC clock, that *reconciles* the host rate to

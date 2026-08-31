@@ -121,8 +121,8 @@ const CATCHUP_TARGET_PERIODS: i64 = 1;
 /// effects stack — a WiFi-bursty AirPlay lane deposits an A-MPDU burst of ~4
 /// packets (~5.5 periods) into its ring at once (then drains back at the DAC
 /// rate), and a scheduling stall delays OUR drain (worst-case ~36.8 ms ≈ 6.9
-/// periods on a stressed stock Pi 5, PREEMPT_RT not yet in; see
-/// HANDOFF-fan-in-daemon.md) — so a stall coinciding with a burst is ~5.5 + 6.9
+/// periods on a stressed stock Pi 5, PREEMPT_RT not yet in) — so a stall
+/// coinciding with a burst is ~5.5 + 6.9
 /// ≈ 12.4 periods of peak occupancy on a healthy lane. Upper bound: it MUST sit
 /// below the input buffer depth (16 periods / 4096 frames, the "0 xruns over
 /// 4.5 min" sizing) so the resync fires before overrun. 14 periods (~75 ms)
@@ -3915,8 +3915,8 @@ mod tests {
     fn zombie_handle_never_fires_on_attached_idle_host() {
         // The 2026-07-05 review's BLOCKER: an ordinary attached-but-silent host
         // (Mac wired 24/7, music paused/asleep) streams avail≈0 drains forever
-        // with frames NEVER having flowed on the handle (measured on jts.local —
-        // docs/HANDOFF-usb-low-latency.md). The flowing→dead gate MUST hold the
+        // with frames NEVER having flowed on the handle (measured on jts.local).
+        // The flowing→dead gate MUST hold the
         // detector off no matter how long the zero-avail streak grows, or the
         // flagship box churns a reopen + WARN every ~2 s with no gadget rebuild.
         // No amount of accumulated zero-avail can trip while frames_flowed=false:
@@ -4074,8 +4074,7 @@ mod tests {
         // real gadget rebuild (vs `avail_update` continuing to return Ok(0)) is
         // kernel behavior no unit test can pin; it is the on-device obligation —
         // `curl .../state | jq .audio_graph.fanin ... card_gen_reopens` must tick
-        // across a `systemctl restart jasper-usbsink` on jts.local. See
-        // docs/HANDOFF-usb-low-latency.md "handle-liveness probe".
+        // across a `systemctl restart jasper-usbsink` on jts.local.
         for state in [
             State::Open,
             State::Setup,

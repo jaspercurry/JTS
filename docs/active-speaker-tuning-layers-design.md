@@ -429,9 +429,8 @@ floor (~150–200 Hz here); below that is Layers 2–3 by contract. Fix-4
 across mic positions for linearization — position-averaging is Layer-3
 practice and smears genuine on-axis HF detail here (artifact 01 Q2).
 
-**Measurement instrument, in one paragraph (details are canonical in the
-HANDOFF's invariants):** the gated far-field sweep at the listening axis is
-the Layer-1 instrument. The analysis finds the direct arrival per driver,
+**Measurement instrument, in one paragraph:** the gated far-field sweep at the
+listening axis is the Layer-1 instrument. The analysis finds the direct arrival per driver,
 windows the IR before the first strong reflection (adaptive per capture —
 ~7 ms on the JTS3 rig, i.e. a ~143 Hz validity floor via `f_valid = 1/T`),
 and claims nothing below the floor; VERIFY refuses comparison when its own
@@ -1723,7 +1722,7 @@ calibration** for a consumer mic against the reference — a
 
 ## Execution plan for the implementing session
 
-Phase 0 — read this doc, the HANDOFF, and issues #1666–#1672; JTS3 +
+Phase 0 — read this doc and issues #1666–#1672; JTS3 +
 UMIK-2 is the rig; headless drive tooling per
 `captures/xover-e0-2026-07-21/drive-tooling/` (no relay).
 Phase 1 — **#1666** (apply promotion durability + doctor divergence check):
