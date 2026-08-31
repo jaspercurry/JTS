@@ -22,8 +22,8 @@ from jasper.active_speaker.alignment_walk import driver_delay_walk_spec
 from jasper.audio_measurement.null_walk import NullWalkSpec
 
 # Both bars are docs/tuning-methodology.md's, and both are depths in dB re the
-# Fc/2 and 2*Fc shoulder mean — the one null-depth definition
-# `analyze_summed_crossover` already emits. They answer a different question
+# Fc/2 and 2*Fc shoulder mean — the one canonical null-depth definition. They
+# answer a different question
 # from `driver_acoustics.DEFAULT_NULL_THRESHOLD_DB` (6.0), which asks whether a
 # null formed AT ALL for the polarity call; these ask whether the null that
 # formed is deep enough to trust the DELAY it implies.

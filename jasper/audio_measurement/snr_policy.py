@@ -826,9 +826,8 @@ def cap_null_depth_db(
 
     The pass/fail verdict for a summed-crossover capture must be computed
     from the UNCAPPED ``measured_db`` BEFORE calling this — a capped-but-
-    still-deep null is safely "at least that deep" (see
-    ``jasper.active_speaker.driver_acoustics.analyze_summed_crossover``,
-    which this function does not itself decide).
+    still-deep null is safely "at least that deep". This function does not
+    itself decide that verdict.
     """
     if worst_relevant is None:
         return measured_db, False

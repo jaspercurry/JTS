@@ -4,7 +4,7 @@
 
 """The mic-backed acoustic verdict -> commissioning measurement wire (gap-1).
 
-``driver_acoustics.analyze_driver_capture`` / ``analyze_summed_crossover`` had no
+``driver_acoustics.analyze_driver_capture`` had no
 caller. ``commissioning_capture`` is that caller: it derives each driver's
 expected passband from the preset crossovers, runs the acoustic analysis on a
 captured sweep, maps the verdict to a measurement outcome, and records it (with
@@ -637,10 +637,9 @@ def test_summed_capture_threads_capture_geometry_to_analyze():
 def test_summed_capture_below_validity_floor_records_nothing():
     """A reference-axis summed capture whose crossover Fc (or its lower
     shoulder) sits below the IR-gating validity floor comes back as
-    unusable_capture with the gating block populated
-    (driver_acoustics.analyze_summed_crossover's own contract, pinned in
-    test_active_speaker_driver_acoustics.py); this pins that the wire here
-    still records nothing for it, same as any other unusable_capture."""
+    unusable_capture with the gating block populated (the injected analyzer's
+    own contract); this pins that the wire here still records nothing for it,
+    same as any other unusable_capture."""
     calls = {"n": 0}
 
     def spy_record(*a, **k):
@@ -2683,7 +2682,7 @@ def test_record_summed_acoustic_capture_requires_an_explicit_capture_geometry():
     """No silent default on the outer recorder either.
 
     This function forwards BOTH ``capture_geometry`` and ``ambient_duration_s``
-    to ``analyze_summed_crossover``, so it can reach the paired-ambient
+    to the injected ``analyze``, so it can reach the paired-ambient
     analysis where the two geometries differ in more than the reflection gate.
     Leaving it defaulted to ``near_field`` would reintroduce, one level up, the
     silent un-gated choice that was removed from the analyzer itself.

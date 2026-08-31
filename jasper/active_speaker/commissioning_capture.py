@@ -4,10 +4,10 @@
 
 """Bridge: mic-backed acoustic verdict -> commissioning measurement record.
 
-[`driver_acoustics`](driver_acoustics.py)'s ``analyze_driver_capture`` /
-``analyze_summed_crossover`` turn a phone-mic sweep capture into a real acoustic
-verdict, but they had no caller (the runtime commissioning loop did not exist
-yet). This module is that caller: per driver it derives the expected passband
+[`driver_acoustics`](driver_acoustics.py)'s ``analyze_driver_capture`` turns a
+phone-mic sweep capture into a real acoustic verdict, but it had no caller (the
+runtime commissioning loop did not exist yet). This module is that caller: per
+driver it derives the expected passband
 from the compiled preset's crossover regions, runs the acoustic analysis on a
 captured sweep WAV, maps the verdict to a
 [`measurement`](measurement.py) outcome, and records it through
@@ -67,7 +67,6 @@ from .driver_acoustics import (
     DriverAcousticResult,
     SummedAcousticResult,
     analyze_driver_capture,
-    analyze_summed_crossover,
 )
 from .measurement import record_driver_measurement, record_summed_validation
 from .profile import ActiveSpeakerPreset, crossover_edges_for_role
@@ -529,15 +528,16 @@ def record_summed_acoustic_capture(
     state_path: str | Path | None = None,
     now: str | None = None,
     capture_geometry: str,
-    analyze: Callable[..., SummedAcousticResult] = analyze_summed_crossover,
+    analyze: Callable[..., SummedAcousticResult],
     record: Callable[..., dict[str, Any]] = record_summed_validation,
 ) -> dict[str, Any]:
     """Analyze a summed-driver sweep capture and record the crossover verdict.
 
-    Runs ``analyze_summed_crossover`` at the group's crossover frequency
-    (defaulting to the lowest crossover in the preset), maps the verdict to a
-    summed outcome, and persists it through ``record_summed_validation``. An
-    ``unusable_capture`` — or a preset with no crossover — records nothing.
+    Runs ``analyze`` at the group's crossover frequency (defaulting to the
+    lowest crossover in the preset), maps the verdict to a summed outcome, and
+    persists it through ``record_summed_validation``. An ``unusable_capture``
+    — or a preset with no crossover — records nothing. ``analyze`` is REQUIRED
+    and has no default: this module no longer ships a summed analyzer.
 
     ``noise_band_report`` and ``noise_floor_dbfs`` both feed ``analyze`` (the
     SC-1 alignment-class SNR block on ``SummedAcousticResult.snr`` and the
@@ -547,8 +547,8 @@ def record_summed_acoustic_capture(
     existed.
     ``unusable_capture`` — or a preset with no crossover — records nothing
     (which includes a reference-axis capture whose crossover Fc or lower
-    shoulder sits below the IR-gating validity floor — see
-    :func:`jasper.active_speaker.driver_acoustics.analyze_summed_crossover`).
+    shoulder sits below the IR-gating validity floor, when ``analyze`` reports
+    one).
 
     ``capture_geometry`` (``"near_field"`` or ``"reference_axis"``) passes
     straight through to ``analyze``, and is REQUIRED — it has no default. This
@@ -1311,8 +1311,8 @@ def aggregate_driver_repeats(
 
     Each item in ``repeats`` carries at minimum ``verdict`` and ``acoustic``
     (the ``DriverAcousticResult``/``SummedAcousticResult.to_dict()`` block a
-    single ``analyze_driver_capture``/``analyze_summed_crossover`` call
-    already produces) plus whatever else the caller wants preserved
+    single analyzer call already produces) plus whatever else the caller wants
+    preserved
     (``artifact_path``, ``excitation``, ``placement_proof``, ...) — the
     whole item is echoed back verbatim as ``aggregate_repeat`` when it wins.
 

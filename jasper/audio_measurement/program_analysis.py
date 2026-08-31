@@ -6291,14 +6291,11 @@ def _analyze_verify(
             woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
         )
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
-        # The one null-depth definition in the tree, shared with the acoustic
-        # capture analyzer so a computed depth and a measured one are the same
-        # quantity. It lives in `audio_measurement.analysis` rather than beside
-        # that analyzer because BOTH consumers sit above this package and this
-        # package may import neither of them.
+        # The one null-depth definition in the tree. It lives in
+        # `audio_measurement.analysis` rather than beside its consumers because
+        # they sit above this package and this package may import neither.
         #
-        # Guarded the way `analyze_summed_crossover` guards it, and for the same
-        # reason: the depth is read at Fc/2 and 2*Fc, `np.interp` CLAMPS outside
+        # Guarded because the depth is read at Fc/2 and 2*Fc, `np.interp` CLAMPS outside
         # the data, and a curve that does not reach both shoulders — or reaches
         # them below the gate's validity floor — would return a number built
         # from edge values with nothing saying so. No number is the honest

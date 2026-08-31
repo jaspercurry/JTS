@@ -247,7 +247,6 @@ from .driver_acoustics import (
     DriverSweep,
     SummedAcousticResult,
     analyze_driver_capture,
-    analyze_summed_crossover,
     write_driver_sweep_wav,
 )
 from .commissioning_capture import (
@@ -285,7 +284,6 @@ __all__ = [
     "DriverSweep",
     "SummedAcousticResult",
     "analyze_driver_capture",
-    "analyze_summed_crossover",
     "write_driver_sweep_wav",
     "DRIVER_VERDICT_TO_OUTCOME",
     "SUMMED_VERDICT_TO_OUTCOME",
