@@ -10026,9 +10026,14 @@ def test_alternative_apply_refuses_stale_sound_before_camilla(
         )
 
 
-def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
+def test_alternative_stage2_refusal_refuses_before_the_sound_save(
     monkeypatch, tmp_path,
 ):
+    """With Apply clickable on a preflight-refusing box, one click must not
+    durably move the Sound declaration: the change arm asserts stage-2
+    openability BEFORE ``apply_measured_crossover_geometry``, so the refusal
+    arrives raw (the predicate's own sentence, not "saved in Sound") and
+    displaces nothing — no declaration write, no Camilla."""
     from jasper.active_speaker.design_draft import load_design_draft
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
@@ -10038,7 +10043,7 @@ def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
 
     monkeypatch.setattr(v2host, "_assert_stage_2_can_open", refuse_stage_2)
     with pytest.raises(
-        v2host.CrossoverV2Refused, match="2750 Hz is saved in Sound but was not applied",
+        v2host.CrossoverV2Refused, match="the safety declaration changed",
     ):
         _apply(
             {"expected_candidate_fingerprint": candidate.fingerprint,
@@ -10047,8 +10052,8 @@ def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
             lambda: (_ for _ in ()).throw(AssertionError("Camilla touched")),
         )
 
-    assert load_design_draft()["revision"] == 2
-    assert (v2host.load_v2_state() or {})["accepted_sound_revision"] == 2
+    assert load_design_draft()["revision"] == 1
+    assert "accepted_sound_revision" not in (v2host.load_v2_state() or {})
 
 
 def test_alternative_camilla_failure_reports_sound_saved_and_allows_retry(
@@ -10203,8 +10208,15 @@ def test_sound_change_during_preflight_refuses_before_camilla(
     from jasper.output_topology import load_output_topology
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    calls = 0
 
     def change_sound(_status):
+        # First call is the change arm's pre-save assert; the subject here is
+        # the AT-COMMIT one (D3), so the mutation lands on the second call.
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return
         draft = load_design_draft()
         save_design_draft(
             load_output_topology(), driver_research=draft.get("driver_research"),

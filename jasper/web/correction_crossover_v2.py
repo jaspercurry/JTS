@@ -7393,6 +7393,16 @@ def handle_v2_apply(
                       selected_fc_hz=selected_fc_hz)
             raise CrossoverV2Refused(str(exc)) from exc
         if not saved_already:
+            # Ordered BEFORE the durable declaration write for the reason the
+            # hearing-safety gate above orders itself the same way: a refused
+            # apply must displace nothing, or ``/sound`` declares a crossover
+            # the speaker is not playing and every retry re-refuses. The D3
+            # assert below stays at commit position (freshness); a retry
+            # (Sound already saved) skips this arm and keeps its "saved in
+            # Sound but was not applied" framing there. Raw on purpose:
+            # ``_before_dsp`` would relabel a pre-write refusal as
+            # saved-not-applied, which is false on this side of the write.
+            _assert_stage_2_can_open(status)
             measured_revision = (state or {}).get("sound_design_revision")
             if (isinstance(measured_revision, bool)
                     or not isinstance(measured_revision, int)):
