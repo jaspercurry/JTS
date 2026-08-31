@@ -115,6 +115,8 @@ def _curve(
 
     import numpy as np
 
+    from .position_cycle import parse_curve_magnitude
+
     if not isinstance(raw, Mapping):
         raise DelayLandscapeError(f"{field_name} must be a banked curve mapping")
     role = raw.get("role")
@@ -123,33 +125,21 @@ def _curve(
             f"{field_name} is the {role!r} curve, but was passed as "
             f"{expected_role!r}"
         )
-    try:
-        freqs = np.asarray([float(hz) for hz in raw["freqs_hz"]], dtype=float)
-        magnitude_db = np.asarray(
-            [float(db) for db in raw["magnitude_db"]], dtype=float
+    # The exact inverse of pose_curve_record's serialization (ruling S3) —
+    # the shared magnitude step, with this reader's phase requirement on top.
+    parsed = parse_curve_magnitude(raw)
+    if parsed is None:
+        raise DelayLandscapeError(
+            f"{field_name} does not parse as a banked magnitude curve "
+            "(freqs_hz/magnitude_db/band_hz)"
         )
+    freqs, magnitude_db, swept = parsed
+    try:
         phase_deg = np.asarray([float(deg) for deg in raw["phase_deg"]], dtype=float)
     except (KeyError, TypeError, ValueError) as exc:
-        raise DelayLandscapeError(
-            f"{field_name} must carry freqs_hz, magnitude_db and phase_deg"
-        ) from exc
-    if not (freqs.size and freqs.size == magnitude_db.size == phase_deg.size):
+        raise DelayLandscapeError(f"{field_name} must carry phase_deg") from exc
+    if phase_deg.size != freqs.size:
         raise DelayLandscapeError(f"{field_name} curve arrays disagree in length")
-    if not np.all(np.isfinite(freqs)):
-        raise DelayLandscapeError(f"{field_name} carries a non-finite frequency")
-    # The exact inverse of pose_curve_record's serialization (ruling S3).
-    band = raw.get("band_hz")
-    if (
-        isinstance(band, (list, tuple))
-        and len(band) == 2
-        and all(isinstance(edge, (int, float)) for edge in band)
-    ):
-        swept = (float(band[0]), float(band[1]))
-    else:
-        # A curve that does not declare its band is taken at its grid extent.
-        swept = (float(freqs[0]), float(freqs[-1]))
-    if not swept[0] < swept[1]:
-        raise DelayLandscapeError(f"{field_name} declares an empty band")
     tf = 10.0 ** (magnitude_db / 20.0) * np.exp(1j * np.radians(phase_deg))
     return freqs, tf, swept
 

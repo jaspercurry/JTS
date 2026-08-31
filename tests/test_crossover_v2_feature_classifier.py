@@ -259,6 +259,65 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     assert row["excess_loss_vs_null"]["3"] < -row["gate_slack"]["3"]
 
 
+#: A custom ladder that deliberately reaches past SEARCH_T_MAX_MS (7 ms):
+#: ticket 6.1 requires those rungs to be legal, not clamped or refused, since
+#: they re-admit reflections and make convergence vs fan-out readable.
+_WIDE_LADDER_MS = (3.0, 5.0, 7.0, 9.0, 11.0)
+
+
+def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
+    """6.1: every commanded rung, including ones past SEARCH_T_MAX_MS, is a fact.
+
+    ``_gate_invariance`` already built this table internally and only its
+    DERIVED columns (``excess_loss_vs_null``, ``centre_shift_oct``,
+    ``gate_slack``) ever reached a row -- the raw per-rung depth/centre never
+    did. A caller who commands a wider ladder must get every rung's own
+    reading back, additively, with nothing clamped at the shipped ceiling.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    artifact = fx.classify_round(captures, at=[RESONANCE_HZ], gates_ms=_WIDE_LADDER_MS)
+    assert artifact["measurement"]["gate_ladder_ms"] == list(_WIDE_LADDER_MS)
+    # A rung past the primary never DISPLACES the primary: the verdict
+    # reference, and with it the trusted floor, stays on the commanded
+    # ``gate_ms`` (the shipped default here) — not on the ladder's max,
+    # which re-admits reflections.
+    assert artifact["measurement"]["gate_ms_primary"] == fx.DEFAULT_GATE_MS
+    row = artifact["rows"][0]
+    rungs = row["gate_rungs"]
+    assert set(rungs) == {f"{g:.0f}" for g in _WIDE_LADDER_MS}
+    for entry in rungs.values():
+        assert isinstance(entry["pooled_db"], float)
+        assert isinstance(entry["centre_hz"], float)
+        assert isinstance(entry["resolved"], bool)
+    # The primary rung has nothing to compare itself to, so the DERIVED
+    # per-gate maps exclude it; every other rung — the 11 ms one past the
+    # primary included — is compared against the primary, and the raw rung
+    # table reports them all, which is the additive fact this ticket is
+    # about.
+    assert f"{fx.DEFAULT_GATE_MS:.0f}" not in row["excess_loss_vs_null"]
+    assert "11" in row["excess_loss_vs_null"]
+    assert "11" in rungs
+
+
+def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
+    """6.1: ``--gates-ms`` is not merely parsed -- it reaches classify_round."""
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    code = cli.main([
+        str(bundle), "--dumps", str(dumps),
+        "--at", str(RESONANCE_HZ),
+        "--gates-ms", "3", "--gates-ms", "9", "--gates-ms", "11",
+    ])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert banked["measurement"]["gate_ladder_ms"] == [3.0, 7.0, 9.0, 11.0]
+    assert set(banked["rows"][0]["gate_rungs"]) == {"3", "7", "9", "11"}
+
+
 def _composed(**overrides):
     """One row through the composer, from a cell that is stable by default.
 
@@ -621,6 +680,237 @@ def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):
     assert "subsample_residual_us" not in timing
     assert all(row["timing_corroborated"] is False for row in peak_artifact["rows"])
     assert all(row["confidence"] != "high" for row in peak_artifact["rows"])
+
+
+# --------------------------------------------------------------------------- #
+# 6.2: off-axis persistence, read from ALREADY-BANKED lateral pose curves
+# --------------------------------------------------------------------------- #
+
+
+def _pose_curve(
+    ir: np.ndarray,
+    *,
+    pose_id: str,
+    position_deg: int | None,
+    role: str = "woofer",
+    band_hz: tuple[float, float] = (200.0, 8000.0),
+) -> fx.RoundPoseCurve:
+    """A synthetic banked pose curve, built the same way the module's own
+    ``_resonant_ir`` fixtures are read -- :func:`fx.magnitude_response`, the
+    seam :func:`~jasper.active_speaker.crossover_v2.feature_classifier.smoothed_curve`
+    itself uses, never a hand-rolled transform.
+    """
+    freqs, db = fx.magnitude_response(ir.astype(np.float32), SR)
+    keep = np.isfinite(db) & (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    return fx.RoundPoseCurve(
+        pose_id=pose_id,
+        position_deg=position_deg,
+        role=role,
+        freqs_hz=freqs[keep],
+        magnitude_db=db[keep],
+        band_hz=band_hz,
+    )
+
+
+def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
+    """6.2: a feature present at every pose reads a depth/centre there; a
+    pose whose curve never swept the feature's band reads not-resolved.
+
+    ``absent is not zero`` (the ticket's own words): the not-resolved pose's
+    numbers are ``None``, never a fabricated 0 dB.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    present = [
+        _pose_curve(_resonant_ir(+3.0), pose_id="lateral_00_a01", position_deg=-15),
+        _pose_curve(_resonant_ir(+3.0), pose_id="lateral_01_a01", position_deg=15),
+    ]
+    # This pose's own driven band never reached the feature at all -- the
+    # honest, unambiguous way to construct "vanished" without guessing
+    # whether a sign-flipped read means the feature moved or the noise did.
+    vanished = _pose_curve(
+        _flat_ir(), pose_id="lateral_02_a01", position_deg=30, band_hz=(20.0, 500.0)
+    )
+    artifact = fx.classify_round(
+        captures, at=[RESONANCE_HZ], pose_curves=[*present, vanished]
+    )
+    assert artifact["pose_bank"] == {"available": True, "n_poses": 3}
+    persistence = artifact["rows"][0]["pose_persistence"]
+    assert len(persistence) == 3
+    by_pose = {entry["pose_id"]: entry for entry in persistence}
+    for pose_id, degrees in (("lateral_00_a01", -15), ("lateral_01_a01", 15)):
+        entry = by_pose[pose_id]
+        assert entry["resolved"] is True
+        assert entry["position_deg"] == degrees
+        assert isinstance(entry["pooled_db"], float)
+        assert isinstance(entry["centre_hz"], float)
+        assert abs(math.log2(entry["centre_hz"] / RESONANCE_HZ)) < fx.NEIGHBOURHOOD_OCT
+    vanished_entry = by_pose["lateral_02_a01"]
+    assert vanished_entry["resolved"] is False
+    assert vanished_entry["pooled_db"] is None
+    assert vanished_entry["centre_hz"] is None
+
+
+def test_no_lateral_poses_reads_as_not_run(peak_artifact):
+    """6.2(d): a round with no banked pose curves gets the classifier's own
+    NOT-RUN shape (mirroring ``_timing_scatter``'s), and every row's
+    persistence table is empty rather than absent.
+    """
+    assert peak_artifact["pose_bank"]["available"] is False
+    assert peak_artifact["pose_bank"]["n_poses"] == 0
+    assert all(row["pose_persistence"] == [] for row in peak_artifact["rows"])
+
+
+def _bank_lateral_pose(
+    bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
+    relay: str = "wired-TEST",
+) -> None:
+    """Directly write a banked ``positions/<take_id>.json`` -- the exact
+    fields :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
+    and :func:`~jasper.active_speaker.crossover_v2.position_cycle.read_take_curves`
+    read, real-shaped without going through the retention engine.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+
+    positions_dir = (
+        bundle / "evidence/v1/artifacts/crossover_v2" / relay / "positions"
+    )
+    positions_dir.mkdir(parents=True, exist_ok=True)
+    (positions_dir / f"{take_id}.json").write_text(
+        json.dumps({
+            "kind": POSITION_EVIDENCE_KIND,
+            "phase": fx.PHASE_LATERAL,
+            "position_deg": position_deg,
+            "curves": curves,
+        })
+    )
+
+
+def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
+    """6.2: the reuse this ticket requires, end to end -- ``load_round_pose_curves``
+    reaches a REAL banked take file through the same reader
+    ``jasper-delay-sweep`` uses, never a second tree-walker.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    curve = _pose_curve(_resonant_ir(+3.0), pose_id="ignored", position_deg=-20)
+    _bank_lateral_pose(
+        bundle,
+        take_id="lateral_00_a01",
+        position_deg=-20,
+        curves=[{
+            "role": "woofer",
+            "band_hz": list(curve.band_hz),
+            "freqs_hz": [float(v) for v in curve.freqs_hz],
+            "magnitude_db": [float(v) for v in curve.magnitude_db],
+            "phase_deg": [0.0] * curve.freqs_hz.size,
+        }],
+    )
+    code = cli.main([str(bundle), "--dumps", str(dumps), "--at", str(RESONANCE_HZ)])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert banked["pose_bank"] == {"available": True, "n_poses": 1}
+    persistence = banked["rows"][0]["pose_persistence"]
+    assert len(persistence) == 1
+    assert persistence[0]["pose_id"] == "lateral_00_a01"
+    assert persistence[0]["position_deg"] == -20
+    assert persistence[0]["resolved"] is True
+
+
+# --------------------------------------------------------------------------- #
+# 6.3: narrow-band decay, from the IRs this instrument already deconvolves
+# --------------------------------------------------------------------------- #
+
+#: Tolerance the injected-ring control's recovered time must land within,
+#: relative to the ring's own analytically known time-to-neg20dB
+#: (``tau * ln(10)``). Loose enough to absorb the FFT band mask's own
+#: passband ripple; tight enough that a broken envelope read could not pass
+#: by luck -- a clean impulse (no injected ring at all) reads roughly 20x
+#: faster than this control's expected time, at the same centre band.
+_DECAY_CONTROL_REL_TOL = 0.25
+_DECAY_RESONANCE_TAU_S = 0.02
+
+
+def _decaying_sinusoid_ir(
+    fc: float, tau_s: float, *, peak: int = 200, seconds: float = 0.6
+) -> np.ndarray:
+    """An impulse plus a decaying sinusoid of analytically KNOWN ring time.
+
+    Time-to-``DECAY_TARGET_DROP_DB`` of ``exp(-t/tau)`` is exactly
+    ``tau * ln(10^(DECAY_TARGET_DROP_DB/20))`` -- ``tau * ln(10)`` at the
+    shipped 20 dB target -- which is the known answer the control below
+    grades :func:`fx._decay_read` against.
+    """
+    n = int(seconds * SR)
+    ir = np.zeros(n)
+    ir[peak] = 1.0
+    t = np.arange(n - peak) / SR
+    ir[peak:] += 0.5 * np.exp(-t / tau_s) * np.sin(2 * np.pi * fc * t)
+    return ir
+
+
+def test_decay_recovers_an_injected_rings_known_time():
+    """The campaign's own known-answer control, mirroring the EGD controls'
+    style: inject a ring of a KNOWN time constant and read it back within
+    tolerance.
+    """
+    ir = _decaying_sinusoid_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S)
+    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
+    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    expected_ms = _DECAY_RESONANCE_TAU_S * math.log(10) * 1000.0
+    assert result["below_floor"] is False
+    assert result["time_to_neg20_db_ms"] == pytest.approx(
+        expected_ms, rel=_DECAY_CONTROL_REL_TOL
+    )
+
+
+def test_decay_reads_fast_on_a_clean_impulse():
+    """Negative control: no injected ring, so the band-limited impulse's own
+    bandwidth-bound ring-down must read far faster than a real resonance —
+    the "6-10 ms just outside" half of the campaign's own contrast.
+    """
+    ir = np.zeros(int(0.6 * SR))
+    ir[200] = 1.0
+    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
+    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    assert result["below_floor"] is False
+    assert result["time_to_neg20_db_ms"] is not None
+    assert result["time_to_neg20_db_ms"] < 10.0
+
+
+def test_decay_reports_below_floor_for_a_steady_tone():
+    """An undamped sinusoid never decays, so the -20 dB point is
+    unreachable above its own tail — reported as ``below_floor``, never a
+    fabricated time.
+    """
+    n = int(0.6 * SR)
+    t = np.arange(n) / SR
+    ir = 0.5 * np.sin(2 * np.pi * RESONANCE_HZ * t)
+    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
+    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    assert result["below_floor"] is True
+    assert result["time_to_neg20_db_ms"] is None
+
+
+def test_the_artifact_carries_the_decay_field_with_units(peak_artifact):
+    """Facts only, and the field names carry their own units."""
+    assert (
+        peak_artifact["thresholds"]["decay_target_drop_db"] == fx.DECAY_TARGET_DROP_DB
+    )
+    decay = peak_artifact["rows"][0]["decay"]
+    assert set(decay) == {"center", "flank_lo", "flank_hi"}
+    for band in decay.values():
+        assert set(band) == {
+            "band_hz", "noise_floor_db", "below_floor", "time_to_neg20_db_ms",
+        }
+        assert isinstance(band["noise_floor_db"], float)
+        assert isinstance(band["below_floor"], bool)
+        assert band["time_to_neg20_db_ms"] is None or isinstance(
+            band["time_to_neg20_db_ms"], float
+        )
 
 
 # --------------------------------------------------------------------------- #

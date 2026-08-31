@@ -62,9 +62,11 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
+    GATE_LADDER_MS,
     FeatureClassificationRefused,
     classify_round,
     load_round_captures,
+    load_round_pose_curves,
 )
 
 EXIT_OK = 0
@@ -119,6 +121,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_GATE_MS,
         help=f"primary analysis window (default {DEFAULT_GATE_MS:g})",
+    )
+    parser.add_argument(
+        "--gates-ms",
+        type=float,
+        action="append",
+        default=None,
+        metavar="MS",
+        help=(
+            "add this gate to the invariance ladder, repeatable. Rungs above "
+            "the primary window are legal -- they re-admit reflections, so "
+            "convergence vs fan-out across the ladder is readable. Omitted, "
+            f"the shipped ladder is used ({', '.join(f'{g:g}' for g in GATE_LADDER_MS)} ms)"
+        ),
     )
     parser.add_argument(
         "--out",
@@ -189,7 +204,17 @@ def main(argv: list[str] | None = None) -> int:
             session_id=session_id,
             walk_logs=tuple(args.walk_logs),
         )
-        artifact = classify_round(captures, at=args.at, gate_ms=args.gate_ms)
+        # Best-effort and always attempted: a round with no lateral walk
+        # returns empty rather than raising, and classify_round reports that
+        # as its own NOT-RUN fact rather than needing a flag to ask for it.
+        pose_curves = load_round_pose_curves(args.bundle_dir)
+        artifact = classify_round(
+            captures,
+            at=args.at,
+            gate_ms=args.gate_ms,
+            gates_ms=tuple(args.gates_ms) if args.gates_ms else GATE_LADDER_MS,
+            pose_curves=pose_curves,
+        )
     except FeatureClassificationRefused as refusal:
         # The directory actually read, named explicitly: a refusal whose
         # own detail can be misread as describing a directory with zero

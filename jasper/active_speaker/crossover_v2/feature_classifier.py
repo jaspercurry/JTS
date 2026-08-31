@@ -79,12 +79,17 @@ from typing import Any
 
 import numpy as np
 
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.deconv import (
     magnitude_response,
     regularized_deconvolution_full,
 )
-from jasper.audio_measurement.gating import SEARCH_T_MAX_MS, f_trusted_floor_hz
+from jasper.audio_measurement.gating import (
+    SEARCH_T_MAX_MS,
+    analytic_envelope,
+    f_trusted_floor_hz,
+)
 from jasper.audio_measurement.quality_model import TrustLevel
 
 from .feature_classification import (
@@ -114,8 +119,10 @@ __all__ = [
     "PROGRAM_MISSING",
     "FeatureClassificationRefused",
     "RoundCapture",
+    "RoundPoseCurve",
     "classify_round",
     "load_round_captures",
+    "load_round_pose_curves",
 ]
 
 
@@ -188,8 +195,10 @@ GENERATED_BY = "jasper.active_speaker.crossover_v2.feature_classifier"
 #: ever calls reflection-free. Overridable per run.
 DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
-#: The gate-invariance ladder, shortest first. The primary window is the last
-#: entry and every retention is read against it.
+#: The gate-invariance ladder, shortest first. Every retention is read against
+#: the commanded primary window (``gate_ms``) — the last entry here by
+#: default. A commanded rung longer than the primary stays a rung: it
+#: re-admits reflections as a readable fact and never displaces the primary.
 GATE_LADDER_MS: tuple[float, ...] = (3.0, 5.0, DEFAULT_GATE_MS)
 
 #: Pre-peak lead for the PHASE window only. A zero-lead window starts at
@@ -340,6 +349,28 @@ CONTROL_ALLPASS_RATIO_BAND = (0.85, 1.15)
 #: multiple of the worst false positive above. Without it the two verdicts
 #: would be a coin toss dressed as a threshold.
 CONTROL_SEPARATION_MARGIN = 5.0
+
+# --- narrow-band decay ------------------------------------------------------- #
+
+#: The drop time-to-decay is measured against. Named once so the field
+#: (``time_to_neg20_db_ms``) and the reachability test (``below_floor``) read
+#: the same number back rather than one of them drifting from the other.
+DECAY_TARGET_DROP_DB = 20.0
+
+#: How far beyond a feature's own +/-``FEATURE_HALF_OCT`` skirts a flanking
+#: decay band's matching skirt sits. One third-octave: the flanking reads
+#: exist to show whether extended ringing is peculiar to the resonance or is
+#: the room's tail everywhere nearby — the campaign's own ~48 ms on the
+#: 898 Hz ridge against ~6-10 ms a third-octave outside it (same room, same
+#: capture). Each flank is the SAME width as the centre band, not narrower.
+DECAY_FLANK_SKIRT_OFFSET_OCT = 1.0 / 3.0
+
+#: Fraction of a band-limited envelope's own tail read for its noise floor.
+#: The IRs this reads are the full deconvolved capture, not a gated
+#: fragment, so any decay this instrument could report has long since
+#: finished by the last fifth of it; late enough to be floor, wide enough
+#: that a handful of samples cannot set it.
+DECAY_NOISE_FLOOR_TAIL_FRACTION = 0.2
 
 
 # --------------------------------------------------------------------------- #
@@ -537,6 +568,80 @@ def load_round_captures(
             },
         )
     return tuple(sorted(captures, key=lambda cap: cap.stamp))
+
+
+@dataclass(frozen=True)
+class RoundPoseCurve:
+    """One banked lateral-walk pose's one driver-role curve, magnitude only.
+
+    Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
+    (Wave 4a / ruling S3) through the same reader :mod:`.delay_landscape` and
+    ``jasper-delay-sweep`` already use to reconstruct a transfer function --
+    never a raw lateral WAV, and never a second tree-walker over the bundle
+    (house ruling R11). ``band_hz`` is the role's own driven sweep band,
+    parsed by the shared :func:`~.position_cycle.parse_curve_magnitude` —
+    the same step the delay-sweep reader layers phase onto.
+    """
+
+    pose_id: str
+    position_deg: int | None
+    role: str
+    freqs_hz: np.ndarray
+    magnitude_db: np.ndarray
+    band_hz: tuple[float, float]
+
+
+def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
+    """Every banked lateral-walk pose curve in this bundle, magnitude only.
+
+    ``bundle_dir`` is the commissioning bundle -- the same directory
+    :func:`load_round_captures` and :func:`~.evidence_packet.round_artifact_dir`
+    read, not the round's own artifact directory.
+
+    Reused, not re-walked: :func:`~.record_index.bundle_measurements` is the
+    same take index the evidence packet's ``lateral_poses`` block and
+    ``jasper-delay-sweep propose`` scan, and
+    :func:`~.position_cycle.read_take_curves` is the same banked-curve reader
+    :func:`~.spatial.pose_curve_record` writes. Phase is dropped -- a
+    persistence read is magnitude-only -- so a caller wanting the pair reads
+    ``read_take_curves`` directly.
+
+    Returns one entry per (accepted take, role): a pose that measured two
+    driver curves banks two entries sharing one ``pose_id``. Empty when this
+    round ran no lateral walk, or banked none that survived to a curve --
+    never raises, which is what lets :func:`classify_round` tell "no lateral
+    walk" from "a walk that measured nothing usable" apart from a directory
+    error.
+    """
+    from .position_cycle import parse_curve_magnitude, read_take_curves
+    from .record_index import bundle_measurements
+
+    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
+    out: list[RoundPoseCurve] = []
+    for row in bundle_measurements(bundle_dir, phase=PHASE_LATERAL):
+        curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
+        if curves is None:
+            continue
+        pose_id = Path(row.path).stem
+        for curve in curves:
+            role = curve.get("role")
+            if not isinstance(role, str):
+                continue
+            parsed = parse_curve_magnitude(curve)
+            if parsed is None:
+                continue
+            freqs_arr, mag_arr, band_tuple = parsed
+            out.append(
+                RoundPoseCurve(
+                    pose_id=pose_id,
+                    position_deg=row.position_deg,
+                    role=role,
+                    freqs_hz=freqs_arr,
+                    magnitude_db=mag_arr,
+                    band_hz=band_tuple,
+                )
+            )
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -1214,6 +1319,8 @@ def _gate_invariance(
     features: Sequence[float],
     grid: np.ndarray,
     gates_ms: Sequence[float],
+    *,
+    primary_ms: float,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, float]]:
     """Retention and centre movement across the gate ladder, against a null model.
 
@@ -1223,8 +1330,12 @@ def _gate_invariance(
     injected into a real IR and gated identically — speaker-own by
     construction, so whatever retention it loses is the gate alone. A
     1.5x-narrower companion brackets the width rather than betting on one.
+
+    ``primary_ms`` is passed, never derived from the ladder: a commanded rung
+    longer than the primary must stay a rung, or every verdict reference
+    silently moves onto a reflection-admitting window.
     """
-    primary = max(gates_ms)
+    primary = float(primary_ms)
     primary_key = f"{primary:.0f}"
 
     pooled = np.mean(
@@ -1299,14 +1410,10 @@ def _gate_invariance(
             )
             for fc in features:
                 sizes[key][fc].append(read_feature(curve, grid, fc))
-                band = (grid >= fc * 2**-CENTRE_SEARCH_OCT) & (
-                    grid <= fc * 2**CENTRE_SEARCH_OCT
+                _, centre_hz = _extremum_reading(
+                    curve, grid, fc, pooled_db[f"{fc:.0f}"] < 0
                 )
-                window = curve[band]
-                apex = int(
-                    np.argmin(window) if pooled_db[f"{fc:.0f}"] < 0 else np.argmax(window)
-                )
-                centres[key][fc].append(float(grid[band][apex]))
+                centres[key][fc].append(centre_hz)
 
     table: dict[str, Any] = {}
     for fc in features:
@@ -1451,6 +1558,202 @@ def _subsample_delay_us(
     return float(-slope * 1e6)
 
 
+# --------------------------------------------------------------------------- #
+# off-axis persistence -- a fact read from ALREADY-BANKED lateral pose curves
+# --------------------------------------------------------------------------- #
+
+#: Fewest samples inside a centre-search span for its extremum to mean
+#: anything, on the lateral walk's own coarse evidence grid
+#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave -- "not a polar
+#: measurement", by that module's own words). Lower than
+#: :data:`_MIN_SLOPE_SAMPLES`: this reads an extremum, not a fitted slope.
+_POSE_MIN_CENTRE_SAMPLES = 3
+
+
+def _centre_search_mask(freqs: np.ndarray, fc: float) -> np.ndarray:
+    return (freqs >= fc * 2**-CENTRE_SEARCH_OCT) & (freqs <= fc * 2**CENTRE_SEARCH_OCT)
+
+
+def _extremum_reading(
+    values: np.ndarray, freqs: np.ndarray, fc: float, is_dip: bool
+) -> tuple[float, float]:
+    """The extremum inside ``fc``'s centre-search window: (value, centre_hz).
+
+    The one implementation of "where is this feature's centre" — the gate
+    ladder and the pose-persistence read call it alike, so the same feature
+    can never grow two centres.
+    """
+    search = _centre_search_mask(freqs, fc)
+    window = values[search]
+    apex = int(np.argmin(window) if is_dip else np.argmax(window))
+    return float(window[apex]), float(freqs[search][apex])
+
+
+def _pose_reading(
+    curve: RoundPoseCurve, detrended: np.ndarray, fc: float, is_dip: bool
+) -> dict[str, Any]:
+    """One pose curve's own depth/centre near ``fc``, or NOT-RESOLVED.
+
+    Direct on the curve's own banked ``(freqs_hz, magnitude_db)`` -- never a
+    raw WAV. Detrended with this module's own :func:`detrend`, the same
+    one-octave baseline the primary detector uses, so a departure read here
+    means what it means there.
+
+    NOT-RESOLVED (``resolved=False``, both numbers ``None``) whenever this
+    pose cannot answer the question at all: ``fc``'s own neighbourhood falls
+    outside the curve's driven ``band_hz``, or too few of the grid's sparse
+    points land inside the centre-search span to read an extremum from. Never
+    a fabricated 0 dB -- absence is not zero.
+
+    ``detrended`` is the curve's own detrended magnitude, computed once per
+    curve by the caller — it is feature-independent.
+    """
+    lo = fc * 2**-NEIGHBOURHOOD_OCT
+    hi = fc * 2**NEIGHBOURHOOD_OCT
+    base: dict[str, Any] = {
+        "pose_id": curve.pose_id,
+        "position_deg": curve.position_deg,
+        "role": curve.role,
+        "resolved": False,
+        "pooled_db": None,
+        "centre_hz": None,
+    }
+    if not (curve.band_hz[0] <= lo and hi <= curve.band_hz[1]):
+        return base
+    search = _centre_search_mask(curve.freqs_hz, fc)
+    if int(np.count_nonzero(search)) < _POSE_MIN_CENTRE_SAMPLES:
+        return base
+    pooled, centre = _extremum_reading(detrended, curve.freqs_hz, fc, is_dip)
+    return {**base, "resolved": True, "pooled_db": pooled, "centre_hz": centre}
+
+
+def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
+    """This round's lateral-pose bank, once -- what every row's
+    ``pose_persistence`` table is read against.
+
+    Mirrors :func:`_timing_scatter`'s NOT-RUN shape for the same reason: "no
+    lateral poses banked" is a different fact from "every pose read as
+    not-resolved", and a reader must not have to infer the first from a row
+    full of the second.
+    """
+    if not pose_curves:
+        return {
+            "available": False,
+            "n_poses": 0,
+            "note": (
+                "NOT RUN: this round banked no lateral-walk pose curves, so "
+                "no feature's off-axis persistence can be read. This is an "
+                "unmeasured dimension, not evidence a feature is on-axis only."
+            ),
+        }
+    return {
+        "available": True,
+        "n_poses": len({curve.pose_id for curve in pose_curves}),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# narrow-band decay -- from the IRs this instrument already deconvolved
+# --------------------------------------------------------------------------- #
+
+
+def _decay_bands_hz(fc: float) -> dict[str, tuple[float, float]]:
+    """The centre band and its two flanks, every one ``FEATURE_HALF_OCT`` wide.
+
+    The centre band is the feature's own -- :func:`read_feature`'s band,
+    restated so a magnitude read and a decay read agree on what "the
+    feature's own band" means. Each flank is the SAME width, its own inner
+    edge :data:`DECAY_FLANK_SKIRT_OFFSET_OCT` beyond the centre band's
+    matching skirt, never narrower.
+    """
+    half = FEATURE_HALF_OCT
+    far = 3 * half + DECAY_FLANK_SKIRT_OFFSET_OCT
+    near = half + DECAY_FLANK_SKIRT_OFFSET_OCT
+    return {
+        "center": (fc * 2**-half, fc * 2**half),
+        "flank_lo": (fc * 2**-far, fc * 2**-near),
+        "flank_hi": (fc * 2**near, fc * 2**far),
+    }
+
+
+@dataclass(frozen=True)
+class _DecayHost:
+    """One IR's forward FFT, computed once — every band read shares it.
+
+    The per-band work is only the mask and the inverse transform; the
+    spectrum itself is feature-independent, and a round reads three bands
+    per feature off the same host IR.
+    """
+
+    n: int
+    sample_rate: int
+    spectrum: np.ndarray
+    freqs: np.ndarray
+
+    @classmethod
+    def of(cls, ir: np.ndarray, sample_rate: int) -> "_DecayHost":
+        return cls(
+            n=ir.size,
+            sample_rate=sample_rate,
+            spectrum=np.fft.rfft(ir),
+            freqs=np.fft.rfftfreq(ir.size, d=1.0 / sample_rate),
+        )
+
+
+def _band_limited_envelope(
+    host: _DecayHost, band_hz: tuple[float, float]
+) -> np.ndarray:
+    """The analytic envelope of the host IR restricted to ``band_hz``.
+
+    An FFT-domain brick-wall mask, zero outside the band: the IR here is the
+    module's own reflection-free deconvolution, already long and clean, so
+    no taper is needed to keep the result well-behaved.
+    :func:`~jasper.audio_measurement.gating.analytic_envelope` is REUSED, not
+    duplicated — the same Hilbert-magnitude envelope the gating half of this
+    package already reads a ring-down with.
+    """
+    mask = (host.freqs >= band_hz[0]) & (host.freqs <= band_hz[1])
+    band_limited = np.fft.irfft(host.spectrum * mask, n=host.n)
+    return analytic_envelope(band_limited)
+
+
+def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any]:
+    """Time-to-``DECAY_TARGET_DROP_DB`` in one band, or an honest non-answer.
+
+    ``noise_floor_db`` is the envelope's own late-tail level, dB relative to
+    THIS band's own peak, so it is directly comparable to
+    :data:`DECAY_TARGET_DROP_DB`. ``below_floor`` is a property of that
+    number alone — the target drop is not resolvable above the floor,
+    independent of whether a search happens to cross it.
+    ``time_to_neg20_db_ms`` is ``None`` whenever ``below_floor`` is true OR
+    the envelope never reaches the target within the IR's own length —
+    never a fabricated time.
+    """
+    envelope = _band_limited_envelope(host, band_hz)
+    peak_idx = int(np.argmax(envelope))
+    peak_level = float(envelope[peak_idx])
+    tail_start = int(envelope.size * (1.0 - DECAY_NOISE_FLOOR_TAIL_FRACTION))
+    tail = envelope[tail_start:]
+    floor_level = float(np.median(tail)) if tail.size else 0.0
+    noise_floor_db = 20.0 * math.log10(
+        max(floor_level, 1e-300) / max(peak_level, 1e-300)
+    )
+    below_floor = noise_floor_db > -DECAY_TARGET_DROP_DB
+    target_level = peak_level * 10 ** (-DECAY_TARGET_DROP_DB / 20.0)
+    crossings = np.flatnonzero(envelope[peak_idx:] <= target_level)
+    time_ms = (
+        float(crossings[0] / host.sample_rate * 1000.0)
+        if not below_floor and crossings.size
+        else None
+    )
+    return {
+        "band_hz": [float(band_hz[0]), float(band_hz[1])],
+        "noise_floor_db": noise_floor_db,
+        "below_floor": bool(below_floor),
+        "time_to_neg20_db_ms": time_ms,
+    }
+
+
 def _compose(
     fc: float,
     egd: Mapping[str, Any],
@@ -1584,17 +1887,41 @@ def _compose(
     }
 
 
+def _gate_rungs(cell: Mapping[str, Any]) -> dict[str, Any]:
+    """Every commanded gate's own depth/centre, additive to the composed row.
+
+    ``_compose`` only carries what a rung MOVED against, so it excludes the
+    primary key -- there is nothing to compare the primary to. A reader
+    auditing the ladder itself, rather than the STABLE/MOVED call, needs
+    every rung including the primary, which is what this publishes.
+    """
+    return {
+        gate_key: {
+            "pooled_db": entry["db_mean"],
+            "centre_hz": entry["centre_hz_mean"],
+            "resolved": entry["resolved"],
+        }
+        for gate_key, entry in cell.items()
+    }
+
+
 def classify_round(
     captures: Sequence[RoundCapture],
     *,
     at: Sequence[float] | None = None,
     gate_ms: float = DEFAULT_GATE_MS,
     gates_ms: Sequence[float] = GATE_LADDER_MS,
+    pose_curves: Sequence[RoundPoseCurve] = (),
 ) -> dict[str, Any]:
     """Classify one round's features and return the artifact to bank.
 
     ``at`` pins the frequencies to classify; omitted, they are detected from
     the round's own pooled response (:func:`_detect_features`).
+
+    ``pose_curves`` is this round's banked lateral-walk curves
+    (:func:`load_round_pose_curves`), optional and orthogonal to ``captures``:
+    a caller with none still gets every EGD/gate/timing fact, plus a
+    ``pose_bank``/``pose_persistence`` NOT-RUN pair rather than a refusal.
 
     Raises :class:`FeatureClassificationRefused` — with
     :data:`CONTROLS_FAILED` when the known-answer controls did not pass, and
@@ -1604,7 +1931,7 @@ def classify_round(
     if not captures:
         raise FeatureClassificationRefused(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
     ladder = tuple(sorted({float(g) for g in gates_ms} | {float(gate_ms)}))
-    primary = max(ladder)
+    primary = float(gate_ms)
     primary_key = f"{primary:.0f}"
     trusted_band_hz = (f_trusted_floor_hz(primary * 1e-3), TRUSTED_CEILING_HZ)
     grid = analysis_grid()
@@ -1737,25 +2064,42 @@ def classify_round(
 
     gate_table, null_model, pooled_db = _gate_invariance(
         irs, peaks, irs[host_index], peaks[host_index], sample_rate, features, grid,
-        ladder,
+        ladder, primary_ms=primary,
     )
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
 
-    rows = [
-        _compose(
+    # Feature-independent work, once per round: each pose curve's detrended
+    # form, and the host IR's forward FFT — the rows loop only reads them.
+    pose_detrended = [
+        detrend(curve.magnitude_db, curve.freqs_hz) for curve in pose_curves
+    ]
+    decay_host = _DecayHost.of(irs[host_index], sample_rate)
+
+    rows = []
+    for fc in features:
+        key = f"{fc:.0f}"
+        row = _compose(
             fc,
-            egd_rows[f"{fc:.0f}"],
-            gate_table[f"{fc:.0f}"],
-            controls["C4_pair"]["at"][f"{fc:.0f}"],
-            pooled_db[f"{fc:.0f}"],
-            null_model[f"{fc:.0f}"]["matched"]["q"],
+            egd_rows[key],
+            gate_table[key],
+            controls["C4_pair"]["at"][key],
+            pooled_db[key],
+            null_model[key]["matched"]["q"],
             controls_ok=controls_ok,
             timing_available=bool(timing["available"]),
             primary_key=primary_key,
             gates_ms=ladder,
         )
-        for fc in features
-    ]
+        row["gate_rungs"] = _gate_rungs(gate_table[key])
+        row["pose_persistence"] = [
+            _pose_reading(curve, detrended, fc, pooled_db[key] < 0)
+            for curve, detrended in zip(pose_curves, pose_detrended)
+        ]
+        row["decay"] = {
+            name: _decay_read(decay_host, band)
+            for name, band in _decay_bands_hz(fc).items()
+        }
+        rows.append(row)
 
     return {
         "schema": CLASSIFICATION_SCHEMA_VERSION,
@@ -1770,6 +2114,7 @@ def classify_round(
             "feature_min_departure_db": FEATURE_MIN_DEPARTURE_DB,
             "feature_min_separation_oct": FEATURE_MIN_SEPARATION_OCT,
             "max_features": MAX_FEATURES,
+            "decay_target_drop_db": DECAY_TARGET_DROP_DB,
         },
         "measurement": {
             "sample_rate": sample_rate,
@@ -1789,5 +2134,6 @@ def classify_round(
         "controls": controls,
         "gate_invariance_null_model": null_model,
         "timing_scatter": timing,
+        "pose_bank": _pose_bank_block(pose_curves),
         "rows": rows,
     }
