@@ -377,8 +377,8 @@ def _print_walk(payload: dict[str, Any]) -> None:
         "states the price before Start"
     )
     print(
-        "  done: jasper-crossover-prescriber status -- a new banked round "
-        "appears under `banked`"
+        "  done: jasper-crossover-prescriber status -- the walk's takes "
+        "appear under banked.walk"
     )
 
 
