@@ -296,6 +296,19 @@ gap**, measured rather than declared. Only a best null under the usable bar with
 the branches *already* matched inside that bound means directivity or lobing on
 that axis — then stop and return to §3.
 
+**And a capped null cannot resolve a delay.** The depth ceiling and the
+corner-band level mismatch are one number read two ways — that formula is its
+own inverse, so an 8.6 dB ceiling *is* a 4.03 dB mismatch and a 4.03 dB mismatch
+*is* an 8.6 dB ceiling (jts3, 2026-08-31, as an example of the reading, not a
+number to carry). The cap squashes the depth-versus-delay curve toward itself,
+so the part of the depth that still varies with delay shrinks toward the repeat
+floor and the coordinate that "wins" is picked by σ rather than by the physics:
+**the depth bars above are bars on the DELAY's trustworthiness, not only on the
+depth.** So read the corner-band level match before trusting any null-derived
+delay, and when the ceiling lands under those bars on branches you believed were
+matched, fix the match or escalate to the in-phase grid below — that is the
+level speaking, not the timing.
+
 **Cross-check: the phase overlay.** With magnitude and phase banked per
 branch, read Δφ(f) between the branches across the corner octave. Two
 equal-level correlated sources sum to `20·log10(2·cos(Δφ/2))`: +6 dB at 0°,
