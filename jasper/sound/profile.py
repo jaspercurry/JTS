@@ -772,6 +772,24 @@ def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     return tuple(spec for spec in filters if spec.active())
 
 
+# The clamp floor _biquad_coeffs applies to eff_q below, and the smallest Q
+# jasper.camilla_emit.fmt's "%.4f" spells faithfully into CamillaDSP's YAML
+# (below it the emitter writes "q: 0.0000", a document that fails at apply
+# time). Below this floor an evaluated chain is not the filter that was
+# asked for: the evaluator silently widens it and the emitter silently
+# truncates it.
+EVALUABLE_Q_MIN = 1e-4
+
+# Above this Q, alpha = sin(w0)/(2Q) falls within ~8 orders of f64 epsilon of
+# 1 in the Peaking numerator/denominator's "1 +/- alpha/amp", and the two
+# stop cancelling symmetrically: measured +6.99 dB REALIZED from a requested
+# Q 8e14 CUT (an admitted -3.0 dB), exact unity pole radius by Q 1e16. The
+# ceiling keeps alpha/amp >= ~1e-8 across the audio band, so a cut's |H| <= 1
+# stays true in the arithmetic this module actually does, not only in the
+# algebra that assumes infinite precision.
+EVALUABLE_Q_MAX = 1e6
+
+
 def _biquad_coeffs(
     biquad_type: str, freq: float, gain_db: float, q: float
 ) -> tuple[float, float, float, float, float, float]:
@@ -793,7 +811,7 @@ def _biquad_coeffs(
     w0 = 2.0 * math.pi * max(freq, 1e-6) / RESPONSE_SAMPLE_RATE_HZ
     cw = math.cos(w0)
     sw = math.sin(w0)
-    eff_q = _SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else max(q, 1e-4)
+    eff_q = _SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else max(q, EVALUABLE_Q_MIN)
     alpha = sw / (2.0 * eff_q)
     if biquad_type == "Lowpass":
         return ((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)

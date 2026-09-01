@@ -1511,8 +1511,11 @@ def _validated_linearization(
     role is dropped (mirrors ``_validated_driver_corrections``); a known
     role's filter list is validated field-by-field and RAISES
     ``ActiveSpeakerConfigError`` on the first violation (never silently
-    dropped or clamped -- a hardware-bound safety invariant, matching the
-    fit engine's own explicit-raise per-filter-boost-cap invariant). Pinned by
+    dropped or clamped). The per-filter boost cap it re-proves is a
+    REALIZATION-FIDELITY bound, not a hearing/SPL clamp -- past it the
+    emitted filter stops being a faithful realization of the requested shape
+    (``linearization_fit.PER_FILTER_BOOST_CAP_DB``'s own derivation); the SPL
+    budget is charged by headroom accounting, not here. Pinned by
     tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
     and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
     """

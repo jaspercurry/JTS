@@ -655,6 +655,11 @@ priors measured.
     mechanism (stays), re-tags as integrity under the ADR-0002 test
     (stays), or is proposed for demotion to disclosure; demotions land
     only after owner ruling, as their own PRs. (M)
+    **Ruled and landed 2026-08-31 (ADR-0207):** owner ruled the 8-item
+    menu — cut depth/composed/Q bounds and the min-Q floor retired
+    outright in both doors, blend rationale demoted to
+    truncate-and-disclose, boost caps and region bar stay; a fully
+    demoted bound's machinery is deleted, never left as a vestige.
 6.9 Research intake: four owner research assignments are out as of
     2026-08-31 (correction granularity/audibility; reference axis and
     position artifacts; gating/windowing; structure/alignment and

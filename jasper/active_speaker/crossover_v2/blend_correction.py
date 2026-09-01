@@ -168,11 +168,9 @@ BLEND_MAX_FILTERS = 2
 #: peaking filter the series-1 fits actually emitted used, so the shape is one
 #: the loop has already realized on hardware.
 #:
-#: **Scope, since 2026-08-19.** That first sentence was measured and found too
-#: strong for a PRESCRIBED cut, and the prescription intake's own ceiling moved
-#: out from under this constant to
-#: :data:`~.blend_prescription.PRESCRIPTION_MAX_CUT_Q`, which carries the
-#: evidence and the ruling. This constant did not move, and does not need that
+#: **Scope.** The first sentence was measured (2026-08-19) and found too
+#: strong for a PRESCRIBED cut, whose Q is now unbounded at the intake
+#: (ADR-0207). This constant did not move, and does not need that
 #: argument to hold: its second leg is sufficient on its own — the narrow-defect
 #: convergence stop in :func:`solve_blend_correction`'s docstring, which is
 #: untouched, and which is why a FIXED-Q iterating solver still wants 2.0 even
@@ -182,7 +180,9 @@ BLEND_MAX_FILTERS = 2
 #: which is the skirt damage both prescribed rounds were rolled back on.
 BLEND_FILTER_Q = 2.0
 
-#: Per-filter cut ceiling, dB. Derived rather than chosen: the woofer's own
+#: Per-filter cut ceiling, dB — the deterministic solver's own emission bound,
+#: and nothing else's: a PRESCRIBED cut has no depth ceiling (ADR-0207).
+#: Derived rather than chosen: the woofer's own
 #: acknowledged ``measured_excess_db`` inside the blind zone was 2.09–2.26 dB
 #: across series-1 rounds r1/r2/r4 (1291.4–2077.2 Hz), and this model's own
 #: measured tracking error on jts3 is 0.5 dB

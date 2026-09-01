@@ -63,13 +63,10 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
 from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_MAX_BOOST_Q,
     DRIVER_MAX_COMPOSED_BOOST_DB,
-    DRIVER_MAX_COMPOSED_CUT_DB,
     DRIVER_MAX_FILTER_BOOST_DB,
-    DRIVER_MAX_FILTER_CUT_DB,
     DRIVER_MAX_FILTERS_PER_ROLE,
     DRIVER_MIN_BOOST_DB,
     DRIVER_MIN_CUT_DB,
-    DRIVER_MIN_Q,
     MAX_SPL_SPEND_BOUND_DB,
     DRIVER_PRESCRIPTION_KIND,
     DRIVER_PRESCRIPTION_REFUSAL_REASONS,
@@ -108,8 +105,6 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
 )
 from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
-    MAX_NORMALIZATION_SPEND_DB,
-    PER_FILTER_CUT_CAP_DB,
     linearization_filters_by_role,
 )
 from jasper.camilla_config_contract import SHELF_Q
@@ -701,14 +696,14 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     """A contract that omitted a bound would send a prescriber into a refusal."""
     bounds = driver_prescription_response_format()["bounds"]
 
-    assert bounds["q_min"] == DRIVER_MIN_Q
-    # Per SIGN, and named as a PAIR like the sibling class's: the cut arm has no
-    # ceiling, so its key says so in words rather than carrying a number a
-    # prescriber would then aim at. A single `q_max` would tell a cut it is
-    # bounded and a boost nothing about which bound it got.
     assert bounds["q_max_boost"] == DRIVER_MAX_BOOST_Q
     assert "q_max" not in bounds
-    assert "none" in bounds["q_max_cut"]
+    # The retired cut bounds are gone from the contract entirely, and the
+    # freedom is stated in their place (ADR-0207).
+    for retired_key in ("max_filter_cut_db", "max_composed_cut_db", "q_min",
+                        "q_max_cut"):
+        assert retired_key not in bounds
+    assert "ADR-0207" in bounds["cuts_are_free"]
     # The audibility floor is published as the DISCLOSURE threshold it now is —
     # one key for both signs, because it is one constant under two names — and
     # the two bound-shaped keys it used to wear are gone, so a prescriber cannot
@@ -717,8 +712,6 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert "min_cut_db" not in bounds
     assert "min_boost_db" not in bounds
     assert "subaudible_filters" in bounds["a_shallower_filter_discloses_and_is_admitted"]
-    assert bounds["max_filter_cut_db"] == DRIVER_MAX_FILTER_CUT_DB
-    assert bounds["max_composed_cut_db"] == DRIVER_MAX_COMPOSED_CUT_DB
     assert bounds["max_filters_per_role"] == DRIVER_MAX_FILTERS_PER_ROLE
     assert bounds["max_filter_boost_db"] == DRIVER_MAX_FILTER_BOOST_DB
     assert bounds["max_composed_boost_db"] == DRIVER_MAX_COMPOSED_BOOST_DB
@@ -757,17 +750,19 @@ def test_the_response_format_states_every_bound_the_gate_applies():
         dp.COMPOSED_BOOST_EXCEEDED,
         dp.FILTER_Q_OUT_OF_RANGE,
     }
-    # …and all NINE retired slugs are gone from the module entirely, not
+    # …and all ELEVEN retired slugs are gone from the module entirely, not
     # merely from this block: a prescriber that could still read
     # `driver_feature_not_boostable` in `refusal_reasons` would satisfy a bar
     # nothing applies. Six went on 2026-08-23; the knee bar went with the nanny
-    # burn-down; the two audibility-floor slugs went on 2026-08-29.
+    # burn-down; the two audibility-floor slugs went on 2026-08-29; the two
+    # cut-depth ceilings went with ADR-0207.
     for retired in (
         "driver_feature_not_classified", "driver_feature_not_cuttable",
         "driver_feature_not_boostable", "driver_feature_depth_unavailable",
         "driver_boost_exceeds_feature_depth", "driver_boost_unvouched",
         "driver_boost_in_crossover_overlap",
         "driver_filter_cut_too_shallow", "driver_filter_boost_too_shallow",
+        "driver_filter_cut_too_deep", "driver_composed_cut_exceeded",
     ):
         assert retired not in DRIVER_PRESCRIPTION_REFUSAL_REASONS
         assert not hasattr(dp, retired.upper().removeprefix("DRIVER_"))
@@ -837,24 +832,32 @@ def test_the_passband_edges_are_inclusive_and_refuse_by_name(packet, freq, ok):
     assert excinfo.value.reason == dp.FILTER_OUTSIDE_PASSBAND
 
 
-@pytest.mark.parametrize(("q", "ok"), [
-    (DRIVER_MIN_Q, True),
-    (DRIVER_MAX_BOOST_Q, True),
-    (DRIVER_MIN_Q - 0.01, False),
-    # The row that used to refuse. A cut's width is FREE — the 2026-08-19
-    # ruling, which this gate spent months restating as its own opposite — so
-    # the boost ceiling no longer reaches this arm at all.
-    (DRIVER_MAX_BOOST_Q + 0.01, True),
-    (14.0, True),
-    (100.0, True),
+@pytest.mark.parametrize(("q", "ok", "reason"), [
+    (0.5, True, None),
+    # The retired floor's neighbourhood, admitted now (ADR-0207): a broad cut
+    # is a legitimate reversible experiment, and broadband bookkeeping is not
+    # a hazard.
+    (0.49, True, None),
+    (0.1, True, None),
+    (1e-4, True, None),
+    (14.0, True, None),
+    (100.0, True, None),
+    (1e6, True, None),
+    # Below the evaluator's floor: silently clamped by _biquad_coeffs and
+    # spelled "q: 0.0000" by the emitter, whatever the gain's sign.
+    (5e-5, False, "driver_filter_malformed"),
+    (0.0, False, "driver_filter_malformed"),
+    (-2.0, False, "driver_filter_malformed"),
+    # Past the instrument-fidelity ceiling: the f64 cascade stops evaluating
+    # the filter that was actually asked for.
+    (2e6, False, "driver_filter_q_out_of_range"),
 ])
-def test_a_cut_has_a_q_floor_and_no_q_ceiling(packet, q, ok):
-    """Only the FLOOR binds a cut: below it a Peaking is a broadband tilt.
-
-    Above it nothing does. A cut removes level and cannot clip at any width, so
-    there is no component-damage or hearing mechanism to name for a narrow one —
-    ``docs/measurement-loop-doctrine.md`` §4 — and the emitter agrees, asking a
-    biquad's ``q`` only to be positive and finite.
+def test_a_cut_q_is_bounded_by_the_evaluable_range(packet, q, ok, reason):
+    """A cut's Q is free within [1e-4, 1e6] (ADR-0207) — the range this
+    system's evaluator and emitter realize faithfully, not a policy choice —
+    and refused outside it: malformed below the floor (not a shape this
+    system can realize), out-of-range past the ceiling (not the filter the
+    f64 arithmetic can still evaluate).
     """
     document = _document([_cut(q=q)], packet)
     if ok:
@@ -862,8 +865,7 @@ def test_a_cut_has_a_q_floor_and_no_q_ceiling(packet, q, ok):
         return
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, document)
-    assert excinfo.value.reason == dp.FILTER_Q_OUT_OF_RANGE
-    assert excinfo.value.evidence["q_min"] == DRIVER_MIN_Q
+    assert excinfo.value.reason == reason
 
 
 @pytest.mark.parametrize("q", [DRIVER_MAX_BOOST_Q + 0.01, 14.0, 100.0])
@@ -887,29 +889,33 @@ def test_the_same_q_a_cut_may_use_refuses_a_boost(tmp_path, q):
     # The split has ONE owner, so the validator, its message and the contract
     # cannot disagree about which arm a filter got.
     assert driver_max_q_for_gain(1.0) == DRIVER_MAX_BOOST_Q
-    assert driver_max_q_for_gain(-1.0) == driver_max_q_for_gain(0.0) == math.inf
+    assert driver_max_q_for_gain(-1.0) == driver_max_q_for_gain(0.0) == 1e6
 
 
-@pytest.mark.parametrize(("gain", "reason"), [
-    (-DRIVER_MIN_CUT_DB, None),
-    (-DRIVER_MAX_FILTER_CUT_DB, None),
-    # The two rows that used to refuse `driver_filter_cut_too_shallow`. Only the
-    # CEILING is a bound now; a zero-gain filter is inert whatever its Q and is
-    # the floor's clearest case rather than an exception to it.
-    (-DRIVER_MIN_CUT_DB + 0.01, None),
-    (0.0, None),
-    (-DRIVER_MAX_FILTER_CUT_DB - 0.01, dp.FILTER_CUT_TOO_DEEP),
+@pytest.mark.parametrize("gain", [
+    -DRIVER_MIN_CUT_DB,
+    -DRIVER_MIN_CUT_DB + 0.01,
+    0.0,
+    # Depths past the retired 12 dB per-filter ceiling (ADR-0207): a cut
+    # spends no headroom at any depth, and the measured verify is the net.
+    -12.0,
+    -12.01,
+    -30.0,
 ])
-def test_only_the_cut_ceiling_is_a_bound_and_it_refuses_by_name(
-    packet, gain, reason
-):
-    document = _document([_cut(gain=gain)], packet)
-    if reason is None:
-        assert _gate(packet, document).filters[0]["gain"] == gain
-        return
+def test_a_cut_is_admitted_at_any_depth(packet, gain):
+    assert _gate(
+        packet, _document([_cut(gain=gain)], packet)
+    ).filters[0]["gain"] == gain
+
+
+def test_a_gain_that_underflows_f64_is_refused_as_malformed(packet):
+    """The evaluability floor, not a depth policy: 10**(-13000/40) is exactly
+    0.0, and _biquad_coeffs divides by it — an uncaught ZeroDivisionError the
+    gate must fail closed on rather than let an unevaluable filter through to
+    ``_check_composed``."""
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, document)
-    assert excinfo.value.reason == reason
+        _gate(packet, _document([_cut(gain=-13000.0)], packet))
+    assert excinfo.value.reason == "driver_filter_malformed"
 
 
 @pytest.mark.parametrize("gain", [-0.3, 0.3, 0.0, -0.49, 0.49])
@@ -1027,24 +1033,17 @@ def test_the_per_role_filter_count_is_the_branchs_own_ceiling(packet, tmp_path):
     assert len(_gate(packet, _document(filters[:8], packet)).filters) == 8
 
 
-def test_the_composed_cap_is_evaluated_per_role_not_summed(packet, tmp_path):
-    """Two filters at the same frequency deliver more than either alone.
-
-    Each is inside the per-filter ceiling; the cascade is not. Checked on the
-    evaluated response through the one biquad evaluator, so this gate and the
-    emitter cannot disagree about what CamillaDSP will realize.
-    """
+def test_a_composed_cut_past_the_retired_ceiling_is_admitted(packet, tmp_path):
+    """Two stacked deep cuts compose past the retired 18 dB ceiling and are
+    admitted (ADR-0207): a composed cut spends no headroom, and no downstream
+    check re-imposes one."""
     packet = _speaker(tmp_path / "deep", classification=_classification([
         _verdict(TWEETER_FEATURE_HZ),
     ]))
     stacked = [_cut(gain=-10.0, q=1.0), _cut(gain=-10.0, q=1.0)]
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(stacked, packet))
-
-    assert excinfo.value.reason == dp.COMPOSED_CUT_EXCEEDED
-    assert excinfo.value.evidence["role"] == "tweeter"
-    assert excinfo.value.evidence["composed_cut_db"] < -DRIVER_MAX_COMPOSED_CUT_DB
+    accepted = _gate(packet, _document(stacked, packet))
+    assert [f["gain"] for f in accepted.filters] == [-10.0, -10.0]
 
 
 def test_one_roles_composed_spend_is_not_charged_to_the_other(packet, tmp_path):
@@ -2701,7 +2700,7 @@ def test_no_admissible_cascade_charges_more_than_the_published_bound():
             {
                 "type": "Peaking",
                 "freq": float(np.exp(rng.uniform(np.log(lo), np.log(hi)))),
-                "q": float(rng.uniform(dp.DRIVER_MIN_Q, dp.DRIVER_MAX_BOOST_Q)),
+                "q": float(rng.uniform(0.5, dp.DRIVER_MAX_BOOST_Q)),
                 "gain": float(rng.uniform(
                     dp.DRIVER_MIN_BOOST_DB, DRIVER_MAX_FILTER_BOOST_DB
                 )),
@@ -2974,7 +2973,7 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
     # only to be positive and finite, so an unbounded cut Q is emittable rather
     # than accepted here and refused downstream.
     prescription = _gate(
-        packet, _document([_cut(gain=-DRIVER_MAX_FILTER_CUT_DB, q=14.0)], packet),
+        packet, _document([_cut(gain=-12.0, q=14.0)], packet),
     )
     reduced = linearization_filters_by_role(
         driver_prescription_to_candidate_fields(prescription, fitted=None)[
@@ -2986,7 +2985,7 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
 
     assert safe["tweeter"] == [{
         "biquad_type": "Peaking", "freq": TWEETER_FEATURE_HZ,
-        "q": 14.0, "gain": -DRIVER_MAX_FILTER_CUT_DB,
+        "q": 14.0, "gain": -12.0,
     }]
 
 
@@ -3182,15 +3181,15 @@ def test_the_prescribed_branch_names_its_author_without_claiming_to_be_a_fit(
 
 @pytest.mark.parametrize("freq_hz", [40.0, 60.0, 100.0, 1000.0, 5000.0, 20000.0])
 @pytest.mark.parametrize(("q", "gain_db"), [
-    (DRIVER_MAX_BOOST_Q, -DRIVER_MAX_FILTER_CUT_DB),
+    (DRIVER_MAX_BOOST_Q, -12.0),
     (DRIVER_MAX_BOOST_Q, -DRIVER_MIN_CUT_DB),
-    (DRIVER_MIN_Q, -DRIVER_MAX_FILTER_CUT_DB),
+    (0.5, -12.0),
     # Above the boost arm's ceiling, which a cut may now sit at. A SAMPLE and
     # not a corner: since 2026-08-29 the cut arm has no upper Q bound, so
     # nothing here is the widest admissible filter and this row must not be read
     # as claiming otherwise. What holds at every Q is the direction — a cut's
     # |H| never exceeds unity — and the margin's scaling is the test below.
-    (14.0, -DRIVER_MAX_FILTER_CUT_DB),
+    (14.0, -12.0),
 ])
 def test_a_cut_at_every_corner_of_the_envelope_is_a_stable_biquad_at_48_khz(
     freq_hz, q, gain_db
@@ -3256,7 +3255,7 @@ def test_the_pole_radius_margin_scales_with_the_centre_frequency():
     import math
 
     def margin(freq_hz: float) -> float:
-        amplitude = 10.0 ** (-DRIVER_MAX_FILTER_CUT_DB / 40.0)
+        amplitude = 10.0 ** (-12.0 / 40.0)
         w0 = 2.0 * math.pi * freq_hz / 48_000.0
         alpha = math.sin(w0) / (2.0 * DRIVER_MAX_BOOST_Q)
         radius = math.sqrt(abs((1.0 - alpha / amplitude) / (1.0 + alpha / amplitude)))
@@ -3363,28 +3362,11 @@ def test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to():
     )
 
     assert DRIVER_MAX_BOOST_Q == _PEAKING_Q_MAX
-    assert DRIVER_MAX_FILTER_CUT_DB == PER_FILTER_CUT_CAP_DB
-    assert DRIVER_MAX_COMPOSED_CUT_DB == MAX_NORMALIZATION_SPEND_DB
     assert DRIVER_MIN_CUT_DB == _MIN_FILTER_GAIN_DB
     assert DRIVER_MAX_FILTERS_PER_ROLE == MAX_FILTERS_PER_DRIVER
     assert DRIVER_MAX_FILTERS_PER_ROLE == (
         camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER
     )
-
-
-def test_the_q_floor_is_the_prescription_familys_not_the_boost_drop_radius():
-    """`_PEAKING_Q_MIN` is the #1967 boost-exclusion drop radius, not a cut bound.
-
-    Adopting it here would borrow a number for the one reason it was not chosen,
-    and would refuse a broad cut the fit engine's own cut loops already make.
-    """
-    from jasper.active_speaker.crossover_v2.blend_prescription import (
-        PRESCRIPTION_MIN_Q,
-    )
-    from jasper.active_speaker.linearization_fit import _PEAKING_Q_MIN
-
-    assert DRIVER_MIN_Q == PRESCRIPTION_MIN_Q
-    assert DRIVER_MIN_Q != _PEAKING_Q_MIN
 
 
 # --------------------------------------------------------------------------- #
@@ -3607,7 +3589,7 @@ def test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest(tmp_
     path = spool.prescription_spool_path()
     envelope = json.loads(path.read_text())
     document = json.loads(envelope["document"])
-    document["filters"][0]["gain"] = -DRIVER_MAX_FILTER_CUT_DB - 1.0
+    document["filters"][0]["gain"] = DRIVER_MAX_FILTER_BOOST_DB + 1.0
     payload = json.dumps(document).encode()
     envelope["document"] = payload.decode()
     envelope["prescription_sha256"] = spool.prescription_sha256(payload)
@@ -3618,7 +3600,7 @@ def test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest(tmp_
             round_ordinal=4, accepts=spool.STAGEABLE_KINDS
         )
 
-    assert excinfo.value.reason == dp.FILTER_CUT_TOO_DEEP
+    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
 
 #: A minimum-phase DIP 0.143 octaves above the tweeter's cuttable peak — the
@@ -4402,11 +4384,10 @@ def test_a_shelf_pays_the_same_caps_as_a_bell(tmp_path):
         ))
     assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(
-            [dict(shelf, gain=-DRIVER_MAX_FILTER_CUT_DB - 0.01)], packet,
-        ))
-    assert excinfo.value.reason == dp.FILTER_CUT_TOO_DEEP
+    # The cut arm has no ceiling to pay (ADR-0207): the same shelf cutting
+    # past the retired 12 dB rail is admitted.
+    deep = _gate(packet, _document([dict(shelf, gain=-12.01)], packet))
+    assert deep.filters[0]["gain"] == -12.01
 
 
 def _shelf_pair(lead_hz: float, taper_hz: float, gain: float) -> list[dict[str, Any]]:

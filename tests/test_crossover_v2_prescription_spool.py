@@ -630,12 +630,13 @@ def test_a_hand_edited_document_is_caught_by_the_digest():
 @pytest.mark.parametrize(
     "replacement, expected_reason",
     [
-        # Past the per-filter cut ceiling.
-        (('"gain": -1.2', '"gain": -12.0'), "filter_cut_too_deep"),
+        # Past the boost ceiling. The cut arm's own ceilings are retired
+        # (ADR-0207), so the sign flip is what an edit must reach for.
+        (('"gain": -1.2', '"gain": 4.0'), "filter_boost_too_high"),
         # Outside the region the staging step banked.
         (('"freq": 1400.0', '"freq": 14000.0'), "filter_outside_region"),
-        # Past the Q ceiling.
-        (('"q": 2.0', '"q": 12.0'), "filter_q_out_of_range"),
+        # A Q the emitter cannot build at all.
+        (('"q": 2.0', '"q": -2.0'), "filter_malformed"),
         # A boost, which has no seam. It reaches the ROUTE now: the positional
         # bar that used to refuse first was demoted to a finding by the nanny
         # burn-down, so `boost_route_unavailable` — retained by ruling R8 — is
@@ -1236,7 +1237,7 @@ def test_a_refused_prescription_stages_nothing_and_exits_two(tmp_path, monkeypat
     state = _write_state(tmp_path, ordinal=8)
 
     def _refuse(_args):
-        raise BlendPrescriptionRefused("filter_cut_too_deep", "too deep")
+        raise BlendPrescriptionRefused("filter_boost_too_high", "too deep")
 
     monkeypatch.setattr(cli, "_gate", _refuse)
 
