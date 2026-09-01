@@ -115,6 +115,13 @@ class OpenMeasurementDoor:
     plan: Any
     measurement_volume_db: float
     graph_fingerprint: str
+    #: The tuning-scope hash of the graph this door opened ON — the round's
+    #: comparability anchor, banked at entry (#3489). Distinct from
+    #: ``graph_fingerprint``, which names the MEASUREMENT graph the door then
+    #: installed. ``""`` when the entry graph could not be named; the live
+    #: verdict is ``graph.comparability_boundary``, which latches when a later
+    #: re-entry finds a different one.
+    entry_scope_fingerprint: str = ""
 
 
 @asynccontextmanager
@@ -228,6 +235,7 @@ async def measurement_door(
                 plan=plan,
                 measurement_volume_db=measurement_volume_db,
                 graph_fingerprint=fingerprint,
+                entry_scope_fingerprint=graph.entry_scope_fingerprint,
             )
         except BaseException as raised:  # noqa: BLE001 - CancelledError is the point
             # Held so the give-back can ATTACH its own failures to it rather

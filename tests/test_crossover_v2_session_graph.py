@@ -22,7 +22,10 @@ from jasper.active_speaker.crossover_v2.session_graph import (
     MeasurementSessionGraph,
     SessionGraphError,
 )
+from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDARY
 from jasper.camilla import CamillaUnavailable
+from jasper.sound.profile import build_sound_filters
+from tests.test_crossover_v2_tuning_scope import FLAT, SAVED, household_graph
 
 ENTRY_PATH_NAME = "entry.yml"
 GRAPH = "program: graph\n"
@@ -557,3 +560,92 @@ def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
     assert "result=reinstall" in stomp[0].getMessage()
     loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
     assert len(loads) == 2, "the stomp is repaired"
+
+
+# --------------------------------------------------------------------------- #
+# the comparability boundary a round banks at entry (#3489)
+# --------------------------------------------------------------------------- #
+#
+# The scoped fingerprint itself is pinned in
+# ``tests/test_crossover_v2_tuning_scope.py``; these are the SESSION's use of
+# it — a summed sweep restores the household graph and the next routed
+# stimulus re-enters on it, which is the one moment a session can see that the
+# bytes under its own captures moved.
+
+
+def _reenter(tmp_path, first: str, second: str):
+    """Enter on ``first``, step aside for a summed sweep, re-enter on ``second``."""
+    entry = tmp_path / ENTRY_PATH_NAME
+    entry.write_text(first, encoding="utf-8")
+    cam = FakeCam(entry_path=str(entry))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    asyncio.run(graph.install())
+    banked = graph.entry_scope_fingerprint
+    asyncio.run(graph.restore())
+    entry.write_text(second, encoding="utf-8")
+    asyncio.run(graph.install())
+    return graph, banked
+
+
+def test_a_preference_eq_save_between_two_captures_is_not_a_boundary(tmp_path):
+    """The false boundary #3489 exists to prevent.
+
+    The household saved taste EQ while the round was walking. Every byte of
+    the entry graph moved, but nothing the round measures through did — so the
+    session's captures either side of the save are still comparable and it says
+    nothing.
+    """
+    graph, banked = _reenter(
+        tmp_path,
+        household_graph(build_sound_filters(FLAT)),
+        household_graph(build_sound_filters(SAVED)),
+    )
+
+    assert banked
+    assert graph.entry_scope_fingerprint == banked
+    assert graph.comparability_boundary is False
+
+
+def test_a_tuning_layer_change_between_two_captures_latches_the_boundary(
+    tmp_path, caplog,
+):
+    """The boundary that must fire, and the anchor that must NOT move with it.
+
+    An out-of-band reconcile changed a per-driver trim mid-round. The session's
+    banked entry stays what it entered on — a round keeps its entry graph — and
+    the disclosure is loud, because two captures either side of this went
+    through different tuning layers.
+    """
+    saved = build_sound_filters(SAVED)
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        graph, banked = _reenter(
+            tmp_path,
+            household_graph(saved),
+            household_graph(saved, woofer_gain_db=-4.0),
+        )
+
+    assert graph.entry_scope_fingerprint == banked
+    assert graph.comparability_boundary is True
+    disclosed = [
+        record
+        for record in caplog.records
+        if record.name == _LOGGER
+        and f"result={COMPARABILITY_BOUNDARY}" in record.getMessage()
+    ]
+    assert len(disclosed) == 1
+    assert disclosed[0].levelno == logging.WARNING
+
+
+def test_an_unnameable_entry_graph_makes_no_comparison_at_all(tmp_path):
+    """An absent measurement is not evidence of a defect.
+
+    The entry graph does not parse, so the session cannot name what it entered
+    on. It must not then claim comparability by hashing nothing — and it must
+    not refuse the install either.
+    """
+    graph, banked = _reenter(tmp_path, "- not: a mapping\n", "- still: not one\n")
+
+    assert banked == ""
+    assert graph.entry_scope_fingerprint == ""
+    assert graph.comparability_boundary is False
