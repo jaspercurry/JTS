@@ -53,6 +53,7 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
 from ._logging import configure_verbose_logging
+from ._refusal import refused
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -78,14 +79,7 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
 
 
 def _refused(reason: str, detail: str) -> int:
-    print(
-        json.dumps(
-            {"status": "refused", "reason": reason, "detail": detail},
-            indent=2, sort_keys=True,
-        )
-    )
-    print(f"refused ({reason}): {detail}", file=sys.stderr)
-    return EXIT_REFUSED
+    return refused(reason, detail, exit_code=EXIT_REFUSED)
 
 
 def _cmd_propose(args: argparse.Namespace) -> int:

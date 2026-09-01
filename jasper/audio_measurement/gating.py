@@ -24,6 +24,9 @@ This module does no I/O and holds no state:
   (rectangular head through the peak, half-Hann taper into the reflection)
   and returns the :data:`~jasper.active_speaker.driver_acoustics` SC-2
   gating-block fragment describing what it did.
+* :func:`build_gate_window` is that window's SHAPE in isolation, for a
+  caller that already knows the peak and the span — including a caller
+  forcing a span this module would not have chosen (a gate ladder).
 * :func:`exempt_gating_block` builds the SC-2 block for a capture that is
   exempt from gating (today's near-field driver capture, taken a few
   centimetres from the driver — too close for a room reflection to matter).
@@ -779,6 +782,61 @@ def _fragment(
     }
 
 
+def build_gate_window(
+    n: int,
+    *,
+    peak_idx: int,
+    span: int,
+    taper_fraction: float = TAPER_FRACTION,
+    lead: int | None = None,
+) -> np.ndarray:
+    """The gate's window shape alone: a float64 array of length ``n``.
+
+    Unity from the head through ``peak_idx``, a flat plateau, then a
+    half-Hann tail ``0.5 * (1 + cos(pi t))`` over the last
+    ``taper_fraction`` of ``span`` samples, and zero past ``peak_idx +
+    span``. This is the single owner of that shape — every window this
+    module applies, and every window a forced-span caller builds, comes
+    from here, so a ladder rung and a shipped gate cannot drift apart.
+
+    ``lead`` bounds the head. ``None`` is the shipped path: rectangular all
+    the way to index 0, which is correct when the array was already trimmed
+    to a fixed pre-peak margin. An integer starts the window ``lead``
+    samples before the peak with a raised-cosine fade into it, which is
+    what a FORCED span needs — an unbounded head would add the whole
+    pre-peak array to the window, so a 3 ms rung could not be built from an
+    IR carrying a 5 ms lead, and a hard edge there would itself become a
+    feature of the spectrum under test.
+
+    Raises ``ValueError`` when the window would not fit inside ``n``:
+    truncating it silently would publish a shorter window than the one the
+    caller's numbers are stated against.
+    """
+    end = peak_idx + span
+    if span <= 0 or peak_idx < 0 or end >= n:
+        raise ValueError(
+            f"gate window does not fit: n={n} peak_idx={peak_idx} span={span}"
+        )
+    win = np.zeros(n, dtype=np.float64)
+    if lead is None:
+        win[: peak_idx + 1] = 1.0
+    else:
+        start = max(0, peak_idx - lead)
+        win[start : peak_idx + 1] = 1.0
+        fade = peak_idx - start
+        if fade:
+            win[start:peak_idx] = np.hanning(fade * 2)[:fade]
+    taper_len = max(1, int(round(taper_fraction * span)))
+    flat_end = max(peak_idx, end - taper_len)
+    win[peak_idx:flat_end] = 1.0
+    tail_len = end - flat_end  # always > 0: taper_len >= 1 and span > 0
+    idx = np.arange(flat_end, end + 1)
+    t = (idx - flat_end) / tail_len
+    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
+    # win[end + 1:] stays 0 from initialization.
+    return win
+
+
 def gate_impulse_response(
     ir: np.ndarray,
     sample_rate: int,
@@ -881,16 +939,7 @@ def gate_impulse_response(
         reflection_onset_ms = None
         first_reflection_ms = None
 
-    win = np.zeros(n, dtype=np.float64)
-    win[: p + 1] = 1.0
-    taper_len = max(1, int(round(taper_fraction * span)))
-    flat_end = max(p, end - taper_len)
-    win[p:flat_end] = 1.0
-    tail_len = end - flat_end  # always > 0 here: taper_len >= 1 and span > 0
-    idx = np.arange(flat_end, end + 1)
-    t = (idx - flat_end) / tail_len
-    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
-    # win[end + 1:] stays 0 from initialization.
+    win = build_gate_window(n, peak_idx=p, span=span, taper_fraction=taper_fraction)
 
     gated = (ir_arr.astype(np.float64) * win).astype(np.float32)
     fragment = _fragment(
@@ -941,15 +990,9 @@ def apply_gate_fragment(
     end = p + span
     if not (0 <= p < end < len(ir_arr)):
         raise ValueError("signal gate fragment is outside the paired IR")
-    win = np.zeros(len(ir_arr), dtype=np.float64)
-    win[: p + 1] = 1.0
-    taper_len = max(1, int(round(taper_fraction * span)))
-    flat_end = max(p, end - taper_len)
-    win[p:flat_end] = 1.0
-    tail_len = end - flat_end
-    idx = np.arange(flat_end, end + 1)
-    t = (idx - flat_end) / tail_len
-    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
+    win = build_gate_window(
+        len(ir_arr), peak_idx=p, span=span, taper_fraction=taper_fraction
+    )
     return (ir_arr.astype(np.float64) * win).astype(np.float32)
 
 
