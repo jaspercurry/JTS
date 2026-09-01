@@ -84,6 +84,7 @@ from jasper.audio_measurement.program import ExcitationProgram
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
+from .measurement_programs import MeasurementProgram
 from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
@@ -122,6 +123,7 @@ __all__ = [
     "AngleCaptureRequest",
     "ResolvedStop",
     "pose_at_angle",
+    "request_for_program",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -129,6 +131,7 @@ __all__ = [
     "program_for_stop",
     "index_phase_map",
     "announced_indexes",
+    "WALK_DISTANCE_UNSUPPORTED",
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
@@ -352,6 +355,11 @@ class AngleCaptureRequest:
     adopts this walk. An operator who could state numbers here could measure
     one speaker through another's level match.
 
+    ``program`` is PROVENANCE, not geometry: the name of the
+    :class:`~.measurement_programs.MeasurementProgram` these stops came from
+    (``"baseline/express"``, ``"spot"``), or ``""`` for a free-form walk
+    nobody named. Nothing parses it -- the stops are the walk.
+
     ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
     because the reverse-null is **one act at one place**
     (``docs/REFACTOR-TUNING-2026-08.md`` §1: design-axis-only, where the
@@ -374,6 +382,7 @@ class AngleCaptureRequest:
     delayed_role: str = ""
     delay_us: float = 0.0
     level_matched: bool = False
+    program: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -559,6 +568,61 @@ def both_at(
     return AngleCaptureRequest(stops=tuple(stops), mover=mover)
 
 
+def request_for_program(
+    program: MeasurementProgram,
+    *,
+    mover: str = MOVER_HUMAN,
+    polarity: str = POLARITY_NORMAL,
+    inverted_role: str = "",
+    delayed_role: str = "",
+    delay_us: float = 0.0,
+    level_matched: bool = False,
+) -> AngleCaptureRequest:
+    """The walk one named program asks for, in the table's own order.
+
+    Per-driver at every pose, because that is the only regime a session walk
+    plays (:data:`WALK_REGIME_UNSUPPORTED`). A pose's ``repeats`` become that
+    many ADJACENT identical stops, which is how the shipped seam already says
+    "more captures here": the microphone moves once per DISTINCT pose, so
+    repeats cost captures and no travel.
+
+    The graph flags are passed through untouched -- a program states geometry
+    and nothing else, so the reverse-null, the confirmation delay and the level
+    match stay the caller's to state (and the spec's to judge).
+
+    Reach is not re-checked here: :class:`AngleCaptureRequest` already refuses a
+    pose beyond the stated mover's envelope, in the vocabulary this module
+    shares with the session.
+    """
+    if program.mark_distance_m != MARK_DISTANCE_M:
+        raise LateralWalkRefused(
+            WALK_DISTANCE_UNSUPPORTED,
+            f"program {program.program_id}/{program.size} measures at "
+            f"{program.mark_distance_m} m and this walk derives every pose at "
+            f"{MARK_DISTANCE_M} m",
+        )
+    return AngleCaptureRequest(
+        stops=tuple(
+            AngleStop(pose.azimuth_deg, REGIME_PER_DRIVER, pose.elevation_deg)
+            for pose in program.poses
+            for _ in range(pose.repeats)
+        ),
+        mover=mover,
+        polarity=polarity,
+        inverted_role=inverted_role,
+        delayed_role=delayed_role,
+        delay_us=delay_us,
+        level_matched=level_matched,
+        # ``spot`` carries caller geometry rather than a registry row, so its
+        # size names nothing an operator chose.
+        program=(
+            program.program_id
+            if program.program_id == "spot"
+            else f"{program.program_id}/{program.size}"
+        ),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # resolution -- request -> the shipped primitives
 # --------------------------------------------------------------------------- #
@@ -697,6 +761,13 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
 
 
+#: A program row names a mark distance this walk cannot honour. The walk's
+#: geometry is derived at :data:`MARK_DISTANCE_M` and only there
+#: (:func:`pose_at_angle`, and the prompt copy that states the distance), so a
+#: row naming another one is refused rather than silently measured at 1 m.
+#: The close-reference row lifts this when the engine learns distance.
+WALK_DISTANCE_UNSUPPORTED = "walk_distance_unsupported"
+
 #: A stop is not per-driver. A session lateral group plays MEASURE's per-driver
 #: object at every pose, so a summed stop would be measured as something else.
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
@@ -787,6 +858,7 @@ WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 
 WALK_REFUSAL_REASONS = frozenset({
+    WALK_DISTANCE_UNSUPPORTED,
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,

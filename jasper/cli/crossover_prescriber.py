@@ -118,7 +118,7 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
 )
-from jasper.identity import read_identity
+from jasper.identity import read_identity, speaker_url
 
 EXIT_OK = 0
 EXIT_EVIDENCE_UNREADABLE = 1
@@ -153,30 +153,6 @@ STAGED_LIFECYCLE_NOTE = (
 #: style, so the section that reads a file the packet never sees still answers
 #: in the vocabulary the other three answer in.
 SPOOL_UNREADABLE_REASON = "permission_denied"
-
-
-def _speaker_url(path: str) -> str:
-    """A handoff URL for THIS speaker, from the hostname it is configured with.
-
-    Through :func:`jasper.identity.read_identity` — the repository's single
-    speaker-identity reader, which exists (its own words) "so consumers ...
-    stop reconstructing identity ad-hoc and drifting from each other" — rather
-    than an ``os.environ`` read of ``JASPER_HOSTNAME`` spelled a second time
-    here. It is TOTAL and never raises, which is what a status verb needs:
-    a speaker whose identity files are unreadable still gets a URL, at the
-    documented default.
-
-    Deliberately NOT ``Config.from_env``, whose ``hostname`` field says the
-    same thing: that constructor refuses outright when no voice provider is
-    configured and validates two dozen unrelated knobs on the way past, so an
-    orientation verb built on it would fail on a bench speaker that has never
-    been given an API key.
-
-    Why this exists at all: speakers are ``jts1.local``, ``jts3.local``, …, and
-    a printed ``http://jts.local/...`` sends its reader to a different box —
-    silently, because that name usually resolves to something.
-    """
-    return f"http://{read_identity().hostname}{path}"
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
@@ -856,6 +832,14 @@ def _banked_section(
     per-driver filter must be shown to be aimed at, so both ride inside the
     banked section rather than beside it: they are facts about this round's
     evidence, and they are absent for the same reasons the round is.
+
+    ``walk`` is the exception to "absent for the same reasons": the packet's
+    ``lateral_poses`` block is filled by ACCEPTED takes, while ``available``
+    above needs a ``round_receipt.json``, which is only written once a graded
+    post-apply VERIFY completes. A measurement-only angle walk therefore banks
+    poses and no receipt, and without this sub-block the operator who staged it
+    — or the driver polling this verb for it — would read the round's silence
+    as the walk's.
     """
     region = packet_region_band_hz(packet)
     verdicts = packet_feature_classifications(packet)
@@ -875,6 +859,17 @@ def _banked_section(
             None
             if verdicts
             else _reason(_block(packet, "feature_classification"), packet_error)
+        ),
+    }
+    lateral = _block(packet, "lateral_poses")
+    lateral_angles = lateral.get("angles_deg")
+    walk: dict[str, Any] = {
+        "available": bool(lateral.get("available")),
+        "n_takes": lateral.get("n_takes") or 0,
+        "angles_deg": list(lateral_angles) if isinstance(lateral_angles, list) else [],
+        "reason": (
+            None if lateral.get("available")
+            else _reason(lateral, packet_error)
         ),
     }
     round_block = _block(packet, "round")
@@ -898,6 +893,11 @@ def _banked_section(
         )
         if available
         else f"no round receipt ({reason})"
+    ) + (
+        f"; {walk['n_takes']} walk take(s) at "
+        f"{', '.join(str(deg) for deg in walk['angles_deg'])} deg"
+        if walk["available"]
+        else f"; no walk takes ({walk['reason']})"
     )
     return {
         "available": available,
@@ -906,6 +906,7 @@ def _banked_section(
         "round_id": session.get("round_id"),
         "region": region_state,
         "classification": classification,
+        "walk": walk,
         "summary": summary,
     }
 
@@ -1223,8 +1224,8 @@ def status_document(
     truthfully regardless. A prescription waiting for the next round is a fact
     about this speaker whichever directory the operator happened to name.
     """
-    crossover_url = _speaker_url(CROSSOVER_PAGE_PATH)
-    declaration_url = _speaker_url(SOUND_SETUP_PAGE_PATH)
+    crossover_url = speaker_url(CROSSOVER_PAGE_PATH)
+    declaration_url = speaker_url(SOUND_SETUP_PAGE_PATH)
     sections = _status_sections(packet, packet_error)
     return {
         "speaker": {

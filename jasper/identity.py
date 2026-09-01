@@ -134,6 +134,21 @@ def _resolve_hostname() -> str:
     return recorded or DEFAULT_HOSTNAME
 
 
+def speaker_url(path: str) -> str:
+    """A handoff URL for THIS speaker. TOTAL — never raises.
+
+    Through :func:`read_identity`, so ``jts3.local`` never prints as
+    ``jts.local`` and sends its reader to a different box — silently, because
+    that name usually resolves to something.
+
+    Deliberately NOT ``Config.from_env``, whose ``hostname`` field says the
+    same thing: that constructor refuses outright when no voice provider is
+    configured, so an orientation verb built on it would fail on a bench
+    speaker that has never been given an API key.
+    """
+    return f"http://{read_identity().hostname}{path}"
+
+
 def read_identity() -> SpeakerIdentity:
     """Resolve this speaker's identity. TOTAL — never raises.
 

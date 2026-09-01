@@ -264,6 +264,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
+        "program": request.program,
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a
@@ -289,6 +290,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         logger, "angle_capture.request_staged",
         stops=len(request.stops),
         mover=request.mover,
+        program=request.program,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
         polarity=request.polarity,
         inverted_role=request.inverted_role,
@@ -529,6 +531,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         delayed_role=str(doc.get("delayed_role") or ""),
         delay_us=float(doc.get("delay_us") or 0.0),
         level_matched=bool(doc.get("level_matched")),
+        program=str(doc.get("program") or ""),
     )
 
 
