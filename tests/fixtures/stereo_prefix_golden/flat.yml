@@ -35,6 +35,20 @@ filters:
   sound_preamp:
     type: Gain
     parameters: { gain: 0.0000, inverted: false, mute: false }
+  sound_curve_bass:
+    type: Biquad
+    parameters:
+      type: Lowshelf
+      freq: 100.0000
+      q: 0.7071068
+      gain: 0.0000
+  sound_curve_tilt:
+    type: Biquad
+    parameters:
+      type: Highshelf
+      freq: 3000.0000
+      q: 0.7071068
+      gain: 0.0000
   sound_simple_sub_bass:
     type: Biquad
     parameters:
@@ -141,7 +155,7 @@ pipeline:
     name: master_gain
   - type: Filter
     channels: [0]
-    names: [sound_preamp, sound_simple_sub_bass, sound_simple_bass, sound_simple_mid, sound_simple_presence, sound_simple_treble, sound_advanced_1, sound_advanced_2, sound_advanced_3, sound_advanced_4, sound_advanced_5, sound_advanced_6, sound_advanced_7, sound_advanced_8, flat]
+    names: [sound_preamp, sound_curve_bass, sound_curve_tilt, sound_simple_sub_bass, sound_simple_bass, sound_simple_mid, sound_simple_presence, sound_simple_treble, sound_advanced_1, sound_advanced_2, sound_advanced_3, sound_advanced_4, sound_advanced_5, sound_advanced_6, sound_advanced_7, sound_advanced_8, flat]
   - type: Filter
     channels: [1]
-    names: [sound_preamp, sound_simple_sub_bass, sound_simple_bass, sound_simple_mid, sound_simple_presence, sound_simple_treble, sound_advanced_1, sound_advanced_2, sound_advanced_3, sound_advanced_4, sound_advanced_5, sound_advanced_6, sound_advanced_7, sound_advanced_8, flat]
+    names: [sound_preamp, sound_curve_bass, sound_curve_tilt, sound_simple_sub_bass, sound_simple_bass, sound_simple_mid, sound_simple_presence, sound_simple_treble, sound_advanced_1, sound_advanced_2, sound_advanced_3, sound_advanced_4, sound_advanced_5, sound_advanced_6, sound_advanced_7, sound_advanced_8, flat]

@@ -116,8 +116,7 @@ def _without_preference_layer(graph: Mapping[str, Any]) -> dict[str, Any]:
 
     Both halves are needed and each on its own would leave the layer visible:
     the ``filters`` block carries the slots' parameters (a gain drag), and the
-    ``pipeline`` block carries which of them are wired (a band added, or the
-    step disappearing entirely on a profile that went flat).
+    ``pipeline`` block carries which of them are wired.
     """
 
     from jasper.sound.profile import sound_filter_slot_names
@@ -143,10 +142,9 @@ def _step_without_slots(step: Any, slots: frozenset[str]) -> Any | None:
     """One pipeline step with the preference names dropped, or ``None``.
 
     ``None`` means the step WAS the preference layer and nothing else. It has
-    to vanish rather than survive with an empty ``names`` list: a flat profile
-    emits no step at all (``_emit_baseline_pipeline`` writes one only for a
-    non-empty name list), so a graph whose household went flat must hash equal
-    to the same graph before the save.
+    to vanish rather than survive with an empty ``names`` list, so a graph
+    hashes the same whatever its household's profile and whether it was
+    written before or after the fixed preference frame.
     """
 
     if not isinstance(step, Mapping):
