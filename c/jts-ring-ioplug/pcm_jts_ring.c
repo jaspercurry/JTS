@@ -1041,10 +1041,16 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     snd_pcm_ioplug_t *io = &p->io;
     int rc;
 
-    // Access modes. PLAYBACK advertises RW + MMAP: the emulated mmap area a
-    // playback app writes into is APP-authored, so alsa-lib's mmap-commit path
-    // only ever hands our `transfer` the frames the app itself wrote — no stale
-    // bytes can reach the ring. CAPTURE advertises RW ONLY. With mmap_rw=0 the
+    // Access modes. PLAYBACK advertises RW + MMAP. The emulated mmap area is NOT
+    // app-authored — behind a `plug`/rate wrapper alsa-lib authors it from
+    // malloc'd memory and can commit frames the converter never wrote, so stale
+    // bytes DO reach `transfer` (#3443, which measured shairport's heap arriving
+    // as full-scale samples). Keeping MMAP is deliberate: a converter demands an
+    // mmap-capable slave (pcm_rate.c forces SND_PCM_ACCBIT_MMAP), so withdrawing
+    // it fails the lane at hw_params rather than fixing anything. The leak is
+    // answered by zeroing what we hand back instead — see jts_ring_scrub_mmap_area
+    // and the tail of jts_ring_transfer.
+    // CAPTURE advertises RW ONLY. With mmap_rw=0 the
     // capture mmap area is filled by OUR `transfer`, and this transfer legitimately
     // returns SHORT (delivered < requested) on the writer-alive-empty pacing block.
     // alsa-lib's ioplug mmap-capture avail/commit accounting can expose the mmap
