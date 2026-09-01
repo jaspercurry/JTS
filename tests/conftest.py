@@ -23,6 +23,7 @@ Three pieces here, all load-bearing:
   from a test_doctor case — see #254 / #255 / #256 for context (this
   fixture, which contains that leak, landed in #256).
 """
+import io
 import logging
 import os
 import socketserver
@@ -436,3 +437,25 @@ def a_process_with_a_volume_owner(monkeypatch):
         return fader["db"]
 
     seat_process_volume_owner(monkeypatch, _set, _get)
+
+
+@pytest.fixture
+def logging_sandbox(monkeypatch):
+    """Give a deterministic single 'journal' StreamHandler on a clean root
+    (pytest's caplog handler would otherwise be the first one
+    set_console_debug finds), and restore everything afterward. Yields the
+    console handler so tests can assert its level."""
+    from jasper import flight_recorder as fr
+
+    root = logging.getLogger()
+    jasper = logging.getLogger("jasper")
+    saved = (root.handlers[:], root.level, jasper.handlers[:], jasper.level)
+    root.handlers[:] = []
+    jasper.handlers[:] = []
+    console = logging.StreamHandler(io.StringIO())
+    root.addHandler(console)
+    root.setLevel(logging.INFO)
+    monkeypatch.setattr(fr, "_ring", None, raising=False)
+    yield console
+    root.handlers[:], root.level, jasper.handlers[:], jasper.level = saved
+    fr._ring = None

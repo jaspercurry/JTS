@@ -191,11 +191,10 @@ def _console_handler() -> "logging.Handler | None":
 
     Prefer the handler whose stream is stderr/stdout so an unrelated
     StreamHandler can't be mistaken for the console (which could leave the
-    real journal handler emitting DEBUG). Fall back to the first *exact*
-    ``logging.StreamHandler`` for setups without a stderr/stdout handler
-    (e.g. tests) — matching by exact type (not ``isinstance``) so a
-    StreamHandler subclass that isn't a real console, such as pytest's
-    ``LogCaptureHandler``, is never mistaken for one."""
+    real journal handler emitting DEBUG). The fallback for setups without a
+    stderr/stdout handler (e.g. tests) matches exact type only, so a
+    subclass like pytest's ``LogCaptureHandler`` is never mistaken for the
+    console."""
     import sys
     consoles = (sys.stderr, sys.stdout)
     fallback = None

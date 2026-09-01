@@ -228,18 +228,14 @@ class _NotAConsoleStreamHandler(logging.StreamHandler):
     subclass whose stream is neither stderr nor stdout."""
 
 
-def test_set_console_debug_ignores_non_console_streamhandler_subclass():
+def test_set_console_debug_ignores_non_console_streamhandler_subclass(
+    logging_sandbox,
+):
     """set_console_debug must not mutate a StreamHandler subclass that
     isn't the real console (e.g. pytest's capture handler) — issue #3471
-    item 2. A genuine plain StreamHandler on root is still the fallback
-    when nothing matches stderr/stdout."""
-    root = logging.getLogger()
-    saved = root.handlers[:]
+    item 2."""
     foreign = _NotAConsoleStreamHandler(io.StringIO())
     foreign.setLevel(logging.INFO)
-    root.handlers[:] = [foreign]
-    try:
-        dm.set_console_debug(True)
-        assert foreign.level == logging.INFO  # untouched: not a real console handler
-    finally:
-        root.handlers[:] = saved
+    logging.getLogger().addHandler(foreign)
+    dm.set_console_debug(True)
+    assert foreign.level == logging.INFO

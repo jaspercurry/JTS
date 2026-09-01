@@ -153,7 +153,7 @@ def install(
     # every frame). Keep hot-loop logging coarser than DEBUG, or rate-limit it.
     jasper_logger = logging.getLogger("jasper")
     if _ring is not None:
-        jasper_logger.removeHandler(_ring)  # idempotent: drop any prior install's handler
+        jasper_logger.removeHandler(_ring)
     _ring = RingFlushHandler(capacity, dump_stream or sys.stderr)
     jasper_logger.addHandler(_ring)
     # Apply the persisted Tier-B debug toggle for this subsystem (raises the

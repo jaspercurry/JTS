@@ -24,26 +24,6 @@ def _rec(level, msg, name="jasper.test"):
     return logging.LogRecord(name, level, "f.py", 1, msg, None, None)
 
 
-@pytest.fixture
-def logging_sandbox(monkeypatch):
-    """Give a deterministic single 'journal' StreamHandler on a clean root
-    (pytest's caplog handler would otherwise be the first one
-    set_console_debug finds), and restore everything afterward. Yields the
-    console handler so tests can assert its level."""
-    root = logging.getLogger()
-    jasper = logging.getLogger("jasper")
-    saved = (root.handlers[:], root.level, jasper.handlers[:], jasper.level)
-    root.handlers[:] = []
-    jasper.handlers[:] = []
-    console = logging.StreamHandler(io.StringIO())
-    root.addHandler(console)
-    root.setLevel(logging.INFO)
-    monkeypatch.setattr(fr, "_ring", None, raising=False)
-    yield console
-    root.handlers[:], root.level, jasper.handlers[:], jasper.level = saved
-    fr._ring = None
-
-
 # ----------------------------------------------------------- RingFlushHandler
 
 
