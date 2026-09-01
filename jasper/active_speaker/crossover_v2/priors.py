@@ -179,7 +179,7 @@ def measure_sweep_durations_s(
     }
 
 
-def check_priors(*, fc_hz: float) -> MeasurementPriors:
+def check_priors(*, fc_hz: float | None) -> MeasurementPriors:
     """CHECK's priors — Fc only, for the MEASURE level solve (#1825).
 
     CHECK used to run on bare defaults. Its gain solve now scopes each band's
@@ -196,7 +196,7 @@ def check_priors(*, fc_hz: float) -> MeasurementPriors:
 
 def measure_priors(
     *,
-    fc_hz: float,
+    fc_hz: float | None,
     source_preset: Any,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None,
     ambient_report: Any,
@@ -285,9 +285,10 @@ def measure_priors(
         ),
         # §4.2's candidate-required bins, from their single owner above. Gated
         # with the other configured-path fields for the partial-set reason in
-        # this docstring, never re-derived here.
+        # this docstring, never re-derived here. Also absent with no corner: the
+        # union is half an overlap band, and a 1-way declares neither.
         candidate_required_band_hz_by_role=(
-            None if protection_sections_by_role is None
+            None if protection_sections_by_role is None or fc_hz is None
             else candidate_required_band_hz(
                 sections_by_role(source_preset.crossover_regions), fc_hz=fc_hz,
             )
@@ -338,7 +339,7 @@ def candidate_priors(
     )
 
 
-def lateral_priors(*, fc_hz: float, ambient_report: Any) -> MeasurementPriors:
+def lateral_priors(*, fc_hz: float | None, ambient_report: Any) -> MeasurementPriors:
     """Priors for one lateral pose — MEASURE-shaped, deliberately NEUTRAL.
 
     Everything the anchor gets EXCEPT the configured-path composition maps. That
@@ -364,7 +365,7 @@ def lateral_priors(*, fc_hz: float, ambient_report: Any) -> MeasurementPriors:
 
 def verify_priors(
     *,
-    fc_hz: float,
+    fc_hz: float | None,
     source_preset: Any,
     predicted_sum: Any,
     sweep_bounds: tuple[float | None, float | None],
@@ -393,7 +394,7 @@ def verify_priors(
     )
 
 
-def cloud_priors(*, fc_hz: float) -> MeasurementPriors:
+def cloud_priors(*, fc_hz: float | None) -> MeasurementPriors:
     """Priors for a position-group capture — deliberately WITHOUT ``predicted_sum``.
 
     VERIFY's priors carry the MEASURE-derived prediction so ``_analyze_verify``
@@ -418,7 +419,7 @@ def cloud_priors(*, fc_hz: float) -> MeasurementPriors:
     return MeasurementPriors(crossover_fc_hz=fc_hz)
 
 
-def entry_baseline_priors(*, fc_hz: float) -> MeasurementPriors:
+def entry_baseline_priors(*, fc_hz: float | None) -> MeasurementPriors:
     """Priors for #2291's pre-apply capture — the SAME two withholdings
     :func:`cloud_priors` makes, for a different reason.
 

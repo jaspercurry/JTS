@@ -106,6 +106,45 @@ def _preset() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
 
 
+# --- the 1-way (subless passive main) shape, #3507 -----------------------------
+#
+# One amp channel, one declaration, no crossover region and no local sub. Its
+# MEASURE is ONE routed solo of the whole speaker, so there is no upper role and
+# no corner anywhere in this block.
+
+WAY1_BAND = FrequencyBand(45.0, 18000.0)
+
+CAPS_WAY1 = {"full_range": 0.0}
+
+
+def _roles_way1() -> list[RoleBand]:
+    return [RoleBand("full_range", 0, WAY1_BAND)]
+
+
+def _one_way_preset() -> ActiveSpeakerPreset:
+    return ActiveSpeakerPreset.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_preset",
+        "preset_id": "passive-full-range-v1",
+        "name": "Passive full-range test preset",
+        "way_count": 1,
+        "channel_map": {
+            "layout": "mono",
+            "outputs": [{
+                "index": 0,
+                "side": "mono",
+                "driver_role": "full_range",
+                "label": "mono full_range",
+                "startup_muted": True,
+            }],
+        },
+        "drivers": {
+            "full_range": {"manufacturer": "Example", "model": "FR-1"},
+        },
+        "crossover_regions": [],
+    })
+
+
 # --- fake analyses -------------------------------------------------------------
 
 
@@ -633,19 +672,27 @@ def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
     )
 
 
-def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
+def _conductor(
+    fakes: FakeSeams,
+    *,
+    roles_bands: list[RoleBand] | None = None,
+    fc_hz: float | None = FC_HZ,
+    driver_caps_dbfs: Mapping[str, float] | None = None,
+    driver_spacing_m: float = 0.15,
+    **kwargs,
+) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
     supplied_baseline = "measure_entry_baseline" in kwargs
     conductor = CrossoverV2Session(
         session_id=SESSION,
         source_preset=source_preset,
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
+        roles_bands=_roles() if roles_bands is None else roles_bands,
+        fc_hz=fc_hz,
+        driver_caps_dbfs=CAPS if driver_caps_dbfs is None else driver_caps_dbfs,
         session_volume_db=SESSION_VOLUME_DB,
         seams=seams,
-        driver_spacing_m=0.15,
+        driver_spacing_m=driver_spacing_m,
         **kwargs,
     )
     # A session that walks ``PHASE_ENTRY_BASELINE`` is stage ONE: it captures
@@ -658,6 +705,26 @@ def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     ):
         conductor._measure_entry_baseline = _fixture_entry_baseline(conductor)
     return conductor
+
+
+def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
+    """:func:`_conductor`'s 1-way twin — one declaration, and ``fc_hz=None``.
+
+    ``None`` rather than a stand-in corner: a passive main has none, and every
+    consumer reads the absence rather than a number (see
+    ``build_verify_program``'s no-crossover mode). ``driver_spacing_m`` is 0.0
+    for the matching reason and stated rather than omitted: parallax is a
+    woofer-to-tweeter geometry, and one driver has no gap to correct for.
+    """
+    return _conductor(
+        fakes,
+        roles_bands=_roles_way1(),
+        fc_hz=None,
+        driver_caps_dbfs=CAPS_WAY1,
+        driver_spacing_m=0.0,
+        source_preset=kwargs.pop("source_preset", _one_way_preset()),
+        **kwargs,
+    )
 
 
 def _attempt_floor() -> FloorStats:

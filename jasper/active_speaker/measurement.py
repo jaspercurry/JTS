@@ -34,11 +34,15 @@ import os
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import (
+    OutputTopology,
+    main_speaker_groups,
+    topology_is_subless_passive_mains,
+)
 
 from ._common import (
     finite_float as _finite_float,
@@ -211,11 +215,31 @@ def _valid_region(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _active_groups(topology: OutputTopology) -> list[Any]:
+def _crossover_groups(topology: OutputTopology) -> list[Any]:
+    """The groups that carry an INTER-DRIVER crossover.
+
+    The summed-check vocabulary: a summed target is a claim about two driver
+    branches adding up, which only a group with a crossover between them has.
+    """
     return [
         group for group in topology.speaker_groups
         if group.mode in {"active_2_way", "active_3_way"}
     ]
+
+
+def _measured_groups(topology: OutputTopology) -> list[Any]:
+    """The groups whose drivers need per-driver measurement evidence.
+
+    Every crossover group, PLUS a subless passive main (#3507): its one
+    full-range driver is the plant a recommissioning session measures with one
+    routed solo, so it needs the same declared target, safety limits and
+    excitation ceilings every other measured driver has. Passive mains WITH a
+    sub are excluded — that shape is bass management, not this session.
+    """
+    groups = _crossover_groups(topology)
+    if topology_is_subless_passive_mains(topology):
+        groups = groups + main_speaker_groups(topology)
+    return groups
 
 
 def _hardware_payload(topology: OutputTopology) -> Mapping[str, Any]:
@@ -275,14 +299,30 @@ def physical_driver_target(
     return target
 
 
-def active_driver_targets(topology: OutputTopology) -> list[dict[str, Any]]:
-    """Return the driver targets that need measurement evidence."""
+def _driver_targets_for(
+    topology: OutputTopology, groups: Sequence[Any],
+) -> list[dict[str, Any]]:
+    """Every channel of ``groups`` as a fingerprinted driver target.
 
-    targets: list[dict[str, Any]] = []
-    for group in _active_groups(topology):
-        for channel in group.channels:
-            targets.append(physical_driver_target(topology, group, channel))
-    return targets
+    The build is shared so the two eligibility filters above stay the only
+    difference between what a driver surface sees and what a summed one does.
+    """
+    return [
+        physical_driver_target(topology, group, channel)
+        for group in groups
+        for channel in group.channels
+    ]
+
+
+def active_driver_targets(topology: OutputTopology) -> list[dict[str, Any]]:
+    """Return the driver targets that need measurement evidence.
+
+    Eligibility is :func:`_measured_groups`, which is WIDER than "has a
+    crossover" — see its docstring. ``active_summed_targets`` beside it keeps
+    the narrower filter, because a summed claim needs two branches.
+    """
+
+    return _driver_targets_for(topology, _measured_groups(topology))
 
 
 def _summed_fingerprint(
@@ -307,7 +347,12 @@ def _summed_fingerprint(
 def active_summed_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return active speaker groups that need a summed crossover check."""
 
-    driver_targets = active_driver_targets(topology)
+    crossover_groups = _crossover_groups(topology)
+    # NOT ``active_driver_targets``: that set is wider than this one since
+    # #3507, so asking it here would build and discard a passive main's
+    # full-range target on every call. The fingerprint below is unchanged —
+    # it only ever consumed the crossover groups' own targets.
+    driver_targets = _driver_targets_for(topology, crossover_groups)
     return [
         {
             "speaker_group_id": group.id,
@@ -320,7 +365,7 @@ def active_summed_targets(topology: OutputTopology) -> list[dict[str, Any]]:
                 driver_targets,
             ),
         }
-        for group in _active_groups(topology)
+        for group in crossover_groups
     ]
 
 
@@ -329,7 +374,7 @@ def _target_lookup(topology: OutputTopology) -> dict[str, dict[str, Any]]:
 
 
 def _group_ids(topology: OutputTopology) -> set[str]:
-    return {group.id for group in _active_groups(topology)}
+    return {group.id for group in _crossover_groups(topology)}
 
 
 def _summed_lookup(topology: OutputTopology) -> dict[str, dict[str, Any]]:
@@ -707,7 +752,7 @@ def _expected_summed_output_indices(
     topology: OutputTopology,
     speaker_group_id: str,
 ) -> list[int]:
-    for group in _active_groups(topology):
+    for group in _crossover_groups(topology):
         if group.id != speaker_group_id:
             continue
         indices: list[int] = []

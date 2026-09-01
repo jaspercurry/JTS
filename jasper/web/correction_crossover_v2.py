@@ -106,9 +106,12 @@ from jasper.active_speaker.crossover_v2.durable_state import (
     build_conductor_state,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
+    REASON_REGISTRY,
     REASON_SESSION_CEILING_EXPIRED,
+    REASON_SPEAKER_SHAPE_UNSUPPORTED,
 )
 # The round-outcome vocabulary, which the domain owns (#2662). This module
 # still DECIDES which of the four a graded session came to — see
@@ -4266,7 +4269,9 @@ class V2ConductorContext:
 
     preset: Any
     roles_bands: tuple
-    fc_hz: float
+    #: The declared crossover corner, or ``None`` on a 1-way main, which has
+    #: none. Never a stand-in figure — see ``resolve_conductor_context``.
+    fc_hz: float | None
     driver_caps_dbfs: dict[str, float]
     # Per-role longest admissible ONE sweep, seconds, from the SAME owner the
     # admission gate reads (``effective_sweep_duration_limit_s``). The MEASURE
@@ -4301,14 +4306,17 @@ class V2ConductorContext:
     # it needs no schema or allowlist change. A role absent here simply gets no
     # beaming prior, disclosed as such rather than assuming a diameter.
     radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
-    # Flat-linearization plan PR-4: the tweeter's confirmed
+    # Flat-linearization plan PR-4: each role's confirmed
     # ``measurement_band_hz`` — the contract-derived echo/null analysis band
     # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
     # pipeline's call site (crossover_v2_flow.CrossoverV2Session's own
-    # tweeter_measurement_band_hz ctor param). ``None`` degrades to that
-    # module default, never a refused session — a declared-metadata gap here
-    # is not a reason to block a measurement the household is entitled to run.
-    tweeter_measurement_band_hz: tuple[float, float] | None = None
+    # tweeter_measurement_band_hz ctor param, which reads the tweeter's).
+    # A role missing here degrades to that module default, never a refused
+    # session — a declared-metadata gap is not a reason to block a measurement
+    # the household is entitled to run.
+    measurement_band_hz_by_role: Mapping[str, tuple[float, float]] = field(
+        default_factory=dict
+    )
 
 
 def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
@@ -4475,7 +4483,6 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     it — the exact 2026-07-28 JTS3 dead-end.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
     from jasper.active_speaker.design_draft import (
@@ -4490,41 +4497,57 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         resolve_driver_measurement_band_hz,
     )
     from jasper.active_speaker.playback_route import resolve_active_playback_device
+    from jasper.active_speaker.profile import required_driver_roles
     from jasper.audio_measurement.program import RoleBand
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology import (
+        load_output_topology,
+        topology_is_subless_passive_mains,
+    )
 
-    if not status.get("active"):
-        raise CrossoverV2Refused(
-            "this speaker has no active crossover to measure"
-        )
-    setup = status.get("setup")
-    if not isinstance(setup, Mapping) or setup.get("status") != "ready":
-        raise CrossoverV2Refused(
-            "protected speaker setup is not ready; finish it before measuring"
-        )
-    # The one loud line 7j buys. A rotated topology fingerprint used to make
-    # `setup.status` `blocked` and refuse this session outright; it is now a
-    # notice, and this is the moment it is worth saying — once per session
-    # open, not on every `/state` poll.
-    if any(
-        isinstance(issue, Mapping)
-        and issue.get("code") == BASELINE_TOPOLOGY_CHANGED
-        for issue in (setup.get("issues") or ())
-    ):
-        log_event(
-            logger,
-            "correction.crossover_v2_baseline_topology_stale",
-            level=logging.WARNING,
-            code=BASELINE_TOPOLOGY_CHANGED,
-        )
     topology = load_output_topology()
-    # Ensure a ready crossover preview BEFORE resolving the capture preset —
-    # otherwise resolve_capture_preset's no-preview fallback silently bakes
-    # the generic bundled preset into every MEASURE candidate (see docstring).
-    ensure_crossover_preview_ready()
+    # A subless passive main has no active crossover, so the two gates below —
+    # both of which ask whether an ACTIVE crossover is commissioned — are not
+    # questions about it. Its plant is the whole speaker, one routed solo, and
+    # the preset resolved from its own topology is what says so.
+    passive_mains = topology_is_subless_passive_mains(topology)
+    if not passive_mains:
+        if not status.get("active"):
+            raise CrossoverV2Refused(
+                "this speaker has no active crossover to measure"
+            )
+        setup = status.get("setup")
+        if not isinstance(setup, Mapping) or setup.get("status") != "ready":
+            raise CrossoverV2Refused(
+                "protected speaker setup is not ready; finish it before measuring"
+            )
+        # The one loud line 7j buys. A rotated topology fingerprint used to make
+        # `setup.status` `blocked` and refuse this session outright; it is now a
+        # notice, and this is the moment it is worth saying — once per session
+        # open, not on every `/state` poll.
+        if any(
+            isinstance(issue, Mapping)
+            and issue.get("code") == BASELINE_TOPOLOGY_CHANGED
+            for issue in (setup.get("issues") or ())
+        ):
+            log_event(
+                logger,
+                "correction.crossover_v2_baseline_topology_stale",
+                level=logging.WARNING,
+                code=BASELINE_TOPOLOGY_CHANGED,
+            )
+        # Ensure a ready crossover preview BEFORE resolving the capture preset —
+        # otherwise resolve_capture_preset's no-preview fallback silently bakes
+        # the generic bundled preset into every MEASURE candidate (see docstring).
+        # A passive box compiles no preview at all; its preset comes from the
+        # topology, so asking for one would refuse a session it cannot serve.
+        ensure_crossover_preview_ready()
     preset = resolve_capture_preset(topology)
-    if preset.way_count != 2:
-        raise CrossoverV2Refused("the v2 conductor flow is scoped to 2-way presets")
+    if preset.way_count not in (1, 2):
+        raise CrossoverV2Refused(
+            REASON_REGISTRY[REASON_SPEAKER_SHAPE_UNSUPPORTED].message,
+            code=REASON_SPEAKER_SHAPE_UNSUPPORTED,
+        )
+    roles = required_driver_roles(preset.way_count)
     draft = load_design_draft(topology=topology)
     safety_profile = draft.get("driver_safety_profile")
     # The gate the refusal text has always CLAIMED (issue #1821). Evaluated
@@ -4559,9 +4582,21 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             fingerprint = str(target.get("target_fingerprint") or "")
             if role and fingerprint:
                 role_targets[role] = fingerprint
-    if set(role_targets) != {"woofer", "tweeter"}:
+    if set(role_targets) != set(roles):
+        # The roles are the fact worth keeping, and the registry copy cannot
+        # carry them — so they go on the journal line beside the code.
+        log_event(
+            logger,
+            "correction.crossover_v2_measurement_targets_missing",
+            level=logging.WARNING,
+            gate="session_open",
+            code=REASON_MEASUREMENT_TARGETS_MISSING,
+            declared=",".join(roles),
+            found=",".join(sorted(role_targets)),
+        )
         raise CrossoverV2Refused(
-            "the woofer and tweeter measurement targets are not both active"
+            REASON_REGISTRY[REASON_MEASUREMENT_TARGETS_MISSING].message,
+            code=REASON_MEASUREMENT_TARGETS_MISSING,
         )
     # The declaration's per-role EFFECTIVE datasheet sensitivities -- naked
     # figure with any declared in-line pad folded in (#1665) -- threaded into
@@ -4576,7 +4611,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     roles_bands = []
     caps: dict[str, float] = {}
     sweep_duration_limits_s: dict[str, float] = {}
-    for channel, role in enumerate(("woofer", "tweeter")):
+    measurement_bands: dict[str, tuple[float, float]] = {}
+    for channel, role in enumerate(roles):
         try:
             # program_admission=True: this context exists solely to serve the
             # admission-gated CHECK/MEASURE programs, whose channel routing
@@ -4602,28 +4638,32 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             raise CrossoverV2Refused(
                 f"the {role}'s safe excitation limits could not be resolved"
             ) from exc
+        # Flat-linearization plan PR-4: this role's confirmed measurement band.
+        # Its OWN except arm rather than the refusing one above, because a
+        # declared-metadata gap on this optional surface must never refuse a
+        # session — a role absent from the map simply has no declared band. By
+        # the time the ceilings above succeeded for this role,
+        # resolve_driver_excitation_ceilings has already validated this same
+        # field on the same confirmed record, so it is not expected to raise.
+        try:
+            measurement_bands[role] = resolve_driver_measurement_band_hz(
+                safety_profile, role_targets[role],
+            )
+        except (ExcitationSafetyPlanError, ValueError):
+            pass
         roles_bands.append(RoleBand(role, channel, band))
         caps[role] = float(cap)
-    # Flat-linearization plan PR-4: the tweeter's confirmed measurement band —
-    # by the time this loop above has succeeded for role="tweeter",
-    # resolve_driver_excitation_ceilings has ALREADY validated this exact
-    # field on the same confirmed record (see its "Band-edge asymmetry"
-    # docstring paragraph), so this call is not expected to raise here; it is
-    # still wrapped, because a declared-metadata gap on this NEW, optional
-    # surface must never turn into a refused measurement session — the
-    # conductor's own tweeter_measurement_band_hz ctor param degrades to the
-    # module default on None.
-    try:
-        tweeter_measurement_band_hz = resolve_driver_measurement_band_hz(
-            safety_profile, role_targets["tweeter"],
-        )
-    except (ExcitationSafetyPlanError, ValueError):
-        tweeter_measurement_band_hz = None
-    region = preset.crossover_regions[0]
-    fc_hz = float(region.fc_hz)
+    # ``None`` is "this speaker declares no corner", which is what a 1-way main
+    # is. Every consumer of ``fc_hz`` treats it as the absence of a crossover
+    # rather than as a corner at zero — see ``crossover_v2.priors`` and
+    # ``build_verify_program``'s no-crossover mode.
+    fc_hz = (
+        float(preset.crossover_regions[0].fc_hz)
+        if preset.crossover_regions else None
+    )
     session_volume_db = derive_session_volume_db(
         safety_profile,
-        [role_targets["woofer"], role_targets["tweeter"]],
+        [role_targets[role] for role in roles],
         declared_sensitivities=declared_sensitivities,
     )
     playback_device, _playback_device_source = resolve_active_playback_device(
@@ -4659,12 +4699,12 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         driver_spacing_m=0.0,
         topology=topology,
         playback_device=playback_device,
-        role_channels={"woofer": 0, "tweeter": 1},
+        role_channels={role: channel for channel, role in enumerate(roles)},
         sound_design_revision=int(draft.get("revision", 0)),
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
         radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
-        tweeter_measurement_band_hz=tweeter_measurement_band_hz,
+        measurement_band_hz_by_role=measurement_bands,
     )
 
 
@@ -6292,6 +6332,7 @@ def prepare_v2_session(
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
+    from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
     from jasper.active_speaker.crossover_v2.topology_prescription import (
         apply_topology_pin,
     )
@@ -6444,25 +6485,37 @@ def prepare_v2_session(
         raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
         topology_prescription = None
         if raw_topology is not None:
+            # The four declarations below are a TWO-role reading — the bands a
+            # corner sits between and the upper driver's published slope. A 1-way
+            # main declares none of them, so all four go as ``None`` and the
+            # reader is told the way count instead: it owns "may this
+            # prescription run", and refusing there keeps that answer in one
+            # place rather than in a host that would have to reconstruct it.
+            #
             # Woofer first, tweeter second — the order this context builds them in.
-            woofer_band, tweeter_band = (
-                context.roles_bands[0].band, context.roles_bands[1].band,
+            pair = (
+                context.roles_bands if len(context.roles_bands) == 2
+                and "tweeter" in context.role_targets else ()
             )
             woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
             try:
                 topology_prescription = read_topology_prescription(
                     raw_topology,
-                    declared_floor_hz=tweeter_band.lower_hz,
-                    lower_driver_ceiling_hz=woofer_band.upper_hz,
+                    declared_floor_hz=pair[1].band.lower_hz if pair else None,
+                    lower_driver_ceiling_hz=pair[0].band.upper_hz if pair else None,
                     minimum_slope_db_per_octave=(
                         resolve_driver_protection_slope_db_per_octave(
                             context.safety_profile, context.role_targets["tweeter"],
-                        )
+                        ) if pair else None
                     ),
                     beaming_ceiling_hz=(
                         None if woofer_diameter_mm is None
                         else beaming_onset_hz(float(woofer_diameter_mm))
                     ),
+                    # ``None`` is the parameter's own "not stated": this context's
+                    # ``preset`` is typed ``Any``, so an unknown shape leaves the
+                    # reader's way-count gate silent rather than guessing a count.
+                    way_count=getattr(context.preset, "way_count", None),
                 )
             except TopologyPrescriptionRefused as exc:
                 raise CrossoverV2Refused(
@@ -6477,8 +6530,15 @@ def prepare_v2_session(
         try:
             alignment_prescription = read_alignment_prescription(
                 (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
-                # THIS round's corner, never ``context.fc_hz`` — see the pin above.
+                # THIS round's corner, never ``context.fc_hz`` — see the pin
+                # above. ``None`` on a speaker with no crossover region; the
+                # reader is told the way count and refuses on that, which is why
+                # it is reached at all rather than short-circuited here.
                 fc_hz=session_fc_hz,
+                # THIS round's preset — the pinned one when a pin ran — asked the
+                # same way the corner above is. See the topology reader's call for
+                # why an unknown shape reads as "not stated".
+                way_count=getattr(session_preset, "way_count", None),
                 # The preset's own declared window, from its single owner. It is
                 # the one bound here that does not rest on a number the request
                 # supplied — and it already existed as the Fix-3 plausibility
@@ -6752,8 +6812,10 @@ def prepare_v2_session(
             spec = build_v2_verify_session_spec(
                 # The corner this round was measured and applied at — stage 1's
                 # ``session_fc_hz`` rehydrated. Same one-corner-per-round rule
-                # as the stage-1 spec below.
+                # as the stage-1 spec below. ``None`` on a speaker with no
+                # corner, whose summed sweep takes its shape from the band.
                 verify_fc_hz,
+                measurement_band_hz=measurement_band_hz(context.roles_bands),
                 acknowledgement_binding=acknowledgement_binding,
                 plan_shape=plan_shape,
                 default_setup_calibration=default_setup_calibration_for_v2(),
@@ -6929,7 +6991,7 @@ def prepare_v2_session(
                 driver_spacing_m=context.driver_spacing_m,
                 driver_class_by_role=context.driver_class_by_role,
                 radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-                tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+                tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
                 applied=True,
                 gain_plan_db=state.get("gain_plan_db"),
@@ -7008,7 +7070,7 @@ def prepare_v2_session(
                 lateral_claims=lateral_claims,
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
-                tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+                tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
                 alignment_prescription=alignment_prescription,

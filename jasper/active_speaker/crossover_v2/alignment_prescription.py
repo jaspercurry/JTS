@@ -502,8 +502,9 @@ def _optional_number(value: Any) -> float | None:
 def read_alignment_prescription(
     raw: Mapping[str, Any] | None,
     *,
-    fc_hz: float,
+    fc_hz: float | None,
     declared_bounds_us: tuple[float, float] | None,
+    way_count: int | None = None,
 ) -> AlignmentPrescription | None:
     """THE request gate.  One point, and the one derivation of the lobe bound.
 
@@ -548,6 +549,15 @@ def read_alignment_prescription(
     """
     if raw is None:
         return None
+    if way_count == 1:
+        # A delay prescription is an inter-driver arrival gap and its bound is a
+        # half-period at the corner. A 1-way main has neither, so this is
+        # refused at the gate rather than bounded against numbers it does not
+        # declare.
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_FC_UNKNOWN,
+            "this speaker declares no crossover region to align across",
+        )
     prescription = _parse_prescription(raw)
     # Checked after the shape and before the bound: an unusable corner is a
     # different problem from an out-of-lobe prescription, and reporting the

@@ -1519,9 +1519,9 @@ POLARITY_INVERTED = "inverted"
 POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
 
 #: The driver branches a `polarity=inverted` measurement may flip. Owner:
-#: `profile.DRIVER_ROLES_BY_WAY[2]` — the program graph is scoped to a 2-way
-#: preset (`camilla_yaml.emit_active_speaker_program_config` refuses any other
-#: `way_count`), so these two roles are the whole set a measurement can name.
+#: `profile.DRIVER_ROLES_BY_WAY[2]`. A polarity flip is a statement about two
+#: branches summing, so a 1-way's MeasureSpec names no inverted role and the
+#: 2-way pair stays the whole set a measurement can name.
 DRIVER_ROLE_WOOFER = "woofer"
 DRIVER_ROLE_TWEETER = "tweeter"
 DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)

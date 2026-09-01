@@ -1555,6 +1555,12 @@ class ProgramAnalysis:
     # predicts stays invisible. Always a dict on a VERIFY analysis — the
     # numbers, or ``{"not_evaluated": <reason>}``; ``None`` elsewhere.
     verify_absolute: dict[str, Any] | None = None
+    # Why a MEASURE analysis carries no ``alignment`` and no ``candidate``.
+    # Both are statements about TWO driver branches, and a 1-way program has one
+    # (#3507). ``None`` on every analysis that HAS them — absence spelled the
+    # way its two siblings above spell it — so "nobody evaluated this" can never
+    # be read as "this passed", the rule ``verify_absolute`` follows.
+    measure_pair_not_evaluated: str | None = None
     # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the tracking
     # scalars above were reduced from. A separate field rather than a key inside
     # ``verify_tracking`` because that dict travels to the phone in a
@@ -5349,7 +5355,7 @@ def _repeat_driver_responses(
     role: str,
     calibration: "CalibrationCurve | None",
     ambient_report: Mapping[str, Any] | None,
-    fc_hz: float,
+    fc_hz: float | None,
     n_fft: int,
     priors: MeasurementPriors,
 ) -> tuple[DriverResponse, ...]:
@@ -5391,17 +5397,35 @@ def _repeat_driver_responses(
     return tuple(out)
 
 
+#: :attr:`ProgramAnalysis.measure_pair_not_evaluated`'s only value today: the
+#: program carried one driver, so there was no pair to align or to build a
+#: candidate across.
+MEASURE_PAIR_SINGLE_DRIVER = "single_driver_no_pair"
+
+
 def _analyze_measure(
     program, capture, sample_rate, global_offset, locations,
     calibration, geometry, priors,
 ) -> ProgramAnalysis:
-    if priors.crossover_fc_hz is None:
-        raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
-    fc_hz = float(priors.crossover_fc_hz)
+    # ``None`` is legal for exactly one shape: a speaker with no crossover (a
+    # 1-way passive main), whose readers below treat it as "no overlap band to
+    # scope by". On a TWO-branch program it is still a missing prior and still
+    # raises — the pair's whole vocabulary (overlap band, blend, candidate) is
+    # derived from the corner, and declining to build one because a caller
+    # forgot it would be a wrong answer wearing an honest name. The
+    # discrimination happens where ``seg_t`` is known, below.
+    fc_hz = None if priors.crossover_fc_hz is None else float(priors.crossover_fc_hz)
     drift = _estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
-    seg_t = program.segment("sweep_t")
+    # The structural fact this analysis branches on: did the program carry a
+    # SECOND driver's sweep. A 1-way MEASURE is one routed solo, so there is no
+    # pair to align, no overlap band, and no candidate to build across one.
+    seg_t = next(
+        (seg for seg in program.segments if seg.segment_id == "sweep_t"), None
+    )
+    if seg_t is not None and fc_hz is None:
+        raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
     epsilon = drift.epsilon_ppm / 1e6
     # Deconvolve both sweeps anchored at their SCHEDULE window (with a shared
     # pre-guard) so relative timing survives (the aligner relies on this); the
@@ -5410,18 +5434,21 @@ def _analyze_measure(
         capture, seg_w, global_offset + seg_w.start_sample, sample_rate,
         epsilon=epsilon,
     )
-    tweeter_full_ir, pre_t = _deconvolve_window(
-        capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
-        epsilon=epsilon,
-    )
     woofer_full_ir = _compose_configured_path_ir(
         seg_w.role, woofer_full_ir, sample_rate, _radiated_band_hz(seg_w), priors
     )
-    tweeter_full_ir = _compose_configured_path_ir(
-        seg_t.role, tweeter_full_ir, sample_rate, _radiated_band_hz(seg_t), priors
-    )
-    pre_samples = min(pre_w, pre_t)
-    n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
+    tweeter_full_ir = None
+    pre_samples = pre_w
+    if seg_t is not None:
+        tweeter_full_ir, pre_t = _deconvolve_window(
+            capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
+            epsilon=epsilon,
+        )
+        tweeter_full_ir = _compose_configured_path_ir(
+            seg_t.role, tweeter_full_ir, sample_rate, _radiated_band_hz(seg_t), priors
+        )
+        pre_samples = min(pre_w, pre_t)
+    n_fft = _n_fft_for(*[ir for ir in (woofer_full_ir, tweeter_full_ir) if ir is not None])
 
     # Primary responses are first-occurrence-derived, built from
     # woofer_full_ir/tweeter_full_ir. Repeats are additionally
@@ -5429,6 +5456,9 @@ def _analyze_measure(
     # `repeat_responses` on the matching primary; they never change a primary's
     # own freqs_hz/magnitude_db/complex_tf/gating/snr/validity_floor.
     occurrences_by_role = _sweep_occurrences_by_role(locations)
+    branches = [(seg_w, woofer_full_ir)]
+    if seg_t is not None and tweeter_full_ir is not None:
+        branches.append((seg_t, tweeter_full_ir))
     responses = tuple(
         replace(
             resp,
@@ -5443,82 +5473,85 @@ def _analyze_measure(
         )
         for resp in (
             _driver_response(
-                seg_w.role, woofer_full_ir, sample_rate,
+                seg.role, full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
-                radiated_band_hz=_radiated_band_hz(seg_w),
+                radiated_band_hz=_radiated_band_hz(seg),
                 capture_segment=_raw_sweep_segment(
-                    capture, seg_w, global_offset + seg_w.start_sample,
+                    capture, seg, global_offset + seg.start_sample,
                 ),
-            ),
-            _driver_response(
-                seg_t.role, tweeter_full_ir, sample_rate,
-                calibration=calibration, ambient_report=priors.ambient_report,
-                fc_hz=fc_hz, n_fft=n_fft,
-                radiated_band_hz=_radiated_band_hz(seg_t),
-                capture_segment=_raw_sweep_segment(
-                    capture, seg_t, global_offset + seg_t.start_sample,
-                ),
-            ),
+            )
+            for seg, full_ir in branches
         )
     )
 
-    alignment = _estimate_alignment(
-        capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
-        fc_hz, geometry, priors,
-        woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
-        pre_samples=pre_samples,
-    )
+    # ONE branch: nothing to align across and nothing to blend. Both come back
+    # absent WITH A REASON rather than as a bare ``None`` a reader could mistake
+    # for "measured, and fine" — the rule ``verify_absolute`` already follows.
+    alignment: AlignmentEstimate | None = None
+    candidate: CrossoverCandidate | None = None
+    predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
+    pair_not_evaluated: str | None = MEASURE_PAIR_SINGLE_DRIVER
+    # ``fc_hz is not None`` is guaranteed by the raise above whenever ``seg_t``
+    # is; it is restated so the narrowing is local to the block that uses it.
+    if seg_t is not None and tweeter_full_ir is not None and fc_hz is not None:
+        pair_not_evaluated = None
+        alignment = _estimate_alignment(
+            capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
+            fc_hz, geometry, priors,
+            woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
+            pre_samples=pre_samples,
+        )
 
-    # The alignment reads BOTH branch impulse responses, so either one's
-    # capture SNR can be the reason its (polarity, delay) answer is noise —
-    # `_select_alignment_pair` refuses on the pair, not on a named driver. The
-    # ALIGNMENT-class verdict, not the magnitude one every surface displays:
-    # this decision is the one the 35 dB law was written for.
-    alignment_roles = {seg_w.role, seg_t.role}
-    branch_snr_insufficient = any(
-        driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT
-        for resp in responses
-        if resp.role in alignment_roles
-    )
-    candidate, predicted_sum = _build_candidate(
-        woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
-        seg_w.role, seg_t.role, alignment, calibration,
-        tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
-        woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
-        alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
-        branch_snr_insufficient=branch_snr_insufficient,
-        applied_alignment=priors.applied_alignment,
-        explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
-        explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
-    )
-    # `_build_candidate` owns the selection; the estimate published here is the
-    # one every downstream consumer reads (`alignment_to_candidate_fields`
-    # builds the APPLIED fields from it), so it must carry what was committed,
-    # with the correlation's own answer preserved beside it as the seed.
-    if candidate.alignment_objective in _SELECTOR_COMMITTED_OBJECTIVES:
-        alignment = replace(
-            alignment,
-            polarity=candidate.polarity,
-            polarity_sign=polarity_sign_of(candidate.polarity),
-            # READ, not re-derived. The rule — only a commitment whose POLARITY
-            # the flat sum actually chose may answer this — belongs to
-            # :attr:`AlignmentPairSelection.polarity_agrees_with_sum`, and the
-            # candidate carries its answer here. A second derivation at this
-            # line drifts as soon as that rule widens.
-            polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
+        # The alignment reads BOTH branch impulse responses, so either one's
+        # capture SNR can be the reason its (polarity, delay) answer is noise —
+        # `_select_alignment_pair` refuses on the pair, not on a named driver. The
+        # ALIGNMENT-class verdict, not the magnitude one every surface displays:
+        # this decision is the one the 35 dB law was written for.
+        alignment_roles = {seg_w.role, seg_t.role}
+        branch_snr_insufficient = any(
+            driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT
+            for resp in responses
+            if resp.role in alignment_roles
         )
-    # The delay half keeps its own condition: the anchor path is exactly where
-    # the committed delay can differ from the estimate's GCC seed, and reading
-    # the anchor's presence says so directly.
-    if candidate.anchor_delay_us is not None:
-        alignment = replace(
-            alignment,
-            delay_us=candidate.delay_us,
-            raw_delay_us=candidate.delay_us + alignment.parallax_us,
-            seed_delay_us=alignment.delay_us,
-            confidence_source="gcc_phat_seed",
+        candidate, predicted_sum = _build_candidate(
+            woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
+            seg_w.role, seg_t.role, alignment, calibration,
+            tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+            woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
+            alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
+            branch_snr_insufficient=branch_snr_insufficient,
+            applied_alignment=priors.applied_alignment,
+            explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
+            explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
         )
+        # `_build_candidate` owns the selection; the estimate published here is the
+        # one every downstream consumer reads (`alignment_to_candidate_fields`
+        # builds the APPLIED fields from it), so it must carry what was committed,
+        # with the correlation's own answer preserved beside it as the seed.
+        if candidate.alignment_objective in _SELECTOR_COMMITTED_OBJECTIVES:
+            alignment = replace(
+                alignment,
+                polarity=candidate.polarity,
+                polarity_sign=polarity_sign_of(candidate.polarity),
+                # READ, not re-derived. The rule — only a commitment whose POLARITY
+                # the flat sum actually chose may answer this — belongs to
+                # :attr:`AlignmentPairSelection.polarity_agrees_with_sum`, and the
+                # candidate carries its answer here. A second derivation at this
+                # line drifts as soon as that rule widens.
+                polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
+            )
+        # The delay half keeps its own condition: the anchor path is exactly where
+        # the committed delay can differ from the estimate's GCC seed, and reading
+        # the anchor's presence says so directly.
+        if candidate.anchor_delay_us is not None:
+            alignment = replace(
+                alignment,
+                delay_us=candidate.delay_us,
+                raw_delay_us=candidate.delay_us + alignment.parallax_us,
+                seed_delay_us=alignment.delay_us,
+                confidence_source="gcc_phat_seed",
+            )
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a pre-pilot ambient window + a leading pilot pair; a
     # program carrying neither leaves the verdicts ``None``.
@@ -5533,6 +5566,7 @@ def _analyze_measure(
         driver_responses=responses,
         alignment=alignment,
         candidate=candidate,
+        measure_pair_not_evaluated=pair_not_evaluated,
         mic_tier=priors.mic_tier,
         mic_calibrated=priors.mic_calibrated,
         # Exact: composition returns its input untouched iff every prior map

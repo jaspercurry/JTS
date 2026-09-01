@@ -93,7 +93,7 @@ from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_dri
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .startup_hold import release_staged_startup_hold
 from .staging import (
-    build_passive_mains_with_sub_preset,
+    build_passive_mains_preset,
     compile_preset_from_crossover_preview,
     topology_is_passive_mains_with_sub,
 )
@@ -2374,7 +2374,7 @@ def build_baseline_profile_candidate(
         for issue in route_capability.issues:
             if issue.get("code") == "active_playback_route_too_narrow":
                 issues.append(issue)
-        preset, preset_issues, preset_gates = build_passive_mains_with_sub_preset(
+        preset, preset_issues, preset_gates = build_passive_mains_preset(
             topology
         )
         issues.extend(preset_issues)

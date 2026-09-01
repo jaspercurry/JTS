@@ -7500,7 +7500,11 @@ def test_measure_analysis_is_invariant_to_the_programmed_drive_gain():
 # --------------------------------------------------------------------------- #
 
 
-def test_measure_requires_fc_prior():
+def test_a_two_branch_measure_still_requires_the_fc_prior():
+    # #3507 made ``crossover_fc_hz=None`` legal for a ONE-branch program (a
+    # speaker with no crossover). A two-branch one still raises: every pair
+    # quantity is derived from the corner, so a caller that forgot it must not
+    # get a candidate-free analysis that reads like an honest absence.
     prog = build_measure_program({"woofer": -11.0, "tweeter": -13.0}, _roles())
     cap = _synthesize(
         prog,

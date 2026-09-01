@@ -450,7 +450,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     # clamps the analysis window up into the allowed band: a window cannot
     # honestly extend below the frequency the driver may not be excited under.
     # The upper edge is untouched — that half is still a declared fact.
-    assert context.tweeter_measurement_band_hz == (1500.0, 10_000.0)
+    assert context.measurement_band_hz_by_role["tweeter"] == (1500.0, 10_000.0)
     # The DURATION half of the same one-derivation-two-consumers probe
     # (#2921): the MEASURE composer must be HANDED the very number the
     # admission gate will compare its sweeps against, never re-derive one.
@@ -472,7 +472,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         )
 
 
-def test_tweeter_measurement_band_hz_is_none_when_unresolvable(monkeypatch):
+def test_a_role_with_no_resolvable_measurement_band_is_simply_absent(monkeypatch):
     """The autouse stub's design draft has no ``targets`` list at all
     (``{"driver_safety_profile": {}}``), so the REAL
     ``resolve_driver_measurement_band_hz`` this context resolves through
@@ -484,7 +484,7 @@ def test_tweeter_measurement_band_hz_is_none_when_unresolvable(monkeypatch):
 
     context = v2host.resolve_conductor_context(_status())
 
-    assert context.tweeter_measurement_band_hz is None
+    assert "tweeter" not in context.measurement_band_hz_by_role
 
 
 def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):

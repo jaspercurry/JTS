@@ -69,7 +69,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -232,6 +232,22 @@ class NoProgramForPhaseError(RuntimeError):
 # --------------------------------------------------------------------------- #
 
 
+def measurement_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
+    """The summed system's swept band — the union of every declared
+    ``RoleBand.band``, which for ONE declaration is that declaration itself.
+
+    Each ``RoleBand.band`` is one driver's own excitation-ceiling band (from
+    ``excitation_safety_plan.resolve_driver_excitation_ceilings``); no other
+    function composes across roles. It lives here because it is session-owned
+    wiring policy (which roles participate in the passband), not a pure-DSP
+    concern that belongs in ``spatial_combine`` or ``audio_measurement.program``.
+    """
+    return (
+        min(float(rb.band.lower_hz) for rb in roles),
+        max(float(rb.band.upper_hz) for rb in roles),
+    )
+
+
 @dataclass(frozen=True)
 class SessionExcitation:
     """What one session may play, how loud, and for how long — its
@@ -245,15 +261,18 @@ class SessionExcitation:
     views.
     """
 
-    #: The two driver role/band declarations, woofer first.
+    #: The driver role/band declarations, lowest first. Two on a 2-way; one on
+    #: a 1-way passive main, whose single declaration is its own hull.
     roles: tuple[RoleBand, ...]
     #: Per-role excitation ceiling, dBFS. The min across roles is what clamps a
     #: summed signal, which reaches every driver.
     caps_dbfs: Mapping[str, float]
     #: The session's own output level, which every per-driver gain folds through.
     session_volume_db: float
-    #: The declared crossover corner, for the summed sweep's shape.
-    fc_hz: float
+    #: The declared crossover corner, for the summed sweep's shape. ``None`` on
+    #: a 1-way main, which has none — the summed sweep then takes its shape from
+    #: the declared band (:meth:`_summed_sweep`).
+    fc_hz: float | None
     #: Per-role longest admissible ONE sweep, seconds — the resolver's
     #: ``effective_sweep_duration_limit_s``, which is also what the admission
     #: gate compares each composed segment against. MEASURE composes to it (see
@@ -273,10 +292,10 @@ class SessionExcitation:
 
     @property
     def leading_pilot_role(self) -> str:
-        """The role whose solved gain the leading pilot pair rides — the woofer.
+        """The role whose solved gain the leading pilot pair rides — the lowest.
 
-        First in ``roles`` by the session's own 2-way contract, named here so
-        the composers below state the rule rather than repeating ``roles[0]``.
+        First in ``roles``, named here so the composers below state the rule
+        rather than repeating ``roles[0]``.
         """
         return self.roles[0].role
 
@@ -405,6 +424,7 @@ class SessionExcitation:
         )
         return build_verify_program(
             self.fc_hz,
+            measurement_band_hz=measurement_band_hz(self.roles),
             gain_db=gain,
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gain),

@@ -84,7 +84,11 @@ from .journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from .programs import PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase
+from .programs import (
+    PILOT_LEVEL_DELTA_DB,
+    courtesy_prelude_for_phase,
+    measurement_band_hz,
+)
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
 logger = logging.getLogger(__name__)
@@ -2107,7 +2111,7 @@ def _cloud_entry_screen(
 
 def build_v2_capture_plan(
     roles_bands: Sequence[RoleBand],
-    fc_hz: float,
+    fc_hz: float | None,
     *,
     plan_shape: V2PlanShape | None = None,
     tier: Any = None,
@@ -2174,8 +2178,13 @@ def build_v2_capture_plan(
     # is the verify program's even though stage 1 runs no VERIFY phase of its
     # own — and it is the ANNOUNCED one, because its program object is stage 2's
     # anchor (``program_for_phase``'s compared pair).
+    # The summed sweep's band, which a speaker with no corner takes from its
+    # own declarations instead — the same value ``SessionExcitation`` composes
+    # the played program at, so this budget stays exact.
+    band_hz = measurement_band_hz(roles)
     verify = build_verify_program(
         fc_hz,
+        measurement_band_hz=band_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -2184,6 +2193,7 @@ def build_v2_capture_plan(
     # A prompted position's twin of it: same sweep, no prelude.
     cloud = build_verify_program(
         fc_hz,
+        measurement_band_hz=band_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -2413,8 +2423,9 @@ def verify_pose_table(
 
 
 def build_v2_verify_capture_plan(
-    fc_hz: float,
+    fc_hz: float | None,
     *,
+    measurement_band_hz: tuple[float, float] | None = None,
     plan_shape: V2PlanShape | None = None,
     verify_prompts: Sequence[CloudPositionPrompt] | None = None,
 ) -> Any:
@@ -2459,6 +2470,7 @@ def build_v2_verify_capture_plan(
     # will actually record.
     verify = build_verify_program(
         fc_hz,
+        measurement_band_hz=measurement_band_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -2466,6 +2478,7 @@ def build_v2_verify_capture_plan(
     )
     cloud = build_verify_program(
         fc_hz,
+        measurement_band_hz=measurement_band_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -2656,8 +2669,9 @@ def build_v2_verify_capture_plan(
 
 
 def build_v2_verify_session_spec(
-    fc_hz: float,
+    fc_hz: float | None,
     *,
+    measurement_band_hz: tuple[float, float] | None = None,
     acknowledgement_binding: str,
     plan_shape: V2PlanShape | None = None,
     verify_prompts: Sequence[CloudPositionPrompt] | None = None,
@@ -2683,7 +2697,8 @@ def build_v2_verify_session_spec(
     # object rather than two calls that happen to agree.
     verify_table = verify_pose_table(verify_prompts)
     plan = build_v2_verify_capture_plan(
-        fc_hz, plan_shape=plan_shape, verify_prompts=verify_table,
+        fc_hz, measurement_band_hz=measurement_band_hz,
+        plan_shape=plan_shape, verify_prompts=verify_table,
     )
     walked = plan.capture_target > 1
     extra: dict[str, Any] = (
@@ -2933,7 +2948,7 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
 
 def build_v2_session_spec(
     roles_bands: Sequence[RoleBand],
-    fc_hz: float,
+    fc_hz: float | None,
     *,
     acknowledgement_binding: str,
     plan_shape: V2PlanShape | None = None,

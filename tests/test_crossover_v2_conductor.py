@@ -4718,13 +4718,14 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     )
     from jasper.web.correction_crossover_v2 import _post_apply_grade
 
-    # The whole input, enumerated: a crossover frequency, a plan SHAPE, and
-    # (since the 2026-08-24 geometry ruling) the POSE SET the walk takes. Not
-    # one of the three is a measured outcome, which is the structural half of
-    # the claim above — a pose set says where the microphone goes, never how
-    # the result came out.
+    # The whole input, enumerated: a crossover frequency (or, on a speaker with
+    # none, its declared measurement band), a plan SHAPE, and (since the
+    # 2026-08-24 geometry ruling) the POSE SET the walk takes. Not one of the
+    # four is a measured outcome, which is the structural half of the claim
+    # above — a pose set says where the microphone goes, and a declared band
+    # what the speaker can be swept over, never how the result came out.
     assert set(inspect.signature(build_v2_verify_capture_plan).parameters) == {
-        "fc_hz", "plan_shape", "verify_prompts",
+        "fc_hz", "measurement_band_hz", "plan_shape", "verify_prompts",
     }
 
     done = build_v2_verify_capture_plan(

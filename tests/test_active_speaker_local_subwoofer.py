@@ -296,25 +296,29 @@ def test_local_sub_rejects_out_of_range_corner(fc: float) -> None:
         LocalSubwoofer(physical_output_index=4, label="Sub", crossover_fc_hz=fc).validate()
 
 
-def test_subless_one_way_preset_is_rejected() -> None:
-    # A 1-way passive main is ONLY valid with a local sub; subless passive takes
-    # the flat program lane, never this multi-output path.
-    with pytest.raises(ActiveSpeakerConfigError, match="local subwoofer"):
-        ActiveSpeakerPreset.from_mapping({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_preset",
-            "preset_id": "bad-passive",
-            "name": "passive subless",
-            "way_count": 1,
-            "channel_map": {
-                "layout": "stereo",
-                "outputs": [
-                    {"index": 0, "side": "left", "driver_role": "full_range", "label": "L"},
-                    {"index": 1, "side": "right", "driver_role": "full_range", "label": "R"},
-                ],
-            },
-            "drivers": {"full_range": {"manufacturer": "X", "model": "FR"}},
-        })
+def test_subless_one_way_preset_is_valid() -> None:
+    # #3507: a subless 1-way passive main is the recommissioning session's
+    # plant. It declares no crossover region and no sub, and that is the whole
+    # of its shape.
+    preset = ActiveSpeakerPreset.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_preset",
+        "preset_id": "passive-subless",
+        "name": "passive subless",
+        "way_count": 1,
+        "channel_map": {
+            "layout": "stereo",
+            "outputs": [
+                {"index": 0, "side": "left", "driver_role": "full_range", "label": "L"},
+                {"index": 1, "side": "right", "driver_role": "full_range", "label": "R"},
+            ],
+        },
+        "drivers": {"full_range": {"manufacturer": "X", "model": "FR"}},
+    })
+
+    assert preset.way_count == 1
+    assert preset.crossover_regions == ()
+    assert preset.local_subwoofer is None
 
 
 def test_sub_output_index_must_be_next_contiguous_channel() -> None:

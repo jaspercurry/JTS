@@ -230,9 +230,15 @@ def test_measure_composer_raises_clear_error_if_ceiling_ever_exceeded_nyquist(mo
         build_measure_program(_gain_plan(), roles)
 
 
-def test_measure_requires_two_drivers_and_all_gains():
+def test_measure_takes_one_or_two_drivers_and_needs_every_gain():
+    # One declared driver is a 1-way passive main, not a malformed 2-way: it
+    # composes, with the single role keeping the ``sweep_w`` spelling the drift
+    # anchor resolves on.
+    one_way = build_measure_program(_gain_plan(), _roles()[:1])
+    assert one_way.segment("sweep_w").role == "woofer"
+    assert "sweep_t" not in {seg.segment_id for seg in one_way.segments}
     with pytest.raises(ValueError):
-        build_measure_program(_gain_plan(), _roles()[:1])
+        build_measure_program(_gain_plan(), _roles() + _roles()[:1])
     with pytest.raises(ValueError):
         build_measure_program({"woofer": -11.0}, _roles())
 
