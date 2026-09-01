@@ -344,6 +344,10 @@ static void jts_ring_scrub_mmap_area(snd_pcm_ioplug_t *io) {
     const snd_pcm_channel_area_t *areas;
     snd_pcm_uframes_t offset;
     snd_pcm_uframes_t frames = io->buffer_size;
+    // Re-entering alsa-lib from our own prepare: safe because ioplug unlocks
+    // the pcm around the callback and its mutex is recursive. Do NOT precede
+    // this with snd_pcm_avail_update — that runs our pointer callback before
+    // ptr_state is reset for the new session.
     int rc = snd_pcm_mmap_begin(io->pcm, &areas, &offset, &frames);
     if (rc == 0) {
         snd_pcm_areas_silence(areas, offset, io->channels, frames, io->format);
@@ -1046,11 +1050,13 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     snd_pcm_ioplug_t *io = &p->io;
     int rc;
 
-    // Access modes. PLAYBACK advertises RW + MMAP, and MMAP must stay: a
-    // converting `plug` chain demands an mmap-capable slave (pcm_rate.c forces
-    // SND_PCM_ACCBIT_MMAP), so withdrawing it fails the lane at hw_params. The
-    // stale bytes that area can carry are handled at prepare — see
-    // jts_ring_scrub_mmap_area (#3443).
+    // Access modes. PLAYBACK advertises RW + MMAP, and MMAP must stay: a rate
+    // converter demands an mmap-capable slave (pcm_rate.c forces
+    // SND_PCM_ACCBIT_MMAP), so withdrawing it either fails hw_params (a client
+    // that pins RW and converts) or makes `plug` insert mmap_emul, whose own
+    // unzeroed buffer reaches the ring over writei where no scrub can see it —
+    // the leak would move, not close. The stale bytes the emulated area can
+    // carry are handled at prepare — see jts_ring_scrub_mmap_area (#3443).
     // CAPTURE advertises RW ONLY. With mmap_rw=0 the capture mmap area is
     // filled by OUR `transfer`, and this transfer legitimately
     // returns SHORT (delivered < requested) on the writer-alive-empty pacing block.
