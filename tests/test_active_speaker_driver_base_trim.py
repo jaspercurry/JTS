@@ -154,6 +154,62 @@ def test_a_positive_trim_is_refused_and_never_banked_as_a_boost(tmp_path: Path):
     assert max(record["trims_db"].values()) <= 0.0
 
 
+def test_the_record_carries_the_chain_the_trim_was_co_fitted_against(
+    tmp_path: Path,
+):
+    """#3479: a trim is degenerate with the chain it was resolved WITH.
+
+    A flat trim plus a shelf is the same branch-gain profile as a deeper flat
+    trim and no shelf, so two banked scalars resolved against different chains
+    are not two estimates of one quantity. The record therefore names the
+    resolving candidate, and the reader hands that name back rather than
+    re-deriving a frame it cannot see.
+    """
+    state = _bank(tmp_path, chain_fingerprint="c" * 64)
+    record = dbt.load_base_trim(state_path=state)
+    assert record is not None
+    assert record["chain_fingerprint"] == "c" * 64
+    _trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    assert meta["chain_fingerprint"] == "c" * 64
+
+
+@pytest.mark.parametrize(
+    "banked, why",
+    [
+        pytest.param(None, "the profile named no resolving candidate", id="absent"),
+        pytest.param("", "an empty string names no chain", id="empty"),
+        pytest.param("not-a-fingerprint", "not a fingerprint at all", id="malformed"),
+        pytest.param(7, "not a string at all", id="numeric"),
+    ],
+)
+def test_a_chain_nobody_can_name_is_banked_as_no_chain(
+    tmp_path: Path, banked, why
+):
+    """Absent, never guessed. A frame the record cannot name must read as
+    "no frame", so a later comparison discloses that it has no basis rather
+    than treating two scalars as comparable."""
+    state = _bank(tmp_path, chain_fingerprint=banked)
+    record = dbt.load_base_trim(state_path=state)
+    assert record is not None
+    assert record["chain_fingerprint"] is None, why
+    _trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    assert meta["chain_fingerprint"] is None
+
+
+def test_a_tampered_chain_fingerprint_reads_as_no_chain(tmp_path: Path):
+    """The reader validates the banked name on the way out too: a hand-edited
+    state file must not be able to dress a trim in a frame it never had."""
+    state = _bank(tmp_path, chain_fingerprint="c" * 64)
+    record = json.loads(state.read_text())
+    record["chain_fingerprint"] = "MiXeDcAsE" * 8
+    state.write_text(json.dumps(record))
+    trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    # The frame is unreadable; the TRIM is still the trim the graph is playing.
+    assert trims == {"woofer": 0.0, "tweeter": -20.0}
+    assert meta["status"] == dbt.STATUS_APPLIED
+    assert meta["chain_fingerprint"] is None
+
+
 def test_banked_trims_are_returned_when_the_declaration_matches(tmp_path: Path):
     state = _bank(tmp_path)
     trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)

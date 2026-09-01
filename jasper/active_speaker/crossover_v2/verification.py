@@ -109,6 +109,7 @@ __all__ = [
     "HEADROOM_WITHIN_PLATEAU",
     "FlatnessObjectives",
     "MeasurementComparand",
+    "REALIZATION_COMPARAND",
     "REALIZATION_NO_COMPARATOR",
     "REALIZATION_NO_TRACKING",
     "REALIZATION_OUT_OF_TOLERANCE",
@@ -229,6 +230,23 @@ def evaluate_capture_validity(
 #: ``ProgramAnalysis.verify_tracking``.
 TRACKING_COMPARATOR_KEY = "max_db_notch_excluded"
 
+#: WHAT the comparator above compares the measured VERIFY sum AGAINST (#3483):
+#: ``MeasurementPriors.predicted_sum``, the applied candidate's own predicted
+#: summed magnitude at its committed trim and delay. An ABSOLUTE curve-against-
+#: curve claim.
+#:
+#: It is on the record because the receipt carries a second realization number
+#: measured against something else entirely — the delta probe's per-band
+#: realized/commanded ratios, whose comparand is the COMMANDED DELTA (ADR-0209
+#: names those verdict classes). The two disagree routinely and neither
+#: impeaches the other: on 2026-09-01 two rounds returned ``matched`` beside
+#: band ratios of 0.4877 and 2.4309, and with no comparand on the record a
+#: reader who trusted the word and a reader who read the ratios reached
+#: opposite conclusions about the same round. Band-pooled ratios are also
+#: near-meaningless across a mixed-sign commanded set, where signed deltas
+#: cancel; this axis is unaffected because it never differences two commands.
+REALIZATION_COMPARAND = "applied_candidate_predicted_sum"
+
 REALIZATION_NO_TRACKING = "tracking_unavailable"
 REALIZATION_NO_COMPARATOR = "tracking_comparator_absent"
 REALIZATION_WITHIN_TOLERANCE = "tracking_within_tolerance"
@@ -245,6 +263,13 @@ def evaluate_realization(
     Grades ``ProgramAnalysis.verify_tracking``'s
     :data:`TRACKING_COMPARATOR_KEY` against ``tolerance_db`` — the same number,
     from the same key, as the deployed VERIFY gate.
+
+    **The verdict names its COMPARAND** (:data:`REALIZATION_COMPARAND`, #3483),
+    which is not the same fact as the comparator: this axis grades the measured
+    VERIFY sum against the applied candidate's own predicted sum, while the
+    delta probe's per-band ratios on the same receipt grade realized against
+    COMMANDED delta. Neither impeaches the other, and until the record said so
+    a reader could not tell which question the word ``matched`` answered.
 
     **Absent evidence is not a failure.** A missing mapping, or a
     missing/non-numeric/non-finite comparator, is
@@ -266,11 +291,20 @@ def evaluate_realization(
         return Verdict(
             RealizationStatus.UNAVAILABLE,
             REALIZATION_NO_COMPARATOR,
-            {"comparator": TRACKING_COMPARATOR_KEY, "tolerance_db": tolerance},
+            {
+                "comparator": TRACKING_COMPARATOR_KEY,
+                "comparand": REALIZATION_COMPARAND,
+                "tolerance_db": tolerance,
+            },
         )
     deviation_db = float(measured)
     evidence = {
         "comparator": TRACKING_COMPARATOR_KEY,
+        # WHAT the number beside it was measured against (#3483). Named on
+        # every graded verdict, because "matched" is one of the four adoption
+        # inputs and the receipt carries a second realization number graded
+        # against a different comparand — see :data:`REALIZATION_COMPARAND`.
+        "comparand": REALIZATION_COMPARAND,
         "deviation_db": deviation_db,
         "tolerance_db": tolerance,
     }

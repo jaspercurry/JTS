@@ -94,6 +94,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     FlatnessObjectives,
     evaluate_iteration_headroom,
     flatness_objectives,
+    REALIZATION_COMPARAND,
     REALIZATION_NO_COMPARATOR,
     REALIZATION_NO_TRACKING,
     REALIZATION_OUT_OF_TOLERANCE,
@@ -303,6 +304,38 @@ def test_realization_grades_the_same_key_the_flow_grades():
     from jasper.active_speaker import crossover_v2_flow
 
     assert TRACKING_COMPARATOR_KEY == crossover_v2_flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
+
+
+@pytest.mark.parametrize(
+    "measured, status",
+    [
+        pytest.param(1.291, RealizationStatus.MATCHED, id="matched"),
+        pytest.param(1.51, RealizationStatus.FAILED, id="failed"),
+        pytest.param("1.2", RealizationStatus.UNAVAILABLE, id="no_comparator"),
+    ],
+)
+def test_every_graded_realization_verdict_names_its_comparand(measured, status):
+    """#3483: the verdict says HOW it compared and must say WHAT against.
+
+    Two rounds returned composed ``realization = matched`` beside delta-probe
+    band ratios of 0.4877 and 2.4309 on the same receipt. They do not
+    contradict each other: this axis grades the measured VERIFY sum against the
+    applied candidate's own PREDICTED sum, while those ratios grade realized
+    against COMMANDED delta (ADR-0209's realized-vs-commanded claim). Nothing
+    on the record said so, so two honest readers of one receipt reached
+    opposite conclusions.
+    """
+
+    verdict = evaluate_realization(
+        tracking={TRACKING_COMPARATOR_KEY: measured}, tolerance_db=TOLERANCE_DB
+    )
+    assert verdict.status is status
+    assert verdict.evidence["comparand"] == REALIZATION_COMPARAND
+    # The comparand is WHAT was compared against; the comparator is the
+    # reduction over it. Two facts, two keys — a receipt carrying only the
+    # second names a statistic and not a comparison.
+    assert verdict.evidence["comparator"] == TRACKING_COMPARATOR_KEY
+    assert REALIZATION_COMPARAND != TRACKING_COMPARATOR_KEY
 
 
 # --------------------------------------------------------------------------

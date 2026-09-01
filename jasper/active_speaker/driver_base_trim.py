@@ -35,6 +35,11 @@ measure an inter-driver level gap is the defect
 ``baseline_profile._compare_level_sittings`` exist to disclose, and it is not
 reopened here.
 
+**The scalar is not portable without its frame.** A trim is degenerate with
+the correction chain it was co-fitted with, so the record also names that chain
+(``chain_fingerprint``) and every reader gets it back beside the number — see
+:func:`write_base_trim`.
+
 **Re-keying is a loud refusal, never a migration.** The record names the
 declaration it was measured against (the crossover preview's own fingerprint).
 A speaker whose declaration has moved — a different Fc, a different driver, a
@@ -145,6 +150,19 @@ def _finite(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _chain_fingerprint(value: Any) -> str | None:
+    """The banked chain name, or ``None`` when nothing readable names one.
+
+    A frame nobody can name is not a frame, so anything that is not a
+    fingerprint reads as absent rather than as a chain: the two are opposite
+    claims, and only the second one licenses a comparison.
+    """
+    try:
+        return require_sha256_hex(value, "chain_fingerprint", ValueError)
+    except ValueError:
+        return None
+
+
 def _group_ids(value: Any) -> list[str]:
     """The record's speaker groups, or ``[]`` when it names none readably.
 
@@ -216,6 +234,12 @@ def banked_base_trims(
     meta: dict[str, Any] = {
         "measured_at": record.get("measured_at"),
         "declaration_fingerprint": banked_fingerprint,
+        # WHICH CHAIN this scalar was resolved WITH (#3479). Read back, never
+        # re-derived: the frame exists at fit time and nowhere else, and a
+        # reader comparing two trims has no way to reconstruct it. ``None``
+        # means the frame is unknown, which is a refusal to compare rather
+        # than a licence to.
+        "chain_fingerprint": _chain_fingerprint(record.get("chain_fingerprint")),
         "state_path": str(base_trim_state_path(state_path)),
     }
     if (
@@ -281,6 +305,7 @@ def write_base_trim(
     speaker_group_ids: Sequence[str],
     declaration_fingerprint: str,
     trim_source: str,
+    chain_fingerprint: Any = None,
     measured_at: str | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -289,6 +314,20 @@ def write_base_trim(
     Raises :class:`DriverBaseTrimError` when the record would not survive
     :func:`banked_base_trims` — writing a value the reader rejects is a silent
     no-op dressed up as success.
+
+    ``chain_fingerprint`` is WHICH CORRECTION CHAIN the trim was co-fitted
+    against — the resolving candidate's own fingerprint, which the apply seam
+    reads off the profile's ``source.measured_candidate_fingerprint`` (#3479).
+    A trim is DEGENERATE with that chain: a flat trim plus a shelf is the same
+    branch-gain profile as a deeper flat trim and no shelf, so on 2026-09-01 a
+    −1.54 dB banked against a −6.32 dB Lowshelf and a −12.48 dB resolved on the
+    bare graph were read as two estimates of one quantity, disagreeing by
+    10.9 dB. They are one physics in two decompositions, and only the chain
+    tells them apart. Absent (``None``) is legitimate — a profile levelled by
+    the guided captures names no resolving candidate — and so is a value this
+    module cannot read: a frame nobody can name is banked as no frame, because
+    "unknown" refuses a comparison while a plausible-looking wrong name would
+    license one.
 
     ``measured_at`` is WHEN THE EVIDENCE WAS MEASURED (the newest capture that
     fed the trim), not when this record was written — the S20 supersede
@@ -367,6 +406,7 @@ def write_base_trim(
         "trims_db": trims,
         "speaker_group_ids": groups,
         "trim_source": trim_source,
+        "chain_fingerprint": _chain_fingerprint(chain_fingerprint),
     }
     # Durable for the reason the SSOT write in the same seam
     # (``persist_applied_baseline_profile``) is: this record and that profile
