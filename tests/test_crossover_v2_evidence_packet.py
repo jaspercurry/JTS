@@ -17,6 +17,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
@@ -28,7 +31,17 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
 )
+from jasper.active_speaker.crossover_v2.round_evidence import (
+    ITERATION_PLATEAU_DB,
+    MEASURED_BENEFIT_MARGIN_DB,
+)
 from jasper.active_speaker.linearization_envelope import MIC_TIERS
+from jasper.active_speaker.repeat_floor import (
+    REPEAT_FLOOR_KIND,
+    SCHEMA_VERSION as REPEAT_FLOOR_SCHEMA_VERSION,
+    SHIPPED_POOL_METRIC,
+    write_repeat_floor,
+)
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
@@ -75,6 +88,61 @@ def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is False
     assert "E2" in entry["reason"]
+    # Absent means the consumers fall back to the two constants that
+    # self-describe as assumptions, and the packet says which source it used.
+    assert entry["thresholds"]["source"] == "codified_assumption"
+    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
+    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
+
+
+def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
+    session, _ = _bundle(tmp_path)
+    floor_path = tmp_path / "repeat-floor.json"
+    record = write_repeat_floor(
+        {
+            "artifact_schema_version": REPEAT_FLOOR_SCHEMA_VERSION,
+            "kind": REPEAT_FLOOR_KIND,
+            "measured_at": "2026-09-01T00:00:00Z",
+            "n_repeats": 3,
+            "aggregate_metric": SHIPPED_POOL_METRIC,
+            "rounds": [
+                {"label": "r1", "bundle_session_id": "sess1",
+                 "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
+                 "started_at": 1.0},
+                {"label": "r2", "bundle_session_id": "sess2",
+                 "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
+                 "started_at": 2.0},
+                {"label": "r3", "bundle_session_id": "sess3",
+                 "graph_fingerprint": None, "mic_calibration_id": "cal1",
+                 "started_at": 3.0},
+            ],
+            "metrics": {
+                SHIPPED_POOL_METRIC: {
+                    "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
+                    "min_db": 0.5, "max_db": 1.5,
+                    "pairwise_abs_delta_p95_db": 0.4,
+                },
+            },
+            "note": "test vector",
+        },
+        state_path=floor_path,
+    )
+    packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
+    entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
+    p95 = record["metrics"][SHIPPED_POOL_METRIC]["pairwise_abs_delta_p95_db"]
+
+    assert entry["kind"] == UNCERTAINTY_RANDOM
+    assert entry["available"] is True
+    assert entry["n_repeats"] == record["n_repeats"]
+    assert entry["aggregate_metric"] == SHIPPED_POOL_METRIC
+    assert entry["bundle_session_ids"] == ["sess1", "sess2", "sess3"]
+    assert entry["graph_fingerprints"] == ["gf1"]
+    assert entry["pairwise_abs_delta_p95_db"] == pytest.approx(p95)
+    assert entry["thresholds"]["source"] == "banked_repeat_floor"
+    assert entry["thresholds"]["margin_db"] == pytest.approx(
+        CLAIM_FLOOR_P95_MULTIPLE * p95
+    )
+    assert entry["thresholds"]["plateau_db"] == pytest.approx(p95)
 
 
 def test_gate_leakage_is_absent_when_no_capture_carries_a_gate_number(tmp_path):

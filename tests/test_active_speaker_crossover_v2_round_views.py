@@ -558,6 +558,43 @@ def test_per_seat_curves_normalises_by_median_not_mean(tmp_path):
     assert seat.normalized_db[baseline_idx] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
+    """The side file reaches the packet exactly as applied-profile.json does:
+    present, the accuracy budget's repeat-floor component is available."""
+    from jasper.active_speaker.repeat_floor import (
+        REPEAT_FLOOR_KIND,
+        SCHEMA_VERSION,
+        SHIPPED_POOL_METRIC,
+        write_repeat_floor,
+    )
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    component = "in_capture_repeat_floor"
+    absent = load_banked_round(round_dir)
+    assert absent.packet["accuracy_budget"]["components"][component]["available"] is False
+
+    write_repeat_floor(
+        {
+            "artifact_schema_version": SCHEMA_VERSION,
+            "kind": REPEAT_FLOOR_KIND,
+            "measured_at": "2026-09-01T00:00:00Z",
+            "n_repeats": 2,
+            "aggregate_metric": SHIPPED_POOL_METRIC,
+            "rounds": [],
+            "metrics": {SHIPPED_POOL_METRIC: {
+                "n": 2, "mean_db": 1.0, "sd_db": 0.1, "range_db": 0.2,
+                "min_db": 0.9, "max_db": 1.1, "pairwise_abs_delta_p95_db": 0.2,
+            }},
+            "note": "",
+        },
+        state_path=round_dir / "repeat-floor.json",
+    )
+    present = load_banked_round(round_dir)
+    assert present.packet["accuracy_budget"]["components"][component]["available"] is True
+
+
 # --------------------------------------------------------------------------- #
 # View 3 — repeatability_spread
 # --------------------------------------------------------------------------- #
@@ -987,6 +1024,32 @@ def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
 
     assert main(["frequency", str(source)]) == 1
     assert "no usable frequency-response curves" in capsys.readouterr().err
+
+
+def test_cli_repeat_floor_writes_the_banked_record(tmp_path):
+    from jasper.active_speaker.repeat_floor import REPEAT_FLOOR_KIND, SCHEMA_VERSION
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    out = tmp_path / "repeat-floor.json"
+    assert main(["repeat-floor", str(r1), str(r2), "--out", str(out)]) == 0
+    payload = json.loads(out.read_text())
+    assert payload["kind"] == REPEAT_FLOOR_KIND
+    assert payload["artifact_schema_version"] == SCHEMA_VERSION
+    assert payload["n_repeats"] == 2
+    assert [row["label"] for row in payload["rounds"]] == ["r1", "r2"]
+
+
+def test_cli_repeat_floor_refuses_a_single_round(tmp_path, capsys):
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    assert main(["repeat-floor", str(r1), "--out", str(tmp_path / "out.json")]) == 1
+    assert "error:" in capsys.readouterr().err
 
 
 def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):

@@ -1549,8 +1549,8 @@ def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
 
     A cross-seat spread contains the field's real seat-to-seat variation AND the
     per-capture measurement noise, and this round cannot separate them —
-    separating them needs a repeat spread at a fixed pose, which is calibration
-    experiment E2 and has not been run. The rule bars publishing a pooled number
+    separating them needs a repeat spread at a fixed pose, which is the banked
+    repeat floor the accuracy budget reads. The rule bars publishing a pooled number
     AS a kind, so the block publishes it as neither: ``fields`` is empty, and the
     figure is declared under ``unseparated`` with a label deliberately kept OUT
     of the closed kind set, so a reader applying the set test concludes "not one
@@ -1566,7 +1566,7 @@ def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
     # Both halves named, and what would separate them.
     assert "seat to seat" in declared["of"]
     assert "measurement noise" in declared["of"]
-    assert "E2" in declared["of"] and "has not been run" in declared["of"]
+    assert "in_capture_repeat_floor" in declared["of"]
     assert "never as a random or a systematic one" in declared["of"]
     assert "never pooled" in block["uncertainty"]["note"]
     # n IS published here — unlike the classification block, which says it does
@@ -2916,6 +2916,7 @@ def test_a_document_echoing_another_packet_still_refuses_against_the_file(
 @pytest.mark.parametrize("extra", [
     pytest.param(["--drivers", "draft.json"], id="drivers"),
     pytest.param(["--applied-profile", "applied.json"], id="applied-profile"),
+    pytest.param(["--repeat-floor", "floor.json"], id="repeat-floor"),
     pytest.param(["--state", "state.json"], id="state"),
     pytest.param(["session-dir"], id="session_dir"),
 ])

@@ -39,6 +39,10 @@
 #   applied-profile.json    the applied baseline profile — what the speaker is
 #                           PLAYING, which the flow state cannot say
 #                           (/var/lib/jasper/active_speaker_baseline_profile.json)
+#   repeat-floor.json       the banked repeat floor — this rig's measured
+#                           touched-nothing repeat spread, which the evidence
+#                           packet's in_capture_repeat_floor reads
+#                           (/var/lib/jasper/active_speaker_repeat_floor.json)
 #   journal/<unit>.log      journal window for the units that speak during a
 #                           round, plus journal/combined.log
 #   power.txt               vcgencmd get_throttled + under-voltage grep counts
@@ -180,6 +184,22 @@ else
 fi
 
 # --------------------------------------------------------------------- #
+# 3c. Banked repeat floor — the rig's measured touched-nothing repeat
+#     spread, which the packet's in_capture_repeat_floor reads and derives
+#     the stopping plateau/benefit margin from. NOT part of the round's
+#     identity — reported, not gated.
+# --------------------------------------------------------------------- #
+repeat_floor_status="FAILED or not present"
+if remote "sudo cat /var/lib/jasper/active_speaker_repeat_floor.json 2>/dev/null" \
+        > "$DEST/repeat-floor.json" && [[ -s "$DEST/repeat-floor.json" ]]; then
+    repeat_floor_status="ok ($(wc -c < "$DEST/repeat-floor.json") bytes)"
+    echo "repeat-floor -> $DEST/repeat-floor.json ($(wc -c < "$DEST/repeat-floor.json") bytes)" >&2
+else
+    rm -f "$DEST/repeat-floor.json"
+    echo "repeat-floor: FAILED or not present" >&2
+fi
+
+# --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.
 #    Same per-unit + combined shape as fetch-pi-logs.sh, scoped to this
 #    round's units instead of the whole install.
@@ -232,6 +252,7 @@ echo "  bundle:          $bundle_status" >&2
 echo "  state:           $state_status" >&2
 echo "  design-draft:    $design_draft_status" >&2
 echo "  applied-profile: $applied_profile_status" >&2
+echo "  repeat-floor:    $repeat_floor_status" >&2
 echo "  journal:         $journal_status" >&2
 
 if (( bundle_ok == 0 )) || (( state_ok == 0 )); then

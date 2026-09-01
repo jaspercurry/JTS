@@ -448,7 +448,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
@@ -970,12 +970,13 @@ name rather than publishing 0.0, which would claim the seats agreed.
 
 **The caveat that governs all three:** a position or seat spread is only as
 meaningful as the repeat spread it is measured against. If σ_repeat is 0.4 dB, a
-σ_position of 0.5 dB says almost nothing about the room. **Calibration experiment
-E2 — the study that would measure σ_repeat — has not been run** (its design is in
-the plan's "Calibration experiments" section). Until it has, every σ threshold
-here is an assumption, including `round_evidence.MEASURED_BENEFIT_MARGIN_DB` and
-`round_evidence.ITERATION_PLATEAU_DB`, both self-described as awaiting exactly
-that study.
+σ_position of 0.5 dB says almost nothing about the room. σ_repeat is measured by
+banking one — `jasper-round-views repeat-floor <N touched-nothing repeat rounds>`
+— and the packet's `accuracy_budget.components.in_capture_repeat_floor` says
+whether this rig has. On a rig that has not, every σ threshold here is an
+assumption, including `round_evidence.MEASURED_BENEFIT_MARGIN_DB` and
+`round_evidence.ITERATION_PLATEAU_DB`; the component's `thresholds.source` names
+which of the two you are reading.
 
 That caveat is why `per_bin_sigma_db` is published under
 `uncertainty.unseparated` rather than in the `fields` list beside a kind: it

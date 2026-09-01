@@ -70,6 +70,9 @@ from ._logging import CLI_LOG_FORMAT
 from jasper.active_speaker.baseline_profile import (
     DEFAULT_STATE_PATH as _APPLIED_PROFILE_DEFAULT_PATH,
 )
+from jasper.active_speaker.repeat_floor import (
+    DEFAULT_STATE_PATH as _REPEAT_FLOOR_DEFAULT_PATH,
+)
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -230,6 +233,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
         applied_profile_path=Path(
             args.applied_profile or _APPLIED_PROFILE_DEFAULT_PATH
         ),
+        repeat_floor_path=Path(args.repeat_floor or _REPEAT_FLOOR_DEFAULT_PATH),
     )
 
 
@@ -239,6 +243,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 _REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("--drivers", "drivers"),
     ("--applied-profile", "applied_profile"),
+    ("--repeat-floor", "repeat_floor"),
 )
 
 
@@ -1329,6 +1334,17 @@ _APPLIED_PROFILE_HELP = (
 )
 
 
+#: What ``--repeat-floor`` is, defaulted on the same terms as the two above.
+#: Without it the accuracy budget reports the repeat floor unmeasured and the
+#: stopping thresholds fall back to the codified assumptions, saying so.
+_REPEAT_FLOOR_HELP = (
+    "the banked repeat floor JSON — this rig's measured touched-nothing "
+    f"repeat spread. Defaults to {_REPEAT_FLOOR_DEFAULT_PATH}. Without a "
+    "readable file there, the packet's in_capture_repeat_floor reads "
+    "unavailable and its plateau/margin are the codified assumptions"
+)
+
+
 #: What ``--packet`` is, and why it exists. The packet a laptop rebuilds is not
 #: the packet the speaker emitted — the rebuild resolves ``--drivers`` and
 #: ``--applied-profile`` against whatever THAT machine has — so the two
@@ -1387,6 +1403,7 @@ def _add_evidence_args(
     # named the flag from one who did not.
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
     parser.add_argument("--applied-profile", default=None, help=_APPLIED_PROFILE_HELP)
+    parser.add_argument("--repeat-floor", default=None, help=_REPEAT_FLOOR_HELP)
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
     else:
