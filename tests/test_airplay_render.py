@@ -287,10 +287,14 @@ def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
     # Camilla term 1024+1024=2048 + live fan-in (Ring A) output 1536 +
     # Ring B fallback 128 + live outputd DAC 1024 = 4736 / 48000 = 0.098667.
     assert "audio_backend_latency_offset_in_seconds = -0.098667;" in rendered
-    # One STATUS connect per socket per render: the renderer reads every
-    # field it needs from a daemon in a single request, never one connect
-    # per dotted field (status_json_values in jasper-apply-airplay-mode).
-    assert len(fanin_socket.requests) == 1
+    # One STATUS connect for outputd: it always serves Ring B's AND the DAC's
+    # fields together, so this payload distinguishes one connect (new) from
+    # main's three (occupancy, slot_frames, dac_delay, unconditionally).
+    # Fanin's connect count is NOT pinned here: this payload hits Ring A's
+    # first tier immediately, which main's per-field fetcher also does in
+    # exactly one connect — see test_airplay_renderer_prefers_live_ring_a_occupancy
+    # for the fanin pin, on the payload shape (Ring A's SECOND tier) where
+    # main provably needs three.
     assert len(outputd_socket.requests) == 1
 
 
@@ -589,10 +593,11 @@ def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
     box) is absent, which is the ring topology's normal case (ADR-0100
     left no playback PCM there for shairport's own snd_pcm_delay() either).
     """
-    with JsonStatusSocket(
+    fanin_socket = JsonStatusSocket(
         {"output": {"period_frames": 100, "ring": {"occupancy": 3}}},
         name="fanin.sock",
-    ) as fanin_status:
+    )
+    with fanin_socket as fanin_status:
         rendered, result = _render(
             tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
         )
@@ -607,6 +612,15 @@ def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
     # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
     # DAC default 3072 = 5548 / 48000.
     assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered
+    # This payload has no snd_pcm_delay_frames at all (Ring A's REAL shape on
+    # a box, per ADR-0100 — the field is null every period, unconditionally),
+    # so main's per-field fetcher provably needs three connects here (a
+    # failed delay_frames attempt, then occupancy, then period_frames) where
+    # this renderer needs one. Unlike the fanin pin dropped from
+    # test_airplay_renderer_prefers_live_fanin_output_delay (whose payload
+    # hits Ring A's first tier immediately, so main also manages one connect
+    # there), this is the payload shape that actually distinguishes them.
+    assert len(fanin_socket.requests) == 1
 
 
 def test_airplay_renderer_alsa_delay_beats_ring_occupancy_for_ring_a(

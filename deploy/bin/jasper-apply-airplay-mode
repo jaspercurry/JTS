@@ -162,12 +162,15 @@ camilla_config_path() {
 # empty field.
 #
 # Deliberately NOT converged onto jasper.camilla_config_contract's
-# parse_camilla_devices_config (the repo's richer Camilla YAML reader):
-# this awk is the one path in the file with no python dependency at all,
-# on a render step that is otherwise unconditional (unlike the STATUS and
-# ring_assets tiers below, which were already python-optional and degrade
-# gracefully). Requiring python here would trade a working, dependency-free
-# offset for a python/venv-availability gate on every render.
+# parse_camilla_devices_config (the repo's richer Camilla YAML reader).
+# Several helpers below are already python-free like this one, but this
+# is the one python-free reader on the HARD-REQUIRED path: missing
+# samplerate/chunksize fails the whole offset computation (falls to
+# 0.0), with no further tier to fall through to. The STATUS and
+# ring_assets tiers below are different in kind, not just in being
+# python-free — they were already python-OPTIONAL, each with its own
+# next tier to degrade to. Converging this one onto a python parser
+# would gate AirPlay startup on venv health for the first time.
 camilla_devices_ints() {
     local config="$1"
     awk '
@@ -316,6 +319,8 @@ except ImportError:
 sock_path = sys.argv[1]
 dotted_paths = sys.argv[2:]
 status = read_status_socket_or_none(sock_path)
+if status is None:
+    sys.exit(0)
 
 fields = []
 for dotted_path in dotted_paths:
@@ -549,10 +554,11 @@ derive_audio_backend_latency_offset() {
     # ONE STATUS fetch per daemon per render (status_json_values), not one
     # per dotted field: fanin serves Ring A's three candidate fields and
     # outputd serves Ring B's and the DAC's in a single JSON reply apiece,
-    # so a fetch per field cost up to four extra round-trips for nothing —
-    # six total (3 fanin + 3 outputd) on the now-common ring topology,
-    # where fanin's ALSA-delay field always misses (ADR-0100); as few as
-    # two extra (four total) when that field is live on a loopback box.
+    # so a fetch per field cost four extra round-trips for nothing — six
+    # total (3 fanin + 3 outputd), unconditionally: fanin's ALSA-delay
+    # field is null every period on the only transport (ADR-0100 deleted
+    # the loopback route this field once served), so the old code always
+    # walked the 3-field path on both sockets, never fewer.
     fanin_fields="$(status_json_values "$FANIN_STATUS_SOCKET" \
         output.snd_pcm_delay_frames output.ring.occupancy output.period_frames || true)"
     IFS='|' read -r fanin_delay_frames fanin_ring_occupancy fanin_period_frames <<< "$fanin_fields"
