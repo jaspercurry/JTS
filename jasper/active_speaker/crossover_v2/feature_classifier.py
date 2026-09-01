@@ -81,6 +81,7 @@ import numpy as np
 
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.deconv import (
     magnitude_response,
     regularized_deconvolution_full,
@@ -165,8 +166,9 @@ NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 #: #3480 misdirection rebuilt one vocabulary later.
 CAPTURES_UNREADABLE = "classification_captures_unreadable"
 
-#: A capture names a phase whose program WAV is not in the round directory, so
-#: it cannot be deconvolved against the signal that was actually played.
+#: No program in the round directory carries the bytes a capture's sidecar
+#: banked, so it cannot be deconvolved against the signal that was actually
+#: played. Matching is by content hash, never by phase label (#3504).
 PROGRAM_MISSING = "classification_program_missing"
 
 #: Nothing in the pooled response stood above the round's own capture-to-
@@ -186,8 +188,9 @@ CLASSIFICATION_REFUSAL_REASONS = frozenset({
 
 # --- per-capture admissibility — why each capture in the ring was dropped --- #
 
-#: The capture is classifiable: an admissible shape, this round's session, its
-#: program WAV present, and a readable WAV under a stamped name.
+#: The capture is classifiable: an admissible shape, this round's session, the
+#: program whose bytes it banked present, and a readable WAV under a stamped
+#: name.
 CAPTURE_ADMISSIBLE = "admissible"
 
 #: The sidecar JSON did not read as an object carrying a ``phase`` string.
@@ -202,8 +205,13 @@ CAPTURE_PHASE_NOT_ADMISSIBLE = "phase_not_admissible"
 #: A ``lateral`` capture — the per-driver shape that refuses the whole round.
 CAPTURE_LATERAL_SHAPE = "lateral_capture_shape"
 
-#: The phase's ``<phase>_program.wav`` is not in the round directory.
+#: No program in the round directory carries the bytes this capture's sidecar
+#: banked as ``provenance.stimulus.wav_sha256``.
 CAPTURE_PROGRAM_MISSING = "program_missing"
+
+#: The sidecar banks no stimulus content hash, so no program can be proven to
+#: be the one it heard.
+CAPTURE_PROGRAM_UNIDENTIFIED = "program_unidentified"
 
 #: The sidecar's WAV is not beside it in the ring.
 CAPTURE_WAV_MISSING = "wav_missing"
@@ -232,6 +240,7 @@ _REFUSAL_FOR_CAPTURE_REASON: dict[str, str | None] = {
     # The round is the right shape and the take is what cannot be read. (A
     # program-missing row is claimed earlier by PROGRAM_MISSING.)
     CAPTURE_PROGRAM_MISSING: CAPTURES_UNREADABLE,
+    CAPTURE_PROGRAM_UNIDENTIFIED: CAPTURES_UNREADABLE,
     CAPTURE_WAV_MISSING: CAPTURES_UNREADABLE,
     CAPTURE_UNSTAMPED_NAME: CAPTURES_UNREADABLE,
 }
@@ -602,10 +611,15 @@ def load_round_captures(
     listing it was just handed. Which name a no-capture round refuses under is
     read off those rows through :data:`_REFUSAL_FOR_CAPTURE_REASON`.
     """
+    # The listing and the binding map are separate because they answer
+    # different questions: a round directory really does hold byte-identical
+    # programs (``_play`` banks the first summed-sweep phase's bytes a second
+    # time as ``summed_program.wav``), and those collapse into ONE hash key —
+    # so a refusal naming the map's values would omit files that are on disk.
+    banked_programs = sorted(round_dir.glob("*_program.wav"))
     programs = {
-        phase: path
-        for phase in sorted(ADMISSIBLE_PHASES)
-        if (path := round_dir / f"{phase}_program.wav").is_file()
+        sha256_file(path): path
+        for path in banked_programs
     }
     releases = _walk_releases(walk_logs)
 
@@ -656,7 +670,18 @@ def load_round_captures(
         if phase not in ADMISSIBLE_PHASES:
             note(sidecar, phase, CAPTURE_PHASE_NOT_ADMISSIBLE)
             continue
-        program = programs.get(phase)
+        # Which program played is the bytes' hash the capture banked, never
+        # the phase label: a cloud position's stimulus is labelled "verify"
+        # whatever it actually emitted (#3504).
+        provenance = doc.get("provenance")
+        stimulus = (
+            provenance.get("stimulus") if isinstance(provenance, Mapping) else None
+        )
+        banked = stimulus.get("wav_sha256") if isinstance(stimulus, Mapping) else None
+        if not isinstance(banked, str) or not banked:
+            note(sidecar, phase, CAPTURE_PROGRAM_UNIDENTIFIED)
+            continue
+        program = programs.get(banked)
         if program is None:
             missing_program.append(phase)
             note(sidecar, phase, CAPTURE_PROGRAM_MISSING)
@@ -696,8 +721,8 @@ def load_round_captures(
             },
         )
     if missing_program:
-        # Refused rather than pooled without them. A round whose bundle is
-        # missing the program for a phase it banked captures of is incomplete,
+        # Refused rather than pooled without them. A round whose bundle does
+        # not carry the bytes one of its captures heard is incomplete,
         # and quietly classifying the half that survived would change the
         # answer without changing anything a reader could see.
         raise FeatureClassificationRefused(
@@ -706,7 +731,8 @@ def load_round_captures(
                 "phases": sorted(set(missing_program)),
                 "captures_dropped": len(missing_program),
                 "round_dir": round_dir.name,
-                "programs_present": sorted(programs),
+                "programs_present": [path.name for path in banked_programs],
+                "matched_by": "provenance.stimulus.wav_sha256",
                 "captures": census,
             },
         )

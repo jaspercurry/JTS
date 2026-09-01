@@ -14,12 +14,13 @@ against, which is exactly why the instrument carries controls at all.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import shutil
 import wave
 from pathlib import Path
-from typing import get_args
+from typing import Callable, get_args
 
 import numpy as np
 import pytest
@@ -95,6 +96,19 @@ def _write_wav(path: Path, x: np.ndarray) -> None:
         handle.writeframes((np.clip(x, -1, 1) * 32767).astype("<i2").tobytes())
 
 
+#: Leading silence per phase, so this fixture's phases carry DIFFERENT program
+#: bytes the way production's do — a position group's sweep is the verify one
+#: minus the courtesy prelude (``crossover_v2.programs``). A capture binds to
+#: the program whose bytes it heard (#3504), and phases sharing one waveform
+#: could not tell that binding from a phase-label one.
+_PROGRAM_LEAD_SAMPLES = {"verify": 240, "cloud_verify": 480}
+
+
+def _program_for(phase: str) -> np.ndarray:
+    lead = np.zeros(_PROGRAM_LEAD_SAMPLES.get(phase, 0))
+    return np.concatenate([lead, _sweep()])
+
+
 def _bundle(
     root: Path,
     ir: np.ndarray,
@@ -103,6 +117,7 @@ def _bundle(
     session_id: str = SESSION_ID,
     seed: int = 11,
     bank_shape: bool = False,
+    stimulus_sha: Callable[[str, dict[str, str]], str | None] | None = None,
 ) -> tuple[Path, Path]:
     """A commissioning bundle plus a capture ring, of one synthetic speaker.
 
@@ -113,34 +128,42 @@ def _bundle(
     still has to exist either way, empty or not, for
     :func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`
     to find it at all.
+
+    Every sidecar banks ``provenance.stimulus.wav_sha256`` over the bytes of
+    the program its capture was made against, as the play seam does.
+    ``stimulus_sha`` overrides that: it is handed the sidecar's phase and the
+    phase→digest map, and a ``None`` return omits the field entirely.
     """
     rng = np.random.default_rng(seed)
-    program = _sweep()
     bundle = root / "bundle"
     round_dir = bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST"
     programs_dir = (bundle / "crossover_v2/wired-TEST") if bank_shape else round_dir
     dumps = root / "dumps"
     round_dir.mkdir(parents=True, exist_ok=True)
+    shas: dict[str, str] = {}
     for phase in set(phases) | {"verify", "cloud_verify"}:
-        _write_wav(programs_dir / f"{phase}_program.wav", program)
+        path = programs_dir / f"{phase}_program.wav"
+        _write_wav(path, _program_for(phase))
+        shas[phase] = hashlib.sha256(path.read_bytes()).hexdigest()
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": session_id}))
 
     for index, phase in enumerate(phases):
+        program = _program_for(phase)
         captured = np.convolve(program, ir)[: program.size + 2048]
         captured = captured + rng.normal(0, 3e-4, captured.size)
         captured = captured / np.max(np.abs(captured)) * 0.8
         name = f"{1787000000000000 + index * 50_000_000}_{phase}_mic"
         _write_wav(dumps / "wav" / f"{name}.wav", captured)
         (dumps / "sidecar").mkdir(parents=True, exist_ok=True)
-        (dumps / "sidecar" / f"{name}.json").write_text(
-            json.dumps(
-                {
-                    "phase": phase,
-                    "jts_session_identity": {"session_id": session_id},
-                }
-            )
-        )
+        doc: dict = {
+            "phase": phase,
+            "jts_session_identity": {"session_id": session_id},
+        }
+        banked = shas[phase] if stimulus_sha is None else stimulus_sha(phase, shas)
+        if banked is not None:
+            doc["provenance"] = {"stimulus": {"wav_sha256": banked}}
+        (dumps / "sidecar" / f"{name}.json").write_text(json.dumps(doc))
     return bundle, dumps
 
 
@@ -783,12 +806,81 @@ def test_a_capture_whose_program_is_missing_refuses_the_whole_round(tmp_path):
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
+    # ``_play`` banks the first summed-sweep phase's bytes a second time under
+    # this name, so it shares verify's hash and is invisible in the binding map.
+    shutil.copy(round_dir / "verify_program.wav", round_dir / "summed_program.wav")
     (round_dir / "cloud_verify_program.wav").unlink()
     with pytest.raises(fx.FeatureClassificationRefused) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    detail = caught.value.detail
     assert caught.value.reason == fx.PROGRAM_MISSING
-    assert caught.value.detail["phases"] == ["cloud_verify"]
-    assert caught.value.detail["programs_present"] == ["verify"]
+    assert detail["phases"] == ["cloud_verify"]
+    assert detail["matched_by"] == "provenance.stimulus.wav_sha256"
+    assert detail["programs_present"] == ["summed_program.wav", "verify_program.wav"]
+
+
+def test_a_capture_binds_to_the_program_whose_bytes_it_heard_not_its_phase_label(
+    tmp_path,
+):
+    """#3504: the phase LABEL on a sidecar does not name the program played.
+
+    ``provenance.stimulus.phase`` reads ``verify`` for every cloud position by
+    construction, and the round directory holds two different sweeps under two
+    phase names. Only the banked content hash says which of them was emitted,
+    so every capture here binds to ``verify_program.wav`` however its own
+    sidecar is labelled.
+    """
+    bundle, dumps = _bundle(
+        tmp_path, _flat_ir(), stimulus_sha=lambda phase, shas: shas["verify"]
+    )
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    verify = round_dir / "verify_program.wav"
+    assert verify.read_bytes() != (round_dir / "cloud_verify_program.wav").read_bytes()
+
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+
+    assert {cap.phase for cap in captures} == {"verify", "cloud_verify"}
+    assert {cap.program for cap in captures} == {verify}
+
+
+@pytest.mark.parametrize(
+    ("stimulus_sha", "expected_reason", "expected_capture_reason"),
+    [
+        pytest.param(
+            lambda phase, shas: None,
+            fx.CAPTURES_UNREADABLE,
+            fx.CAPTURE_PROGRAM_UNIDENTIFIED,
+            id="no_hash_banked",
+        ),
+        pytest.param(
+            lambda phase, shas: "0" * 64,
+            fx.PROGRAM_MISSING,
+            fx.CAPTURE_PROGRAM_MISSING,
+            id="hash_no_program_carries",
+        ),
+    ],
+)
+def test_a_stimulus_hash_that_binds_to_no_program_refuses_by_name(
+    tmp_path, stimulus_sha, expected_reason, expected_capture_reason
+):
+    """#3504 itself: without proven bytes there is nothing to deconvolve.
+
+    No banked hash and a hash no program carries are one failure — nothing
+    says which program played — refused by name, never guessed at by label.
+    """
+    bundle, dumps = _bundle(tmp_path, _flat_ir(), stimulus_sha=stimulus_sha)
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+
+    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+
+    assert caught.value.reason == expected_reason
+    census = caught.value.detail["captures"]
+    assert {row["reason"] for row in census} == {expected_capture_reason}
+    assert {row["reason"] for row in census} <= fx.CAPTURE_ADMISSIBILITY_REASONS
+    assert not any(row["admissible"] for row in census)
 
 
 def _bind_a_lateral_capture(round_dir: Path, dumps: Path) -> None:
@@ -1442,7 +1534,7 @@ def test_a_program_missing_refusal_names_the_directory_it_actually_read(
     # The exact shape the gate demonstrated on a real bundle: programs_present
     # names only what the SIBLING carried, and the payload must now also say
     # that the sibling -- not evidence/'s round_dir -- is what was read.
-    assert payload["detail"]["programs_present"] == ["verify"]
+    assert payload["detail"]["programs_present"] == ["verify_program.wav"]
     assert payload["programs_dir"] == "crossover_v2/wired-TEST"
 
 

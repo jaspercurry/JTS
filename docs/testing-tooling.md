@@ -2137,7 +2137,9 @@ this round by the bundle's own `session_id` (a sidecar stamps it into
 split correctly.
 
 The round directory's own `<phase>_program.wav` files are resolved from
-either shape automatically, by structure rather than a flag: this
+either shape automatically, by structure rather than a flag (and a capture is
+bound to one of them by the content hash its sidecar banked, never by the
+file's phase name): this
 instrument's original campaign-receipts shape banks them beside the JSON
 receipts, and the shape the tar above actually produces banks them in a
 sibling `crossover_v2/<relay>/` directory instead — so the composition above
@@ -2163,10 +2165,11 @@ just works.
   about (a MEASURE-only ring is this by construction).
 - `classification_captures_unreadable` — this round banked a capture of an
   admissible shape and the ring cannot hand it over: the WAV is not beside
-  its sidecar, or the dump name lost the microsecond stamp the take's timing
-  is bound to. The round shape is right, so a different round is the one
-  move that cannot help — the remedy is the ring or the bank step that
-  filled it.
+  its sidecar, the dump name lost the microsecond stamp the take's timing
+  is bound to, or the sidecar banks no `provenance.stimulus.wav_sha256` for
+  the program it heard to be matched by. The round shape is right, so a
+  different round is the one move that cannot help — the remedy is the ring
+  or the bank step that filled it.
 - `classification_no_admissible_captures` — narrowed by the split above:
   nothing of this round reached the instrument at all (an empty ring, every
   sidecar belonging to another session, or every sidecar unparseable).
