@@ -153,19 +153,26 @@ else
     echo "state: FAILED or not present" >&2
 fi
 
+# Pull one optional on-Pi artifact into $DEST/<name>; reported, never gated.
+pull_optional() {  # <label> <remote-path> <local-name> <status-var>
+    local label="$1" src="$2" name="$3" var="$4" bytes
+    if remote "sudo cat $src 2>/dev/null" > "$DEST/$name" && [[ -s "$DEST/$name" ]]; then
+        bytes="$(wc -c < "$DEST/$name")"
+        printf -v "$var" 'ok (%s bytes)' "$bytes"
+        echo "$label -> $DEST/$name ($bytes bytes)" >&2
+    else
+        rm -f "$DEST/$name"
+        printf -v "$var" '%s' "FAILED or not present"
+        echo "$label: FAILED or not present" >&2
+    fi
+}
+
 # --------------------------------------------------------------------- #
 # 3. Active-speaker design draft — the confirmed driver-safety profile.
 #    NOT part of the round's identity — reported, not gated.
 # --------------------------------------------------------------------- #
-design_draft_status="FAILED or not present"
-if remote "sudo cat /var/lib/jasper/active_speaker_design_draft.json 2>/dev/null" \
-        > "$DEST/design-draft.json" && [[ -s "$DEST/design-draft.json" ]]; then
-    design_draft_status="ok ($(wc -c < "$DEST/design-draft.json") bytes)"
-    echo "design-draft -> $DEST/design-draft.json ($(wc -c < "$DEST/design-draft.json") bytes)" >&2
-else
-    rm -f "$DEST/design-draft.json"
-    echo "design-draft: FAILED or not present" >&2
-fi
+pull_optional design-draft /var/lib/jasper/active_speaker_design_draft.json \
+    design-draft.json design_draft_status
 
 # --------------------------------------------------------------------- #
 # 3b. Applied baseline profile — what the speaker is PLAYING. The flow
@@ -173,15 +180,8 @@ fi
 #     stash, one apply behind. NOT part of the round's identity —
 #     reported, not gated.
 # --------------------------------------------------------------------- #
-applied_profile_status="FAILED or not present"
-if remote "sudo cat /var/lib/jasper/active_speaker_baseline_profile.json 2>/dev/null" \
-        > "$DEST/applied-profile.json" && [[ -s "$DEST/applied-profile.json" ]]; then
-    applied_profile_status="ok ($(wc -c < "$DEST/applied-profile.json") bytes)"
-    echo "applied-profile -> $DEST/applied-profile.json ($(wc -c < "$DEST/applied-profile.json") bytes)" >&2
-else
-    rm -f "$DEST/applied-profile.json"
-    echo "applied-profile: FAILED or not present" >&2
-fi
+pull_optional applied-profile /var/lib/jasper/active_speaker_baseline_profile.json \
+    applied-profile.json applied_profile_status
 
 # --------------------------------------------------------------------- #
 # 3c. Banked repeat floor — the rig's measured touched-nothing repeat
@@ -189,15 +189,8 @@ fi
 #     the stopping plateau/benefit margin from. NOT part of the round's
 #     identity — reported, not gated.
 # --------------------------------------------------------------------- #
-repeat_floor_status="FAILED or not present"
-if remote "sudo cat /var/lib/jasper/active_speaker_repeat_floor.json 2>/dev/null" \
-        > "$DEST/repeat-floor.json" && [[ -s "$DEST/repeat-floor.json" ]]; then
-    repeat_floor_status="ok ($(wc -c < "$DEST/repeat-floor.json") bytes)"
-    echo "repeat-floor -> $DEST/repeat-floor.json ($(wc -c < "$DEST/repeat-floor.json") bytes)" >&2
-else
-    rm -f "$DEST/repeat-floor.json"
-    echo "repeat-floor: FAILED or not present" >&2
-fi
+pull_optional repeat-floor /var/lib/jasper/active_speaker_repeat_floor.json \
+    repeat-floor.json repeat_floor_status
 
 # --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.

@@ -105,6 +105,7 @@ def _floor_record() -> dict[str, Any]:
                 "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
                 "min_db": 0.5, "max_db": 1.5,
                 "pairwise_abs_delta_p95_db": 0.4,
+                "pairwise_abs_delta_median_db": 0.3,
             },
         },
         "note": "test vector",
@@ -136,6 +137,7 @@ def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_pa
             "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
             "min_db": 0.5, "max_db": 1.5,
             "pairwise_abs_delta_p95_db": float("nan"),
+            "pairwise_abs_delta_median_db": 0.3,
         }}},
         state_path=floor_path,
     )
@@ -163,7 +165,6 @@ def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
     assert entry["aggregate_metric"] == SHIPPED_POOL_METRIC
     assert entry["bundle_session_ids"] == ["sess1", "sess2", "sess3"]
     assert entry["graph_fingerprints"] == ["gf1"]
-    assert entry["pairwise_abs_delta_p95_db"] == pytest.approx(p95)
     assert entry["thresholds"]["source"] == "banked_repeat_floor"
     assert entry["thresholds"]["margin_db"] == pytest.approx(
         CLAIM_FLOOR_P95_MULTIPLE * p95

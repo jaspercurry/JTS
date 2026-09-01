@@ -2047,52 +2047,51 @@ def _read_candidate(round_dir: Path) -> dict[str, Any]:
     return _mapping(raw)
 
 
+def _unmeasured_repeat_floor(reason: str) -> dict[str, Any]:
+    """The shared shape for both absences below — no record, or one that
+    cannot be read — thresholds falling back to the two ``round_evidence``
+    constants that self-describe as assumptions."""
+    return {
+        "kind": UNCERTAINTY_RANDOM,
+        "available": False,
+        "reason": reason,
+        "thresholds": {
+            "source": "codified_assumption",
+            "margin_db": MEASURED_BENEFIT_MARGIN_DB,
+            "plateau_db": ITERATION_PLATEAU_DB,
+            "note": (
+                "both self-described assumptions in round_evidence.py, "
+                "awaiting exactly this measurement"
+            ),
+        },
+    }
+
+
 def _repeat_floor_component(record: dict[str, Any] | None) -> dict[str, Any]:
     """The RANDOM repeat floor as banked, or the honest absence.
 
-    ``thresholds`` is always present and always names its own source, so a
-    reader never has to guess whether the plateau/margin it is about to apply
-    were measured on this rig or are the two ``round_evidence`` constants that
-    say of themselves that they are assumptions.
-
     Two different absences, told apart: no record at all is "nobody ran the
-    repeats", while a record whose aggregate row carries no finite p95 is a
-    BANKED floor that cannot be read — one is work never done, the other is
-    work to redo, and one shared reason would send the operator after the
+    repeats", while a record whose aggregate row carries no usable p95/median
+    is a BANKED floor that cannot be read — one is work never done, the other
+    is work to redo, and one shared reason would send the operator after the
     wrong one.
     """
-    thresholds = stopping_thresholds(record) if record is not None else None
-    if record is None or thresholds is None:
-        return {
-            "kind": UNCERTAINTY_RANDOM,
-            "available": False,
-            "reason": (
-                "unmeasured -- no banked repeat floor; calibration experiment "
-                "E2 (N touched-nothing fixed-pose repeat rounds through "
-                "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
-                "Calibration experiments)"
-                if record is None
-                else (
-                    "banked repeat floor carries no finite "
-                    f"{record.get('aggregate_metric')} "
-                    "pairwise_abs_delta_p95_db (record at "
-                    f"{record.get('state_path')}); re-bank it with "
-                    "jasper-round-views repeat-floor"
-                )
-            ),
-            "thresholds": {
-                "source": "codified_assumption",
-                "margin_db": MEASURED_BENEFIT_MARGIN_DB,
-                "plateau_db": ITERATION_PLATEAU_DB,
-                "note": (
-                    "both self-described assumptions in round_evidence.py, "
-                    "awaiting exactly this measurement"
-                ),
-            },
-        }
+    if record is None:
+        return _unmeasured_repeat_floor(
+            "unmeasured -- no banked repeat floor; calibration experiment "
+            "E2 (N touched-nothing fixed-pose repeat rounds through "
+            "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
+            "Calibration experiments)"
+        )
+    thresholds = stopping_thresholds(record)
+    if thresholds is None:
+        return _unmeasured_repeat_floor(
+            f"banked repeat floor carries no usable {record.get('aggregate_metric')} "
+            "pairwise_abs_delta_p95_db (finite and positive; record at "
+            f"{record.get('state_path')}); re-bank it with "
+            "jasper-round-views repeat-floor"
+        )
     rows = [row for row in record.get("rounds") or [] if isinstance(row, Mapping)]
-    metric_name = str(record.get("aggregate_metric") or "")
-    aggregate = _mapping(_mapping(record.get("metrics")).get(metric_name))
     return {
         "kind": UNCERTAINTY_RANDOM,
         "available": True,
@@ -2111,8 +2110,6 @@ def _repeat_floor_component(record: dict[str, Any] | None) -> dict[str, Any]:
             }
         ),
         "aggregate_metric": record.get("aggregate_metric"),
-        "sd_db": aggregate.get("sd_db"),
-        "pairwise_abs_delta_p95_db": aggregate.get("pairwise_abs_delta_p95_db"),
         "metrics": record.get("metrics"),
         "thresholds": {"source": "banked_repeat_floor", **thresholds},
         "reason": "",

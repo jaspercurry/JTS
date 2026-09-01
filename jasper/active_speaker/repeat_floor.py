@@ -30,13 +30,11 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-
-import numpy as np
+from typing import Any, Mapping, Sequence, TypeGuard
 
 from jasper.atomic_io import atomic_write_json
 
-from .attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
+from .attempts_loop import FloorStats, percentile
 
 SCHEMA_VERSION = 1
 REPEAT_FLOOR_KIND = "jts_active_speaker_repeat_floor"
@@ -56,18 +54,15 @@ def _state_path(path: str | Path | None) -> Path:
     return Path(path) if path is not None else DEFAULT_STATE_PATH
 
 
-def pairwise_abs_delta_p95(values: Sequence[float]) -> float | None:
-    """The 95th percentile of every pair's absolute difference.
-
-    ``MEASURED_BENEFIT_MARGIN_DB``'s own recipe: difference the two pooled
-    values, repeat, take that distribution's p95. ``None`` below two values —
+def pairwise_abs_deltas(values: Sequence[float]) -> list[float]:
+    """Every pair's absolute difference — ``MEASURED_BENEFIT_MARGIN_DB``'s own
+    recipe: difference the two pooled values, repeat. Empty below two values —
     one measurement has no difference to take.
     """
     vs = [float(v) for v in values]
     if len(vs) < 2:
-        return None
-    deltas = [abs(a - b) for i, a in enumerate(vs) for b in vs[i + 1:]]
-    return float(np.percentile(deltas, 95))
+        return []
+    return [abs(a - b) for i, a in enumerate(vs) for b in vs[i + 1:]]
 
 
 def derive_repeat_floor(
@@ -88,6 +83,7 @@ def derive_repeat_floor(
         spread = metric.spread()
         if spread is None:
             continue
+        deltas = pairwise_abs_deltas(list(metric.values.values()))
         metrics[metric.name] = {
             "n": int(spread["n"]),
             "mean_db": spread["mean"],
@@ -95,9 +91,8 @@ def derive_repeat_floor(
             "range_db": spread["range"],
             "min_db": spread["min"],
             "max_db": spread["max"],
-            "pairwise_abs_delta_p95_db": pairwise_abs_delta_p95(
-                list(metric.values.values())
-            ),
+            "pairwise_abs_delta_p95_db": percentile(deltas, 95.0) if deltas else None,
+            "pairwise_abs_delta_median_db": percentile(deltas, 50.0) if deltas else None,
         }
     if SHIPPED_POOL_METRIC not in metrics:
         raise ValueError(
@@ -155,15 +150,19 @@ def load_repeat_floor(
     return raw
 
 
+def _finite(value: Any) -> TypeGuard[float]:
+    """Is ``value`` a finite number — bools excluded (``isinstance(True, int)``)?"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
     """The plateau and benefit margin this floor implies, or ``None``.
 
-    The plateau is ``ITERATION_PLATEAU_DB``'s own TODO ("the movement that
-    study cannot distinguish from noise") and the margin is
-    ``MEASURED_BENEFIT_MARGIN_DB``'s own house rule
-    (:data:`~jasper.active_speaker.attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`).
-    The same 2× keeps plateau = margin/2, the relationship ``round_evidence``
-    calls load-bearing.
+    Built through :meth:`~jasper.active_speaker.attempts_loop.FloorStats.from_repeat_study`,
+    the one place the formula lives: plateau = the p95 itself
+    (``ITERATION_PLATEAU_DB``'s own TODO), margin = the derived claim floor
+    (``MEASURED_BENEFIT_MARGIN_DB``'s own house rule), so plateau = margin/2
+    by construction.
     """
     aggregate = record.get("metrics")
     if not isinstance(aggregate, Mapping):
@@ -171,17 +170,23 @@ def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
     row = aggregate.get(record.get("aggregate_metric"))
     if not isinstance(row, Mapping):
         return None
-    noise = row.get("pairwise_abs_delta_p95_db")
-    if isinstance(noise, bool) or not isinstance(noise, (int, float)):
+    p95 = row.get("pairwise_abs_delta_p95_db")
+    median = row.get("pairwise_abs_delta_median_db")
+    if not _finite(p95) or not _finite(median):
         return None
-    noise = float(noise)
-    if not math.isfinite(noise):
+    try:
+        floor = FloorStats.from_repeat_study(
+            metric=str(record.get("aggregate_metric") or ""),
+            median_db=median,
+            p95_db=p95,
+            source=f"{REPEAT_FLOOR_KIND} {record.get('state_path') or ''}".strip(),
+            measured_at=str(record.get("measured_at") or ""),
+        )
+    except ValueError:  # from_repeat_study refuses p95 <= 0 and an empty metric name
         return None
     return {
-        "noise_p95_db": noise,
-        "plateau_db": noise,
-        "margin_db": CLAIM_FLOOR_P95_MULTIPLE * noise,
-        "n_repeats": record.get("n_repeats"),
+        "plateau_db": floor.p95_db,
+        "margin_db": floor.claim_floor_db,
         "formula": (
             "plateau_db = p95(|delta| between two touched-nothing repeats of "
             "the aggregate metric); margin_db = CLAIM_FLOOR_P95_MULTIPLE * "

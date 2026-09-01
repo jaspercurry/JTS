@@ -78,6 +78,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
+    repeat_floor_provenance,
     repeatability_spread,
     verify_pose_curve,
 )
@@ -268,18 +269,7 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
         payload = derive_repeat_floor(
             repeatability_spread(rounds),
             rounds=[
-                {
-                    # Basename only: the record travels off this laptop and a
-                    # local path is neither provenance nor anyone else's.
-                    "label": Path(round_dir).name,
-                    "bundle_session_id": banked.packet["session"]["bundle_session_id"],
-                    "graph_fingerprint": banked.packet["identity"].get("graph_fingerprint"),
-                    "mic_calibration_id": banked.packet["identity"].get("mic", {}).get(
-                        "calibration_id"
-                    ),
-                    "started_at": banked.packet["session"].get("started_at"),
-                }
-                for round_dir, banked in rounds
+                repeat_floor_provenance(round_dir, banked) for round_dir, banked in rounds
             ],
         )
         record = write_repeat_floor(payload, state_path=path)

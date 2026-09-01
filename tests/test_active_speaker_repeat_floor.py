@@ -17,9 +17,10 @@ import json
 
 import pytest
 
-from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
+from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE, percentile
 from jasper.active_speaker.crossover_v2.round_views import (
     load_banked_round,
+    repeat_floor_provenance,
     repeatability_spread,
 )
 from jasper.active_speaker.repeat_floor import (
@@ -28,7 +29,7 @@ from jasper.active_speaker.repeat_floor import (
     SHIPPED_POOL_METRIC,
     derive_repeat_floor,
     load_repeat_floor,
-    pairwise_abs_delta_p95,
+    pairwise_abs_deltas,
     stopping_thresholds,
     write_repeat_floor,
 )
@@ -52,6 +53,7 @@ def _record(p95: float) -> dict:
                 "n": 4, "mean_db": 1.5, "sd_db": 1.29, "range_db": 3.0,
                 "min_db": 0.0, "max_db": 3.0,
                 "pairwise_abs_delta_p95_db": p95,
+                "pairwise_abs_delta_median_db": 1.0,
             },
         },
         "note": "",
@@ -59,19 +61,21 @@ def _record(p95: float) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# pairwise_abs_delta_p95
+# pairwise_abs_deltas
 # --------------------------------------------------------------------------- #
 
 
-def test_pairwise_p95_over_a_hand_derivable_set():
-    """[0, 1, 2, 3] -> |delta| = {1,1,1,2,2,3}; the linear-interpolated 95th
-    percentile of that sorted set is 2.75."""
-    assert pairwise_abs_delta_p95([0.0, 1.0, 2.0, 3.0]) == pytest.approx(2.75)
+def test_pairwise_abs_deltas_over_a_hand_derivable_set():
+    """[0, 1, 2, 3] -> |delta| = sorted [1,1,1,2,2,3]; the linear-interpolated
+    95th percentile of that set is 2.75."""
+    deltas = pairwise_abs_deltas([0.0, 1.0, 2.0, 3.0])
+    assert sorted(deltas) == [1.0, 1.0, 1.0, 2.0, 2.0, 3.0]
+    assert percentile(deltas, 95.0) == pytest.approx(2.75)
 
 
 @pytest.mark.parametrize("values", [[], [1.0]])
-def test_pairwise_p95_needs_two_values_to_have_a_difference(values):
-    assert pairwise_abs_delta_p95(values) is None
+def test_pairwise_abs_deltas_needs_two_values_to_have_a_difference(values):
+    assert pairwise_abs_deltas(values) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -82,17 +86,15 @@ def test_pairwise_p95_needs_two_values_to_have_a_difference(values):
 def test_stopping_thresholds_derive_plateau_and_margin_from_the_aggregate_p95():
     thresholds = stopping_thresholds(_record(2.75))
     assert thresholds is not None
-    assert thresholds["noise_p95_db"] == pytest.approx(2.75)
     assert thresholds["plateau_db"] == pytest.approx(2.75)
     assert thresholds["margin_db"] == pytest.approx(CLAIM_FLOOR_P95_MULTIPLE * 2.75)
     # round_evidence calls plateau = margin/2 load-bearing; the derivation
     # must not invert it.
     assert thresholds["plateau_db"] < thresholds["margin_db"]
-    assert thresholds["n_repeats"] == 4
 
 
-@pytest.mark.parametrize("bad", [None, float("nan"), float("inf"), "0.4", True])
-def test_stopping_thresholds_refuse_a_row_that_is_not_a_finite_number(bad):
+@pytest.mark.parametrize("bad", [None, float("nan"), float("inf"), "0.4", True, 0.0])
+def test_stopping_thresholds_refuse_a_row_that_is_not_a_usable_number(bad):
     record = _record(0.4)
     record["metrics"][SHIPPED_POOL_METRIC]["pairwise_abs_delta_p95_db"] = bad
     assert stopping_thresholds(record) is None
@@ -164,11 +166,7 @@ def test_derive_reads_every_metric_the_repeatability_view_graded(tmp_path):
     result = repeatability_spread(rounds)
     payload = derive_repeat_floor(
         result,
-        rounds=[
-            {"label": label, "bundle_session_id": banked.packet["session"]["bundle_session_id"],
-             "graph_fingerprint": None, "mic_calibration_id": "", "started_at": 1.0}
-            for label, banked in rounds
-        ],
+        rounds=[repeat_floor_provenance(label, banked) for label, banked in rounds],
     )
 
     assert payload["kind"] == REPEAT_FLOOR_KIND
@@ -178,7 +176,9 @@ def test_derive_reads_every_metric_the_repeatability_view_graded(tmp_path):
     assert [row["label"] for row in payload["rounds"]] == ["r1", "r2", "r3"]
     assert SHIPPED_POOL_METRIC in payload["metrics"]
     for row in payload["metrics"].values():
-        assert set(row) >= {"n", "sd_db", "pairwise_abs_delta_p95_db"}
+        assert set(row) >= {
+            "n", "sd_db", "pairwise_abs_delta_p95_db", "pairwise_abs_delta_median_db",
+        }
     assert stopping_thresholds(payload) is not None
 
 

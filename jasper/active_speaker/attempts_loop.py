@@ -71,6 +71,7 @@ first-class outcome, not a fabricated verdict".
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
@@ -165,6 +166,31 @@ REASON_BUDGET_EXHAUSTED = "budget_exhausted"
 #: and the README rounds it up for a household-facing sentence. The kernel
 #: computes it; nothing here hardcodes either decimal.
 CLAIM_FLOOR_P95_MULTIPLE = 2.0
+
+
+def percentile(values: Sequence[float], q: float) -> float:
+    """Linear-interpolated percentile — NumPy's default method, in ten lines.
+
+    Spelled out rather than imported so the floor's provenance is auditable
+    without pinning a NumPy version: the claim floor is the product's most
+    consequential decimal, and it should be reproducible by reading. The
+    equivalence to the banked study's own summary is pinned by
+    ``tests/test_active_speaker_attempts_replay.py``.
+    """
+
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        raise ValueError("percentile of an empty sample")
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (q / 100.0) * (len(ordered) - 1)
+    low = math.floor(position)
+    high = math.ceil(position)
+    if low == high:
+        return ordered[int(low)]
+    weight = position - low
+    return ordered[int(low)] + weight * (ordered[int(high)] - ordered[int(low)])
+
 
 #: Averaging more than four repeats buys resolution the box's drift immediately
 #: spends. Measured 2026-07-31: σ falls as 1/√M, but drift accumulates linearly

@@ -561,12 +561,8 @@ def test_per_seat_curves_normalises_by_median_not_mean(tmp_path):
 def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     """The side file reaches the packet exactly as applied-profile.json does:
     present, the accuracy budget's repeat-floor component is available."""
-    from jasper.active_speaker.repeat_floor import (
-        REPEAT_FLOOR_KIND,
-        SCHEMA_VERSION,
-        SHIPPED_POOL_METRIC,
-        write_repeat_floor,
-    )
+    from jasper.active_speaker.crossover_v2.round_views import repeat_floor_provenance
+    from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
 
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
@@ -575,20 +571,16 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     absent = load_banked_round(round_dir)
     assert absent.packet["accuracy_budget"]["components"][component]["available"] is False
 
+    # The record the REAL deriver banks from two repeats, never a hand-typed one.
+    twin = _make_round_dir(
+        tmp_path, "r2", position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=0.2))},
+    )
+    rounds = [(str(path), load_banked_round(path)) for path in (round_dir, twin)]
     write_repeat_floor(
-        {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": REPEAT_FLOOR_KIND,
-            "measured_at": "2026-09-01T00:00:00Z",
-            "n_repeats": 2,
-            "aggregate_metric": SHIPPED_POOL_METRIC,
-            "rounds": [],
-            "metrics": {SHIPPED_POOL_METRIC: {
-                "n": 2, "mean_db": 1.0, "sd_db": 0.1, "range_db": 0.2,
-                "min_db": 0.9, "max_db": 1.1, "pairwise_abs_delta_p95_db": 0.2,
-            }},
-            "note": "",
-        },
+        derive_repeat_floor(
+            repeatability_spread(rounds),
+            rounds=[repeat_floor_provenance(label, banked) for label, banked in rounds],
+        ),
         state_path=round_dir / "repeat-floor.json",
     )
     present = load_banked_round(round_dir)

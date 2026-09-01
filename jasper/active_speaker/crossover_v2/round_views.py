@@ -120,6 +120,7 @@ from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    _mapping,
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
 )
@@ -156,6 +157,7 @@ __all__ = [
     "load_banked_round",
     "per_seat_curves",
     "pooled_window_horizontal",
+    "repeat_floor_provenance",
     "repeatability_spread",
     "verify_pose_curve",
 ]
@@ -1146,6 +1148,21 @@ def repeatability_spread(
     return RepeatabilityResult(
         round_labels=labels, metrics=tuple(metrics), per_position=tuple(per_position_metrics)
     )
+
+
+def repeat_floor_provenance(label: str, banked: BankedRound) -> dict[str, Any]:
+    """One record row naming what produced a repeat — the packet fields a
+    floor cites. Basename only: the record leaves this laptop and a local
+    path is nobody's provenance."""
+    session = _mapping(banked.packet.get("session"))
+    identity = _mapping(banked.packet.get("identity"))
+    return {
+        "label": Path(label).name,
+        "bundle_session_id": session.get("bundle_session_id"),
+        "graph_fingerprint": identity.get("graph_fingerprint"),
+        "mic_calibration_id": _mapping(identity.get("mic")).get("calibration_id"),
+        "started_at": session.get("started_at"),
+    }
 
 
 # --------------------------------------------------------------------------- #
