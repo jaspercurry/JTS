@@ -965,15 +965,20 @@ class SummationFrame:
     ``residual_delay_us`` is already the RESIDUAL relative to the
     argmax-referenced frame (:func:`summed_model_residual_delay_us`'s answer),
     never the applied delay — passing the applied delay double-counts the
-    measured peak gap. It and ``polarity_sign`` both describe how a SECOND
-    branch is summed onto the first, so both are inert on a 1-way frame.
+    measured peak gap.
+
+    **ONE or TWO branches, and the bound is the arithmetic's, not a shortcut.**
+    ``polarity_sign`` and ``residual_delay_us`` describe how a SECOND branch
+    lands against the first — they are relationship terms, not per-branch
+    attributes, and the aligner produces exactly one of each — so the sum is
+    pair-specific and cannot be written N-ary without inventing a per-branch
+    polarity and delay nobody measured. A 1-way frame carries neither term
+    meaningfully and :func:`compose_linearized_prediction` reads neither.
     """
 
     freqs_hz: np.ndarray
-    roles: tuple[str, ...]
-    """The branches, lowest first — one (a 1-way main) or two."""
-    branch_tf: tuple[np.ndarray, ...]
-    """Each role's RAW measured transfer function, in ``roles`` order."""
+    branch_tf: Mapping[str, np.ndarray]
+    """Role -> its RAW measured transfer function, lowest branch first."""
     polarity_sign: int
     residual_delay_us: float
 
@@ -1006,25 +1011,26 @@ def compose_linearized_prediction(
     corrected by unity: :func:`~..branch_chain.chain_response` returns ones for
     an empty filter list, so an unfitted, unprescribed branch survives raw.
     """
+    roles = tuple(frame.branch_tf)
     corrected = [
-        tf * chain_response(
+        frame.branch_tf[role] * chain_response(
             [dict(f) for f in filters_by_role.get(role, ())], frame.freqs_hz,
         )
-        for role, tf in zip(frame.roles, frame.branch_tf)
+        for role in roles
     ]
     if len(corrected) == 1:
         # One branch radiates the whole band, so the "sum" is that branch at its
-        # own trim. Neither the polarity term nor the residual delay applies:
-        # both state how a SECOND branch lands against this one.
+        # own trim — see the frame's own docstring for why the polarity and
+        # delay terms have nothing to say here.
         predicted = corrected[0] * 10.0 ** (
-            float(role_attenuations_db[frame.roles[0]]) / 20.0
+            float(role_attenuations_db[roles[0]]) / 20.0
         )
     else:
         predicted = predicted_branch_sum(
             corrected[0],
             corrected[1],
-            role_attenuations_db[frame.roles[0]],
-            role_attenuations_db[frame.roles[1]],
+            role_attenuations_db[roles[0]],
+            role_attenuations_db[roles[1]],
             int(frame.polarity_sign),
             freqs_hz=frame.freqs_hz,
             residual_delay_us=frame.residual_delay_us,
@@ -1112,6 +1118,113 @@ class LinearizationPlan:
     @property
     def realized_level_match(self) -> RealizedLevelMatch | None:
         return None if self.trim is None else self.trim.committed_match
+
+
+@dataclass(frozen=True)
+class _FittedBranches:
+    """What the fit produced, before any trim was settled — the half of a plan
+    that is the same however the trim was reached."""
+
+    fc_hz: float | None
+    fits: Mapping[str, Any]
+    sections: Mapping[str, tuple[CrossoverSection, ...]]
+    radiating_band_hz: Mapping[str, tuple[float, float]]
+    core_level_evidence: Mapping[str, Mapping[str, Any]]
+    trim_band_estimate_db: Mapping[str, float]
+    level_consistency: "LevelConsistency | None"
+
+
+def _assemble_plan(
+    fitted: _FittedBranches,
+    *,
+    role_attenuations_db: Mapping[str, float],
+    trim: TrimDecision | None,
+    polish_delta_db: Mapping[str, float],
+    summation_frame: SummationFrame,
+    linearized_predicted_sum: tuple[np.ndarray, np.ndarray],
+    emit: Callable[[str, Mapping[str, Any]], None],
+    records: Sequence[JournalRecord],
+    dropped: Sequence[str],
+) -> LinearizationPlan:
+    """Charge the fitted chains and assemble the plan.
+
+    Every branch is charged the same way whatever settled its trim, so the
+    lone-branch arm and the pair arm reach ONE assembly rather than two that
+    agree by inspection. The keywords are exactly what a committed pair decides
+    and a lone branch does not, plus the journal — passed live because it is
+    snapshotted AFTER the headroom record below.
+    """
+    # The headroom charge, computed now that the trim is committed.
+    #
+    # A correction's cost is a property of the CHAIN it is emitted into — the
+    # crossover that follows it and the trim that follows that — so the
+    # topology-agnostic fit core cannot compute it. This is the same
+    # ``branch_headroom_db`` the emitter charges ``active_baseline_headroom``
+    # with, over the same three terms, so the number the household is told and
+    # the number the speaker gives up are one number.
+    #
+    # ``role_attenuations_db`` and not ``anchored``/``resolved``: whichever pair
+    # the decision above committed is the trim the graph will run, and the
+    # charge follows the emitted graph.
+    #
+    # ``normalize_shift_db`` is NET-NEUTRAL under this rule. Subtracting a
+    # common S from every branch's trim lowers every branch's chain peak by S,
+    # so it lowers this charge by S too, and the pre-split attenuation the
+    # emitter applies falls by the same S the branches gained: identical output,
+    # no lost loudness. The one non-neutral case is a branch whose whole chain
+    # already sits below unity — the charge floors at 0 and cannot fall further
+    # — which the ``normalize_shift_db`` field above still discloses.
+    charge_db: dict[str, float] = {}
+    peak_db: dict[str, float] = {}
+    linearization: dict[str, Any] = {}
+    for role, fit in fitted.fits.items():
+        emitted = [f.to_dict() for f in fit.filters]
+        trim_db = float(role_attenuations_db.get(role, 0.0))
+        peak_db[role] = branch_chain_peak_db(
+            emitted, sections=fitted.sections[role], trim_db=trim_db
+        )
+        charge_db[role] = headroom_charge_db(peak_db[role])
+        linearization[role] = replace(fit, headroom_cost_db=charge_db[role]).to_dict()
+    emit(
+    "correction.crossover_v2_linearization_headroom",
+    {
+        # What the branch actually puts above unity at its loudest
+        # bin...
+        "chain_peak_db": {r: round(v, 3) for r, v in peak_db.items()},
+        # ...what that costs the speaker's maximum level (peak + margin,
+        # 0.0 for a chain that never exceeds unity)...
+        "headroom_cost_db": {r: round(v, 3) for r, v in charge_db.items()},
+        # ...and what a sum-of-positives rule would charge instead, kept so
+        # the reclaimed loudness is visible in the journal.
+        "sum_of_positives_db": {
+            role: round(
+                math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3
+            )
+            for role, fit in fitted.fits.items()
+        },
+        "trim_db": {
+            role: round(float(role_attenuations_db.get(role, 0.0)), 3)
+            for role in fitted.fits
+        },
+        "margin_db": HEADROOM_MARGIN_DB,
+    },
+    )
+
+    return LinearizationPlan(
+        fc_hz=fitted.fc_hz,
+        role_attenuations_db=role_attenuations_db,
+        linearization=linearization,
+        trim=trim,
+        core_level_evidence=fitted.core_level_evidence,
+        trim_band_estimate_db=fitted.trim_band_estimate_db,
+        polish_delta_db=dict(polish_delta_db),
+        level_consistency=fitted.level_consistency,
+        linearized_predicted_sum=linearized_predicted_sum,
+        summation_frame=summation_frame,
+        radiating_band_hz=fitted.radiating_band_hz,
+        journal=tuple(records),
+        journal_dropped=tuple(dropped),
+    )
 
 
 def plan_linearization(
@@ -1466,108 +1579,33 @@ def plan_linearization(
         # and the persisted VERIFY prediction).
         corrections[role] = complex_correction_response(fit.filters, resp.freqs_hz)
 
-    def _plan(
-        *,
-        role_attenuations_db: Mapping[str, float],
-        trim: TrimDecision | None,
-        polish_delta_db: Mapping[str, float],
-        summation_frame: SummationFrame,
-        linearized_predicted_sum: tuple[np.ndarray, np.ndarray],
-    ) -> LinearizationPlan:
-        """Charge the fitted chains and assemble the plan.
-
-        Every branch is charged the same way whatever settled its trim, so the
-        lone-branch arm and the pair arm reach ONE assembly rather than two
-        that agree by inspection. The five arguments are exactly what a
-        committed pair decides and a lone branch does not.
-        """
-        # The headroom charge, computed now that the trim is committed.
-        #
-        # A correction's cost is a property of the CHAIN it is emitted into — the
-        # crossover that follows it and the trim that follows that — so the
-        # topology-agnostic fit core cannot compute it. This is the same
-        # ``branch_headroom_db`` the emitter charges ``active_baseline_headroom``
-        # with, over the same three terms, so the number the household is told and
-        # the number the speaker gives up are one number.
-        #
-        # ``role_attenuations_db`` and not ``anchored``/``resolved``: whichever pair
-        # the decision above committed is the trim the graph will run, and the
-        # charge follows the emitted graph.
-        #
-        # ``normalize_shift_db`` is NET-NEUTRAL under this rule. Subtracting a
-        # common S from every branch's trim lowers every branch's chain peak by S,
-        # so it lowers this charge by S too, and the pre-split attenuation the
-        # emitter applies falls by the same S the branches gained: identical output,
-        # no lost loudness. The one non-neutral case is a branch whose whole chain
-        # already sits below unity — the charge floors at 0 and cannot fall further
-        # — which the ``normalize_shift_db`` field above still discloses.
-        charge_db: dict[str, float] = {}
-        peak_db: dict[str, float] = {}
-        linearization: dict[str, Any] = {}
-        for role, fit in fits.items():
-            emitted = [f.to_dict() for f in fit.filters]
-            trim_db = float(role_attenuations_db.get(role, 0.0))
-            peak_db[role] = branch_chain_peak_db(
-                emitted, sections=sections[role], trim_db=trim_db
-            )
-            charge_db[role] = headroom_charge_db(peak_db[role])
-            linearization[role] = replace(fit, headroom_cost_db=charge_db[role]).to_dict()
-        emit(
-        "correction.crossover_v2_linearization_headroom",
-        {
-            # What the branch actually puts above unity at its loudest
-            # bin...
-            "chain_peak_db": {r: round(v, 3) for r, v in peak_db.items()},
-            # ...what that costs the speaker's maximum level (peak + margin,
-            # 0.0 for a chain that never exceeds unity)...
-            "headroom_cost_db": {r: round(v, 3) for r, v in charge_db.items()},
-            # ...and what a sum-of-positives rule would charge instead, kept so
-            # the reclaimed loudness is visible in the journal.
-            "sum_of_positives_db": {
-                role: round(
-                    math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3
-                )
-                for role, fit in fits.items()
-            },
-            "trim_db": {
-                role: round(float(role_attenuations_db.get(role, 0.0)), 3)
-                for role in fits
-            },
-            "margin_db": HEADROOM_MARGIN_DB,
-        },
-        )
-
-        return LinearizationPlan(
-            fc_hz=fc_hz,
-            role_attenuations_db=role_attenuations_db,
-            linearization=linearization,
-            trim=trim,
-            core_level_evidence=core_level_evidence,
-            trim_band_estimate_db=banked_trim_estimate_db,
-            polish_delta_db=dict(polish_delta_db),
-            level_consistency=level_consistency,
-            linearized_predicted_sum=linearized_predicted_sum,
-            summation_frame=summation_frame,
-            radiating_band_hz=radiating_bands,
-            journal=tuple(records),
-            journal_dropped=tuple(dropped),
-        )
+    # Both arms below assemble from this one value, so neither can charge a
+    # branch or bank a finding the other would not.
+    fitted = _FittedBranches(
+        fc_hz=fc_hz,
+        fits=fits,
+        sections=sections,
+        radiating_band_hz=radiating_bands,
+        core_level_evidence=core_level_evidence,
+        trim_band_estimate_db=banked_trim_estimate_db,
+        level_consistency=level_consistency,
+    )
 
     if len(roles) == 1:
         # ONE branch radiates the whole band. There is no handoff to level, so
         # no trim is solved, none is graded, and the branch ships at a fixed
-        # 0 dB with the fit's own filters — :func:`_plan`'s headroom charge
-        # absorbs whatever they cost, exactly as it does for a pair.
+        # 0 dB with the fit's own filters — the headroom charge absorbs
+        # whatever they cost, exactly as it does for a pair.
         role = roles[0]
         attenuations = {role: 0.0}
         frame = SummationFrame(
             freqs_hz=responses[role].freqs_hz,
-            roles=(role,),
-            branch_tf=(responses[role].complex_tf,),
+            branch_tf={role: responses[role].complex_tf},
             polarity_sign=1,
             residual_delay_us=0.0,
         )
-        return _plan(
+        return _assemble_plan(
+            fitted,
             role_attenuations_db=attenuations,
             trim=None,
             polish_delta_db={},
@@ -1579,6 +1617,9 @@ def plan_linearization(
                 },
                 role_attenuations_db=attenuations,
             ),
+            emit=emit,
+            records=records,
+            dropped=dropped,
         )
 
     woofer_role, tweeter_role = roles
@@ -2006,17 +2047,17 @@ def plan_linearization(
     # the same :func:`compose_linearized_prediction`.
     summation_frame = SummationFrame(
         freqs_hz=freqs,
-        roles=(woofer_role, tweeter_role),
-        branch_tf=(
-            responses[woofer_role].complex_tf,
-            responses[tweeter_role].complex_tf,
-        ),
+        branch_tf={
+            woofer_role: responses[woofer_role].complex_tf,
+            tweeter_role: responses[tweeter_role].complex_tf,
+        },
         polarity_sign=int(request.polarity_sign),
         residual_delay_us=summed_model_residual_delay_us(
             request.anchor_delay_us, request.delay_us
         ),
     )
-    return _plan(
+    return _assemble_plan(
+        fitted,
         role_attenuations_db=role_attenuations_db,
         trim=trim,
         polish_delta_db=polish_delta_db,
@@ -2029,8 +2070,10 @@ def plan_linearization(
             },
             role_attenuations_db=role_attenuations_db,
         ),
+        emit=emit,
+        records=records,
+        dropped=dropped,
     )
-
 
 
 def request_from_analysis(

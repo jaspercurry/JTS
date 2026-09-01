@@ -1382,10 +1382,10 @@ def status_payload() -> dict[str, Any]:
     # to tune", which is what the envelope-driven page consumes. Read off the
     # SUMMED targets alone: a summed target IS a claim about two branches adding
     # up, so only `active_2_way` / `active_3_way` groups have one. The DRIVER
-    # list is deliberately not consulted — since #3507 a subless
-    # `full_range_passive` speaker carries one full-range driver target (it is
-    # measured as a single routed solo), and counting that here would flip this
-    # flag on a speaker that still has no crossover to tune.
+    # list is deliberately not consulted — a subless `full_range_passive`
+    # speaker carries one full-range driver target (it is measured as a single
+    # routed solo), and counting that here would flip this flag on a speaker
+    # that still has no crossover to tune.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])

@@ -297,9 +297,9 @@ def test_local_sub_rejects_out_of_range_corner(fc: float) -> None:
 
 
 def test_subless_one_way_preset_is_valid() -> None:
-    # #3507: a subless 1-way passive main is the recommissioning session's
-    # plant. It declares no crossover region and no sub, and that is the whole
-    # of its shape.
+    # A subless 1-way passive main is the recommissioning session's plant. It
+    # declares no crossover region and no sub, and that is the whole of its
+    # shape.
     preset = ActiveSpeakerPreset.from_mapping({
         "artifact_schema_version": 1,
         "kind": "jts_active_speaker_preset",
@@ -868,9 +868,9 @@ def test_subless_passive_with_nothing_measured_does_not_compile_an_active_preset
     inter-driver crossover, so at runtime it takes the flat emit_sound_config
     lane and this asserts the build path does not hijack it.
 
-    Since #3507 phase 2 there IS one thing that moves it — a recommissioning
-    round that measured its one full-range branch and fitted a linearization,
-    which is a Layer-A graph and compiles as one
+    There IS one thing that moves it — a recommissioning round that measured
+    its one full-range branch and fitted a linearization, which is a Layer-A
+    graph and compiles as one
     (``tests/test_crossover_v2_way1_session.py``'s
     ``test_a_way1_round_compiles_and_writes_a_single_branch_baseline``). This
     call brings neither a candidate nor an applied profile naming one, so the

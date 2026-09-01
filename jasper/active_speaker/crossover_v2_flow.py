@@ -2228,6 +2228,10 @@ class CrossoverV2Session:
         )
         self._preset = source_preset
         self._roles = roles
+        # The declared roles, lowest first — the ONE spelling every
+        # role-count-generic seam reads, so "is this a 1-way main" has a single
+        # representation rather than one per call site.
+        self._role_names = tuple(band.role for band in roles)
         # The lowest declaration always exists. ``_tweeter`` is ``None`` on a
         # 1-way passive main — never aliased to ``_woofer``, which would double
         # count one driver everywhere a pair is read.
@@ -5075,7 +5079,7 @@ class CrossoverV2Session:
             self._note_mic_calibration_reservation()
         pair_claim: dict[str, Any] = {}
         if analysis.measure_pair_not_evaluated is not None:
-            # #3507: a 1-way session's MEASURE is ONE routed solo of the plant.
+            # A 1-way session's MEASURE is ONE routed solo of the plant.
             # The INTER-DRIVER axes a pair carries — corner, delay, polarity,
             # inter-branch trim — are statements about two branches, so this
             # round evaluates none of them and says so by name rather than
@@ -5087,7 +5091,7 @@ class CrossoverV2Session:
                 logger, "correction.crossover_v2_measure_solo",
                 session_id=self.session_id,
                 reason=analysis.measure_pair_not_evaluated,
-                roles=",".join(rb.role for rb in self._roles),
+                roles=",".join(self._role_names),
                 responses=len(analysis.driver_responses),
             )
             pair_claim = {
@@ -6612,7 +6616,7 @@ class CrossoverV2Session:
         graded this" for "there was nothing to grade".
         """
         verdict = state.realized_branch_level
-        if verdict is not None or self._tweeter is not None:
+        if verdict is not None or len(self._role_names) > 1:
             return verdict
         return {
             "status": CLAIM_NOT_EVALUATED,
@@ -8766,7 +8770,7 @@ class CrossoverV2Session:
         cand = analysis.candidate
         tweeter_role = self._tweeter_role
         delay_us, delay_role, polarity = alignment_to_candidate_fields(
-            analysis, roles=tuple(band.role for band in self._roles),
+            analysis, roles=self._role_names,
         )
         woofer_snr_db, woofer_snr_verdict, woofer_snr_band = _driver_snr_fields(
             _driver_response_by_role(analysis, self._woofer.role)
@@ -9079,7 +9083,7 @@ class CrossoverV2Session:
         The second is scoped to a session that OWES a measured pair candidate.
         A 1-way main's MEASURE is one routed solo, so its analysis carries none
         by design and the organ builds the single-branch prescription from the
-        solo's own evidence (#3507).
+        solo's own evidence.
 
         The first is ABOVE the SF2 degrade handler on purpose: raised inside it
         this was caught and degraded to a committable trims-only candidate
@@ -9095,7 +9099,7 @@ class CrossoverV2Session:
         sites across two suites reach the first of them — six substituting the
         class attribute, three substituting it on a session instance.
         """
-        roles = tuple(band.role for band in self._roles)
+        roles = self._role_names
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
             raise ValueError("protected-neutral capture reached the fitter uncomposed")
@@ -9242,7 +9246,7 @@ class CrossoverV2Session:
             candidate_sections=candidate_sections,
             preset=self._preset,
             program_for_phase=self.program_for_phase,
-            roles=tuple(band.role for band in self._roles),
+            roles=self._role_names,
             driver_class_by_role=self._driver_class_by_role,
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,

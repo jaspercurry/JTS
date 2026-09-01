@@ -575,7 +575,7 @@ def test_the_no_candidate_refusal_is_not_the_same_as_its_fallback():
     builtin — so a named, classified refusal silently becomes an unclassified
     internal error.
 
-    **Two — the organ would not refuse in its place.** Since #3507 phase 2b
+    **Two — the organ would not refuse in its place.**
     ``planning.build_candidate`` accepts ``cand=None``: that is the honest
     shape of a 1-way main, whose MEASURE is one routed solo. Handed a
     two-branch analysis with no candidate it therefore BUILDS one — a

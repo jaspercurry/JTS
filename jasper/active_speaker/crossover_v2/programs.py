@@ -121,6 +121,22 @@ COURTESY_PRELUDE_PHASES = frozenset(
 )
 
 
+def leading_pilot_role(roles: Sequence[RoleBand]) -> str:
+    """The role whose solved gain the leading pilot pair rides — the lowest.
+
+    First in ``roles``, named so every composer states the rule rather than
+    repeating ``roles[0]`` — including
+    :func:`~.harmonic_evidence.rebuild_measure_program`, which composes the same
+    program from a banked round and holds no session object to ask.
+    """
+    return roles[0].role
+
+
+def pilot_gains(hi_gain_db: float) -> tuple[float, float]:
+    """The ``(lo, hi)`` pilot pair at a given level, delta preserved."""
+    return (hi_gain_db - PILOT_LEVEL_DELTA_DB, hi_gain_db)
+
+
 def courtesy_prelude_for_phase(phase: str) -> bool:
     """Does this phase's capture announce itself with the courtesy prelude?
 
@@ -292,16 +308,12 @@ class SessionExcitation:
 
     @property
     def leading_pilot_role(self) -> str:
-        """The role whose solved gain the leading pilot pair rides — the lowest.
-
-        First in ``roles``, named here so the composers below state the rule
-        rather than repeating ``roles[0]``.
-        """
-        return self.roles[0].role
+        """This session's leading pilot role — see :func:`leading_pilot_role`."""
+        return leading_pilot_role(self.roles)
 
     def pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
-        """The ``(lo, hi)`` pilot pair at a given level, delta preserved."""
-        return (hi_gain_db - PILOT_LEVEL_DELTA_DB, hi_gain_db)
+        """This session's pilot pair — see :func:`pilot_gains`."""
+        return pilot_gains(hi_gain_db)
 
     def check_program(self) -> ExcitationProgram:
         """CHECK's two-pilot behavioural probe, clamped PER ROLE.

@@ -54,9 +54,11 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HARMONIC_ORDERS,
+    STATE_UNREADABLE,
     HarmonicEvidenceRefused,
     read_round_harmonics,
 )
+from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 
 EXIT_OK = 0
 EXIT_ROUND_UNREADABLE = 1
@@ -67,7 +69,8 @@ EXIT_WRITE_FAILED = 3
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory"
 
-#: The shipped MEASURE driver bands, as the flow composes them today.
+#: The shipped MEASURE driver bands for a PAIR, as the flow composes them today
+#: (:data:`DEFAULT_FULL_RANGE_BAND_HZ` is the 1-way sibling).
 #:
 #: Defaults rather than constants: a round measured with different bands is read
 #: by passing them, and a wrong pair cannot produce a wrong reading — it fails
@@ -76,13 +79,11 @@ AUTHORITY_TIER = "advisory"
 DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
     "woofer": (150.0, 4000.0),
     "tweeter": (1600.0, 20000.0),
-    # A 1-way passive main sweeps ONE band, and what it declared is the
-    # speaker's own measurement band — nothing here can derive it. This default
-    # is the whole measurable span; a round that swept a narrower one fails the
-    # program-id proof loudly (``PROGRAM_NOT_REPRODUCIBLE``) instead of being
-    # read at the wrong drive, so the operator is told to pass the band.
-    "full_range": (150.0, 20000.0),
 }
+
+#: The 1-way default: the whole measurable span, since a passive main's own
+#: declared band is not derivable here. Same defaults-not-constants rule.
+DEFAULT_FULL_RANGE_BAND_HZ: tuple[float, float] = (150.0, 20000.0)
 
 
 def _band(text: str) -> tuple[float, float]:
@@ -103,22 +104,30 @@ def round_bands_hz(
 ) -> dict[str, tuple[float, float]]:
     """The band each role THIS round swept, keyed by role.
 
-    The ROLES come from the round's own banked ``gain_plan_db`` rather than a
-    literal pair: a 1-way passive main banks one, and reading it as a pair
-    composes a program the round never played — which
+    The ROLES come from the round's own banked ``gain_plan_db``, resolved
+    through the SAME ``DRIVER_ROLES_BY_WAY`` table
     :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.rebuild_measure_program`
-    can then only refuse, blaming the bank for a shape it never had.
+    composes against — so the CLI cannot hand it a shape it will only refuse. A
+    1-way passive main banks one role, and reading it as a pair composes a
+    program the round never played.
 
-    A role the bank names and this CLI has no band for is dropped rather than
-    guessed at; the shape check downstream names what was left.
+    Refuses by name rather than dropping a role it cannot place: a partial band
+    map composes a program silently missing a sweep, which the ``program_id``
+    proof would then blame on the bank.
     """
     gains = state.get("gain_plan_db")
     banked = set(gains) if isinstance(gains, Mapping) else set()
-    return {
-        role: overrides[role]
-        for role in DEFAULT_BANDS_HZ
-        if role in banked and role in overrides
-    }
+    roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
+    if not roles or set(roles) != banked or not overrides.keys() >= set(roles):
+        raise HarmonicEvidenceRefused(
+            STATE_UNREADABLE,
+            {
+                "missing": "a band for every role this round's gain plan names",
+                "gain_plan_roles": sorted(banked),
+                "bands_offered": sorted(overrides),
+            },
+        )
+    return {role: overrides[role] for role in roles}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -209,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--full-range-band",
         type=_band,
-        default=DEFAULT_BANDS_HZ["full_range"],
+        default=DEFAULT_FULL_RANGE_BAND_HZ,
         metavar="LO:HI",
         help=(
             "1-way (passive full-range main) sweep band in Hz; used only when "

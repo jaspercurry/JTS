@@ -107,7 +107,7 @@ def _preset() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
 
 
-# --- the 1-way (subless passive main) shape, #3507 -----------------------------
+# --- the 1-way (subless passive main) shape ------------------------------------
 #
 # One amp channel, one declaration, no crossover region and no local sub. Its
 # MEASURE is ONE routed solo of the whole speaker, so there is no upper role and

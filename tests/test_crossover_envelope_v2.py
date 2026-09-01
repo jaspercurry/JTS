@@ -2188,7 +2188,7 @@ def test_the_browser_and_python_agree_on_every_linearization_outcome():
     The renderer maps this enum to plain language and renders NOTHING for a
     value it does not know, so a Python outcome the browser has never heard of
     makes the round go silent about whether linearization ran — the exact
-    failure the line was added to kill (#3507 added ``fitted_single_branch``).
+    failure the line was added to kill.
     """
     import re
     from pathlib import Path

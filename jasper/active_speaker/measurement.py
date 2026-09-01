@@ -230,11 +230,11 @@ def _crossover_groups(topology: OutputTopology) -> list[Any]:
 def _measured_groups(topology: OutputTopology) -> list[Any]:
     """The groups whose drivers need per-driver measurement evidence.
 
-    Every crossover group, PLUS a subless passive main (#3507): its one
-    full-range driver is the plant a recommissioning session measures with one
-    routed solo, so it needs the same declared target, safety limits and
-    excitation ceilings every other measured driver has. Passive mains WITH a
-    sub are excluded — that shape is bass management, not this session.
+    Every crossover group, PLUS a subless passive main: its one full-range
+    driver is the plant a recommissioning session measures with one routed
+    solo, so it needs the same declared target, safety limits and excitation
+    ceilings every other measured driver has. Passive mains WITH a sub are
+    excluded — that shape is bass management, not this session.
     """
     groups = _crossover_groups(topology)
     if topology_is_subless_passive_mains(topology):
@@ -348,10 +348,10 @@ def active_summed_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return active speaker groups that need a summed crossover check."""
 
     crossover_groups = _crossover_groups(topology)
-    # NOT ``active_driver_targets``: that set is wider than this one since
-    # #3507, so asking it here would build and discard a passive main's
-    # full-range target on every call. The fingerprint below is unchanged —
-    # it only ever consumed the crossover groups' own targets.
+    # NOT ``active_driver_targets``: that set is WIDER than this one, so asking
+    # it here would build and discard a passive main's full-range target on
+    # every call. The fingerprint below is unchanged — it only ever consumed
+    # the crossover groups' own targets.
     driver_targets = _driver_targets_for(topology, crossover_groups)
     return [
         {

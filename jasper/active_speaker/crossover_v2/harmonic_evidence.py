@@ -405,7 +405,11 @@ def rebuild_measure_program(
 
     from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 
-    from .programs import PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase
+    from .programs import (
+        courtesy_prelude_for_phase,
+        leading_pilot_role,
+        pilot_gains,
+    )
 
     # WHICH branches this round swept, read off the bands the caller resolved
     # from the round's own preset rather than assumed to be a pair: a 1-way
@@ -459,8 +463,10 @@ def rebuild_measure_program(
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
-    # The leading pilot rides the LOWEST branch, whatever it is called.
-    pilot_role = roles[0]
+    # Both pilot rules are the composer's own, asked rather than restated: a
+    # replay that spelled either formula a second time would reproduce a
+    # different program the moment the shipped one moved.
+    pilot_role = leading_pilot_role(roles_bands)
     for prelude in (shipped, not shipped):
         for downstream in _DOWNSTREAM_GRID_DB:
             program = build_measure_program(
@@ -468,10 +474,7 @@ def rebuild_measure_program(
                 roles_bands,
                 sweep_durations=banked_durations,
                 downstream_gain_db=float(downstream),
-                leading_pilot_gains_db=(
-                    float(gains[pilot_role]) - PILOT_LEVEL_DELTA_DB,
-                    float(gains[pilot_role]),
-                ),
+                leading_pilot_gains_db=pilot_gains(float(gains[pilot_role])),
                 leading_pilot_role=pilot_role,
                 courtesy_prelude=prelude,
             )

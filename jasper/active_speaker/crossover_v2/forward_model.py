@@ -296,11 +296,14 @@ def predict_sum(
     """
     frame = SummationFrame(
         freqs_hz=pair.freqs_hz,
-        roles=(pair.woofer_role, pair.tweeter_role),
-        branch_tf=(
-            np.where(pair.driven(pair.woofer_role), pair.woofer_tf, 0.0),
-            np.where(pair.driven(pair.tweeter_role), pair.tweeter_tf, 0.0),
-        ),
+        branch_tf={
+            pair.woofer_role: np.where(
+                pair.driven(pair.woofer_role), pair.woofer_tf, 0.0
+            ),
+            pair.tweeter_role: np.where(
+                pair.driven(pair.tweeter_role), pair.tweeter_tf, 0.0
+            ),
+        },
         polarity_sign=int(candidate.polarity_sign),
         residual_delay_us=float(candidate.residual_delay_us),
     )

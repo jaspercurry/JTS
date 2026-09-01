@@ -43,7 +43,8 @@ from jasper.dsp_apply import (
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
-    topology_is_subless_passive_mains,
+    subwoofer_speaker_groups,
+    topology_is_passive_mains,
 )
 
 from ._common import finite_float as _finite_float, issue as _issue
@@ -98,7 +99,6 @@ from .startup_hold import release_staged_startup_hold
 from .staging import (
     build_passive_mains_preset,
     compile_preset_from_crossover_preview,
-    topology_is_passive_mains_with_sub,
 )
 
 if TYPE_CHECKING:
@@ -1299,6 +1299,19 @@ def _load_saved_state(path: Path) -> dict[str, Any] | None:
     return raw
 
 
+def _measured_candidate_fingerprint(source: Any) -> str:
+    """The candidate fingerprint a profile's ``source`` block names, or ``""``.
+
+    ONE reader for this field's absence, which is an ordinary state rather than
+    a fault: a profile levelled by the guided captures instead of by a measured
+    candidate names none. :func:`_source_payload` is the single writer.
+    """
+    if not isinstance(source, Mapping):
+        return ""
+    value = source.get("measured_candidate_fingerprint")
+    return value if isinstance(value, str) else ""
+
+
 def _subless_passive_is_roleful(
     measured_candidate: Any, applied_anchor: Mapping[str, Any] | None,
 ) -> bool:
@@ -1308,7 +1321,7 @@ def _subless_passive_is_roleful(
     crossover, so by default it takes the flat ``emit_sound_config`` lane and
     compiles no roleful preset at all. Exactly ONE thing gives it one: a
     recommissioning round that measured its single full-range branch and fitted
-    a linearization for it (#3507).
+    a linearization for it.
 
     That fact reaches this compiler two ways, and BOTH are it — a rule that
     read only the first would compile the profile and then grade the read-back
@@ -1326,11 +1339,7 @@ def _subless_passive_is_roleful(
         return True
     if not isinstance(applied_anchor, Mapping):
         return False
-    source = applied_anchor.get("source")
-    return bool(
-        isinstance(source, Mapping)
-        and str(source.get("measured_candidate_fingerprint") or "")
-    )
+    return bool(_measured_candidate_fingerprint(applied_anchor.get("source")))
 
 
 def _applied_profile_anchor(
@@ -2396,29 +2405,23 @@ def build_baseline_profile_candidate(
     # topology, skipping the preview-readiness and active-measurement gates that
     # only apply to a real active crossover.
     #
-    # BOTH passive shapes take this arm (#3507), on two different grounds. With
-    # a local subwoofer the box is roleful UNCONDITIONALLY, because bass
-    # management splits the program. SUBLESS it is roleful only where a
-    # recommissioning round has measured its one full-range branch and fitted a
-    # linearization for it — that is a Layer-A graph and has to be emitted as
-    # one — so this arm asks :func:`_subless_passive_is_roleful` rather than
-    # reading the topology alone. Where nothing has, a subless passive box
-    # keeps the flat ``emit_sound_config`` lane it has always had.
-    #
-    # Before #3507 the subless box fell into the ACTIVE arm below whatever it
-    # brought, and was blocked there by a crossover preview it can never save
-    # and a summed validation that is a two-branch claim — so a measured way-1
-    # candidate could be built, proposed and reviewed and then had nowhere to
-    # land.
+    # BOTH passive shapes take this arm, on two different grounds. With a local
+    # subwoofer the box is roleful UNCONDITIONALLY, because bass management
+    # splits the program. SUBLESS it is roleful only where a recommissioning
+    # round has measured its one full-range branch and fitted a linearization
+    # for it — that is a Layer-A graph and has to be emitted as one — so this
+    # arm asks :func:`_subless_passive_is_roleful` rather than reading the
+    # topology alone. Where nothing has, a subless passive box keeps the flat
+    # ``emit_sound_config`` lane.
     #
     # The preset comes from the same ``build_passive_mains_preset`` that
     # ``commission_wiring.resolve_capture_preset`` answers a passive box with,
     # so the graph compiled here and the plant the round measured are ONE preset
     # rather than two that agree by inspection — which the
     # ``measured_candidate_preset_mismatch`` check below then proves.
-    passive_mains = topology_is_passive_mains_with_sub(topology) or (
-        topology_is_subless_passive_mains(topology)
-        and _subless_passive_is_roleful(measured_candidate, applied_anchor)
+    passive_mains = topology_is_passive_mains(topology) and (
+        bool(subwoofer_speaker_groups(topology))
+        or _subless_passive_is_roleful(measured_candidate, applied_anchor)
     )
 
     preset: ActiveSpeakerPreset | None = None
@@ -3594,7 +3597,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             # exists at fit time and no later reader can reconstruct it. A
             # profile levelled by the guided captures names none, which banks
             # as "frame unknown" rather than as the bare frame.
-            chain_fingerprint=source.get("measured_candidate_fingerprint"),
+            chain_fingerprint=_measured_candidate_fingerprint(source) or None,
             measured_at=evidence_at,
         )
     except (OSError, DriverBaseTrimError) as exc:

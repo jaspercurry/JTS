@@ -585,7 +585,7 @@ class TrimStrategy(str, Enum):
 
 #: :attr:`~.intervention.LinearizationPlan.outcome` for a round whose speaker
 #: has ONE branch — the fit ran and its filters ship, and there was no pair to
-#: trim (#3507).
+#: trim.
 #:
 #: A sibling of ``"fitted"`` rather than that same value, because the two are
 #: read: ``"fitted"`` is mapped to

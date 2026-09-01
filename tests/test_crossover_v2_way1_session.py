@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#3507 phase 1: the recommissioning session's shape on a 1-way passive main.
+"""The recommissioning session's shape on a 1-way passive main.
 
 One amp channel, ``full_range_passive`` mains, no local subwoofer, no crossover
 region. The session opens, walks CHECK -> MEASURE -> ENTRY_BASELINE, and
@@ -228,9 +228,9 @@ def _passive_status(topology) -> dict[str, Any]:
     """The status a passive box really serves, from the REAL derivation.
 
     Not a hand-built target: the production path derives ``targets.drivers``
-    from ``measurement.active_driver_targets``, and until #3507 that filter
-    admitted only ``active_2_way``/``active_3_way`` groups — so a fabricated
-    target would have hidden the one gate a real passive box actually hits.
+    from ``measurement.active_driver_targets``, and that filter once admitted
+    only ``active_2_way``/``active_3_way`` groups — so a fabricated target would
+    have hidden the one gate a real passive box actually hits.
     """
     from jasper.active_speaker.measurement import (
         active_driver_targets,

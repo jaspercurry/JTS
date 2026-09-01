@@ -1169,7 +1169,7 @@ def test_the_artifact_name_has_one_owner():
 
 
 def test_the_cli_reads_its_roles_off_the_round_it_was_handed():
-    """#3507: the distortion door composes the shape the round actually swept.
+    """The distortion door composes the shape the round actually swept.
 
     The 1-way arm of ``rebuild_measure_program`` is only reachable if the CLI
     stops asserting a pair. Both directions are pinned, because a derivation
@@ -1189,9 +1189,13 @@ def test_the_cli_reads_its_roles_off_the_round_it_was_handed():
     assert read_distortion.round_bands_hz(
         {"gain_plan_db": {"full_range": -11.0}}, overrides,
     ) == {"full_range": (150.0, 20000.0)}
-    # A state that banks no gain plan names no roles, which the rebuild refuses
-    # by name rather than composing a pair nobody measured.
-    assert read_distortion.round_bands_hz({}, overrides) == {}
+    # A state that names no roles, or one whose roles are not a shape any
+    # speaker declares, is REFUSED by name — never composed as a pair nobody
+    # measured, and never quietly reduced to the roles that happen to match.
+    for state in ({}, {"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}):
+        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+            read_distortion.round_bands_hz(state, overrides)
+        assert excinfo.value.reason == he.STATE_UNREADABLE
 
 
 def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
@@ -1211,7 +1215,7 @@ def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
     )
     from jasper.cli import read_distortion
 
-    band = read_distortion.DEFAULT_BANDS_HZ["full_range"]
+    band = read_distortion.DEFAULT_FULL_RANGE_BAND_HZ
     program = build_measure_program(
         {"full_range": -11.0},
         (RoleBand("full_range", 0, FrequencyBand(*band)),),
@@ -1226,7 +1230,10 @@ def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
     }
 
     rebuilt, downstream, _prelude = he.rebuild_measure_program(
-        state, read_distortion.round_bands_hz(state, read_distortion.DEFAULT_BANDS_HZ),
+        state,
+        read_distortion.round_bands_hz(
+            state, {"full_range": read_distortion.DEFAULT_FULL_RANGE_BAND_HZ},
+        ),
     )
 
     assert rebuilt.program_id == program.program_id
