@@ -7519,9 +7519,8 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert "  sound_preamp:" in fake.active_raw_values[0]
     assert "gain: 0.0000" in fake.active_raw_values[0]
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "swap"
+    assert fake.ducks[-1] is True
     assert payload["dsp_write_epoch"] == "epoch-1"
-    assert payload["preserved_room_peqs"] == 1
     assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
 
@@ -7585,7 +7584,6 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
     payload = await _live(fake, moved, config_dir)
 
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "parameters"
     assert fake.ducks[-1] is False
     assert len(fake.active_raw_values) == swaps_after_install + 1
 
@@ -7630,7 +7628,7 @@ async def test_the_live_graphs_slots_keep_the_pipeline_still(
 
     payload = await _live(fake, changed, config_dir)
 
-    assert payload["live_method"] == "parameters"
+    assert payload["live_status"] == "live"
     assert fake.ducks[-1] is False
     assert len(fake.active_raw_values) == swaps_after_install + 1
 
@@ -7686,7 +7684,9 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     assert set(_yaml.safe_load(after_quiet)["filters"]) == set(
         _yaml.safe_load(after_loud)["filters"]
     )
-    assert second["live_method"] == "parameters"
+    assert second["live_status"] == "live"
+    assert fake.ducks[-1] is False
+    assert len(fake.active_raw_values) == 2
 
 
 async def test_retyping_a_band_writes_parameters_without_ducking(
@@ -7705,7 +7705,7 @@ async def test_retyping_a_band_writes_parameters_without_ducking(
 
     payload = await _live(fake, retyped, config_dir)
 
-    assert payload["live_method"] == "parameters"
+    assert payload["live_status"] == "live"
     assert fake.ducks[-1] is False
     assert len(fake.active_raw_values) == swaps_after_install + 1
 
@@ -7722,7 +7722,6 @@ async def test_a_redraw_that_changed_nothing_writes_nothing(
     payload = await _live(fake, draft, config_dir)
 
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "unchanged"
     assert len(fake.active_raw_values) == 1
 
 
@@ -7753,7 +7752,6 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
     assert fake.active_raw_values == []
     assert fake.set_calls == []
     assert payload["live_status"] == "stale"
-    assert payload["live_method"] == "skipped_stale_epoch"
     assert payload["dsp_write_epoch"] == "newer-apply"
 
 
@@ -7781,7 +7779,6 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     assert fake.loaded_path is None
     assert fake.set_calls == []
     assert payload["live_status"] == "unavailable"
-    assert payload["live_method"] == "active_config_raw_unavailable"
 
 
 async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):

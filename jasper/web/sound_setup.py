@@ -2062,36 +2062,13 @@ async def _live_draft_profile(
     except AttributeError:
         loader = None
 
-    def _live_payload(
-        *,
-        status: str,
-        method: str,
-        current_epoch: str,
-        room_peq_count: int = 0,
-        active_config_path: str | None = None,
-    ) -> dict[str, Any]:
+    def _live_payload(*, status: str, current_epoch: str) -> dict[str, Any]:
         payload = _state_payload(
             profile,
             library_path=library_path,
             include_library=library_path is not None,
         )
-        payload.update(
-            {
-                "live_status": status,
-                "live_method": method,
-                "dsp_write_epoch": current_epoch,
-                "active_config_path": active_config_path,
-                "preserved_room_peqs": room_peq_count,
-                "sound_filter_count": sound_filter_count,
-            }
-        )
-        if status == "live":
-            payload.update(
-                {
-                    "audition_mode": "draft",
-                    "audition_profile": profile.to_dict(),
-                }
-            )
+        payload.update({"live_status": status, "dsp_write_epoch": current_epoch})
         return payload
 
     def _unavailable(
@@ -2107,11 +2084,7 @@ async def _live_draft_profile(
             sound_filter_count=sound_filter_count,
             error=error,
         )
-        return _live_payload(
-            status="unavailable",
-            method=reason,
-            current_epoch=current_epoch,
-        )
+        return _live_payload(status="unavailable", current_epoch=current_epoch)
 
     if loader is None:
         return _unavailable(
@@ -2129,11 +2102,7 @@ async def _live_draft_profile(
                 expected_epoch=str(expected_dsp_write_epoch),
                 current_epoch=str(current_epoch),
             )
-            return _live_payload(
-                status="stale",
-                method="skipped_stale_epoch",
-                current_epoch=current_epoch,
-            )
+            return _live_payload(status="stale", current_epoch=current_epoch)
 
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
@@ -2163,13 +2132,7 @@ async def _live_draft_profile(
                 sound_filter_count=sound_filter_count,
                 error=e,
             )
-            return _live_payload(
-                status="unavailable",
-                method=f"{method}_failed",
-                current_epoch=current_epoch,
-                room_peq_count=result.room_peq_count,
-                active_config_path=current_path,
-            )
+            return _live_payload(status="unavailable", current_epoch=current_epoch)
 
         log_event(
             logger,
@@ -2186,13 +2149,7 @@ async def _live_draft_profile(
             active_anchor=str(current_path),
             epoch=str(current_epoch),
         )
-        return _live_payload(
-            status="live",
-            method=method,
-            current_epoch=current_epoch,
-            room_peq_count=result.room_peq_count,
-            active_config_path=current_path,
-        )
+        return _live_payload(status="live", current_epoch=current_epoch)
 
 
 async def _load_profile_config(
