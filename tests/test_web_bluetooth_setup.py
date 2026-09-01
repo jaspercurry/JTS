@@ -71,6 +71,8 @@ def _availability(
 @pytest.fixture(autouse=True)
 def _hardware_free_availability_and_pair_cleanup(monkeypatch):
     class _Snapshot:
+        error = ""
+
         @staticmethod
         def available(_unit):
             return True
@@ -1729,6 +1731,8 @@ def test_get_state_uses_one_batched_systemd_snapshot(monkeypatch):
         }
 
     class _Snapshot:
+        error = ""
+
         @staticmethod
         def available(_unit):
             return True
@@ -1780,6 +1784,51 @@ def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
     assert state["available"] is True
     assert state["effective"] == "degraded"
     assert "bt-agent.service" in state["degradedReason"]
+    # Structured verdict beside the prose: the UI gates its Pair controls on
+    # this value, never on a degradedReason substring.
+    assert state["pairingReady"] is False
+
+
+def test_pairing_verdict_reads_only_units_the_snapshot_probes():
+    """`UnitSnapshot.active` answers False for a unit it never looked at.
+
+    So an advertise unit outside the probed set would read as stopped and
+    disable pairing on every healthy speaker, with no other test failing.
+    """
+    assert set(
+        bluetooth_setup._BLUETOOTH_LIFECYCLE.advertise_units
+    ) <= set(bluetooth_setup._STATE_UNITS)
+
+
+def test_failed_unit_probe_does_not_claim_pairing_is_blocked(monkeypatch):
+    """A probe that could not read unit state is not evidence of a stopped one."""
+    fake = _FakeDispatcher()
+
+    async def read_adapter_state():
+        return {
+            "adapter": "hci0",
+            "powered": True,
+            "discoverable": False,
+            "discovering": False,
+        }
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
+    monkeypatch.setattr(bluetooth_setup, "adapter_state", read_adapter_state)
+    monkeypatch.setattr(
+        bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
+    )
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "probe_unit_snapshot",
+        lambda _units: bluetooth_setup.UnitSnapshot(
+            states={}, error="systemctl show timed out",
+        ),
+    )
+
+    state, status = bluetooth_setup._bluetooth_state_snapshot()
+
+    assert status == int(http.HTTPStatus.OK)
+    assert "pairingReady" not in state
 
 
 @pytest.mark.parametrize(

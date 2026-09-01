@@ -104,10 +104,12 @@ function renderToggles() {
     || (unavailable && !state.desired);
   const sd = document.getElementById('sw-disc');
   sd.checked = !!state.discoverable;
-  // Activation needs a ready radio; an already-active pairing window must
+  // Activation needs a ready radio and, since the window exists to accept an
+  // inbound bond, a running pairing agent. An already-active window must
   // remain switchable Off as cleanup even when availability later degrades.
   sd.disabled = busy || parked || (!state.discoverable
-    && (unavailable || !state.desired || !state.powered));
+    && (unavailable || !state.desired || !state.powered
+      || state.pairingReady === false));
   let hint;
   if (parked) {
     hint = 'Managed by this speaker’s stereo pair.';
@@ -476,6 +478,9 @@ function deviceActionDisabled(action, currentState, mutationPending) {
   if (action === 'disconnect' || action === 'forget') {
     return currentState.powered === false;
   }
+  // Forming a new bond needs the pairing agent; reconnecting an existing one
+  // does not. Gate on the server's verdict, never on degradedReason prose.
+  if (action === 'pair' && currentState.pairingReady === false) return true;
   return currentState.available === false || currentState.parked
     || !currentState.desired || currentState.powered !== true;
 }

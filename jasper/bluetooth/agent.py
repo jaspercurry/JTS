@@ -26,6 +26,8 @@ from dbus_next.service import ServiceInterface, method  # type: ignore
 
 from jasper.log_event import log_event
 
+from .models import BluetoothDevice
+
 logger = logging.getLogger(__name__)
 
 REJECTED_DBUS_NAME = "org.bluez.Error.Rejected"
@@ -145,6 +147,23 @@ class NoCodeAgent(ServiceInterface):
         log_event(logger, "bluetooth_agent.cancel")
 
     async def _trust_device(self, device: str) -> None:
+        """Grant Trusted, but only to a device BlueZ has actually bonded.
+
+        Trust is what makes BlueZ auto-reconnect a device on every
+        advertisement, so granting it to an unbonded device strands it: an
+        unbonded HID cannot bring its profile up (`input-hog profile accept
+        failed`), the reconnect repeats for as long as it is in range, and
+        the device stops advertising as pairable, leaving it neither usable
+        nor re-pairable. This is the one place that answers "may this device
+        be trusted"; both agent callbacks route through it.
+
+        RequestAuthorization fires before the bond exists, so it always
+        skips. A pair driven from /bluetooth/ does not depend on that: the
+        engine sets Trusted itself once Pair() returns. A pairing the DEVICE
+        initiates has no engine leg and takes its trust from
+        AuthorizeService instead — unverified on hardware; if such a remote
+        pairs but does not survive a reconnect, look here first.
+        """
         if self._bus is None:
             return
         try:
@@ -152,6 +171,14 @@ class NoCodeAgent(ServiceInterface):
             props = self._bus.get_proxy_object(
                 "org.bluez", device, intro,
             ).get_interface("org.freedesktop.DBus.Properties")
+            all_props = await props.call_get_all("org.bluez.Device1")
+            if not BluetoothDevice.from_props(device, all_props).paired:
+                log_event(
+                    logger,
+                    "bluetooth_agent.trust_skipped_unbonded",
+                    device=device,
+                )
+                return
             await props.call_set(
                 "org.bluez.Device1", "Trusted", Variant("b", True),
             )

@@ -153,6 +153,27 @@ function harness(overrides = {}) {
     "startup must keep cleanup available until adapter power is known");
   assert(deviceActionDisabled("forget", degradedButPowered, true),
     "an active mutation must block every device action");
+
+  // Only forming a NEW bond needs the pairing agent. Reconnecting an
+  // existing one does not, and cleanup must never be trapped behind it.
+  const agentStopped = {
+    powered: true, desired: true, available: true, parked: false,
+    pairingReady: false,
+  };
+  assert(deviceActionDisabled("pair", agentStopped, false),
+    "a stopped pairing agent must block pair");
+  for (const action of ["connect", "disconnect", "forget"]) {
+    assert(!deviceActionDisabled(action, agentStopped, false),
+      `a stopped pairing agent must not block ${action}`);
+  }
+
+  // Absent verdict (parked, or a probe that could not read unit state) is
+  // not evidence of a stopped agent -- it must not disable anything.
+  const noVerdict = {
+    powered: true, desired: true, available: true, parked: false,
+  };
+  assert(!deviceActionDisabled("pair", noVerdict, false),
+    "a missing pairingReady verdict must not block pair");
 }
 
 {

@@ -282,6 +282,37 @@ async def test_pair_refreshes_accessory_profiles_before_ready_event():
     assert refresh_index < ready_index
 
 
+@pytest.mark.parametrize("bond_succeeds", (True, False))
+async def test_trust_follows_the_bond(bond_succeeds: bool):
+    """Trust is granted only once BlueZ has actually bonded the device.
+
+    Why a trusted-but-unbonded device is stranded:
+    `NoCodeAgent._trust_device`.
+    """
+    engine = _engine([])
+    bus = engine._bus
+    assert isinstance(bus, _FakeBus)
+
+    if not bond_succeeds:
+        async def refuse() -> None:
+            raise DBusError("org.bluez.Error.AuthenticationFailed", "no agent")
+
+        bus.proxy.device.call_pair = refuse
+
+    events = [
+        event
+        async for event in engine.pair("CA:AC:04:04:09:D7", timeout_s=1.0)
+    ]
+
+    assert bus.proxy.props.trusted is bond_succeeds
+    assert (events[-1]["stage"] == "error") is not bond_succeeds
+    if bond_succeeds:
+        # Ahead of the connect/handler stages, so trust survives the user
+        # closing the tab mid-flow.
+        stages = [event["stage"] for event in events]
+        assert stages.index("trusting") < stages.index("connecting")
+
+
 async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     reasons: list[str] = []
     engine = _engine(reasons)
