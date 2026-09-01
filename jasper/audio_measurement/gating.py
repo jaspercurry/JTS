@@ -32,6 +32,11 @@ This module does no I/O and holds no state:
 * :func:`f_trusted_floor_hz` is the *disclosed-beside-it* stricter floor
   (see "The gating contract" below). It sizes no window here; what reads it
   is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
+* :func:`f_entanglement_floor_hz` is the same multiplier over the room's
+  first-bounce time rather than the window — the floor no window choice can
+  lower (#3495). This module states the formula and the provenance words;
+  :mod:`~jasper.audio_measurement.gate_disclosure` decides which source a
+  given capture has.
 
 Pipeline stage: **derive**. This module turns a deconvolved impulse
 response into a windowed one plus the record of what it did. It owns
@@ -334,9 +339,13 @@ TOA_REFINE_MS = 0.5
 
 FLOOR_MEASURED = "measured_reflection"
 FLOOR_SEARCH_BOUND = "search_span_bound"
-# Entanglement-floor provenance for a floor derived from operator-declared rig
-# geometry rather than a found reflection — see issue #3502.
+# Entanglement-floor provenance (:func:`f_entanglement_floor_hz`), the
+# vocabulary's single home (#3502). Measured is FLOOR_MEASURED's own word:
+# the entanglement floor is measured exactly when the gate's bound was, off
+# the same reflection. Unknown is NEVER read as clean: nothing was proven.
+ENTANGLEMENT_SOURCE_MEASURED = FLOOR_MEASURED
 ENTANGLEMENT_SOURCE_DECLARED = "declared_geometry"
+ENTANGLEMENT_SOURCE_UNKNOWN = "unknown"
 NEAR_FIELD_EXEMPT = "near_field"
 
 

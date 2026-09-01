@@ -243,6 +243,70 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
     assert d.ledger_count == 0
 
 
+# ---------- the second floor: the room's, not the window's ----------------
+
+
+@pytest.mark.parametrize(
+    ("block", "declared_first_bounce_s", "expected_source", "expected_t_s"),
+    [
+        # A measured reflection times the bounce AND proves it exists, so it
+        # wins over the operator's declared geometry.
+        (
+            {"floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 10.0, "first_reflection_ms": 12.5},
+            0.010,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
+            0.0025,
+        ),
+        # Nothing found to time (this rig class, always): the declared
+        # geometry is the floor, labelled as declared.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND, "window_ms": 7.0},
+            0.0025,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.0025,
+        ),
+        # A measured bound whose arrival did not survive into the record has
+        # nothing to divide, so it falls through rather than inventing one.
+        (
+            {"floor_source": gating.FLOOR_MEASURED, "direct_peak_ms": 10.0},
+            0.005,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.005,
+        ),
+        # Neither source: unknown, and no number stands in for one.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # A non-physical declared bounce is not a floor either.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            0.0,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+    ],
+)
+def test_entanglement_floor_prefers_measured_then_declared_then_unknown(
+    block, declared_first_bounce_s, expected_source, expected_t_s
+):
+    """The floor is ``TRUSTED_FLOOR_MULTIPLIER / t_first_bounce`` off whichever
+    source is available, and the source is always said out loud (#3502)."""
+    d = gate_disclosure.build_gate_disclosure(
+        block, declared_first_bounce_s=declared_first_bounce_s
+    )
+    assert d.entanglement_floor_source == expected_source
+    if expected_t_s is None:
+        assert d.entanglement_floor_hz is None
+    else:
+        assert d.entanglement_floor_hz == pytest.approx(
+            gating.TRUSTED_FLOOR_MULTIPLIER / expected_t_s
+        )
+
+
 # ---------- the copy: #1966's fix at the surface --------------------------
 
 
@@ -293,6 +357,25 @@ def test_describe_gate_discloses_both_floors_and_never_confuses_them():
     text = gate_disclosure.describe_gate(fragment)
     assert "valid above 143 Hz" in text
     assert "trusted above 357 Hz" in text
+
+
+def test_describe_gate_says_all_three_floors_and_never_one_instead_of_another():
+    """#3495 at the surface, under the owner's rendering ruling: the valid and
+    trusted floors stay visible, the room's floor is appended beside them with
+    its source, and the unknown branch names the action that resolves it
+    rather than leaving the trusted floor to read as the whole truth."""
+    ir = _bandlimited_ir(2500.0, 18000.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    unknown = gate_disclosure.describe_gate(fragment)
+    declared = gate_disclosure.describe_gate(
+        fragment, declared_first_bounce_s=0.0025
+    )
+    for text in (unknown, declared):
+        assert "valid above" in text and "trusted above" in text
+    assert "entanglement floor is unknown" in unknown
+    assert "declare" in unknown
+    assert "room-entangled below 1000 Hz (floor from declared geometry)" in declared
+    assert "unknown" not in declared
 
 
 def test_a_small_delta_reads_differently_depending_on_the_bound():

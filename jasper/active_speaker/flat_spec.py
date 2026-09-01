@@ -37,6 +37,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
@@ -156,6 +157,15 @@ class BandResult:
         an edge extremum is still a real graded bin. ``False`` on a band
         whose worst bin sits inside the graded span and on an untruncated
         band; ``None`` when unevaluable, or on a report without the field.
+      room_entangled_below_hz: the upper edge of the sub-span of this band in
+        which no gate length can separate speaker from room --
+        ``min(entanglement_floor_hz, graded_hi_hz)`` when the room's
+        entanglement floor is known and sits above ``graded_lo_hz``. Equal to
+        ``graded_hi_hz`` when the whole graded band is entangled. ``None``
+        when the floor is unknown or below the band, and **unknown is not
+        clean**: on a rig whose reflection finder never fires the floor is
+        unknowable from the capture alone (#3495, #3502). Disclosure only --
+        the grade above is computed exactly as it was without it.
 
     For every non-excluded bin ``i`` in the band the two readings decompose
     exactly::
@@ -193,6 +203,7 @@ class BandResult:
     graded_lo_hz: float | None = None
     graded_hi_hz: float | None = None
     max_at_graded_edge: bool | None = None
+    room_entangled_below_hz: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -212,6 +223,7 @@ class BandResult:
             "graded_lo_hz": self.graded_lo_hz,
             "graded_hi_hz": self.graded_hi_hz,
             "max_at_graded_edge": self.max_at_graded_edge,
+            "room_entangled_below_hz": self.room_entangled_below_hz,
         }
 
     @classmethod
@@ -225,8 +237,8 @@ class BandResult:
         rehydrating a plausible-looking ``None``. (Several of them are
         legitimately ``None`` on an unevaluable band, which ``raw["..."]``
         preserves; the hardening is against the KEY being absent.) Only the
-        six dataclass-defaulted fields, ``level_deviation_db`` through
-        ``max_at_graded_edge``, are read with :meth:`dict.get`, so a document
+        seven dataclass-defaulted fields, ``level_deviation_db`` through
+        ``room_entangled_below_hz``, are read with :meth:`dict.get`, so a document
         without them rehydrates with the same ``None`` a hand-built report
         would carry.
         """
@@ -247,6 +259,7 @@ class BandResult:
             graded_lo_hz=raw.get("graded_lo_hz"),
             graded_hi_hz=raw.get("graded_hi_hz"),
             max_at_graded_edge=raw.get("max_at_graded_edge"),
+            room_entangled_below_hz=raw.get("room_entangled_below_hz"),
         )
 
 
@@ -285,6 +298,11 @@ class FlatSpecReport:
     low-mid band alone, while the span they are stated OVER runs to the
     trusted ceiling. A consumer asking "which bins did this evaluation
     grade" must read this one.
+
+    ``entanglement_floor_hz`` and ``entanglement_floor_source`` are the
+    ROOM's floor and its provenance, echoed the way the clamps above are but
+    clamping nothing: no band edge moves for them and no verdict reads them.
+    What they mark is :attr:`BandResult.room_entangled_below_hz`.
     """
 
     reference_db: float
@@ -302,6 +320,8 @@ class FlatSpecReport:
     graded_band_hz: tuple[float, float] = (
         GATED_SPEC_LOWER_EDGE_HZ, BEST_EFFORT_ABOVE_HZ,
     )
+    entanglement_floor_hz: float | None = None
+    entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -315,6 +335,8 @@ class FlatSpecReport:
             "reference_band_hz": list(self.reference_band_hz),
             "trusted_ceiling_hz": self.trusted_ceiling_hz,
             "graded_band_hz": list(self.graded_band_hz),
+            "entanglement_floor_hz": self.entanglement_floor_hz,
+            "entanglement_floor_source": self.entanglement_floor_source,
         }
 
     @classmethod
@@ -326,8 +348,8 @@ class FlatSpecReport:
         ``excluded_intervals`` is read with hard indexing, so a document
         missing it raises rather than rehydrating an empty tuple that reads
         as "nothing was excluded" when the truth is "the field was lost". The
-        four clamp fields are read with :meth:`dict.get` and fall back to the
-        dataclass defaults.
+        four clamp fields and the two entanglement fields are read with
+        :meth:`dict.get` and fall back to the dataclass defaults.
         """
         kwargs: dict[str, Any] = {}
         reference_band = raw.get("reference_band_hz")
@@ -336,6 +358,9 @@ class FlatSpecReport:
         graded_band = raw.get("graded_band_hz")
         if graded_band is not None:
             kwargs["graded_band_hz"] = (float(graded_band[0]), float(graded_band[1]))
+        entanglement_source = raw.get("entanglement_floor_source")
+        if entanglement_source is not None:
+            kwargs["entanglement_floor_source"] = str(entanglement_source)
         return cls(
             reference_db=float(raw["reference_db"]),
             bands=tuple(BandResult.from_dict(b) for b in raw["bands"]),
@@ -347,6 +372,7 @@ class FlatSpecReport:
             smoothing_fraction=int(raw["smoothing_fraction"]),
             trusted_floor_hz=raw.get("trusted_floor_hz"),
             trusted_ceiling_hz=raw.get("trusted_ceiling_hz"),
+            entanglement_floor_hz=raw.get("entanglement_floor_hz"),
             **kwargs,
         )
 
@@ -416,6 +442,24 @@ def _graded_hi_hz(f_hi_hz: float, trusted_ceiling_hz: float | None) -> float:
     return min(float(f_hi_hz), float(trusted_ceiling_hz))
 
 
+def _room_entangled_below_hz(
+    graded_lo_hz: float,
+    graded_hi_hz: float,
+    entanglement_floor_hz: float | None,
+) -> float | None:
+    """The upper edge of one band's room-entangled sub-span, or ``None``.
+
+    The mirror of :func:`_graded_lo_hz` in spirit and its opposite in effect:
+    that one MOVES an edge and changes what is graded, this one only marks.
+    An unknown or non-finite floor marks nothing -- see :class:`BandResult`.
+    """
+    if entanglement_floor_hz is None or not math.isfinite(entanglement_floor_hz):
+        return None
+    if entanglement_floor_hz <= graded_lo_hz:
+        return None
+    return min(float(entanglement_floor_hz), float(graded_hi_hz))
+
+
 def evaluate_flat_spec(
     freqs_hz: np.ndarray,
     spec_smoothed_db: np.ndarray,
@@ -425,6 +469,8 @@ def evaluate_flat_spec(
     trusted_floor_hz: float | None = None,
     trusted_ceiling_hz: float | None = None,
     reference_db_override: float | None = None,
+    entanglement_floor_hz: float | None = None,
+    entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN,
 ) -> FlatSpecReport:
     """Evaluate the flat-linearization spec against one combined, 1/3-oct-
     smoothed magnitude curve (docs/historical/linearization-campaign-2026-07.md, "The spec --
@@ -475,6 +521,19 @@ def evaluate_flat_spec(
             in the reference band still raises even when an override is
             supplied. ``None`` (the default) computes the reference the
             ordinary way.
+        entanglement_floor_hz: the ROOM's floor in Hz,
+            ``2.5/t_first_bounce``
+            (:func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`)
+            -- below it no window length separates speaker from room, however
+            the operator chooses it. **Nothing is clamped and no grade
+            changes**: it only sets each band's
+            :attr:`BandResult.room_entangled_below_hz`. ``None`` (the
+            default) is unknown, which marks nothing and proves nothing.
+        entanglement_floor_source: which of
+            :mod:`jasper.audio_measurement.gating`'s three
+            ``ENTANGLEMENT_SOURCE_*`` words the floor came from, echoed onto
+            the report verbatim. Provenance only, like ``smoothing_fraction``:
+            nothing here validates it against the floor beside it.
 
     Reference level: the power mean (:func:`_power_mean_db`) over
     non-excluded bins inside :data:`REFERENCE_BAND_HZ`, its lower edge raised
@@ -607,6 +666,9 @@ def evaluate_flat_spec(
         included_band_mask = band_mask & included_mask
         n_bins = int(band_mask.sum())
         n_excluded = int((band_mask & resolved_exclusion_mask).sum())
+        room_entangled_below_hz = _room_entangled_below_hz(
+            f_lo_hz, f_hi_hz, entanglement_floor_hz
+        )
         if not included_band_mask.any():
             band_results.append(
                 BandResult(
@@ -622,6 +684,7 @@ def evaluate_flat_spec(
                     passed=None,
                     graded_lo_hz=f_lo_hz,
                     graded_hi_hz=f_hi_hz,
+                    room_entangled_below_hz=room_entangled_below_hz,
                 )
             )
             continue
@@ -664,6 +727,7 @@ def evaluate_flat_spec(
                 graded_lo_hz=f_lo_hz,
                 graded_hi_hz=f_hi_hz,
                 max_at_graded_edge=max_at_graded_edge,
+                room_entangled_below_hz=room_entangled_below_hz,
             )
         )
 
@@ -694,6 +758,13 @@ def evaluate_flat_spec(
         graded_band_hz=(
             _graded_lo_hz(SPEC_BANDS[0][0], trusted_floor_hz), graded_top_hz,
         ),
+        entanglement_floor_hz=(
+            float(entanglement_floor_hz)
+            if entanglement_floor_hz is not None
+            and math.isfinite(entanglement_floor_hz)
+            else None
+        ),
+        entanglement_floor_source=entanglement_floor_source,
     )
 
 
