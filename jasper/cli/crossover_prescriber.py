@@ -911,13 +911,14 @@ def _staged_section() -> dict[str, Any]:
     a fact whichever directory the operator named — including a directory that
     turned out not to be a bundle at all.
 
-    The spool sits under ``/var/lib/jasper/`` at mode 0640, so an operator
-    running this verb as their own login user gets ``PermissionError`` out of
-    the stat — which used to be a traceback and is now the fourth section
-    reporting unavailable with its reason, the shape the three evidence
-    sections beside it already use. ``pending`` is ``None`` rather than
-    ``False`` there: "no document is waiting" and "nobody could look" are
-    different facts, and a prescriber told the first would stage over a
+    The spool sits under ``/var/lib/jasper/``, which the installer owns
+    ``root:jasper`` at 0770, so an operator running this verb as a login user
+    outside that group cannot even traverse to the file and gets
+    ``PermissionError`` out of the stat — which used to be a traceback and is
+    now the fourth section reporting unavailable with its reason, the shape
+    the three evidence sections beside it already use. ``pending`` is ``None``
+    rather than ``False`` there: "no document is waiting" and "nobody could
+    look" are different facts, and a prescriber told the first would stage over a
     document it never saw. The refusal is NOT swallowed at the spool — ``stage``
     still needs the real error — so the catch lives here, in the one verb whose
     contract is a partial answer.
@@ -1124,11 +1125,11 @@ def _next_actions(
     if seat_level_reference_volume_db() is None:
         out.append(
             "no seat-level measurement reference is banked — measurement "
-            f"sessions ride the {MEASUREMENT_REFERENCE_VOLUME_DB:g} dBFS "
-            "fallback; `jasper-seat-level` sets the seat to the declared "
-            f"{DEFAULT_TARGET_DB_SPL - DEFAULT_TOLERANCE_DB:g}-"
+            f"sessions ride the {MEASUREMENT_REFERENCE_VOLUME_DB:g} dB "
+            "main-volume fallback; `jasper-seat-level` sets the seat to the "
+            f"default {DEFAULT_TARGET_DB_SPL - DEFAULT_TOLERANCE_DB:g}-"
             f"{DEFAULT_TARGET_DB_SPL + DEFAULT_TOLERANCE_DB:g} dB SPL target "
-            "and banks the reference"
+            "(--target-db-spl states another) and banks the reference"
         )
 
     out.append(f"run, apply, or undo a round at {crossover_url}")

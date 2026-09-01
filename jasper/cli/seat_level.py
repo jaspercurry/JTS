@@ -166,12 +166,15 @@ class StimulusLevels:
     bounds the volume ceiling (``unsegmented_stimulus_ceiling_db``: full scale
     less the peak). The RMS is what the seat actually hears at a given volume.
     Their difference is the crest factor, and it is the number that decides
-    whether a target is reachable at all: a band-limited-noise program at
-    -20 dBFS peak carries ~14 dB of crest, so it measures ~-34 dBFS RMS and
-    reaches the seat 19 dB quieter than one peaking at -1 dBFS would — at a
-    fader that cannot go above 0 dB, that is 19 dB of target simply out of
-    reach. The ramp carries both onto its unreachable-target refusal so that
-    sum is visible there rather than inferred.
+    whether a target is reachable at all. Crest is a property of the program
+    (band, length and draw), so it is MEASURED here rather than assumed; to
+    read the size of the effect, one 20 s 150-8000 Hz noise draw measured
+    ~14 dB of crest, so peak-normalized to -20 dBFS it sits at ~-34 dBFS RMS
+    and reaches the seat 19 dB quieter than the same draw peak-normalized to
+    -1 dBFS — at a fader that cannot go above 0 dB, that is 19 dB of target
+    simply out of reach. The ramp carries both numbers onto its
+    unreachable-target refusal so that sum is visible there rather than
+    inferred.
     """
 
     peak_dbfs: float

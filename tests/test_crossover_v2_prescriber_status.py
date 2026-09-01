@@ -792,7 +792,10 @@ def test_no_banked_seat_level_reference_names_the_tool_that_sets_it(
     low = cli.DEFAULT_TARGET_DB_SPL - cli.DEFAULT_TOLERANCE_DB
     high = cli.DEFAULT_TARGET_DB_SPL + cli.DEFAULT_TOLERANCE_DB
     assert f"{low:g}-{high:g} dB SPL" in line
-    assert f"{cli.MEASUREMENT_REFERENCE_VOLUME_DB:g} dBFS" in line
+    # dB, not dBFS: the fallback is a main-volume attenuation, and the same
+    # module publishes driver caps in dBFS -- two scales one line must not mix.
+    assert f"{cli.MEASUREMENT_REFERENCE_VOLUME_DB:g} dB " in line
+    assert "dBFS" not in line
     # Same sentence on both surfaces (the report==json pin, scoped to this line).
     assert line in out
 
