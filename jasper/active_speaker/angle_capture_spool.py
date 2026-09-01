@@ -269,7 +269,15 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         # angle so the microphone moves once per angle), so a set or a
         # sorted-by-angle rewrite here would silently re-plan the walk.
         "stops": [
-            {"angle_deg": stop.angle_deg, "regime": stop.regime}
+            {
+                "angle_deg": stop.angle_deg,
+                "regime": stop.regime,
+                # Written unconditionally and read back with a default, on the
+                # polarity pair's own terms: a document spooled before the
+                # elevation axis existed reads as a walk at mark height and the
+                # schema version does not move.
+                "elevation_deg": stop.elevation_deg,
+            }
             for stop in request.stops
         ],
         "staged_at": time.time(),
@@ -509,7 +517,14 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         if not isinstance(entry, Mapping):
             _refuse(SPOOL_MALFORMED, "a staged stop is not a JSON object")
         stops.append(
-            AngleStop(entry.get("angle_deg"), str(entry.get("regime")))  # type: ignore[arg-type]
+            AngleStop(
+                entry.get("angle_deg"),  # type: ignore[arg-type]
+                str(entry.get("regime")),
+                # Defaulted on ABSENCE only: a document that states the key
+                # hands whatever it states to the one validator, uncoerced, for
+                # the reason the angle above is handed over uncoerced.
+                entry.get("elevation_deg", 0),  # type: ignore[arg-type]
+            )
         )
     return AngleCaptureRequest(
         stops=tuple(stops),

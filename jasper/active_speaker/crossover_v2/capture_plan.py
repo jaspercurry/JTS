@@ -379,6 +379,11 @@ _LATERAL_SIGNS = {"LEFT": -1, "RIGHT": 1}
 # down. The words are the ``updown`` slot ``_VERTICAL_POSE`` fills.
 _VERTICAL_SIGNS = {"BELOW": -1, "ABOVE": 1}
 
+# The same table read the other way, for copy generated FROM a sign rather than
+# parsed into one (:func:`remote_position_prompt`). Inverted rather than spelled
+# a second time: two literal tables are two places for ABOVE to become -1.
+_VERTICAL_WORDS = {sign: word for word, sign in _VERTICAL_SIGNS.items()}
+
 
 def _pose(
     template: str,
@@ -798,21 +803,44 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     reading exactly what Full's walk records. That is the whole point of
     deriving this instead of writing a parallel table: the remote tier is a
     different OPERATOR, not a different measurement.
+
+    **The ELEVATION clause is additive and a pose at mark height gains
+    nothing.** ``position_elevation_deg`` answers 0 for every pose nobody
+    raised, and 0 emits no clause at all — so every walk stated on the
+    horizontal axis reads exactly the sentence it read before elevation was
+    sayable. A raised pose gets one clause in the bearing's own grammar, in
+    :data:`_VERTICAL_SIGNS`' own words, so a household reads one instruction
+    rather than two sentences that could be followed in either order.
+
+    **The 0° verb is the one thing the rise changes**, and it has to: "LEAVE
+    the microphone on the design axis" is a stand-still instruction, and a pose
+    that also asks for a rise would tell the household not to move and then to
+    move. "Keep" states the same bearing as something to HOLD while the second
+    clause is performed.
     """
     degrees_ = position_angle_deg(prompt)
+    elevation = position_elevation_deg(prompt)
     if degrees_ == 0:
-        headline = "Leave the microphone on the design axis (0°)."
+        verb = "Leave" if elevation == 0 else "Keep"
+        bearing = f"{verb} the microphone on the design axis (0°)"
         detail = f"On the mark, {MARK_DISTANCE_M:g} m out, pointed at the speaker."
     else:
         side = "LEFT" if degrees_ < 0 else "RIGHT"
-        headline = (
+        bearing = (
             f"Turn the microphone to {degrees_:+d}° "
-            f"({abs(degrees_)}° {side} of the design axis)."
+            f"({abs(degrees_)}° {side} of the design axis)"
         )
         detail = (
             f"Keep it {MARK_DISTANCE_M:g} m from the speaker and pointed at it."
         )
-    return replace(prompt, headline=headline, detail=detail)
+    if elevation == 0:
+        return replace(prompt, headline=f"{bearing}.", detail=detail)
+    updown = _VERTICAL_WORDS[1 if elevation > 0 else -1]
+    return replace(
+        prompt,
+        headline=f"{bearing}, and {abs(elevation)}° {updown} mark height.",
+        detail=detail,
+    )
 
 # What the household reads during the apply hold, and the same entry's fallback
 # screen body. It carries a REPOSITION instruction because the pre-apply cloud

@@ -12,7 +12,9 @@ review: this feature is NOT a route around the retired lateral-walk statistic.
    pose and advance policy, mutation-checked so a collapsed branch fails;
 3. **the ruling** -- the seam never mints ``PHASE_LATERAL`` itself, so it cannot
    be a route back to the retired statistic;
-4. mover parity, and the record/receipt shape the shipped consumers read.
+4. mover parity, and the record/receipt shape the shipped consumers read;
+5. the ELEVATION axis -- the same construction one plane over, its per-mover
+   reach, and the one clause it adds to what a household reads.
 """
 
 from __future__ import annotations
@@ -33,7 +35,11 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
-from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
+from jasper.active_speaker.crossover_v2.spatial import (
+    POSITION_AXIS_HORIZONTAL,
+    POSITION_AXIS_VERTICAL,
+    cloud_position_record,
+)
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 _FC_HZ = 2000.0
@@ -780,4 +786,151 @@ def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
     assert not (
         {f.name for f in dataclasses.fields(flow.CloudPositionPrompt)}
         & {"phase", "index", "program_phase"}
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 5. the ELEVATION axis: the same construction, one plane over
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("angle_deg", [0, 22, -45])
+def test_elevation_round_trips_and_leaves_the_bearing_alone(angle_deg: int) -> None:
+    """The azimuth's own contract, asserted on the orthogonal axis.
+
+    The two are INDEPENDENT numbers about one pose, so a compound pose reads
+    both back: the elevation through the shipped `position_elevation_deg` and
+    the bearing through `position_angle_deg`, neither disturbed by the other.
+    A raised pose is not `POSITION_ROLE_XOVR` -- that role means a pose
+    commanding no bearing at all, and this one commands one.
+    """
+    for elevation in range(-ac.MAX_ELEVATION_DEG, ac.MAX_ELEVATION_DEG + 1):
+        pose = ac.pose_at_angle(angle_deg, elevation)
+        assert flow.position_elevation_deg(pose) == elevation, elevation
+        assert flow.position_angle_deg(pose) == angle_deg, elevation
+        assert pose.role != flow.POSITION_ROLE_XOVR
+
+
+@pytest.mark.parametrize(
+    "mover, angle_deg, elevation_deg, axis",
+    [
+        # The arm ROTATES about the rig's vertical axis and nothing on it
+        # tilts, so ANY rise is past its reach -- including one asked at a
+        # bearing it can serve.
+        (ac.MOVER_ARM, 0, 1, POSITION_AXIS_VERTICAL),
+        (ac.MOVER_ARM, 22, -10, POSITION_AXIS_VERTICAL),
+        (ac.MOVER_ARM, ac.ARM_ENVELOPE_DEG + 1, 0, POSITION_AXIS_HORIZONTAL),
+        (ac.MOVER_HUMAN, 0, ac.MAX_ELEVATION_DEG + 1, POSITION_AXIS_VERTICAL),
+        (ac.MOVER_HUMAN, 7, -ac.MAX_ELEVATION_DEG - 1, POSITION_AXIS_VERTICAL),
+    ],
+)
+def test_a_stop_past_a_movers_reach_on_either_axis_refuses_at_staging(
+    mover: str, angle_deg: int, elevation_deg: int, axis: str,
+) -> None:
+    """Reach is per-mover AND per-axis, judged where the walk is STATED.
+
+    Refused at statement time for the reason `MOVER_MAX_ANGLE_DEG` already
+    gives about the bearing: a live session would publish a target this mover
+    cannot reach and then spend its whole hold budget per stop waiting for a
+    report that cannot come.
+
+    The refusal carries the mover and the AXIS as vocabulary tokens, not as
+    prose, because a mover can be in reach on one plane and not the other --
+    an operator reading a bare "out of reach" would not know which number to
+    change.
+    """
+    with pytest.raises(ac.LateralWalkRefused) as caught:
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(angle_deg, ac.REGIME_PER_DRIVER, elevation_deg),),
+            mover=mover,
+        )
+    assert caught.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
+    assert mover in caught.value.detail
+    assert axis in caught.value.detail
+
+
+@pytest.mark.parametrize(
+    "elevation_deg",
+    [0, 7, -7, ac.MAX_ELEVATION_DEG, -ac.MAX_ELEVATION_DEG],
+)
+def test_a_person_may_be_asked_to_raise_within_reach(elevation_deg: int) -> None:
+    """Everything inside the person's own bound stages AND resolves.
+
+    The bound covers the plan's baseline vertical walk with margin, and the
+    resolved stop carries the elevation on BOTH statements of it -- its own
+    field and the pose it resolved to -- so the number a session gates on is
+    the number the request asked for.
+    """
+    request = ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(22, ac.REGIME_PER_DRIVER, elevation_deg),),
+        mover=ac.MOVER_HUMAN,
+    )
+    stop, = ac.resolve_request(request)
+
+    assert stop.elevation_deg == elevation_deg
+    assert flow.position_elevation_deg(stop.prompt) == elevation_deg
+    assert flow.position_angle_deg(stop.prompt) == 22
+
+
+@pytest.mark.parametrize("angle_deg", [0, 7, -22])
+def test_a_pose_at_mark_height_is_the_pose_the_seam_already_shipped(
+    angle_deg: int,
+) -> None:
+    """Elevation 0 changes NOTHING, field for field.
+
+    Additive on the whole pose rather than only on the copy: an operator's
+    horizontal walk composes exactly what it composed before this axis was
+    sayable, so nothing downstream that reads a pose can tell the two apart --
+    and the household is told about a rise it was never asked to make.
+    """
+    pose = ac.pose_at_angle(angle_deg)
+
+    assert ac.pose_at_angle(angle_deg, 0) == pose
+    assert (pose.vertical_sign, pose.vertical_offset_cm) == (0, 0.0)
+    assert "mark height" not in pose.headline
+
+
+@pytest.mark.parametrize("elevation_deg, word", [(10, "ABOVE"), (-10, "BELOW")])
+def test_a_raised_pose_gains_exactly_one_elevation_clause(
+    elevation_deg: int, word: str,
+) -> None:
+    """The composed household sentence, asserted whole.
+
+    Prompt copy IS the externally observable behaviour here -- it is the
+    instruction a person follows, and there is no structured field between
+    them and it. The clause EXTENDS the shipped bearing sentence rather than
+    replacing it or adding a second one: a household asked to swing and to
+    rise gets one instruction, not two that could be followed in either order.
+    """
+    flat = ac.pose_at_angle(22)
+    raised = ac.pose_at_angle(22, elevation_deg)
+
+    assert flat.headline == (
+        "Turn the microphone to +22° (22° RIGHT of the design axis)."
+    )
+    assert raised.headline == (
+        "Turn the microphone to +22° (22° RIGHT of the design axis), and "
+        f"{abs(elevation_deg)}° {word} mark height."
+    )
+    # The supporting clause is about DISTANCE and is unchanged by a rise.
+    assert raised.detail == flat.detail
+
+
+@pytest.mark.parametrize("elevation_deg, word", [(10, "ABOVE"), (-10, "BELOW")])
+def test_a_rise_on_the_design_axis_does_not_say_LEAVE_the_microphone(
+    elevation_deg: int, word: str,
+) -> None:
+    """A stand-still verb in front of a move instruction is a contradiction.
+
+    The 0° bearing's shipped copy is "LEAVE the microphone on the design axis",
+    which is a whole instruction on its own: do not move it. A pose that also
+    asks for a rise has to state the bearing as something to HOLD instead, or
+    the household is told not to move and then to move in one sentence.
+    """
+    assert ac.pose_at_angle(0).headline == (
+        "Leave the microphone on the design axis (0°)."
+    )
+    assert ac.pose_at_angle(0, elevation_deg).headline == (
+        "Keep the microphone on the design axis (0°), and "
+        f"{abs(elevation_deg)}° {word} mark height."
     )
