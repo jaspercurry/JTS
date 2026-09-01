@@ -22,7 +22,9 @@ Ownership, deliberately narrow:
 The target BAND is not stored here and is not a property of the speaker: it is
 what the operator wants tonight's session to sound like, passed per run and
 bounded by the preset's ``max_commissioning_level_db_spl`` safety ceiling. Only
-the *result* is durable.
+the *result* is durable — the volume, and the
+:class:`StimulusProvenance` it was measured against, which is the other half of
+what that volume means.
 """
 
 from __future__ import annotations
@@ -55,6 +57,44 @@ DEFAULT_TOLERANCE_DB = 2.5
 
 class SeatLevelTargetError(ValueError):
     """The requested seat-SPL target is not a band this speaker may chase."""
+
+
+@dataclass(frozen=True)
+class StimulusProvenance:
+    """WHICH signal a reference volume was measured against, and at what level.
+
+    The other half of the reference's definition. A reference is the volume
+    that produced a target SPL *for a given stimulus*, and
+    ``dB SPL = stimulus dBFS + chain gain + volume`` — so with the stimulus
+    term unrecorded, two references taken against different WAVs differ by a
+    number no consumer can see, and every comparison of them (drift detection,
+    doctor lines, an LLM reasoning about the rig) mis-attributes that
+    difference to the hardware.
+
+    ``sha256`` is the identity a path alone cannot carry: the same path can be
+    a different file on the next session. ``band_hz`` is the DECLARED band a
+    generated stimulus was synthesized over, and ``None`` for an
+    operator-named WAV whose band nobody declared — never a measured estimate.
+    """
+
+    path: str
+    sha256: str
+    peak_dbfs: float
+    rms_dbfs: float
+    band_hz: tuple[float, float] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "sha256": self.sha256,
+            "peak_dbfs": round(float(self.peak_dbfs), 2),
+            "rms_dbfs": round(float(self.rms_dbfs), 2),
+            "band_hz": (
+                None
+                if self.band_hz is None
+                else [round(float(edge), 1) for edge in self.band_hz]
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -175,6 +215,7 @@ def write_seat_level_reference(
     target: SeatLevelTarget,
     sensitivity: dict[str, Any],
     max_main_volume_db: float,
+    stimulus: StimulusProvenance | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish one converged reference. Called ONLY on a converged ramp.
@@ -203,6 +244,10 @@ def write_seat_level_reference(
         "target": target.to_dict(),
         "mic_sensitivity": dict(sensitivity),
         "max_main_volume_db": round(float(max_main_volume_db), 3),
+        # Always a key, ``None`` when the pass measured no stimulus: a consumer
+        # must be able to tell "banked against a stimulus nobody recorded" from
+        # "this build does not record stimuli", and a missing key cannot.
+        "stimulus": None if stimulus is None else stimulus.to_dict(),
     }
     atomic_write_json(path, payload, mode=0o640, group_from_parent=True)
     return payload

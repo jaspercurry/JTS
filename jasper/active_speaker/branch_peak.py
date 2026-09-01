@@ -128,11 +128,13 @@ _OVERLAP_SAMPLES = 8192
 #     2_880_000 × 2 × 10 B ≈ 55 MiB
 #
 # on a box whose whole budget is 1 GB, and everything after the decode is
-# per-BLOCK rather than per-stimulus. A seat-leveling stimulus is SECONDS long —
-# it is a continuous program the ramp loops while it climbs — so 60 s is already
-# an order of magnitude of slack. Over the bound the render refuses and the
+# per-BLOCK rather than per-stimulus. Over the bound the render refuses and the
 # caller falls back to the conservative full-band bound.
-_MAX_STIMULUS_SAMPLES = 48_000 * 60
+#
+# PUBLIC because it is also a declaration a caller derives from:
+# ``jasper.cli.seat_level.default_stimulus_wav`` generates exactly this many
+# frames, the longest stimulus whose per-branch peak solve stays exact.
+MAX_STIMULUS_SAMPLES = 48_000 * 60
 
 # CamillaDSP filter types this module models EXACTLY. Anything else refuses.
 #
@@ -207,10 +209,10 @@ def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
         array = array[:, None]
     if array.ndim != 2:
         raise BranchPeakError(f"{wav_path} is not a mono or multichannel WAV")
-    if array.shape[0] > _MAX_STIMULUS_SAMPLES:
+    if array.shape[0] > MAX_STIMULUS_SAMPLES:
         raise BranchPeakError(
             f"{wav_path} carries {array.shape[0]} frames, past the "
-            f"{_MAX_STIMULUS_SAMPLES}-frame render bound"
+            f"{MAX_STIMULUS_SAMPLES}-frame render bound"
         )
     samples = array.astype(np.float64)
     if np.issubdtype(array.dtype, np.integer):
@@ -577,7 +579,7 @@ def stimulus_branch_peaks_dbfs(
 
     **Memory**: everything after the decode is per-BLOCK rather than
     per-stimulus, but the decode itself is not — the decoded float64 stimulus is
-    held whole, and :data:`_MAX_STIMULUS_SAMPLES` is what bounds it (60 s, about
+    held whole, and :data:`MAX_STIMULUS_SAMPLES` is what bounds it (60 s, about
     46 MB at 48 kHz stereo). Blocking bounds the working set, not the input.
 
     Raises :class:`BranchPeakError` for anything not modelled exactly.
