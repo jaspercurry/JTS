@@ -59,7 +59,16 @@
 //! At most, not exactly. An incoming lane that is also owed a wake window takes
 //! the PRODUCT of the two, so the pair dips to 0.75 (−2.5 dB) mid-switch; and a
 //! lane delivering a short or empty period holds its rise while the outgoing
-//! lane keeps falling. Both are dips. Nothing pushes the sum up.
+//! lane keeps falling. Both are dips.
+//!
+//! One path goes the other way, by at most the silence floor. A period holding
+//! nothing above [`SILENCE_FLOOR_I16`] reads as no content, so a lane whose
+//! selection window is HELD — or one still fully out that mux has just selected
+//! — passes that period at unity rather than shaping it: alongside a full-scale
+//! twin the sum reaches 32771 where the pair alone would give 32767. The
+//! accumulator is `i64` and saturates at the write (`saturate_to_i16` /
+//! `clamp_sum_to_spine`), and 4 LSB over full scale is 0.001 dB, so this is a
+//! rounding leak rather than a clipping hazard.
 //!
 //! The TTS/cue path enters post-sum via `TtsMixer` and never passes here.
 
@@ -68,8 +77,8 @@ use std::f64::consts::PI;
 use super::CHANNELS;
 use crate::config::MEASUREMENT_LANE;
 
-/// Contiguous digital-zero input that must precede an onset before the onset is
-/// treated as a session start rather than as music.
+/// Contiguous silent input (at or below [`SILENCE_FLOOR_I16`]) that must precede
+/// an onset before the onset is treated as a session start rather than as music.
 ///
 /// The threshold exists to protect legitimate content: quiet passages, track
 /// gaps, and the 0.5 s toggle bursts used by probe/test stimuli must NEVER be
@@ -87,10 +96,40 @@ const ARM_SILENCE_MS: u64 = 1_500;
 /// perceptibly delayed and that a source switch still reads as instant.
 const RAMP_MS: u64 = 10;
 
+/// Magnitude at or below which a lane sample counts as silence — both for the
+/// arming run above and for whether a period bought any window at all.
+///
+/// −78 dBFS (4/32768). The measurement behind it (issue #3512) is POST-DSP: at
+/// the jts3 `:9891` tap, the first content after a source takeover is a
+/// 10-frame, **1-LSB** tick, then 41 ms of exact digital zero, then the real
+/// burst. That tap is downstream of CamillaDSP, and ±1 LSB out of exact zero is
+/// also what float output rounding produces, so the tick's ORIGIN is unproven —
+/// a lane-input tick and a DSP artifact are indistinguishable there.
+///
+/// The floor holds either way. If the tick IS in the lane input, an exact-zero
+/// predicate ended the arming run on it and the real burst then entered a window
+/// already partly open — this is the fix for that. If the lane input was exact
+/// zero, every sample this predicate sees is already under the floor and the
+/// change is a provable no-op. What it buys unconditionally is a BOUND on
+/// sub-audible lane content: nothing under −78 dBFS can end a silence run or
+/// spend a window, whatever produced it.
+///
+/// The floor must stay far below any musical onset and above a 1-LSB tick: 4 LSB
+/// is 12 dB over one and ~78 dB under full scale, so nothing it swallows is
+/// audible whether it is shaped or not.
+const SILENCE_FLOOR_I16: u16 = 4;
+
+/// [`SILENCE_FLOOR_I16`] at the i32 spine scale (full scale ±2^31) — the same
+/// `<< 16` promotion `widen_i16_to_i32` gives a narrow lane at its sum entry, so
+/// one dBFS figure covers both lane widths.
+const SILENCE_FLOOR_I32: u32 = (SILENCE_FLOOR_I16 as u32) << 16;
+
 /// A lane period sample, at either of the two scales a lane can carry (`i16` for
 /// an aloop/ring lane, `i32` for the spine-scale USB DIRECT lane on a wide
 /// wire). The state machine is identical at both, so it is written once.
 pub(super) trait FadeSample: Copy {
+    /// Whether this sample is silence for fade purposes: at or below the
+    /// [`SILENCE_FLOOR_I16`] floor, not necessarily exactly zero.
     fn is_silent(self) -> bool;
     /// Multiply by `gain`, which both windows keep in `0.0..=1.0` — so this only
     /// ever moves a sample toward zero and cannot clip.
@@ -99,7 +138,7 @@ pub(super) trait FadeSample: Copy {
 
 impl FadeSample for i16 {
     fn is_silent(self) -> bool {
-        self == 0
+        self.unsigned_abs() <= SILENCE_FLOOR_I16
     }
     fn scaled(self, gain: f64) -> Self {
         (self as f64 * gain).round() as Self
@@ -108,7 +147,7 @@ impl FadeSample for i16 {
 
 impl FadeSample for i32 {
     fn is_silent(self) -> bool {
-        self == 0
+        self.unsigned_abs() <= SILENCE_FLOOR_I32
     }
     fn scaled(self, gain: f64) -> Self {
         (self as f64 * gain).round() as Self
@@ -141,10 +180,10 @@ pub(super) struct LaneFade {
     arm_frames: u64,
     /// [`RAMP_MS`] at the live sample rate; at least 1 so a window is total.
     ramp_frames: u32,
-    /// Contiguous frames of digital zero seen so far. Counted in WALL-CLOCK
-    /// periods, not captured frames: a lane that reads nothing still renders a
-    /// silent period.
-    zero_frames: u64,
+    /// Contiguous frames of silence ([`SILENCE_FLOOR_I16`]) seen so far. Counted
+    /// in WALL-CLOCK periods, not captured frames: a lane that reads nothing
+    /// still renders a silent period.
+    silent_frames: u64,
     state: RampState,
     /// Whether the period `observe` last saw held any content. `shape_period`
     /// reads it so a silent period can never consume the wake window (the two
@@ -173,7 +212,7 @@ impl LaneFade {
             // it reads is then mid-waveform at full amplitude — the same step
             // as a session start. Starting the count satisfied costs one
             // assignment and covers both that and cold-boot first audio.
-            zero_frames: arm_frames,
+            silent_frames: arm_frames,
             state: RampState::Idle,
             period_had_content: false,
             armed_this_period: false,
@@ -198,17 +237,17 @@ impl LaneFade {
         let first_sample = period.iter().position(|s| !s.is_silent());
         self.period_had_content = first_sample.is_some();
         let Some(first_sample) = first_sample else {
-            self.zero_frames = self.zero_frames.saturating_add(period_frames as u64);
+            self.silent_frames = self.silent_frames.saturating_add(period_frames as u64);
             // Silence long enough to re-arm cancels an unfinished window: what
             // resumes is a NEW session start and is owed the whole ramp, not
             // whatever was left of the last one.
-            if self.zero_frames >= self.arm_frames {
+            if self.silent_frames >= self.arm_frames {
                 self.state = RampState::Idle;
             }
             return false;
         };
-        let armed = self.zero_frames >= self.arm_frames;
-        self.zero_frames = 0;
+        let armed = self.silent_frames >= self.arm_frames;
+        self.silent_frames = 0;
         if !armed || self.state != RampState::Idle {
             return false;
         }
@@ -934,5 +973,89 @@ mod tests {
         for pair in one_channel(&first[..]).windows(2) {
             assert!(pair[0] <= pair[1], "the opening must rise: {:?}", pair);
         }
+    }
+
+    /// Pin 13a (issue #3512), at both lane scales: a sub-audible blip does NOT
+    /// end the arming run. The measured shape — a 10-frame, 1-LSB tick, then
+    /// 41 ms of exact zero, then the real burst — used to arm on the tick and
+    /// hand the burst a window that was already partly open.
+    fn a_blip_never_breaks_the_arming_run<S>(blip: S, level: S)
+    where
+        S: FadeSample + Default + PartialEq + std::fmt::Debug,
+    {
+        const TICK_FRAMES: usize = 10;
+        let mut fade = settled_lane("airplay");
+        drive_silence(&mut fade, 2 * RATE, true);
+
+        let mut tick = vec![S::default(); SAMPLES];
+        for sample in tick.iter_mut().take(TICK_FRAMES * (CHANNELS as usize)) {
+            *sample = blip;
+        }
+        let untouched = tick.clone();
+        assert!(
+            !contributing(&mut fade, &mut tick[..]),
+            "a {blip:?}-magnitude tick must not arm the window"
+        );
+        assert_eq!(tick, untouched, "a sub-floor tick passes unaltered");
+
+        // Far under ARM_SILENCE_MS: only a run that SURVIVED the tick can still
+        // arm the burst below.
+        drive_silence(&mut fade, RATE * 41 / 1000, true);
+
+        let mut burst = [level; SAMPLES];
+        assert!(
+            contributing(&mut fade, &mut burst[..]),
+            "the run outlived the tick, so the real onset is owed a window"
+        );
+        assert_eq!(burst[0], S::default(), "the burst opens at zero gain");
+        assert!(
+            burst.iter().all(|s| *s != level),
+            "the whole period is the window's to shape"
+        );
+    }
+
+    #[test]
+    fn a_sub_audible_blip_never_breaks_the_arming_run() {
+        // 1 and 3 LSB at each scale — the spine scale is the same fraction of
+        // full scale, which is `<< 16`.
+        a_blip_never_breaks_the_arming_run(1i16, i16::MAX);
+        a_blip_never_breaks_the_arming_run(3i16, i16::MAX);
+        a_blip_never_breaks_the_arming_run(1i32 << 16, i32::MAX);
+        a_blip_never_breaks_the_arming_run(3i32 << 16, i32::MAX);
+    }
+
+    /// Pin 13b: the floor is a BOUNDARY, pinned on both sides. At it a period is
+    /// still silence and the run continues; just over it the period is content
+    /// and arms the window, so nothing a listener could hear loses its ramp.
+    fn the_silence_floor_is_a_boundary<S>(at_floor: S, over_floor: S)
+    where
+        S: FadeSample + PartialEq + std::fmt::Debug,
+    {
+        let mut fade = settled_lane("airplay");
+        drive_silence(&mut fade, 2 * RATE, true);
+
+        let mut floor = [at_floor; SAMPLES];
+        assert!(
+            !contributing(&mut fade, &mut floor[..]),
+            "{at_floor:?} is at the floor and must count as silence"
+        );
+        assert!(
+            floor.iter().all(|s| *s == at_floor),
+            "sub-floor content passes unaltered"
+        );
+
+        let mut content = [over_floor; SAMPLES];
+        assert!(
+            contributing(&mut fade, &mut content[..]),
+            "{over_floor:?} is over the floor and must count as content"
+        );
+    }
+
+    #[test]
+    fn a_burst_just_over_the_floor_counts_as_content() {
+        // One step over the floor at each scale's own granularity: +1 at i16,
+        // and the same fraction of full scale (`<< 16`) at the spine width.
+        the_silence_floor_is_a_boundary(4i16, 5i16);
+        the_silence_floor_is_a_boundary(4i32 << 16, 5i32 << 16);
     }
 }
