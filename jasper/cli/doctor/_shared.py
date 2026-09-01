@@ -39,7 +39,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
-from ...audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from ...env_load import parse_env_file as _shared_parse_env_file
 
 GREEN = "\033[32m"
@@ -269,24 +268,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-def _active_audio_dac_env() -> dict[str, str]:
-    env = _shared_parse_env_file("/etc/jasper/jasper.env")
-    return {
-        "id": (
-            os.environ.get("JASPER_AUDIO_DAC_ID")
-            or env.get("JASPER_AUDIO_DAC_ID")
-            or APPLE_USB_C_DONGLE_ID
-        ),
-        "card": (
-            os.environ.get("JASPER_AUDIO_DAC_CARD")
-            or env.get("JASPER_AUDIO_DAC_CARD")
-            or "A"
-        ),
-    }
-
-def _active_audio_dac_id() -> str:
-    return _active_audio_dac_env()["id"]
 
 def _meminfo_kb(field: str) -> int | None:
     """Read a single field (e.g. 'MemAvailable') from /proc/meminfo

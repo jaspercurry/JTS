@@ -21,7 +21,8 @@ from ...camilla_config_contract import read_camilla_device_field
 from ...env_load import merged_env_files
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ._registry import doctor_check
-from ._shared import CheckResult, _active_audio_dac_id, _run
+from ...output_hardware import active_dac_profile_id
+from ._shared import CheckResult, _run
 from .correction import _active_camilla_config_path
 
 # Asset paths are shared with the coupling reconciler. Historical private names
@@ -2536,7 +2537,14 @@ def check_ring_conf_floor_render() -> CheckResult:
     # checks already reach for it lazily.
     from ...audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
-    dac_id = _active_audio_dac_id()
+    dac_id = active_dac_profile_id()
+    if dac_id is None:
+        return CheckResult(
+            label, "warn",
+            "the output-hardware record names no active DAC, so the floor this "
+            "conf.d should carry is unknown — run "
+            "`sudo systemctl start jasper-audio-hardware-reconcile`",
+        )
     floor = latency_floor_for(dac_id)
     # The eligibility half this check cannot read off the conf.d. Appended to
     # every OK branch, so an operator never has to already know that the floor is

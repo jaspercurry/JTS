@@ -50,6 +50,7 @@ from ..chip_aec_policy import (
     resolve_chip_aec_dac_gate,
 )
 from ..wake_models import WAKE_MODEL_FILE
+from ..output_hardware import published_dac_id
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
@@ -582,7 +583,7 @@ def _chip_aec_gate(
     dac_gate = gate_from_runtime_env(env)
     if dac_gate is None:
         dac_gate = resolve_chip_aec_dac_gate(
-            env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+            published_dac_id(env),
             testing_requested=testing_requested,
         )
     # Fold the input-mic fact into the DAC-only gate so blockers +

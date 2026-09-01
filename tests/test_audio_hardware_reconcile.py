@@ -1371,7 +1371,7 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     # `output_parked` sees WHY, not only `recognized=0`.
     assert (
         "event=audio_hardware_reconcile.output_parked reason=test "
-        "output_dac_id=A output_dac_card=A recognized=0 "
+        "output_dac_id=unknown output_dac_card=A recognized=0 "
         "observed_blockers=saved_composite_partially_present"
     ) in result.stderr
 
@@ -2160,7 +2160,7 @@ def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
-    assert "JASPER_AUDIO_DAC_ID=A" in env_text
+    assert "JASPER_AUDIO_DAC_ID=unknown" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     _assert_parked_outputd_dac_template(template)
@@ -4028,3 +4028,28 @@ def test_the_coupling_kick_never_blocks(tmp_path: Path):
 
     assert start_lines, body
     assert all("--no-block" in line for line in start_lines), start_lines
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [APPLE_LISTING, DUAL_APPLE_LISTING, INNOMAKER_LISTING, DAC8X_STUDIO_LISTING, ""],
+)
+def test_env_publication_names_the_dac_the_record_names(tmp_path: Path, listing: str):
+    """One reconcile pass, two publications, one answer.
+
+    JASPER_AUDIO_DAC_ID exists for consumers that can only read env. A Python
+    reader that took it instead of the record could only answer differently
+    if the two publications could differ — so they may not, recognized or not.
+    """
+    from jasper.output_hardware import active_dac_profile_id, published_dac_id
+
+    result = _run_reconcile(tmp_path, listing, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    env = {}
+    for line in (tmp_path / "jasper.env").read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.startswith("#"):
+            key, value = line.split("=", 1)
+            env[key] = value.strip("'\"")
+    recorded = active_dac_profile_id(tmp_path / "output_hardware.json")
+    assert published_dac_id(env) == (recorded or "unknown")

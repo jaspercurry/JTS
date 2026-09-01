@@ -894,26 +894,15 @@ def default_physical_outputs(count: int) -> tuple[PhysicalOutput, ...]:
     )
 
 
-def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
-    """Build read-only hardware inventory from reconciler-owned env facts."""
+def unknown_output_hardware() -> OutputHardware:
+    """The inventory of a box whose reconciler record names no output DAC."""
 
-    env = env or os.environ
-    device_id = normalize_output_device_id(env.get("JASPER_AUDIO_DAC_ID"))
-    card_id = env.get("JASPER_AUDIO_DAC_CARD") or None
-    output_count = _dac_physical_output_count_for(device_id) or 0
-    if output_count <= 0:
-        output_count = 2 if card_id else 0
-    device_label = _dac_label_for(device_id) or (
-        device_id if device_id != "unknown" else "Unknown output device"
-    )
     return OutputHardware(
-        device_id=device_id,
-        device_label=device_label,
-        physical_output_count=output_count,
-        card_id=card_id,
-        clock_domain_id=default_clock_domain_id(device_id, card_id),
-        clock_domain_label=default_clock_domain_label(device_id),
-        outputs=default_physical_outputs(output_count),
+        device_id="unknown",
+        device_label="Unknown output device",
+        physical_output_count=0,
+        clock_domain_id=default_clock_domain_id("unknown", None),
+        clock_domain_label=default_clock_domain_label("unknown"),
     )
 
 
@@ -938,7 +927,7 @@ def new_topology_draft(
     return OutputTopology(
         topology_id=topology_id,
         name=name,
-        hardware=hardware or hardware_from_env(),
+        hardware=hardware or unknown_output_hardware(),
         speaker_groups=(),
         routing=TopologyRouting(),
     )

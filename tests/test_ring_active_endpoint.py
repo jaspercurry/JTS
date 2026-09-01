@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,17 @@ from types import SimpleNamespace
 import pytest
 
 from jasper import ring_assets
+from jasper.output_hardware import OutputHardwareState, write_state
+
+
+def _record_active_dac(dac_id: str) -> None:
+    """The reconciler's record naming ``dac_id``, at the path conftest isolates."""
+    write_state(
+        OutputHardwareState(
+            profile_id=dac_id, profile_label=dac_id, status="ready", physical_output_count=2,
+        ),
+        os.environ["JASPER_OUTPUT_HARDWARE_STATE_PATH"],
+    )
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
@@ -1537,7 +1549,7 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
     """
     from jasper.cli.doctor import audio_runtime
 
-    monkeypatch.setattr(audio_runtime, "_active_audio_dac_id", lambda: "test_dac")
+    _record_active_dac("test_dac")
     monkeypatch.setattr(audio_runtime, "latency_floor_for", lambda dac_id: None)
 
     monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
@@ -1574,7 +1586,7 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
 
-    monkeypatch.setattr(audio_runtime, "_active_audio_dac_id", lambda: "hifiberry_dac8x")
+    _record_active_dac("hifiberry_dac8x")
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
 
     monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)

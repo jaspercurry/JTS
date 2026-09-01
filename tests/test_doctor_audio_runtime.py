@@ -14,6 +14,8 @@ from jasper import audio_runtime_plan
 from jasper.cli import doctor
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
+    OutputHardwareState,
+    write_state as write_output_hardware_state,
 )
 import os
 import re
@@ -3113,6 +3115,20 @@ assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
 )
 
 
+def _stage_active_dac(monkeypatch, tmp_path, dac_id):
+    path = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(path))
+    write_output_hardware_state(
+        OutputHardwareState(
+            profile_id=dac_id,
+            profile_label=dac_id,
+            status="ready",
+            physical_output_count=2,
+        ),
+        path,
+    )
+
+
 def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None):
     conf = tmp_path / "60-jts-ring.conf"
     if conf_text is None:
@@ -3120,9 +3136,20 @@ def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None):
     else:
         conf.write_text(conf_text, encoding="utf-8")
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
-    monkeypatch.setattr(
-        audio_runtime, "_active_audio_dac_id", lambda: dac_id)
+    _stage_active_dac(monkeypatch, tmp_path, dac_id)
     return conf
+
+
+def test_warns_when_no_active_dac_is_recorded(monkeypatch, tmp_path):
+    """The env's JASPER_AUDIO_DAC_ID is not consulted: an absent record means
+    the floor this conf.d should carry cannot be known."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "60-jts-ring.conf"))
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "warn"
+    assert "names no active DAC" in result.detail
 
 
 def _conf_text(period_frames):
@@ -3240,8 +3267,7 @@ def test_warns_when_the_conf_period_is_indeterminate(
 
 def test_warns_when_the_conf_is_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
-    monkeypatch.setattr(
-        audio_runtime, "_active_audio_dac_id", lambda: "apple_usb_c_dongle")
+    _stage_active_dac(monkeypatch, tmp_path, "apple_usb_c_dongle")
 
     result = audio_runtime.check_ring_conf_floor_render()
 

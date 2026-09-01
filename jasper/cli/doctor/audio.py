@@ -41,10 +41,8 @@ from ...mic_presence import MicPresence, read_mic_presence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _active_audio_dac_env,
     _group_writable_dir,
     _parked_as_bonded_follower,
-    _active_audio_dac_id,
     _run,
 )
 from .correction import _active_camilla_config_path
@@ -673,10 +671,9 @@ def _output_hardware_state_or_none() -> OutputHardwareState | None:
         return None
 
 
-def _effective_output_dac_id(state: OutputHardwareState | None = None) -> str:
-    if state is not None and state.profile_id not in {"", "unknown"}:
-        return state.profile_id
-    return _active_audio_dac_id()
+def _effective_output_dac_id(state: OutputHardwareState | None) -> str:
+    """The reconciler's active DAC, or ``unknown`` — never an env or Apple default."""
+    return (state.active_profile_id if state is not None else None) or "unknown"
 
 
 def _apple_output_profile_active(profile_id: str) -> bool:
@@ -892,28 +889,11 @@ def check_apple_dongle_audio() -> CheckResult:
             "ok",
             f"USB + audio interfaces present ({','.join(cards)})",
         )
-    if state is not None:
-        return CheckResult(
-            "Apple dongle",
-            "warn",
-            f"USB present but only {len(cards)} Apple audio card(s) enumerated; "
-            "check analog loads on the 3.5mm jack(s).",
-        )
-    p = _run(["aplay", "-l"])
-    audio_count = len(
-        re.findall(
-            r"(?:USB Audio.*USB Audio|Apple USB-C to 3\.5mm|Apple.*USB)",
-            p.stdout,
-            re.IGNORECASE,
-        )
-    )
-    if audio_count >= expected_count:
-        return CheckResult("Apple dongle", "ok", "USB + audio interfaces present")
     return CheckResult(
-        "Apple dongle", "warn",
-        "USB present but audio interfaces not enumerated. "
-        "Plug speakers/headphones into the dongle's 3.5mm jack — "
-        "the chip stays in low-power mode without an analog load.",
+        "Apple dongle",
+        "warn",
+        f"USB present but only {len(cards)} Apple audio card(s) enumerated; "
+        "check analog loads on the 3.5mm jack(s).",
     )
 
 @doctor_check(order=22, group="audio", exclusive_group="audio-probe")
@@ -929,7 +909,6 @@ def check_dongle_headphone_at_max() -> CheckResult:
     setting and is what triggered the audible-loudness gap that led to
     this check existing."""
     state = _output_hardware_state_or_none()
-    dac = _active_audio_dac_env()
     dac_id = _effective_output_dac_id(state)
     control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
     if not _apple_output_profile_active(dac_id) or not control_groups:
@@ -952,7 +931,13 @@ def check_dongle_headphone_at_max() -> CheckResult:
         )
 
     target_pct = int(control.target_percent or 100)
-    cards = _apple_dongle_cards_from_state(state) or [dac["card"]]
+    cards = _apple_dongle_cards_from_state(state)
+    if not cards:
+        return CheckResult(
+            "Dongle headphone gain", "warn",
+            "the output-hardware record names no Apple dongle card — run "
+            "`sudo systemctl start jasper-audio-hardware-reconcile`",
+        )
     low_cards: list[str] = []
     for card_id in cards:
         p = _run(["amixer", "-c", card_id, "sget", control.name])

@@ -1175,3 +1175,41 @@ def test_published_record_carries_the_partial_composite_reason(
     assert [issue["code"] for issue in published["issues"]] == [
         "saved_composite_partially_present"
     ]
+
+
+def test_active_dac_profile_id_reads_only_the_reconciler_record(
+    tmp_path, monkeypatch,
+) -> None:
+    from jasper.output_hardware import (
+        active_dac_profile_id,
+        published_dac_id,
+        write_state,
+    )
+
+    path = tmp_path / "output_hardware.json"
+    # The env publication names a DAC throughout; the resolver never reads it.
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", HIFIBERRY_DAC8X_DEVICE_ID)
+
+    assert active_dac_profile_id(path) is None
+    write_state(
+        OutputHardwareState(
+            profile_id="unknown", profile_label="", status="missing",
+            physical_output_count=0,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) is None
+    write_state(
+        OutputHardwareState(
+            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, profile_label="Apple",
+            status="ready", physical_output_count=2,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) == APPLE_USB_C_DONGLE_DEVICE_ID
+
+    assert published_dac_id({}) == "unknown"
+    assert (
+        published_dac_id({"JASPER_AUDIO_DAC_ID": HIFIBERRY_DAC8X_DEVICE_ID})
+        == HIFIBERRY_DAC8X_DEVICE_ID
+    )
