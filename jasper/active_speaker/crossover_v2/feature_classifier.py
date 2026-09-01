@@ -1462,7 +1462,7 @@ def _run_controls(
     c3 = excursions(
         ExcessPhase(
             freqs=c3_ep.freqs,
-            excess_phase=c3_ep.excess_phase,
+            excess_phase=c3_ep.excess_phase - c3_bias.excess_phase,
             excess_gd_us=c3_ep.excess_gd_us - c3_bias.excess_gd_us,
             bulk_delay_us=c3_ep.bulk_delay_us,
         )
@@ -1471,8 +1471,7 @@ def _run_controls(
         key: c3[key]["excursion_us"] - baseline[key]["excursion_us"] for key in keys
     }
     c3_bias_removed = {
-        key: egd_excursion(c3_bias, fc, trusted_band_hz)["excursion_us"]
-        for key, fc in zip(keys, features)
+        key: reading["excursion_us"] for key, reading in excursions(c3_bias).items()
     }
 
     # C4 / C4b — the discriminating pair, at every feature. Same comb geometry,
