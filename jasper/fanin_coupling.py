@@ -73,6 +73,40 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 # Making the slot floor-derived across all four components is issue #2147.
 RING_SLOT_FRAMES = 128
 DEFAULT_FANIN_RING_SLOTS = 2
+
+
+def ring_capacity_frames() -> int:
+    """Frames the whole ring holds — the ALSA buffer size its ioplug reports.
+
+    The bound a CamillaDSP ``chunksize`` crossing the ring has to clear:
+    CamillaDSP sets ``avail_min`` to its chunk, and ALSA refuses an
+    ``avail_min`` larger than the device's buffer. It is a property of the
+    TRANSPORT, not of the fitted DAC — both factors are compile-time constants
+    shared by the fan-in writer (``rust/jasper-fanin/src/config.rs``) and the
+    ioplug (``c/jts-ring-ioplug``), so every box's ring is the same size.
+
+    Deliberately not env-derived. ``JASPER_FANIN_RING_SLOTS`` exists, but the
+    ioplug takes its slot count from the conf.d block instead, and a disagreeing
+    pair fails the attach outright rather than resizing anything.
+
+    THIS FUNCTION IS ISSUE #2147's SEAM. That issue makes the slot size derive
+    from the DAC floor across all four components (fan-in, the ioplug, the
+    conf.d render, the Camilla emitter); the constant product below is what it
+    replaces with the box's real geometry. Landing it does not remove the
+    clamp in ``camilla_config_contract.resolve_camilla_latency_for_devices`` —
+    it makes the clamp stop biting, because a board that earns a bigger ring
+    would then report one here and its floor would fit.
+
+    The two are the same defect on different axes: #2147 is the PERIOD axis
+    (a DAC's declared ``outputd_period_frames`` cannot reach the ring), and the
+    clamp is the CHUNK axis (a DAC's declared ``camilla_chunksize`` reached the
+    ring when it could not fit). Note that #2147's stated mitigation — non-128
+    boxes "keep loopback coupling" — no longer exists: ADR-0100 left shm_ring
+    the only transport, which is why the chunk axis surfaced as a crash loop on
+    jts4 rather than as a fallback.
+    """
+
+    return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
 RING_CAMILLA_CHUNKSIZE = 128
 RING_CAMILLA_TARGET_LEVEL = 128
 RING_CAMILLA_QUEUELIMIT = 1

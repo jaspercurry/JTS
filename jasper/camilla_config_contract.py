@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+from jasper.fanin_coupling import (
+    RING_CAPTURE_DEVICE,
+    RING_PCM_DEVICES,
+    RING_PLAYBACK_DEVICE,
+    ring_capacity_frames,
+)
 
 
 # Capture is Ring A, aliased rather than respelled so the emitters' no-kwargs
@@ -293,6 +298,68 @@ def resolve_camilla_target_level(
         os.environ if env is None else env,
         profile_floor,
     )
+
+
+def resolve_camilla_latency_for_devices(
+    *,
+    capture_device: str,
+    playback_device: str | None,
+    chunksize: int | None = None,
+    target_level: int | None = None,
+) -> tuple[int, int]:
+    """The ``(chunksize, target_level)`` a graph between these devices needs.
+
+    A caller value passed here is returned untouched — the lab seam every
+    emitter already offers, and the half a caller leaves ``None`` is the only
+    half resolved. Filling both halves here rather than at each emitter keeps
+    "an explicit value wins" spelled once.
+
+    WHY A DEVICE DECIDES THIS. The DacProfile ``LatencyFloor`` sizes the DAC's
+    OWN buffer, and jasper-outputd is what feeds that buffer. CamillaDSP does
+    not: since ADR-0100 its chunk crosses THE RING, whose capacity is
+    ``RING_SLOT_FRAMES x DEFAULT_FANIN_RING_SLOTS`` frames — a compile-time
+    constant of the fan-in writer and the ioplug, identical on every box and
+    unrelated to which DAC is fitted. A chunk larger than that cannot be
+    negotiated at all: CamillaDSP exits with "Trying to set avail_min to N, must
+    be smaller than or equal to device buffer size of 256" and systemd
+    restart-loops it, which is silent deafness (AGENTS.md #6).
+
+    So a ring end CLAMPS the resolved chunk to what the ring can carry. It does
+    not replace the box's floor with the ring's certified geometry: jts.local
+    runs the Apple floor's 256 across this same ring healthily, so a floor that
+    already fits is the box's own tuning and is passed through untouched. Only a
+    floor the transport physically cannot serve is brought down — the InnoMaker
+    floor's 1024, which is what crash-looped jts4. Whether every ring graph
+    should instead run the certified ``RING_CAMILLA_*`` pair is a deliberate
+    retune of healthy boxes, not this clamp; the armed active path and the
+    fresh-install boot graph already pass that pair explicitly.
+
+    ``target_level`` is NOT clamped: it is the resampler's steady-state fill,
+    inert while ``enable_rate_adjust`` is false, and unconstrained by the ring's
+    capacity — jts.local carries 1536 over a 256-frame ring with no complaint.
+
+    ``playback_device=None`` is a CLOCKLESS sink (a ``File`` — the bonded
+    leader's snapserver FIFO, the parked graph's ``/dev/null``). It declares no
+    ALSA buffer, so a ring capture is then the only ALSA end and it governs.
+
+    A non-ring ALSA playback device keeps the box's floor whole even when
+    capture is Ring A, because that sink's own hardware buffer is what the
+    process must feed (pinned by the ALSA-lane control in
+    ``test_ring_reemit_carries_the_certified_ring_chunk_and_target``).
+    """
+
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+        governing_device = (
+            capture_device if playback_device is None else playback_device
+        )
+        if governing_device in RING_PCM_DEVICES:
+            chunksize = min(chunksize, ring_capacity_frames())
+    return chunksize, target_level
+
+
 # CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
 # JTS treats 0 dB as the hard software ceiling; source/headroom logic
 # should attenuate below this, never boost above full scale.

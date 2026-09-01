@@ -726,22 +726,34 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # the one lane nobody has measured on this board — a Zero 2 W whose own
     # outputd measurement above says it needs MORE slack, not less.
     #
-    # Where it applies at all: a shm_ring-coupled box takes its CamillaDSP
-    # geometry from RING_CAMILLA_CHUNKSIZE / RING_CAMILLA_TARGET_LEVEL (128/128,
-    # jasper.fanin_coupling), which apply_capture_precedence merges LAST over
-    # whatever this floor resolved. So the declared pair governs the LOOPBACK
-    # lane only — the fallback jts4 lands on if the ring disarms.
+    # Where it applies at all: NOT what this comment said until 2026-09-01. It
+    # claimed a shm_ring box always takes 128/128 from RING_CAMILLA_* because
+    # apply_capture_precedence merges them last, so the declared pair governed
+    # "the LOOPBACK lane only". Both halves were wrong, and the box that proved
+    # it was jts4. Only the callers that pass the ring set explicitly merge it;
+    # the ordinary sound emitters resolved chunk 1024 straight out of this
+    # floor and put it on jts_ring_playback, which CamillaDSP cannot open
+    # (avail_min 1024 > the ring's 256-frame buffer) — ten restarts, no audio.
+    # There is also no loopback lane to fall back to: ADR-0100 left shm_ring the
+    # only transport (VALID_COUPLINGS).
+    #
+    # What is true now: this pair reaches the ring like any other, and
+    # camilla_config_contract.resolve_camilla_latency_for_devices CLAMPS the
+    # chunk half to the ring's capacity there. So on the ring this board runs
+    # chunk 256, not the 1024 declared here; the declared pair governs in full
+    # only at a sink with its own buffer.
     #
     # TIGHTENS NOTHING IS NOT CHANGES NOTHING, and the difference is disclosed
     # rather than left in the word. The target_level move (2048 -> 4096) BUYS
     # cushion by SPENDING latency: at 48 kHz the resampler's steady-state fill
     # goes 42.7 ms -> 85.3 ms, so a box on the loopback fallback carries about
     # 42.7 ms more buffering than a floorless one. That is the trade, taken
-    # deliberately on a lane that is a fallback rather than the running path, and
-    # on the slowest board in the fleet. It does NOT reach the two places it
-    # would matter most: the ring lane runs 128/128 regardless
-    # (RING_CAMILLA_* wins there), and the chip-AEC reference tap is downstream
-    # of this stage, so no alignment artifact moves with it.
+    # deliberately on the slowest board in the fleet. target_level is NOT
+    # clamped on the ring (the ring's capacity does not bound the resampler's
+    # steady-state fill), so unlike the chunk half this move does reach the ring
+    # lane — the correction to the paragraph above applies here too. The
+    # chip-AEC reference tap is downstream of this stage either way, so no
+    # alignment artifact moves with it.
     #
     # Because it tightens nothing, this half needs no soak to be safe to ship.
     # What still needs one is any FUTURE TIGHTENING of it: moving chunksize below

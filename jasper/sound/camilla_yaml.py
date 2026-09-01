@@ -31,8 +31,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
-    resolve_camilla_chunksize,
-    resolve_camilla_target_level,
+    resolve_camilla_latency_for_devices,
 )
 from jasper.camilla_emit import (
     MONO_SUM_GAIN_DB,
@@ -452,15 +451,16 @@ def emit_sound_config(
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
     width = _normalize_width(width)
-    # CamillaDSP latency knobs (G7): None → env-or-default, resolved at call
-    # time so a JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} systemd override applies
-    # on the next regeneration. Unset env → the literal defaults (1024/2048), so
-    # the emitted YAML is byte-identical absent an opt-in. An explicit caller
-    # value still wins.
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
+    # emitted devices decide the fallback.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        # `is not None`, the same predicate the File-sink branch below decides
+        # on, so the sink this resolves against is the sink that gets emitted.
+        playback_device=None if playback_pipe_path is not None else playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     if channel_delays_ms is not None:
         if len(channel_delays_ms) != 2:
             raise ValueError("channel_delays_ms must be a (left_ms, right_ms) pair")
