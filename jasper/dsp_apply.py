@@ -454,6 +454,12 @@ def same_config_file(
     """
     if not left or not right:
         return False
+    # One spelling answers itself. ``resolve`` walks and stats every component,
+    # and the common case at every call site is two identical strings — the
+    # confirm step comparing what CamillaDSP reports against what was just
+    # handed to it, most of all.
+    if str(left) == str(right):
+        return True
     try:
         return Path(left).resolve() == Path(right).resolve()
     except (OSError, ValueError, RuntimeError):
@@ -788,17 +794,25 @@ async def _rollback(
     permanent red row on a speaker that is playing correctly.
     """
 
+    restore_error: str | None = None
+    in_place = False
+    if candidate_restore is not None:
+        # ``prepare`` wrote these bytes over a file that was already there, so
+        # putting them back is right whatever the prior path turns out to be —
+        # including when it could not be determined and the early return below
+        # would otherwise leave the rejected graph on disk.
+        restore_error = _restore_candidate_bytes(candidate_restore)
+        in_place = same_config_file(prior_config_path, candidate_restore[0])
+
     if not prior_config_path:
         return
     state.rollback_attempted = True
-    if candidate_restore is not None and same_config_file(
-        prior_config_path, candidate_restore[0]
-    ):
-        restore_error = _restore_candidate_bytes(candidate_restore)
-        if restore_error is not None:
-            state.rollback_succeeded = False
-            state.rollback_error = restore_error
-            return
+    if in_place and restore_error is not None:
+        # Only in place is the file itself the rollback target, so only there
+        # does failing to write it mean the rollback failed.
+        state.rollback_succeeded = False
+        state.rollback_error = restore_error
+        return
     try:
         ok = await load_config(prior_config_path)
     except Exception as e:  # noqa: BLE001
@@ -878,24 +892,33 @@ async def apply_dsp_config(
         sound_filter_count=sound_filter_count,
     )
 
-    # Declared out here so the restore below can run for the ways out that
-    # no branch inside the lock gets to name — cancellation above all, which
-    # is a BaseException the failure handlers deliberately do not catch.
-    candidate_restore: tuple[Path, str] | None = None
-    try:
-        async with _dsp_apply_lock(
-            lock,
-            timeout_s=lock_timeout_s,
-            source=source,
-        ):
+    async with _dsp_apply_lock(
+        lock,
+        timeout_s=lock_timeout_s,
+        source=source,
+    ):
+        # Declared before the ``try`` so the restore below can run for the ways
+        # out that no branch inside it gets to name — cancellation above all,
+        # which is a BaseException the failure handlers deliberately do not
+        # catch. Inside the lock, because a repair racing another writer's
+        # apply is the thing the lock exists to stop.
+        candidate_restore: tuple[Path, str] | None = None
+        try:
             # An apply whose candidate IS the graph already loaded rewrites that
             # file in place, which is the only shape whose rollback cannot be a
-            # re-load (see ``_rollback``). Keep the bytes while they are still the
-            # running graph's; ``prepare`` is what overwrites them. The read is a
-            # few KB and only happens when the candidate could be the prior graph,
-            # which is not knowable yet when the prior path is discovered later.
-            if prior_config_path is None or same_config_file(
-                prior_config_path, candidate
+            # re-load (see ``_rollback``). Keep the bytes while they are still
+            # the running graph's.
+            #
+            # Only when ``prepare`` is the writer: callers that emit the
+            # candidate BEFORE calling in would have this read capture the
+            # already-overwritten bytes, which restores nothing and costs a
+            # durable write to put back what is already there. The prior path
+            # may still be unknown here — it is discovered after ``prepare``, or
+            # handed over by it — so an unknown one reads, and ``_rollback``
+            # makes the in-place decision once the answer exists.
+            if prepare is not None and (
+                prior_config_path is None
+                or same_config_file(prior_config_path, candidate)
             ):
                 try:
                     candidate_restore = (candidate, candidate.read_text(encoding="utf-8"))
@@ -920,15 +943,20 @@ async def apply_dsp_config(
                 except Exception as e:  # noqa: BLE001
                     state.result = "prepare_failed"
                     state.prepare_error = str(e)
-                    # Nothing was loaded, so there is no graph to roll back — but a
-                    # prepare that failed PART WAY through leaves its half-written
-                    # graph on a file the box may already be running and will
-                    # certainly boot from. Give the file back what it had.
+                    # Nothing was loaded, so there is no graph to roll back — but
+                    # a prepare that failed PART WAY through leaves its
+                    # half-written graph on a file the box may already be running
+                    # and will certainly boot from. Give the file back what it had.
+                    #
+                    # Deliberately NOT ``rollback_attempted``: that field is what
+                    # ``cli/doctor/audio`` turns red, and a graph that was never
+                    # loaded cannot have failed to roll back. Recording one here
+                    # would re-create, on this path, the false permanent FAIL the
+                    # byte restore exists to remove.
                     if candidate_restore is not None:
-                        state.rollback_attempted = True
-                        restore_error = _restore_candidate_bytes(candidate_restore)
-                        state.rollback_succeeded = restore_error is None
-                        state.rollback_error = restore_error
+                        state.rollback_error = _restore_candidate_bytes(
+                            candidate_restore
+                        )
                     state.finished_at = _utc_now()
                     record_dsp_apply_state(state, state_path=state_path)
                     raise DspApplyError(f"DSP config preparation failed: {e}", state) from e
@@ -1052,32 +1080,62 @@ async def apply_dsp_config(
                 candidate=candidate,
             )
             return state
-    finally:
-        # ``state.result`` is still "in_progress" only when the apply left
-        # without settling on any outcome: cancelled, or an error class no
-        # handler here names. Everything else — success, and every
-        # ``DspApplyError`` — has already recorded its result and run whatever
-        # rollback it owed.
-        if candidate_restore is not None and state.result == "in_progress":
-            state.rollback_attempted = True
-            restore_error = _restore_candidate_bytes(candidate_restore)
-            state.rollback_succeeded = restore_error is None
-            state.rollback_error = restore_error
-            # Recorded BEFORE the reload: the reload re-raises the cancellation
-            # it rode in on, and a verdict written after it would never be
-            # written at all — leaving the doctor reading a stale ``/state``
-            # for a box that was in fact repaired.
-            record_dsp_apply_state(state, state_path=state_path)
-            if restore_error is None and state.phase in _PHASES_AFTER_LOAD_BEGINS:
-                # Lazy like the module's other active-speaker collaborators:
-                # module level would make a widely-imported apply path pull the
-                # active-speaker tree. Through the resilient runner rather than
-                # a bare ``asyncio.shield``, which lets a second cancellation
-                # past and detaches the restore mid-flight (ADR-0179).
-                from jasper.active_speaker.restore_wait import resilient_restore
+        finally:
+            # ``state.result`` is still "in_progress" only when the apply left
+            # without settling on any outcome: cancelled, or an error class no
+            # handler here names. Everything else — success, and every
+            # ``DspApplyError`` — has already recorded its result and run whatever
+            # rollback it owed.
+            if candidate_restore is not None and state.result == "in_progress":
+                state.rollback_attempted = True
+                restore_error = _restore_candidate_bytes(candidate_restore)
+                state.rollback_succeeded = restore_error is None
+                state.rollback_error = restore_error
+                # Recorded BEFORE the reload: the reload re-raises the cancellation
+                # it rode in on, and a verdict written after it would never be
+                # written at all — leaving the doctor reading a stale ``/state``
+                # for a box that was in fact repaired.
+                record_dsp_apply_state(state, state_path=state_path)
+                # The reload asks CamillaDSP to run the file again, so it is
+                # right only where that file is the graph it was already
+                # running. Anywhere else the candidate is a scratch name being
+                # abandoned, and loading it would move the box ONTO the apply
+                # that just failed instead of leaving it where it was.
+                if (
+                    restore_error is None
+                    and state.phase in _PHASES_AFTER_LOAD_BEGINS
+                    and same_config_file(state.prior_config_path, candidate)
+                ):
+                    # Lazy like the module's other active-speaker collaborators:
+                    # module level would make a widely-imported apply path pull the
+                    # active-speaker tree. Through the resilient runner rather than
+                    # a bare ``asyncio.shield``, which lets a second cancellation
+                    # past and detaches the restore mid-flight (ADR-0179).
+                    from jasper.active_speaker.restore_wait import resilient_restore
 
-                with contextlib.suppress(Exception):
-                    await resilient_restore(load_config(str(candidate_restore[0])))
+                    # A coroutine, because the runner hands it to
+                    # ``create_task``; ``load_config`` is declared as the wider
+                    # ``Awaitable``.
+                    async def _reload_restored() -> bool:
+                        return await load_config(str(candidate))
+
+                    reloaded = False
+                    with contextlib.suppress(Exception):
+                        reloaded = bool(await resilient_restore(_reload_restored()))
+                    # Named apart because "CamillaDSP rejected it" and "the
+                    # daemon is gone" both answer falsy, and a restore log that
+                    # cannot tell a recovery that happened from one that did not
+                    # asserts the first for both — #2198 is what that costs.
+                    log_event(
+                        logger,
+                        "dsp.apply",
+                        op_id=state.op_id,
+                        source=source,
+                        phase="rollback",
+                        result="restored" if reloaded else "not_reloaded",
+                        prior=str(candidate),
+                        level=logging.WARNING,
+                    )
 
 
 def _rollback_result(prefix: str, state: DspApplyState) -> str:

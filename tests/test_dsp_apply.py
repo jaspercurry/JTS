@@ -984,21 +984,32 @@ async def test_a_failed_prepare_leaves_the_candidate_as_it_was_found(tmp_path: P
             validate=_always_valid,
         )
 
-    assert excinfo.value.state.result == "prepare_failed"
+    state = excinfo.value.state
+    assert state.result == "prepare_failed"
     assert cfg.read_text() == pristine
     assert loaded == []
+    # No graph was loaded, so no rollback was attempted — the field the doctor
+    # turns red must stay clear for a failure that never reached the box.
+    assert state.rollback_attempted is False
 
 
 async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path):
     cfg = tmp_path / "candidate.yml"
     cfg.write_text("---\nrunning: true\n")
     pristine = cfg.read_text()
+    reload_saw: list[str] = []
 
     def prepare() -> None:
         cfg.write_text("---\nunproven: true\n")
 
     async def load(path: str) -> bool:
-        raise asyncio.CancelledError
+        # Only the first call is the cancelled apply; a second call is the
+        # recovery reload, and what it finds on disk is the whole question.
+        if not reload_saw:
+            reload_saw.append(cfg.read_text())
+            raise asyncio.CancelledError
+        reload_saw.append(cfg.read_text())
+        return True
 
     with pytest.raises(asyncio.CancelledError):
         await apply_dsp_config(
@@ -1013,6 +1024,51 @@ async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path
         )
 
     assert cfg.read_text() == pristine
+    # The reload ran, and by then the file was the graph the box had been
+    # running — not the unproven one the cancelled apply left there.
+    assert reload_saw == ["---\nunproven: true\n", pristine]
+
+
+async def test_a_cancelled_apply_never_loads_a_candidate_it_was_not_running(
+    tmp_path: Path,
+):
+    """The recovery reload is in-place only.
+
+    A candidate that is NOT the loaded graph is a scratch name being abandoned.
+    Loading it during recovery would move the box ONTO the apply that just
+    failed — the opposite of a rollback.
+    """
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nstale: true\n")
+    loaded: list[str] = []
+
+    def prepare() -> None:
+        cfg.write_text("---\nunproven: true\n")
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        raise asyncio.CancelledError
+
+    running = tmp_path / "running.yml"
+    running.write_text("---\nrunning: true\n")
+
+    async def current() -> str:
+        return str(running)
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_dsp_config(
+            source="sound",
+            candidate_path=cfg,
+            load_config=load,
+            get_current_config_path=current,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    assert loaded == [str(cfg)]
 
 
 async def test_confirm_accepts_another_spelling_of_the_loaded_file(tmp_path: Path):
