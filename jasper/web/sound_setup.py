@@ -2023,6 +2023,7 @@ async def _live_draft_profile(
     expected_dsp_write_epoch: str,
     library_path: str | Path | None = None,
     config_dir: str | Path,
+    profile_path: str | Path | None = None,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
     """Load a bounded preference-EQ draft into the active Camilla config.
@@ -2035,30 +2036,31 @@ async def _live_draft_profile(
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import carrier_for_loaded_config
-    from jasper.sound.profile import build_sound_filter_slots, load_profile
+    from jasper.sound.profile import build_sound_filter_slots
 
     cam = camilla_factory()
     config_path = Path(config_dir)
     settings = load_sound_settings()
-    # The trim is FROZEN for the editing session: it is derived from the SAVED
-    # profile, not the draft, so it cannot move while a household edits. Two
-    # reasons, and the second is the load-bearing one.
+    # The trim is derived from the SAVED profile, never from the draft, so an
+    # edit cannot move it. Match-loudness makes the trim a function of the
+    # profile's own EQ, so a draft-derived trim would fold into
+    # `active_baseline_headroom`'s VALUE and be written by PatchConfig — an
+    # instant, un-ducked, full-spectrum level step mid-drag — while its stereo
+    # twin `sound_preamp` is emitted only when the trim is positive, so it
+    # would add and remove a FILTER and force the ducked swap this path exists
+    # to avoid. The durable save realises any change across a swap that ducks
+    # anyway.
     #
-    # Match-loudness makes the trim a function of the draft's own EQ, so a live
-    # trim would fold into `active_baseline_headroom`'s VALUE and be written by
-    # PatchConfig — an instant, un-ducked, full-spectrum level step mid-drag on
-    # any trim-configured box. Its stereo twin is `sound_preamp`, which is
-    # emitted only when the trim is positive, so a moving trim would add and
-    # remove a FILTER and force the ducked swap this path exists to avoid.
-    # Freezing kills both: the trim is one number for the whole session, and
-    # the durable save realises any change across a swap that ducks anyway.
+    # NOT frozen for the session, which would be the stronger claim: `settings`
+    # is re-read above, so changing headroom_trim_db or match_loudness from the
+    # settings page still moves the trim and costs one swap. The property this
+    # buys is "not draft-derived", and that is the one the edit path needs.
     #
     # Safe because the trim is comfort accounting, not a clip guard —
     # `devices.volume_limit` stays the hard ceiling regardless
     # (`jasper.camilla_stereo_prefix`). The cost is that match-loudness stops
-    # tracking the draft until save; the comparison stays internally consistent
-    # because every draft in the session is heard at the same trim.
-    output_trim_db = _output_trim(load_profile(), settings)
+    # tracking the draft until save.
+    output_trim_db = _output_trim(load_profile(profile_path), settings)
     sound_filter_count = len(build_sound_filters(profile))
     try:
         loader = getattr(cam, "set_active_config_raw")
@@ -2157,20 +2159,15 @@ async def _live_draft_profile(
         )
         yaml = result.yaml
         plan = await _live_edit_plan(cam, yaml)
-        if plan.patch is None:
-            method = "active_config_raw"
-        elif plan.patch:
-            method = "patch_config"
-        else:
-            # The running graph already IS the wanted one. Writing it again
-            # would buy nothing and cost a ducked swap.
-            method = "unchanged"
+        method = plan.method
 
         try:
-            if method == "active_config_raw":
+            if plan.patch is None:
                 await loader(yaml, best_effort=False)
-            elif method == "patch_config":
+            elif plan.patch:
                 await cam.patch_config(plan.patch, best_effort=False)
+            # else: the running graph already IS the wanted one. Writing it
+            # again would buy nothing and cost a ducked swap.
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
                 reason=f"{method}_failed",
@@ -6243,6 +6240,7 @@ def _make_handler(
                                 expected_dsp_write_epoch=expected_epoch,
                                 library_path=library_path,
                                 config_dir=config_dir,
+                                profile_path=profile_path,
                                 camilla_factory=camilla_factory,
                             )
                         )

@@ -41,10 +41,10 @@ from jasper.camilla_emit import (
     fmt,
     mono_sum_sources,
 )
+from jasper.camilla_config_contract import FilterSpec
 from jasper.camilla_stereo_prefix import build_stereo_prefix
 
 from .profile import (
-    FilterSpec,
     SoundProfile,
     build_sound_filters,
 )
@@ -368,6 +368,16 @@ def emit_sound_config(
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
+    ``preference_filters`` overrides the list built from ``profile``.
+    ``None`` — the default, and what every DURABLE caller must pass — builds
+    ``build_sound_filters(profile)``, so a save is byte-identical to what
+    ``reconcile_current_dsp`` recomposes on the next deploy. Handing it
+    ``build_sound_filter_slots(profile)`` instead emits a slot per declared
+    band, neutral ones kept, which is the LIVE editing graph: its shape holds
+    still so an edit can be a parameter write. A durable path that passed the
+    slot list would move that byte comparison on every commissioned speaker and
+    displace the applied baseline (#2572).
+
     ``room_peqs_right`` is the multi-room leader-bake axis: a DIFFERENT
     room correction per channel in ONE config — channel 0 gets
     ``room_peqs`` (the leader's seat), channel 1 gets ``room_peqs_right``
@@ -543,9 +553,8 @@ def emit_sound_config(
         )
     program_dests = _program_dests(dest_map)
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
-    # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
-    # preference filters once and pass them in (it drops inactive specs);
-    # reuse the same list for the summary log below.
+    # room-PEQ -> headroom -> preamp -> preference assembly. Build the list once
+    # and reuse it for the summary log below.
     sound_filters = (
         build_sound_filters(profile)
         if preference_filters is None

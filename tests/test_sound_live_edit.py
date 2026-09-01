@@ -50,7 +50,7 @@ def test_a_number_moving_is_written_as_a_parameter(swap_in, swap_out):
     """Every continuous EQ control is a number, and numbers patch."""
     plan = plan_live_edit(RUNNING, RUNNING.replace(swap_in, swap_out))
 
-    assert plan.method == "patch"
+    assert plan.method == "patch_config"
     assert plan.reason == ""
     assert set(plan.patch) == {"filters"}
     # Only the filter that moved, and it carries its whole definition.
@@ -91,7 +91,7 @@ def test_a_number_moving_is_written_as_a_parameter(swap_in, swap_out):
 def test_anything_structural_falls_back_to_the_ducked_swap(wanted, reason):
     plan = plan_live_edit(RUNNING, wanted)
 
-    assert plan.method == "swap"
+    assert plan.method == "active_config_raw"
     assert plan.patch is None
     assert plan.reason == reason
 
@@ -108,7 +108,7 @@ def test_a_filter_the_running_graph_does_not_have_is_a_swap():
 
     plan = plan_live_edit(RUNNING, wanted)
 
-    assert plan.method == "swap"
+    assert plan.method == "active_config_raw"
     assert plan.reason == "filter_set_differs"
 
 
@@ -125,5 +125,5 @@ def test_two_bands_moving_together_patch_together():
 
     plan = plan_live_edit(RUNNING, wanted)
 
-    assert plan.method == "patch"
+    assert plan.method == "patch_config"
     assert set(plan.patch["filters"]) == {"sound_advanced_1", "sound_advanced_2"}

@@ -39,6 +39,13 @@ from typing import Any
 
 import yaml
 
+try:  # libyaml when the wheel carries it — this parses two full CamillaDSP
+    # configs per edit on a Pi, inside the DSP writer lock, so the pure-Python
+    # loader is the dominant cost of deciding patch-vs-swap.
+    from yaml import CSafeLoader as _Loader
+except ImportError:  # pragma: no cover - depends on the installed wheel
+    from yaml import SafeLoader as _Loader  # type: ignore[assignment]
+
 __all__ = ["LiveEditPlan", "plan_live_edit"]
 
 
@@ -57,13 +64,24 @@ class LiveEditPlan:
 
     @property
     def method(self) -> str:
+        """The route, in the vocabulary the log line and the payload use.
+
+        One name per route, derived once. Deriving it a second time at the call
+        site is how the two spellings drift, and a drift here is silent: the
+        edit simply stops being written while the response still says "live".
+        """
         if self.patch is None:
-            return "swap"
-        return "unchanged" if not self.patch else "patch"
+            return "active_config_raw"
+        return "patch_config" if self.patch else "unchanged"
+
+    @classmethod
+    def swap(cls, reason: str) -> "LiveEditPlan":
+        """Fall back to the ducked pipeline replace, and say why."""
+        return cls(None, reason)
 
 
 def _swap(reason: str) -> LiveEditPlan:
-    return LiveEditPlan(None, reason)
+    return LiveEditPlan.swap(reason)
 
 
 def _is_number(value: Any) -> bool:
@@ -97,7 +115,7 @@ def _parameters_only_moved(before: Any, after: Any) -> bool:
         # rebuilds the filter's shape, so it is a swap like any other.
         if not _is_number(current) or not _is_number(wanted):
             return False
-        if not math.isfinite(float(wanted)):
+        if not math.isfinite(wanted):
             return False
     return True
 
@@ -110,8 +128,8 @@ def plan_live_edit(
     if not running_yaml or not wanted_yaml:
         return _swap("graph_unreadable")
     try:
-        running = yaml.safe_load(running_yaml)
-        wanted = yaml.safe_load(wanted_yaml)
+        running = yaml.load(running_yaml, Loader=_Loader)
+        wanted = yaml.load(wanted_yaml, Loader=_Loader)
     except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
         return _swap("graph_unparseable")
     if not isinstance(running, Mapping) or not isinstance(wanted, Mapping):

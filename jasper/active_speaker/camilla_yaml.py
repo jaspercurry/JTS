@@ -2138,7 +2138,14 @@ def _emit_baseline_filter_definitions(
     # realized peak (#1808; it was the per-branch sum of positive gains until
     # 2026-07-28) — so what a household is told the correction costs is what
     # the speaker actually gives up. Pinned by a test.
-    trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
+    # Gated on a band that actually boosts, not on the list being non-empty:
+    # the LIVE editing graph carries a slot per declared band, so emptiness
+    # stopped meaning "this profile is flat".
+    trim_db = (
+        max(0.0, output_trim_db)
+        if any(spec.active() for spec in preference_filters)
+        else 0.0
+    )
     total_headroom_db = (
         baseline_headroom_db
         + total_positive_boost_db(room_peqs)
@@ -3984,9 +3991,10 @@ def emit_active_speaker_baseline_config(
     correction safety policy.
 
     ``preference_filters`` (Layer C) is the program-domain preference EQ band
-    list — the same ``FilterSpec`` objects ``build_sound_filters`` produces for
-    the stereo emitter. When non-empty, each ``.active()`` band is emitted on
-    the program channels [0, 1] strictly *before* the split mixer. Preference
+    list — the same ``FilterSpec`` objects the stereo emitter takes. Each band
+    is emitted VERBATIM on the program channels [0, 1] strictly *before* the
+    split mixer; dropping neutral ones is the caller's job, because the live
+    editing draft needs its idle slots kept. Preference
     boosts ride at unity, matching ``emit_sound_config``: the active graph keeps
     them safe by placing them upstream of every crossover/limiter/tweeter HP and
     preserving the 0 dB volume ceiling. The empty default keeps every existing
@@ -3995,9 +4003,9 @@ def emit_active_speaker_baseline_config(
     ``output_trim_db`` is the household's manual headroom + loudness-match
     attenuation (``jasper.sound.settings.output_trim_db``), folded into the same
     ``active_baseline_headroom`` gain so the active path honours it exactly like
-    ``emit_sound_config``. It is applied only when ``preference_filters`` is
-    non-empty (a flat profile can't clip from EQ and plays at unity), so the
-    default keeps the no-EQ baseline byte-identical.
+    ``emit_sound_config``. It is applied only when some band actually boosts (a
+    flat profile can't clip from EQ and plays at unity), so the default keeps
+    the no-EQ baseline byte-identical.
 
     ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver EQ/shelf stage
     the driver-linearization fit engine

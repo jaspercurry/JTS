@@ -719,13 +719,6 @@ def _simple_filters(simple: SimpleEq) -> tuple[FilterSpec, ...]:
     )
 
 
-# An unused advanced slot: a Peaking biquad at 0 dB, which is an exact identity
-# (its zeros cancel its poles). Frequency and Q are arbitrary because the filter
-# does nothing; they match what the editor gives a freshly added band, so taking
-# a slot into use is a change of numbers and not of the biquad's recipe.
-_IDLE_ADVANCED_SLOT = ("Peaking", 1000.0, 0.0, 1.0)
-
-
 def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]:
     """One slot per advanced band the editor can hold, always all of them.
 
@@ -740,15 +733,18 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     """
 
     specs = []
-    band_list = list(bands)
-    for i in range(1, MAX_PARAMETRIC_BANDS + 1):
-        band = band_list[i - 1] if i <= len(band_list) else None
-        if band is None or not band.enabled:
-            biquad_type, freq_hz, gain_db, q = _IDLE_ADVANCED_SLOT
-            specs.append(
-                FilterSpec(f"sound_advanced_{i}", biquad_type, freq_hz, gain_db, q=q)
-            )
-            continue
+    # An idle slot is a DEFAULT band, not a hand-copied spelling of one: a
+    # `ParametricBand()` is Peaking at 1 kHz, 0 dB, q=1 — an exact identity (its
+    # zeros cancel its poles), and the same thing the editor creates when a
+    # household adds a band. Taking a slot into use is then a change of numbers
+    # rather than of the biquad's recipe, which is what keeps it a patch. Spell
+    # it by construction so it cannot drift away from that promise.
+    declared = list(bands)[:MAX_PARAMETRIC_BANDS]
+    idle = ParametricBand()
+    padded = declared + [idle] * (MAX_PARAMETRIC_BANDS - len(declared))
+    for i, band in enumerate(padded, start=1):
+        if not band.enabled:
+            band = idle
         if band.biquad_type in {"Lowshelf", "Highshelf"}:
             # No steepness field: the emitter spells every shelf at SHELF_Q,
             # which is the Q _biquad_coeffs draws it at. A band-level Q here
@@ -784,18 +780,6 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     return tuple(specs)
 
 
-def _declared_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Every filter this profile declares, in canonical order."""
-
-    if not profile.enabled:
-        return ()
-    return (
-        *_curve_filters(profile.curve_id),
-        *_simple_filters(profile.simple_eq),
-        *_advanced_filters(profile.parametric_bands),
-    )
-
-
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     """Return active sound filters in canonical order.
 
@@ -804,7 +788,9 @@ def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     :func:`build_sound_filter_slots` is what the GRAPH holds.
     """
 
-    return tuple(spec for spec in _declared_sound_filters(profile) if spec.active())
+    return tuple(
+        spec for spec in build_sound_filter_slots(profile) if spec.active()
+    )
 
 
 def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
@@ -834,7 +820,13 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     nothing at all.
     """
 
-    return _declared_sound_filters(profile)
+    if not profile.enabled:
+        return ()
+    return (
+        *_curve_filters(profile.curve_id),
+        *_simple_filters(profile.simple_eq),
+        *_advanced_filters(profile.parametric_bands),
+    )
 
 
 # The clamp floor _biquad_coeffs applies to eff_q below, and the smallest Q
