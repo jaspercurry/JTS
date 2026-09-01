@@ -206,14 +206,23 @@ def build_stereo_prefix(
     # list being non-empty: the LIVE editing graph carries a slot per declared
     # band so its shape can hold still, and an all-flat draft must still play
     # at unity or the preview stops predicting what a save will sound like.
-    trim_db = (
-        max(0.0, float(output_trim_db))
-        if any(spec.active() for spec in sound_filters)
-        else 0.0
-    )
-    if trim_db > 0.0:
-        lines.extend(emit_gain_filter("sound_preamp", -trim_db))
-        tail_names.append("sound_preamp")
+    # The trim is a NUMBER, never a filter's presence. It used to be gated on
+    # the profile doing something ("a flat profile can't clip from EQ, so it
+    # plays at unity"), which made `sound_preamp` appear and disappear as a gain
+    # crossed the flat window — a structural change, and CamillaDSP rebuilds the
+    # filter group and resets every filter's state across one. Emitting it
+    # always, at 0 dB when no trim is configured, makes that crossing a
+    # parameter write like every other EQ gesture.
+    #
+    # The dropped promise, stated because it is user-visible: a configured
+    # headroom trim now attenuates even while the profile is flat, where it
+    # previously did not. `devices.volume_limit` remains the hard clip guard
+    # either way; the trim is comfort accounting.
+    trim_db = max(0.0, float(output_trim_db))
+    # -0.0 formats as "-0.0000", which would make two graphs that are the same
+    # number look like different bytes to every comparison downstream.
+    lines.extend(emit_gain_filter("sound_preamp", -trim_db if trim_db else 0.0))
+    tail_names.append("sound_preamp")
     for spec in sound_filters:
         lines.extend(emit_filter_spec(spec))
         tail_names.append(spec.name)

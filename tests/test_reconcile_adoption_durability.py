@@ -133,13 +133,22 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
 ):
     """THE DoD PIN (#2572): mid-series adoption survives a deploy.
 
-    Saved intent is unchanged, so the recompose reproduces the candidate the
-    speaker is already playing. Pre-fix this wrote those same bytes to
-    ``sound_current.yml`` and re-pointed CamillaDSP at it; the applied record
-    was then displaced from the statefile and the round lost its entry graph.
+    What must survive is the ANCHOR, not the bytes. Pre-fix, a reconcile wrote
+    the graph to ``sound_current.yml`` and re-pointed CamillaDSP at it, so the
+    applied record was displaced from the statefile and the round lost its
+    entry graph.
+
+    Both halves are pinned here, because the fixed frame separated them. A
+    deploy that CHANGES the emitted graph — the frame migration is exactly such
+    a deploy — reports ``reconciled`` and rewrites the candidate IN PLACE; the
+    statefile keeps naming it and the record stays authoritative. The pass
+    after that reports ``unchanged`` and writes nothing at all. A regression in
+    either direction (a second name appearing, or saved intent never reaching
+    the speaker) fails here.
     """
     candidate, config_dir, camilla = _reigning_candidate_box(tmp_path, monkeypatch)
     before = candidate.read_bytes()
+    dsp_state_before = None
 
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(), profile_path)
@@ -151,15 +160,45 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
         camilla_factory=lambda: camilla,
     )
 
-    assert payload["status"] == "unchanged", payload
     assert payload["carrier_kind"] == "active"
     assert payload["current_config_path"] == str(candidate)
+    # THE INVARIANT: whatever happened to the bytes, the anchor did not move.
+    assert not (config_dir / "sound_current.yml").exists()
+    assert camilla.loaded_path in (None, str(candidate))
 
-    # Nothing was written and nothing was loaded.
+    if payload["status"] == "reconciled":
+        # Migration pass: the emitted graph changed, so it was refreshed over
+        # the candidate ITSELF rather than appearing under a second name.
+        assert camilla.loaded_path == str(candidate)
+        assert payload["candidate_config_path"] == str(candidate)
+        # Settle to steady state before the no-op assertions below.
+        camilla.loaded_path = None
+        caplog.clear()
+        before = candidate.read_bytes()
+        # The migration pass applied for real, so it legitimately recorded apply
+        # state. What the settled pass must not do is write anything NEW.
+        dsp_state_before = (
+            (tmp_path / "dsp.json").read_bytes()
+            if (tmp_path / "dsp.json").exists()
+            else None
+        )
+        payload = await reconcile_current_dsp(
+            profile_path=profile_path,
+            config_dir=config_dir,
+            camilla_factory=lambda: camilla,
+        )
+
+    # Steady state: nothing written and nothing loaded.
+    assert payload["status"] == "unchanged", payload
     assert camilla.loaded_path is None
     assert not (config_dir / "sound_current.yml").exists()
     assert candidate.read_bytes() == before
-    assert not (tmp_path / "dsp.json").exists()
+    dsp_state_after = (
+        (tmp_path / "dsp.json").read_bytes()
+        if (tmp_path / "dsp.json").exists()
+        else None
+    )
+    assert dsp_state_after == dsp_state_before
 
     # THE CONSEQUENCE THE ISSUE IS ABOUT: the record still names what the
     # speaker plays, so the round can still name its own entry graph.
@@ -187,20 +226,31 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
 async def test_changed_intent_still_re_emits_over_a_kept_candidate(
     tmp_path: Path, monkeypatch,
 ):
-    """The other direction: the no-op is about CONTENT, not about the carrier.
+    """The other direction: changed intent still reaches the speaker.
 
     Same box, same kept candidate — but the household has since saved a +6 dB
     bass preference, so the recomposed graph is genuinely different from what
-    the speaker is playing. The reconcile must write and load it exactly as
-    before; a fix that made the active carrier unconditionally quiet would
-    strand saved intent that was never applied.
+    the speaker is playing. The reconcile must write and load it; a fix that
+    made the active carrier unconditionally quiet would strand saved intent
+    that was never applied.
 
-    The record IS displaced afterwards, and that verdict is HONEST rather than a
-    regression: the speaker really did move to a graph the record does not name,
-    which is the state ``applied_profile_displacement`` exists to report. What
-    #2572 removed is the displacement that reported a move that never happened.
+    It is written back over the CANDIDATE, and the record stays authoritative.
+    This is the half of #2572 that changed with the fixed frame. The old
+    behaviour wrote the refresh under ``sound_current.yml`` and called the
+    resulting displacement honest, on the reasoning that the speaker had moved
+    to a graph the record does not name. Two things make re-anchoring the
+    better reading: the candidate ALREADY carries the household's preference EQ
+    (``_recompose_active_baseline_with_eq`` inserts it, and the no-op check
+    above compares against a recompose that includes it), so the record never
+    named an EQ-free graph; and the candidate's filename is a fingerprint of
+    its SOURCE inputs, not of its emitted bytes, so refreshing the content
+    leaves the name still describing what it was built from. The practical
+    consequence is that a crossover-v2 round keeps its entry graph across an EQ
+    save instead of losing it.
     """
     candidate, config_dir, camilla = _reigning_candidate_box(tmp_path, monkeypatch)
+
+    before = candidate.read_text(encoding="utf-8")
 
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=6.0)), profile_path)
@@ -213,10 +263,17 @@ async def test_changed_intent_still_re_emits_over_a_kept_candidate(
 
     assert payload["status"] == "reconciled", payload
     assert payload["carrier_kind"] == "active"
-    emitted = config_dir / "sound_current.yml"
-    assert camilla.loaded_path == str(emitted)
-    assert emitted.exists()
-    assert emitted.read_text(encoding="utf-8") != candidate.read_text(encoding="utf-8")
+    # Written back over the candidate, not under a second name.
+    assert camilla.loaded_path == str(candidate)
+    assert not (config_dir / "sound_current.yml").exists()
+    emitted = candidate.read_text(encoding="utf-8")
+    assert emitted != before
     # The saved preference actually reached the graph (the re-emit is not just
     # a different-looking copy of the same DSP).
-    assert "sound_simple_bass" in emitted.read_text(encoding="utf-8")
+    assert "sound_simple_bass" in emitted
+    # And the anchor held, so the round can still name its own entry graph.
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+
+    assert applied_profile_displacement(load_applied_baseline_profile_state()) == ""

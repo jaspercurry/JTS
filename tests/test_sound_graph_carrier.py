@@ -49,7 +49,7 @@ from jasper.sound.graph_carrier import (
 from jasper.sound.profile import (
     SimpleEq,
     SoundProfile,
-    build_sound_filters,
+    build_sound_filter_slots,
     save_profile,
 )
 from jasper.sound.runtime import materialise_saved_dsp_on_carrier
@@ -826,7 +826,7 @@ def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
     from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
 
     with mock.patch(
-        "jasper.sound.profile.build_sound_filters", return_value=()
+        "jasper.sound.profile.build_sound_filter_slots", return_value=()
     ), mock.patch(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
         return_value={"status": "applied"},
@@ -921,7 +921,7 @@ def test_active_recompose_threads_exact_desired_bass_evidence_and_publishes(
             profile=evaluated_profile,
         ),
     ), mock.patch(
-        "jasper.sound.profile.build_sound_filters",
+        "jasper.sound.profile.build_sound_filter_slots",
         return_value=(),
     ), mock.patch(
         "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
@@ -972,7 +972,7 @@ def test_active_recompose_refuses_unsafe_graph_before_publishing(tmp_path) -> No
         "jasper.bass_extension.profile.evaluate_bass_extension_profile",
         return_value=SimpleNamespace(status="accepted", profile=profile),
     ), mock.patch(
-        "jasper.sound.profile.build_sound_filters",
+        "jasper.sound.profile.build_sound_filter_slots",
         return_value=(),
     ), mock.patch(
         "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
@@ -1104,7 +1104,7 @@ def test_bass_extension_recompose_preserves_exact_program_overlays(
         topology,
         applied_profile=applied,
         room_peqs=room_peqs,
-        preference_filters=build_sound_filters(preference),
+        preference_filters=build_sound_filter_slots(preference),
         output_trim_db=output_trim_db(preference, settings),
     )
     assert issues == []
@@ -1153,7 +1153,7 @@ def test_bass_extension_recompose_refuses_program_overlay_reset(
     current, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        preference_filters=build_sound_filters(selected_preference),
+        preference_filters=build_sound_filter_slots(selected_preference),
         output_trim_db=output_trim_db(selected_preference, selected_settings),
     )
     assert issues == []
@@ -1221,7 +1221,7 @@ async def test_bass_apply_refuses_unreproducible_predecessor_before_mutation(
     current, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        preference_filters=build_sound_filters(preference),
+        preference_filters=build_sound_filter_slots(preference),
         output_trim_db=output_trim_db(preference, settings),
     )
     assert issues == []
@@ -1684,7 +1684,7 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path)
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
         return_value=applied,
     ), mock.patch(
-        "jasper.sound.profile.build_sound_filters", return_value=(),
+        "jasper.sound.profile.build_sound_filter_slots", return_value=(),
     ):
         with pytest.raises(CarrierCannotHostEq) as err:
             _recompose_active_baseline_with_eq(

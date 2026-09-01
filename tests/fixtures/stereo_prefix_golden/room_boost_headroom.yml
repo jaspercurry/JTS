@@ -56,6 +56,9 @@ filters:
   room_headroom:
     type: Gain
     parameters: { gain: -3.0000, inverted: false, mute: false }
+  sound_preamp:
+    type: Gain
+    parameters: { gain: 0.0000, inverted: false, mute: false }
 
 mixers:
   master_gain:
@@ -71,7 +74,7 @@ pipeline:
     name: master_gain
   - type: Filter
     channels: [0]
-    names: [room_peq_1, room_peq_2, room_peq_3, room_headroom, flat]
+    names: [room_peq_1, room_peq_2, room_peq_3, room_headroom, sound_preamp, flat]
   - type: Filter
     channels: [1]
-    names: [room_peq_1, room_peq_2, room_peq_3, room_headroom, flat]
+    names: [room_peq_1, room_peq_2, room_peq_3, room_headroom, sound_preamp, flat]

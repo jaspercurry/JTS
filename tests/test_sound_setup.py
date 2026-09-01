@@ -6816,7 +6816,10 @@ async def test_apply_profile_no_trim_by_default_so_boosts_boost(
 
     generated = Path(fake.loaded_path).read_text()
     assert "sound_simple_bass:" in generated
-    assert "sound_preamp" not in generated  # default: boosts boost
+    # Default: boosts boost. The preamp is always DEFINED so its presence never
+    # depends on a value, and it is inert at 0 dB.
+    assert "  sound_preamp:" in generated
+    assert "gain: 0.0000" in generated
     assert payload["output_trim_db"] == 0
 
 
@@ -7515,8 +7518,10 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert len(fake.active_raw_values) == 1
     assert "sound_curve_harman_bass:" in fake.active_raw_values[0]
     assert "room_peq_1:" in fake.active_raw_values[0]
-    # Default settings -> no output trim, so boosts boost (no global preamp).
-    assert "sound_preamp" not in fake.active_raw_values[0]
+    # Default settings -> no output trim, so boosts boost. The preamp is
+    # always DEFINED (its presence must not depend on a value) and inert.
+    assert "  sound_preamp:" in fake.active_raw_values[0]
+    assert "gain: 0.0000" in fake.active_raw_values[0]
     assert payload["live_status"] == "live"
     assert payload["live_method"] == "active_config_raw"
     assert payload["dsp_write_epoch"] == "epoch-1"
@@ -7670,10 +7675,14 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     second = await _live(fake, loud, config_dir)
     after_loud = fake.running
 
-    # Saved intent is flat, so the frozen trim is 0 and no preamp is emitted --
-    # for EITHER draft. A live trim would have added one for the loud draft.
-    assert "sound_preamp" not in after_quiet
-    assert "sound_preamp" not in after_loud
+    # The preamp is always present; what must not move is its GAIN. A
+    # draft-derived trim would have turned the loud draft down.
+    def _preamp_gain(text):
+        import yaml as _yaml
+
+        return _yaml.safe_load(text)["filters"]["sound_preamp"]["parameters"]["gain"]
+
+    assert _preamp_gain(after_quiet) == _preamp_gain(after_loud)
     # Same filter set both times, so the edit is a parameter write and the
     # broadband gain never steps.
     import yaml as _yaml

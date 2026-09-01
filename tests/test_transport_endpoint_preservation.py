@@ -449,9 +449,9 @@ async def test_reconcile_current_dsp_is_byte_identical_to_the_default_recompose(
 
 
 def _preference_filters(profile_path: Path):
-    from jasper.sound.profile import build_sound_filters, load_profile
+    from jasper.sound.profile import build_sound_filter_slots, load_profile
 
-    return build_sound_filters(load_profile(profile_path))
+    return build_sound_filter_slots(load_profile(profile_path))
 
 
 # --------------------------------------------------------------------------

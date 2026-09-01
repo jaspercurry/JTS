@@ -300,6 +300,7 @@ async def load_profile_config(
     audition: bool = False,
     output_trim_db: float = 0.0,
     profile_id: str | None = None,
+    out_path: str | Path | None = None,
 ) -> tuple[Any, Path, SoundProfile]:
     """Render and load ``profile`` on top of the currently loaded DSP graph.
 
@@ -326,10 +327,25 @@ async def load_profile_config(
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
+    # ``out_path`` names the file this render is written to. The default is the
+    # household's own ``sound_current.yml`` (or the audition preview). The
+    # reconcile overrides it to RE-ANCHOR: a speaker running a kept
+    # active-crossover candidate must keep running THAT file, so a refreshed
+    # graph is written back over it rather than appearing under a second name
+    # and displacing the applied-profile record from the statefile (#2572). Safe
+    # to rewrite in place because the candidate's filename is a fingerprint of
+    # its SOURCE inputs, not a hash of its emitted bytes
+    # (:func:`jasper.active_speaker.baseline_profile._source_payload`), and the
+    # content is recomposed from the same immutable applied-profile snapshot —
+    # so the name still describes what the file was built from.
     out_path = (
-        sound_audition_config_path(config_path)
-        if audition
-        else sound_config_path(config_path)
+        Path(out_path)
+        if out_path is not None
+        else (
+            sound_audition_config_path(config_path)
+            if audition
+            else sound_config_path(config_path)
+        )
     )
     pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
     if (
@@ -526,6 +542,20 @@ async def reconcile_current_dsp(
                 }
             )
 
+        # RE-ANCHOR, don't displace. The bytes differ, so this box does need a
+        # refreshed graph — but a speaker running a kept active-crossover
+        # candidate must keep running THAT file. Writing the refresh under
+        # ``sound_current.yml`` instead is what moves the statefile off the
+        # candidate, leaves the applied record and the statefile disagreeing on
+        # a pure path compare, and costs a crossover-v2 round its entry graph
+        # (#2572). The equality short-circuit above used to be the whole defence
+        # and only held while the emitted content never changed; this holds when
+        # it does.
+        reanchor_path = (
+            current_path
+            if dry.carrier_kind == "active" and not _paths_match(current_path, out_path)
+            else None
+        )
         apply_state, applied_path, _ = await load_profile_config(
             profile,
             profile_path=profile_path,
@@ -535,6 +565,7 @@ async def reconcile_current_dsp(
             persist_profile=False,
             output_trim_db=trim_db,
             profile_id=RECONCILE_PROFILE_ID,
+            out_path=reanchor_path,
         )
     return _log_reconcile_result(
         {

@@ -811,13 +811,18 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     exactly as the editor spells a freshly added band, so taking a slot into
     use writes nothing at all.
 
-    **The LIVE draft takes this list; the durable path must not.** What a save
-    writes is compared byte-for-byte against the running graph by
-    ``reconcile_current_dsp`` on every deploy, and a mismatch makes it write
-    ``sound_current.yml`` and repoint CamillaDSP away from a commissioned
-    candidate — the displacement #2572 closed. So idle slots exist only for the
-    duration of an editing session, and cost a household that is not editing
-    nothing at all.
+    **Every emitter takes this list, live and durable alike.** The graph is one
+    fixed frame: a household's EQ gestures move numbers inside a structure that
+    never changes, and only commissioning restructures it. The alternative —
+    a lean durable graph and a slotted editing graph — buys a byte-identical
+    reconcile at the price of two shapes for one profile, an editor "mode", and
+    a swap entering and leaving it. ``reconcile_current_dsp`` re-anchors a
+    commissioned candidate in place instead (#2572 is about not moving the
+    ANCHOR, not about never changing the content).
+
+    The standing cost is 13 identity biquads per channel, measured at +0.43
+    percentage points of CamillaDSP processing load against a bypassed control
+    (0.451 % -> 0.877 %) on a path already running a crossover and a limiter.
     """
 
     if not profile.enabled:

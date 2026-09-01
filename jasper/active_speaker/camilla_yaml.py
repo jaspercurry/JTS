@@ -2138,14 +2138,14 @@ def _emit_baseline_filter_definitions(
     # realized peak (#1808; it was the per-branch sum of positive gains until
     # 2026-07-28) — so what a household is told the correction costs is what
     # the speaker actually gives up. Pinned by a test.
-    # Gated on a band that actually boosts, not on the list being non-empty:
-    # the LIVE editing graph carries a slot per declared band, so emptiness
-    # stopped meaning "this profile is flat".
-    trim_db = (
-        max(0.0, output_trim_db)
-        if any(spec.active() for spec in preference_filters)
-        else 0.0
-    )
+    # A NUMBER, never a gate. `active_baseline_headroom` is always emitted, so
+    # folding the trim into its value keeps a flat-window crossing a parameter
+    # write; gating it on the profile doing something would step this gain by
+    # the whole trim, un-ducked, the moment a band crossed +-0.05 dB. Matches
+    # the stereo path's `sound_preamp`, which is emitted unconditionally for
+    # the same reason. The user-visible consequence is the same there: a
+    # configured trim attenuates even while the profile is flat.
+    trim_db = max(0.0, output_trim_db)
     total_headroom_db = (
         baseline_headroom_db
         + total_positive_boost_db(room_peqs)
