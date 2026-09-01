@@ -1759,7 +1759,7 @@ def _gcc_correlation(
     ``i <= m/2`` else ``i - m``; native lag = index / ``upsample``). The
     cross-power is phase-transform weighted **only inside ``band_hz``**
     (whitening the near-zero out-of-band bins otherwise piles a spurious peak
-    near zero lag). Shared core of :func:`_gcc_phat` (global-peak seed) and
+    near zero lag). Shared core of :func:`gcc_phat` (global-peak seed) and
     :func:`_gcc_local_peak_snap` (anchor-gated fine snap), so both read one
     correlation formula rather than two that could silently drift apart.
     """
@@ -1783,7 +1783,7 @@ def _gcc_correlation(
     return cc, m
 
 
-def _gcc_phat(
+def gcc_phat(
     a: np.ndarray,
     b: np.ndarray,
     *,
@@ -1853,7 +1853,7 @@ def _gcc_local_peak_snap(
     """Snap ``anchor_lag_samples`` to the nearest local maximum of the
     band-limited GCC-PHAT correlation of ``a`` vs ``b`` within ±``radius_samples``.
 
-    Reuses the exact upsampled phase-transform machinery of :func:`_gcc_phat`
+    Reuses the exact upsampled phase-transform machinery of :func:`gcc_phat`
     (via the shared :func:`_gcc_correlation` core) and the same ±1-bin
     :func:`_parabolic_peak` sub-sample refine. Returns the refined native lag of
     the nearest genuine interior local maximum of the correlation MAGNITUDE — an
@@ -3404,7 +3404,7 @@ def _estimate_alignment(
     length = min(ir_w.size, ir_t.size)
     ir_w, ir_t = ir_w[:length], ir_t[:length]
 
-    lag_samples, polarity_sign, confidence, at_edge = _gcc_phat(
+    lag_samples, polarity_sign, confidence, at_edge = gcc_phat(
         ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
         upsample=GCC_UPSAMPLE, max_lag_samples=max_lag,
     )

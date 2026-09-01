@@ -79,6 +79,9 @@ order — so this list is what exists, not a plan:
   layout those two readers open, out of WAVs and records the bundle already has.
 * :mod:`.feature_classifier` — what KIND of feature is that, measured from a
   round's own banked captures.
+* :mod:`.close_reference` — a close capture corrected to the far distance,
+  sub-sample aligned and subtracted, so each spec band says whether the far
+  read was the speaker or the room.
 * :mod:`.feature_classification` — what KIND of feature is that, read from a
   banked verdict and nothing else.
 * :mod:`.refusal_copy` — what the household is told when a round refuses: the

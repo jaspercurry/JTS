@@ -118,7 +118,7 @@ from jasper.audio_measurement.program_analysis import (
     _gate_floor_hz,
     _gcc_correlation,
     _gcc_local_peak_snap,
-    _gcc_phat,
+    gcc_phat,
     _global_offset,
     _locate_segments,
     _n_fft_for,
@@ -1979,12 +1979,12 @@ def test_locator_robust_to_large_global_offset():
 # --------------------------------------------------------------------------- #
 
 
-def test_gcc_phat_sign_convention():
+def testgcc_phat_sign_convention():
     # A ≈ B shifted right by +lag: build st = sw delayed by 30 samples.
     base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
     sw = base
     st = np.roll(base, 30)  # tweeter LATER by 30 samples
-    lag, sign, conf, at_edge = _gcc_phat(
+    lag, sign, conf, at_edge = gcc_phat(
         st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -1992,7 +1992,7 @@ def test_gcc_phat_sign_convention():
     assert sign == 1
     assert not at_edge
     # Inverting the tweeter flips the correlation sign.
-    lag2, sign2, _conf2, _edge2 = _gcc_phat(
+    lag2, sign2, _conf2, _edge2 = gcc_phat(
         -st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -2003,7 +2003,7 @@ def test_gcc_phat_sign_convention():
 def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
     """Two NaN blocks, pinned — a downstream gate's equivalence rests on them.
 
-    ``_gcc_phat``'s confidence flows into ``ProgramAnalysis.alignment.confidence``,
+    ``gcc_phat``'s confidence flows into ``ProgramAnalysis.alignment.confidence``,
     which MEASURE screens with ``alignment_confidence_ok`` (``crossover_v2_flow``:
     ``confidence >= ALIGNMENT_CONFIDENCE_TRUST_FLOOR``). That phrasing and its
     negation are only interchangeable while the value is a real number: ``NaN``
@@ -2029,7 +2029,7 @@ def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
     assert cc.size == m
     assert np.all(np.isfinite(cc)), "the magnitude clamp is what keeps this finite"
 
-    _lag, _sign, conf, _at_edge = _gcc_phat(
+    _lag, _sign, conf, _at_edge = gcc_phat(
         silence, silence, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -2039,7 +2039,7 @@ def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
     # And on a real capture the same expression stays inside [0, 1], so the
     # comparison against the trust floor is total in both directions.
     base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
-    _l, _s, real_conf, _e = _gcc_phat(
+    _l, _s, real_conf, _e = gcc_phat(
         np.roll(base, 30), base, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -2130,7 +2130,7 @@ def test_gcc_local_peak_snap_stays_near_anchor_despite_taller_far_peak():
     radius = SR / fc_hz * GCC_SNAP_RADIUS_PERIODS
 
     # The GLOBAL correlation peak sits on the taller far feature...
-    global_lag, _sign, _conf, _edge = _gcc_phat(
+    global_lag, _sign, _conf, _edge = gcc_phat(
         tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
         upsample=GCC_UPSAMPLE, max_lag_samples=200,
     )
