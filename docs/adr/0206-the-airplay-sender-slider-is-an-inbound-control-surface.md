@@ -147,3 +147,12 @@ for one concern is the failure mode ADR-0176 was written to prevent;
   "drop it" is a rejected write: `last` advances only on a 2xx, so a 409 or
   a timeout retries the same value on the next pass rather than being
   recorded as delivered.
+- **2026-09-01, from the hardware run: session start is a fade-up, not one
+  message.** The connect-time push this ADR expected to watch arrived on jts3
+  as ~10 messages 200 ms apart, animating the sender's slider from the bottom
+  of its scale up to the level the user had actually left it at; replaying it
+  walked the master ~28 dB down and back over two seconds. While the
+  session-start marker is present the hook now waits for that burst to settle
+  — two unchanged 200 ms passes — and adopts the settled level in one post,
+  still flagged `observation_initial`. A sender's nudge, and the same ramp
+  shape on mute→unmute, carry no marker and still track step by step.
