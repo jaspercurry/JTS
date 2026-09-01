@@ -80,6 +80,35 @@ def test_ioplug_geometry_is_fixed_min_equals_max():
     _ioplug_advertises_period_and_periods_fixed()
 
 
+def test_playback_scrubs_the_emulated_mmap_area():
+    """The playback ioplug must hand alsa-lib's mmap area back as zero (#3443).
+
+    That area is alsa-lib's own ``malloc``, zeroed neither at allocation nor at
+    prepare, and a converting ``plug`` chain commits whole periods whose head or
+    tail the converter need not have written — the remainder reached the ring as
+    full-scale samples. Two scrubs answer it: ``transfer`` zeroes the frames it
+    just copied out, so the next writer to reach them finds silence, and
+    ``prepare`` zeroes the whole area, which is the edge a flush restarts on.
+
+    Pinned against the source because neither scrub has a hardware-free runtime
+    surface: ``pcm_jts_ring.c`` is compiled only by ``make plugin`` (libasound),
+    and reaching ``transfer`` needs a live ALSA open.
+    """
+    src = IOPLUG_C.read_text(encoding="utf-8")
+    assert re.search(
+        r"memset\(src,\s*0,\s*\(size_t\)size\s*\*\s*fb\);",
+        src,
+    ), "jts_ring_transfer must zero the frames it copied out of the mmap area"
+    assert re.search(
+        r"if\s*\(p->mmap_base\)\s*memset\(p->mmap_base,\s*0,\s*p->mmap_bytes\);",
+        src,
+    ), "jts_ring_prepare must scrub the whole emulated mmap area"
+    assert re.search(
+        r"p->mmap_base\s*=\s*NULL;",
+        src,
+    ), "hw_params must drop the cached base — alsa-lib may reallocate the area"
+
+
 def test_ring_a_default_slots_match_conf_d_and_ioplug_period():
     period_frames = ring_assets.ring_conf_period_frames(str(CONF_D))
     n_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(CONF_D))

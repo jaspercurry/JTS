@@ -206,6 +206,13 @@ typedef struct {
     uint8_t *stage;
     size_t stage_frames;
     size_t stage_capacity_frames; // == period_frames
+    // PLAYBACK only: the emulated mmap area alsa-lib hands `transfer` (mmap_rw=0
+    // means alsa-lib owns it, not us). Cached on first transfer so `prepare` can
+    // scrub the whole ring — a region alsa-lib never zeroes and that a converting
+    // `plug` chain can over-commit. NULL until the first transfer of a hw_params
+    // cycle, and cleared by hw_params because the area may be reallocated. #3443.
+    uint8_t *mmap_base;
+    size_t mmap_bytes;
     // Total frames ACCEPTED from / DELIVERED to the app (== ALSA appl_ptr).
     // Playback: frames written by the app. Capture: frames read by the app. The
     // pointer callbacks derive the honest hw_ptr from this ± in-flight/readable.
@@ -352,6 +359,13 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     // can transfer while still PREPARED, and an unarmed bucket does not pace it.
     p->stage_frames = 0;
     p->appl_frames = 0;
+    // Scrub the emulated mmap area (#3443). shairport's flush is drop+prepare, so
+    // this is the edge at which a converting `plug` chain restarts mid-buffer and
+    // its first commit can carry frames the converter never wrote. Zeroing here
+    // means that remainder is silence rather than whatever the last run left.
+    // Only reachable once a transfer has taught us the base; the very first
+    // commit after hw_params is therefore still alsa-lib's malloc to answer for.
+    if (p->mmap_base) memset(p->mmap_base, 0, p->mmap_bytes);
     jts_ring_pointer_prepare(&p->ptr_state, p->pace_nominal,
                              io->stream == SND_PCM_STREAM_PLAYBACK,
                              jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
@@ -459,8 +473,14 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
     // — and it agrees with frame_bytes(p) because the HW constraints advertise
     // exactly the conf-declared format and channel count.
     const size_t fb = frame_bytes(p);
-    const uint8_t *src = (const uint8_t *)areas[0].addr + (areas[0].first / 8) +
-                         (size_t)offset * (areas[0].step / 8);
+    uint8_t *base = (uint8_t *)areas[0].addr + (areas[0].first / 8);
+    uint8_t *src = base + (size_t)offset * (areas[0].step / 8);
+    // Same contiguity the per-period arithmetic above already assumes, extended
+    // to the whole ring: with mmap_rw=0 alsa-lib owns this area and hands the
+    // same base every call, so caching it lets `prepare` scrub the region it
+    // cannot otherwise reach.
+    p->mmap_base = base;
+    p->mmap_bytes = (size_t)io->buffer_size * fb;
 
     snd_pcm_uframes_t consumed = 0;
     while (consumed < size) {
@@ -477,6 +497,16 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
             p->stage_frames = 0;
         }
     }
+    // Hand the region back to alsa-lib as digital zero (#3443). The area is
+    // alsa-lib's own malloc'd buffer, never zeroed at allocation or prepare, and
+    // a converting `plug` chain commits whole periods whose head/tail the
+    // converter did not necessarily write — that unwritten remainder is raw heap
+    // and reaches the ring as full-scale samples. Scrubbing what we just copied
+    // out means the next writer to reach these frames finds zeros there, so an
+    // over-commit publishes silence instead of process memory. Playback only:
+    // on capture this area is OURS to fill, and the RW-only access list already
+    // bounds what the app sees to `delivered`.
+    memset(src, 0, (size_t)size * fb);
     p->appl_frames += size;
     return (snd_pcm_sframes_t)size;
 }
@@ -572,9 +602,14 @@ static int jts_ring_drain(snd_pcm_ioplug_t *io) {
 static int jts_ring_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params) {
     // The HW constraints advertise a single format/channels/rate — the values
     // the conf.d declared — so alsa-lib can only negotiate that one shape and
-    // there is nothing left to validate here. (Kept as a hook.)
-    (void)io;
+    // there is nothing left to validate here.
+    jts_ring_pcm_t *p = io->private_data;
     (void)params;
+    // alsa-lib allocates the emulated mmap area during THIS call's hw_params
+    // commit, after this callback returns — a base cached from a previous cycle
+    // would dangle. Re-learned on the next transfer.
+    p->mmap_base = NULL;
+    p->mmap_bytes = 0;
     return 0;
 }
 
