@@ -322,6 +322,7 @@ def read_pose_curve_pair(
     *,
     phase: str,
     position_deg: int,
+    vertical_deg: int = 0,
     roles: tuple[str, str],
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
     """The latest banked take carrying BOTH roles, and the take it came from.
@@ -342,13 +343,24 @@ def read_pose_curve_pair(
     newest-first and the first match returned, which is the retake rather than
     what it replaced.
 
+    **A pose is a bearing AND a height.** ``vertical_deg`` is the signed
+    whole-degree elevation above mark height, defaulting to the mark: a
+    design-axis consumer asking for 0 deg gets the take measured at the mark,
+    never a raised one banked later in the same walk. Without it "latest
+    attempt wins" would walk right past the pose it was asked for.
+
     ``None`` when no take at this pose carries both roles, never a raise: a
     round that measured one driver is an ordinary shape.
     """
 
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
     for row in reversed(
-        bundle_measurements(bundle_dir, phase=phase, position_deg=position_deg)
+        bundle_measurements(
+            bundle_dir,
+            phase=phase,
+            position_deg=position_deg,
+            vertical_deg=vertical_deg,
+        )
     ):
         curves = read_take_curves(artifacts / row.path, phase=phase)
         if curves is None:

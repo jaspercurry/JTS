@@ -23,10 +23,12 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     expand_angle_spec,
     position_cycle_document,
     read_entry_baseline_take,
+    read_pose_curve_pair,
     read_position_cycle,
     staged_stops,
     takes_by_position,
 )
+from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.spatial import (
     LATERAL_POSE_REGIME,
     LateralPose,
@@ -697,3 +699,74 @@ def test_a_pose_revisited_later_in_the_walk_keeps_both_visits(tmp_path):
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
     ) == {0: ("lateral_01_a01", "lateral_03_a01"), 7: ("lateral_02_a01",)}
+
+
+# --------------------------------------------------------------------------- #
+# the pose key: a bearing AND a height
+# --------------------------------------------------------------------------- #
+
+
+_BOTH_ROLES = [{"role": "woofer"}, {"role": "tweeter"}]
+
+
+def _pose_bank(tmp_path: Path) -> Path:
+    """One walk at 0 deg: a mark-height take, then a NEWER raised one.
+
+    The mark-height record carries no ``vertical_deg`` KEY AT ALL — the shape
+    every round banked before elevated walks shipped — so selecting it at
+    ``vertical_deg=0`` also pins that absence reading as mark height rather
+    than as "unknown height".
+    """
+    mark = {k: v for k, v in _record(1, 0).items() if k != "vertical_deg"}
+    _bank(tmp_path, [
+        {**mark, "curves": _BOTH_ROLES},
+        {**_record(2, 0), "vertical_deg": 10, "curves": _BOTH_ROLES},
+    ])
+    return tmp_path / "bundle" / "sess-1"
+
+
+def _pair_take(bundle_dir: Path, **pose) -> list[str]:
+    found = read_pose_curve_pair(
+        bundle_dir, phase=PHASE_LATERAL, roles=("woofer", "tweeter"), **pose
+    )
+    return [] if found is None else [found[2]]
+
+
+def _indexed(bundle_dir: Path, **filters) -> list[str]:
+    return [row.path for row in bundle_measurements(bundle_dir, **filters)]
+
+
+@pytest.mark.parametrize(
+    ("select", "expected"),
+    [
+        pytest.param(
+            lambda d: _pair_take(d, position_deg=0),
+            ["lateral_01_a01"],
+            id="the_design_axis_pair_is_the_mark_height_take",
+        ),
+        pytest.param(
+            lambda d: _pair_take(d, position_deg=0, vertical_deg=10),
+            ["lateral_02_a01"],
+            id="the_raised_pose_answers_only_when_its_height_is_named",
+        ),
+        pytest.param(
+            lambda d: _indexed(d, vertical_deg=10),
+            ["lateral_02_a01"],
+            id="the_index_selects_the_raised_take_alone",
+        ),
+        pytest.param(
+            lambda d: _indexed(d, vertical_deg=0),
+            ["lateral_01_a01"],
+            id="a_record_lacking_the_key_indexes_as_mark_height",
+        ),
+    ],
+)
+def test_a_pose_is_selected_by_its_bearing_AND_its_height(tmp_path, select, expected):
+    """A raised seat and a mark-height one share a bearing and are NOT the
+    same pose.
+
+    "Latest attempt wins" walks the takes at a pose newest-first, so a bearing-
+    only key hands the newer raised take to the forward model and the delay
+    landscape as their design-axis basis — the wrong measurement, silently.
+    """
+    assert [Path(path).stem for path in select(_pose_bank(tmp_path))] == expected
