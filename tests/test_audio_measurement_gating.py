@@ -1013,13 +1013,12 @@ def test_the_measured_entanglement_word_is_the_gate_bound_word():
     spelt with the source that named the bound, so a consumer comparing the
     two fields never sees synonyms."""
     assert gating.ENTANGLEMENT_SOURCE_MEASURED == gating.FLOOR_MEASURED
-    assert len(
-        {
-            gating.ENTANGLEMENT_SOURCE_MEASURED,
-            gating.ENTANGLEMENT_SOURCE_DECLARED,
-            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
-        }
-    ) == 3
+    assert gating.ENTANGLEMENT_SOURCES == {
+        gating.ENTANGLEMENT_SOURCE_MEASURED,
+        gating.ENTANGLEMENT_SOURCE_DECLARED,
+        gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+    }
+    assert len(gating.ENTANGLEMENT_SOURCES) == 3
 
 
 @pytest.mark.parametrize(

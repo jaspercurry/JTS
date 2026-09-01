@@ -455,7 +455,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
     assert d["trusted_ceiling_hz"] is None
     assert d["graded_band_hz"] == [SPEC_BANDS[0][0], BEST_EFFORT_ABOVE_HZ]
     assert all(type(v) is float for v in d["graded_band_hz"])
-    # No entanglement floor supplied: unknown, which is not clean.
+    # No entanglement floor supplied.
     assert d["entanglement_floor_hz"] is None
     assert d["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
@@ -1419,7 +1419,7 @@ def test_an_unevaluable_band_states_no_edge_verdict():
 @pytest.mark.parametrize(
     ("entanglement_floor_hz", "source", "expected"),
     [
-        # Unknown marks nothing -- and marking nothing is not a clean read.
+        # Unknown marks nothing.
         (None, gating.ENTANGLEMENT_SOURCE_UNKNOWN, (None, None, None)),
         # Below every graded band: nothing in the table is entangled.
         (150.0, gating.ENTANGLEMENT_SOURCE_DECLARED, (None, None, None)),
@@ -1476,6 +1476,54 @@ def test_the_entanglement_floor_moves_no_graded_number():
         dataclasses.replace(band, room_entangled_below_hz=None)
         for band in marked.bands
     ) == plain.bands
+
+
+@pytest.mark.parametrize(
+    ("floor_hz", "source"),
+    [
+        # Outside the vocabulary: a fourth word no consumer can read.
+        (1000.0, "measured"),
+        (None, "declared"),
+        (1000.0, {"source": gating.ENTANGLEMENT_SOURCE_DECLARED}),
+        # Inside it, but the pair disagrees about whether a floor is known.
+        (1000.0, gating.ENTANGLEMENT_SOURCE_UNKNOWN),
+        (None, gating.ENTANGLEMENT_SOURCE_DECLARED),
+        (None, gating.ENTANGLEMENT_SOURCE_MEASURED),
+    ],
+)
+def test_evaluate_flat_spec_refuses_a_provenance_it_cannot_publish(floor_hz, source):
+    """The seam is a caller's own vocabulary, not a document's: a word outside
+    the three, or one that contradicts the floor handed in beside it, is a bug
+    at the call site and raises rather than being echoed onto the report."""
+    with pytest.raises(ValueError):
+        evaluate_flat_spec(
+            _FREQS_HZ,
+            _flat_db(),
+            entanglement_floor_hz=floor_hz,
+            entanglement_floor_source=source,
+        )
+
+
+@pytest.mark.parametrize(
+    "stored", ["measured", "", {"source": "declared_geometry"}, 3, None, ["unknown"]]
+)
+def test_a_document_carrying_an_unreadable_source_word_rehydrates_as_unknown(stored):
+    """Rehydration is defensive where the evaluator is strict: a document is
+    not a call site, so an unrecognized word becomes ``unknown`` rather than
+    raising or being carried through as a fourth vocabulary entry."""
+    report = evaluate_flat_spec(
+        _FREQS_HZ,
+        _flat_db(),
+        entanglement_floor_hz=1000.0,
+        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_MEASURED,
+    )
+    raw = report.to_dict()
+    raw["entanglement_floor_source"] = stored
+
+    assert (
+        FlatSpecReport.from_dict(raw).entanglement_floor_source
+        == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    )
 
 
 def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():

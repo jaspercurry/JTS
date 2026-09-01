@@ -346,6 +346,15 @@ FLOOR_SEARCH_BOUND = "search_span_bound"
 ENTANGLEMENT_SOURCE_MEASURED = FLOOR_MEASURED
 ENTANGLEMENT_SOURCE_DECLARED = "declared_geometry"
 ENTANGLEMENT_SOURCE_UNKNOWN = "unknown"
+#: The closed set of provenance words. A value outside it is a caller bug,
+#: not data: the field is a vocabulary, not free text.
+ENTANGLEMENT_SOURCES = frozenset(
+    {
+        ENTANGLEMENT_SOURCE_MEASURED,
+        ENTANGLEMENT_SOURCE_DECLARED,
+        ENTANGLEMENT_SOURCE_UNKNOWN,
+    }
+)
 NEAR_FIELD_EXEMPT = "near_field"
 
 
@@ -398,11 +407,10 @@ def f_trusted_floor_hz(window_s: float) -> float:
 def f_entanglement_floor_hz(t_first_bounce_s: float) -> float:
     """The frequency below which speaker and room can no longer be separated.
 
-    :func:`f_trusted_floor_hz` is the resolution floor of the window you
-    actually gated (``2.5 / T``); this is the room's own floor
-    (``2.5 / t_first_bounce``), set by when the first reflection arrives.
-    Below it no gate length separates speaker from room: a window long
-    enough to resolve the frequency already contains the reflection.
+    ``2.5 / t_first_bounce`` — the room's own floor, where
+    :func:`f_trusted_floor_hz` is the gated window's (``2.5 / T``). Below it
+    a window long enough to resolve the frequency already contains the
+    reflection, so no gate length separates speaker from room.
     """
     if not math.isfinite(t_first_bounce_s) or not (t_first_bounce_s > 0):
         raise ValueError(

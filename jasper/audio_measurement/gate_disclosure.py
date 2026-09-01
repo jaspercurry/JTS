@@ -59,17 +59,14 @@ why :func:`describe_gate` never renders one without the other.
 Two floors, not one (#3495)
 ---------------------------
 
-``2.5/T`` is a RESOLUTION bound — whether a window can resolve a feature at
-all — and readers consume it as a trustworthiness bound. The room sets a
-second floor, ``2.5/t_first_bounce``: below it every window long enough to
-resolve is already long enough to admit the room's first arrival, so no
-window choice separates speaker from room there. Both are published here,
-the second with its provenance beside it, because on a rig whose first
-bounce lands while the direct sound is still decaying the reflection finder
-structurally never fires (#3502) and the honest answer is
-``unknown`` forever
-(:data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCE_UNKNOWN`).
-Unknown is rendered as unknown; it is not a clean gate.
+Beside the window's floors this module publishes the ROOM's, with its
+provenance — the identity is
+:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`'s and what
+a reader does with it is `docs/tuning-methodology.md`'s. On the rig class
+whose first bounce lands while the direct sound is still decaying the
+reflection finder structurally never fires (#3502), so the source published
+here is routinely
+:data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCE_UNKNOWN`.
 """
 
 from __future__ import annotations
@@ -96,6 +93,10 @@ DELTA_CEILING_HZ = 20000.0
 #: nothing branches on it but the wording, and the number itself is always
 #: printed beside the word.
 SMALL_DELTA_RMS_DB = 1.0
+
+#: First gating schema whose ``first_reflection_ms`` is an arrival rather
+#: than an onset — gating's ``GATING_SCHEMA_VERSION`` carries the boundary.
+_ARRIVAL_SCHEMA_VERSION = 2
 
 
 def evaluation_band_hz(
@@ -282,9 +283,9 @@ class GateDisclosure:
     #: Every ledger entry, internal or not. Beside the count above so a
     #: reader can see that some candidates were classified the other way.
     ledger_count: int
-    #: ``TRUSTED_FLOOR_MULTIPLIER / t_first_bounce`` in Hz — the floor below
-    #: which no window separates speaker from room. ``None`` is UNKNOWN, and
-    #: unknown is not clean: nothing was proven about any band.
+    #: The room's floor in Hz —
+    #: :func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`.
+    #: ``None`` is unknown.
     entanglement_floor_hz: float | None = None
     #: Which of :mod:`~jasper.audio_measurement.gating`'s three
     #: ``ENTANGLEMENT_SOURCE_*`` words the floor came from.
@@ -342,18 +343,35 @@ def _floor_from_bounce_s(t_first_bounce_s: float | None) -> float | None:
     return gating.f_entanglement_floor_hz(t)
 
 
+def _reports_arrival(schema_version: Any) -> bool:
+    """Whether the block's ``first_reflection_ms`` is the reflection's ARRIVAL.
+
+    Schema 1 put the ONSET in that field
+    (:data:`~jasper.audio_measurement.gating.GATING_SCHEMA_VERSION`), which
+    is an earlier time and would misstate the bounce. An absent or
+    unreadable version is a block this module's own callers built, not a v1
+    record — every persisted block carries the number.
+    """
+    version = _finite(schema_version)
+    return version is None or version >= _ARRIVAL_SCHEMA_VERSION
+
+
 def _entanglement_floor(
     source_of_bound: str | None,
     reflection_delay_ms: float | None,
     declared_first_bounce_s: float | None,
+    *,
+    arrival_reported: bool,
 ) -> tuple[float | None, str]:
     """``(floor_hz, source)`` — measured beats declared beats unknown.
 
     A measured reflection is the only source that also proves the bounce it
     times exists; a declared geometry is the operator's tape measure. Neither
-    available is where this rig class lives (#3502).
+    available is where this rig class lives (#3502). A block that reports no
+    arrival (:func:`_reports_arrival`) has nothing to time, so it falls
+    through to declared however its window was bound.
     """
-    if source_of_bound == gating.FLOOR_MEASURED:
+    if arrival_reported and source_of_bound == gating.FLOOR_MEASURED:
         measured = _floor_from_bounce_s(
             reflection_delay_ms / 1000.0 if reflection_delay_ms is not None else None
         )
@@ -377,7 +395,8 @@ def build_gate_disclosure(
     validated rather than trusted, and a missing or malformed one becomes
     ``None`` — "unknown", never a fabricated value. A schema-1 block (whose
     ``first_reflection_ms`` is an ONSET, not an arrival) reads cleanly; its
-    absent fields simply come back ``None``.
+    absent fields come back ``None`` and its onset never times the
+    entanglement floor (:func:`_reports_arrival`).
 
     ``declared_first_bounce_s`` is the operator's geometry, in seconds, and
     is the entanglement floor's fallback source — used only when the gating
@@ -401,6 +420,7 @@ def build_gate_disclosure(
         floor_source,
         _relative_delay_ms(reflection_toa_ms, direct_peak_ms),
         declared_first_bounce_s,
+        arrival_reported=_reports_arrival(b.get("schema_version")),
     )
     return GateDisclosure(
         gate_ms=_finite(b.get("window_ms")),
@@ -455,10 +475,14 @@ def describe_gate(
             "search ran and no validity floor was established"
         )
     if d.source_of_bound is None:
+        # The room's floor is the operator's geometry here, and it survives a
+        # capture the gate could not use at all — the exempt branch above is
+        # the one case with no room floor worth stating (a near-field capture
+        # taken a few centimetres from the driver).
         return (
             "this capture could not be gated; no reflection search ran and "
             "no validity floor was established"
-        )
+        ) + _entanglement_clause(d)
 
     floors = ""
     if d.f_min_hz is not None:
@@ -491,7 +515,7 @@ def describe_gate(
 
 def _entanglement_clause(d: GateDisclosure) -> str:
     """The room's floor, appended beside the window's two — never instead of
-    them, and never collapsed into one phrase with them (owner ruling).
+    them, and never collapsed into one phrase with them.
 
     The unknown branch names the action that resolves it, because a reader
     told only that a number is missing has no way to stop it being missing.
