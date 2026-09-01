@@ -24,26 +24,6 @@ def _rec(level, msg, name="jasper.test"):
     return logging.LogRecord(name, level, "f.py", 1, msg, None, None)
 
 
-@pytest.fixture
-def logging_sandbox(monkeypatch):
-    """Give a deterministic single 'journal' StreamHandler on a clean root
-    (pytest's caplog handler would otherwise be the first one
-    set_console_debug finds), and restore everything afterward. Yields the
-    console handler so tests can assert its level."""
-    root = logging.getLogger()
-    jasper = logging.getLogger("jasper")
-    saved = (root.handlers[:], root.level, jasper.handlers[:], jasper.level)
-    root.handlers[:] = []
-    jasper.handlers[:] = []
-    console = logging.StreamHandler(io.StringIO())
-    root.addHandler(console)
-    root.setLevel(logging.INFO)
-    monkeypatch.setattr(fr, "_ring", None, raising=False)
-    yield console
-    root.handlers[:], root.level, jasper.handlers[:], jasper.level = saved
-    fr._ring = None
-
-
 # ----------------------------------------------------------- RingFlushHandler
 
 
@@ -142,6 +122,21 @@ def test_install_sets_logger_debug_console_info_and_attaches_ring(
     assert logging.getLogger("jasper").level == logging.DEBUG
     assert console.level == logging.INFO          # DEBUG stays out of the journal
     assert fr._ring in logging.getLogger("jasper").handlers
+
+
+def test_install_twice_leaves_one_ring_handler_attached(
+    logging_sandbox, monkeypatch, tmp_path
+):
+    """install() is idempotent: a second call must not stack a second
+    RingFlushHandler onto the jasper logger (issue #3471 item 1)."""
+    monkeypatch.setattr(debug_mode, "DEBUG_FILE", str(tmp_path / "debug.env"))
+    fr.install("voice", capacity=50, dump_stream=io.StringIO())
+    fr.install("voice", capacity=50, dump_stream=io.StringIO())
+    ring_handlers = [
+        h for h in logging.getLogger("jasper").handlers
+        if isinstance(h, fr.RingFlushHandler)
+    ]
+    assert len(ring_handlers) == 1
 
 
 def test_install_applies_active_toggle_to_console(

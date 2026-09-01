@@ -218,3 +218,23 @@ def test_apply_for_no_future_expiry_arms_no_timer(
     dm.apply_for("voice", now=NOW, path=str(f))
     assert armed == []
     dm._self_quiet_timer = None
+
+
+# ------------------------------------------------- console handler matching
+
+
+class _NotAConsoleStreamHandler(logging.StreamHandler):
+    pass
+
+
+def test_set_console_debug_ignores_non_console_streamhandler_subclass(
+    logging_sandbox,
+):
+    """set_console_debug must not mutate a StreamHandler subclass that
+    isn't the real console (e.g. pytest's capture handler) — issue #3471
+    item 2."""
+    foreign = _NotAConsoleStreamHandler(io.StringIO())
+    foreign.setLevel(logging.INFO)
+    logging.getLogger().addHandler(foreign)
+    dm.set_console_debug(True)
+    assert foreign.level == logging.INFO
