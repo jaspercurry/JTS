@@ -1801,13 +1801,7 @@ def test_pairing_verdict_reads_only_units_the_snapshot_probes():
 
 
 def test_failed_unit_probe_does_not_claim_pairing_is_blocked(monkeypatch):
-    """A probe that could not read unit state is not evidence of a stopped one.
-
-    `active()` cannot tell "stopped" from "absent from the output", so
-    stamping a verdict here would disable Pair on a healthy speaker whenever
-    `systemctl show` times out -- likeliest under the very memory pressure
-    this field exists to explain.
-    """
+    """A probe that could not read unit state is not evidence of a stopped one."""
     fake = _FakeDispatcher()
 
     async def read_adapter_state():

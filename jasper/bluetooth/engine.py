@@ -476,17 +476,11 @@ class BluetoothEngine:
 
         yield {"stage": "paired", "address": dev.address}
 
-        # Trust only once the bond exists. Trust is what makes BlueZ
-        # auto-reconnect the device on every advertisement, so setting it
-        # before Pair() survives a FAILED pair: an unbonded HID cannot bring
-        # its profile up (`input-hog profile accept failed`) and the attempt
-        # repeats for as long as the device is in range. The remote then
-        # reads as connected, works for nothing, and stops advertising as
-        # pairable — so it can be neither used nor paired again, and
-        # RemoveDevice races the auto-reconnect instead of clearing it.
-        # Set here rather than after the connect/handler stages so trust
-        # still survives the user closing the browser tab mid-flow. Doesn't
-        # grant Connect — that's a separate call below.
+        # Only a bonded device may be trusted — why:
+        # `NoCodeAgent._trust_device`. Here the bond is guaranteed by
+        # position: Pair() has returned successfully. Set before the
+        # connect/handler stages so trust survives the user closing the
+        # browser tab mid-flow. Doesn't grant Connect — separate call below.
         yield {"stage": "trusting"}
         try:
             await dev_props.call_set(

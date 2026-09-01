@@ -215,25 +215,14 @@ def _annotate_pairing_readiness(
 ) -> None:
     """Stamp one structured pairing-readiness verdict onto a state payload.
 
-    BlueZ answers a pairing authorization request through a registered agent;
-    with none registered it refuses the request outright ("No agent available
-    for request type N") and no new bond can form. Scanning, and reconnecting
-    an existing bond, need no agent — so `advertise_units` is deliberately
-    narrower than the degraded-reason unit list, which also covers audio units
-    pairing does not need.
+    Only a registered agent can answer a pairing authorization, so
+    `advertise_units` is the narrow set that gates a NEW bond; scanning and
+    reconnecting need none of it. A field of its own because the UI gates on
+    a value, never on `degradedReason` prose.
 
-    A field of its own rather than a `degradedReason` substring: the UI must
-    gate its Pair controls on a value, never on prose. `degradedReason`
-    remains the one explanation shown to the household — it already names
-    every inactive unit, including the audio ones a narrower message here
-    would hide.
-
-    Skipped while parked (the stereo pair owns the whole local stack, the UI
-    already blocks every control on `parked`, and probing source units is
-    exactly what a parked snapshot must not do) and skipped when the probe
-    itself failed: `UnitSnapshot.active` cannot tell "stopped" from "not in
-    the output", so stamping a verdict on a failed probe would disable
-    pairing on a healthy speaker.
+    Two cases carry no verdict: parked (a parked snapshot must not probe
+    source units at all) and a failed probe, where `active` cannot tell
+    "stopped" from "absent from the output".
     """
     if payload.get("parked") or unit_snapshot.error:
         return

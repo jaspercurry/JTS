@@ -286,12 +286,8 @@ async def test_pair_refreshes_accessory_profiles_before_ready_event():
 async def test_trust_follows_the_bond(bond_succeeds: bool):
     """Trust is granted only once BlueZ has actually bonded the device.
 
-    Trust is what makes BlueZ auto-reconnect a device on every
-    advertisement. Granting it before Pair() survives a FAILED pair, and an
-    unbonded HID cannot then bring its profile up, so the attempt repeats
-    for as long as the device is in range: the remote reads as connected,
-    works for nothing, and stops advertising as pairable, leaving it
-    neither usable nor re-pairable.
+    Why a trusted-but-unbonded device is stranded:
+    `NoCodeAgent._trust_device`.
     """
     engine = _engine([])
     bus = engine._bus
@@ -311,9 +307,8 @@ async def test_trust_follows_the_bond(bond_succeeds: bool):
     assert bus.proxy.props.trusted is bond_succeeds
     assert (events[-1]["stage"] == "error") is not bond_succeeds
     if bond_succeeds:
-        # Still ahead of the connect/handler stages, so trust survives the
-        # user closing the tab mid-flow -- the reason the set used to run
-        # before Pair() at all.
+        # Ahead of the connect/handler stages, so trust survives the user
+        # closing the tab mid-flow.
         stages = [event["stage"] for event in events]
         assert stages.index("trusting") < stages.index("connecting")
 

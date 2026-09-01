@@ -270,15 +270,11 @@ def test_no_code_agent_accepts_no_code_authorization():
 )
 @pytest.mark.parametrize("paired", (True, False))
 def test_no_code_agent_trusts_only_bonded_devices(authorization, paired):
-    """Trust never reaches a device BlueZ has not bonded.
+    """Trust never reaches a device BlueZ has not bonded, from either entry.
 
-    Trust is what makes BlueZ auto-reconnect a device on every
-    advertisement. Granting it to an unbonded device strands it: the HID
-    profile cannot come up without a bond, the reconnect repeats for as long
-    as it is in range, and the device stops advertising as pairable, leaving
-    it neither usable nor re-pairable. RequestAuthorization in particular
-    fires before the bond exists, so a pairing that then fails would
-    otherwise leave that residue behind.
+    RequestAuthorization fires before the bond exists and AuthorizeService
+    after it; both must honour the guard. Why:
+    `NoCodeAgent._trust_device`.
     """
     method, extra_args = authorization
     calls: list[tuple[str, object]] = []
