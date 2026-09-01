@@ -1,4 +1,4 @@
-# 0211 — Way-1 reuses the existing layers; it does not fork them
+# 0212 — Way-1 reuses the existing layers; it does not fork them
 
 Date: 2026-09-01. Status: accepted.
 
