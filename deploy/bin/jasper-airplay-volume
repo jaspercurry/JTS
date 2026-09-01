@@ -26,6 +26,9 @@ set -u
 runtime_dir="${RUNTIME_DIRECTORY:-/run/shairport-sync}"
 [ -d "$runtime_dir" ] || exit 0
 state="${runtime_dir}/airplay-volume.pct"
+# The level a new session restores audio at: the last non-zero percent this
+# hook delivered, which is the last level the owner actually listened at.
+restore_state="${runtime_dir}/airplay-restore.pct"
 lock="${runtime_dir}/airplay-volume.lock"
 session_start="${runtime_dir}/airplay-session-start"
 # jasper-control is always localhost, and 8780 is jasper/control/client.py's
@@ -60,6 +63,33 @@ pct="$(
 printf '%s\n' "$pct" > "${state}.tmp.$$" 2>/dev/null || exit 0
 mv -f "${state}.tmp.$$" "$state" 2>/dev/null || exit 0
 
+# Deliver one level, $2 carrying any extra JSON fields. `last` advances only
+# on a 2xx. A 409 (active-speaker output not ready) or a timeout therefore
+# retries the same value on the next pass instead of being recorded as
+# delivered, and three straight rejections is a daemon that is not going to
+# take this write: stop quietly instead of hammering it for the rest of the
+# tenure — a lost nudge is the accepted failure mode, and the next volume
+# message starts a fresh holder anyway.
+post() {
+    if curl -fsS --max-time 0.4 \
+        -H 'Content-Type: application/json' \
+        -d "{\"percent\": ${1}, \"source\": \"airplay\"${2}}" \
+        "$url" >/dev/null 2>&1; then
+        last="$1"
+        failures=0
+        # Zero is a mute, never a level to come back to, so it never becomes
+        # the restore point.
+        if [ "$1" -gt 0 ] &&
+            printf '%s\n' "$1" > "${restore_state}.tmp.$$" 2>/dev/null; then
+            mv -f "${restore_state}.tmp.$$" "$restore_state" 2>/dev/null || true
+        fi
+        return 0
+    fi
+    failures=$((failures + 1))
+    [ "$failures" -ge 3 ] && exit 0
+    return 1
+}
+
 last=""
 attempt=0
 # Three tenures is the ceiling. A tenure ends either settled (nothing left to
@@ -86,14 +116,30 @@ while [ "$attempt" -lt 3 ]; do
     failures=0
     while [ "$passes" -lt 25 ]; do
         pct="$(cat "$state" 2>/dev/null)" || break
+        initial=""
         # A session start is not a drag. macOS animates the sender's slider up
         # from the bottom of its scale to the real level — measured on jts3 as
         # ~10 messages 200 ms apart, 6 % to 63 % over ~2 s — so replaying the
-        # burst dips the speaker tens of dB before it swells back. While the
-        # marker is present, wait for two unchanged passes (400 ms, two message
-        # intervals) and adopt the level the animation settles on, in one post.
-        # A user's nudge carries no marker and still tracks step by step.
-        if [ -e "$session_start" ]; then
+        # burst dips the speaker tens of dB before it swells back, while
+        # merely waiting the animation out leaves the speaker muted for two
+        # seconds after content is already flowing (a session teardown's -144
+        # left it at 0 %). So restore audio first, at the level the owner last
+        # listened at, and only then hold the animation: wait for two
+        # unchanged passes (400 ms, two message intervals) and adopt the level
+        # it settles on. Normally the two are the same value and the settled
+        # post is skipped as already delivered.
+        # `rm` succeeds only for the process that actually removes the marker,
+        # so consuming it IS the claim on this session start. Both of a
+        # session's posts carry `observation_initial`, which makes the
+        # coordinator defer them while a mute is latched at the speaker — the
+        # same flag USBSINK's bridge uses. A user's nudge carries no marker
+        # and still tracks the slider step by step.
+        if rm "$session_start" 2>/dev/null; then
+            initial=", \"observation_initial\": true"
+            restore="$(cat "$restore_state" 2>/dev/null)" || restore=""
+            if [ -n "$restore" ] && [ "$restore" != "$last" ]; then
+                post "$restore" "$initial"
+            fi
             settled=0
             while [ "$settled" -lt 2 ] && [ "$passes" -lt 25 ]; do
                 sleep 0.2
@@ -108,33 +154,7 @@ while [ "$attempt" -lt 3 ]; do
             done
         fi
         [ "$pct" = "$last" ] && break
-        body="{\"percent\": ${pct}, \"source\": \"airplay\""
-        # `rm` succeeds only for the process that actually removes the
-        # marker, so consuming it IS the test. Its presence means shairport
-        # is opening a session: `observation_initial` then makes the
-        # coordinator defer this one write while a mute is latched — the
-        # same flag USBSINK's bridge uses. Only a session's first post
-        # carries it.
-        if rm "$session_start" 2>/dev/null; then
-            body="${body}, \"observation_initial\": true"
-        fi
-        # `last` advances only on a 2xx. A 409 (active-speaker output not
-        # ready) or a timeout therefore retries the same value on the next
-        # pass instead of being recorded as delivered.
-        if curl -fsS --max-time 0.4 \
-            -H 'Content-Type: application/json' \
-            -d "${body}}" \
-            "$url" >/dev/null 2>&1; then
-            last="$pct"
-            failures=0
-        else
-            failures=$((failures + 1))
-            # Three straight rejections is a daemon that is not going to take
-            # this write. Stop quietly instead of hammering it for the rest of
-            # the tenure — a lost nudge is the accepted failure mode, and the
-            # next volume message starts a fresh holder anyway.
-            [ "$failures" -ge 3 ] && exit 0
-        fi
+        post "$pct" "$initial"
         passes=$((passes + 1))
         sleep 0.2
     done
@@ -147,3 +167,6 @@ while [ "$attempt" -lt 3 ]; do
     newest="$(cat "$state" 2>/dev/null)" || exit 0
     [ "$newest" = "$last" ] && exit 0
 done
+# Without this the exhausted-tenure path would exit with the status of the
+# test above (1), against the fire-and-forget contract at the top of the file.
+exit 0

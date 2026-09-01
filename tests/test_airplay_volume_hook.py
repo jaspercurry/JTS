@@ -153,11 +153,14 @@ def test_hook_ignores_a_missing_runtime_directory(tmp_path):
 
 class _Recorder(BaseHTTPRequestHandler):
     posts: list[tuple[str, dict]] = []
+    # One arrival time per post, same index — how a pin says "immediately".
+    times: list[float] = []
     statuses: list[int] = []
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8")
+        type(self).times.append(time.monotonic())
         type(self).posts.append((self.path, json.loads(body)))
         status = type(self).statuses.pop(0) if type(self).statuses else 200
         payload = b'{"percent": 0}'
@@ -179,6 +182,7 @@ def control_stub():
     past the end of that list answers 200.
     """
     _Recorder.posts = []
+    _Recorder.times = []
     _Recorder.statuses = []
     server = HTTPServer(("127.0.0.1", 0), _Recorder)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -209,10 +213,10 @@ def test_session_start_marks_only_the_first_observation_as_initial(
     control_stub, tmp_path,
 ):
     """shairport fires `run_this_before_play_begins` ahead of the connect-time
-    volume push. That one write carries `observation_initial`, which the
-    coordinator defers while a mute is latched — so connecting a sender no
-    longer clears a mute asserted at the speaker. A later nudge must NOT carry
-    it, or volume-up-while-muted would do nothing."""
+    volume push. The session's opening write carries `observation_initial`,
+    which the coordinator defers while a mute is latched — so connecting a
+    sender no longer clears a mute asserted at the speaker. A later nudge must
+    NOT carry it, or volume-up-while-muted would do nothing."""
     _run_hook("--session-start", runtime_dir=tmp_path)
     _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
     _run_hook("-15.000000", runtime_dir=tmp_path, port=control_stub.server_port)
@@ -262,6 +266,12 @@ def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
     assert [body["percent"] for _, body in _Recorder.posts] == [0, 100]
 
 
+def _db_for(percent: float) -> str:
+    """The dB shairport hands the hook for a sender slider at `percent`."""
+    db = AIRPLAY_DB_MIN + (AIRPLAY_DB_MAX - AIRPLAY_DB_MIN) * percent / 100
+    return f"{db:.6f}"
+
+
 def _fire_burst(
     percents, *, runtime_dir: Path, port: int, spacing: float,
 ) -> None:
@@ -277,8 +287,9 @@ def _fire_burst(
         delay = started + index * spacing - time.monotonic()
         if delay > 0:
             time.sleep(delay)
-        db = AIRPLAY_DB_MIN + (AIRPLAY_DB_MAX - AIRPLAY_DB_MIN) * percent / 100
-        running.append(subprocess.Popen(["sh", str(HOOK), f"{db:.6f}"], env=env))
+        running.append(
+            subprocess.Popen(["sh", str(HOOK), _db_for(percent)], env=env)
+        )
     for process in running:
         assert process.wait(timeout=60) == 0
 
@@ -326,7 +337,12 @@ def test_a_session_start_fade_up_is_adopted_once_at_its_settled_level(
     """A session start is not a drag. Replaying the connect animation took the
     master down ~28 dB and swelled it back over two seconds — audible on every
     connect. The speaker adopts the level the animation settles on, once, and
-    that write still carries `observation_initial`."""
+    that write still carries `observation_initial`.
+
+    This is a first-ever session, so there is no remembered level to restore
+    ahead of the animation and the settled write is the whole story. The pin
+    below covers the session that has one.
+    """
     _run_hook("--session-start", runtime_dir=tmp_path)
 
     _fire_burst(
@@ -340,6 +356,46 @@ def test_a_session_start_fade_up_is_adopted_once_at_its_settled_level(
         CONNECT_FADE_UP[-1],
     ]
     assert _Recorder.posts[0][1].get("observation_initial") is True
+
+
+@requires_flock
+def test_a_reconnect_restores_the_remembered_level_before_the_animation(
+    control_stub, tmp_path,
+):
+    """Holding the animation is only half the fix. The Mac sends the mute
+    sentinel when the owner disconnects, so the speaker sits at 0 % between
+    sessions; on the next connect shairport starts the audio while the fade-up
+    is still animating, and waiting for it to settle left ~2 s of silence over
+    live content. So the session's first act is to restore the level the owner
+    last listened at — before the hold, not after it — and the animation the
+    hold swallows never reaches the speaker.
+    """
+    level = CONNECT_FADE_UP[-1]
+    port = control_stub.server_port
+    _run_hook(_db_for(level), runtime_dir=tmp_path, port=port)
+    _run_hook("-144.000000", runtime_dir=tmp_path, port=port)
+    assert [body["percent"] for _, body in _Recorder.posts] == [level, 0]
+    opened = len(_Recorder.posts)
+
+    _run_hook("--session-start", runtime_dir=tmp_path)
+    started = time.monotonic()
+    _fire_burst(
+        CONNECT_FADE_UP,
+        runtime_dir=tmp_path,
+        port=port,
+        spacing=FADE_SPACING_S,
+    )
+
+    session = _Recorder.posts[opened:]
+    # One write: the restore. The settled level is the same value, so the
+    # post that used to be the session's only one is skipped as delivered.
+    assert [body["percent"] for _, body in session] == [level]
+    # Still the session's opening write, so a mute latched at the speaker is
+    # still left alone (ADR-0206).
+    assert session[0][1].get("observation_initial") is True
+    # Inside the animation's first few steps — where the settle-only hook
+    # posted nothing at all until the animation had run its ~2 s course.
+    assert _Recorder.times[opened] - started < FADE_SPACING_S * 4
 
 
 @requires_flock
