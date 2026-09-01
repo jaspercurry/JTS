@@ -342,7 +342,8 @@ static void jts_ring_scrub_mmap_area(snd_pcm_ioplug_t *io) {
     const snd_pcm_channel_area_t *areas;
     snd_pcm_uframes_t offset;
     snd_pcm_uframes_t frames = io->buffer_size;
-    // Best-effort: the per-transfer scrub is the backstop if this ever fails.
+    // Best-effort: a failed scrub degrades to the pre-#3443 behaviour rather
+    // than failing the prepare (a failed prepare is a silent session).
     if (snd_pcm_mmap_begin(io->pcm, &areas, &offset, &frames) == 0 && frames > 0)
         snd_pcm_areas_silence(areas, offset, io->channels, frames, io->format);
 }
@@ -376,10 +377,12 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     // can transfer while still PREPARED, and an unarmed bucket does not pace it.
     p->stage_frames = 0;
     p->appl_frames = 0;
-    // The converter re-primes on every prepare (shairport's flush is
-    // drop+prepare), so this is the edge whose first commit carries the
-    // unwritten head. Scrub before any of it can be published.
-    jts_ring_scrub_mmap_area(io);
+    // A converting plug chain re-primes on every prepare (a flush is
+    // drop+prepare), so this is the edge whose first commit carries an
+    // unwritten head. Playback only: the capture area is filled by our own
+    // transfer and never holds foreign bytes.
+    if (io->stream == SND_PCM_STREAM_PLAYBACK)
+        jts_ring_scrub_mmap_area(io);
     jts_ring_pointer_prepare(&p->ptr_state, p->pace_nominal,
                              io->stream == SND_PCM_STREAM_PLAYBACK,
                              jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
@@ -487,8 +490,8 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
     // — and it agrees with frame_bytes(p) because the HW constraints advertise
     // exactly the conf-declared format and channel count.
     const size_t fb = frame_bytes(p);
-    uint8_t *src = (uint8_t *)areas[0].addr + (areas[0].first / 8) +
-                   (size_t)offset * (areas[0].step / 8);
+    const uint8_t *src = (const uint8_t *)areas[0].addr + (areas[0].first / 8) +
+                         (size_t)offset * (areas[0].step / 8);
 
     snd_pcm_uframes_t consumed = 0;
     while (consumed < size) {
@@ -505,13 +508,6 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
             p->stage_frames = 0;
         }
     }
-    // Hand the region back as digital zero, so the next lap's converter finds
-    // silence under any head it leaves unwritten. `prepare`'s scrub covers the
-    // re-prime edge; this covers a short conversion MID-stream, which
-    // alsa-plugins' samplerate right-aligns the same way. Without it that head
-    // would replay stale audio rather than heap — quieter than #3443, still not
-    // the digital zero the lane is supposed to carry.
-    memset(src, 0, (size_t)size * fb);
     p->appl_frames += size;
     return (snd_pcm_sframes_t)size;
 }
@@ -1044,12 +1040,11 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     // Access modes. PLAYBACK advertises RW + MMAP. The emulated mmap area is NOT
     // app-authored — behind a `plug`/rate wrapper alsa-lib authors it from
     // malloc'd memory and can commit frames the converter never wrote, so stale
-    // bytes DO reach `transfer` (#3443, which measured shairport's heap arriving
-    // as full-scale samples). Keeping MMAP is deliberate: a converter demands an
-    // mmap-capable slave (pcm_rate.c forces SND_PCM_ACCBIT_MMAP), so withdrawing
-    // it fails the lane at hw_params rather than fixing anything. The leak is
-    // answered by zeroing what we hand back instead — see jts_ring_scrub_mmap_area
-    // and the tail of jts_ring_transfer.
+    // bytes DO reach `transfer` (#3443). Keeping MMAP is deliberate: a converter
+    // demands an mmap-capable slave (pcm_rate.c forces SND_PCM_ACCBIT_MMAP), so
+    // withdrawing it fails the lane at hw_params rather than fixing anything. The
+    // leak is answered by zeroing the area at prepare instead — see
+    // jts_ring_scrub_mmap_area.
     // CAPTURE advertises RW ONLY. With mmap_rw=0 the
     // capture mmap area is filled by OUR `transfer`, and this transfer legitimately
     // returns SHORT (delivered < requested) on the writer-alive-empty pacing block.
