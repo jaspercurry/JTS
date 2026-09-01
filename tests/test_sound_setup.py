@@ -255,6 +255,7 @@ class FakeCamilla:
         self.loaded_path: str | None = None
         self.set_calls: list[str] = []
         self.active_raw_values: list[str] = []
+        self.ducks: list[bool] = []
         self.fail_set = fail_set
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
@@ -268,9 +269,10 @@ class FakeCamilla:
         return True
 
     async def set_active_config_raw(
-        self, config: str, *, best_effort: bool = False,
+        self, config: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
         self.active_raw_values.append(config)
+        self.ducks.append(duck)
         if self.fail_set and not best_effort:
             raise RuntimeError("live update failed")
         return True
@@ -288,7 +290,6 @@ class FakePatchableCamilla(FakeCamilla):
     def __init__(self, current_path: str, **kwargs) -> None:
         super().__init__(current_path, **kwargs)
         self.running: str | None = None
-        self.patches: list[dict] = []
 
     @staticmethod
     def _normalized(text: str) -> str:
@@ -300,7 +301,9 @@ class FakePatchableCamilla(FakeCamilla):
         self, config: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
         self.running = self._normalized(config)
-        return await super().set_active_config_raw(config, best_effort=best_effort)
+        return await super().set_active_config_raw(
+            config, best_effort=best_effort, duck=duck,
+        )
 
     async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
         return self.running
@@ -309,16 +312,6 @@ class FakePatchableCamilla(FakeCamilla):
         self, config: str, *, best_effort: bool = False,
     ) -> str | None:
         return self._normalized(config)
-
-    async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
-        import yaml as _yaml
-
-        self.patches.append(patch)
-        running = _yaml.safe_load(self.running or "")
-        for name, definition in (patch.get("filters") or {}).items():
-            running["filters"][name] = definition
-        self.running = str(_yaml.safe_dump(running))
-        return True
 
 
 class FakeCamillaWithoutLiveRaw:
@@ -7526,7 +7519,7 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert "  sound_preamp:" in fake.active_raw_values[0]
     assert "gain: 0.0000" in fake.active_raw_values[0]
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "active_config_raw"
+    assert payload["live_method"] == "swap"
     assert payload["dsp_write_epoch"] == "epoch-1"
     assert payload["preserved_room_peqs"] == 1
     assert payload["output_trim_db"] == 0
@@ -7587,13 +7580,14 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
     ))
     await _live(fake, start, config_dir)
     swaps_after_install = len(fake.active_raw_values)
+    assert fake.ducks[0] is True
 
     payload = await _live(fake, moved, config_dir)
 
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "patch_config"
-    assert len(fake.patches) == 1
-    assert len(fake.active_raw_values) == swaps_after_install
+    assert payload["live_method"] == "parameters"
+    assert fake.ducks[-1] is False
+    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 @pytest.mark.parametrize(
@@ -7636,8 +7630,9 @@ async def test_the_live_graphs_slots_keep_the_pipeline_still(
 
     payload = await _live(fake, changed, config_dir)
 
-    assert payload["live_method"] == "patch_config"
-    assert len(fake.active_raw_values) == swaps_after_install
+    assert payload["live_method"] == "parameters"
+    assert fake.ducks[-1] is False
+    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
@@ -7693,16 +7688,13 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     assert set(_yaml.safe_load(after_quiet)["filters"]) == set(
         _yaml.safe_load(after_loud)["filters"]
     )
-    assert second["live_method"] == "patch_config"
+    assert second["live_method"] == "parameters"
 
 
-async def test_retyping_a_band_still_swaps(tmp_path: Path, monkeypatch):
-    """A different biquad recipe is a different filter, and that ducks.
-
-    A gainless type carries no gain to neutralise, so "off" and "Highpass"
-    cannot be spelled as values in a Peaking slot. Honest, and a dropdown
-    rather than a gesture.
-    """
+async def test_retyping_a_band_writes_parameters_without_ducking(
+    tmp_path: Path, monkeypatch,
+):
+    """A biquad's type lives in its parameters; CamillaDSP recomputes coefficients in place."""
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
         ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
@@ -7715,8 +7707,8 @@ async def test_retyping_a_band_still_swaps(tmp_path: Path, monkeypatch):
 
     payload = await _live(fake, retyped, config_dir)
 
-    assert payload["live_method"] == "active_config_raw"
-    assert fake.patches == []
+    assert payload["live_method"] == "parameters"
+    assert fake.ducks[-1] is False
     assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
@@ -7733,7 +7725,6 @@ async def test_a_redraw_that_changed_nothing_writes_nothing(
 
     assert payload["live_status"] == "live"
     assert payload["live_method"] == "unchanged"
-    assert fake.patches == []
     assert len(fake.active_raw_values) == 1
 
 

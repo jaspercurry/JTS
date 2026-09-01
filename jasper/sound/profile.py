@@ -733,12 +733,9 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     """
 
     specs = []
-    # An idle slot is a DEFAULT band, not a hand-copied spelling of one: a
-    # `ParametricBand()` is Peaking at 1 kHz, 0 dB, q=1 — an exact identity (its
-    # zeros cancel its poles), and the same thing the editor creates when a
-    # household adds a band. Taking a slot into use is then a change of numbers
-    # rather than of the biquad's recipe, which is what keeps it a patch. Spell
-    # it by construction so it cannot drift away from that promise.
+    # An idle slot is a default `ParametricBand()` — Peaking, 1 kHz, 0 dB,
+    # q=1, an exact identity — spelled the same as a freshly added band, so
+    # taking a slot into use writes nothing new.
     declared = list(bands)[:MAX_PARAMETRIC_BANDS]
     idle = ParametricBand()
     padded = declared + [idle] * (MAX_PARAMETRIC_BANDS - len(declared))
@@ -784,14 +781,11 @@ def _neutralised(spec: FilterSpec) -> FilterSpec:
     """One slot at unity, keeping as much of its identity as it can.
 
     A gain-bearing biquad at 0 dB is an exact identity, so it keeps its NAME,
-    its TYPE and its frequency and only loses its gain — which makes bypass a
-    parameter write for it. A gainless type (Highpass, Lowpass, Notch) filters
-    regardless of gain, so the only way to silence it is to become the idle
-    Peaking; that IS a recipe change, and it is why bypass still costs one
-    ducked swap for a household using one. That exception is inherent; every
-    other type's is not, and an earlier cut of this rebuilt the whole advanced
-    family from empty inputs and silently turned every SHELF into that same
-    swap.
+    its TYPE and its frequency and only loses its gain. A gainless type
+    (Highpass, Lowpass, Notch) filters regardless of gain, so it has no gain
+    to zero and its slot becomes the idle Peaking instead. Either way the
+    slot's name and filter kind survive, so the write stays in place
+    (:mod:`jasper.sound.live_edit`).
     """
 
     if spec.biquad_type in GAINLESS_BIQUAD_TYPES:
@@ -838,28 +832,17 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     """Return every declared filter in canonical order, neutral ones included.
 
     What the GRAPH holds, and the list every emitter takes. Shape follows the
-    profile's declaration and never its values, so dragging a band's gain
-    across 0 dB stays a change of one number instead of adding or removing a
-    filter. That is what lets a live edit ride ``PatchConfig`` rather than a
-    pipeline replace, which must duck the fader across the swap
-    (:meth:`jasper.camilla.CamillaController._graph_mutation`).
+    profile's declaration and never its values, so a live edit's numbers move
+    inside a structure that never changes, and only commissioning restructures
+    it (:meth:`jasper.camilla.CamillaController._graph_mutation`).
 
     The advanced pool is fixed at :data:`MAX_PARAMETRIC_BANDS` for the same
-    reason, one step further: a household can add, remove or reorder bands
-    without the PIPELINE changing at all, because the slots they move between
-    are always running. A band switched off, and every slot past the last
-    declared band, is an idle Peaking at 0 dB — an exact identity, spelled
-    exactly as the editor spells a freshly added band, so taking a slot into
-    use writes nothing at all.
-
-    **Every emitter takes this list, live and durable alike.** The graph is one
-    fixed frame: a household's EQ gestures move numbers inside a structure that
-    never changes, and only commissioning restructures it. The alternative —
-    a lean durable graph and a slotted editing graph — buys a byte-identical
-    reconcile at the price of two shapes for one profile, an editor "mode", and
-    a swap entering and leaving it. ``reconcile_current_dsp`` re-anchors a
-    commissioned candidate in place instead (#2572 is about not moving the
-    ANCHOR, not about never changing the content).
+    reason: a household can add, remove or reorder bands without the PIPELINE
+    changing at all, because the slots they move between are always running.
+    A band switched off, and every slot past the last declared band, is an
+    idle Peaking at 0 dB — an exact identity, spelled exactly as the editor
+    spells a freshly added band. ``reconcile_current_dsp`` re-anchors a
+    commissioned candidate in place rather than moving this frame (#2572).
 
     The standing cost is 13 filters per channel on a ``flat`` profile — 5
     Simple bands and the 8-slot advanced pool, all identities when idle — and
@@ -871,17 +854,9 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     # Bypass is spelled as VALUES, not as a missing frame. Emitting nothing
     # would strip the whole frame out of the pipeline, and a pipeline change is what
     # rebuilds CamillaDSP's filter group and resets the state of every filter in
-    # it — so toggling bypass would cost the same ducked swap this frame exists
-    # to remove. A bypassed profile is therefore the same shape at unity: the
-    # curve's filters are NEUTRALISED (see `_bypassed_slots`) and every simple
+    # it. A bypassed profile is therefore the same shape at unity: the
+    # curve's filters are NEUTRALISED (see `_neutralised`) and every simple
     # band and advanced slot is idle.
-    #
-    # ONE EXCEPTION, and it is inherent: a declared GAINLESS band (Highpass,
-    # Lowpass, Notch) has no gain to zero, so its slot reverts to the idle
-    # Peaking — a change of the biquad's RECIPE, which `plan_live_edit`
-    # correctly refuses to patch. Bypass therefore still costs one ducked swap
-    # for a household using such a band. Silencing a Highpass requires changing
-    # its type; there is no spelling of this that is a parameter write.
     #
     # The trim is deliberately NOT dropped with it. "Extra headroom" is a global
     # output setting for clip safety into an external amp, so it is level policy
