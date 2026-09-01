@@ -526,6 +526,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR as SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS as SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     _gate_disclosure as _gate_disclosure,
+    _gate_entanglement_floor as _gate_entanglement_floor,
     _gate_floor_source as _gate_floor_source,
     _gate_moved_rms_db as _gate_moved_rms_db,
     _gate_record as _gate_record,
@@ -539,6 +540,26 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     _sweep_schedule_diag_fields as _sweep_schedule_diag_fields,
     _sweep_schedule_ok as _sweep_schedule_ok,
 )
+
+
+def _declared_first_bounce_s(distance_m: float | None) -> float | None:
+    """The operator-declared rig's first bounce at ONE capture's distance.
+
+    Read FRESH on every capture rather than resolved once at session start:
+    ``jasper-declare-geometry`` is a separate process writing a wizard-owned
+    file under :data:`~jasper.audio_measurement.measurement_geometry.DEFAULT_PATH`,
+    and a session that cached it would keep publishing a floor the operator
+    has since corrected. ``None`` when nothing is declared, which every
+    consumer publishes as ``entanglement_floor_source = unknown`` (#3502) —
+    absent is the ordinary state and warns about nothing.
+
+    Imported inside the function, matching how this module's gate helpers
+    reach the measurement package.
+    """
+    from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
+
+    return declared_first_bounce_s(distance_m)
+
 
 # --------------------------------------------------------------------------- #
 # tuning constants
@@ -4213,7 +4234,10 @@ class CrossoverV2Session:
         # recording. See ``locate_failed_message``.
         reflection_measured: bool | None = None
         if verdict.code == REASON_VERIFY_INCONCLUSIVE:
-            gate_record = _gate_record(analysis.summed_response)
+            gate_record = _gate_record(
+                analysis.summed_response,
+                declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
+            )
             if gate_record is not None:
                 reflection_measured = bool(gate_record["reflection_measured"])
         verdict = replace(
@@ -5372,6 +5396,15 @@ class CrossoverV2Session:
         retained.append(position)
         retained.sort(key=lambda p: p.index)
         gating = getattr(position.response, "gating", None) or {}
+        # THIS seat's distance, not the rig's: the room floor rises with
+        # distance, so the pose's own mark distance is what the declared
+        # geometry is evaluated at.
+        entanglement_floor_hz, entanglement_floor_source = _gate_entanglement_floor(
+            position.response,
+            declared_first_bounce_s=_declared_first_bounce_s(
+                position.geometry.mark_distance_m
+            ),
+        )
         metadata = _spatial.cloud_position_record(
             position_id=position.position_id,
             phase=phase,
@@ -5388,6 +5421,8 @@ class CrossoverV2Session:
             gate_disclosure=_gate_disclosure(position.response),
             gate_moved_rms_db=_gate_moved_rms_db(position.response),
             gate_reflection_delay_ms=_gate_reflection_delay_ms(position.response),
+            gate_entanglement_floor_hz=entanglement_floor_hz,
+            gate_entanglement_floor_source=entanglement_floor_source,
             validity_floor_hz=getattr(
                 position.response, "validity_floor_hz", None
             ),
@@ -7833,7 +7868,10 @@ class CrossoverV2Session:
         # capture's window in MILLISECONDS, and in the one method where
         # confusing the two produced a household-visible bug they should not
         # share a name.
-        gate_record = _gate_record(analysis.summed_response)
+        gate_record = _gate_record(
+            analysis.summed_response,
+            declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
+        )
         # The pre-grade ladder — locate, pilot level, capture integrity (issue
         # #1971), linearity — belongs to
         # :func:`~jasper.active_speaker.crossover_v2.capture_dispatch.verify_integrity_screens`,

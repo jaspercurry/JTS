@@ -15,6 +15,7 @@ import sys
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
     DeclaredGeometry,
+    load_declared_geometry,
 )
 
 #: 1 international inch, exactly (25.4 mm).
@@ -121,12 +122,12 @@ def _cmd_set(args: argparse.Namespace) -> int:
 
 def _cmd_show(args: argparse.Namespace) -> int:
     try:
-        geometry = DeclaredGeometry.load(args.path)
-    except FileNotFoundError:
-        print(f"jasper-declare-geometry: no declared geometry at {args.path}", file=sys.stderr)
-        return EXIT_NOT_FOUND
+        geometry = load_declared_geometry(args.path)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"jasper-declare-geometry: could not read {args.path}: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    if geometry is None:
+        print(f"jasper-declare-geometry: no declared geometry at {args.path}", file=sys.stderr)
         return EXIT_NOT_FOUND
 
     print(f"declared rig geometry <- {args.path}")

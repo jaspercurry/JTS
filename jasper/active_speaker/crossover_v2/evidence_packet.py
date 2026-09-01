@@ -264,6 +264,10 @@ _POSITION_FIELDS = (
     # usable without parsing English.
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
+    # The ROOM's floor at this seat and where it came from — always as a pair,
+    # because the number is unreadable without its provenance (#3502).
+    "gate_entanglement_floor_hz",
+    "gate_entanglement_floor_source",
     "gate_window_ms",
     "gating_applied",
     "glitch_detected",
@@ -1742,6 +1746,12 @@ _SPEED_OF_SOUND_AIR_TEMPERATURE_C = 20.0
 #: :func:`_gate_numbers_reason` can ask whether a round's records carry the
 #: fields at all — which is a different question from whether their values are
 #: null, and the two send a reader to different places.
+#:
+#: ``gate_entanglement_floor_hz`` is deliberately NOT here (#3502). This set is
+#: what the accuracy budget's ``gate_leakage.available`` is decided on, and
+#: that component's subject is what the gate DID to the spectrum. The room's
+#: floor survives a capture that gated nothing at all, so counting it would let
+#: ``gate_leakage`` report available on a round carrying no leakage reading.
 _POSITION_GATE_NUMBER_FIELDS = frozenset({
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
@@ -1775,7 +1785,7 @@ _REFLECTOR_PATH_SOURCE = "cloud_verify.json -> null_registry.tau_ladder_us"
 _REFLECTOR_PATH_DECIMALS = 3
 
 #: Everything the ``reflections`` block publishes, and why none of it is an
-#: uncertainty — including the four per-capture gate numbers, which live on the
+#: uncertainty — including the six per-capture gate numbers, which live on the
 #: ``positions`` rows and inside ``verify.gate`` and are declared HERE because
 #: this is the block that owns the subject. A field published in one place and
 #: declared in none is exactly what the enrichment rule forbids, and giving the
@@ -1848,6 +1858,29 @@ _REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
         "path is NOT converted here: it is a different tau, from a different "
         "instrument, at one pose rather than fitted across the cloud"
     ),
+    "positions[].gate_entanglement_floor_hz": (
+        "the ROOM's floor at that seat, in Hz — below it no gate window, "
+        "however long, separates the speaker from the room, so nothing there "
+        "is a speaker measurement. A DERIVED reading, and one that must be "
+        "read beside positions[].gate_entanglement_floor_source, which names "
+        "which of three things produced it: a measured reflection timed it, "
+        "the operator's declared rig geometry gives it, or it is unknown. "
+        "Declared is not measured and never prints as if it were. Null with "
+        "an unknown source is the ordinary state on a rig whose first bounce "
+        "arrives while the direct sound is still decaying — the reflection "
+        "finder structurally never fires there — and is resolved by declaring "
+        "the geometry, not by measuring harder. It is per SEAT because it "
+        "depends on the speaker-to-mic distance as well as the two heights: a "
+        "seat further OUT has a HIGHER floor, because the bounce arrives "
+        "closer behind the direct sound there"
+    ),
+    "verify.gate.entanglement_floor_hz": (
+        "the same derivation as positions[].gate_entanglement_floor_hz, for "
+        "the VERIFY capture rather than a cloud seat, and read beside its own "
+        "verify.gate.entanglement_floor_source. It survives an ungateable "
+        "capture, unlike every other number in this block: the geometry that "
+        "sets it is the rig's, not the window's"
+    ),
     "verify.gate.moved_rms_db": (
         "the same reading as positions[].gate_moved_rms_db, for the VERIFY "
         "capture rather than a cloud seat. Read it beside "
@@ -1882,10 +1915,12 @@ def _reflections_uncertainty() -> dict[str, Any]:
             "the assumed speed of sound is a systematic worth 0.18 % per "
             "Kelvin, and the fitted tau's own error is bounded — not "
             "quantified — by null_registry.ladder_arrival_gap and each rung's "
-            "rung_error_spacings, both already banked. The four per-capture "
+            "rung_error_spacings, both already banked. The six per-capture "
             "gate numbers are declared here with their full paths because they "
             "are published on the positions rows and inside verify.gate, "
-            "beside the sentence that used to be their only copy"
+            "beside the sentence that used to be their only copy. The room's "
+            "own floor is among them, and it is the one number here that a "
+            "capture can carry without having gated anything"
         ),
     }
 

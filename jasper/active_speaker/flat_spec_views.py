@@ -621,7 +621,10 @@ def _evaluate_position(
     site would be a second owner of the same walk.
 
     The evaluator is called with the report's OWN
-    ``trusted_floor_hz``/``trusted_ceiling_hz`` and the report's OWN
+    ``trusted_floor_hz``/``trusted_ceiling_hz``, the report's OWN room floor
+    and provenance — read back, never re-derived: this position is being
+    re-graded in the round's frame, and a floor recomputed here would be a
+    second opinion about the same room — and the report's OWN
     published exclusion intervals, so a per-position number and the pooled
     number are stated in the same frame over the same region of spectrum.
     ``reference_db_override``, when not ``None``, is passed straight through
@@ -643,6 +646,8 @@ def _evaluate_position(
             smoothing_fraction=position.smoothing_fraction,
             trusted_floor_hz=report.trusted_floor_hz,
             trusted_ceiling_hz=report.trusted_ceiling_hz,
+            entanglement_floor_hz=report.entanglement_floor_hz,
+            entanglement_floor_source=report.entanglement_floor_source,
             reference_db_override=reference_db_override,
         )
     except ValueError as exc:

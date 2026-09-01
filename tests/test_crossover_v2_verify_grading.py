@@ -748,6 +748,90 @@ def test_the_gate_record_banks_each_number_its_sentence_narrates_or_a_null(
     assert record["disclosure"] == gd.describe_gate(block)
 
 
+def _declared(tmp_path, **over):
+    """One declared rig, written where only this test can see it (#3502).
+
+    Never :data:`~jasper.audio_measurement.measurement_geometry.DEFAULT_PATH`:
+    the production file is the operator's and a test must not read or write it.
+    """
+    from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
+
+    path = tmp_path / "measurement_geometry.json"
+    DeclaredGeometry(**{
+        "speaker_height_m": 0.84, "mic_height_m": 0.5, "distance_m": 1.0, **over,
+    }).save(path)
+    return path
+
+
+def test_a_gate_record_carries_the_declared_room_floor_and_says_it_is_declared(
+    tmp_path,
+):
+    """#3502 — the whole point of declaring a rig: the floor stops being unknown.
+
+    The 2026-07-30 rig class never fires the measured reflection finder, so
+    without a declaration every capture publishes ``unknown`` forever. With one,
+    the same capture publishes a floor AND the word that says the operator's
+    tape measure produced it — never a word that would let it read as measured.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.audio_measurement import gating
+    from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    block = _gate_block(floor_source=gating.FLOOR_SEARCH_BOUND)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+    bounce_s = declared_first_bounce_s(1.0, path=_declared(tmp_path))
+
+    declared = _gate_record(response, declared_first_bounce_s=bounce_s)
+    undeclared = _gate_record(response)
+
+    assert declared is not None and undeclared is not None
+    assert declared["entanglement_floor_hz"] == pytest.approx(
+        gating.f_entanglement_floor_hz(bounce_s)
+    )
+    assert declared["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_DECLARED
+    assert undeclared["entanglement_floor_hz"] is None
+    assert undeclared["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    # Declaring a rig changes the floor and NOTHING else about the record.
+    assert {k: v for k, v in declared.items() if "entanglement" not in k} == {
+        k: v for k, v in undeclared.items()
+        if "entanglement" not in k and k != "disclosure"
+    } | {"disclosure": declared["disclosure"]}
+
+
+def test_two_seats_of_one_rig_publish_different_floors_for_their_distances(tmp_path):
+    """The owner ruling that distance is per CAPTURE, not per rig.
+
+    Same declared heights, two capture distances: the nearer seat's bounce
+    arrives LATER relative to its direct sound, so its floor is lower. A floor
+    evaluated once per rig would print one number on both rows and hide the
+    fact that the seats are not equally trustworthy down low.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.audio_measurement import gating
+    from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    path = _declared(tmp_path)
+    block = _gate_block(floor_source=gating.FLOOR_SEARCH_BOUND)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+
+    near = _gate_record(
+        response, declared_first_bounce_s=declared_first_bounce_s(0.3, path=path)
+    )
+    far = _gate_record(
+        response, declared_first_bounce_s=declared_first_bounce_s(1.0, path=path)
+    )
+
+    assert near is not None and far is not None
+    assert near["entanglement_floor_hz"] < far["entanglement_floor_hz"]
+    assert (
+        near["entanglement_floor_source"]
+        == far["entanglement_floor_source"]
+        == gating.ENTANGLEMENT_SOURCE_DECLARED
+    )
+
+
 @pytest.mark.parametrize(
     ("floor_source", "verify_kwargs", "accepted", "reflection_measured", "prose"),
     [
