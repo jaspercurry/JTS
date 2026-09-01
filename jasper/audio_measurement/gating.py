@@ -334,6 +334,9 @@ TOA_REFINE_MS = 0.5
 
 FLOOR_MEASURED = "measured_reflection"
 FLOOR_SEARCH_BOUND = "search_span_bound"
+# Entanglement-floor provenance for a floor derived from operator-declared rig
+# geometry rather than a found reflection — see issue #3502.
+ENTANGLEMENT_SOURCE_DECLARED = "declared_geometry"
 NEAR_FIELD_EXEMPT = "near_field"
 
 
@@ -381,6 +384,22 @@ def f_trusted_floor_hz(window_s: float) -> float:
     spec's band clamps do — see :data:`TRUSTED_FLOOR_MULTIPLIER`.
     """
     return TRUSTED_FLOOR_MULTIPLIER * f_valid_floor_hz(window_s)
+
+
+def f_entanglement_floor_hz(t_first_bounce_s: float) -> float:
+    """The frequency below which speaker and room can no longer be separated.
+
+    :func:`f_trusted_floor_hz` is the resolution floor of the window you
+    actually gated (``2.5 / T``); this is the room's own floor
+    (``2.5 / t_first_bounce``), set by when the first reflection arrives.
+    Below it no gate length separates speaker from room: a window long
+    enough to resolve the frequency already contains the reflection.
+    """
+    if not math.isfinite(t_first_bounce_s) or not (t_first_bounce_s > 0):
+        raise ValueError(
+            f"t_first_bounce_s must be finite and positive (got {t_first_bounce_s!r})"
+        )
+    return TRUSTED_FLOOR_MULTIPLIER / t_first_bounce_s
 
 
 def analytic_signal(x: np.ndarray) -> np.ndarray:

@@ -18,15 +18,19 @@ import math
 
 import pytest
 
-from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
+from jasper.audio_measurement.gating import (
+    ENTANGLEMENT_SOURCE_DECLARED,
+    TRUSTED_FLOOR_MULTIPLIER,
+)
+from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.measurement_geometry import (
+    MAX_CEILING_M,
     MAX_DISTANCE_M,
     MAX_HEIGHT_M,
     MIN_DISTANCE_M,
     MIN_HEIGHT_M,
-    PROVENANCE,
-    SPEED_OF_SOUND_M_S,
     DeclaredGeometry,
+    GeometryFieldError,
 )
 
 
@@ -38,7 +42,7 @@ def test_first_bounce_and_entanglement_floor_match_an_independently_derived_case
     geometry = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0)
     direct_m = math.hypot(1.0, 0.84 - 0.84)
     floor_path_m = math.hypot(1.0, 0.84 + 0.84)
-    expected_t_s = (floor_path_m - direct_m) / SPEED_OF_SOUND_M_S
+    expected_t_s = (floor_path_m - direct_m) / DEFAULT_SOUND_SPEED_M_S
 
     assert direct_m == pytest.approx(1.0)
     assert floor_path_m == pytest.approx(1.9550967, abs=1e-6)
@@ -55,7 +59,7 @@ def test_ceiling_family_is_absent_from_the_minimum_when_not_declared():
     direct_m = math.hypot(1.0, 0.0)
     floor_path_m = math.hypot(1.0, 1.68)
     assert geometry.first_bounce_s() == pytest.approx(
-        (floor_path_m - direct_m) / SPEED_OF_SOUND_M_S, rel=1e-12
+        (floor_path_m - direct_m) / DEFAULT_SOUND_SPEED_M_S, rel=1e-12
     )
 
 
@@ -77,7 +81,7 @@ def test_a_low_ceiling_wins_the_minimum_over_the_floor():
     ceiling_path_m = math.hypot(1.0, (0.85 - 0.84) + (0.85 - 0.84))
     direct_m = 1.0
     assert with_low_ceiling.first_bounce_s() == pytest.approx(
-        (ceiling_path_m - direct_m) / SPEED_OF_SOUND_M_S, rel=1e-12
+        (ceiling_path_m - direct_m) / DEFAULT_SOUND_SPEED_M_S, rel=1e-12
     )
     assert with_low_ceiling.first_bounce_s() < without_ceiling.first_bounce_s()
 
@@ -120,11 +124,22 @@ def test_a_low_ceiling_wins_the_minimum_over_the_floor():
             "distance_m",
             id="distance_negative",
         ),
+        pytest.param(
+            {
+                "speaker_height_m": 0.84,
+                "mic_height_m": 0.84,
+                "distance_m": 1.0,
+                "ceiling_height_m": MAX_CEILING_M + 0.01,
+            },
+            "ceiling_height_m",
+            id="ceiling_above_max",
+        ),
     ],
 )
 def test_out_of_range_fields_are_refused_and_named(kwargs, bad_field):
-    with pytest.raises(ValueError, match=bad_field):
+    with pytest.raises(GeometryFieldError) as exc:
         DeclaredGeometry(**kwargs)
+    assert exc.value.field == bad_field
 
 
 @pytest.mark.parametrize(
@@ -135,13 +150,14 @@ def test_out_of_range_fields_are_refused_and_named(kwargs, bad_field):
     ],
 )
 def test_a_ceiling_not_above_both_heights_is_refused(ceiling_height_m):
-    with pytest.raises(ValueError, match="ceiling_height_m"):
+    with pytest.raises(GeometryFieldError) as exc:
         DeclaredGeometry(
             speaker_height_m=0.84,
             mic_height_m=0.84,
             distance_m=1.0,
             ceiling_height_m=ceiling_height_m,
         )
+    assert exc.value.field == "ceiling_height_m"
 
 
 def test_save_load_round_trip_including_provenance(tmp_path):
@@ -155,7 +171,7 @@ def test_save_load_round_trip_including_provenance(tmp_path):
     assert loaded == geometry
 
     raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["source"] == PROVENANCE
+    assert raw["source"] == ENTANGLEMENT_SOURCE_DECLARED
     assert raw["source"] == "declared_geometry"
 
 

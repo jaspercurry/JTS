@@ -25,31 +25,32 @@ import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .gating import TRUSTED_FLOOR_MULTIPLIER
-from ..atomic_io import atomic_write_text
+from .gating import ENTANGLEMENT_SOURCE_DECLARED, f_entanglement_floor_hz
+from .null_walk import DEFAULT_SOUND_SPEED_M_S
+from ..atomic_io import atomic_write_json
 
 DEFAULT_PATH = "/var/lib/jasper/measurement_geometry.json"
-
-#: Written into the JSON alongside the geometry fields. Issue #3502 amends
-#: the gate-disclosure provenance vocabulary to carry this value once a
-#: later PR wires this module into that flow; this module does not import
-#: or touch gate_disclosure.py itself.
-PROVENANCE = "declared_geometry"
-
-# Speed of sound in air at 20 degC (nominal room temperature). First-bounce
-# timing is not sensitive enough to the ~1%/10 degC seasonal swing to
-# warrant a measured value here.
-SPEED_OF_SOUND_M_S = 343.0
 
 MIN_HEIGHT_M = 0.1
 MAX_HEIGHT_M = 3.0
 MIN_DISTANCE_M = 0.15
 MAX_DISTANCE_M = 3.0
+MAX_CEILING_M = 6.0
+
+
+class GeometryFieldError(ValueError):
+    """A refusal that names the offending field as data, not only as prose."""
+
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field
 
 
 def _require_range(name: str, value: float, lo: float, hi: float) -> None:
     if not (lo <= value <= hi):
-        raise ValueError(f"{name} must be within [{lo:g}, {hi:g}] m (got {value:g})")
+        raise GeometryFieldError(
+            name, f"{name} must be within [{lo:g}, {hi:g}] m (got {value:g})"
+        )
 
 
 @dataclass(frozen=True)
@@ -70,14 +71,18 @@ class DeclaredGeometry:
         _require_range("speaker_height_m", self.speaker_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("mic_height_m", self.mic_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("distance_m", self.distance_m, MIN_DISTANCE_M, MAX_DISTANCE_M)
-        if self.ceiling_height_m is not None and not (
+        if self.ceiling_height_m is None:
+            return
+        _require_range("ceiling_height_m", self.ceiling_height_m, MIN_HEIGHT_M, MAX_CEILING_M)
+        if not (
             self.ceiling_height_m > self.speaker_height_m
             and self.ceiling_height_m > self.mic_height_m
         ):
-            raise ValueError(
+            raise GeometryFieldError(
+                "ceiling_height_m",
                 f"ceiling_height_m ({self.ceiling_height_m:g}) must be greater than "
                 f"both speaker_height_m ({self.speaker_height_m:g}) and "
-                f"mic_height_m ({self.mic_height_m:g})"
+                f"mic_height_m ({self.mic_height_m:g})",
             )
 
     def first_bounce_s(self) -> float:
@@ -99,19 +104,21 @@ class DeclaredGeometry:
                     + (self.ceiling_height_m - self.mic_height_m),
                 )
             )
-        return (min(bounce_paths_m) - direct_m) / SPEED_OF_SOUND_M_S
+        return (min(bounce_paths_m) - direct_m) / DEFAULT_SOUND_SPEED_M_S
 
     def entanglement_floor_hz(self) -> float:
-        """The trusted-floor multiplier applied to :meth:`first_bounce_s`.
+        """This rig's entanglement floor, from :meth:`first_bounce_s`.
 
-        Same 2.5 constant as :func:`jasper.audio_measurement.gating.f_trusted_floor_hz`
-        -- imported from there, never duplicated.
+        The floor itself is
+        :func:`jasper.audio_measurement.gating.f_entanglement_floor_hz` --
+        imported from there, never duplicated.
         """
-        return TRUSTED_FLOOR_MULTIPLIER / self.first_bounce_s()
+        return f_entanglement_floor_hz(self.first_bounce_s())
 
     def save(self, path: str | Path = DEFAULT_PATH) -> None:
-        payload = {**asdict(self), "source": PROVENANCE}
-        atomic_write_text(Path(path), json.dumps(payload, indent=2) + "\n")
+        atomic_write_json(
+            Path(path), {**asdict(self), "source": ENTANGLEMENT_SOURCE_DECLARED}
+        )
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_PATH) -> "DeclaredGeometry":

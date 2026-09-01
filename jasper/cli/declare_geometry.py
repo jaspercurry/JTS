@@ -29,7 +29,7 @@ EXIT_WRITE_FAILED = 3
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). This CLI
 #: only persists an operator-declared value -- it plays no audio, arms no
 #: renderer, and touches no DSP config.
-AUTHORITY_TIER = "advisory"
+AUTHORITY_TIER = "advisory (`set` writes; `show` does not)"
 
 
 def _add_unit_pair(parser: argparse.ArgumentParser, name: str, *, required: bool, label: str) -> None:

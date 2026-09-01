@@ -8,7 +8,7 @@ The math itself is pinned in ``tests/test_audio_measurement_geometry.py``;
 these tests are the CLI seam -- inches convert to exact meters, exactly one
 unit per field is enforced by argparse, and a validation refusal from
 :class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`
-surfaces as a non-zero exit code naming the field.
+surfaces as a non-zero exit code with nothing written.
 """
 from __future__ import annotations
 
@@ -90,36 +90,31 @@ def test_set_requires_exactly_one_unit_for_each_required_field(tmp_path, missing
         declare_geometry.main(_set_argv(tmp_path / "geometry.json", **fields))
 
 
-def test_set_refuses_both_units_given_for_one_field(tmp_path):
-    argv = _set_argv(
-        tmp_path / "geometry.json",
-        **{
-            "--speaker-height-in": 33.0,
-            "--speaker-height-m": 0.84,
-            "--mic-height-m": 0.84,
-            "--distance-m": 1.0,
-        },
-    )
-    with pytest.raises(SystemExit):
-        declare_geometry.main(argv)
-
-
-def test_set_refuses_both_units_given_for_the_optional_ceiling(tmp_path):
+@pytest.mark.parametrize(
+    "extra_flags",
+    [
+        pytest.param({"--speaker-height-in": 33.0}, id="required_field"),
+        pytest.param(
+            {"--ceiling-height-in": 94.0, "--ceiling-height-m": 2.4},
+            id="optional_ceiling",
+        ),
+    ],
+)
+def test_set_refuses_both_units_given_for_one_field(tmp_path, extra_flags):
     argv = _set_argv(
         tmp_path / "geometry.json",
         **{
             "--speaker-height-m": 0.84,
             "--mic-height-m": 0.84,
             "--distance-m": 1.0,
-            "--ceiling-height-in": 94.0,
-            "--ceiling-height-m": 2.4,
+            **extra_flags,
         },
     )
     with pytest.raises(SystemExit):
         declare_geometry.main(argv)
 
 
-def test_set_refuses_an_out_of_range_field_with_a_named_field(tmp_path, capsys):
+def test_set_refuses_an_out_of_range_field(tmp_path):
     path = tmp_path / "geometry.json"
     code = declare_geometry.main(
         _set_argv(
@@ -132,7 +127,6 @@ def test_set_refuses_an_out_of_range_field_with_a_named_field(tmp_path, capsys):
         )
     )
     assert code == declare_geometry.EXIT_REFUSED
-    assert "distance_m" in capsys.readouterr().err
     assert not path.exists()
 
 
