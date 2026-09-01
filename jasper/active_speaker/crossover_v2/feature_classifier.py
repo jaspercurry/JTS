@@ -110,6 +110,7 @@ from .journey import PHASE_CLOUD_VERIFY, PHASE_LATERAL, PHASE_VERIFY
 __all__ = [
     "ADMISSIBLE_PHASES",
     "CAPTURE_ADMISSIBILITY_REASONS",
+    "CAPTURES_UNREADABLE",
     "classifiable_band_hz",
     "CLASSIFICATION_REFUSAL_REASONS",
     "CLASSIFICATION_SCHEMA_VERSION",
@@ -146,13 +147,23 @@ LATERAL_CAPTURE_SHAPE = "classification_lateral_capture_shape"
 #: remedy is a different ROUND: point at a verify-shaped one.
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
 
-#: No capture of this round reached the instrument at all — an empty ring, or
-#: one holding only other sessions' captures. The remedy is the RING or the
-#: bundle it was scoped to; no round shape would satisfy this one. Narrowed
-#: from the slug that used to cover :data:`ROUND_SHAPE_INADMISSIBLE` too
-#: (#3480): the two situations refuse from different code paths and have
-#: different remedies, and one name for both sent a driver at the wrong fix.
+#: No capture of this round reached the instrument at all — an empty ring, one
+#: holding only other sessions' captures, or sidecars that will not parse (an
+#: unreadable one carries no session id, so it is not attributable to this
+#: round either). The remedy is the RING or the bundle it was scoped to; no
+#: round shape would satisfy this one. Narrowed from the slug that used to
+#: cover :data:`ROUND_SHAPE_INADMISSIBLE` too (#3480): the two situations
+#: refuse from different code paths and have different remedies, and one name
+#: for both sent a driver at the wrong fix.
 NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
+
+#: This round banked a capture of an admissible shape and the ring cannot hand
+#: it over: the WAV is not beside its sidecar, or the dump name lost the stamp
+#: the take's timing is bound to. The round shape is RIGHT — the remedy is the
+#: ring or the bank step that filled it, and pointing this driver at a
+#: verify-shaped round (what :data:`ROUND_SHAPE_INADMISSIBLE` asks for) is the
+#: #3480 misdirection rebuilt one vocabulary later.
+CAPTURES_UNREADABLE = "classification_captures_unreadable"
 
 #: A capture names a phase whose program WAV is not in the round directory, so
 #: it cannot be deconvolved against the signal that was actually played.
@@ -168,6 +179,7 @@ CLASSIFICATION_REFUSAL_REASONS = frozenset({
     LATERAL_CAPTURE_SHAPE,
     ROUND_SHAPE_INADMISSIBLE,
     NO_ADMISSIBLE_CAPTURES,
+    CAPTURES_UNREADABLE,
     PROGRAM_MISSING,
     NO_FEATURES_DETECTED,
 })
@@ -200,17 +212,56 @@ CAPTURE_WAV_MISSING = "wav_missing"
 #: timing residual is bound to.
 CAPTURE_UNSTAMPED_NAME = "unstamped_name"
 
+#: Which refusal each admissibility reason speaks for when a round ends with no
+#: classifiable capture — the partition of the closed capture vocabulary onto
+#: the refusal vocabulary, as data. A row does not get to be a phase-shape
+#: finding and a ring finding at once, and a reason cannot be added to the
+#: vocabulary below without being placed here, because the vocabulary IS this
+#: table's keys.
+_REFUSAL_FOR_CAPTURE_REASON: dict[str, str | None] = {
+    # Classifiable, so it cannot coexist with the refusal this table serves.
+    CAPTURE_ADMISSIBLE: None,
+    # Not attributable to this round at all. A sidecar that will not parse
+    # carries no session id, exactly like one carrying somebody else's.
+    CAPTURE_UNREADABLE_SIDECAR: NO_ADMISSIBLE_CAPTURES,
+    CAPTURE_OTHER_SESSION: NO_ADMISSIBLE_CAPTURES,
+    # The round answered a different question; a verify-shaped round answers
+    # this one. (A lateral row is claimed earlier by LATERAL_CAPTURE_SHAPE.)
+    CAPTURE_PHASE_NOT_ADMISSIBLE: ROUND_SHAPE_INADMISSIBLE,
+    CAPTURE_LATERAL_SHAPE: ROUND_SHAPE_INADMISSIBLE,
+    # The round is the right shape and the take is what cannot be read. (A
+    # program-missing row is claimed earlier by PROGRAM_MISSING.)
+    CAPTURE_PROGRAM_MISSING: CAPTURES_UNREADABLE,
+    CAPTURE_WAV_MISSING: CAPTURES_UNREADABLE,
+    CAPTURE_UNSTAMPED_NAME: CAPTURES_UNREADABLE,
+}
+
+#: Read in this order, so the most specific thing the census can say is what
+#: the refusal says: a round whose admissible take the ring lost IS
+#: verify-shaped, and naming its shape as the remedy is the #3480 misdirection.
+#: A census speaking for neither says nothing of this round arrived, which is
+#: :data:`NO_ADMISSIBLE_CAPTURES` — the empty census's answer too.
+_REFUSAL_PRECEDENCE = (CAPTURES_UNREADABLE, ROUND_SHAPE_INADMISSIBLE)
+
+#: What to fix, carried in the refusal a driver actually reads: the slug names
+#: the state, this names the move (#3480 — the driver got the state alone).
+_NO_CAPTURE_REMEDY = {
+    NO_ADMISSIBLE_CAPTURES: (
+        "no capture in this ring is attributable to this round; check the ring "
+        "it was pointed at and the session id it was scoped by"
+    ),
+    ROUND_SHAPE_INADMISSIBLE: (
+        "this round banked no capture shape carrying a summed-system response; "
+        "point at a verify-shaped round"
+    ),
+    CAPTURES_UNREADABLE: (
+        "the round shape is right and its takes are what cannot be read; the "
+        "fix is the ring or the bank step that filled it, not another round"
+    ),
+}
+
 #: The closed vocabulary a per-capture admissibility row's ``reason`` speaks.
-CAPTURE_ADMISSIBILITY_REASONS = frozenset({
-    CAPTURE_ADMISSIBLE,
-    CAPTURE_UNREADABLE_SIDECAR,
-    CAPTURE_OTHER_SESSION,
-    CAPTURE_PHASE_NOT_ADMISSIBLE,
-    CAPTURE_LATERAL_SHAPE,
-    CAPTURE_PROGRAM_MISSING,
-    CAPTURE_WAV_MISSING,
-    CAPTURE_UNSTAMPED_NAME,
-})
+CAPTURE_ADMISSIBILITY_REASONS = frozenset(_REFUSAL_FOR_CAPTURE_REASON)
 
 
 class FeatureClassificationRefused(RuntimeError):
@@ -541,11 +592,12 @@ def load_round_captures(
 
     Raises :class:`FeatureClassificationRefused` — never returns an empty
     tuple, because "no captures" is a finding a caller must be told by name.
-    The refusal detail's ``captures`` is one row per sidecar the ring listed
-    (``sidecar`` / ``phase`` / ``admissible`` / ``reason``, the reason drawn
-    from :data:`CAPTURE_ADMISSIBILITY_REASONS`), so a caller sees which
+    EVERY refusal it raises carries ``captures``: one row per sidecar the ring
+    listed (``sidecar`` / ``phase`` / ``admissible`` / ``reason``, the reason
+    drawn from :data:`CAPTURE_ADMISSIBILITY_REASONS`), so a caller sees which
     capture was dropped and why rather than a count contradicting the ring
-    listing it was just handed.
+    listing it was just handed. Which name a no-capture round refuses under is
+    read off those rows through :data:`_REFUSAL_FOR_CAPTURE_REASON`.
     """
     programs = {
         phase: path
@@ -632,12 +684,12 @@ def load_round_captures(
             LATERAL_CAPTURE_SHAPE,
             {
                 "lateral_captures": len(lateral),
-                "example": lateral[0],
                 "note": (
                     "a lateral capture replays the per-driver MEASURE program "
                     "one driver at a time, so it carries no summed-system "
                     "response for a feature verdict to be about"
                 ),
+                "captures": census,
             },
         )
     if missing_program:
@@ -652,20 +704,27 @@ def load_round_captures(
                 "captures_dropped": len(missing_program),
                 "round_dir": round_dir.name,
                 "programs_present": sorted(programs),
+                "captures": census,
             },
         )
     if not captures:
-        # ``seen_phases`` counts only captures that cleared the session filter,
-        # so a non-empty one means this round WAS measured and its shape is
-        # what cannot answer — a different fix from a ring that holds nothing
-        # of this round at all.
+        # Read off the census, never off ``seen_phases``: a ring holding this
+        # round's VERIFY sidecars whose WAVs are gone has a non-empty phase
+        # count and a right round shape, and sending that driver at a
+        # verify-shaped round is #3480 in the vocabulary that replaced it.
+        speaks = {_REFUSAL_FOR_CAPTURE_REASON[row["reason"]] for row in census}
+        reason = next(
+            (slug for slug in _REFUSAL_PRECEDENCE if slug in speaks),
+            NO_ADMISSIBLE_CAPTURES,
+        )
         raise FeatureClassificationRefused(
-            ROUND_SHAPE_INADMISSIBLE if seen_phases else NO_ADMISSIBLE_CAPTURES,
+            reason,
             {
                 "admissible_phases": sorted(ADMISSIBLE_PHASES),
                 "phases_seen": seen_phases,
                 "session_id": session_id,
                 "dumps_dir": dumps_dir.name,
+                "note": _NO_CAPTURE_REMEDY[reason],
                 "captures": census,
             },
         )
