@@ -301,8 +301,12 @@ const OUTER_DLL_RATE: f64 = 48000.0;
 ///   this mode the honest observable is the resampler's own live correction ppm
 ///   ([`Obs::correction_ppm`]): the probe reads how far the resampler's
 ///   correction MOVES in response to the pitch step, and the L0 servo drives
-///   `correction_ppm → 0` (correction ≈ 0 sustained ⇒ the host is truly slaved,
-///   the resampler idle, and the fill rides the resampler's target for free).
+///   `correction_ppm → 0` (correction ≈ 0 sustained ⇒ the host is truly slaved
+///   and the resampler carries no CLOCK term; while fan-in's cushion decay is
+///   descending, correction ≈ 0 means the ratio equals the decay's commanded
+///   drain demand — the adapter subtracts that published demand before this
+///   observable, #3466 — so the raw `resampler.ratio_ppm` STATUS gauge and
+///   this observable legitimately differ by the demand during a descent).
 ///
 /// The mode is carried on [`HostClockConfig`] so each daemon states its
 /// observable explicitly at construction; the ladder branches on it at exactly
@@ -630,7 +634,10 @@ pub struct Obs {
     /// Cumulative frames delivered to playback (monotone).
     pub playback_frames: u64,
     /// The lane resampler's LIVE correction ppm (its rate-adjustment relative to
-    /// nominal, `(ratio − 1) × 1e6`). Meaningful ONLY in [`ObsMode::Correction`]
+    /// nominal, `(ratio − 1) × 1e6`) — minus any rate demand the caller's own
+    /// machinery commands of the resampler on purpose (fan-in subtracts its
+    /// cushion decay's published drain demand here, #3466, so a descent does
+    /// not read as clock error). Meaningful ONLY in [`ObsMode::Correction`]
     /// (fan-in combo, the sole live consumer): it is the honest host-vs-DAC
     /// rate-error readout when a rate-matching stage sits between the gadget
     /// ring and the mix. In [`ObsMode::Fill`] — the deleted usbsink solo
@@ -1653,9 +1660,11 @@ impl HostClock {
         //    limit-cycle against it (review PR #1144); a single slow integrator
         //    ([`CORRECTION_INTEGRAL_GAIN`]) around a near-unity plant is
         //    unconditionally stable at this gain, with the feed-forward carrying
-        //    the DC crystal cancel. The end-state is correction_ppm ≈ 0, at which
-        //    point the resampler is idle and the fill rides its held target for
-        //    free.
+        //    the DC crystal cancel. The end-state is correction_ppm ≈ 0: the
+        //    resampler carries no CLOCK term and the fill rides its held target
+        //    for free (during a fan-in cushion descent the raw ratio still
+        //    carries the decay's commanded drain — the caller subtracts that
+        //    published demand before this observable, #3466).
         let err = match self.cfg.obs_mode {
             ObsMode::Fill => obs.fill_frames - self.cfg.target_fill_frames,
             ObsMode::Correction => self.slope.correction_mean_ppm(),

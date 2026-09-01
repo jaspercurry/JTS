@@ -71,7 +71,7 @@
 //! optimizer can see is never reached. The catch-up drain is intentionally
 //! KEPT as the fallback; deleting it is a later, validation-gated step.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use jasper_resampler::{
@@ -102,6 +102,14 @@ pub struct LaneResamplerObservability {
     /// atomic with milli-ppm resolution). Signed value stored as i64 bits in a
     /// u64; the STATUS layer reinterprets. Kept coarse on purpose.
     pub ratio_milli_ppm: Arc<AtomicU64>,
+    /// Times the controller's output ppm clamp engaged (the loop demanded more
+    /// than `max_adjust_ppm`) — the "ratio railed" event counter the #3466
+    /// wander defect had no window onto. Lifetime count, survives `reset()`.
+    pub clamp_count: Arc<AtomicU64>,
+    /// Times the controller reset a clamped loop wound against the fill error
+    /// (see `jasper_resampler::RateController::anti_windup_count`). Non-zero
+    /// means the lane hit the safety clamp hard. Lifetime count.
+    pub anti_windup_count: Arc<AtomicU64>,
     /// Lock transitions (acquire) — a growing value past 1 means the lane keeps
     /// re-locking (host discontinuities / under-provisioned ring).
     pub lock_count: Arc<AtomicU64>,
@@ -137,6 +145,13 @@ pub struct LaneResamplerObservability {
     pub decay_active: Arc<AtomicBool>,
     pub decay_floor_frames: u64,
     pub decay_frozen_reason: Arc<AtomicU64>,
+    /// The decay's LIVE rate demand on the inner resampler, in milli-ppm.
+    /// Plain signed value (the `commanded_milli_ppm` idiom — no bit-cast);
+    /// authority-clamped, ≥ 0 in practice. Nonzero only while a descent is
+    /// actively stepping. Published by the decay itself — the single source
+    /// of truth the host-clock observable subtracts (see
+    /// `host_clock::build_obs`, #3466); nobody re-derives it from the knobs.
+    pub decay_demand_milli_ppm: Arc<AtomicI64>,
 }
 
 /// What [`LaneResampler::plan_period`] decided this render period should do —
@@ -223,6 +238,8 @@ pub struct LaneResampler {
     silence_frames: Arc<AtomicU64>,
     overrun_frames: Arc<AtomicU64>,
     ratio_milli_ppm: Arc<AtomicU64>,
+    clamp_count: Arc<AtomicU64>,
+    anti_windup_count: Arc<AtomicU64>,
     lock_count: Arc<AtomicU64>,
     unlock_count: Arc<AtomicU64>,
     /// Live ring fill in frames, republished every `render_period` so STATUS
@@ -242,6 +259,9 @@ pub struct LaneResampler {
     /// Decay observability atomics, republished on every decay tick.
     decay_active: Arc<AtomicBool>,
     decay_frozen_reason: Arc<AtomicU64>,
+    /// The decay's live demand gauge — see
+    /// [`LaneResamplerObservability::decay_demand_milli_ppm`].
+    decay_demand_milli_ppm: Arc<AtomicI64>,
 }
 
 impl LaneResampler {
@@ -349,6 +369,8 @@ impl LaneResampler {
             silence_frames: Arc::new(AtomicU64::new(0)),
             overrun_frames: Arc::new(AtomicU64::new(0)),
             ratio_milli_ppm: Arc::new(AtomicU64::new(0)),
+            clamp_count: Arc::new(AtomicU64::new(0)),
+            anti_windup_count: Arc::new(AtomicU64::new(0)),
             lock_count: Arc::new(AtomicU64::new(0)),
             unlock_count: Arc::new(AtomicU64::new(0)),
             fill_frames: Arc::new(AtomicU64::new(0)),
@@ -359,6 +381,7 @@ impl LaneResampler {
             held_target_frames: Arc::new(AtomicU64::new(ceiling)),
             decay_active: Arc::new(AtomicBool::new(false)),
             decay_frozen_reason: Arc::new(AtomicU64::new(DecayFrozenReason::NONE_CODE)),
+            decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -379,6 +402,8 @@ impl LaneResampler {
             silence_frames: Arc::clone(&self.silence_frames),
             overrun_frames: Arc::clone(&self.overrun_frames),
             ratio_milli_ppm: Arc::clone(&self.ratio_milli_ppm),
+            clamp_count: Arc::clone(&self.clamp_count),
+            anti_windup_count: Arc::clone(&self.anti_windup_count),
             lock_count: Arc::clone(&self.lock_count),
             unlock_count: Arc::clone(&self.unlock_count),
             fill_frames: Arc::clone(&self.fill_frames),
@@ -392,6 +417,7 @@ impl LaneResampler {
             decay_active: Arc::clone(&self.decay_active),
             decay_floor_frames: self.decay.floor(),
             decay_frozen_reason: Arc::clone(&self.decay_frozen_reason),
+            decay_demand_milli_ppm: Arc::clone(&self.decay_demand_milli_ppm),
         }
     }
 
@@ -838,13 +864,24 @@ impl LaneResampler {
     /// Republish the held-target gauge + decay observability atomics from the
     /// current decay state. Shared by every path that mutates the decay's held
     /// target (`snap_decay_back`, `tick_decay`) so STATUS and the outer DLL
-    /// setpoint always read a consistent snapshot. Three relaxed stores; no
+    /// setpoint always read a consistent snapshot. Four relaxed stores; no
     /// allocation.
     fn publish_decay_gauges(&self) {
         self.held_target_frames
             .store(self.decay.held(), Ordering::Relaxed);
         self.decay_active
             .store(self.decay.active(), Ordering::Relaxed);
+        // The decontamination term (#3466 — rationale at
+        // `host_clock::build_obs` and `CushionDecay::demand_ppm`).
+        // Belt-and-braces clamp (the same idiom as `DecayParams::build`'s
+        // floor clamp): never publish more demand than this lane's own
+        // ±max_adjust_ppm authority can deliver, so the subtraction can never
+        // fabricate offset the ratio cannot express. Config validation
+        // fail-louds an armed demand without real margin; this bounds anything
+        // that slips past (a direct construction, a drifted geometry).
+        let demand_ppm = self.decay.demand_ppm().min(self.max_adjust_ppm);
+        self.decay_demand_milli_ppm
+            .store((demand_ppm * 1000.0).round() as i64, Ordering::Relaxed);
         self.decay_frozen_reason.store(
             DecayFrozenReason::code(self.decay.frozen_reason()),
             Ordering::Relaxed,
@@ -960,7 +997,7 @@ impl LaneResampler {
     /// caller (the mixer work loop) supplies the outer-DLL signals the decay
     /// needs (`dll_l0_locked`, `commanded_ppm_abs`); the resampler's own
     /// `locked` state is filled in here. No-op-cheap when the feature is off
-    /// (one `CushionDecay::tick` early-return + three relaxed stores).
+    /// (one `CushionDecay::tick` early-return + four relaxed stores).
     ///
     /// The decay clock is render PERIODS — this is called exactly once per
     /// `render_period`, never on a wall clock.
@@ -978,6 +1015,13 @@ impl LaneResampler {
         let milli_ppm = (self.controller.ratio_ppm() * 1000.0).round() as i64;
         self.ratio_milli_ppm
             .store(milli_ppm as u64, Ordering::Relaxed);
+        // Mirror the controller's lifetime rail counters alongside the ratio
+        // they qualify, so STATUS can show WHEN the bounded ratio was actually
+        // pinned at ±max_adjust_ppm (issue #3464: these existed unsurfaced).
+        self.clamp_count
+            .store(self.controller.clamp_count(), Ordering::Relaxed);
+        self.anti_windup_count
+            .store(self.controller.anti_windup_count(), Ordering::Relaxed);
     }
 
     fn publish_fill(&self, frames: u64) {
@@ -1101,6 +1145,26 @@ mod decay {
             ((ms.saturating_mul(sample_rate)) / (1000 * period_frames)).max(1)
         }
 
+        /// The EXECUTED decay drain rate, in ppm, for a ms-space config — the
+        /// exact periods-space arithmetic the machine runs on (`ms_to_periods`
+        /// truncation included: defaults 6 / 1000 ms at 48 kHz / 256 ⇒ 187
+        /// periods ⇒ ~125.33 ppm, not the ms-space 125.0). The ONE derivation
+        /// both config validation and [`CushionDecay::new`] consume, so the
+        /// validated number and the published/subtracted number can never
+        /// disagree (#3466).
+        pub fn step_demand_ppm(
+            step_frames: u64,
+            interval_ms: u64,
+            period_frames: u32,
+            sample_rate: u32,
+        ) -> f64 {
+            demand_ppm_for(
+                step_frames,
+                Self::ms_to_periods(interval_ms, period_frames, sample_rate),
+                period_frames,
+            )
+        }
+
         /// Build the runtime state machine, deriving the render-period intervals
         /// from the lane geometry and clamping the floor defensively.
         ///
@@ -1144,8 +1208,21 @@ mod decay {
                 interval_periods,
                 stability_periods,
                 self.cascade_guard_ppm,
+                period_frames,
             )
         }
+    }
+
+    /// The periods-space demand core: `step` frames drained per
+    /// `interval_periods × period_frames` rendered frames, as ppm. Clamps
+    /// mirror [`CushionDecay::new`]'s (idempotent with them), so the ms-space
+    /// composer [`DecayParams::step_demand_ppm`] and the constructor share one
+    /// formula.
+    fn demand_ppm_for(step: u64, interval_periods: u64, period_frames: u32) -> f64 {
+        step.max(1) as f64 * 1_000_000.0
+            / (interval_periods
+                .max(1)
+                .saturating_mul(period_frames.max(1) as u64)) as f64
     }
 
     /// The per-tick signals the decay reads that it cannot derive itself: the
@@ -1183,6 +1260,12 @@ mod decay {
         stability_periods: u64,
         /// |commanded_ppm| above which decay pauses.
         cascade_guard_ppm: f64,
+        /// The constant rate demand an active descent exerts on the inner
+        /// resampler, in ppm: `step × 1e6 / (interval_periods × period_frames)`
+        /// — derived once from the CLAMPED runtime values, so it is exactly the
+        /// drain rate this machine actually commands (not the config's ms-space
+        /// intent). Exposed live via [`Self::demand_ppm`].
+        step_demand_ppm: f64,
 
         /// Current held target (the live setpoint). Starts at `ceiling`.
         held: u64,
@@ -1190,6 +1273,12 @@ mod decay {
         stable_periods: u64,
         /// Periods since the last decay step (only advances while decaying).
         periods_since_step: u64,
+        /// A step has actually fired since the last freeze/snap edge. Gates
+        /// [`Self::demand_ppm`]: between (re)activation and the first step a
+        /// full interval elapses with NOTHING drained, so publishing the
+        /// mean-rate demand there would over-subtract a ~demand-sized false
+        /// pulse into the host-clock observable at every descent start/resume.
+        has_stepped: bool,
         /// Last computed reason; `None` while actively decaying.
         frozen_reason: Option<DecayFrozenReason>,
     }
@@ -1198,6 +1287,11 @@ mod decay {
         /// Build the machine. The caller (config) validates the knobs fail-loud;
         /// this constructor clamps defensively (`floor <= ceiling`, `step >= 1`,
         /// `interval >= 1`) so a bad value degrades to "no decay" not misbehaviour.
+        ///
+        /// `period_frames` is the render-period length the interval is counted
+        /// in — needed only to state the machine's own drain rate in ppm
+        /// ([`Self::demand_ppm`]).
+        #[allow(clippy::too_many_arguments)]
         pub fn new(
             enabled: bool,
             ceiling: u64,
@@ -1206,18 +1300,27 @@ mod decay {
             interval_periods: u64,
             stability_periods: u64,
             cascade_guard_ppm: f64,
+            period_frames: u32,
         ) -> Self {
+            let step = step.max(1);
+            let interval_periods = interval_periods.max(1);
+            // Demand from the clamped values the tick actually runs on —
+            // defaults (6 / 187 periods / 256) ⇒ ~125.33 ppm. One formula,
+            // shared with the config-validation composer (`step_demand_ppm`).
+            let step_demand_ppm = demand_ppm_for(step, interval_periods, period_frames);
             Self {
                 enabled,
                 ceiling,
                 floor: floor.min(ceiling),
-                step: step.max(1),
-                interval_periods: interval_periods.max(1),
+                step,
+                interval_periods,
                 stability_periods,
                 cascade_guard_ppm,
+                step_demand_ppm,
                 held: ceiling,
                 stable_periods: 0,
                 periods_since_step: 0,
+                has_stepped: false,
                 frozen_reason: if enabled {
                     Some(DecayFrozenReason::Warmup)
                 } else {
@@ -1247,6 +1350,34 @@ mod decay {
             self.enabled && self.frozen_reason.is_none() && self.held > self.floor
         }
 
+        /// The rate demand this decay is exerting on the inner resampler RIGHT
+        /// NOW, in ppm: the constant `step / (interval × period)` drain rate
+        /// once a descent is actually stepping, 0 otherwise (disabled, frozen,
+        /// at floor, or in the flat window between (re)activation and the
+        /// first step — which drains nothing, see `has_stepped`). This is the
+        /// single source of truth the host-clock observable subtracts to see
+        /// only genuine clock offset (issue #3466). The true per-period demand
+        /// is a stepped sawtooth; from the first step on, its mean over each
+        /// interval is exactly this constant — the right model at the outer
+        /// DLL's EW-smoothed, ~1 Hz-sampled altitude.
+        ///
+        /// Deliberately NOT modeled: setpoint RAISES. A snap-back at an
+        /// unlock/session boundary restarts the ladder's measurement anyway,
+        /// but a snap-back with the lane still locked (DLL demotion below l0,
+        /// or a mid-session capture-generation re-probe) starts a REFILL
+        /// window that is NOT decontaminated: the ratio runs railed negative
+        /// for roughly `deficit / authority` seconds, the observable reads
+        /// that commanded refill as clock error, and `clamp_count` grows for
+        /// its duration. Disclosed residual on #3466 — pre-existing behavior,
+        /// unchanged by the subtraction.
+        pub fn demand_ppm(&self) -> f64 {
+            if self.active() && self.has_stepped {
+                self.step_demand_ppm
+            } else {
+                0.0
+            }
+        }
+
         /// The current frozen reason (for STATUS). `None` while decaying.
         pub fn frozen_reason(&self) -> Option<DecayFrozenReason> {
             self.frozen_reason
@@ -1259,6 +1390,7 @@ mod decay {
             self.held = self.ceiling;
             self.stable_periods = 0;
             self.periods_since_step = 0;
+            self.has_stepped = false;
             if self.enabled {
                 self.frozen_reason = Some(reason);
             }
@@ -1286,6 +1418,7 @@ mod decay {
             if s.commanded_ppm_abs > self.cascade_guard_ppm {
                 self.stable_periods = 0;
                 self.periods_since_step = 0;
+                self.has_stepped = false;
                 self.frozen_reason = Some(DecayFrozenReason::Cascade);
                 return self.held;
             }
@@ -1307,6 +1440,7 @@ mod decay {
             if self.periods_since_step >= self.interval_periods {
                 self.periods_since_step = 0;
                 self.held = self.held.saturating_sub(self.step).max(self.floor);
+                self.has_stepped = true;
                 if self.held <= self.floor {
                     self.frozen_reason = Some(DecayFrozenReason::AtFloor);
                 }
@@ -1324,6 +1458,7 @@ mod decay {
         const STEP: u64 = 16;
         const INTERVAL: u64 = 188; // ~1 s at 48k / 256
         const STABILITY: u64 = 1880; // ~10 s
+        const PERIOD_FRAMES: u32 = 256;
 
         fn locked_l0(commanded_ppm_abs: f64) -> DecaySignals {
             DecaySignals {
@@ -1334,12 +1469,30 @@ mod decay {
         }
 
         fn build() -> CushionDecay {
-            CushionDecay::new(true, CEIL, FLOOR, STEP, INTERVAL, STABILITY, 400.0)
+            CushionDecay::new(
+                true,
+                CEIL,
+                FLOOR,
+                STEP,
+                INTERVAL,
+                STABILITY,
+                400.0,
+                PERIOD_FRAMES,
+            )
         }
 
         #[test]
         fn disabled_pins_ceiling_forever() {
-            let mut d = CushionDecay::new(false, CEIL, FLOOR, STEP, INTERVAL, STABILITY, 400.0);
+            let mut d = CushionDecay::new(
+                false,
+                CEIL,
+                FLOOR,
+                STEP,
+                INTERVAL,
+                STABILITY,
+                400.0,
+                PERIOD_FRAMES,
+            );
             for _ in 0..100_000 {
                 assert_eq!(d.tick(locked_l0(0.0)), CEIL);
             }
@@ -1380,6 +1533,93 @@ mod decay {
             for _ in 0..1000 {
                 assert_eq!(d.tick(locked_l0(0.0)), FLOOR);
             }
+        }
+
+        /// The decay's published rate demand tracks its phase exactly: 0 while
+        /// warming up / frozen / at floor / snapped back / in the flat window
+        /// before a descent's first step (nothing drains there), and the
+        /// constant `step × 1e6 / (interval_periods × period_frames)` — the
+        /// machine's real drain rate — from the first step onward. This is the
+        /// term the host-clock observable subtracts (#3466), so a demand that
+        /// leaked outside the stepping phase (or understated it during one)
+        /// would re-contaminate or over-correct the outer DLL's error signal.
+        #[test]
+        fn demand_is_the_drain_rate_while_stepping_and_zero_when_idle() {
+            let expected_ppm =
+                STEP as f64 * 1_000_000.0 / ((INTERVAL * PERIOD_FRAMES as u64) as f64);
+            let mut d = build();
+            // Warm-up: frozen, no demand.
+            for _ in 0..STABILITY - 1 {
+                d.tick(locked_l0(0.0));
+                assert_eq!(d.demand_ppm(), 0.0, "warmup must exert no demand");
+            }
+            // Post-warmup pre-first-step window: ACTIVE (the machine is
+            // descending) but a full interval elapses before anything drains —
+            // demand must stay 0 or every descent start would over-subtract a
+            // ~demand-sized false pulse from the observable.
+            for _ in 0..INTERVAL - 1 {
+                d.tick(locked_l0(0.0));
+                assert!(d.active(), "post-warmup ticks are active");
+                assert_eq!(d.demand_ppm(), 0.0, "no demand before the first step");
+            }
+            // From the first step onward: the constant drain rate, on step
+            // ticks and between-step ticks alike (the mean-rate model).
+            for _ in 0..INTERVAL * 2 {
+                d.tick(locked_l0(0.0));
+                assert_eq!(d.demand_ppm(), expected_ppm);
+            }
+            assert!(d.held() < CEIL, "descent must actually have begun");
+            // Cascade-frozen mid-descent: the DLL is commanding hard, no step
+            // fires, so no demand may be subtracted from the observable.
+            d.tick(locked_l0(401.0));
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Cascade));
+            assert_eq!(d.demand_ppm(), 0.0, "a paused decay exerts no demand");
+            // Resume: the warm-up AND the pre-first-step window are re-earned —
+            // demand stays 0 until a step actually fires again. Warm-up spends
+            // STABILITY−1 ticks (the STABILITY-th tick is already the first
+            // ACTIVE tick, counting interval period 1), so the next step lands
+            // exactly STABILITY+INTERVAL−1 ticks after the freeze.
+            for _ in 0..STABILITY + INTERVAL - 2 {
+                d.tick(locked_l0(0.0));
+                assert_eq!(d.demand_ppm(), 0.0, "no demand until stepping resumes");
+            }
+            d.tick(locked_l0(0.0));
+            assert_eq!(
+                d.demand_ppm(),
+                expected_ppm,
+                "resumed stepping re-publishes"
+            );
+            // Unlock mid-descent: `snap_back` must ALSO clear the stepping
+            // latch (the cascade branch's twin reset is pinned above) — after
+            // recovery re-earns the warm-up, the pre-first-step window drains
+            // nothing again, so a stale `has_stepped` would publish the exact
+            // false pulse this gauge exists to prevent.
+            d.tick(DecaySignals {
+                locked: false,
+                dll_l0_locked: true,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Unlocked));
+            assert_eq!(d.demand_ppm(), 0.0, "an unlock snap-back exerts no demand");
+            for _ in 0..STABILITY + INTERVAL - 2 {
+                d.tick(locked_l0(0.0));
+                assert_eq!(d.demand_ppm(), 0.0, "no demand until stepping re-earns");
+            }
+            d.tick(locked_l0(0.0));
+            assert_eq!(
+                d.demand_ppm(),
+                expected_ppm,
+                "post-unlock stepping re-publishes"
+            );
+            // At floor: idle again.
+            for _ in 0..STABILITY + INTERVAL * ((CEIL - FLOOR) / STEP + 2) {
+                d.tick(locked_l0(0.0));
+            }
+            assert_eq!(d.held(), FLOOR);
+            assert_eq!(d.demand_ppm(), 0.0, "at-floor exerts no demand");
+            // Snap-back raises the setpoint instantaneously (no drain rate).
+            d.snap_back(DecayFrozenReason::Unlocked);
+            assert_eq!(d.demand_ppm(), 0.0, "a snap-back exerts no demand");
         }
 
         #[test]
@@ -1493,7 +1733,7 @@ mod decay {
 
         #[test]
         fn floor_clamped_to_ceiling_when_misconfigured() {
-            let mut d = CushionDecay::new(true, 512, 9999, STEP, INTERVAL, 1, 400.0);
+            let mut d = CushionDecay::new(true, 512, 9999, STEP, INTERVAL, 1, 400.0, PERIOD_FRAMES);
             assert_eq!(d.floor(), 512);
             for _ in 0..100_000 {
                 assert_eq!(d.tick(locked_l0(0.0)), 512);
@@ -1509,7 +1749,16 @@ mod decay {
             // that must clamp EXACTLY to the floor (never overshoot below it), and
             // decay must then stop with AtFloor.
             const ODD_FLOOR: u64 = 545;
-            let mut d = CushionDecay::new(true, CEIL, ODD_FLOOR, STEP, INTERVAL, STABILITY, 400.0);
+            let mut d = CushionDecay::new(
+                true,
+                CEIL,
+                ODD_FLOOR,
+                STEP,
+                INTERVAL,
+                STABILITY,
+                400.0,
+                PERIOD_FRAMES,
+            );
             let mut prev = CEIL;
             for _ in 0..2_000_000 {
                 let h = d.tick(locked_l0(0.0));
@@ -2631,6 +2880,91 @@ mod tests {
         }
         assert_eq!(r.hold_fill_frames() as u64, ceiling);
         assert!(!r.decay_active.load(Ordering::Relaxed));
+    }
+
+    /// The published demand gauge (the host-clock decontamination term, #3466)
+    /// is live while the lane is actively stepping and returns to 0 the moment
+    /// the floor is reached — end-to-end through the render loop, on the same
+    /// atomic `HostClockSignals` clones. The fixture's raw drain rate (step 16
+    /// per 1-period interval = 62 500 ppm) deliberately dwarfs the ±500 ppm
+    /// authority, so this test is ALSO the pin for the publication clamp: the
+    /// gauge must never publish more demand than the lane's own authority
+    /// could deliver (the subtraction downstream must not fabricate offset the
+    /// ratio cannot express).
+    #[test]
+    fn descent_publishes_the_decay_demand_gauge_and_zeroes_it_at_the_floor() {
+        let mut r = build_with_decay();
+        let floor = (TARGET + 32) as u64;
+        let obs = r.observability();
+        // Raw machine demand 62_500 ppm >> MAX_PPM: published gauge clamps to
+        // the lane authority (milli-ppm).
+        let expected_milli = (MAX_PPM * 1000.0) as i64;
+        assert_eq!(
+            obs.decay_demand_milli_ppm.load(Ordering::Relaxed),
+            0,
+            "no demand before the descent starts"
+        );
+
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let block = tone(PERIOD as usize);
+        let mut active_periods = 0u32;
+        for _ in 0..200 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0);
+            if obs.decay_active.load(Ordering::Relaxed) {
+                active_periods += 1;
+                assert_eq!(
+                    obs.decay_demand_milli_ppm.load(Ordering::Relaxed),
+                    expected_milli,
+                    "an active descent must publish its drain rate, authority-clamped"
+                );
+            }
+        }
+        assert!(active_periods > 0, "the descent never became active");
+        assert_eq!(r.held_target_frames.load(Ordering::Relaxed), floor);
+        assert_eq!(
+            obs.decay_demand_milli_ppm.load(Ordering::Relaxed),
+            0,
+            "at the floor the demand must return to 0 (nothing to decontaminate)"
+        );
+    }
+
+    /// A ratio pinned at its ±max_adjust_ppm authority surfaces on the
+    /// published `clamp_count` gauge — the rail observability #3464 called out
+    /// as existing in `RateController` but reaching neither /state nor logs.
+    #[test]
+    fn a_railed_ratio_increments_the_published_clamp_counter() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let obs = r.observability();
+        assert_eq!(
+            obs.clamp_count.load(Ordering::Relaxed),
+            0,
+            "no rail before the overfill"
+        );
+        // A standing ~4000-frame overfill far exceeds what ±500 ppm can drain
+        // (±0.128 frames/period), so the loop integrates past the authority and
+        // the output clamp engages period after period.
+        r.push_input(&tone(4000));
+        let block = tone(PERIOD as usize);
+        for _ in 0..2000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+        }
+        assert!(
+            obs.clamp_count.load(Ordering::Relaxed) > 0,
+            "a sustained overfill must surface on the published clamp counter"
+        );
+        assert_eq!(
+            obs.ratio_milli_ppm.load(Ordering::Relaxed) as i64,
+            (MAX_PPM * 1000.0) as i64,
+            "the bounded ratio itself sits pinned at the +authority rail"
+        );
     }
 
     /// PR #1141's inertness claim, pinned: an ARMED cushion decay that is FROZEN
