@@ -75,6 +75,11 @@ class StimulusProvenance:
     a different file on the next session. ``band_hz`` is the DECLARED band a
     generated stimulus was synthesized over, and ``None`` for an
     operator-named WAV whose band nobody declared — never a measured estimate.
+
+    Sibling record of the same "which stimulus at what level" fact:
+    :class:`~jasper.active_speaker.capture_provenance.CaptureProvenance`, whose
+    banked schema differs — converging the two is a contract change, so extend
+    that one rather than minting a third.
     """
 
     path: str

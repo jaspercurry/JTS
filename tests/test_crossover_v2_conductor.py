@@ -11544,8 +11544,9 @@ def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
 
     The first case is the witnessed one and is unchanged — one claim graded,
     none failed, badge at the mark. What separates the two is not the
-    ``outcome``, which is a ``pass`` in both: it is whether any claim was
-    graded at all.
+    ``outcome``, which is a ``pass`` in both (pinned above, with the ungraded
+    tracking claim): it is whether any claim was graded at all. The BADGE is
+    all this asks about.
     """
     from jasper.web.correction_crossover_v2 import (
         GRADE_INCONCLUSIVE,
@@ -11560,8 +11561,6 @@ def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
     )
     _run_phase(c, 3, 3)
 
-    assert c.verify_outcome == "pass"
-    assert c.verify_claims["integration"]["status"] == CLAIM_NOT_EVALUATED
     grade = _post_apply_grade({
         "applied": True,
         "verify": {"outcome": c.verify_outcome, "claims": c.verify_claims},

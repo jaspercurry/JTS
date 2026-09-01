@@ -171,6 +171,7 @@ from jasper.active_speaker.arm_walk import EXIT_NAMES as ARM_WALK_EXIT_NAMES
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KEY,
 )
+from jasper.active_speaker.crossover_v2.coordinator import round_receipt_is_current
 from jasper.active_speaker.crossover_v2.journey import (
     CAPTURE_PHASES,
     PHASE_APPLYING,
@@ -721,19 +722,15 @@ def round_graded_this_session(wizard: Wizard, prior_session_id: str) -> bool:
     restored/edge rounds are disproportionately the interesting ones: the
     campaign that filed this lost its first full spec pass that way.
 
-    ``round_id`` is the stage-2 relay session id (``coordinator._round_identity``),
-    so the equality below is what stops a PREVIOUS round's receipt — carried
-    forward in durable state — from vouching for this one.
+    Whether the banked receipt is THIS round's is
+    ``coordinator.round_receipt_is_current``'s rule, read from the module that
+    stamps the identity rather than restated here.
     """
     block = wizard.v2_block()
     session_id = str(block.get("session_id") or "")
-    receipt = block.get("round_receipt")
-    if not session_id or session_id == prior_session_id:
+    if session_id == prior_session_id:
         return False
-    return (
-        isinstance(receipt, Mapping)
-        and str(receipt.get("round_id") or "") == session_id
-    )
+    return round_receipt_is_current(block, session_id)
 
 
 def bank(dest: Path, *, since: str, target: Target, trail: Trail) -> int:

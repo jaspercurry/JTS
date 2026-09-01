@@ -12,7 +12,6 @@ the two predictors of one physical quantity have drifted.
 """
 
 import json
-import math
 import re
 from pathlib import Path
 
@@ -41,7 +40,11 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.analysis import crossover_null_depth_db
 from jasper.cli.forward_model import ACCEPTANCE_RUNS, build_parser, main as cli_main
 
-from tests.crossover_v2_banked_round import bank_measure_round, bank_verify_round
+from tests.crossover_v2_banked_round import (
+    bank_measure_round,
+    bank_verify_round,
+    lr4,
+)
 
 FC_HZ = 1800.0
 BAND = (200.0, 12000.0)
@@ -61,14 +64,6 @@ def _banked(role: str, tf: np.ndarray, freqs: np.ndarray, band=BAND) -> dict:
         "magnitude_db": [float(db) for db in 20.0 * np.log10(np.abs(tf))],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
     }
-
-
-def _lr4(freqs: np.ndarray, *, highpass: bool) -> np.ndarray:
-    """One LR4 branch: an inverted, aligned pair cancels hard at Fc."""
-
-    s = 1j * (np.asarray(freqs, dtype=float) / FC_HZ)
-    butter2 = (s**2 if highpass else 1.0) / (s**2 + math.sqrt(2.0) * s + 1.0)
-    return butter2**2
 
 
 def _pair(
@@ -243,8 +238,8 @@ def test_the_predicted_null_depth_agrees_with_the_delay_landscape(
     """
 
     freqs = _grid()
-    woofer_tf = _lr4(freqs, highpass=False)
-    tweeter_tf = _lr4(freqs, highpass=True)
+    woofer_tf = lr4(freqs, highpass=False)
+    tweeter_tf = lr4(freqs, highpass=True)
     lower = _banked("woofer", woofer_tf, freqs)
     upper = _banked("tweeter", tweeter_tf, freqs)
     spec = sweep_spec(
@@ -289,8 +284,8 @@ def test_the_loader_reads_both_solos_from_the_bank_the_store_wrote(
     through the shared index and the shared complex parse — never from a WAV."""
 
     freqs = _grid()
-    woofer_tf = _lr4(freqs, highpass=False)
-    tweeter_tf = _lr4(freqs, highpass=True) * np.exp(
+    woofer_tf = lr4(freqs, highpass=False)
+    tweeter_tf = lr4(freqs, highpass=True) * np.exp(
         -2j * np.pi * freqs * 200.0 * 1e-6
     )
     bundle = _bank_take(tmp_path, [
@@ -320,7 +315,7 @@ def test_the_loader_has_no_pair_when_a_take_lacks_a_solo(tmp_path, curves) -> No
 
     freqs = _grid()
     bundle = _bank_take(tmp_path, [
-        _banked(role, _lr4(freqs, highpass=False), freqs) for role in curves
+        _banked(role, lr4(freqs, highpass=False), freqs) for role in curves
     ] or [{"role": "woofer"}])
 
     assert load_branch_pair(bundle, phase=PHASE_MEASURE, position_deg=0) is None
@@ -336,8 +331,8 @@ def test_curves_on_disagreeing_grids_refuse_rather_than_summing_across_them(
     freqs = _grid(256)
     shifted = _grid(256, band=(220.0, 12500.0))
     bundle = _bank_take(tmp_path, [
-        _banked("woofer", _lr4(freqs, highpass=False), freqs),
-        _banked("tweeter", _lr4(shifted, highpass=True), shifted),
+        _banked("woofer", lr4(freqs, highpass=False), freqs),
+        _banked("tweeter", lr4(shifted, highpass=True), shifted),
     ])
 
     with pytest.raises(ForwardModelError) as excinfo:
@@ -350,7 +345,7 @@ def test_the_shared_complex_parse_inverts_the_banked_serialization() -> None:
     inverse of ``pose_curve_record``'s ``magnitude_db`` / ``phase_deg`` pair."""
 
     freqs = _grid(128)
-    tf = _lr4(freqs, highpass=True) * np.exp(-2j * np.pi * freqs * 90.0 * 1e-6)
+    tf = lr4(freqs, highpass=True) * np.exp(-2j * np.pi * freqs * 90.0 * 1e-6)
 
     parsed = parse_curve_complex(_banked("tweeter", tf, freqs))
 
@@ -445,8 +440,8 @@ def test_the_door_predicts_from_the_bank_and_plays_nothing(
 
     freqs = _grid()
     bundle = _bank_take(tmp_path, [
-        _banked("woofer", _lr4(freqs, highpass=False), freqs),
-        _banked("tweeter", _lr4(freqs, highpass=True), freqs),
+        _banked("woofer", lr4(freqs, highpass=False), freqs),
+        _banked("tweeter", lr4(freqs, highpass=True), freqs),
     ])
 
     code = cli_main([
@@ -476,6 +471,10 @@ def test_the_acceptance_runs_worked_example_runs_on_what_the_flow_banks(
 
     Driven through ``main`` with the flags the help prescribes, over the two
     round shapes the shared real-shape builder banks.
+
+    The other half of #3481 rides the same invocation: the comparand named on
+    the record that carries the delta, rather than left in an invocation the
+    reader no longer has.
     """
     basis = bank_measure_round(tmp_path)
     measured = bank_verify_round(tmp_path)
@@ -491,6 +490,10 @@ def test_the_acceptance_runs_worked_example_runs_on_what_the_flow_banks(
     assert payload["basis_round_dir"] == str(basis)
     assert payload["measured_round_dir"] == str(measured)
     assert payload["predicted_minus_measured"]["compared_points"] > 0
+    assert payload["acceptance"] == {
+        "status": ACCEPTANCE_JUDGED,
+        "judged_against": str(measured),
+    }
 
 
 def test_a_prediction_no_measurement_judged_says_so_on_its_own_record(
@@ -508,8 +511,8 @@ def test_a_prediction_no_measurement_judged_says_so_on_its_own_record(
 
     freqs = _grid()
     bundle = _bank_take(tmp_path, [
-        _banked("woofer", _lr4(freqs, highpass=False), freqs),
-        _banked("tweeter", _lr4(freqs, highpass=True), freqs),
+        _banked("woofer", lr4(freqs, highpass=False), freqs),
+        _banked("tweeter", lr4(freqs, highpass=True), freqs),
     ])
 
     code = cli_main(["predict", str(bundle)])
@@ -519,27 +522,6 @@ def test_a_prediction_no_measurement_judged_says_so_on_its_own_record(
     assert payload["prediction"]["acceptance"] == {
         "status": ACCEPTANCE_NOT_RUN,
         "judged_against": None,
-    }
-
-
-def test_a_verify_delta_names_the_measurement_that_judged_the_prediction(
-    tmp_path, capsys,
-) -> None:
-    """The other half of #3481: the comparand, on the record that carries the
-    delta rather than left in the invocation the reader no longer has."""
-
-    basis = bank_measure_round(tmp_path)
-    measured = bank_verify_round(tmp_path)
-
-    code = cli_main([
-        "verify-delta", str(basis), "--measured-round", str(measured),
-    ])
-    payload = json.loads(capsys.readouterr().out)
-
-    assert code == 0
-    assert payload["acceptance"] == {
-        "status": ACCEPTANCE_JUDGED,
-        "judged_against": str(measured),
     }
 
 
@@ -571,7 +553,7 @@ def test_a_bank_that_cannot_answer_refuses_as_an_output(tmp_path, capsys) -> Non
 
     freqs = _grid()
     bundle = _bank_take(
-        tmp_path, [_banked("woofer", _lr4(freqs, highpass=False), freqs)]
+        tmp_path, [_banked("woofer", lr4(freqs, highpass=False), freqs)]
     )
 
     code = cli_main(["predict", str(bundle)])

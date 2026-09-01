@@ -120,6 +120,7 @@ from jasper.active_speaker.crossover_v2.durable_state import (
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
+    bundle_round_artifact_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
@@ -178,15 +179,34 @@ AGREEMENT_DISSENT_MAX = 1
 
 #: The flow state file ``bank-crossover-round.sh`` drops beside the bundle.
 #: Spelled ONCE because two readers here now need it — :func:`load_banked_round`
-#: hands it to the packet builder, :func:`verify_pose_curve` reads its banked
-#: VERIFY curve — and this module has already paid, once (#2796), for a
-#: location fact it spelled in two places and then changed in one.
+#: hands it to the packet builder, :func:`_banked_state` parses it — and this
+#: module has already paid, once (#2796), for a location fact it spelled in two
+#: places and then changed in one.
 _STATE_FILENAME = "state.json"
 
 #: The applied-baseline-profile SSOT the same script drops beside the bundle.
 #: It answers "what was the speaker playing when this round was banked", which
 #: the flow state cannot (see ``evidence_packet._incumbent_block``).
 _APPLIED_PROFILE_FILENAME = "applied-profile.json"
+
+
+def _banked_state(round_dir: Path) -> tuple[Mapping[str, Any] | None, str]:
+    """``(state, "")`` off the round's banked flow state, or ``(None, reason)``.
+
+    The one parse of ``state.json`` in this module, so its readers cannot
+    disagree about what an absent, unreadable or non-object file is. Never
+    raises: a round banked without it is a normal, expected shape.
+    """
+    state_path = round_dir / _STATE_FILENAME
+    if not state_path.is_file():
+        return None, f"no {_STATE_FILENAME} banked beside the bundle"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}"
+    if not isinstance(state, Mapping):
+        return None, f"{_STATE_FILENAME} is not a JSON object"
+    return state, ""
 
 
 class RoundViewsError(ValueError):
@@ -355,6 +375,23 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     )
 
 
+def validated_round_dir(round_dir: Path) -> Path:
+    """``round_dir``, refused exactly as :func:`load_banked_round` refuses it.
+
+    For a caller that needs a banked round's DIRECTORY and nothing the packet
+    carries — :func:`forward_model_verify_delta`'s ``measured`` half, which is
+    read through ``state.json``. It pays the same "is this a banked round at
+    all" guards, so the refusal an operator meets is unchanged, and skips the
+    packet assembly nothing downstream would read.
+    """
+    round_dir = Path(round_dir)
+    try:
+        bundle_round_artifact_dir(_bundle_session_dir(round_dir))
+    except CrossoverEvidencePacketError as exc:
+        raise RoundViewsError(f"{round_dir}: {exc}") from exc
+    return round_dir
+
+
 # --------------------------------------------------------------------------- #
 # View 0 — grading the state the round STARTED from
 # --------------------------------------------------------------------------- #
@@ -485,14 +522,8 @@ def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
             return None
         return value
 
-    state_path = round_dir / _STATE_FILENAME
-    if not state_path.is_file():
-        return None, None
-    try:
-        state = json.loads(state_path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None, None
-    if not isinstance(state, Mapping):
+    state, _reason = _banked_state(round_dir)
+    if state is None:
         return None, None
     receipt = state.get("round_receipt")
     ordinal = _count(receipt.get("round_ordinal")) if isinstance(receipt, Mapping) else None
@@ -739,15 +770,9 @@ def _banked_verify_curve(
     parse itself is :func:`~.durable_state.verify_measured_curve_from_state`,
     the product's own reader for the key.
     """
-    state_path = round_dir / _STATE_FILENAME
-    if not state_path.is_file():
-        return None, f"no {_STATE_FILENAME} banked beside the bundle"
-    try:
-        state = json.loads(state_path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}"
-    if not isinstance(state, Mapping):
-        return None, f"{_STATE_FILENAME} is not a JSON object"
+    state, reason = _banked_state(round_dir)
+    if state is None:
+        return None, reason
     triple = verify_measured_curve_from_state(state)
     if triple is None:
         return None, "the round's state banked no verify_priors.verify_measured curve"
@@ -851,7 +876,7 @@ def forward_model_verify_delta(
     basis: BankedRound,
     candidate: "forward_model.SummationCandidate",
     *,
-    measured: BankedRound | None = None,
+    measured: BankedRound | Path | None = None,
     phase: str = PHASE_MEASURE,
     position_deg: int = DESIGN_AXIS_DEG,
 ) -> ForwardModelDeltaResult:
@@ -878,14 +903,22 @@ def forward_model_verify_delta(
     campaign's r8 regression is exactly that shape, and exactly this join —
     r7's banked solos, the inherited EQ held verbatim, the delay r8 applied on
     top, against r8's own measured verify.
+
+    ``measured`` may be the round's DIRECTORY rather than a loaded round,
+    because the directory is all this half is: nothing here reads the measured
+    round's packet, so a caller that has validated the directory
+    (:func:`validated_round_dir`) need not assemble one to be compared against.
     """
 
     measured = basis if measured is None else measured
+    measured_dir = (
+        measured.round_dir if isinstance(measured, BankedRound) else Path(measured)
+    )
     dirs = {
         "basis_round_dir": str(basis.round_dir),
-        "measured_round_dir": str(measured.round_dir),
+        "measured_round_dir": str(measured_dir),
     }
-    verify_curve, reason = _banked_verify_curve(measured.round_dir)
+    verify_curve, reason = _banked_verify_curve(measured_dir)
     if verify_curve is None:
         return ForwardModelDeltaResult(None, reason, **dirs)
     measured_freqs_hz, measured_db = verify_curve

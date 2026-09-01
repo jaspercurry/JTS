@@ -52,7 +52,13 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from .contracts import DRIVER_ROLE_TWEETER, DRIVER_ROLE_WOOFER
+from .contracts import (
+    ACCEPTANCE_JUDGED,
+    ACCEPTANCE_NOT_RUN,
+    DRIVER_ROLE_TWEETER,
+    DRIVER_ROLE_WOOFER,
+    acceptance_block,
+)
 from .intervention import SummationFrame, compose_linearized_prediction
 from .position_cycle import parse_curve_complex, read_pose_curve_pair
 
@@ -62,37 +68,6 @@ PREDICTION_SCHEMA_VERSION = 1
 REFUSAL_UNSUPPORTED = "forward_model_unsupported"
 REFUSAL_NO_CURVE_PAIR = "forward_model_no_banked_curve_pair"
 REFUSAL_GRID_DISAGREES = "forward_model_branch_grids_disagree"
-
-#: Nothing measured judged this prediction. What a bare prediction always is:
-#: the model computed a curve and no capture ever contradicted it.
-ACCEPTANCE_NOT_RUN = "not_run"
-
-#: A banked measurement judged it, and ``judged_against`` names which one.
-ACCEPTANCE_JUDGED = "judged_against_measured"
-
-
-def acceptance_block(judged_against: str | None) -> dict[str, Any]:
-    """Whether a measurement judged this prediction, and which one.
-
-    The disclosure #3481 found missing: ``predict`` and ``verify-delta``
-    emitted equally authoritative JSON whether or not anything had ever
-    checked the model against a capture, so an untriaged misattribution
-    entered round provenance indistinguishably from a validated one.
-
-    ``judged_against`` is the measured comparand's own identity — the banked
-    round whose VERIFY sum the prediction was deltaed against — or ``None``,
-    which is what a prediction nothing measured is.
-
-    Disclosure, never a gate, and never a grade: this module ships no
-    acceptance tolerance and invents none, so a JUDGED record says which
-    measurement judged it and leaves what the delta MEANS to the reader
-    (invariant 3).
-    """
-    return {
-        "status": ACCEPTANCE_JUDGED if judged_against else ACCEPTANCE_NOT_RUN,
-        "judged_against": judged_against,
-    }
-
 
 class ForwardModelError(ValueError):
     """The banked curves cannot support a predicted sum.

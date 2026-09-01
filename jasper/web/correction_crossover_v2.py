@@ -1730,14 +1730,9 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     verify_failed = outcome == "fail" or CLAIM_FAIL in {
         tracking_status, absolute_status,
     }
-    # **A capture that graded NO claim proved nothing at the mark** — which the
-    # union above cannot say, because it looks for a failure and finds none.
-    # Reachable since the gate stopped refusing an ungradeable tracking claim
-    # (#3487): a republished candidate has no measure round to track against,
-    # and a capture that also finds no trusted crossover region leaves the
-    # absolute claim ``not_evaluated`` too. INDETERMINATE is the republish
-    # door's own declared outcome for that shape and the mark badge is its
-    # opposite. Only a claims RECORD says this: an absent block is a pre-R18
+    # A claims record that graded NO claim proved nothing at the mark, and
+    # INCONCLUSIVE is the republish door's own declared outcome for that shape
+    # (#3487). Only a claims RECORD says this: an absent block is a pre-R18
     # build and keeps the standing-alone rule stated above.
     no_claim_graded = bool(claims) and not {tracking_status, absolute_status} & {
         CLAIM_PASS, CLAIM_FAIL,

@@ -55,6 +55,8 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from ..branch_chain import CrossoverSection
 
 __all__ = [
+    "ACCEPTANCE_JUDGED",
+    "ACCEPTANCE_NOT_RUN",
     "ADOPTION_ROWS",
     "ADOPTION_ROW_KEEP",
     "ADOPTION_ROW_KEEP_FOR_ITERATION",
@@ -97,6 +99,7 @@ __all__ = [
     "PROPOSAL_FINGERPRINT_KINDS",
     "PlanRefusal",
     "QualityStatus",
+    "REALIZATION_COMPARAND",
     "REFERENCE_MARK_DESIGN_AXIS",
     "REGIME_NEAR_FIELD",
     "REGIME_REFERENCE_AXIS",
@@ -109,6 +112,7 @@ __all__ = [
     "TrimStrategy",
     "VERIFY_TOLERANCE_DB",
     "VerificationResult",
+    "acceptance_block",
     "detached_json",
 ]
 
@@ -1538,3 +1542,61 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 #: `spatial._DESIGN_AXIS_GEOMETRY` declares. `None` is a different fact — "no
 #: side was declared" — and must never be minted here as a synonym for this.
 DESIGN_AXIS_DEG = 0
+
+
+# --------------------------------------------------------------------------- #
+# What judged a prediction, and what a realization was judged against
+# --------------------------------------------------------------------------- #
+#
+# Here for the reason the section above gives: `forward_model` and
+# `verification` are numpy-heavy, and reaching these strings must not drag the
+# analysis stack in behind them. Both modules import them back and re-export
+# them, so a reader still quotes them from the module that owns the behaviour.
+
+#: Nothing measured judged this prediction. What a bare prediction always is:
+#: the model computed a curve and no capture ever contradicted it.
+ACCEPTANCE_NOT_RUN = "not_run"
+
+#: A banked measurement judged it, and ``judged_against`` names which one.
+ACCEPTANCE_JUDGED = "judged_against_measured"
+
+
+def acceptance_block(judged_against: str | None) -> dict[str, Any]:
+    """Whether a measurement judged this prediction, and which one.
+
+    The disclosure #3481 found missing: ``predict`` and ``verify-delta``
+    emitted equally authoritative JSON whether or not anything had ever
+    checked the model against a capture, so an untriaged misattribution
+    entered round provenance indistinguishably from a validated one.
+
+    ``judged_against`` is the measured comparand's own identity — the banked
+    round whose VERIFY sum the prediction was deltaed against — or ``None``,
+    which is what a prediction nothing measured is.
+
+    Disclosure, never a gate, and never a grade: nothing here ships an
+    acceptance tolerance or invents one, so a JUDGED record says which
+    measurement judged it and leaves what the delta MEANS to the reader
+    (invariant 3).
+    """
+    return {
+        "status": ACCEPTANCE_JUDGED if judged_against else ACCEPTANCE_NOT_RUN,
+        "judged_against": judged_against,
+    }
+
+
+#: WHAT :func:`~.verification.evaluate_realization`'s comparator compares the
+#: measured VERIFY sum AGAINST (#3483): ``MeasurementPriors.predicted_sum``,
+#: the applied candidate's own predicted summed magnitude at its committed trim
+#: and delay. An ABSOLUTE curve-against-curve claim.
+#:
+#: It is on the record because the receipt carries a second realization number
+#: measured against something else entirely — the delta probe's per-band
+#: realized/commanded ratios, whose comparand is the COMMANDED DELTA (ADR-0209
+#: names those verdict classes). The two disagree routinely and neither
+#: impeaches the other: on 2026-09-01 two rounds returned ``matched`` beside
+#: band ratios of 0.4877 and 2.4309, and with no comparand on the record a
+#: reader who trusted the word and a reader who read the ratios reached
+#: opposite conclusions about the same round. Band-pooled ratios are also
+#: near-meaningless across a mixed-sign commanded set, where signed deltas
+#: cancel; this axis is unaffected because it never differences two commands.
+REALIZATION_COMPARAND = "applied_candidate_predicted_sum"

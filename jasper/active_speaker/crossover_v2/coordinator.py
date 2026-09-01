@@ -1354,6 +1354,27 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
     )
 
 
+def round_receipt_is_current(state: Any, session_id: str) -> bool:
+    """Did ``session_id``'s own round grade and bank the receipt in ``state``?
+
+    Beside :func:`series_position_from_state` for its reason: the receipt
+    identity :func:`_write_round_receipt` stamps has one reader shape, and a
+    second spelling of it in a caller would be a second owner.
+
+    ``round_id`` is the stage-2 relay session id (:func:`_round_identity`), so
+    the equality is what stops a PREVIOUS round's receipt — carried forward in
+    durable state — from vouching for this one. An empty ``session_id``
+    vouches for nothing, whatever a record's ``round_id`` says.
+    """
+
+    receipt = state.get("round_receipt") if isinstance(state, Mapping) else None
+    return bool(
+        session_id
+        and isinstance(receipt, Mapping)
+        and str(receipt.get("round_id") or "") == session_id
+    )
+
+
 def _blend_from_receipt(
     receipt: Mapping[str, Any],
 ) -> tuple[Mapping[str, Any], ...] | None:

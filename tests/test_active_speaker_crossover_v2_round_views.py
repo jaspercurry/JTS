@@ -418,6 +418,13 @@ def test_forward_model_verify_delta_joins_the_two_rounds_the_flow_banks(
     for stage 2 — so a comparison that read one round for both halves could
     never run on a banked corpus. Both fixture rounds come from the shared
     real-shape builder, so this pin fails if either stage's writer moves.
+
+    The banked VERIFY curve also reaches the comparison VERBATIM. It used to be
+    resampled onto the round's cloud-position grid first, which a round that
+    banked no cloud group does not have — and the delta then compared an empty
+    curve. The measured curve here is flat and the solos sum to a flat
+    prediction, so the whole difference is LEVEL: a shape delta of zero over
+    the solos' own swept band is the tell that the real curve arrived.
     """
     basis = bank_measure_round(tmp_path)
     measured = bank_verify_round(tmp_path)
@@ -436,6 +443,8 @@ def test_forward_model_verify_delta_joins_the_two_rounds_the_flow_banks(
     # say so is a number with no provenance.
     assert result.basis_round_dir == str(basis)
     assert result.measured_round_dir == str(measured)
+    assert result.delta["max_abs_db"] == pytest.approx(0.0, abs=1e-6)
+    assert result.delta["compared_band_hz"] == [SOLO_BAND_HZ[0], SOLO_BAND_HZ[1]]
 
 
 @pytest.mark.parametrize(
@@ -472,30 +481,6 @@ def test_forward_model_verify_delta_names_the_half_it_was_not_given(
     # than leaving the acceptance question to whoever reads it later (#3481).
     assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
     assert result.acceptance["judged_against"] is None
-
-
-def test_forward_model_verify_delta_reads_the_verify_curve_off_its_own_grid(
-    tmp_path,
-):
-    """The banked VERIFY curve reaches the comparison VERBATIM.
-
-    It used to be resampled onto the round's cloud-position grid first, which
-    a round that banked no cloud group does not have — and the delta then
-    compared an empty curve. The measured curve here is flat, the solos sum to
-    a flat prediction, so the whole difference is LEVEL: a shape delta of zero
-    over the solos' own swept band is the tell that the real curve arrived.
-    """
-    basis = bank_measure_round(tmp_path)
-    measured = bank_verify_round(tmp_path)
-
-    result = forward_model_verify_delta(
-        load_banked_round(basis), SummationCandidate(),
-        measured=load_banked_round(measured),
-    )
-
-    assert result.delta is not None
-    assert result.delta["max_abs_db"] == pytest.approx(0.0, abs=1e-6)
-    assert result.delta["compared_band_hz"] == [SOLO_BAND_HZ[0], SOLO_BAND_HZ[1]]
 
 
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):

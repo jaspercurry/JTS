@@ -119,6 +119,7 @@ REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
 REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
 REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
 
+
 def _refused(
     reason: str, detail: str, *, restored: bool | None = None
 ) -> tuple[SeatLevelResult, str]:
@@ -208,18 +209,20 @@ def stimulus_provenance(
 
     raw = path.read_bytes()
     _rate, data = wavfile.read(io.BytesIO(raw))
-    samples = np.asarray(data).astype(np.float64)
+    data = np.asarray(data)
+    samples = data.astype(np.float64)
     full_scale = (
-        float(np.iinfo(np.asarray(data).dtype).max)
-        if np.issubdtype(np.asarray(data).dtype, np.integer)
+        float(np.iinfo(data.dtype).max)
+        if np.issubdtype(data.dtype, np.integer)
         else 1.0
     )
-    peak = float(np.abs(samples).max()) / full_scale if samples.size else 0.0
+    samples /= full_scale
+    peak = float(max(-samples.min(), samples.max())) if samples.size else 0.0
     if not (peak > 0.0) or not math.isfinite(peak):
         raise ValueError(
             f"{path} carries no signal; a silent stimulus cannot bound a volume"
         )
-    rms = float(np.sqrt(np.mean((samples / full_scale) ** 2)))
+    rms = float(np.sqrt(np.mean(np.square(samples, out=samples))))
     return StimulusProvenance(
         path=str(path),
         sha256=hashlib.sha256(raw).hexdigest(),
@@ -235,6 +238,7 @@ class _Declarations(NamedTuple):
     topology: Any
     draft: dict[str, Any]
     safety_profile: dict[str, Any]
+    targets: list[dict[str, Any]]
 
 
 def _load_declarations(args: argparse.Namespace) -> _Declarations:
@@ -244,8 +248,14 @@ def _load_declarations(args: argparse.Namespace) -> _Declarations:
     topology and design draft; loading per consumer would do the draft's
     derived-field stamping twice and give the missing-profile refusal two
     homes to drift between.
+
+    Sibling, not the same reader: ``cli/measure.py``'s ``read_box_declaration``
+    answers the same "what has this box declared" question and is itself
+    disclosed as the second derivation of it. Converging the two needs an owner
+    call because their refusal surfaces differ.
     """
     from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import active_driver_targets
     from jasper.output_topology import load_output_topology_strict
 
     topology = load_output_topology_strict(args.topology)
@@ -256,7 +266,9 @@ def _load_declarations(args: argparse.Namespace) -> _Declarations:
             "the design draft carries no driver_safety_profile; commission the "
             "drivers before leveling"
         )
-    return _Declarations(topology, draft, safety_profile)
+    return _Declarations(
+        topology, draft, safety_profile, active_driver_targets(topology)
+    )
 
 
 def default_stimulus_wav(
@@ -292,7 +304,6 @@ def default_stimulus_wav(
     from jasper.active_speaker.excitation_safety_plan import (
         resolve_driver_measurement_band_hz,
     )
-    from jasper.active_speaker.measurement import active_driver_targets
     from jasper.active_speaker.speech_stimulus import DEFAULT_CACHE_DIR
     from jasper.active_speaker.test_signal_plan import (
         MAX_DRIVER_TEST_FREQUENCY_HZ,
@@ -305,7 +316,7 @@ def default_stimulus_wav(
         resolve_driver_measurement_band_hz(
             declarations.safety_profile, str(target["target_fingerprint"])
         )
-        for target in active_driver_targets(declarations.topology)
+        for target in declarations.targets
     ]
     if not bands:
         raise SessionVolumePlanError(
@@ -378,23 +389,21 @@ def _applied_branch_peaks(
 
 
 def _derive_bounds(
-    stimulus: Path, levels: StimulusProvenance, declarations: _Declarations
+    levels: StimulusProvenance, declarations: _Declarations
 ) -> tuple[float, float]:
     """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``.
 
     ``levels`` is measured once by the caller rather than read again here (the
     ramp needs the same numbers for its refusal, and two reads of one file are
-    two answers), and ``declarations`` is loaded once by the caller for the
-    same reason.
+    two answers) and carries the stimulus path, and ``declarations`` is loaded
+    once by the caller for the same reason.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
     )
-    from jasper.active_speaker.measurement import active_driver_targets
 
-    topology, draft, safety_profile = declarations
-    targets = active_driver_targets(topology)
+    topology, draft, safety_profile, targets = declarations
     fingerprints = [str(target["target_fingerprint"]) for target in targets]
     # The PAD-FOLDED sensitivities, not the naked datasheet ones. An L-pad'd
     # tweeter's acoustic output is quieter than its bare rating by exactly the
@@ -409,7 +418,7 @@ def _derive_bounds(
         fingerprints,
         stimulus_peak_dbfs=levels.peak_dbfs,
         declared_sensitivities=declared_effective_driver_sensitivities(draft),
-        branch_peaks_dbfs=_applied_branch_peaks(stimulus, targets),
+        branch_peaks_dbfs=_applied_branch_peaks(Path(levels.path), targets),
     )
     # ``resolve_capture_preset`` is the sibling every capture-analysis surface
     # uses: it resolves the preview-compiled preset and only then falls back to
@@ -520,7 +529,7 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
             else default_stimulus_wav(declarations)
         )
         provenance = stimulus_provenance(stimulus, band_hz=band_hz)
-        ceiling_db, spl_ceiling = _derive_bounds(stimulus, provenance, declarations)
+        ceiling_db, spl_ceiling = _derive_bounds(provenance, declarations)
     except (
         SessionVolumePlanError,
         CommissionPresetResolutionError,

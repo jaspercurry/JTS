@@ -73,7 +73,7 @@ import json
 import math
 import wave
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -226,37 +226,36 @@ _REFUSAL_FOR_CAPTURE_REASON: dict[str, str | None] = {
     CAPTURE_UNREADABLE_SIDECAR: NO_ADMISSIBLE_CAPTURES,
     CAPTURE_OTHER_SESSION: NO_ADMISSIBLE_CAPTURES,
     # The round answered a different question; a verify-shaped round answers
-    # this one. (A lateral row is claimed earlier by LATERAL_CAPTURE_SHAPE.)
+    # this one.
     CAPTURE_PHASE_NOT_ADMISSIBLE: ROUND_SHAPE_INADMISSIBLE,
-    CAPTURE_LATERAL_SHAPE: ROUND_SHAPE_INADMISSIBLE,
-    # The round is the right shape and the take is what cannot be read. (A
-    # program-missing row is claimed earlier by PROGRAM_MISSING.)
-    CAPTURE_PROGRAM_MISSING: CAPTURES_UNREADABLE,
+    # These two rows short-circuit at their own refusals above the no-capture
+    # read, so they speak for those refusals and never reach the read.
+    CAPTURE_LATERAL_SHAPE: LATERAL_CAPTURE_SHAPE,
+    CAPTURE_PROGRAM_MISSING: PROGRAM_MISSING,
+    # The round is the right shape and the take is what cannot be read.
     CAPTURE_WAV_MISSING: CAPTURES_UNREADABLE,
     CAPTURE_UNSTAMPED_NAME: CAPTURES_UNREADABLE,
 }
 
-#: Read in this order, so the most specific thing the census can say is what
-#: the refusal says: a round whose admissible take the ring lost IS
-#: verify-shaped, and naming its shape as the remedy is the #3480 misdirection.
-#: A census speaking for neither says nothing of this round arrived, which is
-#: :data:`NO_ADMISSIBLE_CAPTURES` — the empty census's answer too.
-_REFUSAL_PRECEDENCE = (CAPTURES_UNREADABLE, ROUND_SHAPE_INADMISSIBLE)
-
 #: What to fix, carried in the refusal a driver actually reads: the slug names
 #: the state, this names the move (#3480 — the driver got the state alone).
+#: Key order is the no-capture read's precedence, so the most specific thing
+#: the census can say is what the refusal says: a round whose admissible take
+#: the ring lost IS verify-shaped, and naming its shape as the remedy is the
+#: #3480 misdirection. The last entry is also the fallback a census speaking
+#: for none of these falls to — the empty census's answer too.
 _NO_CAPTURE_REMEDY = {
-    NO_ADMISSIBLE_CAPTURES: (
-        "no capture in this ring is attributable to this round; check the ring "
-        "it was pointed at and the session id it was scoped by"
+    CAPTURES_UNREADABLE: (
+        "the round shape is right and its takes are what cannot be read; the "
+        "fix is the ring or the bank step that filled it, not another round"
     ),
     ROUND_SHAPE_INADMISSIBLE: (
         "this round banked no capture shape carrying a summed-system response; "
         "point at a verify-shaped round"
     ),
-    CAPTURES_UNREADABLE: (
-        "the round shape is right and its takes are what cannot be read; the "
-        "fix is the ring or the bank step that filled it, not another round"
+    NO_ADMISSIBLE_CAPTURES: (
+        "no capture in this ring is attributable to this round; check the ring "
+        "it was pointed at and the session id it was scoped by"
     ),
 }
 
@@ -611,8 +610,6 @@ def load_round_captures(
 
     captures: list[RoundCapture] = []
     seen_phases: dict[str, int] = {}
-    lateral: list[str] = []
-    missing_program: list[str] = []
     census: list[dict[str, Any]] = []
 
     def note(sidecar: Path, phase: Any, reason: str) -> None:
@@ -650,7 +647,6 @@ def load_round_captures(
             continue
         seen_phases[phase] = seen_phases.get(phase, 0) + 1
         if phase == PHASE_LATERAL:
-            lateral.append(sidecar.name)
             note(sidecar, phase, CAPTURE_LATERAL_SHAPE)
             continue
         if phase not in ADMISSIBLE_PHASES:
@@ -658,7 +654,6 @@ def load_round_captures(
             continue
         program = programs.get(phase)
         if program is None:
-            missing_program.append(phase)
             note(sidecar, phase, CAPTURE_PROGRAM_MISSING)
             continue
         wav = sidecar.parent.parent / "wav" / f"{sidecar.stem}.wav"
@@ -682,6 +677,7 @@ def load_round_captures(
             )
         )
 
+    lateral = [row for row in census if row["reason"] == CAPTURE_LATERAL_SHAPE]
     if lateral:
         raise FeatureClassificationRefused(
             LATERAL_CAPTURE_SHAPE,
@@ -695,6 +691,9 @@ def load_round_captures(
                 "captures": census,
             },
         )
+    missing_program = [
+        row["phase"] for row in census if row["reason"] == CAPTURE_PROGRAM_MISSING
+    ]
     if missing_program:
         # Refused rather than pooled without them. A round whose bundle is
         # missing the program for a phase it banked captures of is incomplete,
@@ -717,7 +716,7 @@ def load_round_captures(
         # verify-shaped round is #3480 in the vocabulary that replaced it.
         speaks = {_REFUSAL_FOR_CAPTURE_REASON[row["reason"]] for row in census}
         reason = next(
-            (slug for slug in _REFUSAL_PRECEDENCE if slug in speaks),
+            (slug for slug in _NO_CAPTURE_REMEDY if slug in speaks),
             NO_ADMISSIBLE_CAPTURES,
         )
         raise FeatureClassificationRefused(
@@ -1242,9 +1241,12 @@ def injection_excess_gd(
     C4's positive-gain combs sit on a broad DC maximum, so neither is touched;
     only C3 is. See issue #3493.
 
-    Read through the identical chain — same transform, smoothing, hold and
-    local-slope differentiator — so the correction is made the way the reading
-    is, and goes to zero exactly when the hold does.
+    Read through the same transform, smoothing, edge hold and local-slope
+    differentiator as the measurement, so the correction is made the way the
+    reading is and goes to zero exactly when the hold does. The gate is the one
+    stage deliberately not shared: the bias is derived ungated from the
+    injection alone, and gating it would change the emitted numbers (deferred
+    behind hardware verification).
     """
     if abs(gain) >= 1.0:
         raise ValueError(
@@ -1460,11 +1462,10 @@ def _run_controls(
     )
     c3_ep = phase_of(echo)
     c3 = excursions(
-        ExcessPhase(
-            freqs=c3_ep.freqs,
+        replace(
+            c3_ep,
             excess_phase=c3_ep.excess_phase - c3_bias.excess_phase,
             excess_gd_us=c3_ep.excess_gd_us - c3_bias.excess_gd_us,
-            bulk_delay_us=c3_ep.bulk_delay_us,
         )
     )
     c3_delta = {

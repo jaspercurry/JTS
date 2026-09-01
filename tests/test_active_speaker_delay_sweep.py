@@ -10,7 +10,6 @@ refusal reach them as the refusing module's own sentence.
 """
 
 import json
-import math
 import shlex
 from pathlib import Path
 
@@ -29,22 +28,15 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.cli.angle_capture import build_parser as angle_capture_parser
 from jasper.cli.delay_sweep import main
 
+from tests.crossover_v2_banked_round import lr4
+
 FC_HZ = 1800.0
-
-
-def _lr4(freqs, *, highpass: bool):
-    """One LR4 branch: an inverted, aligned pair cancels hard at Fc."""
-
-    s = 1j * (np.asarray(freqs, dtype=float) / FC_HZ)
-    butter2 = (s**2 if highpass else 1.0) / (s**2 + math.sqrt(2.0) * s + 1.0)
-    return butter2**2
-
 
 def _curve(role: str, *, arrival_us: float = 0.0, band=(200.0, 12000.0)):
     """One curve in `spatial.pose_curve_record`'s exact banked shape."""
 
     freqs = np.linspace(band[0], band[1], 512)
-    tf = _lr4(freqs, highpass=(role == "tweeter")) * np.exp(
+    tf = lr4(freqs, highpass=(role == "tweeter")) * np.exp(
         -2j * np.pi * freqs * arrival_us * 1e-6
     )
     return {

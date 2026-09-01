@@ -2288,13 +2288,13 @@ banks the per-driver solos and the entry baseline and no cloud at all
 cloud positions nor a graded `spec` — and it is the only round shape that
 produces an entry baseline. `load_banked_round` used to refuse it on both
 counts, which made `entry` unrunnable on every rig (#3478). It now reads what
-the round banked; the four position-graded views (`frozen`, `per-seat`,
+the round banked; the five position-graded views (`frozen`, `per-seat`,
 `repeat`, `agreement`, `co-metrics`) raise the same two sentences themselves.
 An entry baseline in a round that graded no after is stated in NO frame — the
 report echoes `trusted_floor_hz`/`trusted_ceiling_hz` as `null`, which is its
 own "not stated", so the grade discloses which frame produced it.
 
-**A CLOUD position's own record carries a numeric bearing.** The four
+**A CLOUD position's own record carries a numeric bearing.** The five
 position-graded views read the cloud positions block
 (`spatial.cloud_position_record` rows),
 which carries a coarse `role` (`onax`/`offax`) and, since the 2026-08-24

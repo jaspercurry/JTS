@@ -54,9 +54,11 @@ from jasper.active_speaker.crossover_v2.forward_model import (
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.round_views import (
+    BankedRound,
     RoundViewsError,
     forward_model_verify_delta,
     load_banked_round,
+    validated_round_dir,
 )
 
 from ._logging import configure_verbose_logging
@@ -200,12 +202,16 @@ def _cmd_verify_delta(args: argparse.Namespace) -> int:
         candidate = _candidate(args)
     except (OSError, ValueError) as exc:
         return _refused(REFUSE_CANDIDATE, f"{args.candidate_json}: {exc}")
-    measured_dir = args.measured_round or args.round_dir
+    basis_dir = Path(args.round_dir)
+    measured_dir = Path(args.measured_round or args.round_dir)
     try:
-        banked = load_banked_round(Path(args.round_dir))
-        measured = (
-            banked if measured_dir == args.round_dir
-            else load_banked_round(Path(measured_dir))
+        banked = load_banked_round(basis_dir)
+        # The measured half is read through its ``state.json``, never its
+        # packet, so it is validated as a banked round and handed over as a
+        # directory rather than assembled.
+        measured: BankedRound | Path = (
+            banked if measured_dir == basis_dir
+            else validated_round_dir(measured_dir)
         )
     except RoundViewsError as exc:
         return _refused(REFUSE_NO_DELTA, str(exc))

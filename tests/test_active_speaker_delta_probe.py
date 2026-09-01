@@ -38,6 +38,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_TOLERANCE_HIGH_DB,
     DELTA_PROBE_TOLERANCE_LOW_DB,
     DELTA_PROBE_VERDICTS,
+    REALIZED_VS_COMMANDED_COMPARAND,
     REASON_UNCOMMANDED_LEVEL_SHIFT,
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
     SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
@@ -2219,6 +2220,14 @@ def test_only_the_realized_vs_commanded_classes_defer(verdict, defers):
     )
     expected = SEAM_DEFERRED_QUIETER_THAN_COMMANDED if defers else ""
     assert seam_rollback_deferral(stub) == expected
+
+
+def test_every_realized_vs_commanded_verdict_is_a_rollback_verdict():
+    """The narrowing above can only narrow.
+
+    A class outside the rollback set would be a deferral declined on a
+    decision the round never made.
+    """
     assert set(DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS) <= set(
         DELTA_PROBE_ROLLBACK_VERDICTS
     )
@@ -2388,7 +2397,7 @@ def test_the_realization_block_carries_the_trusted_band_provenance():
     # Two graders of one axis on the same receipt, each naming its comparand:
     # this one grades against the commanded delta, verification's composed
     # verdict against the applied candidate's predicted sum.
-    assert payload["comparand"] == "commanded_delta"
+    assert payload["comparand"] == REALIZED_VS_COMMANDED_COMPARAND
     assert set(payload["bands"]) == set(DELTA_PROBE_REALIZATION_BANDS)
     assert set(payload["bands"][DELTA_PROBE_BAND_CROSSOVER]) == {
         "band_hz", "n_bins", "ratio", "graded",

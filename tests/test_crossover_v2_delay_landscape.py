@@ -30,22 +30,9 @@ from jasper.active_speaker.delay_sweep import (
     sweep_spec,
 )
 
+from tests.crossover_v2_banked_round import lr4
+
 FC_HZ = 1800.0
-
-
-def _lr4(freqs, *, highpass: bool, fc_hz: float = FC_HZ):
-    """A Linkwitz-Riley 4th-order branch — Butterworth 2nd order, squared.
-
-    The shape the reverse-null test assumes: an LR4 pair sums FLAT in phase and
-    CANCELS at Fc when one branch is inverted, and away from Fc each branch owns
-    its own shoulder. Two unshaped flat branches would cancel at every frequency
-    equally, which is a null with no shoulders to measure it against — not what
-    a crossover does.
-    """
-    s = 1j * (np.asarray(freqs, dtype=float) / fc_hz)
-    butter2 = (s**2 if highpass else 1.0) / (s**2 + math.sqrt(2.0) * s + 1.0)
-    return butter2**2
-
 
 def _curve(
     role: str, *, arrival_us: float, freqs=None, gain_db: float = 0.0,
@@ -57,7 +44,7 @@ def _curve(
     test reconstructs it the way it reconstructs a real bank.
     """
     freqs = np.linspace(200.0, 12000.0, 512) if freqs is None else np.asarray(freqs)
-    shape = _lr4(freqs, highpass=(role == "tweeter"), fc_hz=fc_hz)
+    shape = lr4(freqs, highpass=(role == "tweeter"), fc_hz=fc_hz)
     tf = (
         shape
         * 10.0 ** (gain_db / 20.0)

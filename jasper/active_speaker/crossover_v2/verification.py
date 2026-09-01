@@ -49,6 +49,7 @@ from .contracts import (
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
     ADOPTION_ROW_RESTORE_UNTRUSTED,
+    REALIZATION_COMPARAND,
     AdoptionDecision,
     AdoptionOutcome,
     BenefitStatus,
@@ -230,23 +231,6 @@ def evaluate_capture_validity(
 #: ``ProgramAnalysis.verify_tracking``.
 TRACKING_COMPARATOR_KEY = "max_db_notch_excluded"
 
-#: WHAT the comparator above compares the measured VERIFY sum AGAINST (#3483):
-#: ``MeasurementPriors.predicted_sum``, the applied candidate's own predicted
-#: summed magnitude at its committed trim and delay. An ABSOLUTE curve-against-
-#: curve claim.
-#:
-#: It is on the record because the receipt carries a second realization number
-#: measured against something else entirely — the delta probe's per-band
-#: realized/commanded ratios, whose comparand is the COMMANDED DELTA (ADR-0209
-#: names those verdict classes). The two disagree routinely and neither
-#: impeaches the other: on 2026-09-01 two rounds returned ``matched`` beside
-#: band ratios of 0.4877 and 2.4309, and with no comparand on the record a
-#: reader who trusted the word and a reader who read the ratios reached
-#: opposite conclusions about the same round. Band-pooled ratios are also
-#: near-meaningless across a mixed-sign commanded set, where signed deltas
-#: cancel; this axis is unaffected because it never differences two commands.
-REALIZATION_COMPARAND = "applied_candidate_predicted_sum"
-
 REALIZATION_NO_TRACKING = "tracking_unavailable"
 REALIZATION_NO_COMPARATOR = "tracking_comparator_absent"
 REALIZATION_WITHIN_TOLERANCE = "tracking_within_tolerance"
@@ -286,28 +270,23 @@ def evaluate_realization(
     tolerance = _positive_db(tolerance_db, field_name="tolerance_db")
     if tracking is None:
         return Verdict(RealizationStatus.UNAVAILABLE, REALIZATION_NO_TRACKING, {})
+    evidence: dict[str, Any] = {
+        "comparator": TRACKING_COMPARATOR_KEY,
+        # WHAT the number beside it was measured against (#3483). Named on
+        # every verdict that read the tracking mapping, because "matched" is
+        # one of the four adoption inputs and the receipt carries a second
+        # realization number graded against a different comparand — see
+        # :data:`REALIZATION_COMPARAND`.
+        "comparand": REALIZATION_COMPARAND,
+        "tolerance_db": tolerance,
+    }
     measured = tracking.get(TRACKING_COMPARATOR_KEY)
     if isinstance(measured, bool) or not isinstance(measured, (int, float)):
         return Verdict(
-            RealizationStatus.UNAVAILABLE,
-            REALIZATION_NO_COMPARATOR,
-            {
-                "comparator": TRACKING_COMPARATOR_KEY,
-                "comparand": REALIZATION_COMPARAND,
-                "tolerance_db": tolerance,
-            },
+            RealizationStatus.UNAVAILABLE, REALIZATION_NO_COMPARATOR, evidence
         )
     deviation_db = float(measured)
-    evidence = {
-        "comparator": TRACKING_COMPARATOR_KEY,
-        # WHAT the number beside it was measured against (#3483). Named on
-        # every graded verdict, because "matched" is one of the four adoption
-        # inputs and the receipt carries a second realization number graded
-        # against a different comparand — see :data:`REALIZATION_COMPARAND`.
-        "comparand": REALIZATION_COMPARAND,
-        "deviation_db": deviation_db,
-        "tolerance_db": tolerance,
-    }
+    evidence["deviation_db"] = deviation_db
     if not np.isfinite(deviation_db):
         return Verdict(
             RealizationStatus.UNAVAILABLE, REALIZATION_NO_COMPARATOR, evidence

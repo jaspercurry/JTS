@@ -703,6 +703,27 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
     return matches[0], ""
 
 
+def bundle_round_artifact_dir(session_dir: Path) -> tuple[dict[str, Any], Path]:
+    """A bundle's ``info.json`` and its one round-artifact directory.
+
+    The three guards :func:`build_crossover_evidence_packet` refuses on before
+    it assembles anything, owned once: a caller that only needs to know a
+    directory IS a crossover-v2 round bundle pays these and not the assembly,
+    and cannot drift off the refusal sentences the packet builder raises.
+    """
+    if not session_dir.is_dir():
+        raise CrossoverEvidencePacketError(f"not a directory: {session_dir}")
+    info_raw, info_reason = _read_json(session_dir / "info.json")
+    if not isinstance(info_raw, dict):
+        raise CrossoverEvidencePacketError(
+            f"bundle missing a readable info.json ({info_reason}): {session_dir}"
+        )
+    round_dir, round_reason = round_artifact_dir(session_dir)
+    if round_dir is None:
+        raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
+    return info_raw, round_dir
+
+
 def round_program_dir(
     session_dir: Path, round_dir: Path, phases: Iterable[str]
 ) -> Path:
@@ -2247,37 +2268,38 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
         None,
     )
     polarity = alignment.get("polarity")
-    values: dict[str, tuple[Any, Any]] = {
-        "trim_db": (
-            {
+    values: dict[str, dict[str, Any]] = {
+        "trim_db": {
+            "value": {
                 str(role): float(value)
                 for role, value in _mapping(
                     candidate.get("role_attenuations_db")
                 ).items()
                 if finite_number(value) is not None
             },
-            {
+            "pinned": {
                 str(role): bool(_mapping(entry).get("trim_pinned") is True)
                 for role, entry in linearization.items()
             },
-        ),
-        "delay_us": (finite_number(alignment.get("delay_us")), None),
-        "polarity": (
-            polarity if isinstance(polarity, str) and polarity else None,
-            (
+        },
+        "delay_us": {
+            "value": finite_number(alignment.get("delay_us")),
+            "pinned": None,
+        },
+        "polarity": {
+            "value": polarity if isinstance(polarity, str) and polarity else None,
+            "pinned": (
                 bool(analysis.get("polarity_pinned"))
                 if "polarity_pinned" in analysis
                 else None
             ),
-        ),
-        "crossover_fc_hz": (
-            finite_number(_mapping(region).get("fc_hz")), None,
-        ),
+        },
+        "crossover_fc_hz": {
+            "value": finite_number(_mapping(region).get("fc_hz")),
+            "pinned": None,
+        },
     }
-    return {
-        axis: {"value": values[axis][0], "pinned": values[axis][1]}
-        for axis in STRUCTURAL_HISTORY_AXES
-    }
+    return values
 
 
 def _structural_history_block(session_dir: Path) -> dict[str, Any]:
@@ -3024,16 +3046,7 @@ def build_crossover_evidence_packet(
     unreadable artifact is reported inside the packet, because a partially
     banked round is a normal thing to want to read.
     """
-    if not session_dir.is_dir():
-        raise CrossoverEvidencePacketError(f"not a directory: {session_dir}")
-    info_raw, info_reason = _read_json(session_dir / "info.json")
-    if not isinstance(info_raw, dict):
-        raise CrossoverEvidencePacketError(
-            f"bundle missing a readable info.json ({info_reason}): {session_dir}"
-        )
-    round_dir, round_reason = round_artifact_dir(session_dir)
-    if round_dir is None:
-        raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
+    info_raw, round_dir = bundle_round_artifact_dir(session_dir)
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")

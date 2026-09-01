@@ -546,6 +546,15 @@ def test_an_allpass_recovers_its_own_group_delay(peak_artifact):
         assert lo <= entry["ratio"] <= hi
 
 
+def _trusted_band() -> tuple[float, float]:
+    """The trusted band at the instrument's own default gate.
+
+    The floor is the gating module's, derived from the gate length — never a
+    number this suite spells.
+    """
+    return (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
+
+
 def _controls(ir: np.ndarray, features: list[float]) -> dict:
     """The control suite on a synthetic host, at the instrument's own defaults.
 
@@ -553,16 +562,14 @@ def _controls(ir: np.ndarray, features: list[float]) -> dict:
     own arithmetic, and the frequencies it is read at have to be commanded
     rather than left to whatever the detector finds.
     """
-    trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
     return fx._run_controls(
-        ir, SR, features, gate_ms=fx.DEFAULT_GATE_MS, trusted_band_hz=trusted
+        ir, SR, features, gate_ms=fx.DEFAULT_GATE_MS, trusted_band_hz=_trusted_band()
     )
 
 
 def _band_edge_hz() -> float:
     """The lowest frequency this instrument will admit a feature at."""
-    trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
-    return fx.classifiable_band_hz(trusted)[0]
+    return fx.classifiable_band_hz(_trusted_band())[0]
 
 
 def test_the_c3_control_reads_flat_at_the_bottom_of_the_classifiable_band():
@@ -620,10 +627,10 @@ def test_the_bias_removal_is_defined_only_where_the_injection_is_minimum_phase()
     The one way this correction could become the rubber stamp #3493 forbids,
     closed at the seam rather than left to a comment.
     """
-    trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
     with pytest.raises(ValueError):
         fx.injection_excess_gd(
-            fx.CONTROL_COMB_NMP_GAIN, fx.CONTROL_ECHO_MS, SR, trusted_band_hz=trusted
+            fx.CONTROL_COMB_NMP_GAIN, fx.CONTROL_ECHO_MS, SR,
+            trusted_band_hz=_trusted_band(),
         )
 
 
@@ -978,11 +985,7 @@ def test_the_artifact_states_every_threshold_it_used(peak_artifact):
     assert thresholds["centre_shift_oct"] == fx.CENTRE_SHIFT_OCT
     measurement = peak_artifact["measurement"]
     assert measurement["gate_ladder_ms"] == sorted(fx.GATE_LADDER_MS)
-    # The trusted floor is the gating module's, derived from the gate length —
-    # never a number this instrument spells.
-    assert measurement["trusted_band_hz"][0] == pytest.approx(
-        f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3)
-    )
+    assert measurement["trusted_band_hz"][0] == pytest.approx(_trusted_band()[0])
 
 
 def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):

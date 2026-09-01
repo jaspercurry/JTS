@@ -332,7 +332,7 @@ def test_the_generated_default_reaches_the_ramp_with_its_own_provenance(
         lambda declarations: (generated, (45.0, 18_000.0)),
     )
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
+        seat_level, "_derive_bounds", lambda levels, declarations: (-30.0, 85.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
@@ -387,7 +387,7 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
     _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
+        seat_level, "_derive_bounds", lambda levels, declarations: (-30.0, 85.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
@@ -462,7 +462,6 @@ def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tm
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        stimulus,
         seat_level.stimulus_provenance(stimulus),
         seat_level._load_declarations(args),
     )
@@ -504,7 +503,7 @@ def _stub_declarations(monkeypatch):
     monkeypatch.setattr(
         seat_level,
         "_load_declarations",
-        lambda args: seat_level._Declarations(None, {}, {}),
+        lambda args: seat_level._Declarations(None, {}, {}, []),
     )
 
 
@@ -551,7 +550,6 @@ def test_seat_level_hands_the_ceiling_the_PAD_FOLDED_sensitivities(
     monkeypatch.setattr(seat_level, "unsegmented_stimulus_ceiling_db", _capture)
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     seat_level._derive_bounds(
-        stimulus,
         seat_level.stimulus_provenance(stimulus),
         seat_level._load_declarations(args),
     )
@@ -882,7 +880,6 @@ def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkey
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        stimulus,
         seat_level.stimulus_provenance(stimulus),
         seat_level._load_declarations(args),
     )
@@ -956,7 +953,7 @@ def _stub_a_ramp_result(monkeypatch, tmp_path, result):
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
     _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda stim, levels, declarations: (0.0, 80.0)
+        seat_level, "_derive_bounds", lambda levels, declarations: (0.0, 80.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
