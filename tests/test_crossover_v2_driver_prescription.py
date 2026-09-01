@@ -108,6 +108,7 @@ from jasper.active_speaker.linearization_fit import (
     linearization_filters_by_role,
 )
 from jasper.camilla_config_contract import SHELF_Q
+from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_crossover_v2_blend_prescription import _bundle
@@ -3752,7 +3753,7 @@ def _cli_stage(tmp_path: Path, rows: list[dict[str, Any]]) -> int:
     # --applied-profile below, so this matches the CLI's own true default.
     packet = build_crossover_evidence_packet(
         session, state_path=state, driver_draft_path=draft,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     document = tmp_path / "prescription.json"
     document.write_bytes(json.dumps(_document([_cut()], packet)).encode())
@@ -3996,8 +3997,9 @@ def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
     draft_path.write_text(json.dumps(_draft()))
     # No explicit --applied-profile below, so this matches the CLI's default.
     packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        session, state_path=round_inputs_mod.state_default_path(),
+        driver_draft_path=draft_path,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(_document([_cut()], packet)))
@@ -4023,15 +4025,22 @@ def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
     was typed" — decides whether evidence is read. Redirected to files that
     are never written, so the refusal is deterministic on any machine.
     """
-    monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", tmp_path / "no-drivers.json")
     monkeypatch.setattr(
-        cli, "_APPLIED_PROFILE_DEFAULT_PATH", tmp_path / "no-applied-profile.json"
+        round_inputs_mod, "state_default_path", lambda: tmp_path / "no-flow-state.json"
+    )
+    monkeypatch.setattr(
+        round_inputs_mod, "DRIVERS_DEFAULT_PATH", tmp_path / "no-drivers.json"
+    )
+    monkeypatch.setattr(
+        round_inputs_mod, "APPLIED_PROFILE_DEFAULT_PATH",
+        tmp_path / "no-applied-profile.json",
     )
     session, _ = _bundle(tmp_path / "bundle")
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        state_path=round_inputs_mod.state_default_path(),
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(_document([_cut()], packet)))
@@ -4549,7 +4558,8 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
         applied_profile({"tweeter": INCUMBENT_TWEETER})
     ))
     packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path, applied_profile_path=applied_path
+        session, state_path=round_inputs_mod.state_default_path(),
+        driver_draft_path=draft_path, applied_profile_path=applied_path,
     )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(
@@ -4584,8 +4594,9 @@ def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(tmp_path, capsy
     draft_path.write_text(json.dumps(_draft()))
     # No explicit --applied-profile below, so this matches the CLI's default.
     packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        session, state_path=round_inputs_mod.state_default_path(),
+        driver_draft_path=draft_path,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
 
     def _propose(document: dict[str, Any]) -> str:

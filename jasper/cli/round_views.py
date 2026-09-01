@@ -6,12 +6,16 @@
 
 One console script, eight subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
-number this tool prints. This module reads banked round directories (the
-tree ``scripts/bank-crossover-round.sh`` produces), calls the product view,
-and writes the result as JSON — into the round directory by default, so the
-artifact travels with the evidence it was computed from, per the same
-"who prints the sentence" boundary :mod:`jasper.cli.crossover_prescriber`
-already keeps for its own JSON output.
+number this tool prints. A round directory is EITHER a banked round tree or
+a live session bundle still on the speaker
+(``/var/lib/jasper/active_speaker/sessions/<id>``) — the shape is
+:func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs`'
+answer, so an operator can grade the round they just ran without banking it
+first (#3498). This module calls the product view and writes the result as
+JSON — into the round directory by default, so the artifact travels with the
+evidence it was computed from, per the same "who prints the sentence"
+boundary :mod:`jasper.cli.crossover_prescriber` already keeps for its own
+JSON output.
 
 Subcommands:
 
@@ -104,7 +108,12 @@ EXIT_ERROR = 1
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory"
 
-#: A banked round directory is operator-pulled evidence, not a validated
+#: What every round-directory positional takes, said once. Both shapes, named
+#: in the order an operator meets them: the live one is what a round leaves on
+#: the speaker, the banked one is what ``bank-crossover-round.sh`` made of it.
+_ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
+
+#: A round directory is operator-pulled evidence, not a validated
 #: input — the documented failure shapes it can hand back are broader than
 #: the product module's own typed :class:`RoundViewsError`. A malformed
 #: evidence document can be missing a key (``KeyError``), hold the wrong type
@@ -212,6 +221,7 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     payload = {
         "round_dir": str(banked.round_dir),
+        "banked": banked.inputs.banked,
         "curve_grid_hz": banked.curve_grid_hz.tolist(),
         "norm_band_hz": [args.norm_lo, args.norm_hi],
         "verify_pose": {
@@ -314,6 +324,7 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     payload = {
         "round_dir": str(banked.round_dir),
+        "banked": banked.inputs.banked,
         "seats": [seat.position_id for seat in seats],
         "swept_band_hz": [lo_hz, args.hi],
         "feature_db": args.feature_db,
@@ -426,7 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
             "frozen-reference grading, per-seat curves, session-to-session "
             "repeatability and the banked repeat floor, per-seat agreement, "
             "audibility co-metrics, and the shared frequency view — over "
-            "banked rounds."
+            "banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -455,24 +466,24 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
-    entry.add_argument("round_dir", help="banked round directory")
+    entry.add_argument("round_dir", help=_ROUND_DIR_HELP)
     entry.add_argument("--out", default=None, help="write the result here (- for stdout)")
     entry.set_defaults(func=_cmd_entry)
 
     frozen = sub.add_parser("frozen", help="grade a round shipped and frozen to a baseline's reference")
-    frozen.add_argument("baseline_dir", help="banked round directory to freeze the reference from")
-    frozen.add_argument("target_dir", help="banked round directory to grade")
+    frozen.add_argument("baseline_dir", help=f"{_ROUND_DIR_HELP} to freeze the reference from")
+    frozen.add_argument("target_dir", help=f"{_ROUND_DIR_HELP} to grade")
     frozen.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frozen.set_defaults(func=_cmd_frozen)
 
     per_seat = sub.add_parser("per-seat", help="every banked position plus the VERIFY pose, normalised")
-    per_seat.add_argument("round_dir", help="banked round directory")
+    per_seat.add_argument("round_dir", help=_ROUND_DIR_HELP)
     _add_norm_band_args(per_seat)
     per_seat.add_argument("--out", default=None, help="write the result here (- for stdout)")
     per_seat.set_defaults(func=_cmd_per_seat)
 
     repeat = sub.add_parser("repeat", help="session-to-session spread of the pooled honest figures")
-    repeat.add_argument("round_dirs", nargs="+", help="two or more banked round directories")
+    repeat.add_argument("round_dirs", nargs="+", help=f"two or more of: {_ROUND_DIR_HELP}")
     repeat.add_argument("--out", default=None, help="write the result here (- for stdout)")
     repeat.set_defaults(func=_cmd_repeat)
 
@@ -495,7 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
     repeat_floor.set_defaults(func=_cmd_repeat_floor)
 
     agreement = sub.add_parser("agreement", help="per-seat sign/magnitude testimony for every feature")
-    agreement.add_argument("round_dir", help="banked round directory")
+    agreement.add_argument("round_dir", help=_ROUND_DIR_HELP)
     _add_norm_band_args(agreement)
     agreement.add_argument(
         "--lo", type=float, default=None,
@@ -510,7 +521,7 @@ def build_parser() -> argparse.ArgumentParser:
     co_metrics = sub.add_parser(
         "co-metrics", help="NBD + SM (Olive 2004) on the on-axis and pooled-window curves — informational only",
     )
-    co_metrics.add_argument("round_dir", help="banked round directory")
+    co_metrics.add_argument("round_dir", help=_ROUND_DIR_HELP)
     co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
     co_metrics.set_defaults(func=_cmd_co_metrics)
 

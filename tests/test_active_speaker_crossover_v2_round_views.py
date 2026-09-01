@@ -30,6 +30,7 @@ from jasper.active_speaker.crossover_v2.forward_model import (
     ACCEPTANCE_NOT_RUN,
     SummationCandidate,
 )
+from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
     ENTRY_STATE_UNREADABLE,
@@ -177,7 +178,25 @@ def _make_round_dir(
 # --------------------------------------------------------------------------- #
 
 
-def test_load_banked_round_reads_positions_and_grid(tmp_path):
+@pytest.mark.parametrize("live", [False, True])
+def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
+    tmp_path, monkeypatch, live
+):
+    """The SAME round, read the two ways it can be pointed at (#3498, #2882).
+
+    A banked tree is the live bundle one level deeper plus three frozen
+    siblings, so both readings must produce the same views — and the one thing
+    that cannot be re-derived from the paths, which of the two shapes was
+    found, is disclosed rather than inferred.
+    """
+    # A live bundle resolves its three non-bundle inputs to the on-speaker
+    # SSOT paths; no test may read whatever sits at those absolute paths on
+    # the box running pytest.
+    for name in ("DRIVERS_DEFAULT_PATH", "APPLIED_PROFILE_DEFAULT_PATH"):
+        monkeypatch.setattr(round_inputs_mod, name, tmp_path / f"unset-{name}.json")
+    monkeypatch.setattr(
+        round_inputs_mod, "state_default_path", lambda: tmp_path / "unset-state.json"
+    )
     round_dir = _make_round_dir(
         tmp_path, "r1",
         position_curves={
@@ -185,15 +204,27 @@ def test_load_banked_round_reads_positions_and_grid(tmp_path):
             "cloud_verify_04": ("offax", _flat_curve()),
         },
     )
-    banked = load_banked_round(round_dir)
-    assert {p.position_id for p in banked.positions} == {"cloud_verify_02", "cloud_verify_04"}
-    assert banked.curve_grid_hz.shape == GRID.shape
-    assert banked.report.bands  # a real, non-empty rehydrated report
+    session_dir = round_dir / "bundle" / "sess1"
+
+    loaded = load_banked_round(session_dir if live else round_dir)
+
+    assert loaded.inputs.banked is not live
+    assert loaded.inputs.session_dir == session_dir
+    assert loaded.session_dir == session_dir
+    assert {p.position_id for p in loaded.positions} == {
+        "cloud_verify_02", "cloud_verify_04"
+    }
+    assert loaded.curve_grid_hz.shape == GRID.shape
+    assert loaded.graded_report.bands  # a real, non-empty rehydrated report
 
 
-def test_load_banked_round_refuses_missing_bundle(tmp_path):
-    with pytest.raises(RoundViewsError, match="bundle"):
-        load_banked_round(tmp_path / "nope")
+def test_a_directory_of_neither_shape_refuses(tmp_path):
+    """No ``bundle/`` and no ``info.json`` is neither round shape, and the
+    refusal keeps this module's own type so the CLI's exit-1 arm catches it."""
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    with pytest.raises(RoundViewsError):
+        load_banked_round(neither)
 
 
 def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):

@@ -2222,12 +2222,18 @@ tournament's "dominance decides" rule was actually judged on (issue #2769).
 `captures/` is gitignored; those originals never entered the repo, so there is
 nothing to `git rm` — this tool is the one copy going forward.
 
-Every subcommand reads a *banked round directory*, the tree
-`scripts/bank-crossover-round.sh <dest-dir>` produces (see
-["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
+Every subcommand reads a round directory in either of the two shapes a round
+comes in, told apart by
+[`round_inputs`](../jasper/active_speaker/crossover_v2/round_inputs.py): a
+*banked round directory*, the tree `scripts/bank-crossover-round.sh
+<dest-dir>` produces (see
+["Crossover-v2 round banking"](#crossover-v2-round-banking) above) — a
 `bundle/<session>/` evidence bundle and optional `state.json` /
-`design-draft.json` / `applied-profile.json`. `jasper-round-views` reads no
-`dumps/` tree: the ring is
+`design-draft.json` / `applied-profile.json` — or a *live session bundle*
+still on the speaker (`/var/lib/jasper/active_speaker/sessions/<id>`), whose
+three non-bundle inputs come from their on-Pi SSOT paths instead, so a round
+can be graded before it is banked. The written JSON says which shape was read
+in its `banked` field. `jasper-round-views` reads no `dumps/` tree: the ring is
 gone and the packet it builds takes no path into one. No file is globbed or
 re-parsed by hand — positions and the graded spec come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
