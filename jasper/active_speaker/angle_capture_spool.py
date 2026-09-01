@@ -35,9 +35,11 @@ about because it is about the BOX rather than the request: a walk may not be
 staged while a measurement session already holds the speaker (see
 :func:`live_measurement_session`).
 
-**What "taking" means, and why reading and consuming are one call.**  There is
-no way to read a staged request without consuming it.
-:func:`take_staged_angle_request` moves the document out of the pending slot
+**What "taking" means.**  :func:`take_staged_angle_request` is the only way to
+GET a staged walk -- :func:`peek_staged_angle_request` reads the same document
+through the same reader so the page can state its price, and leaves the slot
+filled, so the session open is still the one and only take.  The take moves the
+document out of the pending slot
 BEFORE it validates it, so "consumed on the session starting, never reused" is a
 property of the function rather than of a caller remembering to clean up -- and
 a refused document is consumed too, because a document that was wrong for this
@@ -83,6 +85,7 @@ __all__ = [
     "AngleRequestRefused",
     "angle_request_spool_path",
     "live_measurement_session",
+    "peek_staged_angle_request",
     "set_angle_request_spool_path_for_tests",
     "stage_angle_request",
     "staged_angle_request_pending",
@@ -315,8 +318,8 @@ def staged_angle_request_pending() -> bool:
     line can state what happened instead of asserting it.
 
     It answers what a stat answers and no more: anything that wants the request
-    itself goes through :func:`take_staged_angle_request`, which is the only
-    reader and always consumes what it could read.
+    itself goes through :func:`take_staged_angle_request` (which consumes what
+    it could read) or :func:`peek_staged_angle_request` (which does not).
     """
     return angle_request_spool_path().is_file()
 
@@ -347,6 +350,32 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
     deletes it by hand. The one exception -- a slot that cannot be READ at all,
     where there is no document to consume -- is argued at its own arm below.
     """
+    raw = _read_staged(consume=True)
+    return None if raw is None else _validate(raw)
+
+
+def peek_staged_angle_request() -> AngleCaptureRequest | None:
+    """The same request :func:`take_staged_angle_request` would take, unconsumed.
+
+    For a caller that must STATE what is staged without running it -- the tier
+    chooser prices the walk on the page before the household presses Start.
+    Same read, same :func:`_validate`, same refusals; the only difference is
+    that the slot is left filled, so the session open is still the one and only
+    take.
+
+    A caller that wants to run the walk must not use this: the take is what
+    makes single-use a property of this module rather than of a caller's memory.
+    """
+    raw = _read_staged(consume=False)
+    return None if raw is None else _validate(raw)
+
+
+def _read_staged(*, consume: bool) -> bytes | None:
+    """The staged document's bytes, or ``None`` when the slot is empty.
+
+    ONE reader behind both doors above, so the size ceiling, the refusal slugs
+    and the consume order cannot drift between reading a walk and pricing it.
+    """
     pending = angle_request_spool_path()
     try:
         stat = pending.stat()
@@ -362,8 +391,10 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
         # full precisely when the system can least afford it. The size reported
         # is ``st_size`` because that is the number this arm actually judged.
         # Consumed first, for the reason every other document refusal here is:
-        # it has had its session.
-        _consume(pending)
+        # it has had its session. A peek consumes nothing at all -- it has not
+        # had its session yet.
+        if consume:
+            _consume(pending)
         _refuse(
             SPOOL_TOO_LARGE,
             f"the staged walk is {stat.st_size} bytes, over the "
@@ -387,7 +418,8 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
         # the operator with a walk that never ran and no file to look at. So
         # these refuse loudly and repeatedly until the permissions are fixed.
         _refuse(SPOOL_MALFORMED, f"the staged walk could not be read: {exc}")
-    _consume(pending)
+    if consume:
+        _consume(pending)
     if len(raw) > SPOOL_MAX_BYTES:
         # The stat above is what stops a huge file being LOADED; this is what
         # makes the cap a property of the BYTES. A file that grew between the
@@ -399,7 +431,7 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
             f"the staged walk is {len(raw)} bytes, over the "
             f"{SPOOL_MAX_BYTES}-byte ceiling",
         )
-    return _validate(raw)
+    return raw
 
 
 def _consume(pending: Path) -> None:

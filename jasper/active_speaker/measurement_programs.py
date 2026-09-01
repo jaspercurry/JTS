@@ -44,7 +44,8 @@ from .crossover_v2.capture_plan import MARK_DISTANCE_M
 ANCHOR_REPEATS = 4
 
 # Seconds a single hold may wait: ten minutes covers the slower mover — a
-# person walking a tape to the next bearing and posting the release.
+# person walking a tape to the next bearing and posting the release. The web
+# gate that spends it, ``REMOTE_POSITION_HOLD_BUDGET_S``, reads it here.
 HOLD_BUDGET_S = 600
 
 

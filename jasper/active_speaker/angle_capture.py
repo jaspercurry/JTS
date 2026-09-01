@@ -81,6 +81,7 @@ from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import ExcitationProgram
 
+from .crossover_v2.capture_plan import CAPTURE_PLAN_TARGET
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
@@ -105,6 +106,7 @@ from .crossover_v2_flow import (
     position_angle_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
+    wall_clock_ceiling_s,
 )
 
 __all__ = [
@@ -124,6 +126,7 @@ __all__ = [
     "ResolvedStop",
     "pose_at_angle",
     "request_for_program",
+    "walk_price",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -621,6 +624,26 @@ def request_for_program(
             else f"{program.program_id}/{program.size}"
         ),
     )
+
+
+def walk_price(request: AngleCaptureRequest) -> dict[str, int]:
+    """What this walk costs the person holding the microphone.
+
+    Derived from the stops rather than read off a program, so a named walk and
+    a free-form one are priced by one rule wherever the price is stated -- the
+    CLI's receipt and the page's tier chooser read this one function.
+    ``mic_moves`` counts DISTINCT poses because repeats stay at one bearing;
+    ``ceiling_min`` prices the SESSION that takes the walk, whose capture
+    target is the plan's base entries PLUS these stops, rounded UP to whole
+    minutes so the printed number is never under the real ceiling.
+    """
+    return {
+        "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
+        "captures": len(request.stops),
+        "ceiling_min": math.ceil(
+            wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + len(request.stops)) / 60
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- #

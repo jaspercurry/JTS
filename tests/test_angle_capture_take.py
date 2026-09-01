@@ -29,7 +29,9 @@ import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
+from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_PLAN_TARGET
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
@@ -181,6 +183,57 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
     # Single-use: the next session is an ordinary one. The document is spent by
     # the take, not by the session succeeding.
     assert _take() is None
+
+
+def test_a_peek_reads_the_staged_walk_without_spending_it(slot):
+    """The page prices a staged walk before Start; the open is still the take.
+
+    Same reader, same request object -- what a peek does NOT do is empty the
+    slot, so a household that reads the price and never presses Start still has
+    its walk.
+    """
+    assert spool.peek_staged_angle_request() is None
+
+    request = ac.request_for_program(mp.program("baseline", "express"))
+    spool.stage_angle_request(request)
+    assert spool.peek_staged_angle_request() == request
+    assert spool.staged_angle_request_pending() is True
+    assert spool.peek_staged_angle_request() == request
+
+    assert spool.take_staged_angle_request() == request
+    assert spool.staged_angle_request_pending() is False
+    assert spool.peek_staged_angle_request() is None
+
+
+def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
+    """A program's clocks are honoured STRUCTURALLY, not wired a second time.
+
+    The walk's stops enter the plan's ``capture_target``
+    (``build_v2_cloud_index_phase_map`` counts ``lateral_prompts``), and the
+    session ceiling scales on that target -- so the price stated before Start
+    is never under what the session that takes the walk actually budgets.
+    """
+    express = mp.program("baseline", "express")
+    request = ac.request_for_program(express)
+    spool.stage_angle_request(request)
+    prompts, _consumer, _spec, _trims = _take()
+
+    plan = flow.build_v2_capture_plan(
+        _ROLES_BANDS, _FC_HZ, plan_shape=_hand_shape(),
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=True,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        lateral_prompts=prompts,
+    )
+    assert plan.capture_target >= express.capture_count
+    session_ceiling_s = flow.session_wall_clock_ceiling_s(plan)
+    assert ac.walk_price(request)["ceiling_min"] * 60 >= session_ceiling_s
+    # The stops are the ONLY entries this walk adds to the base plan, so before
+    # rounding the two ceilings are the same seconds, not merely bounded.
+    assert (
+        flow.wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + len(request.stops))
+        == session_ceiling_s
+    )
 
 
 def test_a_refused_walk_refuses_the_open_and_is_consumed(slot, caplog):

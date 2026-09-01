@@ -344,6 +344,48 @@ def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
     assert "re-check the result at several spots around the mark" in full["description"]
 
 
+def test_check_phase_states_a_staged_walks_price_before_start(tmp_path, monkeypatch):
+    """WP2b (#3498): the session open takes a staged walk whichever tier is
+    pressed, so the chooser is the last screen that can say what it costs.
+
+    Both tiers carry the SAME offer -- the walk belongs to the session, not to a
+    tier -- and an empty slot adds nothing at all.
+    """
+    from jasper.active_speaker import angle_capture as ac
+    from jasper.active_speaker import angle_capture_spool as spool
+    from jasper.active_speaker import measurement_programs as mp
+
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
+        tmp_path / "session_volume.json",
+    )
+    try:
+        idle = build_crossover_envelope_v2(_status(phase="check"))
+        express = mp.program("baseline", "express")
+        spool.stage_angle_request(ac.request_for_program(express))
+        offered = build_crossover_envelope_v2(_status(phase="check"))
+        # A peek, not a take: the session open is still the only take.
+        assert spool.staged_angle_request_pending() is True
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+    for action in [idle["next_action"], *idle["alternate_actions"]]:
+        assert "staged_walk" not in action
+
+    for action in [offered["next_action"], *offered["alternate_actions"]]:
+        assert action["staged_walk"] == {
+            "program": "baseline/express",
+            "mic_moves": express.mic_move_count,
+            "captures": express.capture_count,
+        }
+        # The price is on the description too, because that is the only field
+        # the page renders (``wrapChoice`` in crossover/js/main.js).
+        assert "baseline/express" in action["description"]
+        assert str(express.mic_move_count) in action["description"]
+        assert str(express.capture_count) in action["description"]
+
+
 def test_check_phase_recommends_full_on_a_first_commission():
     """No applied_crossover at all — never measured before on this topology
     — recommends Full (§3)."""

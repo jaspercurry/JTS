@@ -50,6 +50,8 @@ import time
 from typing import Any, Mapping
 
 from ..log_event import log_event
+from .angle_capture import walk_price
+from .angle_capture_spool import peek_staged_angle_request
 from .attempts_loop import (
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
@@ -98,6 +100,7 @@ from .crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLOUD_CLOSE_RUNNING,
+    CrossoverV2FlowError,
     TIER_EXPRESS,
     TIER_REMOTE,
     TIER_FULL,
@@ -2765,11 +2768,40 @@ def _recommended_tier(status: Mapping[str, Any]) -> str:
     return TIER_EXPRESS if str(_v2(status).get("tier") or "") == TIER_FULL else TIER_FULL
 
 
+def _staged_walk_offer() -> dict[str, Any] | None:
+    """The staged walk's identity and price, or ``None`` when none is staged.
+
+    A PEEK: the session open is still the only take, so a household that reads
+    this price and never presses Start leaves the walk staged.
+
+    A slot that cannot be read, or a document that no longer validates, says
+    NOTHING here — the session open refuses that loudly in the producing
+    module's own words, and a chooser that repeated the refusal would be a
+    second vocabulary for one fact.
+    """
+    try:
+        request = peek_staged_angle_request()
+    except CrossoverV2FlowError:
+        return None
+    if request is None:
+        return None
+    price = walk_price(request)
+    return {
+        "program": request.program,
+        "mic_moves": price["mic_moves"],
+        "captures": price["captures"],
+    }
+
+
 def _tier_action(
-    tier: str, info: Mapping[str, Mapping[str, int]], *, recommended: bool,
+    tier: str,
+    info: Mapping[str, Mapping[str, int]],
+    *,
+    recommended: bool,
+    staged_walk: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     detail = info[tier]
-    return {
+    action: dict[str, Any] = {
         "id": f"start_v2_session_{tier}",
         "label": _TIER_LABELS[tier],
         # One-line claims difference (§1.3/§3), derived from the plan shape —
@@ -2792,6 +2824,18 @@ def _tier_action(
         "endpoint": "/correction/crossover/v2/session",
         "body": {"tier": tier},
     }
+    if staged_walk is not None:
+        # The price is stated BEFORE Start because the walk is taken by the
+        # session open (``_take_staged_angle_walk``) whichever tier is pressed:
+        # the household is agreeing to these extra mic moves either way, so the
+        # chooser is the last screen that can say so.
+        action["staged_walk"] = dict(staged_walk)
+        action["description"] += (
+            f" Plus a staged walk ({staged_walk['program'] or 'free-form'}): "
+            f"{staged_walk['mic_moves']} more spots, "
+            f"{staged_walk['captures']} more measurements."
+        )
+    return action
 
 
 def _tier_choice_actions(
@@ -2807,9 +2851,12 @@ def _tier_choice_actions(
     info = tier_display_info()
     recommended = _recommended_tier(status)
     other = TIER_FULL if recommended == TIER_EXPRESS else TIER_EXPRESS
+    # Read ONCE, for both actions: a staged walk is the session's, not a tier's,
+    # so the two descriptions must state one price.
+    staged_walk = _staged_walk_offer()
     return (
-        _tier_action(recommended, info, recommended=True),
-        [_tier_action(other, info, recommended=False)],
+        _tier_action(recommended, info, recommended=True, staged_walk=staged_walk),
+        [_tier_action(other, info, recommended=False, staged_walk=staged_walk)],
     )
 
 
