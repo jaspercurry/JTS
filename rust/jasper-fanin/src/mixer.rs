@@ -47,8 +47,8 @@
 //! contract documented in `src/watchdog.rs`.
 
 mod direct_capture;
+mod lane_fade;
 mod ring_capture;
-mod wake_ramp;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
@@ -75,9 +75,9 @@ use crate::xrun_log::{XrunEvent, XrunSource};
 
 use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
+use lane_fade::LaneFade;
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
-use wake_ramp::LaneWakeRamp;
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
@@ -1409,11 +1409,12 @@ pub struct Input {
     trim: Arc<TrimControl>,
     /// Per-lane MIX MUTE, shared with the state-server thread. The control
     /// endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads it at
-    /// the SUM stage (`lane_mix_contributes`) and skips this lane's contribution
-    /// when set — WITHOUT touching this lane's capture, `frames_read`, or
-    /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
-    /// mux's latest-source-wins arbitration primitive for the USB lane — the
-    /// sole USB-silencing mechanism in the one-pipeline design.
+    /// the SUM stage (`lane_mix_contributes`) and takes this lane's contribution
+    /// to zero across `lane_fade`'s 10 ms window — silent within a period or
+    /// two, not within a sample — WITHOUT touching this lane's capture,
+    /// `frames_read`, or `rms_dbfs_x100` telemetry, which are accounted BEFORE
+    /// the gate. This is mux's latest-source-wins arbitration primitive for the
+    /// USB lane — the sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
     /// Default `false` (contribute).
     muted: Arc<AtomicBool>,
@@ -1427,11 +1428,12 @@ pub struct Input {
     /// `ring{}` block from it. `None` (and absent from STATUS) for every other
     /// lane — the same optional-block idiom as `direct_obs` and `resampler`.
     ring_obs: Option<ring_capture::RingLaneObservability>,
-    /// Per-lane WAKE FADE-IN state (issue #3443). Held by every lane and usable
-    /// at both lane scales, because it runs over this lane's rendered period —
-    /// the one thing all four read arms produce. Tracked before the selection
-    /// gate and applied after it; inert on [`MEASUREMENT_LANE`].
-    wake_ramp: LaneWakeRamp,
+    /// Per-lane WAKE FADE-IN and SELECTION FADE state (issue #3443). Held by
+    /// every lane and usable at both lane scales, because it runs over this
+    /// lane's rendered period — the one thing all four read arms produce.
+    /// Silence is tracked before the selection gate and both windows are applied
+    /// after it; inert on [`MEASUREMENT_LANE`].
+    lane_fade: LaneFade,
 }
 
 impl Mixer {
@@ -1941,11 +1943,11 @@ impl Mixer {
             // this daemon already emits inline (`record_drain_entry`).
             let woke = if input.read_buf_wide.is_empty() {
                 input
-                    .wake_ramp
+                    .lane_fade
                     .observe(&input.read_buf[..active], self.period_frames)
             } else {
                 input
-                    .wake_ramp
+                    .lane_fade
                     .observe(&input.read_buf_wide[..active], self.period_frames)
             };
             if woke {
@@ -1968,24 +1970,38 @@ impl Mixer {
             // reads the USB DIRECT lane's pre-mute level to keep a muted-but-
             // streaming host "playing" (no mute→release→mute flap). See
             // `lane_mix_contributes`.
-            if !lane_mix_contributes(
+            let contributes = lane_mix_contributes(
                 selected_input,
                 idx,
                 &input.label,
                 input.muted.load(Ordering::Relaxed),
-            ) {
-                continue;
-            }
-            // 3c. WAKE FADE-IN, application half (issue #3443). Only a period
-            // that actually ENTERS the sum spends the window, so a lane that
-            // woke while mux still had it out keeps its ramp owed until `SELECT`
-            // lands (mux arbitrates at 1 Hz). Spending it on discarded periods
-            // instead would leave the sum opening on the very step this exists
-            // to remove. A silent period holds the window rather than eating it.
-            if input.read_buf_wide.is_empty() {
-                input.wake_ramp.apply(&mut input.read_buf[..active]);
+            );
+            // 3c. PER-LANE FADES, application half (issue #3443): the wake
+            // window on a period that enters the sum, then the selection window
+            // that carries the lane in and out of it. The gate's verdict is an
+            // INPUT here rather than a `continue` — a lane mux has just dropped
+            // keeps reaching the sum until its window closes, which is what
+            // stops a switch away from an already-PLAYING source removing a
+            // full-amplitude waveform between one sample and the next. Only a
+            // period that enters the sum spends the wake window, so a lane that
+            // woke while mux still had it out keeps that ramp owed until
+            // `SELECT` lands (mux arbitrates at 1 Hz). `false` means the lane is
+            // fully out and contributes nothing this period.
+            let reaches_sum = if input.read_buf_wide.is_empty() {
+                input.lane_fade.shape_period(
+                    &mut input.read_buf[..active],
+                    self.period_frames,
+                    contributes,
+                )
             } else {
-                input.wake_ramp.apply(&mut input.read_buf_wide[..active]);
+                input.lane_fade.shape_period(
+                    &mut input.read_buf_wide[..active],
+                    self.period_frames,
+                    contributes,
+                )
+            };
+            if !reaches_sum {
+                continue;
             }
             // Only sum the samples we actually got (`active`, computed above for
             // the per-lane RMS). `read_input` zero-pads the tail of
@@ -2661,8 +2677,12 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
     selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
 
-/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter
-/// the sum this period iff it is selected AND not muted.
+/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples are
+/// wanted in the sum this period iff it is selected AND not muted.
+///
+/// This is the WANT, not the gate. `mixer::lane_fade` consumes it and carries
+/// the lane to or from that state across a 10 ms window, so a lane this returns
+/// `false` for still reaches the sum, decaying, until its window closes.
 ///
 /// The mute is mux's latest-source-wins arbitration primitive for the USB
 /// lane — the only USB-silencing mechanism. It is
@@ -2674,7 +2694,7 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// makes mux think the host stopped (which would flap mute→release→mute).
 ///
 /// Selection and mute both drop the lane from the sum, so a muted lane is
-/// silenced exactly like a de-selected one — the same `continue`. This function
+/// silenced exactly like a de-selected one — the same window. This function
 /// takes only values (no atomics/side effects) so the decision is exhaustively
 /// unit-testable without ALSA and can never itself perturb telemetry.
 fn lane_mix_contributes(selected_input: i32, input_index: usize, label: &str, muted: bool) -> bool {
@@ -2890,7 +2910,7 @@ fn open_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: None,
-        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
+        lane_fade: LaneFade::for_lane(label, config.sample_rate),
     })
 }
 
@@ -3034,7 +3054,7 @@ fn open_direct_input(
             drain_stats: DrainStats::new(),
         }),
         ring_obs: None,
-        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
+        lane_fade: LaneFade::for_lane(label, config.sample_rate),
     }
 }
 
