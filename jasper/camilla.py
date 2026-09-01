@@ -985,20 +985,10 @@ class CamillaController:
         with it. A patch does not replace anything: it writes declared
         parameters of filters that are already running.
 
-        **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
-        A patch that rewrote a whole filter chain would step like any swap.
-        Shipped callers are bounded, and differently:
-
-        * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
-          balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,
-          attenuation only). Paying a 40 dB fade and
-          ``MAIN_VOLUME_RAMP_SETTLE_S`` for it muted the speaker for half a
-          second per slider nudge.
-        * ``bass_extension.bench.activation.temporary_bass_activation``,
-          reached from the shipped ``jasper-bass-extension-bench`` console
-          script — one limiter ``clip_limit``, and it has already faded to
-          floor and proved it (``to_floor`` + ``assert_at_floor``) before it
-          patches, so the duck was redundant there rather than protective.
+        **That safety is a property of the CALLERS, not of ``PatchConfig``.**
+        A patch that rewrote a whole filter chain would step like any swap, so
+        every caller must bound what it patches (a clamped trim, one limiter
+        value) and stay off this method for anything structural.
 
         The writer lock stays: a patch still mutates the running graph and must
         serialize against every other DSP writer.

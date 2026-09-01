@@ -2151,10 +2151,8 @@ async def _live_draft_profile(
         method = plan.method
 
         try:
-            # CamillaDSP diffs the whole config itself and rewrites running
-            # filters in place when nothing structural moved; the plan only
-            # decides whether that write is ducked. An unchanged graph is not
-            # written at all.
+            # Duck-or-not is decided in jasper.sound.live_edit; an unchanged
+            # graph is not written at all.
             if method != "unchanged":
                 await loader(yaml, best_effort=False, duck=plan.duck)
         except Exception as e:  # noqa: BLE001

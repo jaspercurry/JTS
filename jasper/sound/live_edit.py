@@ -6,8 +6,9 @@
 
 CamillaDSP applies every config it is handed through one diff of its own
 (``config_diff`` in its ``config/utils.rs``): a changed ``devices`` block,
-``pipeline`` or ``mixers`` section, or a filter whose KIND changed (``Biquad``
-to ``Conv``) rebuilds the filter group and resets every filter's state;
+``pipeline`` or ``mixers`` section (``processing.rs`` rebuilds on a mixer
+change too), or a filter whose KIND changed (``Biquad`` to ``Conv``) rebuilds
+the filter group and resets every filter's state;
 anything else — a biquad's ``type``, ``freq``, ``q`` or ``gain`` alike — is
 written into the running filters in place, coefficients recomputed and state
 kept. Only the rebuild can step the graph's gain by tens of dB at an unchanged
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 import yaml
 
@@ -55,7 +57,7 @@ class LiveEditPlan:
     the section that forced a swap, and is empty otherwise.
     """
 
-    method: str
+    method: Literal["swap", "parameters", "unchanged"]
     reason: str = ""
 
     @property
