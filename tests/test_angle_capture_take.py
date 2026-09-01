@@ -247,6 +247,48 @@ def test_a_banked_stop_past_the_movers_reach_refuses_at_the_take_too(slot, caplo
     assert "consumed=true" in line and "session_continues=false" in line
 
 
+def test_a_raised_walk_survives_the_spool_and_reaches_the_session(slot):
+    """BOTH bearings cross the document, not just the azimuth.
+
+    The spool is the only thing between a stated walk and the session that
+    runs it, so an elevation dropped there re-plans the walk as a horizontal
+    one — silently, and with the operator's own receipt still saying otherwise.
+    """
+    spool.stage_angle_request(
+        ac.AngleCaptureRequest(
+            stops=(
+                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0),
+                ac.AngleStop(22, ac.REGIME_PER_DRIVER, 20),
+                ac.AngleStop(-22, ac.REGIME_PER_DRIVER, -20),
+            ),
+            mover=ac.MOVER_HUMAN,
+        )
+    )
+    prompts, _consumer, _spec, _trims = _take()
+
+    assert [flow.position_elevation_deg(p) for p in prompts] == [0, 20, -20]
+    assert [flow.position_angle_deg(p) for p in prompts] == [0, 22, -22]
+
+
+def test_a_document_staged_before_elevation_existed_reads_as_mark_height(slot):
+    """Additive at the reader, at the SAME schema version.
+
+    The rule the polarity pair already follows: the key is written
+    unconditionally and read back with a default, so a document banked before
+    the axis was sayable still runs — as the walk at mark height it always was.
+    """
+    spool.stage_angle_request(ac.per_driver_at([7]))
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    for stop in doc["stops"]:
+        del stop["elevation_deg"]
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    request = spool.take_staged_angle_request()
+
+    assert [stop.elevation_deg for stop in request.stops] == [0]
+
+
 def test_a_staged_walk_refuses_while_the_session_already_walks_one(slot, caplog):
     """Two lateral groups cannot share one session's index space.
 

@@ -434,6 +434,7 @@ express_cloud_measure_positions = _plan.express_cloud_measure_positions
 format_position_distance = _plan.format_position_distance
 normalize_tier = _plan.normalize_tier
 position_angle_deg = _plan.position_angle_deg
+position_elevation_deg = _plan.position_elevation_deg
 position_geometry = _plan.position_geometry
 relay_plan_attempts_required = _plan.relay_plan_attempts_required
 remote_cloud_measure_positions = _plan.remote_cloud_measure_positions
@@ -447,6 +448,7 @@ tier_is_externally_positioned = _plan.tier_is_externally_positioned
 v2_first_begin_timeout_s = _plan.v2_first_begin_timeout_s
 verify_pose_table = _plan.verify_pose_table
 walk_shape_for = _plan.walk_shape_for
+wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 
 
 # :mod:`jasper.active_speaker.crossover_v2.refusal_copy`
@@ -5159,13 +5161,14 @@ class CrossoverV2Session:
             prompt=prompt.text,
             role=prompt.role,
             offset_cm=float(prompt.offset_cm),
-            at_mark=float(prompt.offset_cm) == 0.0,
+            at_mark=prompt.at_mark,
             curves=tuple(curves),
         )
         log_event(
             logger, "correction.crossover_v2_lateral_pose",
             session_id=self.session_id, pose_id=pose.pose_id, index=index,
             attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
+            vertical_deg=position_elevation_deg(prompt),
             at_mark=pose.at_mark, curves=len(pose.curves),
         )
         # Outside the lock below, unlike the cloud's in-lock retention: that
@@ -5181,7 +5184,7 @@ class CrossoverV2Session:
                 [p for p in self._lateral_poses if p.index != index] + [pose],
                 key=lambda p: p.index,
             )
-            payload: dict[str, Any] = {"position_id": pose.pose_id}
+            payload: dict[str, Any] = {"pose_id": pose.pose_id}
             if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
                 payload.update(self._close_lateral_walk())
             return PhaseVerdict(True, payload=payload)
@@ -5194,12 +5197,17 @@ class CrossoverV2Session:
         ``prompt`` must be :meth:`_prompt_shown_for`'s result — the sidecar's
         bearing names where the operator was sent, not where the table wanted.
         Same shape for both consumers, so their poses stay comparable.
+
+        Both angles come off that prompt through the shipped derivations, so a
+        pose the operator was sent BOTH sideways and up records both numbers
+        rather than claiming mark height for a microphone somebody raised.
         """
         self._seams.bank_take(
             result,
             _spatial.lateral_pose_record(
                 pose,
                 position_deg=position_angle_deg(prompt),
+                vertical_deg=position_elevation_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
                 **self._capture_stamp(result),
             ),

@@ -99,7 +99,9 @@ def test_staged_stops_counts_what_the_walk_will_serve():
 # --------------------------------------------------------------------------- #
 
 
-def _record(index: int, position_deg: int, *, attempt: int = 1) -> dict:
+def _record(
+    index: int, position_deg: int, *, attempt: int = 1, vertical_deg: int = 0,
+) -> dict:
     """One take, built by the SPEAKER's own producer.
 
     Not a hand-written dict: ``lateral_pose_record`` is the thing whose fields
@@ -117,7 +119,8 @@ def _record(index: int, position_deg: int, *, attempt: int = 1) -> dict:
         curves=(),
     )
     return lateral_pose_record(
-        pose, position_deg=position_deg, lateral_consumer="forward_model",
+        pose, position_deg=position_deg, vertical_deg=vertical_deg,
+        lateral_consumer="forward_model",
         session_id="sess-1", graph_fingerprint="fp-applied",
         captured_at="2026-08-26T00:00:00Z",
         wav_sha256=f"sha-{index}-{attempt}",
@@ -173,12 +176,46 @@ def test_the_index_projects_the_speakers_own_take_records(tmp_path):
     ]
     assert document["takes"] == [
         {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "position_deg": 0,
-         "role": "onax", "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-1-1"},
+         "vertical_deg": 0, "role": "onax", "regime": LATERAL_POSE_REGIME,
+         "wav_sha256": "sha-1-1"},
         {"index": 2, "attempt": 1, "take_id": "lateral_02_a01", "position_deg": 7,
-         "role": "offax", "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-2-1"},
+         "vertical_deg": 0, "role": "offax", "regime": LATERAL_POSE_REGIME,
+         "wav_sha256": "sha-2-1"},
         {"index": 3, "attempt": 1, "take_id": "lateral_03_a01", "position_deg": -7,
-         "role": "offax", "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-3-1"},
+         "vertical_deg": 0, "role": "offax", "regime": LATERAL_POSE_REGIME,
+         "wav_sha256": "sha-3-1"},
     ]
+
+
+@pytest.mark.parametrize("vertical_deg", [0, 20, -20])
+def test_a_raised_pose_carries_its_elevation_into_the_index(
+    tmp_path, vertical_deg
+):
+    """The projection carries BOTH bearings — a two-axis walk indexed on one
+    would read as a walk taken entirely at mark height."""
+    _bank(tmp_path, [_record(1, 22, vertical_deg=vertical_deg)])
+
+    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
+
+    assert take["vertical_deg"] == vertical_deg
+    assert take["position_deg"] == 22
+
+
+def test_a_take_banked_before_elevation_existed_indexes_as_mark_height(tmp_path):
+    """History reads, and reads HONESTLY: absent is 0, never ``None``.
+
+    Asserted against a record with the key REMOVED, not one written 0 — a walk
+    that could not state a rise did not take one, so the two are the same fact
+    and a reader must not have to tell a missing number from an unstated one.
+    Refusing the round instead would trade a whole banked walk for one number
+    it never had.
+    """
+    legacy = {k: v for k, v in _record(1, 7).items() if k != "vertical_deg"}
+    _bank(tmp_path, [legacy])
+
+    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
+
+    assert take["vertical_deg"] == 0
 
 
 def test_every_indexed_value_is_present_in_the_banked_record(tmp_path):
@@ -596,6 +633,23 @@ def test_a_take_carrying_an_extra_field_is_refused(tmp_path, document):
     document["takes"][0]["offset_cm"] = 0.0
     with pytest.raises(PositionCycleError, match="must carry exactly"):
         read_position_cycle(_written(tmp_path, document))
+
+
+def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document):
+    """The strict reader's one exemption, at the MISSING end only.
+
+    Strictness exists so a NEWER document is never read as an older one, and
+    the test above keeps that: an unknown key still refuses. What this exempts
+    is the opposite direction — a document written before a defaulted field
+    existed, which a newer reader understands completely. Refusing it would
+    throw away a banked round to gain one number the round never had.
+    """
+    document["takes"] = [
+        {k: v for k, v in take.items() if k != "vertical_deg"}
+        for take in document["takes"]
+    ]
+
+    assert read_position_cycle(_written(tmp_path, document)) == document
 
 
 def test_an_unreadable_file_is_this_modules_error_not_an_oserror(tmp_path):

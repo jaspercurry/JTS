@@ -223,9 +223,10 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` — the identity, the
-    pose, and the verifier. The banked record stays the place to go for the
-    rest.
+    Returns the record narrowed to :data:`_TAKE_FIELDS` plus ``vertical_deg``
+    — the identity, the pose, and the verifier. The banked record stays the
+    place to go for the rest. A take banked before ``vertical_deg`` existed
+    reads back as 0, the elevation a walk that could not state a rise took.
     """
     try:
         raw = json.loads(path.read_text())
@@ -237,7 +238,9 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
         return None
     if raw.get("phase") != PHASE_LATERAL:
         return None
-    return {field: raw.get(field) for field in _TAKE_FIELDS}
+    take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
+    take["vertical_deg"] = raw.get("vertical_deg") or 0
+    return take
 
 
 def read_take_curves(path: Path, *, phase: str) -> list[Mapping[str, Any]] | None:
@@ -534,10 +537,14 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        if not isinstance(take, Mapping) or set(take) != set(_TAKE_FIELDS):
+        # ``vertical_deg`` is exempted at the MISSING end only: a document
+        # written before it existed reads, a document inventing a key does not.
+        if not isinstance(take, Mapping) or not (
+            set(_TAKE_FIELDS) <= set(take) <= set(_TAKE_FIELDS) | {"vertical_deg"}
+        ):
             raise PositionCycleError(
                 f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}"
+                f"{sorted(_TAKE_FIELDS)}, optionally with ['vertical_deg']"
             )
     return dict(raw)
 

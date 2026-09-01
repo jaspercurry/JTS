@@ -2051,7 +2051,10 @@ def _take_staged_angle_walk(
         staged_angle_request_pending,
         take_staged_angle_request,
     )
-    from jasper.active_speaker.crossover_v2.capture_plan import position_angle_deg
+    from jasper.active_speaker.crossover_v2.capture_plan import (
+        position_angle_deg,
+        position_elevation_deg,
+    )
     from jasper.active_speaker.crossover_v2.contracts import (
         MEASURE_KIND_CANDIDATE,
         CrossoverV2FlowError,
@@ -2166,6 +2169,7 @@ def _take_staged_angle_walk(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
         angles=",".join(f"{position_angle_deg(p):+d}" for p in prompts),
+        elevations=",".join(f"{position_elevation_deg(p):+d}" for p in prompts),
         mover=request.mover,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
         polarity=request.polarity,

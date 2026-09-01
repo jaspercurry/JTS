@@ -665,6 +665,12 @@ class LateralPose:
     ("re-solve trim or delay independently at every pose" is forbidden), and it
     is structural rather than a convention: there is no field here for a second
     solution to be written to.
+
+    ``pose_id`` is the canonical key for a POSE on every surface — this record,
+    ``event=correction.crossover_v2_lateral_pose``, and the accepted capture's
+    verdict payload. ``position_id`` / ``position_index`` answer the other
+    question, WHICH SLOT OF A WALK, and are not synonyms for it: a consumer
+    joining takes on ``position_id`` silently mixes poses into the seat table.
     """
 
     pose_id: str
@@ -1318,6 +1324,7 @@ def lateral_pose_record(
     pose: LateralPose,
     *,
     position_deg: int,
+    vertical_deg: int = 0,
     lateral_consumer: str,
     session_id: str,
     graph_fingerprint: str,
@@ -1346,9 +1353,14 @@ def lateral_pose_record(
     capture-retention ring.  :func:`take_kind` is that classification, and it
     is stamped on the record here rather than left for a reader to redo.
 
-    ``position_axis`` is horizontal by construction: the lateral walk states
-    every one of its poses as a sideways move at mark height.  Stated so a
-    reader of the bank does not have to know that to place the microphone.
+    ``position_axis`` is horizontal by construction, and stays so even for a
+    RAISED pose: :data:`POSITION_AXIS_VERTICAL` is the pose that commands NO
+    horizontal bearing (see :class:`PositionGeometry`), and every pose reaching
+    this builder commands one.
+
+    ``vertical_deg`` is the signed whole-degree ELEVATION above mark height,
+    negative BELOW, against the same :data:`MARK_DISTANCE_M` as
+    ``position_deg``.  0 is TRUE of a pose nobody raised.
 
     ``captured_at`` is minted at retention, not carried on the pose, for the
     reason :func:`entry_baseline_record` mints its own: a
@@ -1386,7 +1398,7 @@ def lateral_pose_record(
         "role": pose.role,
         "position_deg": int(position_deg),
         "position_axis": POSITION_AXIS_HORIZONTAL,
-        "vertical_deg": 0,
+        "vertical_deg": int(vertical_deg),
         "offset_cm": float(pose.offset_cm),
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,

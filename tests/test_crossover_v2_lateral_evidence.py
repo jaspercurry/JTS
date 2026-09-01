@@ -1158,6 +1158,73 @@ def test_an_accepted_pose_is_retained_with_its_angle():
     assert first["wav_sha256"] == hashlib.sha256(b"fake-wav").hexdigest()
 
 
+def test_an_accepted_pose_publishes_its_id_under_the_POSE_key():
+    """``pose_id`` is the canonical per-pose key on every surface, the verdict
+    payload included.
+
+    ``position_id`` / ``position_index`` are the WALK's keys — which slot of a
+    walk this is, assigned by whatever drives it — and they answer a different
+    question from "which pose was measured". Publishing a pose id under the
+    position key hands a reader the right string for the wrong question, and it
+    reads as correct because the two strings coincide today.
+    """
+    prompts = _angle_prompts()
+    c = _evidence_conductor(FakeSeams(), prompts=prompts)
+    verdicts = _evidence_walk(c, prompts)
+
+    lateral = verdicts[2:]
+    assert [v["pose_id"] for v in lateral] == [p.pose_id for p in c.lateral_poses]
+    assert not any("position_id" in v for v in lateral)
+
+
+def test_a_raised_pose_banks_the_elevation_the_operator_was_SENT_to():
+    """Both bearings come off the prompt that was actually shown.
+
+    The sidecar is the only durable statement of where a curve was measured,
+    and a raised pose recorded at mark height would place the microphone
+    somewhere it never was. The axis word stays ``horizontal`` because the pose
+    still commands a bearing — it is COMPOUND, not vertical.
+
+    ``at_mark`` answers the same question on both axes at once: a pose raised
+    over the mark with no bearing at all is not AT the mark, and one that says
+    it is brackets the walk's drift with a pose the operator was standing up
+    for.
+    """
+    prompts = ac.session_lateral_walk(
+        ac.AngleCaptureRequest(
+            stops=(
+                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0),
+                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 10),
+                ac.AngleStop(22, ac.REGIME_PER_DRIVER, 20),
+                ac.AngleStop(-22, ac.REGIME_PER_DRIVER, -20),
+            ),
+            mover=ac.MOVER_HUMAN,
+        ),
+        externally_positioned=False, base_entries=3, plans_cloud_group=False,
+    )
+    retained: list = []
+    fakes = FakeSeams()
+    c = _evidence_conductor(
+        fakes,
+        prompts=prompts,
+        seams=replace(
+            fakes.seams(),
+            bank_take=bank_into(
+                retained, with_capture=True, phase=PHASE_LATERAL,
+            ),
+        ),
+    )
+    _evidence_walk(c, prompts)
+
+    banked = [meta for _r, meta in retained]
+    assert [m["vertical_deg"] for m in banked] == [0, 10, 20, -20]
+    assert [m["position_deg"] for m in banked] == [0, 0, 22, -22]
+    assert [m["at_mark"] for m in banked] == [True, False, False, False]
+    assert {m["position_axis"] for m in banked} == {
+        spatial.POSITION_AXIS_HORIZONTAL
+    }
+
+
 def test_a_closed_walk_says_so_by_name(caplog):
     """A walk that finished has to be a POSITIVE journal statement.
 

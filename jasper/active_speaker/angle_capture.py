@@ -84,6 +84,10 @@ from jasper.audio_measurement.program import ExcitationProgram
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
+from .crossover_v2.spatial import (
+    POSITION_AXIS_HORIZONTAL,
+    POSITION_AXIS_VERTICAL,
+)
 from .crossover_v2_flow import (
     MARK_DISTANCE_M,
     POSITION_DEG_KEY,
@@ -110,8 +114,10 @@ __all__ = [
     "MOVER_HUMAN",
     "MOVERS",
     "MAX_ANGLE_DEG",
+    "MAX_ELEVATION_DEG",
     "ARM_ENVELOPE_DEG",
     "MOVER_MAX_ANGLE_DEG",
+    "MOVER_MAX_ELEVATION_DEG",
     "AngleStop",
     "AngleCaptureRequest",
     "ResolvedStop",
@@ -191,10 +197,15 @@ MAX_ANGLE_DEG = 80
 #: this one may depend on; ``tests/test_arm_walk.py`` pins the two together.
 ARM_ENVELOPE_DEG = 45
 
-#: The per-mover bound :class:`AngleCaptureRequest` enforces -- the only place
-#: that knows BOTH the mover and its stops. A person can stand anywhere the
-#: geometry stays honest (:data:`MAX_ANGLE_DEG`); the arm is bounded by its own
-#: travel. Checked when the walk is STATED rather than when a
+#: How far ABOVE or BELOW mark height a person may be asked to hold the
+#: microphone. Covers the plan's baseline vertical walk (+/-20 deg) with margin
+#: and no more: nothing establishes a person can hold a wider rise repeatably.
+MAX_ELEVATION_DEG = 30
+
+#: The per-mover, per-axis bound :class:`AngleCaptureRequest` enforces -- the
+#: only place that knows BOTH the mover and its stops. A person can stand
+#: anywhere the geometry stays honest (:data:`MAX_ANGLE_DEG`); the arm is
+#: bounded by its own travel. Checked when the walk is STATED rather than when a
 #: session takes it, because the alternative is a session that stalls: the
 #: position gate publishes a target this mover cannot reach and then spends its
 #: whole ``REMOTE_POSITION_HOLD_BUDGET_S`` (600 s) per stop waiting for a report
@@ -202,6 +213,13 @@ ARM_ENVELOPE_DEG = 45
 MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_ARM: ARM_ENVELOPE_DEG,
     MOVER_HUMAN: MAX_ANGLE_DEG,
+})
+
+#: The elevation half of the pair above. The arm's 0 is a fact about the rig,
+#: not a placeholder: it rotates about the vertical axis and cannot tilt.
+MOVER_MAX_ELEVATION_DEG: Mapping[str, int] = MappingProxyType({
+    MOVER_ARM: 0,
+    MOVER_HUMAN: MAX_ELEVATION_DEG,
 })
 
 #: Which composed program object each regime plays -- stated as the PHASE whose
@@ -227,6 +245,10 @@ def _validated_angle(angle_deg: object) -> int:
     :class:`AngleStop`, :func:`pose_at_angle` and the three request
     constructors are all reachable directly, so the bounds live here rather
     than on whichever one a caller happened to use first.
+
+    Both axes come through here: what differs between them is REACH, a
+    property of the mover rather than of the geometry
+    (:data:`MOVER_MAX_ELEVATION_DEG`).
 
     **Silent truncation never returns from this function, and that is the point
     rather than a style preference.** The constructors used to coerce with
@@ -276,15 +298,24 @@ class AngleStop:
     honest at (:func:`position_angle_deg`'s own reasoning: the mark is placed
     "about" 1 m out, and a tenth of a degree claims a precision the placement
     never had).
+
+    ``elevation_deg`` is the ORTHOGONAL bearing in the same frame -- signed
+    whole degrees ABOVE mark height, negative BELOW (``_VERTICAL_SIGNS``), and
+    0 for a stop nobody raised. WHICH mover may be asked for a non-zero one is
+    :data:`MOVER_MAX_ELEVATION_DEG`, judged by :class:`AngleCaptureRequest`.
     """
 
     angle_deg: int
     regime: str
+    elevation_deg: int = 0
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
         # never reaches a record or an equality check as a numpy scalar.
         object.__setattr__(self, "angle_deg", _validated_angle(self.angle_deg))
+        object.__setattr__(
+            self, "elevation_deg", _validated_angle(self.elevation_deg)
+        )
         if self.regime not in REGIMES:
             raise CrossoverV2FlowError(
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
@@ -352,19 +383,30 @@ class AngleCaptureRequest:
             raise CrossoverV2FlowError(
                 f"mover must be one of {MOVERS}, got {self.mover!r}"
             )
-        bound = MOVER_MAX_ANGLE_DEG[self.mover]
-        outside = tuple(
-            stop.angle_deg for stop in self.stops if abs(stop.angle_deg) > bound
+        self._refuse_beyond_reach(
+            POSITION_AXIS_HORIZONTAL,
+            MOVER_MAX_ANGLE_DEG[self.mover],
+            tuple(stop.angle_deg for stop in self.stops),
         )
+        self._refuse_beyond_reach(
+            POSITION_AXIS_VERTICAL,
+            MOVER_MAX_ELEVATION_DEG[self.mover],
+            tuple(stop.elevation_deg for stop in self.stops),
+        )
+
+    def _refuse_beyond_reach(
+        self, axis: str, bound: int, asked: tuple[int, ...]
+    ) -> None:
+        # A LateralWalkRefused rather than a bare CrossoverV2FlowError so the
+        # refusal carries the walk vocabulary's own machine slug: this IS a walk
+        # refusal, simply the one decidable from the request alone, with no
+        # session needed to judge it.
+        outside = tuple(deg for deg in asked if abs(deg) > bound)
         if outside:
-            # A LateralWalkRefused rather than a bare CrossoverV2FlowError so the
-            # refusal carries the walk vocabulary's own machine slug: this IS a
-            # walk refusal, it is simply the one decidable from the request alone
-            # (mover plus angles), with no session needed to judge it.
             raise LateralWalkRefused(
                 WALK_OVER_MOVER_ENVELOPE,
-                f"mover={self.mover!r} travels +/-{bound} deg, so it cannot "
-                "reach "
+                f"mover={self.mover!r} travels +/-{bound} deg on the {axis} "
+                "axis, so it cannot reach "
                 + ", ".join(f"{deg:+d}" for deg in outside)
                 + " deg",
             )
@@ -388,7 +430,7 @@ class AngleCaptureRequest:
 # --------------------------------------------------------------------------- #
 
 
-def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
+def pose_at_angle(angle_deg: int, elevation_deg: int = 0) -> CloudPositionPrompt:
     """The pose at a stated bearing -- the exact inverse of
     :func:`position_angle_deg`.
 
@@ -405,15 +447,19 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
     is stored in centimetres, and ``position_angle_deg(pose_at_angle(d)) == d``
     for every whole degree this accepts. That round trip is a test, not a claim.
 
+    ``elevation_deg`` rides the same construction on the orthogonal axis,
+    stored in ``vertical_offset_cm`` and read back by
+    :func:`position_elevation_deg`.
+
     ``role`` is DERIVED from :data:`WIDE_OFFSET_MIN_CM`, not chosen: a stop past
     the wide class answers the off-axis question and one inside it answers the
     on-axis one, which reproduces the shipped table's own assignment exactly
     (its 12 and 25 cm rows are ``onax``, its 40 and 60 cm rows are ``offax``)
-    without a second table to drift from it. A vertical
-    (:data:`POSITION_ROLE_XOVR`) pose is unreachable here by construction --
-    this seam states a horizontal bearing and elevation is the ratified
-    deferred axis -- which is also what keeps :func:`position_angle_deg` from
-    ever being handed a row it must refuse.
+    without a second table to drift from it. It is derived from the SIDEWAYS
+    offset alone: :data:`POSITION_ROLE_XOVR` means a pose commanding NO
+    horizontal bearing, and every pose here commands one (0 deg included),
+    which is what keeps :func:`position_angle_deg` -- it refuses an XOVR row
+    outright -- from ever being handed one on the retention path.
 
     **The copy is stated as the ANGLE for BOTH movers.** A request stated in
     degrees reads back in degrees whoever is holding the microphone, so this
@@ -434,8 +480,8 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
     is what a taut string does by construction and what an arm does by radius.
     """
     degrees = _validated_angle(angle_deg)
-    offset_cm = 100.0 * MARK_DISTANCE_M * math.tan(math.radians(abs(degrees)))
-    sign = 0 if degrees == 0 else (1 if degrees > 0 else -1)
+    elevation = _validated_angle(elevation_deg)
+    offset_cm = _offset_cm_at(degrees)
     role = POSITION_ROLE_OFFAX if offset_cm >= WIDE_OFFSET_MIN_CM else POSITION_ROLE_ONAX
     geometric = CloudPositionPrompt(
         # A placeholder sentence, immediately replaced: the pose's identity is
@@ -445,9 +491,24 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
         detail="",
         offset_cm=offset_cm,
         role=role,
-        lateral_sign=sign,
+        lateral_sign=_sign_of(degrees),
+        vertical_sign=_sign_of(elevation),
+        vertical_offset_cm=_offset_cm_at(elevation),
     )
     return remote_position_prompt(geometric)
+
+
+def _sign_of(degrees: int) -> int:
+    return 0 if degrees == 0 else (1 if degrees > 0 else -1)
+
+
+def _offset_cm_at(degrees: int) -> float:
+    """The cm displacement one bearing names, in the mark's own plane.
+
+    The tangent :func:`position_angle_deg` and :func:`position_elevation_deg`
+    both invert, written once so the two axes cannot drift apart.
+    """
+    return 100.0 * MARK_DISTANCE_M * math.tan(math.radians(abs(degrees)))
 
 
 # --------------------------------------------------------------------------- #
@@ -520,6 +581,7 @@ class ResolvedStop:
     index: int
     angle_deg: int
     regime: str
+    elevation_deg: int
     prompt: CloudPositionPrompt
     program_phase: str
     screen: Mapping[str, str]
@@ -577,12 +639,13 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
     """
     resolved: list[ResolvedStop] = []
     for offset, stop in enumerate(request.stops):
-        pose = pose_at_angle(stop.angle_deg)
+        pose = pose_at_angle(stop.angle_deg, stop.elevation_deg)
         resolved.append(
             ResolvedStop(
                 index=offset + 1,
                 angle_deg=stop.angle_deg,
                 regime=stop.regime,
+                elevation_deg=stop.elevation_deg,
                 prompt=pose,
                 program_phase=_REGIME_PROGRAM_PHASE[stop.regime],
                 screen=_screen_policy(request, pose),
@@ -647,9 +710,11 @@ WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 #: through.
 WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 
-#: A stop is outside the stated mover's own reach (:data:`MOVER_MAX_ANGLE_DEG`).
-#: Decided by :class:`AngleCaptureRequest` itself, so a walk the arm cannot serve
-#: is refused where it is STATED -- at ``jasper-angle-capture plan``/``stage`` --
+#: A stop is outside the stated mover's own reach on one AXIS
+#: (:data:`MOVER_MAX_ANGLE_DEG`, :data:`MOVER_MAX_ELEVATION_DEG`) -- one slug
+#: for both axes, with the axis in the detail sentence. Decided by
+#: :class:`AngleCaptureRequest` itself, so a walk the arm cannot serve is
+#: refused where it is STATED -- at ``jasper-angle-capture plan``/``stage`` --
 #: rather than stalling a live session one 600 s hold at a time.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
