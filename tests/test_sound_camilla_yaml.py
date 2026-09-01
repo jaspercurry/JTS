@@ -31,11 +31,11 @@ def test_sound_config_preserves_room_peqs_before_preference_eq():
     assert 'device: "jts_ring_playback"' in yaml
     assert "room_peq_1:" in yaml
     assert "  sound_preamp:" in yaml  # default trim 0: boosts boost
-    assert "sound_curve_harman_bass:" in yaml
+    assert "sound_curve_bass:" in yaml
     assert "type: Lowshelf" in yaml
     assert "type: Highshelf" in yaml
     assert "sound_simple_mid:" in yaml
-    assert "names: [room_peq_1, sound_preamp, sound_curve_harman_bass" in yaml
+    assert "names: [room_peq_1, sound_preamp, sound_curve_bass" in yaml
     assert yaml.count("channels: [0]") == 1
     assert yaml.count("channels: [1]") == 1
 
@@ -76,7 +76,7 @@ def test_disabled_sound_config_bypasses_preference_eq_but_keeps_room_peqs():
     assert "room_peq_1:" in yaml
     # Bypass is spelled as values: the curve's filters stay in the graph at
     # 0 dB so toggling bypass is a parameter write, not a pipeline change.
-    assert "sound_curve_bk_bass:" in yaml
+    assert "sound_curve_bass:" in yaml
     assert not [
         spec for spec in build_sound_filters(profile)
     ], "a bypassed profile must have nothing active"
@@ -92,7 +92,7 @@ def test_output_trim_emits_single_preamp_before_filters():
 
     assert "sound_preamp:" in yaml
     assert "gain: -4.0000" in yaml
-    assert "names: [sound_preamp, sound_curve_harman_bass" in yaml
+    assert "names: [sound_preamp, sound_curve_bass" in yaml
 
 
 def test_default_preamp_is_inert_so_boosts_boost():
@@ -698,7 +698,7 @@ def _stereo_topology():
 def _room_prefix(yaml_text: str, channel: int = 0) -> list[str]:
     """The chain's ROOM segment: everything before the preference frame.
 
-    The preference frame is a fixed 13-to-15 filters on every graph now, so a
+    The preference frame is a fixed 15 filters on every graph now, so a
     test about room PEQs or channel delays asserts its own subject rather than
     respelling the frame.
     """

@@ -29,6 +29,8 @@ import logging
 import threading
 import urllib.error
 import urllib.request
+
+import yaml
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -55,6 +57,15 @@ from .correction_bundle_fixtures import write_golden_correction_bundle
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
+
+
+def _curve_gains(yaml_text: str) -> set[float]:
+    """Gain of each stock-curve shelf slot in an emitted config."""
+    filters = yaml.safe_load(yaml_text)["filters"]
+    return {
+        filters[name]["parameters"]["gain"]
+        for name in ("sound_curve_bass", "sound_curve_tilt")
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -651,7 +662,7 @@ async def test_correction_apply_preserves_saved_sound_profile(
     assert sess.config_path is not None
     yaml = sess.config_path.read_text()
     assert "room_peq_1:" in yaml
-    assert "sound_curve_harman_bass:" in yaml
+    assert "sound_curve_bass:" in yaml
     assert "sound_simple_treble:" in yaml
 
 
@@ -806,7 +817,7 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     assert out_path.name.endswith(".yml")
     assert current.read_text(encoding="utf-8") != yaml
     assert "room_peq_1:" not in yaml
-    assert "sound_curve_harman_bass:" in yaml
+    assert "sound_curve_bass:" in yaml
     assert "sound_simple_treble:" in yaml
 
 
@@ -1444,7 +1455,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     assert Path(fake_cam.set_calls[0]).exists()
     generated = Path(fake_cam.set_calls[0]).read_text(encoding="utf-8")
     assert "room_peq_1" not in generated
-    assert "sound_curve_" not in generated
+    assert _curve_gains(generated) == {0.0}
     # The descriptor is derived from immutable graph content rather than the
     # mutable predecessor filename.
     prior = body["current_correction_at_start"]
@@ -1709,7 +1720,7 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     assert "/run/jasper-snapserver/snapfifo" in generated
     assert "enable_rate_adjust: false" in generated
     assert "room_peq_" not in generated
-    assert "sound_curve_" not in generated
+    assert _curve_gains(generated) == {0.0}
     assert payload["measurement_config_path"] == str(measurement_path)
     assert payload["prior_config_path"] == str(current)
     assert sess.pre_measurement_config_path == current

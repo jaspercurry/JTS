@@ -143,30 +143,36 @@ class CurvePreset:
     filters: tuple[FilterSpec, ...] = ()
 
 
+def _curve(
+    bass_hz: float, bass_db: float, tilt_hz: float, tilt_db: float,
+) -> tuple[FilterSpec, ...]:
+    """The two shelf slots every preset holds, so a preset change is a
+    parameter write (:func:`build_sound_filter_slots`); 0 dB is an identity."""
+
+    return (
+        FilterSpec("sound_curve_bass", "Lowshelf", bass_hz, bass_db),
+        FilterSpec("sound_curve_tilt", "Highshelf", tilt_hz, tilt_db),
+    )
+
+
 CURVE_PRESETS: tuple[CurvePreset, ...] = (
     CurvePreset(
         id="flat",
         label="Flat",
         description="No stock sound curve.",
-        filters=(),
+        filters=_curve(100.0, 0.0, 3000.0, 0.0),
     ),
     CurvePreset(
         id="harman",
         label="Harman-style",
         description="Gentle bass lift with a mild downward high-frequency tilt.",
-        filters=(
-            FilterSpec("sound_curve_harman_bass", "Lowshelf", 105.0, 4.0),
-            FilterSpec("sound_curve_harman_tilt", "Highshelf", 3500.0, -2.0),
-        ),
+        filters=_curve(105.0, 4.0, 3500.0, -2.0),
     ),
     CurvePreset(
         id="bk",
         label="B&K-style",
         description="Classic in-room downward tilt, approximated as broad shelves.",
-        filters=(
-            FilterSpec("sound_curve_bk_bass", "Lowshelf", 120.0, 3.0),
-            FilterSpec("sound_curve_bk_tilt", "Highshelf", 2500.0, -4.5),
-        ),
+        filters=_curve(120.0, 3.0, 2500.0, -4.5),
     ),
 )
 
@@ -812,7 +818,18 @@ def sound_filter_slot_names() -> frozenset[str]:
         {spec.name for preset in CURVE_PRESETS for spec in preset.filters}
         | {band.filter_name for band in SIMPLE_BANDS}
         | {spec.name for spec in _advanced_filters(())}
+        | _RETIRED_CURVE_SLOT_NAMES
     )
+
+
+# Curve slots as graphs written before the fixed pair spell them; still the
+# preference layer when such a graph is read back. Delete once every Pi's
+# banked graphs have been re-emitted (none names them in /var/lib/jasper).
+_RETIRED_CURVE_SLOT_NAMES = frozenset(
+    f"sound_curve_{preset}_{slot}"
+    for preset in ("harman", "bk")
+    for slot in ("bass", "tilt")
+)
 
 
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
@@ -844,11 +861,12 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     spells a freshly added band. ``reconcile_current_dsp`` re-anchors a
     commissioned candidate in place rather than moving this frame (#2572).
 
-    The standing cost is 13 filters per channel on a ``flat`` profile — 5
-    Simple bands and the 8-slot advanced pool, all identities when idle — and
-    15 on a curve preset, whose two shelves are real. Measured at +0.43
-    percentage points of CamillaDSP processing load against a bypassed control
-    (0.451 % -> 0.877 %) on a path already running a crossover and a limiter.
+    The standing cost is 15 filters per channel on every profile — the curve's
+    two shelves, 5 Simple bands and the 8-slot advanced pool, all identities
+    when idle. The 13-filter frame before the curve pair joined measured
+    +0.43 percentage points of CamillaDSP processing load against a bypassed
+    control (0.451 % -> 0.877 %) on a path already running a crossover and a
+    limiter.
     """
 
     # Bypass is spelled as VALUES, not as a missing frame. Emitting nothing

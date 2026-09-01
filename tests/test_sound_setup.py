@@ -6601,7 +6601,7 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
     generated = Path(fake.loaded_path).read_text()
     assert Path(fake.loaded_path).name == "sound_current.yml"
     assert "room_peq_1:" in generated
-    assert "sound_curve_bk_bass:" in generated
+    assert "sound_curve_bass:" in generated
     assert payload["preserved_room_peqs"] == 1
     assert payload["dsp_write_epoch"] == payload["last_dsp_apply"]["op_id"]
     assert load_profile(profile_path).curve_id == "bk"
@@ -7478,7 +7478,7 @@ async def test_audition_profile_loads_draft_without_persisting(
     assert fake.loaded_path is not None
     assert Path(fake.loaded_path).name == "sound_audition.yml"
     generated = Path(fake.loaded_path).read_text()
-    assert "sound_curve_harman_bass:" in generated
+    assert "sound_curve_bass:" in generated
     assert "sound_advanced_1:" in generated
     assert "sound_preamp:" in generated  # match-loudness trim applied
     assert payload["audition_profile"]["curve_id"] == "harman"
@@ -7512,7 +7512,7 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
 
     assert fake.set_calls == []
     assert len(fake.active_raw_values) == 1
-    assert "sound_curve_harman_bass:" in fake.active_raw_values[0]
+    assert "sound_curve_bass:" in fake.active_raw_values[0]
     assert "room_peq_1:" in fake.active_raw_values[0]
     # Default settings -> no output trim, so boosts boost. The preamp is
     # always DEFINED (its presence must not depend on a value) and inert.
@@ -7610,16 +7610,23 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
             )),
             id="gain_dragged_to_exactly_flat",
         ),
+        pytest.param(
+            SoundProfile(curve_id="harman", parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+            )),
+            id="curve_preset_changed",
+        ),
     ],
 )
 async def test_the_live_graphs_slots_keep_the_pipeline_still(
     tmp_path: Path, monkeypatch, changed,
 ):
-    """Adding, removing, or flattening a band writes numbers, not a pipeline.
+    """Adding, removing or flattening a band, or switching the curve preset,
+    writes numbers, not a pipeline.
 
-    The live draft carries a slot per band, so none of these changes which
-    filters exist — which is what would otherwise rebuild CamillaDSP's filter
-    group and reset every filter's state.
+    The live draft carries a slot per band and one fixed pair of curve shelves,
+    so none of these changes which filters exist — which is what would
+    otherwise rebuild CamillaDSP's filter group and reset every filter's state.
     """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
