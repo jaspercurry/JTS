@@ -9,11 +9,13 @@ import json
 import pytest
 
 from jasper.sound.profile import (
+    MAX_PARAMETRIC_BANDS,
     SIMPLE_EQ_FIELDS,
     ParametricBand,
     ProfileLibraryEntry,
     SimpleEq,
     SoundProfile,
+    build_sound_filter_slots,
     build_sound_filters,
     delete_named_profile,
     estimate_headroom_db,
@@ -326,3 +328,93 @@ def test_corrupt_profile_has_no_applied_timestamp(tmp_path):
     profile = load_profile(path)
 
     assert profile.updated_at == ""
+
+
+# ---------------------------------------------------------------------------
+# The fixed frame. These pin the property the whole live-EQ design rests on:
+# the graph's SHAPE follows the profile's declaration and never its values, so
+# an edit is a parameter write. CamillaDSP rebuilds its filter group and resets
+# every filter's state when the structure changes, so a slot that came and went
+# with a value would cost a ducked swap per gesture.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("band_count", [0, 1, 3, MAX_PARAMETRIC_BANDS])
+def test_the_advanced_pool_is_the_same_size_whatever_the_band_count(band_count):
+    profile = SoundProfile(parametric_bands=tuple(
+        ParametricBand(freq_hz=100.0 * (i + 1), gain_db=2.0, q=1.0)
+        for i in range(band_count)
+    ))
+
+    names = [s.name for s in build_sound_filter_slots(profile)]
+
+    assert [n for n in names if n.startswith("sound_advanced_")] == [
+        f"sound_advanced_{i}" for i in range(1, MAX_PARAMETRIC_BANDS + 1)
+    ]
+    # ...while only the declared ones count as doing anything.
+    assert len(build_sound_filters(profile)) == band_count
+
+
+def test_an_idle_slot_is_an_exact_identity():
+    """A 0 dB Peaking biquad's zeros cancel its poles, so a spare slot is free."""
+    idle = [
+        s for s in build_sound_filter_slots(SoundProfile())
+        if s.name.startswith("sound_advanced_")
+    ]
+
+    assert len(idle) == MAX_PARAMETRIC_BANDS
+    assert {s.biquad_type for s in idle} == {"Peaking"}
+    assert {s.gain for s in idle} == {0.0}
+    assert not any(s.active() for s in idle)
+
+
+@pytest.mark.parametrize("gain_db", [2.0, 0.02, 0.0, -0.02, -2.0])
+def test_a_bands_slot_survives_its_gain_crossing_zero(gain_db):
+    """Dragging through the flat window must not add or remove a filter."""
+    profile = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=gain_db, q=1.0),),
+    )
+
+    band = next(
+        s for s in build_sound_filter_slots(profile) if s.name == "sound_advanced_1"
+    )
+
+    assert band.gain == gain_db
+    assert band.biquad_type == "Peaking"
+    assert [s.name for s in build_sound_filter_slots(profile)] == [
+        s.name for s in build_sound_filter_slots(SoundProfile())
+    ]
+
+
+def test_a_neutral_band_holds_a_slot_but_does_not_count_as_doing_anything():
+    """The two questions stay separate: what the graph HOLDS vs what it DOES."""
+    profile = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),),
+    )
+
+    assert build_sound_filters(profile) == ()
+    assert any(
+        s.name == "sound_advanced_1" for s in build_sound_filter_slots(profile)
+    )
+    assert estimate_headroom_db(profile) == 0.0
+
+
+@pytest.mark.parametrize("curve_id", ["flat", "harman", "bk"])
+def test_bypass_keeps_the_frame_and_only_moves_values(curve_id):
+    """Bypass is spelled as values, including for a curve preset.
+
+    Emitting nothing would strip the whole frame out of the pipeline, so
+    toggling bypass would cost the ducked swap the frame exists to remove. The
+    curve's filters are NEUTRALISED rather than dropped for the same reason —
+    dropping them would make bypass structural again for exactly the households
+    who chose a preset.
+    """
+    on = SoundProfile(enabled=True, curve_id=curve_id)
+    bypassed = SoundProfile(enabled=False, curve_id=curve_id)
+
+    assert [s.name for s in build_sound_filter_slots(on)] == [
+        s.name for s in build_sound_filter_slots(bypassed)
+    ]
+    # Bypassed means silent, by value.
+    assert build_sound_filters(bypassed) == ()
+    assert not any(s.active() for s in build_sound_filter_slots(bypassed))
