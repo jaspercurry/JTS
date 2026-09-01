@@ -235,6 +235,7 @@ jasper-noise-capture = "jasper.cli.noise_capture:main"
 jasper-wake-score = "jasper.cli.wake_score:main"
 jasper-wake-review = "jasper.cli.wake_review:main"
 jasper-wake-corpus-web = "jasper.web.wake_corpus_setup:main"
+jasper-declare-geometry = "jasper.cli.declare_geometry:main"
 
 [build-system]
 requires = ["setuptools>=82.0.1"]
