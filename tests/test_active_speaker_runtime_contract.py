@@ -3207,16 +3207,50 @@ def test_baseline_preference_step_is_before_split_mixer() -> None:
     assert pipeline.index("names: [pref_pk]") < pipeline.index("type: Mixer")
 
 
-def test_baseline_empty_preference_is_byte_identical() -> None:
-    # An all-flat preference profile emits nothing extra: the baseline is
-    # byte-for-byte the pre-PR-3 config. Inactive bands (near-zero gain) drop out
-    # exactly like the stereo emitter's build_sound_filters does.
+def test_baseline_without_preference_eq_is_byte_identical() -> None:
+    # A household with no preference EQ emits nothing extra: the baseline is
+    # byte-for-byte the pre-PR-3 config.
     base = _active_baseline_yaml("mono", 2)
+
     assert _active_baseline_yaml("mono", 2, preference_filters=()) == base
+
+
+def test_an_all_flat_profile_still_emits_the_byte_identical_baseline() -> None:
+    """The durable path drops neutral bands — at the CALLER, not in the emitter.
+
+    ``build_sound_filters`` is what a save hands over, and it drops anything
+    under ``FILTER_EPSILON_DB``, so an all-flat profile reaches the emitter as
+    ``()`` and the baseline does not move. That byte-identity is what
+    ``reconcile_current_dsp`` compares on every deploy, and moving it displaces
+    a commissioned candidate (#2572).
+    """
+    from jasper.sound.profile import ParametricBand, SoundProfile, build_sound_filters
+
+    flat = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),),
+    )
+
+    assert build_sound_filters(flat) == ()
+    assert _active_baseline_yaml(
+        "mono", 2, preference_filters=build_sound_filters(flat)
+    ) == _active_baseline_yaml("mono", 2)
+
+
+def test_the_emitter_emits_the_bands_it_is_given() -> None:
+    """The LIVE draft depends on this: a neutral slot must survive to the graph.
+
+    A filter appearing or disappearing is a pipeline change, and CamillaDSP
+    rebuilds the filter group and resets every filter's state across one. The
+    live editing graph therefore carries a slot per band, neutral ones
+    included, and the emitter must not quietly drop them back out.
+    """
     near_zero = (
         FilterSpec(name="pref_noop", biquad_type="Peaking", freq=1000.0, gain=0.0, q=1.0),
     )
-    assert _active_baseline_yaml("mono", 2, preference_filters=near_zero) == base
+
+    emitted = _active_baseline_yaml("mono", 2, preference_filters=near_zero)
+
+    assert "pref_noop" in emitted
 
 
 def test_tweeter_commissioning_requires_protective_highpass() -> None:
