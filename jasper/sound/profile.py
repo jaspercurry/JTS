@@ -802,6 +802,25 @@ def _neutralised(spec: FilterSpec) -> FilterSpec:
     return replace(spec, gain=0.0)
 
 
+def sound_filter_slot_names() -> frozenset[str]:
+    """Every filter name the preference layer can declare, under any profile.
+
+    Value-independent and profile-independent, unlike
+    :func:`build_sound_filter_slots`, which answers for ONE profile: this is
+    the closed set of names the layer owns, so a reader that has to tell the
+    preference layer apart from the tuning layers in an emitted graph asks
+    here rather than matching a name prefix. Derived from the same three
+    declarations the builders emit from, so a slot added there joins this set
+    without a second edit.
+    """
+
+    return frozenset(
+        {spec.name for preset in CURVE_PRESETS for spec in preset.filters}
+        | {band.filter_name for band in SIMPLE_BANDS}
+        | {spec.name for spec in _advanced_filters(())}
+    )
+
+
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     """Return active sound filters in canonical order.
 

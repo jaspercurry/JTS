@@ -38,6 +38,13 @@ thing under test — so the caller restores before one and installs again after.
 That is what keeps the swap count at two for an all-routed walk and bounded by
 the routed/summed transitions otherwise, instead of two per stimulus.
 
+**It banks what it entered on, and says when that moved.** Every entry-graph
+take is also a content fingerprint of the layers a round measures through
+(:mod:`.tuning_scope`), so a round anchored to one candidate NAME can still
+tell that the bytes underneath it changed between two of its own captures. It
+is a disclosure, never a gate, and it is scoped: a household preference-EQ
+save is above everything under tune and deliberately does not trip it (#3489).
+
 **Neither swap ducks the fader** (wave 6d). The 40 dB / ``MAIN_VOLUME_RAMP_SETTLE_S``
 bracket exists because replacing the pipeline under live household audio can
 step the graph's own gain by tens of dB at an unchanged volume. Neither
@@ -123,11 +130,37 @@ class MeasurementSessionGraph:
         self._yaml: dict[_VariantKey, str] = {}
         self._installed_yaml: str | None = None
         self._entry_config_path: str | None = None
+        self._entry_scope_fingerprint: str | None = None
+        self._comparability_boundary = False
 
     @property
     def installed(self) -> bool:
         """True while this session holds an entry graph to put back."""
         return self._entry_config_path is not None
+
+    @property
+    def entry_scope_fingerprint(self) -> str:
+        """The tuning-scope hash of the graph this session ENTERED on (#3489).
+
+        Banked once, at the first entry graph this session took, and kept
+        across every restore/re-install afterwards — a round keeps its entry
+        graph. ``""`` when the entry graph could not be named.
+        """
+        return self._entry_scope_fingerprint or ""
+
+    @property
+    def comparability_boundary(self) -> bool:
+        """Has the graph under this session's captures changed since entry?
+
+        Latched, never cleared: once two captures in one round went through
+        different tuning layers they are not comparable, and a later re-entry
+        that happens to match again does not repair the pair already banked.
+        Provenance for the round to disclose, never a gate.
+
+        No production reader today — the WARNING this property is set beside is
+        the whole disclosure surface until a round banks it.
+        """
+        return self._comparability_boundary
 
     def graph_yaml(
         self,
@@ -221,6 +254,7 @@ class MeasurementSessionGraph:
                         "refusing to install the measurement graph"
                     )
                 self._entry_config_path = str(entry)
+                self._observe_entry_graph(self._entry_config_path)
             result, stomped = await self._reason_for_loading(cam, yaml_text)
             log_event(
                 logger,
@@ -275,6 +309,77 @@ class MeasurementSessionGraph:
         if not await self._is_live(cam, previous):
             return "reinstall", True
         return "variant", False
+
+    def _observe_entry_graph(self, path: str) -> None:
+        """Bank this session's entry tuning scope, or disclose that it moved.
+
+        Runs at every ENTRY-graph take: the first install, and each install
+        after a summed sweep put the household's graph back — :meth:`restore`
+        clears the path, so the next install re-reads it, and that is the one
+        moment in a session where the graph a round is anchored to is standing
+        in front of us again. The first take is the anchor; every later one is
+        the comparison, and a mismatch is
+        :data:`~.tuning_scope.COMPARABILITY_BOUNDARY`: the round's captures
+        either side of it went through different tuning layers.
+
+        **SCOPED, which is what keeps it quiet** (#3489). A household
+        ``/sound/`` save rewrites this file and moves its whole-graph content
+        hash, but preference EQ sits above everything a round measures through
+        and is excluded — so an EQ save is not a boundary, and a change to any
+        tuning layer is.
+
+        Never raises, and the install never depends on it. An unreadable or
+        unparseable entry graph costs the fingerprint, not the capture: the
+        session then makes no comparison at all rather than a false one, and
+        anchors on the first entry graph it CAN name. A late anchor is still a
+        real one; refusing to anchor at all would cost the round every later
+        disclosure as well as the one it could not make.
+
+        The hash is taken from the entry config FILE — the text :meth:`restore`
+        will put back — not from a readback, so a live-only graph change that
+        left the statefile alone is invisible here. That is the same document
+        this class already treats as the thing it entered on.
+
+        A boundary re-disclosed on every later re-entry is deliberate: each one
+        brackets different captures, and a reader has to be able to tell which
+        of them fell after it.
+        """
+        from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
+
+        try:
+            current = tuning_scope_fingerprint(_read_text(path))
+        except (OSError, RuntimeError, ValueError):
+            log_event(
+                logger,
+                "active_speaker.session_graph",
+                action="entry_graph",
+                result="unnameable",
+                entry_config_path=path,
+                exc_info=True,
+            )
+            return
+        if self._entry_scope_fingerprint is None:
+            self._entry_scope_fingerprint = current
+            log_event(
+                logger,
+                "active_speaker.session_graph",
+                action="entry_graph",
+                result="banked",
+                entry_scope_fingerprint=current,
+            )
+            return
+        if current == self._entry_scope_fingerprint:
+            return
+        self._comparability_boundary = True
+        log_event(
+            logger,
+            "active_speaker.session_graph",
+            level=logging.WARNING,
+            action="entry_graph",
+            result=COMPARABILITY_BOUNDARY,
+            entry_scope_fingerprint=self._entry_scope_fingerprint,
+            current_scope_fingerprint=current,
+        )
 
     async def patch(self, changes: Mapping[str, Any]) -> None:
         """Change what one candidate needs, without re-installing.

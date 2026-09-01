@@ -445,8 +445,15 @@ def _context_fingerprint(
     )
 
 
-def running_graph_fingerprint(running_config_raw: str | None) -> str:
-    """Fingerprint one parseable fresh CamillaDSP readback without repairing it."""
+def parse_running_graph(running_config_raw: str | None) -> dict[str, Any]:
+    """One parseable CamillaDSP graph as an object, unrepaired.
+
+    Extracted from :func:`running_graph_fingerprint` so a caller that hashes a
+    SUBSET of the graph — see
+    :func:`~jasper.active_speaker.crossover_v2.tuning_scope.tuning_scope_fingerprint`
+    — parses and refuses it the same way, rather than spelling a second
+    tolerance for an unparseable readback.
+    """
 
     try:
         parsed = yaml.safe_load(running_config_raw or "")
@@ -458,7 +465,13 @@ def running_graph_fingerprint(running_config_raw: str | None) -> str:
         raise ActiveCommissioningAdmissionError(
             "running CamillaDSP graph is not an object"
         )
-    return json_fingerprint(parsed)
+    return parsed
+
+
+def running_graph_fingerprint(running_config_raw: str | None) -> str:
+    """Fingerprint one parseable fresh CamillaDSP readback without repairing it."""
+
+    return json_fingerprint(parse_running_graph(running_config_raw))
 
 
 def prepare_capture_plan(

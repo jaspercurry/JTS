@@ -17,6 +17,9 @@ order — so this list is what exists, not a plan:
 * :mod:`.verification` — realization / benefit / spec grading and the adoption
   decision over them.
 * :mod:`.round_evidence` — the two measurements a round compares, reduced.
+* :mod:`.tuning_scope` — the comparability fingerprint a round banks at entry:
+  the graph's content hashed over the layers it measures through, preference
+  EQ excluded.
 * :mod:`.round_views` — the round-grading comparison views a laptop campaign
   had been re-deriving by hand.
 * :mod:`.frequency_view` — retained round packets translated into the neutral

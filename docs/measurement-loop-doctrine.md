@@ -36,6 +36,37 @@ and persist their own accounting under
 - **loop** — checking that a recommendation held is measuring again (§3).
 - **save** — the result is banked.
 
+### 1a. The layering rule — what a measurement plays through
+
+**Owner ruling, 2026-09-01.** When tuning layer N, the measurement plays
+through layer N and everything *below* it, and never anything above it.
+
+- Preference EQ (`/sound/`) sits above everything tunable, so it is part of no
+  measurement graph and of no tuning comparison. Room correction follows the
+  same rule: absent while drivers are being linearized, and holding
+  linearization fixed beneath it when it is itself the layer under tune.
+- A **comparability** question inherits the same scope. The fingerprint a
+  round banks at entry, and compares against later, covers the candidate and
+  below — structure, linearization, blend, trim, headroom, limiters — and
+  deliberately excludes the preference slots
+  (`crossover_v2.tuning_scope`, #3489). A whole-graph hash would report a
+  boundary on every household EQ save, which is noise that trains a driver to
+  ignore the flag.
+
+**Known departure, open at writing time.** The rule above is the ruling; the
+code does not yet meet it everywhere. Routed stimuli satisfy it by construction
+— `measurement_emit.emit_measurement_graph` takes no `SoundProfile`, pinned by
+`test_the_measurement_graph_never_carries_preference_eq`. The
+`programs.SUMMED_SWEEP_PHASES` captures do not: they deliberately measure the
+STANDING production graph, which carries the household's preference EQ. That
+set is VERIFY, both position clouds, **and ENTRY_BASELINE** — so it includes
+the very pair `evaluate_benefit` differences, and an EQ save between a round's
+"before" and its "after" moves them apart for a reason no verdict attributes.
+Harmless on the runs banked so far only because jts3's sound profile was
+`enabled=false` with 0 bands throughout both campaigns, which is a property of
+those runs and not a guarantee. Closing it is measurement-path work and has no
+issue of its own yet.
+
 ## 2. The authority model
 
 - **The LLM recommends; the measurement decides.** Priors, confidence scores
