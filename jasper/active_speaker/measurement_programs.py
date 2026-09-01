@@ -37,22 +37,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-DEFAULT_MARK_DISTANCE_M = 1.0
+from .crossover_v2.capture_plan import MARK_DISTANCE_M, wall_clock_ceiling_s
 
 # Repeats at the on-axis anchor, per the plan's ratified position-major
 # structure: x4 at the 0 deg anchor pose, x1 at every other pose.
 ANCHOR_REPEATS = 4
 
-# Per-hold budget, matching the shipped walk's
-# ``jasper.web.correction_crossover_v2.REMOTE_POSITION_HOLD_BUDGET_S``: ten
-# minutes covers the slower of the two movers (a person walking a tape to the
-# next bearing and posting the release).
+# Per-hold budget, replacing ``jasper.web.correction_crossover_v2``'s
+# ``REMOTE_POSITION_HOLD_BUDGET_S`` for a walk that names a program.
 HOLD_BUDGET_S = 600
-
-# Per capture: prompt read, mic settle, the ~16 s sweep, and the upload. The
-# shipped walk's ``crossover_v2.capture_plan.WALL_CLOCK_CEILING_PER_ENTRY_S``
-# is the same allowance, and is likewise a budget, not a measured time.
-CAPTURE_SETTLE_ALLOWANCE_S = 120
 
 
 @dataclass(frozen=True)
@@ -73,7 +66,7 @@ class MeasurementProgram:
     poses: tuple[ProgramPose, ...]
     hold_budget_s: int
     session_ceiling_s: int
-    mark_distance_m: float = DEFAULT_MARK_DISTANCE_M
+    mark_distance_m: float = MARK_DISTANCE_M
 
     @property
     def mic_move_count(self) -> int:
@@ -104,22 +97,6 @@ class UnknownProgramError(ValueError):
         )
 
 
-def _session_ceiling_s(capture_count: int) -> int:
-    """Wall-clock ceiling for one program, on the shipped walk's own scaling.
-
-    ``DEFAULT_WALL_CLOCK_CEILING_S`` (1800 s) covered a three-capture stage;
-    each further capture adds one settle allowance: 1800 + (n-3) x 120.
-    Full: 1800 + 13x120 = 3360 s. Express: 1800 + 5x120 = 2400 s. Both sit
-    under ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S`` (3600 s), which
-    owns the walked-away hard cap and clamps whatever it is handed — a
-    thirteen-pose human walk that spends real hold time per pose will meet
-    that cap before it meets this ceiling; pricing that is the program-clock
-    wiring's decision (#3498 WP2), not this table's.
-    """
-
-    return 1800 + max(0, capture_count - 3) * CAPTURE_SETTLE_ALLOWANCE_S
-
-
 def _program(
     program_id: str, size: str, poses: tuple[ProgramPose, ...]
 ) -> MeasurementProgram:
@@ -128,7 +105,7 @@ def _program(
         size=size,
         poses=poses,
         hold_budget_s=HOLD_BUDGET_S,
-        session_ceiling_s=_session_ceiling_s(sum(p.repeats for p in poses)),
+        session_ceiling_s=int(wall_clock_ceiling_s(sum(p.repeats for p in poses))),
     )
 
 

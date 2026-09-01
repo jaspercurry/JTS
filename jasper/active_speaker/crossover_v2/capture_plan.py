@@ -358,6 +358,16 @@ class CloudPositionPrompt:
         return float(self.offset_cm) >= WIDE_OFFSET_MIN_CM
 
     @property
+    def at_mark(self) -> bool:
+        """Whether the pose asks for no move at all — on EITHER axis.
+
+        Derived for the same reason ``wide`` is: a raised pose is not at the
+        mark, and a reader computing this from ``offset_cm`` alone would bank
+        one as if it were.
+        """
+        return float(self.offset_cm) == 0.0 and float(self.vertical_offset_cm) == 0.0
+
+    @property
     def text(self) -> str:
         """Headline + detail as one string — the evidence sidecar's ``prompt``.
 
@@ -380,8 +390,8 @@ _LATERAL_SIGNS = {"LEFT": -1, "RIGHT": 1}
 _VERTICAL_SIGNS = {"BELOW": -1, "ABOVE": 1}
 
 # The same table read the other way, for copy generated FROM a sign rather than
-# parsed into one (:func:`remote_position_prompt`). Inverted rather than spelled
-# a second time: two literal tables are two places for ABOVE to become -1.
+# parsed into one -- inverted so ABOVE cannot be signed down in one of two
+# places.
 _VERTICAL_WORDS = {sign: word for word, sign in _VERTICAL_SIGNS.items()}
 
 
@@ -804,19 +814,11 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     deriving this instead of writing a parallel table: the remote tier is a
     different OPERATOR, not a different measurement.
 
-    **The ELEVATION clause is additive and a pose at mark height gains
-    nothing.** ``position_elevation_deg`` answers 0 for every pose nobody
-    raised, and 0 emits no clause at all — so every walk stated on the
-    horizontal axis reads exactly the sentence it read before elevation was
-    sayable. A raised pose gets one clause in the bearing's own grammar, in
-    :data:`_VERTICAL_SIGNS`' own words, so a household reads one instruction
-    rather than two sentences that could be followed in either order.
-
-    **The 0° verb is the one thing the rise changes**, and it has to: "LEAVE
-    the microphone on the design axis" is a stand-still instruction, and a pose
-    that also asks for a rise would tell the household not to move and then to
-    move. "Keep" states the same bearing as something to HOLD while the second
-    clause is performed.
+    The elevation clause is additive: a pose at mark height reads exactly the
+    sentence it read before elevation was sayable. The 0° verb is the one thing
+    a rise changes, and it has to — "LEAVE the microphone on the design axis"
+    is a stand-still instruction, so a pose that also asks for a rise would tell
+    the household not to move and then to move.
     """
     degrees_ = position_angle_deg(prompt)
     elevation = position_elevation_deg(prompt)
@@ -2705,6 +2707,24 @@ def build_v2_verify_session_spec(
     )
 
 
+def wall_clock_ceiling_s(capture_target: int) -> float:
+    """The ceiling for a plan of ``capture_target`` captures.
+
+    The arithmetic :func:`session_wall_clock_ceiling_s` states, reachable by a
+    caller holding a capture count rather than a plan object.
+    """
+    from jasper.active_speaker.session_volume_plan import (
+        DEFAULT_WALL_CLOCK_CEILING_S,
+        MAX_WALL_CLOCK_CEILING_S,
+    )
+
+    extra = max(0, capture_target - CAPTURE_PLAN_TARGET)
+    return min(
+        MAX_WALL_CLOCK_CEILING_S,
+        DEFAULT_WALL_CLOCK_CEILING_S + extra * WALL_CLOCK_CEILING_PER_ENTRY_S,
+    )
+
+
 def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     """The walked-away volume ceiling for one plan, scaled by its length.
 
@@ -2746,17 +2766,8 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     maximum the unclamped value would be 3720 s and the plan's hard cap binds at
     3600 s.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        DEFAULT_WALL_CLOCK_CEILING_S,
-        MAX_WALL_CLOCK_CEILING_S,
-    )
-
     target = int(getattr(capture_plan, "capture_target", CAPTURE_PLAN_TARGET) or 0)
-    extra = max(0, target - CAPTURE_PLAN_TARGET)
-    return min(
-        MAX_WALL_CLOCK_CEILING_S,
-        DEFAULT_WALL_CLOCK_CEILING_S + extra * WALL_CLOCK_CEILING_PER_ENTRY_S,
-    )
+    return wall_clock_ceiling_s(target)
 
 
 # Per accepted capture beyond the 3-entry baseline. 120 s covers a prompt read,

@@ -448,6 +448,7 @@ tier_is_externally_positioned = _plan.tier_is_externally_positioned
 v2_first_begin_timeout_s = _plan.v2_first_begin_timeout_s
 verify_pose_table = _plan.verify_pose_table
 walk_shape_for = _plan.walk_shape_for
+wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 
 
 # :mod:`jasper.active_speaker.crossover_v2.refusal_copy`
@@ -5160,10 +5161,7 @@ class CrossoverV2Session:
             prompt=prompt.text,
             role=prompt.role,
             offset_cm=float(prompt.offset_cm),
-            at_mark=(
-                float(prompt.offset_cm) == 0.0
-                and float(prompt.vertical_offset_cm) == 0.0
-            ),
+            at_mark=prompt.at_mark,
             curves=tuple(curves),
         )
         log_event(

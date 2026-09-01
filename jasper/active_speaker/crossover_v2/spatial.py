@@ -666,17 +666,11 @@ class LateralPose:
     is structural rather than a convention: there is no field here for a second
     solution to be written to.
 
-    **``pose_id`` is the canonical key for a POSE on every surface** — this
-    record, ``event=correction.crossover_v2_lateral_pose``, and the accepted
-    capture's verdict payload. ``position_id`` / ``position_index`` belong to
-    the other question: WHICH SLOT OF A WALK, keyed by the walk driver
-    (``round_views`` keys its views by ``f"{phase}_{index:02d}"``, and the
-    cloud, entry-baseline and unprompted-phase records each carry a
-    ``position_id`` of their own). A pose published under the position key is
-    the right string filed under the wrong question, and it reads as correct
-    because the two strings look alike — so a consumer joining takes on
-    ``position_id`` silently mixes poses into the seat table. One word per
-    question; neither is a synonym for the other.
+    ``pose_id`` is the canonical key for a POSE on every surface — this record,
+    ``event=correction.crossover_v2_lateral_pose``, and the accepted capture's
+    verdict payload. ``position_id`` / ``position_index`` answer the other
+    question, WHICH SLOT OF A WALK, and are not synonyms for it: a consumer
+    joining takes on ``position_id`` silently mixes poses into the seat table.
     """
 
     pose_id: str
@@ -1360,17 +1354,13 @@ def lateral_pose_record(
     is stamped on the record here rather than left for a reader to redo.
 
     ``position_axis`` is horizontal by construction, and stays so even for a
-    RAISED pose: the axis names where a pose's stated bearing lies, and every
-    pose reaching this builder commands one (:data:`POSITION_AXIS_VERTICAL` is
-    the pose that commands NO bearing — see :class:`PositionGeometry`).  A pose
-    that is both swung and raised is COMPOUND: it states both numbers, which is
-    the move an axis-plus-one-value pair could only describe half of.
+    RAISED pose: :data:`POSITION_AXIS_VERTICAL` is the pose that commands NO
+    horizontal bearing (see :class:`PositionGeometry`), and every pose reaching
+    this builder commands one.
 
-    ``vertical_deg`` is that second number — the signed whole-degree ELEVATION
-    above mark height, negative BELOW, derived against the same
-    :data:`MARK_DISTANCE_M` as ``position_deg`` and stated here rather than
-    re-derived.  It defaults to 0 because 0 is TRUE of a pose nobody raised, so
-    a caller with nothing to say says nothing and the record is unchanged.
+    ``vertical_deg`` is the signed whole-degree ELEVATION above mark height,
+    negative BELOW, against the same :data:`MARK_DISTANCE_M` as
+    ``position_deg``.  0 is TRUE of a pose nobody raised.
 
     ``captured_at`` is minted at retention, not carried on the pose, for the
     reason :func:`entry_baseline_record` mints its own: a

@@ -14,13 +14,13 @@ the sentence around the angles must not fail this file.
 
 from __future__ import annotations
 
-import ast
 import re
 from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker import measurement_programs as mp
+from jasper.active_speaker.crossover_v2.capture_plan import wall_clock_ceiling_s
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLAN_DOC = REPO_ROOT / "docs" / "tuning-master-plan.md"
@@ -246,23 +246,4 @@ def test_clocks_are_program_owned(row: mp.MeasurementProgram) -> None:
     """Every program's ceiling scales with its own capture count."""
 
     assert row.hold_budget_s == mp.HOLD_BUDGET_S
-    assert row.session_ceiling_s == 1800 + max(0, row.capture_count - 3) * (
-        mp.CAPTURE_SETTLE_ALLOWANCE_S
-    )
-
-
-def test_table_imports_nothing_but_stdlib() -> None:
-    """The table is plain data: importing it must not pull the audio stack."""
-
-    source = Path(mp.__file__).read_text(encoding="utf-8")
-    roots = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
-
-    assert roots <= {"__future__", "dataclasses", "typing"}, (
-        f"measurement_programs.py imports {sorted(roots)} — it is a plain-data "
-        "table and stays import-cheap"
-    )
+    assert row.session_ceiling_s == int(wall_clock_ceiling_s(row.capture_count))

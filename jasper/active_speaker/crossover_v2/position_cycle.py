@@ -71,7 +71,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Mapping
 
 import numpy as np
@@ -108,20 +107,6 @@ _BANKED_POSITIONS_GLOB = (
 #: ``sources``.
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
                 "regime", "wav_sha256")
-
-#: The pose fields that arrived AFTER the first documents were written, each
-#: with the value an absent key reads as. They are projected like any other
-#: field and are always present in a document this module writes; they are
-#: OPTIONAL at the reader so a round banked before the field existed still
-#: indexes, instead of a schema bump refusing history to gain one number.
-#:
-#: ``vertical_deg`` — the signed whole-degree elevation above mark height, the
-#: orthogonal half of ``position_deg``. 0 is the honest default: a walk that
-#: could not state a rise did not take one.
-_TAKE_DEFAULTS = MappingProxyType({"vertical_deg": 0})
-
-_TAKE_REQUIRED = frozenset(_TAKE_FIELDS)
-_TAKE_KEYS = _TAKE_REQUIRED | frozenset(_TAKE_DEFAULTS)
 
 #: The three arrays that make a retained entry-baseline take the durable copy.
 #: A take without all three predates the curve riding here and is not readable
@@ -238,12 +223,10 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` plus
-    :data:`_TAKE_DEFAULTS` — the identity, the pose, and the verifier. The
-    banked record stays the place to go for the rest. A take banked before a
-    defaulted field existed reads back as that field's default rather than as
-    ``None``, so history stays indexable and a reader never has to tell a
-    missing number from an absent one.
+    Returns the record narrowed to :data:`_TAKE_FIELDS` plus ``vertical_deg``
+    — the identity, the pose, and the verifier. The banked record stays the
+    place to go for the rest. A take banked before ``vertical_deg`` existed
+    reads back as 0, the elevation a walk that could not state a rise took.
     """
     try:
         raw = json.loads(path.read_text())
@@ -256,9 +239,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     if raw.get("phase") != PHASE_LATERAL:
         return None
     take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
-    for field, default in _TAKE_DEFAULTS.items():
-        value = raw.get(field)
-        take[field] = default if value is None else value
+    take["vertical_deg"] = raw.get("vertical_deg") or 0
     return take
 
 
@@ -556,17 +537,14 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        # Unknown keys still refuse, for the strictness argument above; the
-        # defaulted ones are the single exception, and they are exempted at the
-        # MISSING end only — a document written before one existed reads, a
-        # document inventing a key does not.
+        # ``vertical_deg`` is exempted at the MISSING end only: a document
+        # written before it existed reads, a document inventing a key does not.
         if not isinstance(take, Mapping) or not (
-            _TAKE_REQUIRED <= set(take) <= _TAKE_KEYS
+            set(_TAKE_FIELDS) <= set(take) <= set(_TAKE_FIELDS) | {"vertical_deg"}
         ):
             raise PositionCycleError(
                 f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}, optionally with "
-                f"{sorted(_TAKE_DEFAULTS)}"
+                f"{sorted(_TAKE_FIELDS)}, optionally with ['vertical_deg']"
             )
     return dict(raw)
 
