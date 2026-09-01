@@ -6770,6 +6770,51 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
         assert events[0]["reason"] == reason
 
 
+@pytest.mark.parametrize(
+    "named_chain",
+    [
+        pytest.param("c" * 64, id="a_candidate_resolved_it"),
+        pytest.param(None, id="the_guided_captures_did"),
+    ],
+)
+def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
+    tmp_path: Path, named_chain
+) -> None:
+    """#3479: the seam banks the FRAME beside the number.
+
+    A trim is degenerate with the chain it was resolved against, so the apply
+    passes the resolving candidate's own fingerprint — already on the profile's
+    source block — through to the record, and it reaches the level-match ledger
+    every downstream reader looks at. A profile the guided captures levelled
+    names no candidate and banks no frame, which is a different fact from
+    naming the bare one.
+    """
+    candidate = _applied_with_sources(
+        tmp_path, {"woofer": "measured", "tweeter": "measured"}
+    )
+    source = dict(candidate["source"])
+    if named_chain is None:
+        source.pop("measured_candidate_fingerprint", None)
+    else:
+        source["measured_candidate_fingerprint"] = named_chain
+    candidate["source"] = source
+    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
+
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+
+    record = dbt.load_base_trim()
+    assert record is not None
+    assert record["chain_fingerprint"] == named_chain
+    _trims, meta = dbt.banked_base_trims(
+        record["declaration_fingerprint"], record["roles"]
+    )
+    assert meta["chain_fingerprint"] == named_chain
+
+
 def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     tmp_path: Path, caplog
 ) -> None:

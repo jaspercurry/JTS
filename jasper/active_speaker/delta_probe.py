@@ -417,6 +417,12 @@ DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS: frozenset[str] = frozenset({
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
 })
 
+#: What the band ratios grade realized against: the COMMANDED delta — a change
+#: claim. The composed verdict's sibling on the same receipt grades against
+#: ``verification.REALIZATION_COMPARAND`` (the applied candidate's predicted
+#: sum, an absolute claim); two graders of one axis, each naming its comparand.
+REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
+
 
 def seam_rollback_deferral(probe: Any | None) -> str:
     """Why this map's seam-bound rollback DEFERS to the adoption table, or ``""``.
@@ -1165,6 +1171,7 @@ class DeltaProbeMap:
             # never has to reach outside it to compare the whole-band answer
             # against the per-band ones.
             "realization": {
+                "comparand": REALIZED_VS_COMMANDED_COMPARAND,
                 "pooled": self.gain_factor,
                 "bands": {
                     band_id: dict(entry)

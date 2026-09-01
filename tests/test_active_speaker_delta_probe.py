@@ -2382,9 +2382,13 @@ def test_the_realization_block_carries_the_trusted_band_provenance():
     ).to_dict()["realization"]
 
     assert set(payload) == {
-        "pooled", "bands", "graded_band_hz", "trusted_floor_hz",
+        "comparand", "pooled", "bands", "graded_band_hz", "trusted_floor_hz",
         "trust_ceiling_hz",
     }
+    # Two graders of one axis on the same receipt, each naming its comparand:
+    # this one grades against the commanded delta, verification's composed
+    # verdict against the applied candidate's predicted sum.
+    assert payload["comparand"] == "commanded_delta"
     assert set(payload["bands"]) == set(DELTA_PROBE_REALIZATION_BANDS)
     assert set(payload["bands"][DELTA_PROBE_BAND_CROSSOVER]) == {
         "band_hz", "n_bins", "ratio", "graded",

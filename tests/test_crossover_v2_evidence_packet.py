@@ -4,7 +4,7 @@
 
 """General packet blocks that are not any one prescription gate's own concern.
 
-``accuracy_budget`` (6.5) and ``trim_history`` (6.6) both read fields the
+``accuracy_budget`` (6.5) and ``structural_history`` (6.6) both read fields the
 packet already assembles from elsewhere in the tree; neither computes a new
 measurement. Reuses the synthetic-bundle fixture
 ``test_crossover_v2_blend_prescription`` already established, on the same
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
     round_artifact_dir,
 )
@@ -134,7 +135,7 @@ def test_mic_calibration_tier_publishes_each_roles_own_tier(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# trim_history (ticket 6.6)
+# structural_history (ticket 6.6, #3484)
 # --------------------------------------------------------------------------- #
 
 
@@ -145,11 +146,14 @@ def _sibling_bundle(
     started_at: float,
     trim_db: dict[str, float] | None = None,
     linearization: dict[str, Any] | None = None,
+    alignment: dict[str, Any] | None = None,
+    analysis: dict[str, Any] | None = None,
+    fc_hz: float | None = None,
 ) -> Path:
     """One MINIMAL bundle directly under ``root`` -- the TRUE production
     shape (``info.json`` inside the bundle dir itself), unlike this file's
     own ``_bundle`` helper, which nests everything one level under a
-    "session" subdirectory for its own readability. A trim-history read
+    "session" subdirectory for its own readability. A structural-history read
     across SIBLING bundles needs each one's ``info.json`` at the level
     ``bundles.list_bundles`` actually scans -- ``session_dir.parent`` in
     production, which for ``_bundle``'s own shape is one level too shallow.
@@ -161,15 +165,21 @@ def _sibling_bundle(
         "kind": "jts_active_speaker_commissioning_bundle",
         "session_id": name, "state": "closed", "started_at": started_at,
     }))
-    if trim_db is not None:
+    if trim_db is not None or alignment is not None:
         (round_dir / "candidate.json").write_text(json.dumps({
-            "role_attenuations_db": trim_db,
+            "role_attenuations_db": trim_db or {},
             "linearization": linearization or {},
+            "alignment": alignment or {},
+            "analysis": analysis or {},
+            "source_preset": (
+                {} if fc_hz is None
+                else {"crossover_regions": [{"fc_hz": fc_hz, "order": 4}]}
+            ),
         }))
     return bundle_dir
 
 
-def test_trim_history_reads_sibling_bundles_oldest_first(tmp_path):
+def test_the_history_reads_sibling_bundles_oldest_first(tmp_path):
     root = tmp_path / "bundles"
     root.mkdir()
     _sibling_bundle(
@@ -185,7 +195,7 @@ def test_trim_history_reads_sibling_bundles_oldest_first(tmp_path):
         trim_db={"woofer": -1.4, "tweeter": -3.1},
     )
     packet = build_crossover_evidence_packet(latest)
-    history = packet["trim_history"]
+    history = packet["structural_history"]
     assert history["available"] is True
     assert history["max_rounds"] == 8
     assert history["rounds_covered"] == 3
@@ -195,13 +205,13 @@ def test_trim_history_reads_sibling_bundles_oldest_first(tmp_path):
     ]
     # The campaign's own runaway signature, oldest first -- readable left to
     # right, and no drift verdict published about it.
-    assert [row["trim_db"]["tweeter"] for row in history["rounds"]] == [
-        -1.4, -2.1, -3.1,
-    ]
+    assert [
+        row["axes"]["trim_db"]["value"]["tweeter"] for row in history["rounds"]
+    ] == [-1.4, -2.1, -3.1]
     assert all("verdict" not in row for row in history["rounds"])
 
 
-def test_trim_history_pinned_roles_carry_their_own_flag(tmp_path):
+def test_pinned_trim_roles_carry_their_own_flag(tmp_path):
     root = tmp_path / "bundles"
     root.mkdir()
     only = _sibling_bundle(
@@ -213,23 +223,91 @@ def test_trim_history_pinned_roles_carry_their_own_flag(tmp_path):
         },
     )
     packet = build_crossover_evidence_packet(only)
-    row = packet["trim_history"]["rounds"][0]
-    assert row["pinned"] == {"woofer": False, "tweeter": True}
+    row = packet["structural_history"]["rounds"][0]
+    assert row["axes"]["trim_db"]["pinned"] == {"woofer": False, "tweeter": True}
 
 
-def test_trim_history_empty_shape_when_no_round_banked_a_candidate(tmp_path):
+def test_the_history_is_empty_when_no_round_banked_a_candidate(tmp_path):
     root = tmp_path / "bundles"
     root.mkdir()
     only = _sibling_bundle(root, "r1", started_at=1.0)
     packet = build_crossover_evidence_packet(only)
-    history = packet["trim_history"]
+    history = packet["structural_history"]
     assert history["available"] is False
     assert history["rounds_covered"] == 0
     assert history["rounds"] == []
     assert history["max_rounds"] == 8
 
 
-def test_trim_history_is_bounded_at_max_rounds(tmp_path):
+def test_the_history_carries_every_declared_structural_axis(tmp_path):
+    """#3484: the cross-round surface stops being trim-only.
+
+    The witnessed defect: r4 applied ``invert``, r5's candidate re-derived
+    ``keep`` at an essentially unchanged delay, ``polarity_pinned`` false, and
+    the review surface for a flipped structural axis was byte-identical to one
+    that held it. The trim's own runaway was caught the same night precisely
+    BECAUSE its per-round values were lined up here. Every axis a prescription
+    can pin now gets the same row, and the axis list is a declaration rather
+    than a branch per axis, so an axis cannot be silently left out of it.
+    """
+    root = tmp_path / "bundles"
+    root.mkdir()
+    _sibling_bundle(
+        root, "r4", started_at=4.0,
+        trim_db={"woofer": 0.0, "tweeter": -12.481},
+        alignment={"delay_us": 76.265, "polarity": "invert"},
+        analysis={"polarity_pinned": False},
+        fc_hz=1800.0,
+    )
+    latest = _sibling_bundle(
+        root, "r5", started_at=5.0,
+        trim_db={"woofer": 0.0, "tweeter": -2.65},
+        alignment={"delay_us": 76.300, "polarity": "keep"},
+        analysis={"polarity_pinned": False},
+        fc_hz=1800.0,
+    )
+    packet = build_crossover_evidence_packet(latest)
+    history = packet["structural_history"]
+    assert history["axes"] == list(STRUCTURAL_HISTORY_AXES)
+    rows = history["rounds"]
+    assert [row["ordinal"] for row in rows] == [1, 2]
+    # Every row answers for every declared axis — an axis with nothing banked
+    # says so with a null, never by being missing.
+    for row in rows:
+        assert set(row["axes"]) == set(STRUCTURAL_HISTORY_AXES)
+    # The flip, readable left to right, exactly as the trim runaway already is.
+    assert [row["axes"]["polarity"]["value"] for row in rows] == [
+        "invert", "keep",
+    ]
+    assert [row["axes"]["polarity"]["pinned"] for row in rows] == [False, False]
+    assert [row["axes"]["delay_us"]["value"] for row in rows] == [76.265, 76.300]
+    assert [row["axes"]["trim_db"]["value"]["tweeter"] for row in rows] == [
+        -12.481, -2.65,
+    ]
+    assert [row["axes"]["crossover_fc_hz"]["value"] for row in rows] == [
+        1800.0, 1800.0,
+    ]
+    assert all("verdict" not in row for row in rows)
+
+
+def test_a_round_that_banked_only_an_alignment_still_gets_a_row(tmp_path):
+    """Row admission follows the declared axes, not the trim alone: a
+    candidate that names ANY structural axis is a round whose structure can
+    have moved, and a skipped row is the silence this block exists to end."""
+    root = tmp_path / "bundles"
+    root.mkdir()
+    only = _sibling_bundle(
+        root, "r1", started_at=1.0,
+        alignment={"delay_us": -405.7, "polarity": "keep"},
+    )
+    packet = build_crossover_evidence_packet(only)
+    rows = packet["structural_history"]["rounds"]
+    assert len(rows) == 1
+    assert rows[0]["axes"]["delay_us"]["value"] == -405.7
+    assert rows[0]["axes"]["trim_db"]["value"] == {}
+
+
+def test_the_history_is_bounded_at_max_rounds(tmp_path):
     root = tmp_path / "bundles"
     root.mkdir()
     latest = None
@@ -240,7 +318,7 @@ def test_trim_history_is_bounded_at_max_rounds(tmp_path):
         )
     assert latest is not None
     packet = build_crossover_evidence_packet(latest)
-    history = packet["trim_history"]
+    history = packet["structural_history"]
     assert history["rounds_covered"] == 8
     assert [row["round_id"] for row in history["rounds"]] == [
         f"relay_r{i}" for i in range(3, 11)

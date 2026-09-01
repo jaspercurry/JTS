@@ -3529,6 +3529,13 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
                 source.get("crossover_preview_fingerprint") or ""
             ),
             trim_source=str(level_match.get("comparison") or ""),
+            # WHICH CHAIN this trim was co-fitted with (#3479). The resolving
+            # candidate's own fingerprint, already on the profile's source
+            # block — passed through rather than derived, because the frame
+            # exists at fit time and no later reader can reconstruct it. A
+            # profile levelled by the guided captures names none, which banks
+            # as "frame unknown" rather than as the bare frame.
+            chain_fingerprint=source.get("measured_candidate_fingerprint"),
             measured_at=evidence_at,
         )
     except (OSError, DriverBaseTrimError) as exc:

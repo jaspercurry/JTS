@@ -2187,40 +2187,127 @@ def _accuracy_budget_block(
 
 
 #: Ticket 6.6's own bound: "recent per-round history... bounded, N~=8".
-TRIM_HISTORY_MAX_ROUNDS = 8
+STRUCTURAL_HISTORY_MAX_ROUNDS = 8
 
-#: How many of the household's recent bundles :func:`_trim_history_block`
-#: looks at before it stops trying to find :data:`TRIM_HISTORY_MAX_ROUNDS`
-#: rounds that banked a candidate. Wider than the round count itself: a
-#: household's recent bundles are not all crossover_v2 tournament rounds
-#: (commissioning and calibration bundles carry no candidate.json at all)
-#: and a bundle without one is silently skipped rather than counted against
-#: the round budget.
-_TRIM_HISTORY_BUNDLE_SCAN_LIMIT = 32
+#: How many of the household's recent bundles :func:`_structural_history_block`
+#: looks at before it stops trying to find
+#: :data:`STRUCTURAL_HISTORY_MAX_ROUNDS` rounds that banked a candidate. Wider
+#: than the round count itself: a household's recent bundles are not all
+#: crossover_v2 tournament rounds (commissioning and calibration bundles carry
+#: no candidate.json at all) and a bundle without one is silently skipped
+#: rather than counted against the round budget.
+_STRUCTURAL_HISTORY_BUNDLE_SCAN_LIMIT = 32
+
+#: EVERY structural axis a round re-derives, in report order — the axes the
+#: three prescription classes exist to pin (:mod:`.driver_prescription`'s
+#: ``pinned_trim_db``, :mod:`.alignment_prescription`'s ``delay_us`` and
+#: ``polarity``, :mod:`.topology_prescription`'s corner).
+#:
+#: **Declared once so the history below is a LOOP** (#3484). It used to be the
+#: trim alone, and the asymmetry was the defect: the trim's per-round values
+#: were lined up here — which is how a 7 dB and a 9.8 dB runaway were caught on
+#: 2026-09-01 — while a candidate that re-derived the POLARITY into the other
+#: basin between two rounds, at an essentially unchanged delay, read identically
+#: to one that held it. An axis named here appears on every row; an axis left
+#: out of it is exactly the silent re-derivation this block exists to end.
+STRUCTURAL_HISTORY_AXES: tuple[str, ...] = (
+    "trim_db",
+    "delay_us",
+    "polarity",
+    "crossover_fc_hz",
+)
 
 
-def _trim_history_block(session_dir: Path) -> dict[str, Any]:
-    """The resolved per-driver trim pair's recent per-round history (6.6).
+def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """One candidate's committed value for each :data:`STRUCTURAL_HISTORY_AXES`.
+
+    Every axis answers with the same two keys — ``value`` (what the round
+    committed) and ``pinned`` (whether an operator held it, ``None`` where the
+    candidate banks no such bit) — so a reader walks the axes rather than
+    learning a shape per axis.
+
+    **One frame per axis, and never across artifacts.** Each value is read off
+    ``candidate.json`` and compared only against another round's ``candidate
+    .json``, so ``polarity`` stays the candidate's own action word — a flip
+    RELATIVE to the declared ``upper_polarity``
+    (``measured_crossover_candidate.effective_preset``) — throughout. Reading
+    the applied profile's ABSOLUTE per-role ``inverted`` flags into this column
+    would put two rows in two frames on any speaker whose draft declares an
+    inverted branch; that conversion has exactly one owner
+    (``commanded.profile_graph_summation``'s required ``draft_inverted_by_role``)
+    and it is not re-implemented here.
+    """
+    linearization = _mapping(candidate.get("linearization"))
+    alignment = _mapping(candidate.get("alignment"))
+    analysis = _mapping(candidate.get("analysis"))
+    region = next(
+        iter(
+            _mapping(candidate.get("source_preset")).get("crossover_regions") or ()
+        ),
+        None,
+    )
+    polarity = alignment.get("polarity")
+    values: dict[str, tuple[Any, Any]] = {
+        "trim_db": (
+            {
+                str(role): float(value)
+                for role, value in _mapping(
+                    candidate.get("role_attenuations_db")
+                ).items()
+                if finite_number(value) is not None
+            },
+            {
+                str(role): bool(_mapping(entry).get("trim_pinned") is True)
+                for role, entry in linearization.items()
+            },
+        ),
+        "delay_us": (finite_number(alignment.get("delay_us")), None),
+        "polarity": (
+            polarity if isinstance(polarity, str) and polarity else None,
+            (
+                bool(analysis.get("polarity_pinned"))
+                if "polarity_pinned" in analysis
+                else None
+            ),
+        ),
+        "crossover_fc_hz": (
+            finite_number(_mapping(region).get("fc_hz")), None,
+        ),
+    }
+    return {
+        axis: {"value": values[axis][0], "pinned": values[axis][1]}
+        for axis in STRUCTURAL_HISTORY_AXES
+    }
+
+
+def _structural_history_block(session_dir: Path) -> dict[str, Any]:
+    """Every structural axis's recent per-round history (6.6, #3484).
 
     **Where it is durably banked, investigated.** Neither
     ``round_receipt.json`` nor the durable conductor-state document
-    (:mod:`.durable_state`) carries a trim across rounds:
+    (:mod:`.durable_state`) carries a candidate across rounds:
     ``round_receipt.json``'s ``round_axes`` is the four ADOPTION-verdict axes
     (trust/safety/quality/headroom), not an alignment axis, and
     ``durable_state``'s document is ONE overwritten CURRENT snapshot
     (``candidate`` is session-scoped there — "a previous session's answer
     says nothing about this one"), never a log. ``round_anchor`` names
-    nothing in this tree. What DOES durably bank it, write-once, one file per
-    round directory, retained for as long as the bundle is:
-    ``candidate.json``'s ``role_attenuations_db`` — the trim the fit actually
-    committed for the round, pin-substituted where a prescription pinned one
-    (``crossover_v2.planning``'s trim-pin fold, disclosed per role as
-    ``linearization[role].trim_pinned`` — the same bit
+    nothing in this tree. What DOES durably bank them, write-once, one file per
+    round directory, retained for as long as the bundle is: ``candidate.json``
+    — its ``role_attenuations_db``, its ``alignment`` and its own preset's
+    corner, which are the values the round actually committed, pin-substituted
+    where a prescription pinned one (``crossover_v2.planning``'s trim-pin fold,
+    disclosed per role as ``linearization[role].trim_pinned`` — the same bit
     ``durable_state._candidate_pinned_trims`` reads off the identical
     candidate for the household's own /state projection).
 
     So this reads the FIRST branch the ticket names, not the second: no
     change to the round-receipt writer, only a reader here.
+
+    **Every axis, on one rule** (#3484). Which axes, and why the trim alone was
+    the defect, is :data:`STRUCTURAL_HISTORY_AXES`; how one round's row is read
+    is :func:`_structural_axes_of`. A round is admitted when its candidate
+    names ANY of them, because a round whose structure can have moved is a row
+    whether or not it re-solved a trim.
 
     **Across bundles, not across round directories inside one.** A bundle
     carries at most one round directory (:func:`round_artifact_dir` refuses
@@ -2240,7 +2327,7 @@ def _trim_history_block(session_dir: Path) -> dict[str, Any]:
 
     try:
         bundles = list_bundles(
-            session_dir.parent, limit=_TRIM_HISTORY_BUNDLE_SCAN_LIMIT
+            session_dir.parent, limit=_STRUCTURAL_HISTORY_BUNDLE_SCAN_LIMIT
         )
     except OSError:
         bundles = []
@@ -2253,41 +2340,45 @@ def _trim_history_block(session_dir: Path) -> dict[str, Any]:
         round_dir, _reason = round_artifact_dir(Path(bundle_dir))
         if round_dir is None:
             continue
-        candidate = _read_candidate(round_dir)
-        trim_db = candidate.get("role_attenuations_db")
-        if not isinstance(trim_db, Mapping) or not trim_db:
+        axes = _structural_axes_of(_read_candidate(round_dir))
+        # Admitted when the candidate names ANY declared axis. Emptiness, not
+        # falsiness: a committed delay of exactly 0.0 µs and a polarity of
+        # ``keep`` are both readings, and dropping either would make this
+        # surface silent about the rounds that held their structure.
+        if all(
+            entry["value"] is None or entry["value"] == {}
+            for entry in axes.values()
+        ):
             continue
-        linearization = _mapping(candidate.get("linearization"))
-        newest_first.append({
-            "round_id": round_dir.name,
-            "trim_db": {
-                str(role): float(value)
-                for role, value in trim_db.items()
-                if finite_number(value) is not None
-            },
-            "pinned": {
-                str(role): bool(_mapping(entry).get("trim_pinned") is True)
-                for role, entry in linearization.items()
-            },
-        })
-        if len(newest_first) >= TRIM_HISTORY_MAX_ROUNDS:
+        newest_first.append({"round_id": round_dir.name, "axes": axes})
+        if len(newest_first) >= STRUCTURAL_HISTORY_MAX_ROUNDS:
             break
 
     oldest_first = list(reversed(newest_first))
     return {
         "available": bool(oldest_first),
-        "max_rounds": TRIM_HISTORY_MAX_ROUNDS,
+        "max_rounds": STRUCTURAL_HISTORY_MAX_ROUNDS,
+        "axes": list(STRUCTURAL_HISTORY_AXES),
         "rounds_covered": len(oldest_first),
         "rounds": [
             {"ordinal": index + 1, **entry}
             for index, entry in enumerate(oldest_first)
         ],
-        "source": "candidate.json role_attenuations_db, across this bundle's recent siblings",
+        "source": (
+            "candidate.json role_attenuations_db / alignment / source_preset "
+            "corner, across this bundle's recent siblings"
+        ),
         "note": (
             "oldest first, so a monotonic walk reads left to right. Values "
-            "only -- no drift verdict. History legitimately starts wherever "
-            "the household's retained bundles do; rounds_covered states how "
-            "many this reading actually found, bounded at max_rounds"
+            "only -- no drift verdict. Every row answers for every axis; a "
+            "null is 'this candidate banks none', never a substituted "
+            "default, and 'pinned': null is 'the candidate banks no pin bit "
+            "for this axis'. polarity is the candidate's own action word, a "
+            "flip relative to the DECLARED polarity, so two rows compare and "
+            "neither states an absolute wiring. History legitimately starts "
+            "wherever the household's retained bundles do; rounds_covered "
+            "states how many this reading actually found, bounded at "
+            "max_rounds"
         ),
     }
 
@@ -3111,10 +3202,11 @@ def build_crossover_evidence_packet(
             verify=verify,
             round_dir=round_dir,
         ),
-        # Ticket 6.6: the resolved per-driver trim pair's recent per-round
-        # history, so a monotonic walk (a re-solved trim drifting round over
-        # round) is readable evidence. Values only; no drift verdict.
-        "trim_history": _trim_history_block(session_dir),
+        # Ticket 6.6, widened by #3484: every structural axis's recent
+        # per-round history, so a monotonic walk (a re-solved trim drifting
+        # round over round) and a basin flip (opposite polarity at an unchanged
+        # delay) are both readable evidence. Values only; no drift verdict.
+        "structural_history": _structural_history_block(session_dir),
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
         # says where a filter may sit, the verdicts say what it may be aimed
