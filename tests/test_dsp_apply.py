@@ -927,10 +927,6 @@ def test_same_config_file_resolves_rather_than_string_compares(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _valid(path: str | Path) -> CamillaConfigValidationResult:
-    return CamillaConfigValidationResult(status=ValidationStatus.VALID, path=str(path))
-
-
 async def test_an_in_place_rollback_restores_the_bytes_not_the_path(tmp_path: Path):
     cfg = tmp_path / "candidate.yml"
     cfg.write_text("---\nrunning: true\n")
@@ -953,7 +949,7 @@ async def test_an_in_place_rollback_restores_the_bytes_not_the_path(tmp_path: Pa
             prepare=prepare,
             state_path=tmp_path / "dsp_apply_state.json",
             lock_path=tmp_path / "dsp_apply.lock",
-            validate=_valid,
+            validate=_always_valid,
         )
 
     state = excinfo.value.state
@@ -985,7 +981,7 @@ async def test_a_failed_prepare_leaves_the_candidate_as_it_was_found(tmp_path: P
             prepare=prepare,
             state_path=tmp_path / "dsp_apply_state.json",
             lock_path=tmp_path / "dsp_apply.lock",
-            validate=_valid,
+            validate=_always_valid,
         )
 
     assert excinfo.value.state.result == "prepare_failed"
@@ -1013,7 +1009,7 @@ async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path
             prepare=prepare,
             state_path=tmp_path / "dsp_apply_state.json",
             lock_path=tmp_path / "dsp_apply.lock",
-            validate=_valid,
+            validate=_always_valid,
         )
 
     assert cfg.read_text() == pristine
@@ -1039,7 +1035,7 @@ async def test_confirm_accepts_another_spelling_of_the_loaded_file(tmp_path: Pat
         get_current_config_path=current,
         state_path=tmp_path / "dsp_apply_state.json",
         lock_path=tmp_path / "dsp_apply.lock",
-        validate=_valid,
+        validate=_always_valid,
     )
 
     assert state.result == "success"

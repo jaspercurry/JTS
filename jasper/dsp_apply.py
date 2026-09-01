@@ -1057,19 +1057,27 @@ async def apply_dsp_config(
         # without settling on any outcome: cancelled, or an error class no
         # handler here names. Everything else — success, and every
         # ``DspApplyError`` — has already recorded its result and run whatever
-        # rollback it owed. The bytes go back synchronously (nothing to
-        # interrupt); the reload is shielded because an interrupted recovery
-        # leaves the file repaired and the box still playing the graph the file
-        # no longer holds, which is the worse half of the two.
+        # rollback it owed.
         if candidate_restore is not None and state.result == "in_progress":
             state.rollback_attempted = True
             restore_error = _restore_candidate_bytes(candidate_restore)
             state.rollback_succeeded = restore_error is None
             state.rollback_error = restore_error
-            if restore_error is None and state.phase in _PHASES_AFTER_LOAD_BEGINS:
-                with contextlib.suppress(Exception):
-                    await asyncio.shield(load_config(str(candidate_restore[0])))
+            # Recorded BEFORE the reload: the reload re-raises the cancellation
+            # it rode in on, and a verdict written after it would never be
+            # written at all — leaving the doctor reading a stale ``/state``
+            # for a box that was in fact repaired.
             record_dsp_apply_state(state, state_path=state_path)
+            if restore_error is None and state.phase in _PHASES_AFTER_LOAD_BEGINS:
+                # Lazy like the module's other active-speaker collaborators:
+                # module level would make a widely-imported apply path pull the
+                # active-speaker tree. Through the resilient runner rather than
+                # a bare ``asyncio.shield``, which lets a second cancellation
+                # past and detaches the restore mid-flight (ADR-0179).
+                from jasper.active_speaker.restore_wait import resilient_restore
+
+                with contextlib.suppress(Exception):
+                    await resilient_restore(load_config(str(candidate_restore[0])))
 
 
 def _rollback_result(prefix: str, state: DspApplyState) -> str:
