@@ -45,6 +45,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_WOOFER,
 )
 from jasper.active_speaker.crossover_v2.forward_model import (
+    ACCEPTANCE_NOT_RUN,
     REFUSAL_NO_CURVE_PAIR,
     ForwardModelError,
     SummationCandidate,
@@ -71,7 +72,7 @@ AUTHORITY_TIER = "advisory (plays nothing)"
 REFUSE_CANDIDATE = "forward_model_unreadable_candidate"
 REFUSE_NO_DELTA = "forward_model_no_verify_delta"
 
-ACCEPTANCE_RUNS = """\
+ACCEPTANCE_RUNS = f"""\
 operator acceptance (run against the owner's banked captures, NOT CI tests):
 
   1. Postdict the flat campaign's r8 regression. r8 applied the measured
@@ -99,6 +100,11 @@ operator acceptance (run against the owner's banked captures, NOT CI tests):
 
 Both are campaign-entry acceptance for ADR-0203's recommissioning campaign,
 and both must pass BEFORE any prediction is used to triage a candidate.
+
+Every record this tool prints carries its own `acceptance` block, so the
+question is answerable from the output rather than from this help: `predict`
+compares its curve to nothing and says `{ACCEPTANCE_NOT_RUN}`, while
+`verify-delta` names the banked round that judged it.
 """
 
 
@@ -171,6 +177,15 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         {"status": "predicted", "prediction": predicted.to_dict()},
         indent=2, sort_keys=True,
     ))
+    # The gate lived only in this tool's --help and never crossed a driver's
+    # path (#3481): output that does not say it is untriaged reads as
+    # authoritative as output a measurement checked.
+    print(
+        f"acceptance {ACCEPTANCE_NOT_RUN}: no measurement judged this "
+        "prediction — see ACCEPTANCE_RUNS in --help for the two runs that "
+        "would, and `verify-delta` for the verb that records one",
+        file=sys.stderr,
+    )
     print(
         f"predicted {predicted.freqs_hz.size} bins over "
         f"{predicted.sum_band_hz[0]:g}-{predicted.sum_band_hz[1]:g} Hz "
@@ -203,6 +218,7 @@ def _cmd_verify_delta(args: argparse.Namespace) -> int:
         return _refused(REFUSE_NO_DELTA, result.reason)
     print(json.dumps(
         {"status": "compared",
+         "acceptance": result.acceptance,
          "basis_round_dir": result.basis_round_dir,
          "measured_round_dir": result.measured_round_dir,
          "predicted_minus_measured": dict(result.delta)},

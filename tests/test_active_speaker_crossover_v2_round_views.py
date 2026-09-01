@@ -26,7 +26,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.forward_model import SummationCandidate
+from jasper.active_speaker.crossover_v2.forward_model import (
+    ACCEPTANCE_NOT_RUN,
+    SummationCandidate,
+)
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
     ENTRY_STATE_UNREADABLE,
@@ -465,6 +468,10 @@ def test_forward_model_verify_delta_names_the_half_it_was_not_given(
 
     assert result.delta is None
     assert result.reason
+    # A result with no delta was judged by no measurement, and says so rather
+    # than leaving the acceptance question to whoever reads it later (#3481).
+    assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
+    assert result.acceptance["judged_against"] is None
 
 
 def test_forward_model_verify_delta_reads_the_verify_curve_off_its_own_grid(

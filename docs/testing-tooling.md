@@ -2158,8 +2158,24 @@ just works.
   summed-system response for a feature verdict to be about. A hard refusal
   rather than a silent skip: a caller who pointed this at a per-driver round
   should be told what is wrong with the round.
-- `classification_no_admissible_captures` / `classification_program_missing` /
-  `classification_no_features_detected`.
+- `classification_round_shape_inadmissible` — the round WAS measured, and no
+  capture shape it banked carries a summed-system response for a verdict to be
+  about (a MEASURE-only ring is this by construction).
+- `classification_captures_unreadable` — this round banked a capture of an
+  admissible shape and the ring cannot hand it over: the WAV is not beside
+  its sidecar, or the dump name lost the microsecond stamp the take's timing
+  is bound to. The round shape is right, so a different round is the one
+  move that cannot help — the remedy is the ring or the bank step that
+  filled it.
+- `classification_no_admissible_captures` — narrowed by the split above:
+  nothing of this round reached the instrument at all (an empty ring, every
+  sidecar belonging to another session, or every sidecar unparseable).
+- `classification_program_missing` / `classification_no_features_detected`.
+
+Every refusal `load_round_captures` raises — the shape, readability, and
+no-captures slugs above, the lateral one included — carries a `captures`
+table naming every take the ring listed with its admissibility reason, so a
+refusal cannot contradict the ring listing it was handed.
 
 **Every capture shape it reads is horizontal**, and that is still a fact about
 the instrument, not a placeholder — a turntable swings at fixed height and

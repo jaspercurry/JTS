@@ -109,7 +109,10 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
    first is refused against it.
 3. **Re-run the deterministic views** as needed:
    `jasper-classify-features <bundle-dir> --dumps <ring>` files
-   `feature_classification.json` into the round dir;
+   `feature_classification.json` into the round dir — classification wants a
+   summed-system capture, so verify-shaped rounds classify and a MEASURE-only
+   or lateral ring refuses by name, with a per-take `captures` table saying
+   why;
    `jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>`
    files `harmonic_distortion.json` beside it;
    `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
