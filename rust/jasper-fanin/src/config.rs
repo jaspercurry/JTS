@@ -59,7 +59,7 @@ pub const RENDERER_RING_PREFIX: &str = "lane-";
 /// always mixed regardless of selection, so diagnostics keep working when the
 /// household has pinned a source ([`crate::mixer`]'s selection gate), and its
 /// stimuli are never onset-shaped, because the measurement loop deconvolves
-/// against the signal it believes it played (`mixer::wake_ramp`).
+/// against the signal it believes it played (`mixer::lane_fade`).
 pub const MEASUREMENT_LANE: &str = "correction";
 
 /// The ring file a renderer-ingress lane reads, derived from the fan-in lane

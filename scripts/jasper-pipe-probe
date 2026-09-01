@@ -106,11 +106,12 @@ latency LANE_PCM [--repeats N]
     min and max (default 5 repeats).
 
     LANE CHOICE: on a RENDERER lane (spotify/airplay/bluealsa/usbsink)
-    fan-in applies its wake fade-in to the lane's first onset, which the
-    pilot absorbs -- the click itself is unshaped, but the lane is not
-    bit-transparent for the first 10 ms of the file. The `correction`
-    lane is exempt from that ramp by construction, so prefer it when the
-    absolute shape of what reaches the tap matters.
+    fan-in shapes the lane's first onset with its wake fade-in, and the
+    first 10 ms after any mux SELECT with its selection fade. The pilot
+    absorbs both -- the click itself is unshaped -- but the lane is not
+    bit-transparent across that opening. The `correction` lane is exempt
+    from both windows by construction, so prefer it when the absolute
+    shape of what reaches the tap matters.
 
 Every remote temp path (sniffer, click WAV, capture file) is suffixed
 with a short per-invocation id; on exit (including Ctrl-C) this tool

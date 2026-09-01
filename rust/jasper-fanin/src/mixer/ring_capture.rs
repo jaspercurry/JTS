@@ -677,7 +677,7 @@ pub(super) fn open_ring_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: Some(obs),
-        wake_ramp: super::LaneWakeRamp::for_lane(label, config.sample_rate),
+        lane_fade: super::LaneFade::for_lane(label, config.sample_rate),
     }
 }
 
@@ -983,7 +983,7 @@ mod tests {
             muted: Arc::new(AtomicBool::new(false)),
             direct_obs: None,
             ring_obs: Some(obs),
-            wake_ramp: super::LaneWakeRamp::for_lane("spotify", geometry.rate),
+            lane_fade: super::LaneFade::for_lane("spotify", geometry.rate),
         }
     }
 
