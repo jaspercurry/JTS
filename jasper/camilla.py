@@ -776,17 +776,10 @@ class CamillaController:
         writers — the coordinator and the floor-tone audition — the only ones.
 
         ``duck=False`` keeps the writer-lock serialization and drops the fader
-        bracket. Two callers take it, for two different reasons:
-
-        * :meth:`patch_config` changes ONE declared parameter of a running
-          filter rather than replacing the pipeline, so there is no new graph
-          whose headroom could step. Its safety is a property of ITS CALLERS'
-          bounded edits, not of ``PatchConfig`` itself — a patch that rewrote a
-          whole filter chain would step like any swap.
-        * the measurement session graph, through
-          :meth:`set_active_config_raw`, installs once into a session that
-          already holds the fader and the measurement window, so nothing is
-          playing for a step to be loud against.
+        bracket: a parameter write into running filters has no new graph whose
+        headroom could step, and the measurement session graph, through
+        :meth:`set_active_config_raw`, installs into a session that already
+        holds the fader, so nothing is playing for a step to be loud against.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 
@@ -874,13 +867,15 @@ class CamillaController:
         loader so validation, state recording, and rollback stay
         boring and inspectable.
 
-        ``duck=False`` skips the fader bracket and keeps the writer lock. The
-        measurement session graph takes it: its graph is installed ONCE into a
+        ``duck=False`` skips the fader bracket and keeps the writer lock. Taken
+        by the measurement session graph, whose graph is installed ONCE into a
         session that has already claimed the fader and paused voice, so there
-        is no household programme for a gain step to be loud against — and the
-        0.94 s of ramp the bracket cost was being paid inside a measurement
-        window with nothing playing. Every other caller replaces the pipeline
-        under live audio and keeps ducking.
+        is no household programme for a gain step to be loud against; and by
+        the live preference-EQ edit, once
+        :func:`jasper.sound.live_edit.plan_live_edit` has established that
+        CamillaDSP will update the running filters in place rather than
+        rebuild the pipeline, so there is no gain step to hide. Every other
+        caller keeps ducking.
         """
         if not isinstance(config, str) or not config.strip():
             if best_effort:
@@ -990,29 +985,10 @@ class CamillaController:
         with it. A patch does not replace anything: it writes declared
         parameters of filters that are already running.
 
-        **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
-        A patch that rewrote a whole filter chain would step like any swap.
-        All three shipped callers are bounded, and differently:
-
-    * ``jasper.web.sound_setup._live_draft_profile`` — the live preference-EQ
-      draft, the largest of them: it can rewrite every filter in the editing
-      graph in one patch. Bounded by the profile schema, which clamps a band to
-      ±``ADVANCED_GAIN_LIMIT_DB``, 20 Hz–20 kHz and Q 0.2–10, and by
-      ``jasper.sound.live_edit.plan_live_edit``, which refuses to patch at all
-      unless the running and wanted graphs differ ONLY in finite numbers inside
-      filters that already exist — anything structural falls back to the ducked
-      swap.
-
-        * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
-          balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,
-          attenuation only). Paying a 40 dB fade and
-          ``MAIN_VOLUME_RAMP_SETTLE_S`` for it muted the speaker for half a
-          second per slider nudge.
-        * ``bass_extension.bench.activation.temporary_bass_activation``,
-          reached from the shipped ``jasper-bass-extension-bench`` console
-          script — one limiter ``clip_limit``, and it has already faded to
-          floor and proved it (``to_floor`` + ``assert_at_floor``) before it
-          patches, so the duck was redundant there rather than protective.
+        **That safety is a property of the CALLERS, not of ``PatchConfig``.**
+        A patch that rewrote a whole filter chain would step like any swap, so
+        every caller must bound what it patches (a clamped trim, one limiter
+        value) and stay off this method for anything structural.
 
         The writer lock stays: a patch still mutates the running graph and must
         serialize against every other DSP writer.

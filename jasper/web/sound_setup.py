@@ -1994,24 +1994,23 @@ async def audition_profile(
 
 
 async def _live_edit_plan(cam: Any, wanted_yaml: str) -> "LiveEditPlan":
-    """How this edit should reach the DSP: a parameter write, or a swap.
+    """Whether this edit must duck: a swap, a quiet parameter write, or nothing.
 
     Both graphs are read back in CamillaDSP's OWN normalization before they are
     compared — the running config, and the wanted one through ``ReadConfig``,
     which parses and default-fills without applying. Comparing the emitter's
     raw text against the running readback would differ on every edit (the
-    readback is a default-filled superset) and quietly never patch.
+    readback is a default-filled superset) and quietly duck every one.
 
-    A controller that cannot do all three calls gets the swap, so a
-    test double or an older controller keeps today's behaviour.
+    A controller that cannot do both reads gets the ducked swap, so a test
+    double or an older controller keeps the conservative behaviour.
     """
     from jasper.sound.live_edit import LiveEditPlan, plan_live_edit
 
     read_active = getattr(cam, "get_active_config_raw", None)
     normalize = getattr(cam, "normalize_config_raw", None)
-    patcher = getattr(cam, "patch_config", None)
-    if read_active is None or normalize is None or patcher is None:
-        return LiveEditPlan(None, "controller_cannot_patch")
+    if read_active is None or normalize is None:
+        return LiveEditPlan.swap("controller_cannot_compare")
     running = await read_active(best_effort=True)
     wanted = await normalize(wanted_yaml, best_effort=True)
     return plan_live_edit(running, wanted)
@@ -2043,12 +2042,9 @@ async def _live_draft_profile(
     # The trim is derived from the SAVED profile, never from the draft, so an
     # edit cannot move it. Match-loudness makes the trim a function of the
     # profile's own EQ, so a draft-derived trim would fold into
-    # `active_baseline_headroom`'s VALUE and be written by PatchConfig — an
-    # instant, un-ducked, full-spectrum level step mid-drag — while its stereo
-    # twin `sound_preamp` is emitted only when the trim is positive, so it
-    # would add and remove a FILTER and force the ducked swap this path exists
-    # to avoid. The durable save realises any change across a swap that ducks
-    # anyway.
+    # `active_baseline_headroom`'s VALUE and be written in place — an
+    # instant, un-ducked, full-spectrum level step mid-drag. The durable save
+    # realises any change across a swap that ducks anyway.
     #
     # NOT frozen for the session, which would be the stronger claim: `settings`
     # is re-read above, so changing headroom_trim_db or match_loudness from the
@@ -2155,12 +2151,10 @@ async def _live_draft_profile(
         method = plan.method
 
         try:
-            if plan.patch is None:
-                await loader(yaml, best_effort=False)
-            elif plan.patch:
-                await cam.patch_config(plan.patch, best_effort=False)
-            # else: the running graph already IS the wanted one. Writing it
-            # again would buy nothing and cost a ducked swap.
+            # Duck-or-not is decided in jasper.sound.live_edit; an unchanged
+            # graph is not written at all.
+            if method != "unchanged":
+                await loader(yaml, best_effort=False, duck=plan.duck)
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
                 reason=f"{method}_failed",
