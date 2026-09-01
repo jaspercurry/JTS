@@ -117,29 +117,25 @@ def test_write_then_load_round_trips_the_record(tmp_path):
     assert loaded == written
 
 
-def test_load_returns_none_for_a_missing_file(tmp_path):
-    assert load_repeat_floor(state_path=tmp_path / "nope.json") is None
-
-
-@pytest.mark.parametrize("mutate", [
-    pytest.param(lambda r: r.update(kind="something_else"), id="wrong-kind"),
+@pytest.mark.parametrize("on_disk", [
+    pytest.param(None, id="missing"),
+    pytest.param("{not json", id="not-json"),
+    pytest.param("[]", id="wrong-shape"),
+    pytest.param("", id="empty"),
     pytest.param(
-        lambda r: r.update(artifact_schema_version=SCHEMA_VERSION + 1),
+        json.dumps({**_record(0.4), "kind": "something_else"}), id="wrong-kind",
+    ),
+    pytest.param(
+        json.dumps({**_record(0.4), "artifact_schema_version": SCHEMA_VERSION + 1}),
         id="wrong-schema",
     ),
 ])
-def test_load_returns_none_for_a_record_it_does_not_own(tmp_path, mutate):
+def test_load_answers_none_for_anything_it_does_not_own(tmp_path, on_disk):
+    """Absent-tolerant: every way the file can fail to be this module's record
+    resolves the same, because the reader's fallback is honest in all of them."""
     path = tmp_path / "repeat-floor.json"
-    record = _record(0.4)
-    mutate(record)
-    path.write_text(json.dumps(record), encoding="utf-8")
-    assert load_repeat_floor(state_path=path) is None
-
-
-@pytest.mark.parametrize("blob", ["{not json", "[]", ""])
-def test_load_returns_none_for_an_unparseable_file(tmp_path, blob):
-    path = tmp_path / "repeat-floor.json"
-    path.write_text(blob, encoding="utf-8")
+    if on_disk is not None:
+        path.write_text(on_disk, encoding="utf-8")
     assert load_repeat_floor(state_path=path) is None
 
 

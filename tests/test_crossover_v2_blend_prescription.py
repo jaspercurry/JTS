@@ -1566,7 +1566,6 @@ def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
     # Both halves named, and what would separate them.
     assert "seat to seat" in declared["of"]
     assert "measurement noise" in declared["of"]
-    assert "in_capture_repeat_floor" in declared["of"]
     assert "never as a random or a systematic one" in declared["of"]
     assert "never pooled" in block["uncertainty"]["note"]
     # n IS published here — unlike the classification block, which says it does

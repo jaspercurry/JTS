@@ -132,9 +132,10 @@ touching nothing, and take the spread as your instrument's noise floor. **Act
 only on differences larger than it**, and state it in the receipt beside any
 delta you claim. Bank it rather than re-deriving it by hand:
 `jasper-round-views repeat-floor <N repeat rounds> --out repeat-floor.json`
-writes the record at the on-speaker path (or beside a banked round as
-`repeat-floor.json`), which is where the packet reads it. Two spreads exist and
-they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
+writes the record wherever `--out` says; put that file on the speaker at
+`/var/lib/jasper/active_speaker_repeat_floor.json` (or beside a banked round
+as `repeat-floor.json`) and the packet reads it from there. Two spreads exist
+and they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
 cross-seat and declared `unseparated`. Say which one you used. (The runbook's
 "Reading σ honestly" owns how to read them.)
 

@@ -1052,6 +1052,34 @@ def test_cli_repeat_floor_refuses_a_single_round(tmp_path, capsys):
     assert "error:" in capsys.readouterr().err
 
 
+def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path, capsys):
+    """The record is written INSIDE the guarded block: an unwritable --out is
+    the same "could not be done" exit every other verb gives, not a traceback."""
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    # A directory component that is a FILE: the write fails as an OSError for
+    # any uid, unlike a chmod-based unwritable directory (root ignores it).
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    assert main(["repeat-floor", str(r1), str(r2), "--out", str(blocker / "x.json")]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_repeat_floor_requires_an_explicit_out(tmp_path):
+    """No default path: this tool runs on a laptop over banked directories and
+    cannot assume the speaker's own state path."""
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    with pytest.raises(SystemExit):
+        main(["repeat-floor", str(r1), str(r1)])
+
+
 def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli.round_views import main
 

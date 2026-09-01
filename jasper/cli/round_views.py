@@ -31,10 +31,15 @@ Subcommands:
 * ``repeat <round-dir> [<round-dir> ...]`` — session-to-session spread of
   the pooled honest figures (the stop criterion). Writes
   ``<first-round-dir>/repeatability.json``.
-* ``repeat-floor <round-dir> <round-dir> [...]`` — the same spread, banked as
-  the durable record the evidence packet's ``in_capture_repeat_floor`` reads
-  and derives the stopping plateau/benefit margin from. Writes the on-speaker
-  path by default, and the rounds must be touched-nothing fixed-pose repeats.
+* ``repeat-floor <round-dir> <round-dir> [...] --out PATH`` — the same
+  spread, banked as the durable record the evidence packet's
+  ``in_capture_repeat_floor`` reads and derives the stopping plateau/benefit
+  margin from. The rounds must be touched-nothing fixed-pose repeats. This
+  tool only WRITES the record where ``--out`` says (required: it runs on a
+  laptop over banked directories, and the speaker's own path is not a
+  default it can assume); the operator then places that file at the
+  on-speaker path, from which ``bank-crossover-round.sh`` pulls it beside
+  every later round as ``repeat-floor.json``.
 * ``agreement <round-dir>`` — per-position sign/magnitude testimony for
   every feature in the trusted sweep, built from the same per-seat curves
   ``per-seat`` computes. Writes ``<round-dir>/agreement.json``.
@@ -49,7 +54,7 @@ Subcommands:
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published
-atomically by its owning module and so needs a real path), and prints a
+atomically by its owning module and so requires a real path), and prints a
 one-line human summary to stderr either way. Exit ``0`` on success, ``1``
 when a round directory could not be read into a comparable view (:class:`~jasper.active_speaker.crossover_v2.round_views.RoundViewsError`).
 """
@@ -64,6 +69,7 @@ from typing import Any, Sequence
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
+    BankedRound,
     RoundViewsError,
     agreement_table,
     audibility_co_metrics,
@@ -230,10 +236,15 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_rounds(round_dirs: Sequence[str]) -> list[tuple[str, BankedRound]]:
+    """The (label, round) pairs both repeat verbs grade, labelled by the
+    directory the operator named."""
+    return [(round_dir, load_banked_round(Path(round_dir))) for round_dir in round_dirs]
+
+
 def _cmd_repeat(args: argparse.Namespace) -> int:
     try:
-        rounds = [(round_dir, load_banked_round(Path(round_dir))) for round_dir in args.round_dirs]
-        result = repeatability_spread(rounds)
+        result = repeatability_spread(_load_rounds(args.round_dirs))
     except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -251,11 +262,9 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
 
 
 def _cmd_repeat_floor(args: argparse.Namespace) -> int:
+    path = Path(args.out)
     try:
-        rounds = [
-            (round_dir, load_banked_round(Path(round_dir)))
-            for round_dir in args.round_dirs
-        ]
+        rounds = _load_rounds(args.round_dirs)
         payload = derive_repeat_floor(
             repeatability_spread(rounds),
             rounds=[
@@ -273,11 +282,10 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
                 for round_dir, banked in rounds
             ],
         )
+        record = write_repeat_floor(payload, state_path=path)
     except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    path = Path(args.out) if args.out else _REPEAT_FLOOR_DEFAULT_PATH
-    record = write_repeat_floor(payload, state_path=path)
     thresholds = stopping_thresholds(record)
     aggregate = record["metrics"][SHIPPED_POOL_METRIC]
     print(
@@ -479,8 +487,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="two or more TOUCHED-NOTHING fixed-pose repeat round directories",
     )
     repeat_floor.add_argument(
-        "--out", default=None,
-        help=f"write the record here (default {_REPEAT_FLOOR_DEFAULT_PATH})",
+        "--out", required=True,
+        help=(
+            "where to write the record; place it on the speaker at "
+            f"{_REPEAT_FLOOR_DEFAULT_PATH} so bank-crossover-round.sh pulls it "
+            "beside every later round, or beside a banked round as "
+            "repeat-floor.json"
+        ),
     )
     repeat_floor.set_defaults(func=_cmd_repeat_floor)
 

@@ -754,10 +754,11 @@ workflow engine to fight.
   `ITERATION_PLATEAU_DB` (0.25), both self-described assumptions awaiting
   exactly this study, reconcile against E2's numbers. **First run: 2026-08-31,
   jts3 — in-band σ_repeat 0.03–0.17 dB at a fixed pose.** Its durable home is
-  the banked repeat floor: `jasper-round-views repeat-floor <repeat rounds>`
-  writes `/var/lib/jasper/active_speaker_repeat_floor.json`, which
-  `bank-crossover-round.sh` pulls beside every banked round as
-  `repeat-floor.json`; the packet's `in_capture_repeat_floor` reads it and
+  the banked repeat floor. `jasper-round-views repeat-floor <repeat rounds>
+  --out PATH` writes the record; place that file on the speaker at
+  `/var/lib/jasper/active_speaker_repeat_floor.json`, from which
+  `bank-crossover-round.sh` pulls it beside every later round as
+  `repeat-floor.json`. The packet's `in_capture_repeat_floor` reads it and
   derives the stopping plateau and benefit margin from it.
 - **E1 — lobe-tilt resolution:** inject +0.1/+0.2/+0.5 ms delay errors on a
   known-good alignment; vertical polar at 5° steps; adopt the coarsest step

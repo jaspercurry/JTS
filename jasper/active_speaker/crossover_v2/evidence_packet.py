@@ -2054,6 +2054,12 @@ def _repeat_floor_component(record: dict[str, Any] | None) -> dict[str, Any]:
     reader never has to guess whether the plateau/margin it is about to apply
     were measured on this rig or are the two ``round_evidence`` constants that
     say of themselves that they are assumptions.
+
+    Two different absences, told apart: no record at all is "nobody ran the
+    repeats", while a record whose aggregate row carries no finite p95 is a
+    BANKED floor that cannot be read — one is work never done, the other is
+    work to redo, and one shared reason would send the operator after the
+    wrong one.
     """
     thresholds = stopping_thresholds(record) if record is not None else None
     if record is None or thresholds is None:
@@ -2065,6 +2071,14 @@ def _repeat_floor_component(record: dict[str, Any] | None) -> dict[str, Any]:
                 "E2 (N touched-nothing fixed-pose repeat rounds through "
                 "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
                 "Calibration experiments)"
+                if record is None
+                else (
+                    "banked repeat floor carries no finite "
+                    f"{record.get('aggregate_metric')} "
+                    "pairwise_abs_delta_p95_db (record at "
+                    f"{record.get('state_path')}); re-bank it with "
+                    "jasper-round-views repeat-floor"
+                )
             ),
             "thresholds": {
                 "source": "codified_assumption",

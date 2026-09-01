@@ -81,6 +81,36 @@ def test_cross_seat_component_points_at_the_positions_block_it_mirrors(tmp_path)
     assert "per_bin_sigma_db" not in entry
 
 
+def _floor_record() -> dict[str, Any]:
+    """One banked record, written through the REAL writer by every test below."""
+    return {
+        "artifact_schema_version": REPEAT_FLOOR_SCHEMA_VERSION,
+        "kind": REPEAT_FLOOR_KIND,
+        "measured_at": "2026-09-01T00:00:00Z",
+        "n_repeats": 3,
+        "aggregate_metric": SHIPPED_POOL_METRIC,
+        "rounds": [
+            {"label": "r1", "bundle_session_id": "sess1",
+             "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
+             "started_at": 1.0},
+            {"label": "r2", "bundle_session_id": "sess2",
+             "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
+             "started_at": 2.0},
+            {"label": "r3", "bundle_session_id": "sess3",
+             "graph_fingerprint": None, "mic_calibration_id": "cal1",
+             "started_at": 3.0},
+        ],
+        "metrics": {
+            SHIPPED_POOL_METRIC: {
+                "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
+                "min_db": 0.5, "max_db": 1.5,
+                "pairwise_abs_delta_p95_db": 0.4,
+            },
+        },
+        "note": "test vector",
+    }
+
+
 def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
@@ -95,38 +125,34 @@ def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
 
 
+def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_path):
+    """A record that exists but carries no finite aggregate p95 is a floor that
+    cannot be read, not a floor nobody measured — unavailable either way, and
+    the thresholds fall back rather than deriving from a non-number."""
+    session, _ = _bundle(tmp_path)
+    floor_path = tmp_path / "repeat-floor.json"
+    write_repeat_floor(
+        {**_floor_record(), "metrics": {SHIPPED_POOL_METRIC: {
+            "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
+            "min_db": 0.5, "max_db": 1.5,
+            "pairwise_abs_delta_p95_db": float("nan"),
+        }}},
+        state_path=floor_path,
+    )
+    packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
+    entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
+
+    assert entry["kind"] == UNCERTAINTY_RANDOM
+    assert entry["available"] is False
+    assert entry["thresholds"]["source"] == "codified_assumption"
+    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
+    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
+
+
 def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
     session, _ = _bundle(tmp_path)
     floor_path = tmp_path / "repeat-floor.json"
-    record = write_repeat_floor(
-        {
-            "artifact_schema_version": REPEAT_FLOOR_SCHEMA_VERSION,
-            "kind": REPEAT_FLOOR_KIND,
-            "measured_at": "2026-09-01T00:00:00Z",
-            "n_repeats": 3,
-            "aggregate_metric": SHIPPED_POOL_METRIC,
-            "rounds": [
-                {"label": "r1", "bundle_session_id": "sess1",
-                 "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
-                 "started_at": 1.0},
-                {"label": "r2", "bundle_session_id": "sess2",
-                 "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
-                 "started_at": 2.0},
-                {"label": "r3", "bundle_session_id": "sess3",
-                 "graph_fingerprint": None, "mic_calibration_id": "cal1",
-                 "started_at": 3.0},
-            ],
-            "metrics": {
-                SHIPPED_POOL_METRIC: {
-                    "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
-                    "min_db": 0.5, "max_db": 1.5,
-                    "pairwise_abs_delta_p95_db": 0.4,
-                },
-            },
-            "note": "test vector",
-        },
-        state_path=floor_path,
-    )
+    record = write_repeat_floor(_floor_record(), state_path=floor_path)
     packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
     p95 = record["metrics"][SHIPPED_POOL_METRIC]["pairwise_abs_delta_p95_db"]
