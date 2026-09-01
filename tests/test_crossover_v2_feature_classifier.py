@@ -546,6 +546,87 @@ def test_an_allpass_recovers_its_own_group_delay(peak_artifact):
         assert lo <= entry["ratio"] <= hi
 
 
+def _controls(ir: np.ndarray, features: list[float]) -> dict:
+    """The control suite on a synthetic host, at the instrument's own defaults.
+
+    Straight at the suite rather than through a bundle: the subject here is its
+    own arithmetic, and the frequencies it is read at have to be commanded
+    rather than left to whatever the detector finds.
+    """
+    trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
+    return fx._run_controls(
+        ir, SR, features, gate_ms=fx.DEFAULT_GATE_MS, trusted_band_hz=trusted
+    )
+
+
+def _band_edge_hz() -> float:
+    """The lowest frequency this instrument will admit a feature at."""
+    trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
+    return fx.classifiable_band_hz(trusted)[0]
+
+
+def test_the_c3_control_reads_flat_at_the_bottom_of_the_classifiable_band():
+    """C3's known answer is flat at EVERY frequency a feature may be admitted at.
+
+    Issue #3493: on a bare synthetic host, with C1/C2/C4 all clean, C3 read
+    10.5 us against its own 10.0 us bar at the lowest frequency
+    :func:`classifiable_band_hz` allows — so the suite was failing itself, and
+    a rig that happened to detect a feature near the band edge could never be
+    certified. The bias belongs to the injection, not to any capture.
+    """
+    verdict = _controls(_resonant_ir(+3.0), [_band_edge_hz(), RESONANCE_HZ])["verdict"]
+    assert verdict["C3_max_false_positive_us"] < verdict["C3_limit_us"]
+    assert verdict["failed"] == []
+    assert verdict["passes"] is True
+
+
+def test_a_genuinely_non_minimum_phase_host_still_fails_c3():
+    """Removing the injection's own artifact is not a rubber stamp.
+
+    ``CONTROL_COMB_NMP_GAIN`` is the module's own ``|g| > 1``: a host the
+    chain genuinely cannot read flat. #3493 bars clearing this control by
+    widening it, and it equally bars clearing it by over-subtracting.
+    """
+    host = fx.add_delayed_copy(_flat_ir(), fx.CONTROL_COMB_NMP_GAIN, 0.9, SR)
+    verdict = _controls(host, [1800.0, RESONANCE_HZ])["verdict"]
+    assert verdict["passes"] is False
+    assert "C3_min_phase_echo" in verdict["failed"]
+    assert verdict["C3_max_false_positive_us"] > 10 * verdict["C3_limit_us"]
+
+
+def test_the_c3_verdict_discloses_the_injection_bias_it_removed():
+    """#3480: a refusal has to say what moved, and only ``verdict`` rides one.
+
+    The bar itself is untouched — the artifact was removed, not tolerated —
+    and the amount removed at the band edge is larger than the whole bar,
+    which is the finding rather than a detail.
+    """
+    controls = _controls(_resonant_ir(+3.0), [_band_edge_hz(), RESONANCE_HZ])
+    verdict = controls["verdict"]
+    assert verdict["C3_limit_us"] == fx.CONTROL_MAX_ECHO_FALSE_POSITIVE_US == 10.0
+    assert verdict["C3_injection_bias_removed_us"] > verdict["C3_limit_us"]
+
+    per_feature = controls["C3_min_phase_echo"]["injection_bias_removed_us"]
+    assert set(per_feature) == {f"{_band_edge_hz():.0f}", f"{RESONANCE_HZ:.0f}"}
+    # ~1/f^2: negligible where the round's features usually sit, decisive at
+    # the edge. Both are properties of the injection alone, not of this host.
+    assert abs(per_feature[f"{RESONANCE_HZ:.0f}"]) < 1.0
+    assert abs(per_feature[f"{_band_edge_hz():.0f}"]) > 10.0
+
+
+def test_the_bias_removal_is_defined_only_where_the_injection_is_minimum_phase():
+    """``|g| >= 1`` is signal, not artifact, and subtracting it would blind C3.
+
+    The one way this correction could become the rubber stamp #3493 forbids,
+    closed at the seam rather than left to a comment.
+    """
+    trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
+    with pytest.raises(ValueError):
+        fx.injection_excess_gd(
+            fx.CONTROL_COMB_NMP_GAIN, fx.CONTROL_ECHO_MS, SR, trusted_band_hz=trusted
+        )
+
+
 def test_failing_controls_withholds_every_verdict(tmp_path, monkeypatch):
     """The gate is live: tighten a control bar past reach and nothing reports.
 
