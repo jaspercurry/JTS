@@ -23,7 +23,7 @@ from jasper.camilla_config_contract import FilterSpec, PeqFilter
 from jasper.camilla_stereo_prefix import build_stereo_prefix, emit_filter_spec
 
 
-def test_solo_cuts_only_no_headroom_no_preamp():
+def test_solo_cuts_only_adds_no_headroom_and_an_inert_preamp():
     specs = [FilterSpec("sound_simple_bass", "Peaking", 150.0, 3.0, q=1.0)]
     yaml, left, right, trim = build_stereo_prefix(
         specs, [PeqFilter(freq=80.0, q=4.0, gain=-3.0)]
@@ -33,14 +33,17 @@ def test_solo_cuts_only_no_headroom_no_preamp():
     assert right is None
     assert trim == 0.0
     # Room cut + preference band + the closing `flat` anchor, in order.
-    assert left == ["room_peq_1", "sound_simple_bass", "flat"]
+    assert left == ["room_peq_1", "sound_preamp", "sound_simple_bass", "flat"]
     # Definitions exist for each named filter and the flat anchor.
     assert "  room_peq_1:" in yaml
     assert "  sound_simple_bass:" in yaml
     assert "  flat:" in yaml
-    # Cuts-only correction adds no headroom and no preamp.
+    # Cuts-only correction adds no headroom, and the always-present preamp is
+    # inert -- 0 dB, spelled without a negative zero so it compares cleanly.
     assert "room_headroom" not in yaml
-    assert "sound_preamp" not in yaml
+    assert "  sound_preamp:" in yaml
+    assert "gain: 0.0000" in yaml
+    assert "gain: -0.0000" not in yaml
 
 
 def test_room_boost_inserts_worst_case_headroom():
@@ -56,10 +59,12 @@ def test_room_boost_inserts_worst_case_headroom():
     # Worst-case additive boost is +3 dB => a single -3 dB headroom gain.
     assert "  room_headroom:" in yaml
     assert "gain: -3.0000" in yaml
-    assert left == ["room_peq_1", "room_peq_2", "room_peq_3", "room_headroom", "flat"]
+    assert left == ["room_peq_1", "room_peq_2", "room_peq_3", "room_headroom", "sound_preamp", "flat"]
     assert right is None
-    # No preference filters => no preamp even if a trim were passed.
-    assert "sound_preamp" not in yaml
+    # The preamp is always defined; with no trim configured it is 0 dB, so it
+    # is present and inert rather than absent. Its presence never depends on a
+    # value -- that is what keeps a flat-window crossing a parameter write.
+    assert "  sound_preamp:" in yaml
 
 
 def test_output_trim_emits_single_preamp_only_with_preference_filters():
@@ -73,13 +78,30 @@ def test_output_trim_emits_single_preamp_only_with_preference_filters():
     assert left == ["sound_preamp", "sound_simple_bass", "flat"]
 
 
-def test_trim_ignored_when_no_preference_filters():
-    # A flat program can't clip from EQ, so a configured trim is a no-op.
-    yaml, left, _right, trim = build_stereo_prefix([], [], output_trim_db=6.0)
+def test_the_trim_is_a_number_and_the_preamp_is_always_there():
+    """The trim applies whatever the profile is doing, and that is the point.
 
-    assert trim == 0.0
-    assert "sound_preamp" not in yaml
-    assert left == ["flat"]
+    It used to be gated on the profile having active filters — "a flat program
+    can't clip from EQ, so a configured trim is a no-op". That made
+    ``sound_preamp`` appear and disappear as a gain crossed the flat window,
+    which is a STRUCTURAL change, and CamillaDSP rebuilds the filter group and
+    resets every filter's state across one (measured: an acoustically-null
+    identity filter added to a chain tore a tone 24 dB above the noise floor).
+    Emitting the preamp always makes that crossing a parameter write.
+
+    The dropped promise is user-visible and deliberate: a configured headroom
+    trim now attenuates even while the profile is flat. ``volume_limit`` remains
+    the hard clip guard; the trim is comfort accounting.
+    """
+    trimmed, left, _right, trim = build_stereo_prefix([], [], output_trim_db=6.0)
+    untrimmed, _l, _r, no_trim = build_stereo_prefix([], [], output_trim_db=0.0)
+
+    assert trim == 6.0
+    assert no_trim == 0.0
+    # Present either way, so its presence never depends on a value.
+    assert "sound_preamp" in trimmed
+    assert "sound_preamp" in untrimmed
+    assert left == ["sound_preamp", "flat"]
 
 
 def test_leader_bake_distinct_room_chains_share_preference_tail():
@@ -118,8 +140,8 @@ def test_empty_right_bakes_flat_right_segment_distinct_from_solo():
     _yaml, left, right, _trim = build_stereo_prefix(
         [], [PeqFilter(freq=120.0, q=3.0, gain=-2.0)], room_peqs_right=[]
     )
-    assert left == ["room_peq_1", "flat"]
-    assert right == ["flat"]
+    assert left == ["room_peq_1", "sound_preamp", "flat"]
+    assert right == ["sound_preamp", "flat"]
 
 
 def test_channel_delays_emit_delay_filters_on_each_room_chain():
@@ -130,8 +152,8 @@ def test_channel_delays_emit_delay_filters_on_each_room_chain():
     assert "  room_delay_r:" in yaml
     assert "type: Delay" in yaml
     assert "delay: 1.2500" in yaml
-    assert left == ["room_delay_l", "flat"]
-    assert right == ["room_delay_r", "flat"]
+    assert left == ["room_delay_l", "sound_preamp", "flat"]
+    assert right == ["room_delay_r", "sound_preamp", "flat"]
 
 
 def test_zero_delays_emit_nothing():
@@ -139,8 +161,8 @@ def test_zero_delays_emit_nothing():
         [], [], room_peqs_right=[], channel_delays_ms=(0.0, 0.0)
     )
     assert "room_delay" not in yaml
-    assert left == ["flat"]
-    assert right == ["flat"]
+    assert left == ["sound_preamp", "flat"]
+    assert right == ["sound_preamp", "flat"]
 
 
 def test_emit_filter_spec_dispatches_by_biquad_type():
@@ -176,9 +198,10 @@ def test_sound_filters_input_is_normalized_so_a_generator_is_safe():
     assert trim == 4.0
     assert left == ["sound_preamp", "sound_simple_bass", "flat"]
 
-    # An empty generator is falsy-by-content after normalization: no preamp.
+    # An empty generator normalizes to an empty tuple without being consumed
+    # twice; the trim still applies, because it is a number and not a gate.
     _yaml, left, _right, trim = build_stereo_prefix(
         (s for s in []), [], output_trim_db=4.0
     )
-    assert trim == 0.0
-    assert left == ["flat"]
+    assert trim == 4.0
+    assert left == ["sound_preamp", "flat"]

@@ -62,6 +62,19 @@ def emit_measurement_graph(
 ) -> str:
     """One session's measurement graph, per measurement variant.
 
+    **Preference EQ is never in it, by construction.** A measurement plays
+    through the layer under tune and everything BELOW it, never anything above
+    (owner ruling, 2026-09-01, #3489). Preference EQ sits above every tunable
+    layer, so it is not part of any measurement graph and not relevant to any
+    tuning comparison. ``MeasurementGraphProfile`` carries preset, topology,
+    role channels, playback device and protection sections — it has no field
+    for a ``SoundProfile`` and this module reads none, so the household's taste
+    cannot reach a capture even though the DURABLE graph now always carries
+    preference slots (the fixed frame). That is not an accident of the current
+    field list; it is the invariant, and
+    ``tests/test_active_speaker_measurement_emit_excludes_preference_eq``
+    fails if a field or a read is ever added.
+
     Everything but the three VARIANT axes — ``inverted_roles``,
     ``measurement_delays_us`` and ``level_trims_db`` — rides on ``profile``,
     which is what makes the graph session-scoped rather than per-stimulus: the

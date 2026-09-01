@@ -3185,12 +3185,17 @@ def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
         topology=_active_topology("mono", "active_2_way"), text=with_eq
     ).allowed is True
 
-    # Flat profile: the trim is ignored (can't clip from EQ), headroom stays 0
-    # and the config is byte-identical to no-trim — preserves the no-EQ contract.
+    # Flat profile: the trim STILL applies, folded into the same always-present
+    # headroom gain. It used to be gated on the profile having active filters,
+    # which made the gain step by the whole trim the moment a band crossed the
+    # ±0.05 dB flat window — un-ducked, full-spectrum, mid-drag. A number that
+    # is always applied cannot do that. The user-visible trade is that a
+    # configured headroom trim now attenuates even with EQ flat; volume_limit
+    # remains the hard clip guard.
     flat_no_trim = _active_baseline_yaml("mono", 2)
     flat_with_trim = _active_baseline_yaml("mono", 2, output_trim_db=4.0)
-    assert _headroom_db(flat_with_trim) == 0.0
-    assert flat_with_trim == flat_no_trim
+    assert _headroom_db(flat_with_trim) == -4.0
+    assert _headroom_db(flat_no_trim) == 0.0
 
 
 def test_baseline_preference_step_is_before_split_mixer() -> None:

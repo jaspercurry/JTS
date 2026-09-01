@@ -2245,6 +2245,18 @@ def build_baseline_profile_candidate(
     # tests/test_multiroom_follower_config.py and
     # tests/test_multiroom_active_leader_config.py against this change).
     if not driver_domain:
+        # The 12 hex characters are a SOURCE fingerprint, NOT a content hash.
+        # They identify the inputs this graph was compiled FROM (topology,
+        # design draft, crossover preview, measurement summary — see
+        # `_source_payload`), never the bytes that came out. Two consequences a
+        # reader will otherwise get backwards: the same name can legitimately
+        # hold different bytes after a recompose from the same record, which is
+        # what lets `reconcile_current_dsp` refresh a kept candidate IN PLACE
+        # instead of displacing it; and a byte difference under an unchanged
+        # name is therefore NOT evidence of tampering or drift. Content
+        # identity is answered by the content-derived fingerprints
+        # (`running_graph_fingerprint`, `_normalized_graph_fingerprint`), which
+        # is what the measurement program actually consumes.
         config_target = config_target.with_name(
             f"{config_target.stem}_candidate_{source['fingerprint'][:12]}"
             f"{config_target.suffix}"

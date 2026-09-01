@@ -20,7 +20,7 @@ implementation instead of a copy:
 DATA — already-built preference :class:`FilterSpec` objects and room
 :class:`PeqFilter` objects — never a ``SoundProfile``, so it imports
 nothing from ``jasper.sound`` (and nothing from ``jasper.active_speaker``).
-The caller builds the ``FilterSpec`` list (``build_sound_filters``) and
+The caller builds the ``FilterSpec`` list (``build_sound_filter_slots``) and
 passes it in. This is what lets both the sound and active emitters reuse
 the builder without an active→sound dependency.
 
@@ -113,13 +113,13 @@ def build_stereo_prefix(
     NOT emit the mixer/pipeline, so there is no master_gain-vs-split
     coupling here.
 
-    ``sound_filters`` is the already-built preference filter list. The durable
-    path passes ``build_sound_filters(profile)`` (only ``.active()`` specs); the
-    LIVE editing draft passes ``build_sound_filter_slots(profile)``, a slot per
-    declared band with the neutral ones KEPT. It is normalized to a tuple at the
-    boundary, so a generator is safe. Whether any spec is ``.active()`` — not
-    whether the list is empty — gates the optional preamp, so an all-flat
-    profile plays at unity either way.
+    ``sound_filters`` is the already-built preference filter list: EVERY caller
+    passes ``build_sound_filter_slots(profile)``, a slot per declared band with
+    the neutral ones kept, so the graph's shape follows the profile's
+    declaration and never its values. It is normalized to a tuple at the
+    boundary, so a generator is safe. The preamp is emitted unconditionally and
+    its gain carries the trim — see the comment at the emit for why, and for
+    the promise that change deliberately drops.
 
     ``chain_names_right`` is ``None`` when ``room_peqs_right`` is ``None``
     (solo — channel 1 duplicates channel 0, byte-identical to before this
@@ -194,26 +194,28 @@ def build_stereo_prefix(
             room_headroom_db,
         )
 
-    # Preference boosts apply at unity: a +N dB band raises only that band
-    # and leaves the rest of the spectrum untouched, like a consumer EQ. The
-    # one optional global attenuation is the caller-supplied output trim
-    # (manual headroom and/or loudness matching, both opt-in, both default 0).
-    # With trim 0 there is no preamp at all -- boosts boost. The master
-    # volume_limit ceiling stays the hard clip guard regardless. The trim
-    # only applies when the profile has filters; a flat profile can't clip
-    # from EQ, so it plays at unity even if a headroom trim is configured.
-    # "Does this profile boost" is a property of the specs' VALUES, not of the
-    # list being non-empty: the LIVE editing graph carries a slot per declared
-    # band so its shape can hold still, and an all-flat draft must still play
-    # at unity or the preview stops predicting what a save will sound like.
-    trim_db = (
-        max(0.0, float(output_trim_db))
-        if any(spec.active() for spec in sound_filters)
-        else 0.0
-    )
-    if trim_db > 0.0:
-        lines.extend(emit_gain_filter("sound_preamp", -trim_db))
-        tail_names.append("sound_preamp")
+    # Preference boosts apply at unity: a +N dB band raises only that band and
+    # leaves the rest of the spectrum untouched, like a consumer EQ. The one
+    # global attenuation is the caller-supplied output trim (manual headroom
+    # and/or loudness matching, both opt-in, both default 0).
+    #
+    # The trim is a NUMBER, never a filter's presence: `sound_preamp` is emitted
+    # ALWAYS, at 0 dB when nothing is configured. It used to be gated on the
+    # profile doing something ("a flat profile can't clip from EQ, so it plays
+    # at unity"), which made the filter appear and disappear as a gain crossed
+    # the flat window — a structural change, and CamillaDSP rebuilds its filter
+    # group and resets every filter's state across one. Emitting it always makes
+    # that crossing a parameter write like every other EQ gesture.
+    #
+    # The dropped promise, stated because it is user-visible: a configured
+    # headroom trim now attenuates even while the profile is flat, where it
+    # previously did not — max SPL given up. `devices.volume_limit` remains the
+    # hard clip guard either way; the trim is comfort accounting.
+    trim_db = max(0.0, float(output_trim_db))
+    # -0.0 formats as "-0.0000", which would make two graphs that are the same
+    # number look like different bytes to every comparison downstream.
+    lines.extend(emit_gain_filter("sound_preamp", -trim_db if trim_db else 0.0))
+    tail_names.append("sound_preamp")
     for spec in sound_filters:
         lines.extend(emit_filter_spec(spec))
         tail_names.append(spec.name)

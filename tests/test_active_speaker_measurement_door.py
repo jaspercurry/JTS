@@ -392,3 +392,48 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path):
             protection_sections_by_role=protection,
         ),
     )
+
+
+def test_the_measurement_graph_never_carries_preference_eq():
+    """A measurement plays through the layer under tune and everything BELOW it.
+
+    Owner ruling (2026-09-01, #3489): preference EQ sits above every tunable
+    layer, so it is never part of a measurement graph and never relevant to a
+    tuning comparison.
+
+    This became load-bearing with the fixed frame, which puts preference slots
+    in the DURABLE graph permanently. If the measurement graph were ever
+    derived from that graph — or if ``MeasurementGraphProfile`` grew a
+    ``SoundProfile`` field — every capture would be silently coloured by
+    whatever the household last saved, and no fingerprint scheme can repair a
+    contaminated capture. Asserted at the seam rather than trusted from today's
+    field list.
+    """
+    import dataclasses
+    import pathlib
+
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+
+    fields = {f.name for f in dataclasses.fields(MeasurementGraphProfile)}
+    annotations = " ".join(
+        str(f.type) for f in dataclasses.fields(MeasurementGraphProfile)
+    ).lower()
+
+    # No route in: no field named for a preference/EQ input, no SoundProfile...
+    assert not {f for f in fields if "sound" in f or "preference" in f}
+    assert "soundprofile" not in annotations.replace("_", "")
+
+    # ...and the emitter reaches for none either.
+    body = "\n".join(
+        line
+        for line in pathlib.Path(
+            "jasper/active_speaker/measurement_emit.py"
+        ).read_text().splitlines()
+        if not line.strip().startswith("#")
+    )
+    for forbidden in (
+        "load_profile",
+        "build_sound_filters",
+        "build_sound_filter_slots",
+    ):
+        assert forbidden not in body, forbidden

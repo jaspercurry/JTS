@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.atomic_io import atomic_write_text
 from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.log_event import log_event
 from jasper.sound.profile import (
@@ -300,6 +302,7 @@ async def load_profile_config(
     audition: bool = False,
     output_trim_db: float = 0.0,
     profile_id: str | None = None,
+    out_path: str | Path | None = None,
 ) -> tuple[Any, Path, SoundProfile]:
     """Render and load ``profile`` on top of the currently loaded DSP graph.
 
@@ -326,10 +329,26 @@ async def load_profile_config(
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
+    # ``out_path`` names the file this render is written to, and WINS over
+    # ``audition`` when both are given. The default is the
+    # household's own ``sound_current.yml`` (or the audition preview). The
+    # reconcile overrides it to RE-ANCHOR: a speaker running a kept
+    # active-crossover candidate must keep running THAT file, so a refreshed
+    # graph is written back over it rather than appearing under a second name
+    # and displacing the applied-profile record from the statefile (#2572). Safe
+    # to rewrite in place because the candidate's filename is a fingerprint of
+    # its SOURCE inputs, not a hash of its emitted bytes
+    # (:func:`jasper.active_speaker.baseline_profile._source_payload`), and the
+    # content is recomposed from the same immutable applied-profile snapshot —
+    # so the name still describes what the file was built from.
     out_path = (
-        sound_audition_config_path(config_path)
-        if audition
-        else sound_config_path(config_path)
+        Path(out_path)
+        if out_path is not None
+        else (
+            sound_audition_config_path(config_path)
+            if audition
+            else sound_config_path(config_path)
+        )
     )
     pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
     if (
@@ -526,16 +545,93 @@ async def reconcile_current_dsp(
                 }
             )
 
-        apply_state, applied_path, _ = await load_profile_config(
-            profile,
-            profile_path=profile_path,
-            config_dir=config_path,
-            camilla_factory=lambda: cam,
-            source="sound_reconcile",
-            persist_profile=False,
-            output_trim_db=trim_db,
-            profile_id=RECONCILE_PROFILE_ID,
+        # ONE DERIVER, TWO TRIGGERS — not a second writer. The candidate is a
+        # DERIVED artifact, and both the commissioning path and this one produce
+        # it through the SAME carrier recompose of that candidate's own
+        # immutable applied-profile record (`load_profile_config` ->
+        # `carrier.reemit`). This branch may never write candidate bytes that
+        # differ from that shared recompose; it chooses the destination, never
+        # the content. Written that way deliberately so AGENTS.md's
+        # single-writer rule survives intact rather than acquiring an exception.
+        #
+        # RE-ANCHOR, don't displace. The bytes differ, so this box does need a
+        # refreshed graph — but a speaker running a kept active-crossover
+        # candidate must keep running THAT file. Writing the refresh under
+        # ``sound_current.yml`` instead is what moves the statefile off the
+        # candidate, leaves the applied record and the statefile disagreeing on
+        # a pure path compare, and costs a crossover-v2 round its entry graph
+        # (#2572). The equality short-circuit above used to be the whole defence
+        # and only held while the emitted content never changed; this holds when
+        # it does.
+        reanchor_path = (
+            current_path
+            if dry.carrier_kind == "active" and not _paths_match(current_path, out_path)
+            else None
         )
+        # A re-anchor writes the candidate IN PLACE, which takes its own
+        # rollback away: `apply_dsp_config` rolls back by re-loading
+        # ``prior_config_path``, and under a re-anchor that path IS the file
+        # just overwritten — so a rejected graph would be reloaded as if it
+        # were the recovery, and the commissioned candidate would be left
+        # holding a config CamillaDSP will not load, which is also what it
+        # boots from. Keep the pristine bytes and put them back ourselves.
+        reanchor_backup = (
+            Path(reanchor_path).read_text(encoding="utf-8")
+            if reanchor_path is not None
+            else None
+        )
+        applied = False
+        try:
+            apply_state, applied_path, _ = await load_profile_config(
+                profile,
+                profile_path=profile_path,
+                config_dir=config_path,
+                camilla_factory=lambda: cam,
+                source="sound_reconcile",
+                persist_profile=False,
+                output_trim_db=trim_db,
+                profile_id=RECONCILE_PROFILE_ID,
+                out_path=reanchor_path,
+            )
+            applied = True
+        finally:
+            # ``finally`` rather than a broad ``except``: this puts bytes back
+            # and re-raises nothing, so it must run for EVERY way the apply can
+            # fail, including ones no handler here would think to name.
+            if not applied and reanchor_path is not None and reanchor_backup is not None:
+                atomic_write_text(
+                    Path(reanchor_path), reanchor_backup, mode=0o640,
+                )
+                # The file is pristine again; make the box run it again too,
+                # because the failed apply's own rollback just re-loaded this
+                # same path while it still held the rejected graph.
+                #
+                # Through the house verdict, not a bare call: `best_effort`
+                # returns False for BOTH "CamillaDSP rejected it" and "the
+                # daemon is gone", and a restore log that cannot tell those
+                # apart asserts a recovery that may not have happened — #2198
+                # is what collapsing them costs. Shielded because an
+                # interrupted restore leaves the bytes back and the box still
+                # on the rejected graph, which is the worse half.
+                from jasper.active_speaker.web_commissioning import (
+                    attempt_graph_restore,
+                )
+
+                took_effect, raise_message = await asyncio.shield(
+                    attempt_graph_restore(
+                        lambda: cam.set_config_file_path(
+                            str(reanchor_path), best_effort=True,
+                        )
+                    )
+                )
+                log_event(
+                    logger,
+                    "sound.reconcile_reanchor_restored",
+                    candidate=str(reanchor_path),
+                    result="restored" if took_effect else "not_reloaded",
+                    error=raise_message or "",
+                    level=logging.WARNING,
+                )
     return _log_reconcile_result(
         {
             "status": "reconciled",

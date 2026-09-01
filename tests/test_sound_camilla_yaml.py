@@ -11,7 +11,7 @@ from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config_text,
 )
-from jasper.sound.profile import SimpleEq, SoundProfile
+from jasper.sound.profile import SimpleEq, SoundProfile, build_sound_filters
 
 
 def test_sound_config_preserves_room_peqs_before_preference_eq():
@@ -30,12 +30,12 @@ def test_sound_config_preserves_room_peqs_before_preference_eq():
     assert "volume_limit: 0.0" in yaml
     assert 'device: "jts_ring_playback"' in yaml
     assert "room_peq_1:" in yaml
-    assert "sound_preamp" not in yaml  # default trim 0: boosts boost
+    assert "  sound_preamp:" in yaml  # default trim 0: boosts boost
     assert "sound_curve_harman_bass:" in yaml
     assert "type: Lowshelf" in yaml
     assert "type: Highshelf" in yaml
     assert "sound_simple_mid:" in yaml
-    assert "names: [room_peq_1, sound_curve_harman_bass" in yaml
+    assert "names: [room_peq_1, sound_preamp, sound_curve_harman_bass" in yaml
     assert yaml.count("channels: [0]") == 1
     assert yaml.count("channels: [1]") == 1
 
@@ -74,10 +74,14 @@ def test_disabled_sound_config_bypasses_preference_eq_but_keeps_room_peqs():
     )
 
     assert "room_peq_1:" in yaml
-    assert "sound_curve_bk_bass" not in yaml
-    assert "sound_simple_bass" not in yaml
-    assert "sound_preamp" not in yaml
-    assert "names: [room_peq_1, flat]" in yaml
+    # Bypass is spelled as values: the curve's filters stay in the graph at
+    # 0 dB so toggling bypass is a parameter write, not a pipeline change.
+    assert "sound_curve_bk_bass:" in yaml
+    assert not [
+        spec for spec in build_sound_filters(profile)
+    ], "a bypassed profile must have nothing active"
+    assert "  sound_preamp:" in yaml
+    assert _room_prefix(yaml) == ["room_peq_1"]
 
 
 def test_output_trim_emits_single_preamp_before_filters():
@@ -91,21 +95,31 @@ def test_output_trim_emits_single_preamp_before_filters():
     assert "names: [sound_preamp, sound_curve_harman_bass" in yaml
 
 
-def test_default_has_no_preamp_so_boosts_boost():
+def test_default_preamp_is_inert_so_boosts_boost():
+    """No trim configured means the preamp is present and 0 dB, not absent."""
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=6.0))
     yaml = emit_sound_config(profile)
 
-    assert "sound_preamp" not in yaml
+    assert "  sound_preamp:" in yaml
+    assert "gain: 0.0000" in yaml
+    assert "gain: -" not in yaml.split("sound_preamp:")[1].split("filters:")[0]
     assert "sound_simple_bass:" in yaml
 
 
-def test_output_trim_is_ignored_when_profile_has_no_filters():
-    # A flat profile can't clip from EQ, so a configured trim is a no-op.
+def test_a_configured_trim_applies_even_on_a_flat_profile():
+    """The dropped promise, pinned in the direction it now runs.
+
+    A flat profile used to ignore a configured trim ("it can't clip from EQ").
+    That rule is what made the preamp appear and disappear as a gain crossed
+    the flat window — a structural change. The trim is a number now, so it
+    applies whatever the profile is doing, and that is max SPL given up.
+    """
     yaml = emit_sound_config(
         SoundProfile(enabled=True, curve_id="flat"), output_trim_db=6.0
     )
 
-    assert "sound_preamp" not in yaml
+    assert "  sound_preamp:" in yaml
+    assert "gain: -6.0000" in yaml
 
 
 def _legacy_correction_config_text(
@@ -283,8 +297,8 @@ def test_room_peqs_right_empty_bakes_flat_right_room_segment():
         room_peqs=[PeqFilter(freq=120.0, q=3.0, gain=-2.0)],
         room_peqs_right=[],
     )
-    assert "    names: [room_peq_1, flat]" in yaml
-    assert "    names: [flat]" in yaml
+    assert _room_prefix(yaml) == ["room_peq_1"]
+    assert _room_prefix(yaml, 1) == []
     assert "room_peq_r" not in yaml
 
 
@@ -304,7 +318,7 @@ def test_cuts_only_room_correction_emits_no_headroom():
         ],
     )
     assert "room_headroom" not in yaml
-    assert "    names: [room_peq_1, room_peq_2, flat]" in yaml
+    assert _room_prefix(yaml) == ["room_peq_1", "room_peq_2"]
 
 
 def test_room_boost_emits_headroom_preamp_so_net_gain_stays_at_unity():
@@ -321,10 +335,9 @@ def test_room_boost_emits_headroom_preamp_so_net_gain_stays_at_unity():
     assert "room_headroom:" in yaml
     assert "gain: -3.0000" in yaml
     # …and it rides the chain right after the room PEQs.
-    assert (
-        "    names: [room_peq_1, room_peq_2, room_peq_3, room_headroom, flat]"
-        in yaml
-    )
+    assert _room_prefix(yaml) == [
+        "room_peq_1", "room_peq_2", "room_peq_3", "room_headroom",
+    ]
 
 
 def test_room_headroom_trims_by_the_louder_channel_for_leader_bake():
@@ -521,8 +534,8 @@ def test_channel_delays_emit_delay_filters_only_on_distinct_room_chains():
     assert "unit: ms" in yaml
     assert "gain: 1.2500" not in yaml
     assert "volume_limit: 0.0" in yaml
-    assert "    names: [room_delay_l, flat]" in yaml
-    assert "    names: [flat]" in yaml
+    assert _room_prefix(yaml, 0) == ["room_delay_l"]
+    assert _room_prefix(yaml, 1) == []
 
 
 def test_channel_delays_default_and_zero_are_solo_byte_identical():
@@ -682,6 +695,19 @@ def _stereo_topology():
     })
 
 
+def _room_prefix(yaml_text: str, channel: int = 0) -> list[str]:
+    """The chain's ROOM segment: everything before the preference frame.
+
+    The preference frame is a fixed 13-to-15 filters on every graph now, so a
+    test about room PEQs or channel delays asserts its own subject rather than
+    respelling the frame.
+    """
+    names = _pipeline_names(yaml_text, channel)
+    inner = names.split("[", 1)[1].rsplit("]", 1)[0]
+    chain = [n.strip() for n in inner.split(",")]
+    return [n for n in chain if not n.startswith("sound_") and n != "flat"]
+
+
 def _pipeline_names(yaml_text: str, channel: int) -> str:
     """The ``names: [...]`` line of the Filter step targeting ``channel``."""
     lines = yaml_text.splitlines()
@@ -709,8 +735,8 @@ def test_mono_on_output_0_renders_channel_1_hard_muted():
     assert "mute: true" in yaml
     # Terminal: the mute is the LAST name in its channel's chain, and the
     # claimed channel keeps its ordinary chain untouched.
-    assert _pipeline_names(yaml, 1) == f"names: [flat, {mute}]"
-    assert _pipeline_names(yaml, 0) == "names: [flat]"
+    assert _pipeline_names(yaml, 1).endswith(f"{mute}]")
+    assert _room_prefix(yaml, 0) == []
     assert output_commission_mute_name(0) not in yaml
 
 
@@ -721,8 +747,8 @@ def test_mono_on_output_1_renders_channel_0_hard_muted():
     yaml = emit_flat_outputd_cutover_config(topology=_mono_topology(1))
 
     mute = output_commission_mute_name(0)
-    assert _pipeline_names(yaml, 0) == f"names: [flat, {mute}]"
-    assert _pipeline_names(yaml, 1) == "names: [flat]"
+    assert _pipeline_names(yaml, 0).endswith(f"flat, {mute}]")
+    assert _room_prefix(yaml, 1) == []
     assert output_commission_mute_name(1) not in yaml
 
 
@@ -737,8 +763,9 @@ def test_stereo_and_unconfigured_topologies_render_byte_identical_flat_config():
 
     assert emit_flat_outputd_cutover_config(topology=_stereo_topology()) == baseline
     assert "commission_mute" not in baseline
-    assert _pipeline_names(baseline, 0) == "names: [flat]"
-    assert _pipeline_names(baseline, 1) == "names: [flat]"
+    assert _room_prefix(baseline, 0) == []
+    assert _pipeline_names(baseline, 0).endswith("flat]")
+    assert _room_prefix(baseline, 1) == []
 
 
 def _unconfigured_draft():
@@ -1345,9 +1372,12 @@ def test_production_call_shape_reads_the_saved_topology_from_disk(
 
     yaml = emit_flat_outputd_cutover_config()
 
-    assert _pipeline_names(yaml, 1) == (
-        f"names: [flat, {output_commission_mute_name(1)}]"
+    # Mono on output 0 means channel 1 is hard-muted, and the mute is TERMINAL
+    # — last in its chain, after the preference frame.
+    assert _pipeline_names(yaml, 1).endswith(
+        f"flat, {output_commission_mute_name(1)}]"
     )
+    assert output_commission_mute_name(0) not in yaml
 
 
 def test_production_call_shape_missing_topology_renders_the_golden(

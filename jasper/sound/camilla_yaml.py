@@ -41,12 +41,11 @@ from jasper.camilla_emit import (
     fmt,
     mono_sum_sources,
 )
-from jasper.camilla_config_contract import FilterSpec
 from jasper.camilla_stereo_prefix import build_stereo_prefix
 
 from .profile import (
     SoundProfile,
-    build_sound_filters,
+    build_sound_filter_slots,
 )
 
 if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
@@ -364,19 +363,8 @@ def emit_sound_config(
     mono_fold_output: int | None = None,
     width: int = FLAT_GRAPH_WIDTH,
     program_dest_map: Sequence[int] | None = None,
-    preference_filters: Sequence[FilterSpec] | None = None,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
-
-    ``preference_filters`` overrides the list built from ``profile``.
-    ``None`` — the default, and what every DURABLE caller must pass — builds
-    ``build_sound_filters(profile)``, so a save is byte-identical to what
-    ``reconcile_current_dsp`` recomposes on the next deploy. Handing it
-    ``build_sound_filter_slots(profile)`` instead emits a slot per declared
-    band, neutral ones kept, which is the LIVE editing graph: its shape holds
-    still so an edit can be a parameter write. A durable path that passed the
-    slot list would move that byte comparison on every commissioned speaker and
-    displace the applied baseline (#2572).
 
     ``room_peqs_right`` is the multi-room leader-bake axis: a DIFFERENT
     room correction per channel in ONE config — channel 0 gets
@@ -555,11 +543,7 @@ def emit_sound_config(
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the list once
     # and reuse it for the summary log below.
-    sound_filters = (
-        build_sound_filters(profile)
-        if preference_filters is None
-        else tuple(preference_filters)
-    )
+    sound_filters = build_sound_filter_slots(profile)
     filter_yaml, chain_names, chain_names_right, trim_db = build_stereo_prefix(
         sound_filters,
         room_peqs or [],

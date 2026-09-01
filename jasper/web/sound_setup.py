@@ -2036,7 +2036,6 @@ async def _live_draft_profile(
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import carrier_for_loaded_config
-    from jasper.sound.profile import build_sound_filter_slots
 
     cam = camilla_factory()
     config_path = Path(config_dir)
@@ -2150,12 +2149,6 @@ async def _live_draft_profile(
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
             fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
-            # A slot per band, neutral ones kept, so the pipeline holds still
-            # while the household edits and every edit is a parameter write.
-            # ONLY here: the durable save leaves this None, so what it writes
-            # stays byte-identical to what `reconcile_current_dsp` recomposes
-            # on the next deploy (#2572).
-            preference_filters=build_sound_filter_slots(profile),
         )
         yaml = result.yaml
         plan = await _live_edit_plan(cam, yaml)
