@@ -3244,11 +3244,17 @@ class CrossoverV2Session:
         authorize; the consumer widens its own uncertainty with this number
         instead. ``None`` when either bracket pose is missing — never ``0.0``,
         which would read as "nothing moved".
+
+        The closing pose is the first at-mark pose AFTER the walk's last
+        off-mark one, so a program whose at-mark repeats all sit before the
+        first move brackets nothing and answers ``None``.
         """
-        opening = next((p for p in self._lateral_poses if p.at_mark), None)
-        closing = next(
-            (p for p in reversed(self._lateral_poses) if p.at_mark), None
+        poses = self._lateral_poses
+        left_the_mark = max(
+            (i for i, p in enumerate(poses) if not p.at_mark), default=-1
         )
+        opening = next((p for p in poses if p.at_mark), None)
+        closing = next((p for p in poses[left_the_mark + 1:] if p.at_mark), None)
         if opening is None or closing is None or opening.index == closing.index:
             return None
         drift: dict[str, float] = {}

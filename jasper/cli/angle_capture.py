@@ -130,6 +130,17 @@ PROGRAM_SIZES = tuple(sorted({
 AUTHORITY_TIER = "mutating (`stage` writes; `plan`/`withdraw` do not)"
 
 
+def _size_phrase() -> str:
+    """``--size``'s choices with each tier's shape, read off the registry."""
+    return ", ".join(
+        f"{size} ({row.mic_move_count} spots, {row.capture_count} captures)"
+        for size, row in (
+            (size, measurement_programs.program("baseline", size))
+            for size in PROGRAM_SIZES
+        )
+    )
+
+
 def _angle_field(text: str) -> Any:
     """One ``--angles`` field, as the seam should see it.
 
@@ -508,8 +519,7 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         # No argparse ``choices``: the registry owns the valid set, so an
         # unknown size refuses in its own words and names the real pairs.
         help=(
-            "which tier of --program baseline, one of "
-            f"{', '.join(PROGRAM_SIZES)} (express is 5 poses, 8 captures). "
+            f"which tier of --program baseline, one of {_size_phrase()}. "
             "Ignored by --program spot, which is one pose either way"
         ),
     )

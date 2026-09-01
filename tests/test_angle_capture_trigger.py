@@ -927,19 +927,22 @@ def test_mutation_the_two_doors_cannot_both_be_open(slot):
     assert parser.parse_args(["plan", "--angles", "0"]).program is None
 
 
-def test_an_unknown_program_refuses_and_names_the_real_set(slot, capsys):
-    """The registry owns the valid pairs, so the refusal can list them."""
+def test_an_unknown_program_refuses_rather_than_walking_a_size_nobody_offers(
+    slot, capsys
+):
+    """``--size`` carries no argparse ``choices``, so the registry refuses it.
+
+    Which pairs the refusal names is the registry's own contract
+    (``UnknownProgramError.choices``, pinned in
+    ``tests/test_measurement_programs.py``); this door only has to reach it.
+    """
     args = cli.build_parser().parse_args(
         ["plan", "--program", "baseline", "--size", "huge", "--json"]
     )
     assert cli._cmd_plan(args) == cli.EXIT_REFUSED
     body = json.loads(capsys.readouterr().out)
 
-    assert body["reason"] == cli.UNKNOWN_PROGRAM
-    assert all(
-        f"{pid}/{size}" in body["detail"]
-        for pid, size in mp.available_programs()
-    )
+    assert (body["ok"], body["reason"]) == (False, cli.UNKNOWN_PROGRAM)
 
 
 # --------------------------------------------------------------------------- #

@@ -1039,6 +1039,29 @@ def test_an_evidence_walk_reaches_its_last_pose_and_publishes_nothing():
     assert not hasattr(c, "fc_selection")
 
 
+@pytest.mark.parametrize(
+    "angles, bracketed",
+    [((0, 0, 20), False), ((0, 20, 0), True)],
+    ids=["repeats-then-off-axis", "off-axis-then-back"],
+)
+def test_the_mark_return_bracket_needs_a_pose_taken_after_the_mic_moved(
+    angles, bracketed
+):
+    """Adjacent at-mark repeats are repeat noise, not return drift.
+
+    Both baseline tiers open with their anchor repeats and never come back, so
+    a bracket drawn from the first and last at-mark pose would publish
+    take-to-take spread as if the household had nudged something.
+    """
+    prompts = _angle_prompts(angles)
+    fakes = FakeSeams()
+    c = _evidence_conductor(fakes, prompts=prompts)
+    _evidence_walk(c, prompts)
+
+    assert [pose.at_mark for pose in c.lateral_poses] == [a == 0 for a in angles]
+    assert (c.lateral_mark_return_drift_db() is not None) is bracketed
+
+
 def test_a_settled_last_pose_closes_the_walk_too():
     """The OTHER route into the close, pinned independently.
 
