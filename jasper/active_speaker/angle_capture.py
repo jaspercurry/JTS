@@ -102,7 +102,6 @@ from .crossover_v2_flow import (
     CrossoverV2FlowError,
     announced_capture_indexes,
     position_angle_deg,
-    position_elevation_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
 )
