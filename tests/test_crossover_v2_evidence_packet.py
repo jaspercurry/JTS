@@ -27,6 +27,8 @@ from jasper.active_speaker.crossover_v2.contracts import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CANDIDATE_GRADINGS_UNAVAILABLE,
+    DECLARED_GEOMETRY_ARTIFACT,
+    DECLARED_GEOMETRY_KIND,
     NO_CANDIDATE_TAKES,
     REPEAT_FLOOR_UNMEASURED,
     REPEAT_FLOOR_UNREADABLE,
@@ -520,3 +522,39 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
     assert block["comparison"]["reason"] == CANDIDATE_GRADINGS_UNAVAILABLE
     assert "candidates" not in {row["field"] for row in packet["not_evaluated"]}
     assert packet["packet_fingerprint"]
+
+
+# --------------------------------------------------------------------------- #
+# session.declared_geometry (#3498) — the one reader of the banked geometry
+# --------------------------------------------------------------------------- #
+
+
+def test_the_session_block_reads_the_households_declared_geometry(tmp_path):
+    """The banked room in metres, WITHOUT the artifact envelope it arrived in.
+
+    This is the ONE reader of what the operator declared at ``stage``; the
+    room's entanglement floor (2.5 / t_first_bounce) is derived from it
+    offline. A reader that passed the artifact straight through would leak
+    ``schema_version`` and ``kind`` into the room, so the keys are named.
+    """
+    session, _ = _bundle(tmp_path)
+    room = {
+        "speaker_height_m": 0.9, "mic_height_m": 1.0,
+        "mic_distance_m": 1.05, "ceiling_height_m": 2.4,
+    }
+    round_dir, _ = round_artifact_dir(session)
+    (round_dir / DECLARED_GEOMETRY_ARTIFACT).write_text(json.dumps({
+        "schema_version": 1, "kind": DECLARED_GEOMETRY_KIND, **room,
+    }))
+
+    assert build_crossover_evidence_packet(session)["session"][
+        "declared_geometry"
+    ] == room
+
+
+def test_a_session_nobody_was_asked_about_declares_no_geometry(tmp_path):
+    """Absent is ``None``, never an empty room: most sessions carry none."""
+    session, _ = _bundle(tmp_path)
+    assert build_crossover_evidence_packet(session)["session"][
+        "declared_geometry"
+    ] is None

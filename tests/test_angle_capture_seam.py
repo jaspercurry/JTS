@@ -1009,3 +1009,54 @@ def test_mutation_the_distance_guard_cannot_be_dropped() -> None:
                 mark_distance_m=ac.MARK_DISTANCE_M * 2,
             )
         )
+
+
+# --------------------------------------------------------------------------- #
+# 7. the household's declared geometry -- carried, refused when unusable
+# --------------------------------------------------------------------------- #
+
+_ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "mic_distance_m": 1.05}
+
+
+@pytest.mark.parametrize(
+    "override, refused_field",
+    [
+        ({}, None),
+        ({"ceiling_height_m": 2.4}, None),
+        ({"speaker_height_m": 0.0}, "speaker_height_m"),
+        ({"mic_height_m": -1.0}, "mic_height_m"),
+        ({"mic_distance_m": float("nan")}, "mic_distance_m"),
+        ({"mic_distance_m": "tall"}, "mic_distance_m"),
+        ({"ceiling_height_m": float("inf")}, "ceiling_height_m"),
+    ],
+)
+def test_a_declared_distance_is_a_positive_finite_number_of_metres(
+    override, refused_field,
+) -> None:
+    """Every field is a LENGTH, so zero, negative and non-finite are refusals.
+
+    A geometry the toolbox cannot derive an entanglement floor from must fail
+    where the household stated it, not silently in an offline reader months
+    later, so the refusal names the field to re-measure. The accepted rows also
+    pin the banked shape both ways: an unmeasured ceiling is ABSENT, never
+    null, and :meth:`from_dict` is :meth:`to_dict`'s exact inverse.
+    """
+    room = {**_ROOM, **override}
+    if refused_field is not None:
+        with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
+            ac.DeclaredGeometry(**room)
+        assert refused_field in str(excinfo.value)
+        return
+
+    geometry = ac.DeclaredGeometry(**room)
+    assert geometry.to_dict() == room
+    assert ac.DeclaredGeometry.from_dict(room) == geometry
+
+
+def test_the_declared_geometry_is_opt_in_and_passed_through_untouched() -> None:
+    """A program states POSE geometry; the ROOM stays the caller's to state."""
+    assert ac.per_driver_at([0]).declared_geometry is None
+    room = ac.DeclaredGeometry(**_ROOM)
+    assert ac.request_for_program(
+        mp.program("baseline", "express"), declared_geometry=room,
+    ).declared_geometry is room
