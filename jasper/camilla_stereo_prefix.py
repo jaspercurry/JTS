@@ -194,30 +194,23 @@ def build_stereo_prefix(
             room_headroom_db,
         )
 
-    # Preference boosts apply at unity: a +N dB band raises only that band
-    # and leaves the rest of the spectrum untouched, like a consumer EQ. The
-    # one optional global attenuation is the caller-supplied output trim
-    # (manual headroom and/or loudness matching, both opt-in, both default 0).
-    # With trim 0 there is no preamp at all -- boosts boost. The master
-    # volume_limit ceiling stays the hard clip guard regardless. The trim
-    # only applies when the profile has filters; a flat profile can't clip
-    # from EQ, so it plays at unity even if a headroom trim is configured.
-    # "Does this profile boost" is a property of the specs' VALUES, not of the
-    # list being non-empty: the LIVE editing graph carries a slot per declared
-    # band so its shape can hold still, and an all-flat draft must still play
-    # at unity or the preview stops predicting what a save will sound like.
-    # The trim is a NUMBER, never a filter's presence. It used to be gated on
-    # the profile doing something ("a flat profile can't clip from EQ, so it
-    # plays at unity"), which made `sound_preamp` appear and disappear as a gain
-    # crossed the flat window — a structural change, and CamillaDSP rebuilds the
-    # filter group and resets every filter's state across one. Emitting it
-    # always, at 0 dB when no trim is configured, makes that crossing a
-    # parameter write like every other EQ gesture.
+    # Preference boosts apply at unity: a +N dB band raises only that band and
+    # leaves the rest of the spectrum untouched, like a consumer EQ. The one
+    # global attenuation is the caller-supplied output trim (manual headroom
+    # and/or loudness matching, both opt-in, both default 0).
+    #
+    # The trim is a NUMBER, never a filter's presence: `sound_preamp` is emitted
+    # ALWAYS, at 0 dB when nothing is configured. It used to be gated on the
+    # profile doing something ("a flat profile can't clip from EQ, so it plays
+    # at unity"), which made the filter appear and disappear as a gain crossed
+    # the flat window — a structural change, and CamillaDSP rebuilds its filter
+    # group and resets every filter's state across one. Emitting it always makes
+    # that crossing a parameter write like every other EQ gesture.
     #
     # The dropped promise, stated because it is user-visible: a configured
     # headroom trim now attenuates even while the profile is flat, where it
-    # previously did not. `devices.volume_limit` remains the hard clip guard
-    # either way; the trim is comfort accounting.
+    # previously did not — max SPL given up. `devices.volume_limit` remains the
+    # hard clip guard either way; the trim is comfort accounting.
     trim_db = max(0.0, float(output_trim_db))
     # -0.0 formats as "-0.0000", which would make two graphs that are the same
     # number look like different bytes to every comparison downstream.

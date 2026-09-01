@@ -847,7 +847,15 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     # rebuilds CamillaDSP's filter group and resets the state of every filter in
     # it — so toggling bypass would cost the same ducked swap this frame exists
     # to remove. A bypassed profile is therefore the same shape at unity: the
-    # curve is dropped and every simple band and advanced slot is idle.
+    # curve's filters are NEUTRALISED (see `_bypassed_slots`) and every simple
+    # band and advanced slot is idle.
+    #
+    # ONE EXCEPTION, and it is inherent: a declared GAINLESS band (Highpass,
+    # Lowpass, Notch) has no gain to zero, so its slot reverts to the idle
+    # Peaking — a change of the biquad's RECIPE, which `plan_live_edit`
+    # correctly refuses to patch. Bypass therefore still costs one ducked swap
+    # for a household using such a band. Silencing a Highpass requires changing
+    # its type; there is no spelling of this that is a parameter write.
     #
     # The trim is deliberately NOT dropped with it. "Extra headroom" is a global
     # output setting for clip safety into an external amp, so it is level policy

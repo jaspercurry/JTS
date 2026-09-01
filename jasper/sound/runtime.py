@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.atomic_io import atomic_write_text
+from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -328,7 +328,8 @@ async def load_profile_config(
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
-    # ``out_path`` names the file this render is written to. The default is the
+    # ``out_path`` names the file this render is written to, and WINS over
+    # ``audition`` when both are given. The default is the
     # household's own ``sound_current.yml`` (or the audition preview). The
     # reconcile overrides it to RE-ANCHOR: a speaker running a kept
     # active-crossover candidate must keep running THAT file, so a refreshed
