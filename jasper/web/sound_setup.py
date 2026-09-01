@@ -2001,18 +2001,11 @@ async def _live_edit_plan(cam: Any, wanted_yaml: str) -> "LiveEditPlan":
     which parses and default-fills without applying. Comparing the emitter's
     raw text against the running readback would differ on every edit (the
     readback is a default-filled superset) and quietly duck every one.
-
-    A controller that cannot do both reads gets the ducked swap, so a test
-    double or an older controller keeps the conservative behaviour.
     """
-    from jasper.sound.live_edit import LiveEditPlan, plan_live_edit
+    from jasper.sound.live_edit import plan_live_edit
 
-    read_active = getattr(cam, "get_active_config_raw", None)
-    normalize = getattr(cam, "normalize_config_raw", None)
-    if read_active is None or normalize is None:
-        return LiveEditPlan.swap("controller_cannot_compare")
-    running = await read_active(best_effort=True)
-    wanted = await normalize(wanted_yaml, best_effort=True)
+    running = await cam.get_active_config_raw(best_effort=True)
+    wanted = await cam.normalize_config_raw(wanted_yaml, best_effort=True)
     return plan_live_edit(running, wanted)
 
 
@@ -2020,7 +2013,6 @@ async def _live_draft_profile(
     profile: SoundProfile,
     *,
     expected_dsp_write_epoch: str,
-    library_path: str | Path | None = None,
     config_dir: str | Path,
     profile_path: str | Path | None = None,
     camilla_factory: Callable[[], Any] = _camilla,
@@ -2031,6 +2023,10 @@ async def _live_draft_profile(
     config-file pointer change, and no shared apply-state mutation. The
     durable Save/Apply path remains `_apply_profile`, which writes a
     validated YAML file and records rollback state.
+
+    Returns only `live_status` and `dsp_write_epoch` — the browser reads
+    nothing else from this response (`runLiveDraft` in
+    `deploy/assets/sound-profile/js/main.js`).
     """
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
@@ -2062,62 +2058,19 @@ async def _live_draft_profile(
     except AttributeError:
         loader = None
 
-    def _live_payload(
-        *,
-        status: str,
-        method: str,
-        current_epoch: str,
-        room_peq_count: int = 0,
-        active_config_path: str | None = None,
-    ) -> dict[str, Any]:
-        payload = _state_payload(
-            profile,
-            library_path=library_path,
-            include_library=library_path is not None,
-        )
-        payload.update(
-            {
-                "live_status": status,
-                "live_method": method,
-                "dsp_write_epoch": current_epoch,
-                "active_config_path": active_config_path,
-                "preserved_room_peqs": room_peq_count,
-                "sound_filter_count": sound_filter_count,
-            }
-        )
-        if status == "live":
-            payload.update(
-                {
-                    "audition_mode": "draft",
-                    "audition_profile": profile.to_dict(),
-                }
-            )
-        return payload
+    def _live_payload(*, status: str, current_epoch: str) -> dict[str, Any]:
+        return {"live_status": status, "dsp_write_epoch": current_epoch}
 
-    def _unavailable(
-        reason: str,
-        *,
-        current_epoch: str,
-        error: Exception | None = None,
-    ) -> dict[str, Any]:
+    if loader is None:
+        current_epoch = dsp_write_epoch()
         _log_live_draft_unavailable(
-            reason=reason,
+            reason="active_config_raw_unavailable",
             output_trim_db=output_trim_db,
             room_peq_count=0,
             sound_filter_count=sound_filter_count,
-            error=error,
+            error=None,
         )
-        return _live_payload(
-            status="unavailable",
-            method=reason,
-            current_epoch=current_epoch,
-        )
-
-    if loader is None:
-        return _unavailable(
-            "active_config_raw_unavailable",
-            current_epoch=dsp_write_epoch(),
-        )
+        return _live_payload(status="unavailable", current_epoch=current_epoch)
 
     async with dsp_writer_lock(config_path, source="sound_live_draft"):
         current_epoch = dsp_write_epoch()
@@ -2129,11 +2082,7 @@ async def _live_draft_profile(
                 expected_epoch=str(expected_dsp_write_epoch),
                 current_epoch=str(current_epoch),
             )
-            return _live_payload(
-                status="stale",
-                method="skipped_stale_epoch",
-                current_epoch=current_epoch,
-            )
+            return _live_payload(status="stale", current_epoch=current_epoch)
 
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
@@ -2163,13 +2112,7 @@ async def _live_draft_profile(
                 sound_filter_count=sound_filter_count,
                 error=e,
             )
-            return _live_payload(
-                status="unavailable",
-                method=f"{method}_failed",
-                current_epoch=current_epoch,
-                room_peq_count=result.room_peq_count,
-                active_config_path=current_path,
-            )
+            return _live_payload(status="unavailable", current_epoch=current_epoch)
 
         log_event(
             logger,
@@ -2186,13 +2129,7 @@ async def _live_draft_profile(
             active_anchor=str(current_path),
             epoch=str(current_epoch),
         )
-        return _live_payload(
-            status="live",
-            method=method,
-            current_epoch=current_epoch,
-            room_peq_count=result.room_peq_count,
-            active_config_path=current_path,
-        )
+        return _live_payload(status="live", current_epoch=current_epoch)
 
 
 async def _load_profile_config(
@@ -6225,7 +6162,6 @@ def _make_handler(
                             _live_draft_profile(
                                 profile,
                                 expected_dsp_write_epoch=expected_epoch,
-                                library_path=library_path,
                                 config_dir=config_dir,
                                 profile_path=profile_path,
                                 camilla_factory=camilla_factory,

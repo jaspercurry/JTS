@@ -4,28 +4,18 @@
 
 """Whether one live preference-EQ edit must duck the fader.
 
-CamillaDSP applies every config it is handed through one diff of its own
-(``config_diff`` in its ``config/utils.rs``): a changed ``devices`` block,
-``pipeline`` or ``mixers`` section (``processing.rs`` rebuilds on a mixer
-change too), or a filter whose KIND changed (``Biquad`` to ``Conv``) rebuilds
-the filter group and resets every filter's state;
-anything else — a biquad's ``type``, ``freq``, ``q`` or ``gain`` alike — is
-written into the running filters in place, coefficients recomputed and state
-kept. Only the rebuild can step the graph's gain by tens of dB at an unchanged
-fader or tear the waveform, so only the rebuild is worth the ~0.85 s duck that
-:meth:`jasper.camilla.CamillaController._graph_mutation` brackets it with.
-
-This module asks the same question by the same rule, so an edit is ducked
-exactly when CamillaDSP will rebuild. It is a comparison of the RUNNING graph
-against the WANTED one, never a caller declaring its own change safe
-(ADR-0177, and why #3309 was rejected). See ADR-0211.
+An edit ducks exactly when CamillaDSP will rebuild its pipeline (a changed
+``devices``, ``pipeline`` or ``mixers`` section, a changed filter set, or a
+filter whose kind changed); a change confined to filters' ``parameters`` is
+written in place and does not. Decided by comparing the RUNNING graph against
+the WANTED one, never by a caller declaring its own change safe (ADR-0177).
+See ADR-0211 for the CamillaDSP behaviour this mirrors.
 
 Both sides must be CamillaDSP's own normalization of a config
 (:meth:`~jasper.camilla.CamillaController.get_active_config_raw` and
-:meth:`~jasper.camilla.CamillaController.normalize_config_raw`), never an
-emitter's raw text: the running readback is a default-filled superset of what
-JTS wrote, so comparing against the emitted bytes would report a structural
-difference on every edit and duck every one.
+:meth:`~jasper.camilla.CamillaController.normalize_config_raw`): the running
+readback is a default-filled superset of what JTS wrote, so the emitted bytes
+would differ structurally on every edit.
 """
 
 from __future__ import annotations
