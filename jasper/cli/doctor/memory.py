@@ -24,6 +24,8 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from ...active_speaker.bundles import sessions_dir
+from ...active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...memory_policy import memory_headroom_thresholds
 from ...wake_events import (
@@ -573,6 +575,34 @@ def check_wake_events_storage() -> CheckResult:
             "check the ring reaper (journalctl -u jasper-voice | grep "
             "wake_events) or lower the cap."
         ),
+    )
+
+
+@doctor_check(order=42.35, group="memory")
+def check_active_speaker_storage() -> CheckResult:
+    """Read-only size disclosure for the two active-speaker evidence stores.
+
+    Disclosure, not a warning: neither store has an enforced byte budget.
+    Session storage is bundle-capped and evicts its own oldest complete
+    bundles (``bundles.enforce_retention``); the campaign home
+    (``jasper-round-bank``'s output) never evicts at all and is
+    operator-pruned. So there is no threshold an operator could act on — only
+    the number, and where to go and delete rounds if it has grown."""
+    parts = []
+    for label, path in (
+        ("sessions", sessions_dir()),
+        ("campaigns", DEFAULT_CAMPAIGN_ROOT),
+    ):
+        if not path.is_dir():
+            parts.append(f"{label} 0 MiB ({path} absent)")
+            continue
+        total, truncated = _bounded_dir_size(path)
+        floor = "≥" if truncated else ""
+        parts.append(f"{label} {floor}{total / (1024 * 1024):.0f} MiB under {path}")
+    return CheckResult(
+        "active-speaker storage",
+        "ok",
+        "; ".join(parts) + " — operator-pruned; remove a banked round to reclaim",
     )
 
 
