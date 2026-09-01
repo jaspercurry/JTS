@@ -917,6 +917,23 @@ nothing on its own; what is published is its distance from the direct arrival. I
 is `null` — never `0.0` — on a capture whose window was capped at the search
 ceiling.
 
+**`entanglement_floor_hz` is the ROOM's floor, and it is not the trusted
+floor.** Both ride the same disclosure; what makes them two different numbers
+is "There are TWO floors, and the lower one is the room's" in
+[`tuning-methodology.md`](tuning-methodology.md).
+
+**Read `entanglement_floor_source` FIRST, and read `unknown` as unknown.**
+`measured_reflection` means the gate's own reflection timed the bounce.
+`declared_geometry` means an operator handed over the rig's dimensions — a
+number that is only as good as the tape measure, and never a measurement.
+`unknown` means neither was available and `entanglement_floor_hz` is `null`;
+it is the answer you should expect on a rig whose first bounce lands while the
+direct sound is still decaying (#3502). Where the floor IS known, each spec
+band publishes `room_entangled_below_hz` — the top of its own
+entangled sub-span, `null` when the band sits wholly above the floor. The band
+still grades and still passes or fails exactly as it did; what the field adds is
+the reservation on how far up that verdict is a claim about the speaker.
+
 **The reflector path is the ladder's tau times the speed of sound.** The
 `reflections` block publishes `reflector_path_distance_m` alongside the
 `tau_ladder_us` it converted and the `speed_of_sound_m_s` it used, so the

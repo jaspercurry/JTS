@@ -243,6 +243,99 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
     assert d.ledger_count == 0
 
 
+# ---------- the second floor: the room's, not the window's ----------------
+
+
+@pytest.mark.parametrize(
+    ("block", "declared_first_bounce_s", "expected_source", "expected_t_s"),
+    [
+        # A measured reflection times the bounce AND proves it exists, so it
+        # wins over the operator's declared geometry.
+        (
+            {"floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 10.0, "first_reflection_ms": 12.5},
+            0.010,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
+            0.0025,
+        ),
+        # Nothing found to time (this rig class, always): the declared
+        # geometry is the floor, labelled as declared.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND, "window_ms": 7.0},
+            0.0025,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.0025,
+        ),
+        # A measured bound whose arrival did not survive into the record has
+        # nothing to divide, so it falls through rather than inventing one.
+        (
+            {"floor_source": gating.FLOOR_MEASURED, "direct_peak_ms": 10.0},
+            0.005,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.005,
+        ),
+        # The same measured block stamped with the schema that reports an
+        # arrival: the version is read, not assumed.
+        (
+            {"schema_version": 2, "floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 10.0, "first_reflection_ms": 12.5},
+            None,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
+            0.0025,
+        ),
+        # Schema 1 put the reflection's ONSET in ``first_reflection_ms``, an
+        # earlier time than the arrival the floor divides by. It times
+        # nothing, so a v1 block falls through to the declared geometry...
+        (
+            {"schema_version": 1, "direct_peak_ms": 10.4,
+             "first_reflection_ms": 10.9, "window_ms": 4.0,
+             "f_valid_floor_hz": 250.0, "floor_source": gating.FLOOR_MEASURED},
+            0.005,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.005,
+        ),
+        # ... and to unknown when there is none, never to measured.
+        (
+            {"schema_version": 1, "direct_peak_ms": 10.4,
+             "first_reflection_ms": 10.9, "window_ms": 4.0,
+             "f_valid_floor_hz": 250.0, "floor_source": gating.FLOOR_MEASURED},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # Neither source: unknown, and no number stands in for one.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # A non-physical declared bounce is not a floor either.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            0.0,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+    ],
+)
+def test_entanglement_floor_prefers_measured_then_declared_then_unknown(
+    block, declared_first_bounce_s, expected_source, expected_t_s
+):
+    """The floor is ``TRUSTED_FLOOR_MULTIPLIER / t_first_bounce`` off whichever
+    source is available, and the source is always said out loud (#3502)."""
+    d = gate_disclosure.build_gate_disclosure(
+        block, declared_first_bounce_s=declared_first_bounce_s
+    )
+    assert d.entanglement_floor_source == expected_source
+    if expected_t_s is None:
+        assert d.entanglement_floor_hz is None
+    else:
+        assert d.entanglement_floor_hz == pytest.approx(
+            gating.TRUSTED_FLOOR_MULTIPLIER / expected_t_s
+        )
+
+
 # ---------- the copy: #1966's fix at the surface --------------------------
 
 
@@ -285,6 +378,23 @@ def test_describe_gate_distinguishes_ungateable_and_exempt_from_a_clean_gate():
     for text in (ungateable, exempt):
         assert "reflection measured" not in text
         assert "no reflection found" not in text
+    # A near-field capture sits a few centimetres from the driver, so it has
+    # no room floor worth stating; a capture the gate merely could not use
+    # still does.
+    assert "entanglement" not in exempt
+
+
+def test_a_capture_the_gate_could_not_use_still_discloses_the_rooms_floor():
+    block = {"floor_source": None}
+    d = gate_disclosure.build_gate_disclosure(
+        block, declared_first_bounce_s=0.0025
+    )
+    assert d.source_of_bound is None
+    assert d.entanglement_floor_hz == pytest.approx(1000.0)
+    assert d.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_DECLARED
+    text = gate_disclosure.describe_gate(block, declared_first_bounce_s=0.0025)
+    assert "could not be gated" in text
+    assert "1000 Hz" in text
 
 
 def test_describe_gate_discloses_both_floors_and_never_confuses_them():
@@ -293,6 +403,32 @@ def test_describe_gate_discloses_both_floors_and_never_confuses_them():
     text = gate_disclosure.describe_gate(fragment)
     assert "valid above 143 Hz" in text
     assert "trusted above 357 Hz" in text
+
+
+def test_describe_gate_says_all_three_floors_and_never_one_instead_of_another():
+    """#3495 at the surface: the window's two floors stay published whether or
+    not the room's is known, and the room's is a THIRD field beside them."""
+    ir = _bandlimited_ir(2500.0, 18000.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    unknown = gate_disclosure.build_gate_disclosure(fragment)
+    declared = gate_disclosure.build_gate_disclosure(
+        fragment, declared_first_bounce_s=0.0025
+    )
+    for d in (unknown, declared):
+        assert d.f_min_hz is not None
+        assert d.f_trusted_hz is not None
+    assert unknown.entanglement_floor_hz is None
+    assert unknown.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    assert declared.entanglement_floor_hz == pytest.approx(1000.0)
+    assert declared.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_DECLARED
+    assert declared.entanglement_floor_hz != declared.f_trusted_hz
+
+    declared_text = gate_disclosure.describe_gate(
+        fragment, declared_first_bounce_s=0.0025
+    )
+    unknown_text = gate_disclosure.describe_gate(fragment)
+    assert "declared geometry" in declared_text
+    assert unknown_text and unknown_text != declared_text
 
 
 def test_a_small_delta_reads_differently_depending_on_the_bound():
