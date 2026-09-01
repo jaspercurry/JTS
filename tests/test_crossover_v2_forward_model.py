@@ -13,6 +13,7 @@ the two predictors of one physical quantity have drifted.
 
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +37,9 @@ from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_complex
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.analysis import crossover_null_depth_db
-from jasper.cli.forward_model import main as cli_main
+from jasper.cli.forward_model import ACCEPTANCE_RUNS, build_parser, main as cli_main
+
+from tests.crossover_v2_banked_round import bank_measure_round, bank_verify_round
 
 FC_HZ = 1800.0
 BAND = (200.0, 12000.0)
@@ -455,6 +458,59 @@ def test_the_door_predicts_from_the_bank_and_plays_nothing(
     assert prediction["take_path"].endswith("positions/p0_a01.json")
     assert len(prediction["predicted_db"]) == len(prediction["freqs_hz"]) == freqs.size
     assert prediction["sum_band_hz"] == [BAND[0], BAND[1]]
+
+
+def test_the_acceptance_runs_worked_example_runs_on_what_the_flow_banks(
+    tmp_path, capsys,
+) -> None:
+    """Issue #3482: ``verify-delta``'s own worked example must be runnable.
+
+    ``ACCEPTANCE_RUNS`` run 1 is the model's entry gate, and it describes a
+    two-round operation — predict from the round that banked the SOLOS, delta
+    against the round that MEASURED the verify sum — while the verb took one
+    round for both halves. No banked round has both: stage 1 walks the solos
+    and stage 2 opens a new bundle for the verify. So the gate was
+    unexecutable on every corpus the flow can produce, on every rig.
+
+    Driven through ``main`` with the flags the help prescribes, over the two
+    round shapes the shared real-shape builder banks.
+    """
+    basis = bank_measure_round(tmp_path)
+    measured = bank_verify_round(tmp_path)
+
+    code = cli_main([
+        "verify-delta", str(basis), "--measured-round", str(measured),
+        "--residual-delay-us", "-100",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["status"] == "compared"
+    assert payload["basis_round_dir"] == str(basis)
+    assert payload["measured_round_dir"] == str(measured)
+    assert payload["predicted_minus_measured"]["compared_points"] > 0
+
+
+def test_every_flag_the_acceptance_runs_prescribe_is_a_flag_the_parser_has(
+) -> None:
+    """The worked example and the parser cannot drift apart again.
+
+    ``ACCEPTANCE_RUNS`` is the model's entry gate, and it shipped naming an
+    invocation the tool could not execute. Structural, not prose: the option
+    tokens are lifted out of the acceptance text and matched against the
+    parser's own option strings, so the pin holds however the sentences around
+    them are reworded.
+    """
+    parser = build_parser()
+    options = {
+        string
+        for action in parser._subparsers._group_actions[0].choices["verify-delta"]._actions
+        for string in action.option_strings
+    }
+    prescribed = set(re.findall(r"--[a-z][a-z0-9-]*", ACCEPTANCE_RUNS))
+
+    assert prescribed
+    assert prescribed <= options
 
 
 def test_a_bank_that_cannot_answer_refuses_as_an_output(tmp_path, capsys) -> None:

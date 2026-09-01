@@ -1712,9 +1712,11 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # grades CAPTURE and tracking health only (``crossover_v2_flow.
     # _set_verify_outcome``; its pass call site says "Absolute remains
     # independent"), so a crossover-region claim that missed its tolerance
-    # rides a clean ``pass`` — and the other way, an absent or non-numeric
-    # tracking max is an ``outcome`` fail whose integration claim reads
-    # ``not_evaluated``. It reads ``integration`` and ``absolute`` because a
+    # rides a clean ``pass`` — and the other way, an absent tracking max is an
+    # ``outcome`` pass whose integration claim reads ``not_evaluated``, which
+    # this union must not read as proved (#3487: a republished candidate has no
+    # measure round to track against, and ``tracking_passed`` stays ``None``).
+    # It reads ``integration`` and ``absolute`` because a
     # VERIFY grades no others: its one summed sweep leaves both per-branch
     # claims structurally ``not_evaluated`` (``CLAIM_NO_PER_BRANCH_CAPTURE``).
     # A state file with no claims block is a pre-R18 build and leaves

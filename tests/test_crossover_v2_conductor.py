@@ -11476,6 +11476,66 @@ def test_not_evaluated_claims_never_gate_and_keep_the_kernels_own_reason():
     assert absolute["reason"] == "no_trusted_crossover_region"
 
 
+def test_an_ungradeable_tracking_claim_discloses_instead_of_refusing():
+    """#3487, witnessed live: the documented recovery could not be receipted.
+
+    ``POST /crossover/v2/republish`` by fingerprint then ``--apply`` is the
+    runbook's own way back from any restore, including one the adoption table
+    got wrong (#3485). But a republished candidate has no measure round behind
+    it, so the verify's TRACKING claim has nothing to track against and
+    ``max_db_notch_excluded`` is absent. The verdict collapsed that into
+    ``verify_out_of_tolerance`` and refused index 1 four times — the whole retry
+    budget, four rounds of audible playback — while the ABSOLUTE claim passed at
+    1.503 dB. No capture was ever accepted, so no round graded and no receipt
+    could mint: every rig, every republish.
+
+    Same principle as the absolute claim's own pin above, pointed at the other
+    half of §7's third claim — *refusing on a measurement nobody made is the
+    same dishonesty pointed the other way*. R18's three-valued vocabulary
+    already had the honest word and the claim record was already using it; only
+    the gate was still two-valued. It is also the republish door's own declared
+    contract, restored: ``handle_v2_republish`` clears ``verify_priors`` on
+    purpose and says the consequence is that *a post-apply VERIFY of a
+    republished candidate grades INDETERMINATE, never a false pass* — which a
+    refusal is not either.
+
+    The subject is the GATE's answer, which is what carried the wrong name. What
+    the round then makes of an unavailable realization is the trust axis's own
+    question and has its own pins.
+    """
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=None, verify_absolute=_absolute(1.503),
+    )
+    _run_phase(c, 3, 3)
+
+    assert c.verify_outcome == "pass"
+    assert c.verify_code is None
+    assert c.verify_claims["integration"]["status"] == CLAIM_NOT_EVALUATED
+    # Never a pass either: the claim is on the record as ungraded, and the
+    # number it would have carried stays absent rather than becoming 0.0.
+    assert c.verify_claims["integration"]["max_db"] is None
+    assert c.verify_claims["absolute"]["status"] == CLAIM_PASS
+
+
+def test_a_tracking_claim_that_missed_its_tolerance_still_refuses():
+    """The control for the pin above, and the reason the refusal keeps its name.
+
+    ``verify_out_of_tolerance`` now fires only where a tracking max was
+    MEASURED and cleared the tolerance — which is what the code has always
+    said, and what it did not always mean.
+    """
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
+
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "verify_out_of_tolerance"
+    assert c.verify_claims["integration"]["status"] == CLAIM_FAIL
+
+
 def test_per_branch_claims_are_named_not_evaluated_never_silently_claimed():
     """§7 names three claims; VERIFY plays ONE summed sweep, so two have no
     evidence. R18 does not widen the capture plan — it refuses to let

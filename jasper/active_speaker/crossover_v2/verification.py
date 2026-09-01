@@ -1089,8 +1089,8 @@ def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
     for which classes restore, and
     :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
-    one that is spared — a ``model_error`` pointing entirely quieter than
-    commanded is a quality miss the series keeps and learns from.
+    ones that are spared — a realized-vs-commanded miss pointing entirely
+    quieter than commanded is a quality miss the series keeps and learns from.
     """
 
     if not verdict or verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:

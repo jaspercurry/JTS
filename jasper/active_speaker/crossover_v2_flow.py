@@ -7773,12 +7773,10 @@ class CrossoverV2Session:
         ``out_of_tolerance`` with or without the guard, and ``-inf`` never
         reaches here at all.)
 
-        It is unreachable for NaN today, and only by an upstream accident this
-        method must not depend on: the caller gates on
-        ``max_db > VERIFY_TOLERANCE_DB``, which is ``False`` for ``nan``, so a
-        NaN grade takes the PASS branch instead of arriving here. That is a
-        property of one comparison in one caller, not a contract — and the
-        answer it protects is the one that would be wrong.
+        NaN reaches it: the caller gates on the integration claim, whose own
+        ``max <= tolerance`` is ``False`` for ``nan``, so an unmeasurable grade
+        is a ``fail`` rather than the pass an earlier reading of the raw number
+        gave it (#3487).
 
         Clearing the pair is the second half: a value nothing can agree with
         must not become the thing a later attempt agrees WITH either.
@@ -7929,12 +7927,16 @@ class CrossoverV2Session:
         # notch-excluded) and the pre-clamp ``*_full_band`` numbers still
         # travel in the persisted evidence as diagnostic fields only.
         max_db = tracking.get("max_db_notch_excluded")
-        if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
+        # Gated on the CLAIM just recorded, not on a second reading of the same
+        # number: R18's vocabulary is three-valued and ``not_evaluated`` is
+        # first-class, so a claim nobody could grade must not read as one that
+        # failed (#3487). A republished candidate has no measure round behind
+        # it — ``handle_v2_republish`` clears ``verify_priors`` on purpose and
+        # states the consequence: such a VERIFY grades INDETERMINATE, which a
+        # refusal is not.
+        if self._verify_claims["integration"]["status"] == CLAIM_FAIL:
             code = self._note_verify_mismatch(max_db)
             self._set_verify_outcome("fail", code, gate_record)
-            # Its own name: the integrity-screen branch above already binds a
-            # ``payload`` in this scope, and the two describe different
-            # captures' verdicts.
             # Its own name: the integrity-screen branch above already binds a
             # ``payload`` in this scope, and the two describe different
             # captures' verdicts.

@@ -31,6 +31,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES,
     DELTA_PROBE_MIN_QUIET_COVERAGE,
     DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB,
+    DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS,
     DELTA_PROBE_ROLLBACK_VERDICTS,
     DELTA_PROBE_SHORTFALL_GAIN_CEILING,
     DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
@@ -2139,7 +2140,7 @@ def test_an_unanchored_louder_map_is_not_handed_the_quieter_only_lenience():
     is right for a hazard; applied to the fence it would mean an unanchored map
     that reported nothing louder — because nothing looked — receives #2559's
     quieter-only lenience and KEEPS, with
-    ``model_error_quieter_than_commanded`` banked on a round measured louder.
+    ``realized_quieter_than_commanded`` banked on a round measured louder.
 
     So an unanchored map falls back to the model's departure, which is exactly
     what this function read before D1.
@@ -2195,31 +2196,32 @@ def test_a_boost_over_its_bound_never_defers_even_when_stated_alone():
 
 
 @pytest.mark.parametrize(
-    ("verdict", "why"),
+    ("verdict", "defers"),
     [
-        (
-            VERDICT_LEVEL_DEPENDENT_SHORTFALL,
-            "a claim about a driver's headroom, not about shape",
-        ),
-        (
-            VERDICT_SPATIALLY_COSTLY,
-            "a claim about the room's own spread, with no model between the "
-            "two measurements",
-        ),
+        (VERDICT_MODEL_ERROR, True),
+        (VERDICT_LEVEL_DEPENDENT_SHORTFALL, True),
+        (VERDICT_SPATIALLY_COSTLY, False),
     ],
 )
-def test_no_other_rollback_verdict_defers(verdict, why):
-    """The narrowing is one class wide.
+def test_only_the_realized_vs_commanded_classes_defer(verdict, defers):
+    """The narrowing follows the CLAIM, not the verdict name (#3485).
 
-    Neither of these is the shape claim the owner ruled on, so neither may
-    borrow the lenience it granted.
+    Shape and scale are the same sentence — *the emitted filters did not do what
+    the fit's model of them says* — so a quieter-pointing shortfall borrows the
+    lenience the owner granted the quieter-pointing shape miss. The spread claim
+    does not: it differences two MEASUREMENTS with no model between them, which
+    is the measured regression the adoption table restores ON.
     """
     stub = SimpleNamespace(
         verdict=verdict,
         realized_louder_than_commanded=False,
         boost_over_declared_bound=False,
     )
-    assert seam_rollback_deferral(stub) == "", why
+    expected = SEAM_DEFERRED_QUIETER_THAN_COMMANDED if defers else ""
+    assert seam_rollback_deferral(stub) == expected
+    assert set(DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS) <= set(
+        DELTA_PROBE_ROLLBACK_VERDICTS
+    )
 
 
 @pytest.mark.parametrize(

@@ -56,8 +56,11 @@ from jasper.active_speaker.crossover_v2.contracts import (
 )
 from jasper.active_speaker.delta_probe import (
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+    VERDICT_LEVEL_DEPENDENT_SHORTFALL as DELTA_VERDICT_LEVEL_SHORTFALL,
     VERDICT_LEVEL_MISMATCH as DELTA_VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED as DELTA_VERDICT_MATCHED,
+    VERDICT_MODEL_ERROR as DELTA_VERDICT_MODEL_ERROR,
+    VERDICT_SPATIALLY_COSTLY as DELTA_VERDICT_SPATIALLY_COSTLY,
 )
 from jasper.active_speaker.crossover_v2 import verification as verification_module
 from jasper.active_speaker.crossover_v2.verification import (
@@ -829,6 +832,7 @@ class _Probe:
         boost_over_declared_bound=False,
         boost_overshoot_db=None,
         safety_anchored=True,
+        realized_louder_than_commanded=False,
     ):
         self.verdict = verdict
         self.reason = reason
@@ -836,6 +840,10 @@ class _Probe:
         self.residual_offset_tolerance_db = residual_offset_tolerance_db
         self.boost_over_declared_bound = boost_over_declared_bound
         self.boost_overshoot_db = boost_overshoot_db
+        # Which way the graded bins missed — the discriminator every
+        # directional rule in this subsystem turns on, and the one
+        # ``seam_rollback_deferral`` reads.
+        self.realized_louder_than_commanded = realized_louder_than_commanded
         # Whether the realized-energy check ran (series-2 D1). Defaults to the
         # round that HAD a pre-apply capture, because that is the ordinary
         # shape every other assertion in this file means; the unanchored one is
@@ -1227,6 +1235,63 @@ def test_the_delta_probe_verdict_never_moves_the_quality_STATUS():
     assert any(
         t.startswith("delta_probe:") for t in band_scoped.evidence["targets"]
     )
+
+
+@pytest.mark.parametrize(
+    ("probe_verdict", "louder", "restores"),
+    [
+        (DELTA_VERDICT_LEVEL_SHORTFALL, False, False),
+        (DELTA_VERDICT_LEVEL_SHORTFALL, True, True),
+        (DELTA_VERDICT_MODEL_ERROR, False, False),
+        (DELTA_VERDICT_MODEL_ERROR, True, True),
+        (DELTA_VERDICT_SPATIALLY_COSTLY, False, True),
+    ],
+)
+def test_a_quieter_realized_vs_commanded_miss_keeps_a_measured_acceptable_round(
+    probe_verdict, louder, restores
+):
+    """#3485, witnessed live on the day-2 recommissioning campaign.
+
+    The campaign's flattest state — every spec band inside tolerance, benefit
+    improved past its margin, realization matched, trust trusted, safety safe,
+    nothing realized louder than commanded — was RESTORED onto a
+    measured-FAILING graph because the delta probe returned
+    ``level_dependent_shortfall`` over a band that pooled a deliberate +2 dB
+    realizability PROBE with a shelf increment. ``docs/measurement-loop-doctrine``
+    §3: *a class that retreats from a measured-acceptable state on realized !=
+    commanded alone is a bug against this principle*, and *realized-versus-
+    predicted mismatch is a learning signal, never by itself a reason to
+    retreat*.
+
+    **Direction stays the discriminator, which is why the parametrization has a
+    ``louder`` column.** The same class pointing LOUDER than commanded is energy
+    nobody asked for and still comes off — the 2026-08-15 shape axis rule,
+    unchanged. ``spatially_costly`` is the second control: it differences two
+    MEASUREMENTS with no model between them, so it is the measured regression
+    §3 restores ON, and it still does whichever way it points.
+    """
+
+    quality = _quality(probe=_Probe(
+        verdict=probe_verdict,
+        reason="realized_short_of_commanded",
+        realized_louder_than_commanded=louder,
+    ))
+    decision = _adopt(quality=quality)
+
+    if restores:
+        assert quality.status is QualityStatus.REGRESSED
+        assert quality.evidence["probe_rollback_class"] == probe_verdict
+        assert decision.outcome is AdoptionOutcome.RESTORE
+        assert decision.row == ADOPTION_ROW_RESTORE_REGRESSION
+        return
+    assert quality.status is QualityStatus.PASSED
+    assert quality.reason == ADOPTION_REALIZED_AND_IMPROVED
+    assert quality.evidence["probe_rollback_class"] == ""
+    assert decision.outcome is AdoptionOutcome.KEEP
+    assert decision.row == ADOPTION_ROW_KEEP
+    # …and the probe's finding is still on the round, as the learning signal
+    # §3 calls it: banked, chased next round, deciding nothing here.
+    assert "delta_probe:realized_short_of_commanded" in quality.evidence["targets"]
 
 
 def test_the_quality_status_is_2291s_own_table_unchanged_in_what_it_reads():

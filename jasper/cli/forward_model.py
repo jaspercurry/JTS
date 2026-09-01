@@ -13,9 +13,13 @@ existing MEASURE bank answers both today.
     magnitude on the bank's own grid.
 
 ``verify-delta``
-    The same prediction over a BANKED ROUND, deltaed against the VERIFY sum
-    that round measured (ticket 4.5). Additive evidence: the delta is facts —
-    band, points, level offset, per-bin dB, max and RMS — and no verdict.
+    The same prediction over a BANKED ROUND, deltaed against a banked VERIFY
+    sum (ticket 4.5). The two halves come from two rounds, because the flow
+    banks them in two — a measure stage walks the solos, a verify stage
+    measures the sum, in separate bundles — so ``--measured-round`` names the
+    second and the output discloses both. Additive evidence: the delta is
+    facts — band, points, level offset, per-bin dB, max and RMS — and no
+    verdict.
 
 **A refusal is an output, not an error.** A bundle with no take carrying both
 solos cannot support a prediction, and the sentence saying so is printed from
@@ -73,11 +77,18 @@ operator acceptance (run against the owner's banked captures, NOT CI tests):
   1. Postdict the flat campaign's r8 regression. r8 applied the measured
      -100 us inter-driver delay under EQ held verbatim from the incumbent
      tune, and the 5-seat verify came back a REGRESSION: -3.1 dB at the
-     crossover region, auto-restored. Point `verify-delta` at the banked r7
-     round with the incumbent filters held and --residual-delay-us set to
-     the delay r8 added; the model passes if the predicted delta reproduces
-     that crossover-region dip (~-3 dB) rather than predicting an
-     improvement. See historical/flat-campaign-2026-08-31.md section 5.
+     crossover region, auto-restored. The two halves sit in two banked
+     rounds, because the flow banks them that way -- a measure-stage round
+     walks the per-driver solos and a verify-stage round measures the sum:
+
+       jasper-forward-model verify-delta <r7-measure-round> \\
+           --measured-round <r8-verify-round> \\
+           --candidate-json <incumbent-filters.json> \\
+           --residual-delay-us -100
+
+     The model passes if the predicted delta reproduces that
+     crossover-region dip (~-3 dB) rather than predicting an improvement.
+     See historical/flat-campaign-2026-08-31.md section 5.
 
   2. Track the C5 -> final measured delta. C5 is the blind-run 22-filter
      starting chain; the final tune is 24 filters. Predict each chain over
@@ -174,18 +185,26 @@ def _cmd_verify_delta(args: argparse.Namespace) -> int:
         candidate = _candidate(args)
     except (OSError, ValueError) as exc:
         return _refused(REFUSE_CANDIDATE, f"{args.candidate_json}: {exc}")
+    measured_dir = args.measured_round or args.round_dir
     try:
         banked = load_banked_round(Path(args.round_dir))
+        measured = (
+            banked if measured_dir == args.round_dir
+            else load_banked_round(Path(measured_dir))
+        )
     except RoundViewsError as exc:
         return _refused(REFUSE_NO_DELTA, str(exc))
 
     result = forward_model_verify_delta(
-        banked, candidate, phase=args.phase, position_deg=args.position_deg
+        banked, candidate, measured=measured,
+        phase=args.phase, position_deg=args.position_deg,
     )
     if result.delta is None:
         return _refused(REFUSE_NO_DELTA, result.reason)
     print(json.dumps(
-        {"status": "compared", "round_dir": str(banked.round_dir),
+        {"status": "compared",
+         "basis_round_dir": result.basis_round_dir,
+         "measured_round_dir": result.measured_round_dir,
          "predicted_minus_measured": dict(result.delta)},
         indent=2, sort_keys=True,
     ))
@@ -194,7 +213,8 @@ def _cmd_verify_delta(args: argparse.Namespace) -> int:
         f"{result.delta['compared_band_hz'][0]:g}-"
         f"{result.delta['compared_band_hz'][1]:g} Hz: "
         f"max |delta| {result.delta['max_abs_db']:.2f} dB, "
-        f"RMS {result.delta['rms_db']:.2f} dB",
+        f"RMS {result.delta['rms_db']:.2f} dB "
+        f"(solos {result.basis_round_dir}, verify {result.measured_round_dir})",
         file=sys.stderr,
     )
     return EXIT_OK
@@ -257,12 +277,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     delta = sub.add_parser(
         "verify-delta",
-        help="the predicted sum deltaed against the round's measured VERIFY sum",
+        help="the predicted sum deltaed against a banked round's measured "
+             "VERIFY sum",
     )
     delta.add_argument(
         "round_dir",
-        help="a banked round directory (the bank-crossover-round.sh output "
-             "holding bundle/ and state.json)",
+        help="the banked round whose per-driver solos are the PREDICTION "
+             "BASIS (a bank-crossover-round.sh output holding bundle/ and "
+             "state.json) — a measure-stage round",
+    )
+    delta.add_argument(
+        "--measured-round",
+        default=None,
+        help="the banked round whose VERIFY sum is the MEASURED half — a "
+             "verify-stage round. Defaults to round_dir, which only answers "
+             "for a corpus whose rounds carry both halves; the two-stage flow "
+             "banks the solos and the verify in separate rounds",
     )
     _add_common(delta)
     delta.set_defaults(func=_cmd_verify_delta)

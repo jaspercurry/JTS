@@ -53,6 +53,12 @@ the only transform left anywhere here is the ``fraction=1`` residual
       design-draft.json              active-speaker design draft (optional)
       applied-profile.json           applied baseline profile SSOT (optional)
 
+It comes in TWO shapes, because the two-stage flow banks one bundle per stage:
+a MEASURE round (per-driver solos, the entry baseline, the lateral walk; no
+cloud group and so no cloud seats and no graded spec) and a VERIFY round (the
+verify capture and the cloud group). :func:`load_banked_round` reads either;
+:class:`BankedRound` says which views need which.
+
 **A seat's BEARING is read, and the position id alone is no longer enough.**
 Every view here keys a position by its stable ``position_id``
 (``f"{phase}_{index:02d}"``, assigned once by the walk driver), because that is
@@ -197,19 +203,45 @@ class BankedRound:
     """One banked round, read once, ready for every view below.
 
     ``report`` carries the round's own grading frame (trusted floor,
-    published exclusion intervals, and — when the persisted ``spec`` block
-    has bands — the full per-band evaluation, needed for
-    :func:`repeatability_spread`'s pooled figures). ``positions`` is built
+    published exclusion intervals, and the full per-band evaluation, needed
+    for :func:`repeatability_spread`'s pooled figures). ``positions`` is built
     directly from the evidence packet's ``positions`` block; nothing here
     re-parses ``cloud_verify.json``.
+
+    **Both are ABSENT on a round that banked no cloud group, and that is a
+    round SHAPE rather than a defect** (#3478). Only the verify stage banks a
+    cloud group (``capture_plan.STAGE1_INCLUDES_CLOUD_MEASURE`` is ``False``),
+    so a measure-stage round — the only shape that produces an entry baseline
+    — has an empty ``positions`` and a ``None`` ``report``. The two accessors
+    below are where a view that NEEDS them says so; a view that does not
+    (:func:`entry_state_grade`, the frequency projector over :attr:`packet`)
+    reads the round it was given.
     """
 
     round_dir: Path
     session_dir: Path
     positions: tuple[PositionCurve, ...]
     curve_grid_hz: np.ndarray
-    report: FlatSpecReport
+    report: FlatSpecReport | None
     packet: Mapping[str, Any] = field(repr=False)
+
+    @property
+    def graded_report(self) -> FlatSpecReport:
+        """The round's own graded spec, or :class:`RoundViewsError`."""
+        if self.report is None:
+            raise RoundViewsError(
+                f"{self.round_dir}: evidence packet carries no graded spec"
+            )
+        return self.report
+
+    @property
+    def graded_positions(self) -> tuple[PositionCurve, ...]:
+        """The round's cloud seats, or :class:`RoundViewsError`."""
+        if not self.positions:
+            raise RoundViewsError(
+                f"{self.round_dir}: evidence packet carries no position evidence"
+            )
+        return self.positions
 
 
 def _bundle_session_dir(round_dir: Path) -> Path:
@@ -246,11 +278,15 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     """Read one ``bank-crossover-round.sh`` output directory into a
     :class:`BankedRound`.
 
-    Raises :class:`RoundViewsError` when the directory is not a usable
-    banked round — no bundle, no readable evidence packet, or a packet
-    carrying no position evidence / no graded spec. Every one of the four
-    views below needs both, so failing loudly here is more useful than four
-    separate partial failures downstream.
+    Raises :class:`RoundViewsError` when the directory is not a banked round
+    at all — no bundle, more than one session in it, or no readable evidence
+    packet.
+
+    **It does NOT judge what the round banked** — a loader-level "positions
+    and a graded spec, or nothing" refusal blocked the two views that need
+    neither on the only shape that reaches them (#3478, #3482). What a view
+    needs, the view says: :attr:`BankedRound.graded_report` and
+    :attr:`BankedRound.graded_positions`.
     """
     round_dir = Path(round_dir)
     session_dir = _bundle_session_dir(round_dir)
@@ -268,14 +304,10 @@ def load_banked_round(round_dir: Path) -> BankedRound:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
 
     positions_block = packet.get("positions") or {}
-    if not positions_block.get("available"):
-        raise RoundViewsError(f"{round_dir}: evidence packet carries no position evidence")
     spec_block = packet.get("spec") or {}
-    if not spec_block.get("bands"):
-        raise RoundViewsError(f"{round_dir}: evidence packet carries no graded spec")
-
-    grid = np.asarray(positions_block["curve_grid"].get("freqs_hz") or [], dtype=float)
-    smoothing = int(positions_block["curve_grid"].get("smoothing_fraction") or 0)
+    grid_block = positions_block.get("curve_grid") or {}
+    grid = np.asarray(grid_block.get("freqs_hz") or [], dtype=float)
+    smoothing = int(grid_block.get("smoothing_fraction") or 0)
     positions = tuple(
         PositionCurve(
             position_id=str(row.get("position_id") or ""),
@@ -297,10 +329,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
         for row in positions_block.get("positions") or []
         if row.get("magnitude_db")
     )
-    if not positions:
-        raise RoundViewsError(f"{round_dir}: every position row is missing its magnitude_db")
-
-    report = FlatSpecReport.from_dict(spec_block)
+    report = FlatSpecReport.from_dict(spec_block) if spec_block.get("bands") else None
     return BankedRound(
         round_dir=round_dir,
         session_dir=session_dir,
@@ -358,11 +387,8 @@ class EntryStateGrade:
     different mask over a different capture. Grading this curve through the
     round's post-apply exclusions would report deviations at bins nobody
     vouched for, and screen bins this capture's own gate never invalidated.
-    The floor and ceiling belong to the round: they are the span its post-apply
-    grade was taken over, and stating the before in a different span would make
-    the pair incomparable — which is the whole reason to grade the before.
-    :func:`_own_reference_db` already grades a foreign curve in the round's
-    frame for exactly this reason.
+    The floor and ceiling belong to the round, and :func:`_entry_frame` owns
+    both why and what a round that graded no after is stated in instead.
 
     ``round_ordinal`` / ``round_ordinal_epoch`` are the round this entry state
     belongs to and which epoch of the ordinal sequence that ordinal counts in,
@@ -458,6 +484,26 @@ def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
     return ordinal, _count(state.get("round_ordinal_epoch"))
 
 
+def _entry_frame(report: FlatSpecReport | None) -> tuple[int, float | None, float | None]:
+    """``(smoothing_fraction, trusted_floor_hz, trusted_ceiling_hz)`` for an
+    entry baseline — the round's own when it graded one, nothing when it did
+    not.
+
+    The frame is the ROUND's so a before and an after are stated over one span
+    (:class:`EntryStateGrade`). A round that banked no cloud group graded no
+    after, so there is no span for this before to be made comparable with, and
+    the honest frame is no frame: unclamped, on ``0`` — this module's own
+    spelling for *not attested* (:func:`verify_pose_curve` reads the same
+    ``0``). Nothing is inferred and nothing is defaulted to a literal; the
+    emitted report echoes both clamps as ``None`` on its face, which is
+    :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`'s own "not
+    stated", so the grade discloses which of the two frames produced it.
+    """
+    if report is None:
+        return 0, None, None
+    return report.smoothing_fraction, report.trusted_floor_hz, report.trusted_ceiling_hz
+
+
 def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
     """Grade the entry state this round measured before it applied anything.
 
@@ -468,10 +514,14 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
     re-spell it — and hands the arrays to the shipped
     :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`. Every number
     returned comes from that evaluator; see :class:`EntryStateGrade` for why
-    the frame is the round's and the mask is the take's.
+    the frame is the round's and the mask is the take's, and
+    :func:`_entry_frame` for what a round that graded no after is stated in.
 
-    ``packet["entry_baseline"]`` is indexed rather than fetched with a default,
-    on :func:`load_banked_round`'s own precedent for the blocks it requires:
+    **It requires no cloud group**, which is what makes it reachable at all:
+    the measure stage is the only stage that banks an entry baseline and the
+    only one that banks no cloud (#3478).
+
+    ``packet["entry_baseline"]`` is indexed rather than fetched with a default:
     the packet is DERIVED fresh on every read by a builder that always emits
     this block (present-and-``available: False`` is how it reports a round that
     banked no take), so a missing key is a corrupt packet and belongs in the
@@ -494,13 +544,14 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
             ENTRY_STATE_UNREADABLE,
             round_ordinal=ordinal, round_ordinal_epoch=epoch,
         )
+    smoothing_fraction, trusted_floor_hz, trusted_ceiling_hz = _entry_frame(banked.report)
     report = evaluate_flat_spec(
         np.asarray(baseline.curve.hz, dtype=float),
         np.asarray(baseline.curve.db, dtype=float),
         np.asarray(baseline.excluded, dtype=bool),
-        smoothing_fraction=banked.report.smoothing_fraction,
-        trusted_floor_hz=banked.report.trusted_floor_hz,
-        trusted_ceiling_hz=banked.report.trusted_ceiling_hz,
+        smoothing_fraction=smoothing_fraction,
+        trusted_floor_hz=trusted_floor_hz,
+        trusted_ceiling_hz=trusted_ceiling_hz,
     )
     return EntryStateGrade(
         available=True,
@@ -601,27 +652,34 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
 
     ``target`` may be the same round as ``baseline`` (frozen == shipped by
     construction in that case — the freeze changes nothing when a round is
-    compared against itself). Raises :class:`RoundViewsError` when a
-    position present in ``target`` has no counterpart
-    (matched by ``position_id``) in ``baseline``, or when any position is
-    not evaluable under its own report's frame.
+    compared against itself). Raises :class:`RoundViewsError` when either
+    round banked no cloud group (:attr:`BankedRound.graded_positions` /
+    :attr:`BankedRound.graded_report`), when a position present in ``target``
+    has no counterpart (matched by ``position_id``) in ``baseline``, or when
+    any position is not evaluable under its own report's frame.
     """
     baseline_refs = {
-        position.position_id: _own_reference_db(position, baseline.report)
-        for position in baseline.positions
+        position.position_id: _own_reference_db(position, baseline.graded_report)
+        for position in baseline.graded_positions
     }
-    missing = [p.position_id for p in target.positions if p.position_id not in baseline_refs]
+    missing = [
+        p.position_id for p in target.graded_positions
+        if p.position_id not in baseline_refs
+    ]
     if missing:
         raise RoundViewsError(
             f"target round has position(s) {missing} with no baseline counterpart "
             f"(baseline has {sorted(baseline_refs)})"
         )
     target_own_refs = {
-        position.position_id: _own_reference_db(position, target.report)
+        position.position_id: _own_reference_db(position, target.graded_report)
         for position in target.positions
     }
-    shipped_pooled, shipped_positions = _grade_positions(target.positions, target.report, None)
-    frozen_pooled, frozen_positions = _grade_positions(target.positions, target.report, baseline_refs)
+    report = target.graded_report
+    shipped_pooled, shipped_positions = _grade_positions(target.positions, report, None)
+    frozen_pooled, frozen_positions = _grade_positions(
+        target.positions, report, baseline_refs
+    )
     return FrozenReferenceResult(
         baseline_round_dir=str(baseline.round_dir),
         target_round_dir=str(target.round_dir),
@@ -654,6 +712,38 @@ class VerifyPoseResult:
     reason: str
 
 
+def _banked_verify_curve(
+    round_dir: Path,
+) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
+    """``((freqs_hz, measured_db), "")`` off the round's banked flow state, or
+    ``(None, reason)``.
+
+    The ONE reader of ``verify_priors.verify_measured`` on this side of the
+    seam, because it has two consumers that want the curve differently:
+    :func:`verify_pose_curve` puts it on the round's cloud-position grid so it
+    can sit beside the seats, and :func:`forward_model_verify_delta` takes it
+    VERBATIM — that comparison interpolates onto the prediction's own grid, so
+    a detour through a third grid would only lose bins, and a round that
+    banked no cloud group has no such grid to detour through (#3482). The
+    parse itself is :func:`~.durable_state.verify_measured_curve_from_state`,
+    the product's own reader for the key.
+    """
+    state_path = round_dir / _STATE_FILENAME
+    if not state_path.is_file():
+        return None, f"no {_STATE_FILENAME} banked beside the bundle"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}"
+    if not isinstance(state, Mapping):
+        return None, f"{_STATE_FILENAME} is not a JSON object"
+    triple = verify_measured_curve_from_state(state)
+    if triple is None:
+        return None, "the round's state banked no verify_priors.verify_measured curve"
+    freqs_hz, measured_db, _predicted_db = triple
+    return (freqs_hz, measured_db), ""
+
+
 def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     """The VERIFY pose's measured curve, READ rather than re-derived.
 
@@ -664,39 +754,30 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
 
     It is banked now. ``verify_priors.verify_measured`` holds the very pair the
     delta probe graded (``(freqs_hz, measured_db, predicted_db)``, #2522), so
-    this reads the measured half through
-    :func:`~.durable_state.verify_measured_curve_from_state` — the product's
-    own reader for that key, not a second parse of it — and interpolates it
-    onto the round's shared grid. That is the whole function: one hop from a
-    banked number to a comparable one.
+    this reads the measured half through :func:`_banked_verify_curve` — the
+    module's one reader for that key — and interpolates it onto the round's
+    shared grid. That is the whole function: one hop from a banked number to a
+    comparable one.
 
-    **Two consequences of reading instead of re-deriving, stated rather than
-    buried.** The banked curve is block-averaged in dB to
+    The banked curve is block-averaged in dB to
     :data:`~.durable_state.MAX_PERSISTED_SUM_POINTS`, not smoothed at a
     fractional-octave width, so :attr:`PositionCurve.smoothing_fraction` is
     reported as ``0`` — this module's own spelling for *not attested*
     (:func:`load_banked_round` reads the same ``0`` for a round that banked no
     fraction). Nothing consumes that attestation for THIS curve:
     :func:`per_seat_curves` and :func:`agreement_table` read only
-    ``magnitude_db``, and the graded views run over ``banked.positions``. And a
-    round that banked no VERIFY curve now says so through ``reason`` instead of
-    silently re-deriving one from raw bytes that may no longer be there.
+    ``magnitude_db``, and the graded views run over the cloud seats.
+
+    **The resample is for the SEATS, and only they should pay it.** The grid
+    is the round's cloud-position grid, which is what makes this curve sit
+    beside them — and which a round that banked no cloud group does not have.
+    :func:`forward_model_verify_delta` therefore reads the same source
+    verbatim rather than coming through here.
     """
-    state_path = banked.round_dir / _STATE_FILENAME
-    if not state_path.is_file():
-        return VerifyPoseResult(None, f"no {_STATE_FILENAME} banked beside the bundle")
-    try:
-        state = json.loads(state_path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return VerifyPoseResult(None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}")
-    if not isinstance(state, Mapping):
-        return VerifyPoseResult(None, f"{_STATE_FILENAME} is not a JSON object")
-    triple = verify_measured_curve_from_state(state)
-    if triple is None:
-        return VerifyPoseResult(
-            None, "the round's state banked no verify_priors.verify_measured curve"
-        )
-    freqs_hz, measured_db, _predicted_db = triple
+    banked_curve, reason = _banked_verify_curve(banked.round_dir)
+    if banked_curve is None:
+        return VerifyPoseResult(None, reason)
+    freqs_hz, measured_db = banked_curve
     grid = np.asarray(banked.curve_grid_hz, dtype=float)
     curve = PositionCurve(
         position_id=VERIFY_POSITION_ID,
@@ -715,12 +796,18 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
 
 @dataclass(frozen=True)
 class ForwardModelDeltaResult:
-    """The round's predicted-vs-measured VERIFY delta, or why there is none.
+    """A predicted-vs-measured VERIFY delta, or why there is none.
 
     ``delta`` is ``None`` exactly when ``reason`` is non-empty, exactly as
     :class:`VerifyPoseResult` reads. Never raises: a round that banked no
     per-driver solos, or none at this pose, or no VERIFY curve, is a normal
     shape rather than an error.
+
+    ``basis_round_dir`` / ``measured_round_dir`` name the two rounds the
+    halves came from, ALWAYS — equal when one round supplied both. They are
+    the join's disclosure: a delta whose prediction and whose measurement were
+    banked by different sessions is a different claim from one taken inside a
+    round, and a reader must not have to remember which it asked for.
 
     Additive evidence. It carries no verdict, tolerance or score — what a
     given ``max_abs_db`` means is the reader's judgement (invariant 3).
@@ -728,53 +815,74 @@ class ForwardModelDeltaResult:
 
     delta: Mapping[str, Any] | None
     reason: str
+    #: Required, not defaulted: an unattributed join is the thing this pair
+    #: exists to make impossible.
+    basis_round_dir: str
+    measured_round_dir: str
 
 
 def forward_model_verify_delta(
-    banked: BankedRound,
+    basis: BankedRound,
     candidate: "forward_model.SummationCandidate",
     *,
+    measured: BankedRound | None = None,
     phase: str = PHASE_MEASURE,
     position_deg: int = DESIGN_AXIS_DEG,
 ) -> ForwardModelDeltaResult:
-    """Predict this round's summed response from its own banked solos, and
-    delta it against the VERIFY sum the round measured (ticket 4.5).
+    """Predict a summed response from ``basis``'s per-driver solos, and delta
+    it against the VERIFY sum ``measured`` banked (ticket 4.5).
 
-    The two halves a round must carry for the question to mean anything: a
-    PREDICTION BASIS (a banked take at ``position_deg`` carrying both driver
-    solos, magnitude and phase, per ruling R9) and a MEASURED VERIFY SUM (read
-    through :func:`verify_pose_curve`'s own source). Either absent, and the
+    The two halves the question needs: a PREDICTION BASIS (a banked take at
+    ``position_deg`` carrying both driver solos, magnitude and phase, per
+    ruling R9) and a MEASURED VERIFY SUM (``verify_priors.verify_measured``,
+    read verbatim through :func:`_banked_verify_curve`). Either absent, and the
     result says which — this view never substitutes one for the other.
+
+    **They come from two different banked rounds, because that is where the
+    flow puts them** (#3482). The measure stage walks the solos and never
+    reaches VERIFY; the verify stage measures the sum and walks no solos, in a
+    NEW bundle under a new relay session id. So ``measured`` is a separate
+    round and the join is disclosed on the result. It defaults to ``basis``,
+    which is the same question asked of one round — the shape a corpus banked
+    from a single session carries.
 
     ``candidate`` is a PARAMETER rather than the round's incumbent, and that is
     the point of a forward model: the question is usually what some candidate
     WOULD have measured, not what the applied one did. Postdicting the flat
-    campaign's r8 regression is exactly that shape — r7's banked solos, the
-    inherited EQ held verbatim, and the delay that was applied on top.
+    campaign's r8 regression is exactly that shape, and exactly this join —
+    r7's banked solos, the inherited EQ held verbatim, the delay r8 applied on
+    top, against r8's own measured verify.
     """
 
-    verify = verify_pose_curve(banked)
-    if verify.curve is None:
-        return ForwardModelDeltaResult(None, verify.reason)
+    measured = basis if measured is None else measured
+    dirs = {
+        "basis_round_dir": str(basis.round_dir),
+        "measured_round_dir": str(measured.round_dir),
+    }
+    verify_curve, reason = _banked_verify_curve(measured.round_dir)
+    if verify_curve is None:
+        return ForwardModelDeltaResult(None, reason, **dirs)
+    measured_freqs_hz, measured_db = verify_curve
     try:
         pair = forward_model.load_branch_pair(
-            banked.session_dir, phase=phase, position_deg=position_deg
+            basis.session_dir, phase=phase, position_deg=position_deg
         )
     except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(None, str(exc))
+        return ForwardModelDeltaResult(None, str(exc), **dirs)
     if pair is None:
         return ForwardModelDeltaResult(
             None,
             f"no {phase} take at {position_deg} deg banks both driver solos",
+            **dirs,
         )
     predicted = forward_model.predict_sum(pair, candidate)
     try:
         delta = forward_model.predicted_minus_measured_db(
-            predicted, verify.curve.freqs_hz, verify.curve.magnitude_db
+            predicted, measured_freqs_hz, measured_db
         )
     except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(None, str(exc))
-    return ForwardModelDeltaResult(delta, "")
+        return ForwardModelDeltaResult(None, str(exc), **dirs)
+    return ForwardModelDeltaResult(delta, "", **dirs)
 
 
 # --------------------------------------------------------------------------- #
@@ -809,6 +917,10 @@ def per_seat_curves(
     cross-calibration assumption: only SHAPE is compared, never absolute
     level.
     """
+    # Asked BEFORE the norm band, so a round that banked no cloud group is
+    # told what it is missing rather than that its (empty) grid has no bins in
+    # the band — the two are one absence and only the first sentence names it.
+    positions = banked.graded_positions
     grid = np.asarray(banked.curve_grid_hz, dtype=float)
     sel = (grid >= norm_band_hz[0]) & (grid <= norm_band_hz[1])
     if not np.any(sel):
@@ -818,7 +930,7 @@ def per_seat_curves(
         curve_db = np.asarray(curve_db, dtype=float)
         return SeatCurve(position_id, role, curve_db - float(np.median(curve_db[sel])))
 
-    seats = [_seat(p.position_id, p.role, p.magnitude_db) for p in banked.positions]
+    seats = [_seat(p.position_id, p.role, p.magnitude_db) for p in positions]
     if verify is not None:
         seats.append(_seat(verify.position_id, verify.role, verify.magnitude_db))
     return tuple(seats)
@@ -952,7 +1064,9 @@ def repeatability_spread(
     position_values: dict[str, dict[str, float]] = {}
     position_degrees: dict[str, dict[str, float]] = {}
     for label, banked in rounds:
-        split = role_split_flatness(banked.report, banked.positions, primary_role=primary_role)
+        split = role_split_flatness(
+            banked.graded_report, banked.graded_positions, primary_role=primary_role,
+        )
         roles = ([split.primary] if split.primary is not None else []) + list(split.others)
         for role_flatness in roles:
             if role_flatness.rms_db is not None:
@@ -978,7 +1092,7 @@ def repeatability_spread(
         # number, lifted from the report rather than recomputed — carried
         # beside the per-octave/per-role re-poolings above so a caller can
         # see whether the number the tournament actually reads repeats too.
-        residual = flat_spec.spec_convergence_residual(banked.report)
+        residual = flat_spec.spec_convergence_residual(banked.graded_report)
         if residual.evaluable and residual.rms_db is not None:
             linear_pooled[label] = float(residual.rms_db)
 
@@ -1116,7 +1230,7 @@ def default_agreement_lo_hz(banked: BankedRound) -> float:
     at its particular 7 ms gate window — a coincidence of that campaign, not
     a general default).
     """
-    floor = banked.report.trusted_floor_hz
+    floor = banked.graded_report.trusted_floor_hz
     return float(floor) if floor is not None else float(REFERENCE_BAND_HZ[0])
 
 
@@ -1427,10 +1541,10 @@ def audibility_co_metrics(
     caller deliberately asks for a different one.
     """
 
-    band = banked.report.graded_band_hz if band_hz is None else band_hz
+    band = banked.graded_report.graded_band_hz if band_hz is None else band_hz
 
     on_axis_positions = [
-        position for position in banked.positions
+        position for position in banked.graded_positions
         if position.role == DEFAULT_PRIMARY_ROLE
     ]
     on_axis_metrics: AudibilityMetrics | None

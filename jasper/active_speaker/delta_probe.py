@@ -401,19 +401,33 @@ DELTA_PROBE_ROLLBACK_VERDICTS: frozenset[str] = frozenset({
 #: instead of restoring on it (#2559). A stable string, because it rides the
 #: journal and the round receipt: an immediate restore that did not happen must
 #: be as legible as one that did.
-SEAM_DEFERRED_QUIETER_THAN_COMMANDED = "model_error_quieter_than_commanded"
+#:
+#: Named for the DIRECTION rather than for one verdict — see ADR-0209.
+SEAM_DEFERRED_QUIETER_THAN_COMMANDED = "realized_quieter_than_commanded"
+
+#: The rollback classes whose whole claim is realized-vs-commanded, and which
+#: therefore defer when the deviation points entirely quieter (ADR-0209).
+#:
+#: :data:`VERDICT_SPATIALLY_COSTLY` is deliberately absent: it differences two
+#: MEASUREMENTS — the pre- and post-apply cross-position spreads — with no model
+#: between them, so it is a measured regression rather than a realized-vs-
+#: commanded miss, and measurement-loop-doctrine §3 restores ON those.
+DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS: frozenset[str] = frozenset({
+    VERDICT_MODEL_ERROR,
+    VERDICT_LEVEL_DEPENDENT_SHORTFALL,
+})
 
 
 def seam_rollback_deferral(probe: Any | None) -> str:
     """Why this map's seam-bound rollback DEFERS to the adoption table, or ``""``.
 
-    Owner ruling, 2026-08-15: a ``model_error`` whose realized deviation points
-    entirely QUIETER than commanded is a quality miss that keeps for iteration,
-    not a hazard that comes off the speaker. It is the same directional
+    Owner ruling, 2026-08-15: a realized-vs-commanded miss whose deviation
+    points entirely QUIETER than commanded is a quality miss that keeps for
+    iteration, not a hazard that comes off the speaker. It is the same directional
     discipline #2537 put on the level axis — *"quieter-than-declared costs a
     household some output and tells the next round something, while
-    louder-than-declared is energy nobody asked for"* — applied to the shape
-    axis, and it is the rule that would have changed the 2026-08-15 14:47 jts3
+    louder-than-declared is energy nobody asked for"* — applied to what the fit
+    COMMANDED, and it is the rule that would have changed the 2026-08-15 14:47 jts3
     round: a −3.32 dB dip at 1330 Hz, nothing realized louder than commanded
     anywhere, tracking passed, 2.399 dB of measured improvement, reverted by a
     seam that never asked which way the miss pointed.
@@ -425,13 +439,11 @@ def seam_rollback_deferral(probe: Any | None) -> str:
     table reachable; it decides nothing about the outcome, and ``row5``'s
     restore on a measured regression is as available afterwards as before.
 
-    **It NARROWS one class and touches nothing else.** Every other rollback
-    verdict is unchanged, and so is every positive-direction finding:
+    **It NARROWS the realized-vs-commanded classes and touches nothing else.**
+    Which classes those are, and why the spread claim is not one of them, is
+    :data:`DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS` (ADR-0209). Every
+    positive-direction finding is unchanged:
 
-    * :data:`VERDICT_LEVEL_DEPENDENT_SHORTFALL` and
-      :data:`VERDICT_SPATIALLY_COSTLY` never defer. The first is a claim about a
-      driver's headroom and the second about the room's own spread; neither is
-      the shape claim this ruling is about.
     * A map with ANY safety bin measured louder than this apply declared, past
       tolerance, never defers, whatever else it measured.
     * ``boost_over_declared_bound`` never defers. That is implied by the bin
@@ -452,7 +464,7 @@ def seam_rollback_deferral(probe: Any | None) -> str:
     evidence. It inverts for a FENCE, whose default is generous — an unanchored
     map that reported nothing louder has not established that the miss points
     quieter, it has established nothing, and handing it a lenience named
-    ``model_error_quieter_than_commanded`` would put a false sentence on a
+    ``realized_quieter_than_commanded`` would put a false sentence on a
     hearing-safety record. Measured on a graph commanding +5 dB that the speaker
     delivered +20 dB of: with the first two guards alone, an unanchored map
     takes ``row2_trusted_safe_missed`` and KEEPS. So an unanchored map falls
@@ -472,7 +484,10 @@ def seam_rollback_deferral(probe: Any | None) -> str:
     """
     if probe is None:
         return ""
-    if str(getattr(probe, "verdict", "") or "") != VERDICT_MODEL_ERROR:
+    if (
+        str(getattr(probe, "verdict", "") or "")
+        not in DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS
+    ):
         return ""
     if bool(getattr(probe, "realized_louder_than_commanded", False)):
         return ""
@@ -2438,6 +2453,7 @@ __all__ = [
     "DELTA_PROBE_MIN_QUIET_COVERAGE",
     "DELTA_PROBE_REALIZATION_BANDS",
     "DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB",
+    "DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS",
     "DELTA_PROBE_ROLLBACK_VERDICTS",
     "DELTA_PROBE_SHORTFALL_GAIN_CEILING",
     "DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB",
