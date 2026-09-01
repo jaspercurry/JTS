@@ -334,9 +334,10 @@ def resolve_camilla_latency_for_devices(
     retune of healthy boxes, not this clamp; the armed active path and the
     fresh-install boot graph already pass that pair explicitly.
 
-    ``target_level`` is NOT clamped: it is the resampler's steady-state fill,
-    inert while ``enable_rate_adjust`` is false, and unconstrained by the ring's
-    capacity — jts.local carries 1536 over a 256-frame ring with no complaint.
+    ``target_level`` is not bounded by the ring's capacity — jts.local carries
+    1536 over a 256-frame ring with no complaint — but it IS bounded by
+    CamillaDSP relative to the chunk, so a clamped chunk drags its ceiling down
+    with it and the pair scales together. See the comment at the clamp.
 
     ``playback_device=None`` is a CLOCKLESS sink (a ``File`` — the bonded
     leader's snapserver FIFO, the parked graph's ``/dev/null``). It declares no
@@ -348,6 +349,7 @@ def resolve_camilla_latency_for_devices(
     ``test_ring_reemit_carries_the_certified_ring_chunk_and_target``).
     """
 
+    resolved_target = target_level is None
     if target_level is None:
         target_level = resolve_camilla_target_level()
     if chunksize is None:
@@ -356,7 +358,24 @@ def resolve_camilla_latency_for_devices(
             capture_device if playback_device is None else playback_device
         )
         if governing_device in RING_PCM_DEVICES:
-            chunksize = min(chunksize, ring_capacity_frames())
+            capacity = ring_capacity_frames()
+            if chunksize > capacity:
+                # THE PAIR SCALES TOGETHER. CamillaDSP bounds target_level at
+                # `chunksize x (queuelimit + 4)` — measured against 4.1.3 on
+                # jts4, exact across chunk 128/256/512 and queuelimit 1/2/4 —
+                # so the ceiling falls with the chunk. Clamping the chunk alone
+                # pushed jts4's floor-declared target of 4096 over the new
+                # 2048 ceiling and swapped one fatal config for another
+                # ("target_level cannot be larger than 2048", same crash loop).
+                #
+                # Scaling by the same ratio keeps the pair valid without
+                # encoding CamillaDSP's formula here: the bound is proportional
+                # to chunksize, so a pair that fit before fits after. It also
+                # preserves the RELATIONSHIP the DacProfile declared rather
+                # than substituting a number of our own.
+                if resolved_target:
+                    target_level = max(1, target_level * capacity // chunksize)
+                chunksize = capacity
     return chunksize, target_level
 
 

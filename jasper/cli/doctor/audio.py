@@ -1131,6 +1131,27 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             label, "ok",
             f"{config_path} names no ring end (chunksize={chunksize})",
         )
+    # CamillaDSP's own ceiling on the pair, measured against 4.1.3 on jts4 and
+    # exact across chunk 128/256/512 and queuelimit 1/2/4. Checked here because
+    # a config can carry a chunk that fits the ring and STILL be refused: that
+    # is exactly the state jts4 landed in on 2026-09-01 (256 / 4096), where the
+    # ring half of this check passed while the box crash-looped. If a future
+    # CamillaDSP moves this formula, this line reports a wrong number loudly
+    # rather than going quiet.
+    queuelimit = devices.get("queuelimit")
+    target_level = devices.get("target_level")
+    if queuelimit is not None and target_level is not None:
+        ceiling = int(chunksize) * (int(queuelimit) + 4)
+        if int(target_level) > ceiling:
+            return CheckResult(
+                label, "fail",
+                f"{config_path} sets devices.target_level={target_level} with "
+                f"chunksize={chunksize} and queuelimit={queuelimit}; CamillaDSP "
+                f"refuses a target above {ceiling} and will restart-loop. "
+                "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
+                speaker_silent=True,
+            )
+
     capacity = ring_capacity_frames()
     if int(chunksize) > capacity:
         return CheckResult(
