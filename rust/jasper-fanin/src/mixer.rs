@@ -1409,9 +1409,11 @@ pub struct Input {
     trim: Arc<TrimControl>,
     /// Per-lane MIX MUTE, shared with the state-server thread. The control
     /// endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads it at
-    /// the SUM stage (`lane_mix_contributes`) and skips this lane's contribution
-    /// when set — WITHOUT touching this lane's capture, `frames_read`, or
-    /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
+    /// the SUM stage (`lane_mix_contributes`) and takes this lane's contribution
+    /// to zero across `lane_fade`'s 10 ms window — silent within a period or
+    /// two, not within a sample — WITHOUT touching this lane's capture,
+    /// `frames_read`, or `rms_dbfs_x100` telemetry, which are accounted BEFORE
+    /// the gate. This is
     /// mux's latest-source-wins arbitration primitive for the USB lane — the
     /// sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
@@ -2676,8 +2678,12 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
     selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
 
-/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter
-/// the sum this period iff it is selected AND not muted.
+/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples are
+/// wanted in the sum this period iff it is selected AND not muted.
+///
+/// This is the WANT, not the gate. `mixer::lane_fade` consumes it and carries
+/// the lane to or from that state across a 10 ms window, so a lane this returns
+/// `false` for still reaches the sum, decaying, until its window closes.
 ///
 /// The mute is mux's latest-source-wins arbitration primitive for the USB
 /// lane — the only USB-silencing mechanism. It is
@@ -2689,7 +2695,7 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// makes mux think the host stopped (which would flap mute→release→mute).
 ///
 /// Selection and mute both drop the lane from the sum, so a muted lane is
-/// silenced exactly like a de-selected one — the same `continue`. This function
+/// silenced exactly like a de-selected one — the same window. This function
 /// takes only values (no atomics/side effects) so the decision is exhaustively
 /// unit-testable without ALSA and can never itself perturb telemetry.
 fn lane_mix_contributes(selected_input: i32, input_index: usize, label: &str, muted: bool) -> bool {

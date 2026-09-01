@@ -51,10 +51,15 @@
 //! zero when it comes back. Steady state (fully in, fully out) is bit-exact and
 //! costs one comparison.
 //!
-//! Both lanes of a switch step their windows on the same period boundary, so the
-//! pair is exactly complementary and the two gains sum to 1.0 the whole way
-//! across. A switch therefore adds no headroom pressure to the sum, even though
-//! two lanes are briefly in it.
+//! Both lanes of a switch step on the same period boundary and advance in WALL
+//! CLOCK, so the pair is complementary and the two gains sum to AT MOST 1.0
+//! across the switch. Two lanes are briefly in the sum where one used to be, and
+//! that is why it still cannot clip.
+//!
+//! At most, not exactly. An incoming lane that is also owed a wake window takes
+//! the PRODUCT of the two, so the pair dips to 0.75 (−2.5 dB) mid-switch; and a
+//! lane delivering a short or empty period holds its rise while the outgoing
+//! lane keeps falling. Both are dips. Nothing pushes the sum up.
 //!
 //! The TTS/cue path enters post-sum via `TtsMixer` and never passes here.
 
@@ -235,9 +240,13 @@ impl LaneFade {
         if !contributes && self.select_pos == 0 {
             return false;
         }
-        if contributes {
-            self.apply_wake(period);
-        }
+        // Deliberately NOT gated on `contributes`: past the early return above,
+        // this period REACHES THE SUM, and a wake window in flight must keep
+        // shaping it. Gating here would strip the wake attenuation off the very
+        // period mux drops the lane on — the sum would see the lane jump from
+        // its ramp position straight back to unity, a bigger step upward than
+        // the one this module was written to remove.
+        self.apply_wake(period);
         self.apply_select(period, period_frames, contributes);
         true
     }
@@ -274,8 +283,24 @@ impl LaneFade {
         };
     }
 
-    /// The selection window, walked one frame per frame toward fully-in
-    /// (`contributes`) or fully-out. Bit-exact in the steady state.
+    /// The selection window. Bit-exact in the steady state.
+    ///
+    /// The two directions do NOT advance the same way, and that asymmetry is the
+    /// whole correctness of this function:
+    ///
+    /// * Fading IN advances only over frames that actually carry content into
+    ///   the sum — the rule [`Self::apply_wake`] already follows. A renderer
+    ///   whose ring is still empty when `SELECT` lands (a fresh AirPlay session
+    ///   is exactly that) would otherwise spend the window on periods the sum
+    ///   never heard, and the first period carrying real samples would enter at
+    ///   unity: the step this module exists to remove.
+    /// * Fading OUT advances in WALL CLOCK. A lane being dropped may deliver
+    ///   short or empty periods, and counting only captured frames would leave
+    ///   it lingering in the sum long past the window.
+    ///
+    /// A short read can therefore make the incoming lane rise more slowly than
+    /// the outgoing lane falls. The two gains then sum to slightly under 1.0 —
+    /// never above it, so the headroom argument holds in the safe direction.
     fn apply_select<S: FadeSample>(
         &mut self,
         period: &mut [S],
@@ -283,27 +308,33 @@ impl LaneFade {
         contributes: bool,
     ) {
         let n = self.ramp_frames;
-        if contributes && self.select_pos == n {
+        if contributes && (self.select_pos == n || !self.period_had_content) {
             return;
         }
-        if period.is_empty() {
-            // The lane captured nothing, so there are no samples to shape — but
-            // the window still has to pass in wall clock, or a lane that stalls
-            // while leaving the sum would never reach the fully-out fast path.
-            self.select_pos = self.advanced(self.select_pos, period_frames, contributes);
-            return;
-        }
+        let start = self.select_pos;
+        let mut pos = start;
         for frame in period.chunks_exact_mut(CHANNELS as usize) {
-            if contributes && self.select_pos == n {
+            if contributes && pos == n {
                 // The rest of the period passes at unity, untouched.
-                return;
+                break;
             }
-            let gain = window_gain(self.select_pos, n);
+            // Both rails are exact, and skipping the cosine at zero is worth a
+            // branch: the closing period of every fade-out sits there.
+            let gain = if pos == 0 { 0.0 } else { window_gain(pos, n) };
             for sample in frame.iter_mut() {
                 *sample = sample.scaled(gain);
             }
-            self.select_pos = self.advanced(self.select_pos, 1, contributes);
+            pos = self.advanced(pos, 1, contributes);
         }
+        // The gain is indexed per SAMPLE above, but the window ADVANCES IN WALL
+        // CLOCK. Both lanes of a switch therefore step by the same amount even
+        // when they deliver different frame counts, which is what keeps them
+        // complementary. Advancing on delivered frames instead lets an outgoing
+        // lane that short-reads (`read_input` returns partial `readi` counts on
+        // every DEFAULT-arm lane) fall slower than the incoming lane rises: the
+        // two gains then sum ABOVE 1.0 and the sum clips for the length of the
+        // window — the artifact this module exists to remove.
+        self.select_pos = self.advanced(start, period_frames, contributes);
     }
 
     /// `pos` moved `frames` toward fully-in or fully-out, clamped to the window.
@@ -688,10 +719,174 @@ mod tests {
         assert!(periods > 0, "the window was open and had to close");
     }
 
-    /// Pin 11 (headroom across a switch): the outgoing and incoming windows are
-    /// complementary, so the sum of the two lanes' gains is 1.0 at every frame
-    /// of the crossover. Two lanes are briefly in the sum where one used to be,
-    /// and this is why that cannot push it toward clipping.
+    /// Pin 11a (the fresh-session hole): a lane whose renderer ring is still
+    /// EMPTY when `SELECT` lands must HOLD its selection window, not spend it on
+    /// periods the sum never heard. Spending it there opens the lane at unity on
+    /// the first period that carries real samples — which is a step, and is what
+    /// a first AirPlay session start looks like. The wake window cannot cover
+    /// this: the gap here is far under `ARM_SILENCE_MS`.
+    #[test]
+    fn an_empty_ring_at_select_holds_the_selection_window() {
+        let mut fade = settled_lane("airplay");
+        // mux drops the lane while it streams; the fade-out runs to completion.
+        for periods in 0.. {
+            assert!(periods < 16, "the fade-out must terminate");
+            let mut playing = [i16::MAX; SAMPLES];
+            if !deselected(&mut fade, &mut playing[..]).1 {
+                break;
+            }
+        }
+        // SELECT returns, but the ring hands over nothing for a while.
+        let mut empty: [i16; 0] = [];
+        for _ in 0..(2 * RAMP_FRAMES / (PERIOD as usize) + 2) {
+            assert!(!fade.observe(&empty[..], PERIOD));
+            assert!(fade.shape_period(&mut empty[..], PERIOD, true));
+        }
+        // The first period that actually reaches the sum owes the whole window.
+        let mut first = [i16::MAX; SAMPLES];
+        contributing(&mut fade, &mut first[..]);
+        assert!(
+            first[0].is_silent(),
+            "the window must open on the first sample the sum hears"
+        );
+        assert!(
+            first.iter().all(|s| *s < i16::MAX),
+            "the window is longer than one period"
+        );
+    }
+
+    /// Pin 11b: the same hold for a period that is present but digitally SILENT
+    /// — an attached renderer sitting idle. Silence reaches the sum as nothing,
+    /// so it must not buy window either.
+    #[test]
+    fn a_silent_period_at_select_holds_the_selection_window() {
+        let mut fade = settled_lane("airplay");
+        for periods in 0.. {
+            assert!(periods < 16, "the fade-out must terminate");
+            let mut playing = [i16::MAX; SAMPLES];
+            if !deselected(&mut fade, &mut playing[..]).1 {
+                break;
+            }
+        }
+        drive_silence(&mut fade, 4 * (RAMP_FRAMES as u32), true);
+        let mut first = [i16::MAX; SAMPLES];
+        contributing(&mut fade, &mut first[..]);
+        assert!(first[0].is_silent(), "silence must not spend the window");
+    }
+
+    /// Pin 11c: a lane being DROPPED closes in wall clock, not in captured
+    /// frames. A renderer handing over half-periods on its way out would
+    /// otherwise linger in the sum for twice the window — and would fall more
+    /// slowly than the incoming lane rises, which is the one way the pair could
+    /// sum above unity.
+    #[test]
+    fn a_dropped_lane_closes_in_wall_clock_not_captured_frames() {
+        let mut fade = settled_lane("usbsink");
+        let half = SAMPLES / 2;
+        let mut periods = 0;
+        loop {
+            // A short read: the lane captured only half a period this time.
+            let mut short = [i16::MAX; SAMPLES];
+            if !deselected(&mut fade, &mut short[..half]).1 {
+                break;
+            }
+            periods += 1;
+            assert!(periods < 8, "a short-read fade must still close");
+        }
+        let allowed = RAMP_FRAMES.div_ceil(PERIOD as usize);
+        assert!(
+            periods <= allowed,
+            "the fade took {periods} periods of short reads; \
+             wall clock allows at most {allowed}"
+        );
+    }
+
+    /// Pin 11d (the real headroom pin, replacing the algebra one): drive TWO
+    /// lanes through a switch — the outgoing one short-reading, which is the
+    /// case that can desynchronise them — and check the summed gain never
+    /// exceeds unity. Pin 11 only proves an identity about `window_gain`; this
+    /// proves the stepping puts two real lanes on complementary positions.
+    #[test]
+    fn two_lanes_across_a_switch_never_sum_above_unity() {
+        let mut outgoing = settled_lane("usbsink");
+        let mut incoming = settled_lane("airplay");
+        // Park the incoming lane fully out, still streaming.
+        for periods in 0.. {
+            assert!(periods < 16, "the fade-out must terminate");
+            let mut playing = [i16::MAX; SAMPLES];
+            if !deselected(&mut incoming, &mut playing[..]).1 {
+                break;
+            }
+        }
+
+        const LEVEL: i16 = 16_000;
+        let half = SAMPLES / 2;
+        for period in 0..8 {
+            // The outgoing lane short-reads on the switch period itself.
+            let n_out = if period == 0 { half } else { SAMPLES };
+            let mut out = [LEVEL; SAMPLES];
+            let mut inc = [LEVEL; SAMPLES];
+            let out_mixes = deselected(&mut outgoing, &mut out[..n_out]).1;
+            incoming.observe(&inc[..], PERIOD);
+            let in_mixes = incoming.shape_period(&mut inc[..], PERIOD, true);
+            assert!(in_mixes, "the incoming lane always reaches the sum");
+            // Only the frames the outgoing lane actually delivered are summed;
+            // past those it contributes nothing at all.
+            for f in 0..(n_out / (CHANNELS as usize)) {
+                let a = if out_mixes {
+                    i32::from(out[f * (CHANNELS as usize)])
+                } else {
+                    0
+                };
+                let b = i32::from(inc[f * (CHANNELS as usize)]);
+                assert!(
+                    a + b <= i32::from(LEVEL) + 1,
+                    "period {period} frame {f}: {a} + {b} exceeds one lane at full gain"
+                );
+            }
+        }
+    }
+
+    /// Pin 11e (the wake window must survive the gate flipping): a lane whose
+    /// wake ramp is still RUNNING when mux drops it keeps that attenuation on
+    /// the period it is dropped in. Stripping it would hand the sum a jump from
+    /// the ramp's position straight back to unity — a bigger step upward than
+    /// the one the wake ramp exists to remove.
+    #[test]
+    fn a_running_wake_window_survives_being_dropped() {
+        let mut fade = LaneFade::for_lane("airplay", RATE);
+        drive_silence(&mut fade, 2 * RATE, true);
+
+        // The onset arms and starts the wake window while selected.
+        let mut onset = [i16::MAX; SAMPLES];
+        assert!(contributing(&mut fade, &mut onset[..]));
+        let last = onset[(PERIOD as usize - 1) * (CHANNELS as usize)];
+        assert!(last < i16::MAX, "the window is longer than one period");
+
+        // mux drops the lane on the very next period, mid-window. The wake
+        // window keeps going (its next position), and the selection window is
+        // still at unity on this period's first frame — so the sum sees the
+        // ramp continue, not jump back to full scale.
+        let mut dropped = [i16::MAX; SAMPLES];
+        assert!(deselected(&mut fade, &mut dropped[..]).1);
+        // Both windows are mid-flight at the same position, so this frame takes
+        // their PRODUCT. Stripping the wake half would leave the selection half
+        // alone — a jump upward, which is what this pins against.
+        let g = expected_gain(PERIOD as usize);
+        let expected = (f64::from(i16::MAX) * g * g).round() as i16;
+        let wake_stripped = (f64::from(i16::MAX) * g).round() as i16;
+        assert_eq!(
+            dropped[0], expected,
+            "the wake window must carry across the flip (it was at {last}; \
+             stripping it would give {wake_stripped})"
+        );
+    }
+
+    /// Pin 11 (headroom across a switch): the WINDOW FUNCTION is complementary —
+    /// `w(p) + w(n-p) == 1`. This pins the algebra only; the stepping that makes
+    /// two real lanes land on complementary positions is pinned by
+    /// [`a_dropped_lane_closes_in_wall_clock_not_captured_frames`], which is the
+    /// case that can break it.
     #[test]
     fn the_two_halves_of_a_switch_sum_to_unity() {
         let n = RAMP_FRAMES as u32;
