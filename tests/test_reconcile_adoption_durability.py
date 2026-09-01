@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import json
 import logging
+
+import pytest
 from pathlib import Path
 
 
@@ -221,6 +223,56 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
     assert f"current={candidate}" in caplog.text
     assert f"candidate={config_dir / 'sound_current.yml'}" in caplog.text
     assert caplog.text.count("event=sound.reconcile_current_dsp") == 1
+
+
+class _RejectingCamilla(_FakeCamilla):
+    """CamillaDSP that refuses the candidate it is asked to load."""
+
+    def __init__(self, current_path: str) -> None:
+        super().__init__(current_path)
+        self.rejected: list[str] = []
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False
+    ) -> bool:
+        self.rejected.append(path)
+        if best_effort:
+            # The restore path uses best_effort; let it through so the test
+            # observes the restore rather than a second refusal.
+            self.loaded_path = path
+            return True
+        return False
+
+
+async def test_a_rejected_re_anchor_leaves_the_candidate_pristine(
+    tmp_path: Path, monkeypatch,
+):
+    """A re-anchor writes IN PLACE, so it must put the bytes back itself.
+
+    ``apply_dsp_config`` rolls back by re-LOADING ``prior_config_path``, which
+    under a re-anchor is the very file just overwritten — so its rollback would
+    reload the rejected graph and call that recovery, leaving the commissioned
+    candidate holding a config CamillaDSP will not load, which is also what the
+    box boots from. Nothing else keeps a pristine copy.
+    """
+    candidate, config_dir, _camilla = _reigning_candidate_box(tmp_path, monkeypatch)
+    camilla = _RejectingCamilla(str(candidate))
+    pristine = candidate.read_text(encoding="utf-8")
+
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=6.0)), profile_path)
+
+    with pytest.raises(Exception):
+        await reconcile_current_dsp(
+            profile_path=profile_path,
+            config_dir=config_dir,
+            camilla_factory=lambda: camilla,
+        )
+
+    # The refusal actually happened against the candidate itself...
+    assert str(candidate) in camilla.rejected
+    # ...and the commissioned artifact is byte-for-byte what it was.
+    assert candidate.read_text(encoding="utf-8") == pristine
 
 
 async def test_changed_intent_still_re_emits_over_a_kept_candidate(

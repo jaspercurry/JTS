@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -556,17 +557,46 @@ async def reconcile_current_dsp(
             if dry.carrier_kind == "active" and not _paths_match(current_path, out_path)
             else None
         )
-        apply_state, applied_path, _ = await load_profile_config(
-            profile,
-            profile_path=profile_path,
-            config_dir=config_path,
-            camilla_factory=lambda: cam,
-            source="sound_reconcile",
-            persist_profile=False,
-            output_trim_db=trim_db,
-            profile_id=RECONCILE_PROFILE_ID,
-            out_path=reanchor_path,
+        # A re-anchor writes the candidate IN PLACE, which takes its own
+        # rollback away: `apply_dsp_config` rolls back by re-loading
+        # ``prior_config_path``, and under a re-anchor that path IS the file
+        # just overwritten — so a rejected graph would be reloaded as if it
+        # were the recovery, and the commissioned candidate would be left
+        # holding a config CamillaDSP will not load, which is also what it
+        # boots from. Keep the pristine bytes and put them back ourselves.
+        reanchor_backup = (
+            Path(reanchor_path).read_text(encoding="utf-8")
+            if reanchor_path is not None
+            else None
         )
+        try:
+            apply_state, applied_path, _ = await load_profile_config(
+                profile,
+                profile_path=profile_path,
+                config_dir=config_path,
+                camilla_factory=lambda: cam,
+                source="sound_reconcile",
+                persist_profile=False,
+                output_trim_db=trim_db,
+                profile_id=RECONCILE_PROFILE_ID,
+                out_path=reanchor_path,
+            )
+        except Exception:
+            if reanchor_path is not None and reanchor_backup is not None:
+                atomic_write_text(
+                    Path(reanchor_path), reanchor_backup, mode=0o640,
+                )
+                # The file is pristine again; make the box run it again too,
+                # because the failed apply's own rollback just re-loaded this
+                # same path while it still held the rejected graph.
+                await cam.set_config_file_path(str(reanchor_path), best_effort=True)
+                log_event(
+                    logger,
+                    "sound.reconcile_reanchor_restored",
+                    candidate=str(reanchor_path),
+                    level=logging.WARNING,
+                )
+            raise
     return _log_reconcile_result(
         {
             "status": "reconciled",
