@@ -831,6 +831,21 @@ class ForwardModelDeltaResult:
     basis_round_dir: str
     measured_round_dir: str
 
+    @property
+    def acceptance(self) -> dict[str, Any]:
+        """Whether a measurement judged this prediction, and which one (#3481).
+
+        Derived rather than passed in: a delta IS the judging, so a result
+        carrying one was judged by ``measured_round_dir`` and a result
+        carrying a reason was judged by nothing. The vocabulary is
+        :func:`~.forward_model.acceptance_block`'s, shared with the
+        prediction record, so ``predict``'s untriaged output and this one
+        cannot come to spell the same fact differently.
+        """
+        return forward_model.acceptance_block(
+            self.measured_round_dir if self.delta is not None else None
+        )
+
 
 def forward_model_verify_delta(
     basis: BankedRound,

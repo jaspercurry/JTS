@@ -109,6 +109,7 @@ from .journey import PHASE_CLOUD_VERIFY, PHASE_LATERAL, PHASE_VERIFY
 
 __all__ = [
     "ADMISSIBLE_PHASES",
+    "CAPTURE_ADMISSIBILITY_REASONS",
     "classifiable_band_hz",
     "CLASSIFICATION_REFUSAL_REASONS",
     "CLASSIFICATION_SCHEMA_VERSION",
@@ -117,6 +118,7 @@ __all__ = [
     "NO_ADMISSIBLE_CAPTURES",
     "NO_FEATURES_DETECTED",
     "PROGRAM_MISSING",
+    "ROUND_SHAPE_INADMISSIBLE",
     "FeatureClassificationRefused",
     "RoundCapture",
     "RoundPoseCurve",
@@ -139,7 +141,17 @@ CONTROLS_FAILED = "classification_controls_failed"
 #: A ``lateral`` capture was bound to this round. See the module docstring.
 LATERAL_CAPTURE_SHAPE = "classification_lateral_capture_shape"
 
-#: No capture of an admissible shape belongs to this round's session.
+#: This round's captures were found, and every one of them names a phase this
+#: instrument cannot read — a MEASURE-only round is the common case. The
+#: remedy is a different ROUND: point at a verify-shaped one.
+ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
+
+#: No capture of this round reached the instrument at all — an empty ring, or
+#: one holding only other sessions' captures. The remedy is the RING or the
+#: bundle it was scoped to; no round shape would satisfy this one. Narrowed
+#: from the slug that used to cover :data:`ROUND_SHAPE_INADMISSIBLE` too
+#: (#3480): the two situations refuse from different code paths and have
+#: different remedies, and one name for both sent a driver at the wrong fix.
 NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 
 #: A capture names a phase whose program WAV is not in the round directory, so
@@ -154,9 +166,50 @@ NO_FEATURES_DETECTED = "classification_no_features_detected"
 CLASSIFICATION_REFUSAL_REASONS = frozenset({
     CONTROLS_FAILED,
     LATERAL_CAPTURE_SHAPE,
+    ROUND_SHAPE_INADMISSIBLE,
     NO_ADMISSIBLE_CAPTURES,
     PROGRAM_MISSING,
     NO_FEATURES_DETECTED,
+})
+
+# --- per-capture admissibility — why each capture in the ring was dropped --- #
+
+#: The capture is classifiable: an admissible shape, this round's session, its
+#: program WAV present, and a readable WAV under a stamped name.
+CAPTURE_ADMISSIBLE = "admissible"
+
+#: The sidecar JSON did not read as an object carrying a ``phase`` string.
+CAPTURE_UNREADABLE_SIDECAR = "unreadable_sidecar"
+
+#: The capture is stamped with a different bundle ``session_id``.
+CAPTURE_OTHER_SESSION = "other_session"
+
+#: The capture's phase is not in :data:`ADMISSIBLE_PHASES`.
+CAPTURE_PHASE_NOT_ADMISSIBLE = "phase_not_admissible"
+
+#: A ``lateral`` capture — the per-driver shape that refuses the whole round.
+CAPTURE_LATERAL_SHAPE = "lateral_capture_shape"
+
+#: The phase's ``<phase>_program.wav`` is not in the round directory.
+CAPTURE_PROGRAM_MISSING = "program_missing"
+
+#: The sidecar's WAV is not beside it in the ring.
+CAPTURE_WAV_MISSING = "wav_missing"
+
+#: The dump filename does not open with the microsecond stamp every capture's
+#: timing residual is bound to.
+CAPTURE_UNSTAMPED_NAME = "unstamped_name"
+
+#: The closed vocabulary a per-capture admissibility row's ``reason`` speaks.
+CAPTURE_ADMISSIBILITY_REASONS = frozenset({
+    CAPTURE_ADMISSIBLE,
+    CAPTURE_UNREADABLE_SIDECAR,
+    CAPTURE_OTHER_SESSION,
+    CAPTURE_PHASE_NOT_ADMISSIBLE,
+    CAPTURE_LATERAL_SHAPE,
+    CAPTURE_PROGRAM_MISSING,
+    CAPTURE_WAV_MISSING,
+    CAPTURE_UNSTAMPED_NAME,
 })
 
 
@@ -488,6 +541,11 @@ def load_round_captures(
 
     Raises :class:`FeatureClassificationRefused` — never returns an empty
     tuple, because "no captures" is a finding a caller must be told by name.
+    The refusal detail's ``captures`` is one row per sidecar the ring listed
+    (``sidecar`` / ``phase`` / ``admissible`` / ``reason``, the reason drawn
+    from :data:`CAPTURE_ADMISSIBILITY_REASONS`), so a caller sees which
+    capture was dropped and why rather than a count contradicting the ring
+    listing it was just handed.
     """
     programs = {
         phase: path
@@ -500,40 +558,65 @@ def load_round_captures(
     seen_phases: dict[str, int] = {}
     lateral: list[str] = []
     missing_program: list[str] = []
+    census: list[dict[str, Any]] = []
+
+    def note(sidecar: Path, phase: Any, reason: str) -> None:
+        """One row of the per-capture admissibility table.
+
+        Every drop below records why, so a refusal names the captures the ring
+        listing just handed the caller instead of only counting them (#3480).
+        """
+        census.append({
+            "sidecar": sidecar.name,
+            "phase": phase if isinstance(phase, str) else None,
+            "admissible": reason == CAPTURE_ADMISSIBLE,
+            "reason": reason,
+        })
+
     for sidecar in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
         try:
             doc = json.loads(sidecar.read_text())
         except (OSError, json.JSONDecodeError):
+            note(sidecar, None, CAPTURE_UNREADABLE_SIDECAR)
             continue
         if not isinstance(doc, Mapping):
+            note(sidecar, None, CAPTURE_UNREADABLE_SIDECAR)
             continue
         phase = doc.get("phase")
         if not isinstance(phase, str):
+            note(sidecar, None, CAPTURE_UNREADABLE_SIDECAR)
             continue
         identity = doc.get("jts_session_identity")
         banked_session = (
             identity.get("session_id") if isinstance(identity, Mapping) else None
         )
         if session_id is not None and banked_session != session_id:
+            note(sidecar, phase, CAPTURE_OTHER_SESSION)
             continue
         seen_phases[phase] = seen_phases.get(phase, 0) + 1
         if phase == PHASE_LATERAL:
             lateral.append(sidecar.name)
+            note(sidecar, phase, CAPTURE_LATERAL_SHAPE)
             continue
         if phase not in ADMISSIBLE_PHASES:
+            note(sidecar, phase, CAPTURE_PHASE_NOT_ADMISSIBLE)
             continue
         program = programs.get(phase)
         if program is None:
             missing_program.append(phase)
+            note(sidecar, phase, CAPTURE_PROGRAM_MISSING)
             continue
         wav = sidecar.parent.parent / "wav" / f"{sidecar.stem}.wav"
         if not wav.is_file():
+            note(sidecar, phase, CAPTURE_WAV_MISSING)
             continue
         # The dump filename opens with its own microsecond stamp.
         try:
             stamp = float(sidecar.stem.split("_")[0]) / 1e6
         except ValueError:
+            note(sidecar, phase, CAPTURE_UNSTAMPED_NAME)
             continue
+        note(sidecar, phase, CAPTURE_ADMISSIBLE)
         captures.append(
             RoundCapture(
                 wav=wav,
@@ -572,13 +655,18 @@ def load_round_captures(
             },
         )
     if not captures:
+        # ``seen_phases`` counts only captures that cleared the session filter,
+        # so a non-empty one means this round WAS measured and its shape is
+        # what cannot answer — a different fix from a ring that holds nothing
+        # of this round at all.
         raise FeatureClassificationRefused(
-            NO_ADMISSIBLE_CAPTURES,
+            ROUND_SHAPE_INADMISSIBLE if seen_phases else NO_ADMISSIBLE_CAPTURES,
             {
                 "admissible_phases": sorted(ADMISSIBLE_PHASES),
                 "phases_seen": seen_phases,
                 "session_id": session_id,
                 "dumps_dir": dumps_dir.name,
+                "captures": census,
             },
         )
     return tuple(sorted(captures, key=lambda cap: cap.stamp))
@@ -1286,18 +1374,31 @@ def _run_controls(
     c2_ok = all(ratio_lo <= entry["ratio"] <= ratio_hi for entry in c2.values())
     separation = min(entry["separation_us"] for entry in pair.values())
     required = CONTROL_SEPARATION_MARGIN * max(c1_max, c3_max, 1.0)
+    # WHICH control missed, named once and reduced to ``passes`` — the same
+    # four terms the boolean was spelled from. A run that fails is a fact
+    # about one control, and #3480 met the same suite passing on one verify
+    # round of a rig and failing on another with nothing saying which moved.
+    failed = [
+        name
+        for name, ok in (
+            ("C1_min_phase_peaking", c1_max < CONTROL_MAX_FALSE_POSITIVE_US),
+            ("C2_allpass", c2_ok),
+            ("C3_min_phase_echo", c3_max < CONTROL_MAX_ECHO_FALSE_POSITIVE_US),
+            ("C4_pair", separation > required),
+        )
+        if not ok
+    ]
     verdict = {
         "C1_max_false_positive_us": c1_max,
+        "C1_limit_us": CONTROL_MAX_FALSE_POSITIVE_US,
         "C2_recovers_theory": c2_ok,
+        "C2_ratio_band": [ratio_lo, ratio_hi],
         "C3_max_false_positive_us": c3_max,
+        "C3_limit_us": CONTROL_MAX_ECHO_FALSE_POSITIVE_US,
         "C4_min_separation_us": separation,
         "C4_required_separation_us": required,
-        "passes": bool(
-            c2_ok
-            and c1_max < CONTROL_MAX_FALSE_POSITIVE_US
-            and c3_max < CONTROL_MAX_ECHO_FALSE_POSITIVE_US
-            and separation > required
-        ),
+        "failed": failed,
+        "passes": not failed,
     }
     return {
         "C0_untouched": baseline,

@@ -63,6 +63,36 @@ REFUSAL_UNSUPPORTED = "forward_model_unsupported"
 REFUSAL_NO_CURVE_PAIR = "forward_model_no_banked_curve_pair"
 REFUSAL_GRID_DISAGREES = "forward_model_branch_grids_disagree"
 
+#: Nothing measured judged this prediction. What a bare prediction always is:
+#: the model computed a curve and no capture ever contradicted it.
+ACCEPTANCE_NOT_RUN = "not_run"
+
+#: A banked measurement judged it, and ``judged_against`` names which one.
+ACCEPTANCE_JUDGED = "judged_against_measured"
+
+
+def acceptance_block(judged_against: str | None) -> dict[str, Any]:
+    """Whether a measurement judged this prediction, and which one.
+
+    The disclosure #3481 found missing: ``predict`` and ``verify-delta``
+    emitted equally authoritative JSON whether or not anything had ever
+    checked the model against a capture, so an untriaged misattribution
+    entered round provenance indistinguishably from a validated one.
+
+    ``judged_against`` is the measured comparand's own identity — the banked
+    round whose VERIFY sum the prediction was deltaed against — or ``None``,
+    which is what a prediction nothing measured is.
+
+    Disclosure, never a gate, and never a grade: this module ships no
+    acceptance tolerance and invents none, so a JUDGED record says which
+    measurement judged it and leaves what the delta MEANS to the reader
+    (invariant 3).
+    """
+    return {
+        "status": ACCEPTANCE_JUDGED if judged_against else ACCEPTANCE_NOT_RUN,
+        "judged_against": judged_against,
+    }
+
 
 class ForwardModelError(ValueError):
     """The banked curves cannot support a predicted sum.
@@ -161,6 +191,13 @@ class PredictedSum:
     ``predicted_db`` is on ``freqs_hz``, the banked pair's own shared grid.
     Outside :attr:`sum_band_hz` neither driver was swept and the prediction is
     the floor rather than a response — a reader compares inside that band.
+
+    The serialized record's ``acceptance`` is
+    :data:`ACCEPTANCE_NOT_RUN` by construction: :func:`predict_sum` sums
+    banked solos and compares them to nothing, so no instance of this class
+    was ever judged by a measurement. The judged form of the same disclosure
+    rides the delta result that did the judging
+    (:class:`~.round_views.ForwardModelDeltaResult`).
     """
 
     freqs_hz: np.ndarray
@@ -176,6 +213,7 @@ class PredictedSum:
             "predicted_db": [float(db) for db in self.predicted_db],
             "sum_band_hz": [float(edge) for edge in self.sum_band_hz],
             "take_path": self.take_path,
+            "acceptance": acceptance_block(None),
         }
 
 
@@ -345,6 +383,8 @@ def predicted_minus_measured_db(
 
 
 __all__ = [
+    "ACCEPTANCE_JUDGED",
+    "ACCEPTANCE_NOT_RUN",
     "PREDICTION_KIND",
     "PREDICTION_SCHEMA_VERSION",
     "REFUSAL_GRID_DISAGREES",
@@ -354,6 +394,7 @@ __all__ = [
     "ForwardModelError",
     "PredictedSum",
     "SummationCandidate",
+    "acceptance_block",
     "load_branch_pair",
     "predict_sum",
     "predicted_minus_measured_db",

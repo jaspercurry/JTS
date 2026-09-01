@@ -557,7 +557,14 @@ def test_failing_controls_withholds_every_verdict(tmp_path, monkeypatch):
     with pytest.raises(fx.FeatureClassificationRefused) as caught:
         _classify(tmp_path, _resonant_ir(+3.0))
     assert caught.value.reason == fx.CONTROLS_FAILED
-    assert caught.value.detail["verdict"]["passes"] is False
+    verdict = caught.value.detail["verdict"]
+    assert verdict["passes"] is False
+    # WHICH control missed, and against which bar (#3480's addendum: the same
+    # suite passed on one verify round of this rig and failed on another, with
+    # nothing in the refusal saying which of the four terms moved).
+    assert verdict["failed"] == ["C1_min_phase_peaking"]
+    assert verdict["C1_limit_us"] == 0.0
+    assert verdict["C1_max_false_positive_us"] > verdict["C1_limit_us"]
 
 
 # --------------------------------------------------------------------------- #
@@ -582,8 +589,36 @@ def test_a_lateral_round_is_refused_by_name(tmp_path):
     assert caught.value.detail["lateral_captures"] == 1
 
 
-def test_a_round_with_no_admissible_shape_is_refused_by_name(tmp_path):
-    """``check`` and ``measure`` are not the summed post-apply response."""
+@pytest.mark.parametrize(
+    ("rewrite", "expected_reason", "expected_capture_reason"),
+    [
+        pytest.param(
+            {"phase": "measure"},
+            fx.ROUND_SHAPE_INADMISSIBLE,
+            fx.CAPTURE_PHASE_NOT_ADMISSIBLE,
+            id="round_shape",
+        ),
+        pytest.param(
+            {"jts_session_identity": {"session_id": "someone-else"}},
+            fx.NO_ADMISSIBLE_CAPTURES,
+            fx.CAPTURE_OTHER_SESSION,
+            id="no_capture_for_this_round",
+        ),
+    ],
+)
+def test_the_two_ways_to_reach_no_capture_refuse_under_different_names(
+    tmp_path, rewrite, expected_reason, expected_capture_reason
+):
+    """#3480: one slug covered two situations with two different remedies.
+
+    A ring holding this round's captures in a shape the instrument cannot read
+    (``measure`` is per-driver, not the summed post-apply response) is
+    plannable-around — point at a verify-shaped round. A ring holding no
+    capture of this round at all is about the ring or the bundle it was scoped
+    to, and no round shape would satisfy it. The driver on the campaign's
+    second night burned its question on the first while reading the second's
+    name, so the two must not share one.
+    """
     bundle, dumps = _bundle(
         tmp_path, _resonant_ir(+3.0), phases=("verify", "cloud_verify")
     )
@@ -591,12 +626,23 @@ def test_a_round_with_no_admissible_shape_is_refused_by_name(tmp_path):
     assert round_dir is not None
     for sidecar in (dumps / "sidecar").glob("*.json"):
         doc = json.loads(sidecar.read_text())
-        doc["phase"] = "measure"
+        doc.update(rewrite)
         sidecar.write_text(json.dumps(doc))
+
     with pytest.raises(fx.FeatureClassificationRefused) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    assert caught.value.reason == fx.NO_ADMISSIBLE_CAPTURES
-    assert caught.value.detail["phases_seen"] == {"measure": 2}
+
+    assert caught.value.reason == expected_reason
+    assert caught.value.reason in fx.CLASSIFICATION_REFUSAL_REASONS
+    # The per-capture table: every sidecar the ring listed, and why each one
+    # is not classifiable. A refusal that names a count contradicts the ring
+    # listing the operator was just handed; this names the captures.
+    census = caught.value.detail["captures"]
+    assert len(census) == 2
+    assert {row["reason"] for row in census} == {expected_capture_reason}
+    assert {row["reason"] for row in census} <= fx.CAPTURE_ADMISSIBILITY_REASONS
+    assert not any(row["admissible"] for row in census)
+    assert all(row["sidecar"] for row in census)
 
 
 def test_a_capture_whose_program_is_missing_refuses_the_whole_round(tmp_path):

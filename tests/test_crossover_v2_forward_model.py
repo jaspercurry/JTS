@@ -23,6 +23,8 @@ from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2 import delay_landscape
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.forward_model import (
+    ACCEPTANCE_JUDGED,
+    ACCEPTANCE_NOT_RUN,
     REFUSAL_GRID_DISAGREES,
     REFUSAL_NO_CURVE_PAIR,
     BranchPair,
@@ -489,6 +491,56 @@ def test_the_acceptance_runs_worked_example_runs_on_what_the_flow_banks(
     assert payload["basis_round_dir"] == str(basis)
     assert payload["measured_round_dir"] == str(measured)
     assert payload["predicted_minus_measured"]["compared_points"] > 0
+
+
+def test_a_prediction_no_measurement_judged_says_so_on_its_own_record(
+    tmp_path, capsys,
+) -> None:
+    """Issue #3481: ``predict`` emitted identically authoritative JSON whether
+    or not anything had ever checked the model against a measurement.
+
+    Three campaign decisions were triaged on this verb before the acceptance
+    gate — which lived only in ``--help`` prose — ever reached the driver, and
+    the model then failed acceptance on sign. The record now carries whether a
+    measurement judged it, so an untriaged prediction cannot enter round
+    provenance indistinguishably from a validated one.
+    """
+
+    freqs = _grid()
+    bundle = _bank_take(tmp_path, [
+        _banked("woofer", _lr4(freqs, highpass=False), freqs),
+        _banked("tweeter", _lr4(freqs, highpass=True), freqs),
+    ])
+
+    code = cli_main(["predict", str(bundle)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["prediction"]["acceptance"] == {
+        "status": ACCEPTANCE_NOT_RUN,
+        "judged_against": None,
+    }
+
+
+def test_a_verify_delta_names_the_measurement_that_judged_the_prediction(
+    tmp_path, capsys,
+) -> None:
+    """The other half of #3481: the comparand, on the record that carries the
+    delta rather than left in the invocation the reader no longer has."""
+
+    basis = bank_measure_round(tmp_path)
+    measured = bank_verify_round(tmp_path)
+
+    code = cli_main([
+        "verify-delta", str(basis), "--measured-round", str(measured),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["acceptance"] == {
+        "status": ACCEPTANCE_JUDGED,
+        "judged_against": str(measured),
+    }
 
 
 def test_every_flag_the_acceptance_runs_prescribe_is_a_flag_the_parser_has(
