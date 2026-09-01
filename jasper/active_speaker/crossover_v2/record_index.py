@@ -67,18 +67,6 @@ def _position_deg(value: Any) -> int | None:
     return value
 
 
-def _vertical_deg(value: Any) -> int:
-    """The signed whole-degree elevation above mark height, 0 where absent.
-
-    Unlike :func:`_position_deg` this has no ``None``: a pose is always at SOME
-    height, and a record banked before the key existed was taken at the mark.
-    ``bool`` is excluded for the same reason it is there.
-    """
-    if isinstance(value, bool) or not isinstance(value, int):
-        return 0
-    return value
-
-
 def _captured_at(value: Any) -> str | None:
     """The take's own capture time as ISO-8601 UTC, or ``None``.
 
@@ -118,7 +106,9 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         _text(document.get(MEASURE_KIND_KEY)),
         _text(document.get("phase")),
         _position_deg(document.get("position_deg")),
-        _vertical_deg(document.get("vertical_deg")),
+        # A pose is always at SOME height: absent or malformed elevation
+        # reads as the mark, never ``None``.
+        _position_deg(document.get("vertical_deg")) or 0,
         _text(document.get("candidate_id")),
         _captured_at(document.get("captured_at")),
     )

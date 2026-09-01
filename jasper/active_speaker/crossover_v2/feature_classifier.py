@@ -1881,6 +1881,7 @@ def _pose_reading(
     base: dict[str, Any] = {
         "pose_id": curve.pose_id,
         "position_deg": curve.position_deg,
+        "vertical_deg": curve.vertical_deg,
         "role": curve.role,
         "resolved": False,
         "pooled_db": None,
