@@ -299,7 +299,41 @@ def test_ssh_control_path_stays_short_regardless_of_tmpdir(monkeypatch: pytest.M
 
     reloaded = _load_module()
 
-    control_path_opt = next(opt for opt in reloaded.SSH_OPTS if opt.startswith("ControlPath="))
+    control_path_opt = next(opt for opt in reloaded._SSH_OPTS if opt.startswith("ControlPath="))
     control_path = control_path_opt.removeprefix("ControlPath=")
     assert len(control_path) < 66
     assert deep_tmpdir not in control_path
+
+
+@pytest.mark.parametrize(
+    ("invoke", "program"),
+    [
+        pytest.param(lambda m: m.push_sniffer("pi.example", "pi", "sess"), "ssh", id="push_sniffer"),
+        pytest.param(lambda m: m.ssh_run("pi.example", "pi", "true", timeout=5), "ssh", id="ssh_run"),
+        pytest.param(lambda m: m.ssh_popen("pi.example", "pi", "true"), "ssh", id="ssh_popen"),
+        pytest.param(lambda m: m.scp_push("pi.example", "pi", Path("/dev/null"), "/tmp/x"), "scp", id="scp_push"),
+        pytest.param(lambda m: m.scp_pull("pi.example", "pi", "/tmp/x", Path("/dev/null")), "scp", id="scp_pull"),
+    ],
+)
+def test_every_ssh_entry_point_creates_control_dir_before_spawning(
+    invoke, program: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ControlPath dir is created lazily, so EVERY path that builds an
+    ssh/scp argv must create it first: ssh binds its control socket there
+    on the first connection, and a missing dir fails the whole run with
+    `unix_listener: cannot bind` (exit 255) -- proven live on `capture`,
+    whose first ssh is push_sniffer."""
+    control_dir = tmp_path / "cm"
+    monkeypatch.setattr(jasper_pipe_probe, "_SSH_CONTROL_DIR", control_dir)
+    spawns: list[tuple[str, bool]] = []
+
+    def _record(cmd, *_args, **_kwargs):
+        spawns.append((cmd[0], control_dir.is_dir()))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(jasper_pipe_probe.subprocess, "run", _record)
+    monkeypatch.setattr(jasper_pipe_probe.subprocess, "Popen", _record)
+
+    invoke(jasper_pipe_probe)
+
+    assert spawns == [(program, True)]
