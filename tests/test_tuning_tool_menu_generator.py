@@ -69,7 +69,7 @@ def test_every_covered_tool_declares_its_own_authority_tier():
         tier = module.AUTHORITY_TIER
         assert isinstance(tier, str) and tier
         assert tier.split()[0].split("(")[0] in (
-            "advisory", "measured", "mutating",
+            "advisory", "measured", "mutating", "mutating-with-gates",
         )
 
 

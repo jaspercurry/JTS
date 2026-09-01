@@ -166,6 +166,53 @@ def test_peak_matches_target_dbfs(tmp_path):
     assert measured_dbfs == pytest.approx(dbfs, abs=0.3)
 
 
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_the_seat_level_band_at_a_minus_one_peak_lands_in_the_hot_rms_window(
+    tmp_path, seed
+):
+    """The crest factor a seat-SPL stimulus is actually reachable through.
+
+    Field report: a 150-8000 Hz program generated here at the -20 dBFS peak
+    (``..._200dbm_...``) measures ~-33.6 dBFS RMS, because band-limited noise in
+    this band carries ~13.6 dB of crest. At a fader that cannot go above 0 dB
+    that is 19 dB of seat SPL simply unreachable, and
+    ``jasper-seat-level``'s ``spl_target_unreachable`` was the symptom.
+
+    Asked for the hottest RMS that still keeps the true peak at or under
+    -1 dBFS, the answer is the peak argument itself: this generator
+    peak-normalizes, so ``dbfs=-1.0`` yields ~-14.6 dBFS RMS — not the -12 a
+    crest-blind guess produces. Pinned as a WINDOW across seeds because the
+    crest is a property of the draw, and at the field stimulus's own 20 s
+    because it is also a property of the LENGTH — the peak is a max over
+    samples, so a 2 s draw of the same band crests ~0.8 dB lower and lands
+    hotter. Pinned at all because the reachability arithmetic in that refusal
+    is only as good as this number.
+
+    Nothing here changes a clamp: the ramp's per-sample SPL stop and its clip
+    stop are what bound the level, and a hotter stimulus only moves the same
+    target into reach at a LOWER fader.
+    """
+    path = ensure_bandlimited_noise_wav(
+        cache_dir=tmp_path,
+        f_lo_hz=150.0,
+        f_hi_hz=8000.0,
+        duration_s=20.0,
+        dbfs=-1.0,
+        sample_rate=48000,
+        seed=seed,
+    )
+    samples, *_ = _read_wav(path)
+    scaled = samples / 32767.0
+    peak_dbfs = 20.0 * math.log10(float(np.max(np.abs(scaled))))
+    rms_dbfs = 20.0 * math.log10(float(np.sqrt(np.mean(scaled**2))))
+
+    assert peak_dbfs <= -1.0 + 0.05, "true peak must stay at or under -1 dBFS"
+    assert -16.0 <= rms_dbfs <= -14.0
+    # The level token the cache filename carries, on its own convention
+    # (tenths of a dB, sign dropped) -- what an operator greps for.
+    assert "_10dbm_" in path.name
+
+
 @pytest.mark.parametrize(
     "bad",
     [

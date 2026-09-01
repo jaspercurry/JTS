@@ -29,8 +29,12 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
+from jasper.active_speaker.seat_level_reference import (
+    STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
+)
 from jasper.cli import crossover_prescriber as cli
 
+from tests.test_active_speaker_session_volume_plan import _bank_reference
 from tests.test_crossover_v2_blend_prescription import _bundle, _receipt
 from tests.test_crossover_v2_driver_prescription import (
     TWEETER_BAND,
@@ -63,11 +67,18 @@ def _no_real_pi_paths(tmp_path: Path, monkeypatch):
     ``--drivers``/``--applied-profile`` now default to real on-speaker paths;
     a test that omits either flag must stay hermetic rather than reading
     whatever happens to sit at those absolute paths on the box running pytest.
+    The seat-level reference reads the same way -- no flag, a real on-speaker
+    default path -- so it gets the same treatment: unset unless a test banks
+    one itself at an explicit path.
     """
     monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", tmp_path / "unset-drivers-default.json")
     monkeypatch.setattr(
         cli, "_APPLIED_PROFILE_DEFAULT_PATH",
         tmp_path / "unset-applied-profile-default.json",
+    )
+    monkeypatch.setenv(
+        _SEAT_LEVEL_STATE_PATH_ENV,
+        str(tmp_path / "unset-seat-level-reference.json"),
     )
 
 
@@ -439,6 +450,46 @@ def test_the_staged_state_comes_from_the_spools_own_predicate(
     assert payload["staged"]["pending"] is True
 
 
+def test_a_spool_this_user_cannot_stat_is_disclosed_rather_than_raised(
+    tmp_path, capsys, monkeypatch
+):
+    """Run as ``pi`` rather than root, the 0640 spool raises out of the stat.
+
+    That used to be a raw traceback, which is the one thing an orientation verb
+    may not do. The section now answers in the shape its three neighbours use —
+    unavailable, with the reason — and ``pending`` is ``None`` rather than
+    ``False``, because a prescriber told "nothing waiting" would stage over a
+    document nobody could see.
+
+    The spool's own predicate still raises: ``stage`` needs the real error, so
+    the catch is this verb's, not the module's.
+    """
+    session, _ = _speaker_dirs(tmp_path)
+
+    def _denied() -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(cli, "staged_prescription_pending", _denied)
+
+    code, payload = _status([str(session)], capsys)
+    _, out = _report([str(session)], capsys)
+
+    assert code == cli.EXIT_OK, "a partial answer still beats no answer"
+    assert payload["staged"]["available"] is False
+    assert payload["staged"]["pending"] is None
+    assert payload["staged"]["reason"] == cli.SPOOL_UNREADABLE_REASON
+    sudo = [action for action in payload["next_actions"] if "sudo" in action]
+    assert len(sudo) == 1
+    assert cli.SPOOL_UNREADABLE_REASON in sudo[0]
+    # Both surfaces, one wording — the same pin the four sections carry.
+    assert payload["staged"]["summary"] in out
+    assert sudo[0] in out
+    # …and nothing anywhere claims a document is or is not waiting.
+    assert not any(
+        cli.STAGED_LIFECYCLE_NOTE in action for action in payload["next_actions"]
+    )
+
+
 def test_the_staged_sentence_is_the_one_stage_itself_prints(tmp_path, capsys):
     """Two wordings of "what becomes of this file" would be two answers."""
     session, _ = _speaker_dirs(tmp_path)
@@ -716,6 +767,53 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
 
     assert any("--state" in action for action in without["next_actions"])
     assert not any("--state" in action for action in with_state["next_actions"])
+
+
+def test_no_banked_seat_level_reference_names_the_tool_that_sets_it(
+    tmp_path, capsys
+):
+    """A box that never ran `jasper-seat-level` is told, not left silent.
+
+    Absent a banked reference, every measurement session rides the codified
+    fallback -- a level nobody measured. ``_no_real_pi_paths`` already points
+    the seat-level state path at a file that does not exist, so "not banked"
+    is this suite's ambient default, same as ``--drivers`` above.
+    """
+    session, _ = _speaker_dirs(tmp_path)
+
+    _, payload = _status([str(session)], capsys)
+    _, out = _report([str(session)], capsys)
+
+    line = next(
+        (a for a in payload["next_actions"] if "seat-level" in a), None
+    )
+    assert line is not None
+    assert "jasper-seat-level" in line
+    low = cli.DEFAULT_TARGET_DB_SPL - cli.DEFAULT_TOLERANCE_DB
+    high = cli.DEFAULT_TARGET_DB_SPL + cli.DEFAULT_TOLERANCE_DB
+    assert f"{low:g}-{high:g} dB SPL" in line
+    # dB, not dBFS: the fallback is a main-volume attenuation, and the same
+    # module publishes driver caps in dBFS -- two scales one line must not mix.
+    assert f"{cli.MEASUREMENT_REFERENCE_VOLUME_DB:g} dB " in line
+    assert "dBFS" not in line
+    # Same sentence on both surfaces (the report==json pin, scoped to this line).
+    assert line in out
+
+
+def test_a_banked_seat_level_reference_is_silent_about_it(
+    tmp_path, capsys, monkeypatch
+):
+    """A converged box carries no line at all -- absence IS the signal."""
+    path = tmp_path / "seat-level-reference.json"
+    monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(path))
+    _bank_reference(path, -9.0)
+    session, _ = _speaker_dirs(tmp_path)
+
+    _, payload = _status([str(session)], capsys)
+    _, out = _report([str(session)], capsys)
+
+    assert not any("seat-level" in action for action in payload["next_actions"])
+    assert "seat-level" not in out
 
 
 # --------------------------------------------------------------------------- #

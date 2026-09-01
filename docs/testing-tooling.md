@@ -1824,16 +1824,28 @@ jasper-crossover-prescriber status <bundle-dir> --state <flow-state.json> \
 jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
     --applied-profile <applied-profile.json> --out round.json
 
-# the write side: validate what came back, against the round it answers
-jasper-crossover-prescriber propose <bundle-dir> --state <flow-state.json> \
-    --applied-profile <applied-profile.json> \
+# the write side: validate what came back, against the round it answers —
+# against the SAME file `packet` wrote, not a second packet rebuilt here
+jasper-crossover-prescriber propose --packet round.json \
     --prescription answer.json --json
 
 # the door: same gate, and the accepted answer is left for the next round
-jasper-crossover-prescriber stage <bundle-dir> --state <flow-state.json> \
-    --applied-profile <applied-profile.json> \
-    --prescription answer.json
+jasper-crossover-prescriber stage --packet round.json \
+    --state <flow-state.json> --prescription answer.json
 ```
+
+**Emit the packet once, then judge against that file.** `--packet` reads an
+already-emitted packet AS the evidence instead of rebuilding one, and the
+rebuild is what used to cost an operator a hand-copied fingerprint: a packet
+built on a laptop resolves `--drivers`/`--applied-profile` against *that*
+machine, so it fingerprints differently from the one the speaker emitted and the
+prescription written against the first is refused against the second. Nothing
+re-stamps a fingerprint — the echo is the provenance — so what the flag removes
+is the second packet. The rebuild inputs (the `<bundle-dir>` positional,
+`--drivers`, `--applied-profile`) are refused beside it; `stage` still takes
+`--state`, which it reads for the round ordinal rather than as evidence. Without
+`--packet` both verbs rebuild from the bundle exactly as before, which is the
+right shape when the whole loop runs on the speaker.
 
 `propose` is the **dry run of** `stage` — the same gate on the same document,
 and the only difference is that `stage` banks the result. Run the first to see

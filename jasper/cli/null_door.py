@@ -7,7 +7,7 @@
 ``jasper-delay-sweep propose`` computes a coordinate from banked per-driver
 curves. This plays it. One command, one mic position, one row per coordinate:
 
-* **§1a, the polarity proof** — ``--polarity both`` (the default) plays the
+* **§1b, the polarity proof** — ``--polarity both`` (the default) plays the
   in-phase and inverted takes at delay 0. A correct, time-aligned crossover
   cancels when one branch is flipped, so the PAIR is the proof; neither half
   means anything alone.
@@ -903,7 +903,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--delays", type=_delay_list, default=None,
         help="signed microsecond coordinates, comma separated; the propose "
-             "door's optimum and one neighbour either side when omitted",
+             "door's optimum and one neighbour either side when omitted. A "
+             "value starting with '-' must use the --delays=-200,-100,0 form: "
+             "argparse reads a leading dash as the next flag",
     )
     parser.add_argument(
         "--polarity", default=POLARITY_BOTH,

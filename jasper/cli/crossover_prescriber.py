@@ -27,6 +27,19 @@ avoid — so ``propose`` is the dry run of ``stage`` rather than a different
 question, and an operator who wants to see the answer before committing to it
 runs the first and then the second.
 
+**Emit the packet ONCE, and judge against that file.** ``propose`` and
+``stage`` take ``--packet <file>`` and read it AS the evidence, which is the
+intended flow: run ``packet`` on the box, hand the file to whoever writes the
+prescription, then run ``propose``/``stage`` against the same file. Rebuilding
+the packet a second time is what used to make staging a fingerprint dance — a
+rebuild on another machine resolves ``--drivers`` and ``--applied-profile``
+against whatever THAT machine has, so it fingerprints differently and the
+document written against the first one is refused against the second, leaving an
+operator to paste a fingerprint across by hand. Nothing here re-stamps a
+fingerprint and nothing ever will: the echo is provenance, and a tool that
+rewrote it would make every accepted prescription unprovable. What ``--packet``
+removes is the second packet, so the echo matches by construction.
+
 Conventions mirror :mod:`jasper.cli.correction_bundle` and the workbench plan's
 §5.0 CLI note: ``argparse`` subcommands, a per-subcommand ``--json``,
 ``main() -> int``, non-zero exit on failure, and ``-`` for stdin.
@@ -93,6 +106,14 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
 from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as _DRIVERS_DEFAULT_PATH,
 )
+from jasper.active_speaker.seat_level_reference import (
+    DEFAULT_TARGET_DB_SPL,
+    DEFAULT_TOLERANCE_DB,
+    seat_level_reference_volume_db,
+)
+from jasper.active_speaker.session_volume_plan import (
+    MEASUREMENT_REFERENCE_VOLUME_DB,
+)
 from jasper.identity import read_identity
 
 EXIT_OK = 0
@@ -124,6 +145,11 @@ STAGED_LIFECYCLE_NOTE = (
     "the next round takes it once and consumes it; an Undo withdraws it unrun"
 )
 
+#: Why the staged section has nothing to report. A slug in the packet's own
+#: style, so the section that reads a file the packet never sees still answers
+#: in the vocabulary the other three answer in.
+SPOOL_UNREADABLE_REASON = "permission_denied"
+
 
 def _speaker_url(path: str) -> str:
     """A handoff URL for THIS speaker, from the hostname it is configured with.
@@ -149,6 +175,38 @@ def _speaker_url(path: str) -> str:
     return f"http://{read_identity().hostname}{path}"
 
 
+def _read_packet_file(path: Path) -> dict[str, Any]:
+    """One already-emitted packet, read as the evidence rather than rebuilt.
+
+    The whole point of the flag: a packet emitted on the speaker and a packet
+    rebuilt on a laptop fingerprint differently, because the rebuild resolves
+    ``--drivers``/``--applied-profile`` against whatever that machine has. So
+    the answer to a packet was either re-fingerprinted by hand — provenance
+    laundering, and the one thing the echo exists to prevent — or judged against
+    evidence it was not written for. Reading the FILE removes the second packet
+    entirely; the fingerprint then matches by construction.
+
+    Every ``packet_*`` reader the gate uses takes the packet as a VALUE and
+    tolerates any shape, so a file that parses is a usable evidence source and
+    one that does not answers the tool's own "the evidence could not be read"
+    exit. ``OSError`` is deliberately not caught: an unreadable path is the same
+    failure as an unreadable bundle and both commands already map it to that
+    exit.
+    """
+    try:
+        packet = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise CrossoverEvidencePacketError(
+            f"{path} is not a readable evidence packet: {exc}"
+        ) from exc
+    if not isinstance(packet, dict):
+        raise CrossoverEvidencePacketError(
+            f"{path} must hold one evidence packet object, got "
+            f"{type(packet).__name__}"
+        )
+    return packet
+
+
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     """The packet, as a value — already separate from every verb's printing.
 
@@ -156,14 +214,66 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     errors their own way (different exception tuples, different exit codes),
     which is why the value door stops here rather than inside a shared
     try/except: one mapping could not serve three different contracts.
+
+    ``--packet`` short-circuits the build: the two sources are exclusive, and
+    :func:`_evidence_source_error` has already refused an invocation that named
+    both. The on-speaker defaults are resolved HERE rather than at the argparse
+    default, so "the operator passed this flag" stays answerable — which is
+    what that refusal is decided on.
     """
+    if args.packet:
+        return _read_packet_file(Path(args.packet))
     return build_crossover_evidence_packet(
         Path(args.session_dir),
         state_path=Path(args.state) if args.state else None,
-        driver_draft_path=Path(args.drivers) if args.drivers else None,
-        applied_profile_path=(
-            Path(args.applied_profile) if args.applied_profile else None
+        driver_draft_path=Path(args.drivers or _DRIVERS_DEFAULT_PATH),
+        applied_profile_path=Path(
+            args.applied_profile or _APPLIED_PROFILE_DEFAULT_PATH
         ),
+    )
+
+
+#: The flags that exist ONLY to feed a rebuild, and are therefore refused
+#: beside ``--packet``. ``--state`` is not among them: ``stage`` reads it for
+#: the round ordinal, which is not evidence, so it is refused per-verb below.
+_REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
+    ("--drivers", "drivers"),
+    ("--applied-profile", "applied_profile"),
+)
+
+
+def _evidence_source_error(args: argparse.Namespace) -> str | None:
+    """ONE evidence source per invocation, or the sentence that says why not.
+
+    Two sources cannot both be the evidence, and the failure of letting them
+    try is silent: the rebuild wins, the document echoes the file's fingerprint,
+    and the operator is told their prescription answers the wrong round. So a
+    rebuild input named beside ``--packet`` is refused rather than ignored.
+
+    ``--state`` is the exception, and only on ``stage``: that verb reads it for
+    the round ordinal — a fact about the SERIES, not about the round's
+    evidence — and hard-refuses without it, so refusing it here would make
+    ``stage --packet`` unreachable. On ``propose`` it feeds nothing but the
+    rebuild, so it is refused with the rest.
+    """
+    if not args.packet:
+        if args.session_dir is None:
+            return (
+                "name the evidence: a session_dir to build the packet from, or "
+                "--packet <packet JSON> to judge against one already emitted"
+            )
+        return None
+    named = ["the session_dir positional"] if args.session_dir else []
+    named += [flag for flag, dest in _REBUILD_ONLY_FLAGS if getattr(args, dest)]
+    if args.command != "stage" and args.state:
+        named.append("--state")
+    if not named:
+        return None
+    return (
+        f"--packet is the evidence, so {', '.join(named)} cannot be given "
+        "beside it: those inputs only feed a rebuild, and a rebuild "
+        "fingerprints differently from the file it was rebuilt beside — which "
+        "is the mismatch --packet exists to remove"
     )
 
 
@@ -326,6 +436,10 @@ def _gate(
 
 def _cmd_propose(args: argparse.Namespace) -> int:
     """Read a prescription back through the gate, and say what it becomes."""
+    source_error = _evidence_source_error(args)
+    if source_error is not None:
+        print(f"error: {source_error}", file=sys.stderr)
+        return EXIT_EVIDENCE_UNREADABLE
     try:
         payload, prescription, candidate_fields, _ = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
@@ -556,6 +670,10 @@ def _next_round_ordinal(state_path: str | None) -> int:
 
 def _cmd_stage(args: argparse.Namespace) -> int:
     """Accept a prescription and leave it where the next round will take it."""
+    source_error = _evidence_source_error(args)
+    if source_error is not None:
+        print(f"error: {source_error}", file=sys.stderr)
+        return EXIT_EVIDENCE_UNREADABLE
     if not args.state:
         print(
             "error: --state is required to stage a prescription; the round it "
@@ -792,11 +910,37 @@ def _staged_section() -> dict[str, Any]:
     rather than in any bundle, so a prescription waiting for the next round is
     a fact whichever directory the operator named — including a directory that
     turned out not to be a bundle at all.
+
+    The spool sits under ``/var/lib/jasper/``, which the installer owns
+    ``root:jasper`` at 0770, so an operator running this verb as a login user
+    outside that group cannot even traverse to the file and gets
+    ``PermissionError`` out of the stat — which used to be a traceback and is
+    now the fourth section reporting unavailable with its reason, the shape
+    the three evidence sections beside it already use. ``pending`` is ``None``
+    rather than ``False`` there: "no document is waiting" and "nobody could
+    look" are different facts, and a prescriber told the first would stage over a
+    document it never saw. The refusal is NOT swallowed at the spool — ``stage``
+    still needs the real error — so the catch lives here, in the one verb whose
+    contract is a partial answer.
     """
-    pending = staged_prescription_pending()
+    path = str(prescription_spool_path())
+    try:
+        pending = staged_prescription_pending()
+    except PermissionError:
+        return {
+            "available": False,
+            "pending": None,
+            "path": path,
+            "reason": SPOOL_UNREADABLE_REASON,
+            "summary": (
+                f"whether one is waiting is unknown ({SPOOL_UNREADABLE_REASON})"
+            ),
+        }
     return {
+        "available": True,
         "pending": pending,
-        "path": str(prescription_spool_path()),
+        "path": path,
+        "reason": None,
         "summary": (
             f"one prescription waiting — {STAGED_LIFECYCLE_NOTE}"
             if pending
@@ -963,8 +1107,31 @@ def _next_actions(
     if not state_supplied:
         out.append("pass --state <flow state JSON>: `stage` refuses without it")
 
-    if sections["staged"]["pending"]:
+    staged = sections["staged"]
+    if not staged["available"]:
+        out.append(
+            f"the spool could not be read ({staged['reason']}) — run with sudo "
+            "for the full report"
+        )
+    elif staged["pending"]:
         out.append(f"a prescription is already staged — {STAGED_LIFECYCLE_NOTE}")
+
+    # `seat_level_reference_volume_db()` already fails soft to `None` both
+    # when this box never ran the leveling step and when /var/lib/jasper does
+    # not exist at all (a laptop checkout) -- the same shape
+    # `staged_prescription_pending()` above relies on -- so no on-box guard
+    # is needed here. A banked reference adds NO line: the absence of this
+    # warning is itself the signal, so a converged box stays uncluttered.
+    if seat_level_reference_volume_db() is None:
+        out.append(
+            "no seat-level measurement reference is banked — measurement "
+            f"sessions ride the {MEASUREMENT_REFERENCE_VOLUME_DB:g} dB "
+            "main-volume fallback; `jasper-seat-level` sets the seat to the "
+            f"default {DEFAULT_TARGET_DB_SPL - DEFAULT_TOLERANCE_DB:g}-"
+            f"{DEFAULT_TARGET_DB_SPL + DEFAULT_TOLERANCE_DB:g} dB SPL target "
+            "(--target-db-spl states another) and banks the reference"
+        )
+
     out.append(f"run, apply, or undo a round at {crossover_url}")
     return out
 
@@ -1162,15 +1329,36 @@ _APPLIED_PROFILE_HELP = (
 )
 
 
+#: What ``--packet`` is, and why it exists. The packet a laptop rebuilds is not
+#: the packet the speaker emitted — the rebuild resolves ``--drivers`` and
+#: ``--applied-profile`` against whatever THAT machine has — so the two
+#: fingerprint differently and a document answering one is refused against the
+#: other. Emitting once and judging against the file removes the second packet
+#: rather than teaching anything to re-stamp a fingerprint, which would make the
+#: echo worthless as provenance.
+_PACKET_HELP = (
+    "an evidence packet JSON file (what `packet` emitted), used AS this "
+    "round's evidence instead of rebuilding one. Emit the packet ONCE on the "
+    "speaker, hand that file to whoever writes the prescription, then judge "
+    "the answer against the SAME file: the fingerprint the document echoes "
+    "matches by construction and nobody copies one by hand. The rebuild inputs "
+    "(the session_dir positional, --drivers, --applied-profile) are refused "
+    "beside it; `stage` still takes --state, which it reads for the round "
+    "ordinal rather than as evidence"
+)
+
+
 def _add_evidence_args(
     parser: argparse.ArgumentParser,
     *,
     state_help: str = _STATE_HELP_OPTIONAL,
     session_dir_optional: bool = False,
+    packet_source: bool = False,
 ) -> None:
+    optional_positional = session_dir_optional or packet_source
     parser.add_argument(
         "session_dir",
-        nargs="?" if session_dir_optional else None,
+        nargs="?" if optional_positional else None,
         help=(
             "a commissioning bundle directory (the one holding info.json and "
             "evidence/v1/artifacts/crossover_v2/<relay-session-id>/)"
@@ -1181,23 +1369,30 @@ def _add_evidence_args(
                 if session_dir_optional
                 else ""
             )
+            + (
+                ". Omit it when --packet names the evidence; the two are "
+                "exclusive and naming both is refused"
+                if packet_source
+                else ""
+            )
         ),
     )
     # Not `required=True` even for ``stage``: argparse would refuse before the
     # two speaker-level questions are asked, and the command owns a sentence
     # that says WHY the flag matters here. The check lives in `_cmd_stage`.
     parser.add_argument("--state", default=None, help=state_help)
-    # TRUE argparse defaults: `--help` has always printed these on-Pi paths as
-    # though they were defaults; omitting the flag now actually reads them,
-    # rather than silently carrying no per-driver evidence.
-    parser.add_argument(
-        "--drivers", default=str(_DRIVERS_DEFAULT_PATH), help=_DRIVERS_HELP
-    )
-    parser.add_argument(
-        "--applied-profile",
-        default=str(_APPLIED_PROFILE_DEFAULT_PATH),
-        help=_APPLIED_PROFILE_HELP,
-    )
+    # `None` at the parser, resolved to the on-Pi path in `_load_packet`: the
+    # default is still TRUE (omitting the flag reads it), and keeping it out of
+    # the namespace is what lets `_evidence_source_error` tell an operator who
+    # named the flag from one who did not.
+    parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
+    parser.add_argument("--applied-profile", default=None, help=_APPLIED_PROFILE_HELP)
+    if packet_source:
+        parser.add_argument("--packet", default=None, help=_PACKET_HELP)
+    else:
+        # So every verb's namespace answers the question `_load_packet` asks,
+        # rather than the loader reaching for an attribute only two verbs have.
+        parser.set_defaults(packet=None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1217,13 +1412,19 @@ def build_parser() -> argparse.ArgumentParser:
             "    SAME gate propose does, so skipping propose only delays\n"
             "    finding out about a refusal, it does not avoid the gate\n"
             "\n"
-            "EXAMPLE\n"
+            "EXAMPLE -- emit the packet ONCE, then judge against that file\n"
             "  jasper-crossover-prescriber packet captures/.../session-1 \\\n"
-            "      > packet.json\n"
-            "  jasper-crossover-prescriber propose captures/.../session-1 \\\n"
+            "      --out packet.json\n"
+            "  jasper-crossover-prescriber propose --packet packet.json \\\n"
             "      --prescription my_prescription.json\n"
-            "  jasper-crossover-prescriber stage captures/.../session-1 \\\n"
+            "  jasper-crossover-prescriber stage --packet packet.json \\\n"
             "      --prescription my_prescription.json --state flow_state.json\n"
+            "\n"
+            "  The fingerprint the document echoes is the file's, so it\n"
+            "  matches by construction. Rebuilding the packet on another\n"
+            "  machine resolves --drivers/--applied-profile against THAT\n"
+            "  machine and fingerprints differently, which is what used to\n"
+            "  send an operator copying a fingerprint across by hand.\n"
             "\n"
             "EXIT CODES\n"
             "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
@@ -1272,7 +1473,7 @@ def build_parser() -> argparse.ArgumentParser:
         "propose",
         help="validate a prescription against the round it answers",
     )
-    _add_evidence_args(propose)
+    _add_evidence_args(propose, packet_source=True)
     propose.add_argument(
         "--prescription",
         required=True,
@@ -1290,7 +1491,7 @@ def build_parser() -> argparse.ArgumentParser:
             "validate a prescription and leave it for the next round to apply"
         ),
     )
-    _add_evidence_args(stage, state_help=_STATE_HELP_REQUIRED)
+    _add_evidence_args(stage, state_help=_STATE_HELP_REQUIRED, packet_source=True)
     stage.add_argument(
         "--prescription",
         required=True,

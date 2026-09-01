@@ -1177,6 +1177,58 @@ def test_the_stage_verb_stamps_the_round_the_receipt_says_is_next(
     assert envelope["prescription_sha256"] == prescription_sha256(_document())
 
 
+def test_the_stage_verb_banks_a_document_judged_against_a_saved_packet_FILE(
+    tmp_path, monkeypatch,
+):
+    """The whole flow, ending where it is supposed to: emit once, stage that.
+
+    ``--packet`` is what removes the second packet, and with it the hand-copied
+    fingerprint that staging used to need. The builder is replaced with a
+    raiser, so the file is the only thing that can have answered.
+
+    ``--state`` survives beside ``--packet`` here and only here: this verb reads
+    it for the round ordinal — a fact about the SERIES, not the round's
+    evidence — and hard-refuses without one.
+    """
+    from tests.test_crossover_v2_blend_prescription import (
+        _bundle,
+        _cut,
+        _document as _blend_document,
+    )
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        build_crossover_evidence_packet,
+    )
+
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(json.dumps(packet))
+    document = tmp_path / "prescription.json"
+    payload = json.dumps(_blend_document([_cut(-1.5)], packet)).encode()
+    document.write_bytes(payload)
+    state = _write_state(tmp_path, ordinal=8)
+
+    def _raise(*_a, **_k):  # pragma: no cover - asserted by not firing
+        raise AssertionError("the packet was rebuilt instead of read from --packet")
+
+    monkeypatch.setattr(cli, "build_crossover_evidence_packet", _raise)
+
+    code = cli.main([
+        "stage", "--packet", str(packet_path), "--state", str(state),
+        "--prescription", str(document),
+    ])
+
+    assert code == cli.EXIT_OK
+    envelope = json.loads(spool.prescription_spool_path().read_text())
+    assert envelope["for_round_ordinal"] == 9
+    assert envelope["packet_fingerprint"] == packet["packet_fingerprint"]
+    assert envelope["prescription_sha256"] == prescription_sha256(payload)
+
+
 def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
     tmp_path, capsys,
 ):

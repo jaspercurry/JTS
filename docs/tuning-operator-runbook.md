@@ -101,7 +101,12 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
 2. **Read the round.** `jasper-crossover-prescriber packet` → one versioned JSON
    document per banked round (`--compact` to drop indentation, `--json` to
    suppress the human summary on stderr). This is the evidence surface; it is a
-   **computed view**, so rebuild it rather than reading a stale copy.
+   **computed view**, so rebuild it per ROUND rather than carrying one across
+   rounds. **Within one round, emit it once to a file** (`--out packet.json`)
+   and hand that file to steps 4 and 5 with `--packet`: a rebuild resolves
+   `--drivers`/`--applied-profile` against whichever machine ran it, so a second
+   packet fingerprints differently and the prescription written against the
+   first is refused against it.
 3. **Re-run the deterministic views** as needed:
    `jasper-classify-features <bundle-dir> --dumps <ring>` files
    `feature_classification.json` into the round dir;
@@ -110,9 +115,10 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
    `jasper-round-views frozen | per-seat | repeat | agreement | frequency`
    grades it.
 4. **Propose.** Author the prescription JSON yourself, then
-   `jasper-crossover-prescriber propose --prescription -` — a true dry run
-   sharing the whole gate with `stage`.
-5. **Stage.** `jasper-crossover-prescriber stage --prescription -` writes the
+   `jasper-crossover-prescriber propose --packet packet.json --prescription -`
+   — a true dry run sharing the whole gate with `stage`.
+5. **Stage.** `jasper-crossover-prescriber stage --packet packet.json --state
+   <flow-state> --prescription -` writes the
    single-slot mailbox at
    `/var/lib/jasper/active_speaker_crossover_v2_prescription.json`, consumed on
    take. One slot, last write wins, logged.
@@ -433,6 +439,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 <!-- BEGIN GENERATED TOOL MENU (scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->
 | Tool | Does | Authority | Where |
 |---|---|---|---|
+| `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction. Replaces the live tune; deletes no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL, then bank that volume as the crossover session's measurement reference. PRECONDITION: the mic's Sens Factor is quoted at MAXIMUM capture volume — confirm `amixer -c <card>` shows the capture control at 100%, or every absolute SPL below is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|withdraw` | State one angle walk, see what it resolves to, and leave it for the next measurement session. | mutating (`stage` writes; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |
 | `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
@@ -592,7 +599,8 @@ blend**. It applies with no measured candidate — a measured crossover still
 comes only from `handle_v2_apply` above. The apply is **durable**: it persists
 the applied record and publishes the canonical config, and CamillaDSP's own
 statefile keeps the running path across a restart. Nothing refuses it while a
-measured tune is live.
+measured tune is live. `jasper-basic-profile review | apply` is that door's
+machine surface — one command on the speaker, no wizard session to reconstruct.
 
 **It replaces the live Layer A, and it says what it derived.** Every
 linearization filter and any blend correction the measured profile was carrying
