@@ -35,6 +35,23 @@ INVOCATIONS = {
 }
 
 
+# sysexits EX_CONFIG: _lib.sh refuses rather than guess a speaker (#3498).
+NO_TARGET_EXIT = 78
+
+
+def _identity_file(tmp_path: Path) -> Path:
+    """A reconciler-shaped identity.env, as jasper-identity-reconcile writes
+    it (key names owned by jasper/identity_state.py)."""
+    path = tmp_path / "identity.env"
+    path.write_text(
+        "JASPER_IDENTITY_OS_HOSTNAME=jts7\n"
+        "JASPER_IDENTITY_AVAHI_HOSTNAME=jts7.local\n"
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts7.local\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -112,8 +129,11 @@ def _run_script(
     log.unlink(missing_ok=True)
 
     env = os.environ.copy()
-    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME", "JASPER_IDENTITY_FILE"):
         env.pop(key, None)
+    # Hermetic against a real box: point the on-box identity lookup at a
+    # path that does not exist unless a test names one.
+    env["JASPER_IDENTITY_FILE"] = str(repo / "absent-identity.env")
     env.update(inherited)
     env.update(
         {
@@ -250,10 +270,12 @@ def test_jasper_hostname_compatibility_fallback_comes_from_shared_owner(
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
-def test_final_pi_target_defaults_come_from_shared_owner(
+def test_unnamed_target_refuses_instead_of_guessing_a_speaker(
     script_repo: tuple[Path, Path, Path],
     name: str,
 ) -> None:
+    """#3498: `jts.local` resolves to whichever box on the LAN claimed the
+    name, so an unnamed target is a refusal — never a guess, never ssh."""
     result, calls = _run_script(
         script_repo,
         name,
@@ -261,8 +283,44 @@ def test_final_pi_target_defaults_come_from_shared_owner(
         inherited={},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
-    assert "pi@jts.local" in calls
+    assert result.returncode == NO_TARGET_EXIT, result.stdout + result.stderr
+    assert calls == ""
+
+
+def test_on_box_identity_file_supplies_the_target(
+    script_repo: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """Run ON a speaker there IS a right answer: the hostname the
+    reconciler recorded for this box (jasper/identity_state.py's file)."""
+    result, calls = _run_script(
+        script_repo,
+        "tail-pi-logs.sh",
+        env_local=None,
+        inherited={"JASPER_IDENTITY_FILE": str(_identity_file(tmp_path))},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pi@jts7.local" in calls
+
+
+def test_explicit_target_outranks_the_on_box_identity_file(
+    script_repo: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_script(
+        script_repo,
+        "tail-pi-logs.sh",
+        env_local=None,
+        inherited={
+            "JASPER_IDENTITY_FILE": str(_identity_file(tmp_path)),
+            "PI_HOST": "explicit.invalid",
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pi@explicit.invalid" in calls
+    assert "jts7.local" not in calls
 
 
 def test_gemini_unknown_alias_exits_without_network(

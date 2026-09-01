@@ -131,8 +131,9 @@ Usage::
         --attest-rig-clear --expect-angles 0,7,-7,22,-22
 
 ``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
-wins over the ``jts.local`` default — the resolution is ``scripts/_lib.sh``'s
-own (issue #2689), and the resolved host is named in the run trail. The same
+wins over the box's own recorded identity — the resolution is
+``scripts/_lib.sh``'s own (issue #2689), and the resolved host is named in the
+run trail. The same
 values are exported into the bank script, so both halves of a round can never
 target different speakers.
 """
@@ -372,9 +373,9 @@ def resolve_target(hostname_override: str | None = None,
 
     env_local = (REPO_ROOT / ".env.local").exists()
     # Where a value came from when the library answered but the file does not
-    # exist: `_lib.sh` supplies `jts.local`/`pi` itself, so calling that
-    # ".env.local" would name a file the operator could go look for and not
-    # find.
+    # exist: `_lib.sh` answered from this box's own identity.env or supplied
+    # `pi` itself, so calling that ".env.local" would name a file the operator
+    # could go look for and not find.
     lib_source = ".env.local" if env_local else "the built-in default"
 
     def _pick(override: str, caller: str, lib: str, default: str) -> tuple[str, str]:

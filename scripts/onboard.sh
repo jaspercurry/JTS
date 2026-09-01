@@ -80,7 +80,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
-. "${SCRIPT_DIR}/_lib.sh"
+JTS_LIB_TARGET_OPTIONAL=1 . "${SCRIPT_DIR}/_lib.sh"  # the target is this script's argument, not _lib.sh's
 
 # ---- argument parsing ---------------------------------------------------
 

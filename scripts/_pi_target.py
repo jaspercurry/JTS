@@ -8,13 +8,14 @@
 
 Sources ``scripts/_lib.sh`` once -- the checkout's single ``.env.local``
 reader (issue #2689) -- rather than each caller re-parsing the file itself.
-``_lib.sh`` guarantees ``PI_HOST``/``PI_USER`` are always non-empty after a
-successful source (its own final fallback is ``jts.local``/``pi``), so this
-module treats a failed run OR an empty result as ``_lib.sh`` itself being
-broken and raises :class:`LibTargetError` rather than guessing a value --
-callers decide whether that is fatal or a disclosed fallback (they differ:
-``scripts/jasper-pipe-probe`` fails loud, ``scripts/run-crossover-round.py``
-degrades to caller-env/defaults with a Trail disclosure).
+``_lib.sh`` guarantees ``PI_HOST``/``PI_USER`` are non-empty after a
+successful source, and exits non-zero when nothing names a target rather
+than guessing ``jts.local`` (#3498), so this module treats a failed run OR
+an empty result as "no target" and raises :class:`LibTargetError` rather
+than guessing a value -- callers decide whether that is fatal or a
+disclosed fallback (they differ: ``scripts/jasper-pipe-probe`` fails loud,
+``scripts/run-crossover-round.py`` degrades to caller-env/defaults with a
+Trail disclosure).
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB_SH = REPO_ROOT / "scripts" / "_lib.sh"
 
 _LIB_QUERY = (
-    'set -u; . "$0" >/dev/null 2>&1; '
+    'set -u; . "$0" >/dev/null; '  # stderr survives: it carries _lib.sh's refusal
     'printf "%s\\n%s\\n%s\\n" "$PI_HOST" "$PI_USER" "${JASPER_HOSTNAME:-}"'
 )
 
@@ -36,9 +37,10 @@ class LibTargetError(RuntimeError):
 
 def resolve_lib_target(*, timeout: float = 30) -> tuple[str, str, str]:
     """``(host, user, hostname)`` as ``scripts/_lib.sh`` itself resolves
-    them: caller env, then ``.env.local``, then ``jts.local``/``pi``/unset.
-    Raises :class:`LibTargetError` on any failure to run it, a nonzero
-    exit, or an empty ``PI_HOST``/``PI_USER`` in its output."""
+    them: caller env, then ``.env.local``, then this box's own recorded
+    identity. Raises :class:`LibTargetError` on any failure to run it, a
+    nonzero exit (including its refusal to guess a target), or an empty
+    ``PI_HOST``/``PI_USER`` in its output."""
     try:
         proc = subprocess.run(
             ["bash", "-c", _LIB_QUERY, str(LIB_SH)],

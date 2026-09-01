@@ -16,6 +16,7 @@ RESULTS_DIR to a ``-ethernet-reference`` suffix and logs the redirect.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import wave
@@ -63,11 +64,14 @@ def _write_pcm_wav(
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
+    # The harness targets speakers, so _lib.sh requires one to be named
+    # (#3498); these runs exit at the argument layer, before any network.
     return subprocess.run(
         ["bash", str(_SCRIPT), *args],
         capture_output=True,
         text=True,
         timeout=10,
+        env={**os.environ, "PI_HOST": "jts9.invalid"},
     )
 
 

@@ -60,7 +60,7 @@ _CC1PLUS_OOM = (
 
 def _lib_fn(fn: str, arg: str, *, pipefail: bool = False) -> subprocess.CompletedProcess[str]:
     prefix = "set -o pipefail; " if pipefail else ""
-    script = f'{prefix}source "{LIB}"; {fn} "$1"'
+    script = f'{prefix}JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; {fn} "$1"'
     return subprocess.run(
         ["bash", "-c", script, "bash", arg],
         capture_output=True, text=True, timeout=30,
@@ -68,7 +68,7 @@ def _lib_fn(fn: str, arg: str, *, pipefail: bool = False) -> subprocess.Complete
 
 
 def _lib_predicate(fn: str, arg: str) -> int:
-    script = f'source "{LIB}"; {fn} "$1"'
+    script = f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; {fn} "$1"'
     return subprocess.run(
         ["bash", "-c", script, "bash", arg],
         capture_output=True, text=True, timeout=30,
@@ -153,7 +153,7 @@ def test_oom_unit_is_production_false_for_build_and_unknown():
 
 _OOM_HARNESS = r"""
 set -o pipefail
-source "@LIB@"
+JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 # Extract the real report_oom_collateral() — its def line through the first
 # column-0 '}'. eval defines it; nothing else in the deploy script runs.
 eval "$(awk '/^report_oom_collateral\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"

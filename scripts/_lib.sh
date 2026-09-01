@@ -40,7 +40,15 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #            unset for the caller to resolve from that same host.
 #   file     neither was set, so this checkout's `.env.local` supplies
 #            both (written by scripts/onboard.sh and scripts/use).
-#   default  neither was set and no file names a host: jts.local.
+#   identity this invocation is running ON a speaker, so the box's own
+#            recorded identity answers (see jts_lib_identity_hostname).
+#   unset    nothing names a target and the caller declared it does not
+#            need one (JTS_LIB_TARGET_OPTIONAL=1): PI_HOST stays unset.
+#
+# With none of those, sourcing REFUSES (exit 78) instead of guessing
+# `jts.local`: on a multi-speaker LAN that name resolves to whichever box
+# claimed it, so a guess deploys to, or measures, the wrong speaker
+# silently (issue #3498, docs/tuning-master-plan.md invariant 7).
 #
 # PI_USER is a login, not an identity: caller, then file, then `pi`.
 #
@@ -62,6 +70,24 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # it, so deploy-to-pi.sh gives the guard no state file — reading it
 # would bless the wrong Pi, writing it would corrupt the checkout's own.
 #
+# The hostname a speaker records for ITSELF, for an invocation running on
+# the box (over ssh, say) rather than on the laptop: the reconciler's
+# snapshot of the configured JASPER_HOSTNAME. Same file, same key and same
+# JASPER_IDENTITY_FILE override that jasper/identity_state.py reads, so
+# both sides of the repo answer "which speaker is this" identically.
+# Empty (and success) when the file is absent or names none.
+jts_lib_identity_hostname() {
+    local file="${JASPER_IDENTITY_FILE:-/var/lib/jasper/identity.env}"
+    local line value=""
+    [[ -r "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == JASPER_IDENTITY_CONFIGURED_HOSTNAME=* ]] || continue
+        value="${line#*=}"
+        value="${value%$'\r'}"
+    done < "$file"
+    printf '%s\n' "$value"
+}
+
 # The temporaries are prefixed because this file is sourced INTO other
 # scripts, whose own variables must survive it.
 _jts_lib_caller_host="${PI_HOST:-}"
@@ -92,15 +118,25 @@ if [[ -n "$_jts_lib_caller_host" || -n "$_jts_lib_caller_hostname" ]]; then
 elif [[ -n "${PI_HOST:-}" || -n "${JASPER_HOSTNAME:-}" ]]; then
     export JTS_TARGET_FROM=file
     export PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-}}"
+elif _jts_lib_identity_host="$(jts_lib_identity_hostname)" \
+    && [[ -n "$_jts_lib_identity_host" ]]; then
+    export JTS_TARGET_FROM=identity
+    export PI_HOST="$_jts_lib_identity_host"
+elif [[ "${JTS_LIB_TARGET_OPTIONAL:-}" == "1" ]]; then
+    export JTS_TARGET_FROM=unset
+    unset PI_HOST
 else
-    export JTS_TARGET_FROM=default
-    export PI_HOST=jts.local
+    printf '%s%s\n' \
+        "_lib.sh: no target speaker — set PI_HOST=<host> or JASPER_HOSTNAME=<name>, " \
+        "or run scripts/onboard.sh <host> / scripts/use <host> for this checkout" >&2
+    exit 78
 fi
 if [[ -n "$_jts_lib_caller_user" ]]; then
     export PI_USER="$_jts_lib_caller_user"
 fi
 export PI_USER="${PI_USER:-pi}"
-unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user
+unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user \
+    _jts_lib_identity_host
 
 # Print the Python executable for repository-bound laptop tooling.
 # Precedence is the effective PYTHON value (one executable token/path),
