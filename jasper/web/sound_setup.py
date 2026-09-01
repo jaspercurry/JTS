@@ -2042,12 +2042,9 @@ async def _live_draft_profile(
     # The trim is derived from the SAVED profile, never from the draft, so an
     # edit cannot move it. Match-loudness makes the trim a function of the
     # profile's own EQ, so a draft-derived trim would fold into
-    # `active_baseline_headroom`'s VALUE and be written by PatchConfig — an
-    # instant, un-ducked, full-spectrum level step mid-drag — while its stereo
-    # twin `sound_preamp` is emitted only when the trim is positive, so it
-    # would add and remove a FILTER and force the ducked swap this path exists
-    # to avoid. The durable save realises any change across a swap that ducks
-    # anyway.
+    # `active_baseline_headroom`'s VALUE and be written in place — an
+    # instant, un-ducked, full-spectrum level step mid-drag. The durable save
+    # realises any change across a swap that ducks anyway.
     #
     # NOT frozen for the session, which would be the stronger claim: `settings`
     # is re-read above, so changing headroom_trim_db or match_loudness from the

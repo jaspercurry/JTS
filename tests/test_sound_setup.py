@@ -7642,11 +7642,9 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
 
     The trim is a function of the profile's own EQ when match-loudness is on.
     Derived from the DRAFT it would fold into ``active_baseline_headroom``'s
-    value and be written by PatchConfig — an instant, un-ducked, full-spectrum
-    level step — and its stereo twin ``sound_preamp`` is emitted only when the
-    trim is positive, so it would add and remove a FILTER and force the very
-    swap this path exists to avoid. Derived from the SAVED profile it is one
-    number for the whole session.
+    value and be written in place — an instant, un-ducked, full-spectrum
+    level step. Derived from the SAVED profile it is one number for the whole
+    session.
     """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     settings_path = tmp_path / "settings.json"
