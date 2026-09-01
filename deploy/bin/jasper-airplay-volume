@@ -86,6 +86,27 @@ while [ "$attempt" -lt 3 ]; do
     failures=0
     while [ "$passes" -lt 25 ]; do
         pct="$(cat "$state" 2>/dev/null)" || break
+        # A session start is not a drag. macOS animates the sender's slider up
+        # from the bottom of its scale to the real level — measured on jts3 as
+        # ~10 messages 200 ms apart, 6 % to 63 % over ~2 s — so replaying the
+        # burst dips the speaker tens of dB before it swells back. While the
+        # marker is present, wait for two unchanged passes (400 ms, two message
+        # intervals) and adopt the level the animation settles on, in one post.
+        # A user's nudge carries no marker and still tracks step by step.
+        if [ -e "$session_start" ]; then
+            settled=0
+            while [ "$settled" -lt 2 ] && [ "$passes" -lt 25 ]; do
+                sleep 0.2
+                passes=$((passes + 1))
+                probe="$(cat "$state" 2>/dev/null)" || break
+                if [ "$probe" = "$pct" ]; then
+                    settled=$((settled + 1))
+                else
+                    settled=0
+                    pct="$probe"
+                fi
+            done
+        fi
         [ "$pct" = "$last" ] && break
         body="{\"percent\": ${pct}, \"source\": \"airplay\""
         # `rm` succeeds only for the process that actually removes the

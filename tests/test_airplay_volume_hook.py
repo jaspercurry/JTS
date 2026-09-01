@@ -262,6 +262,27 @@ def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
     assert [body["percent"] for _, body in _Recorder.posts] == [0, 100]
 
 
+def _fire_burst(
+    percents, *, runtime_dir: Path, port: int, spacing: float,
+) -> None:
+    """Fire one hook invocation per volume message, the way shairport does.
+
+    Messages are scheduled against an absolute clock, so Popen's own cost
+    doesn't stretch the burst the assertions are written about.
+    """
+    env = _hook_env(runtime_dir, port)
+    started = time.monotonic()
+    running = []
+    for index, percent in enumerate(percents):
+        delay = started + index * spacing - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        db = AIRPLAY_DB_MIN + (AIRPLAY_DB_MAX - AIRPLAY_DB_MIN) * percent / 100
+        running.append(subprocess.Popen(["sh", str(HOOK), f"{db:.6f}"], env=env))
+    for process in running:
+        assert process.wait(timeout=60) == 0
+
+
 @requires_flock
 def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     control_stub, tmp_path,
@@ -275,20 +296,70 @@ def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     harder (fewer posts), and the holder re-reads the published value after
     releasing the lock, so the last post is the last value either way.
     """
-    messages = [f"{-30.0 + 30.0 * i / 20.0:.6f}" for i in range(21)]
-    env = _hook_env(tmp_path, control_stub.server_port)
+    messages = list(range(0, 101, 5))
 
-    running = []
-    for db in messages:
-        running.append(subprocess.Popen(["sh", str(HOOK), db], env=env))
-        time.sleep(0.05)
-    for process in running:
-        assert process.wait(timeout=60) == 0
+    _fire_burst(
+        messages,
+        runtime_dir=tmp_path,
+        port=control_stub.server_port,
+        spacing=0.05,
+    )
 
     percents = [body["percent"] for _, body in _Recorder.posts]
     assert percents, "the drag produced no volume write at all"
     assert len(percents) < len(messages)
     assert percents[-1] == 100
+    assert percents == sorted(percents)
+
+
+# The connect animation macOS plays at every AirPlay session start, measured
+# on jts3: ten volume messages 200 ms apart walking the sender's slider up
+# from the bottom of its scale to where the user actually left it (63 %).
+CONNECT_FADE_UP = [6, 13, 19, 25, 31, 38, 44, 50, 57, 63]
+FADE_SPACING_S = 0.2
+
+
+@requires_flock
+def test_a_session_start_fade_up_is_adopted_once_at_its_settled_level(
+    control_stub, tmp_path,
+):
+    """A session start is not a drag. Replaying the connect animation took the
+    master down ~28 dB and swelled it back over two seconds — audible on every
+    connect. The speaker adopts the level the animation settles on, once, and
+    that write still carries `observation_initial`."""
+    _run_hook("--session-start", runtime_dir=tmp_path)
+
+    _fire_burst(
+        CONNECT_FADE_UP,
+        runtime_dir=tmp_path,
+        port=control_stub.server_port,
+        spacing=FADE_SPACING_S,
+    )
+
+    assert [body["percent"] for _, body in _Recorder.posts] == [
+        CONNECT_FADE_UP[-1],
+    ]
+    assert _Recorder.posts[0][1].get("observation_initial") is True
+
+
+@requires_flock
+def test_the_same_ramp_without_a_session_start_still_tracks_the_slider(
+    control_stub, tmp_path,
+):
+    """Unmuting at the sender replays the same ramp shape with no marker in
+    front of it. That is a live volume change, not a connect snapshot, so it
+    must keep following the slider from where the ramp starts."""
+    _fire_burst(
+        CONNECT_FADE_UP,
+        runtime_dir=tmp_path,
+        port=control_stub.server_port,
+        spacing=FADE_SPACING_S,
+    )
+
+    percents = [body["percent"] for _, body in _Recorder.posts]
+    assert len(percents) > 1
+    assert percents[0] < percents[-1]
+    assert percents[-1] == CONNECT_FADE_UP[-1]
     assert percents == sorted(percents)
 
 
