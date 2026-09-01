@@ -853,6 +853,20 @@ impl StateServer {
                 let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
                 push_kv_f64(buf, "ratio_ppm", ratio_ppm, 2);
                 buf.push(',');
+                // The controller's lifetime rail counters (issue #3464): times
+                // the bounded ratio hit ±max_adjust_ppm, and times a clamped
+                // loop wound against the fill error was anti-windup reset. A
+                // growing clamp_count is the "ratio is railing" signal the
+                // ratio_ppm gauge alone only shows if polled at the right
+                // moment.
+                push_kv_u64(buf, "clamp_count", r.clamp_count.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "anti_windup_count",
+                    r.anti_windup_count.load(Ordering::Relaxed),
+                );
+                buf.push(',');
                 // Live ring fill (current) vs. the configured hold target — the
                 // operator's "the resampler engaged and is tracking" proof: a
                 // fill_frames steady near target_fill_frames = locked & holding.
@@ -875,6 +889,9 @@ impl StateServer {
                 buf.push(',');
                 // Post-lock cushion-decay state (all inert while decay is off):
                 // enabled = startup config; active = actively decaying;
+                // demand_ppm = the live rate demand the descent exerts on the
+                // inner resampler (0 unless active — the exact term subtracted
+                // from the host-clock observable, #3466);
                 // floor = the configured decay floor;
                 // frozen_reason = why decay is paused ("" while actively decaying,
                 // else unlocked / not_l0 / cascade / warmup / at_floor).
@@ -882,6 +899,10 @@ impl StateServer {
                 push_kv_bool(buf, "enabled", r.decay_enabled);
                 buf.push(',');
                 push_kv_bool(buf, "active", r.decay_active.load(Ordering::Relaxed));
+                buf.push(',');
+                let demand_ppm =
+                    (r.decay_demand_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
+                push_kv_f64(buf, "demand_ppm", demand_ppm, 2);
                 buf.push(',');
                 push_kv_u64(buf, "floor_frames", r.decay_floor_frames);
                 buf.push(',');
@@ -1409,6 +1430,11 @@ mod tests {
                         silence_frames: Arc::new(AtomicU64::new(256)),
                         overrun_frames: Arc::new(AtomicU64::new(0)),
                         ratio_milli_ppm: Arc::new(AtomicU64::new(120_000)),
+                        // Rail counters (#3464): this fixture has railed 7 times
+                        // and anti-windup reset twice — exercises the nonzero
+                        // rendering path.
+                        clamp_count: Arc::new(AtomicU64::new(7)),
+                        anti_windup_count: Arc::new(AtomicU64::new(2)),
                         lock_count: Arc::new(AtomicU64::new(1)),
                         unlock_count: Arc::new(AtomicU64::new(0)),
                         // Held near target (520 vs 512) — the "engaged & tracking"
@@ -1422,6 +1448,7 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
+                        decay_demand_milli_ppm: Arc::new(AtomicU64::new(0)),
                     }),
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
@@ -1481,12 +1508,15 @@ mod tests {
                         silence_frames: Arc::new(AtomicU64::new(0)),
                         overrun_frames: Arc::new(AtomicU64::new(0)),
                         ratio_milli_ppm: Arc::new(AtomicU64::new(0)),
+                        clamp_count: Arc::new(AtomicU64::new(0)),
+                        anti_windup_count: Arc::new(AtomicU64::new(0)),
                         lock_count: Arc::new(AtomicU64::new(1)),
                         unlock_count: Arc::new(AtomicU64::new(0)),
                         // ACTIVELY DECAYING fixture: the held target (1024) has
                         // dropped below the acquisition ceiling (2560) toward the
                         // floor (544), exercising the decay STATUS block's live
-                        // path (active:true, frozen_reason:"").
+                        // path (active:true, frozen_reason:"") with the shipped
+                        // default drain demand (~125.33 ppm) on the gauge.
                         fill_frames: Arc::new(AtomicU64::new(1024)),
                         target_fill_frames: 2560,
                         held_target_frames: Arc::new(AtomicU64::new(1024)),
@@ -1494,6 +1524,7 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
+                        decay_demand_milli_ppm: Arc::new(AtomicU64::new(125_330)),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                     // The USB DIRECT (combo) lane starts unmuted; the mute-path
@@ -1682,11 +1713,22 @@ mod tests {
             j.contains(r#""held_target_frames":512"#),
             "missing live held_target_frames on the inactive-decay fixture: {j}"
         );
+        // The controller rail counters (#3464) ride next to the ratio they
+        // qualify — the airplay fixture pins the nonzero rendering.
+        assert!(
+            j.contains(r#""clamp_count":7"#),
+            "missing resampler clamp_count: {j}"
+        );
+        assert!(
+            j.contains(r#""anti_windup_count":2"#),
+            "missing resampler anti_windup_count: {j}"
+        );
         // Every armed lane carries a decay block (inert when off). The airplay
-        // fixture is not decaying: active:false, empty frozen_reason.
+        // fixture is not decaying: active:false, zero demand, empty
+        // frozen_reason.
         assert!(
             j.contains(
-                r#""decay":{"enabled":false,"active":false,"floor_frames":0,"frozen_reason":""}"#
+                r#""decay":{"enabled":false,"active":false,"demand_ppm":0.00,"floor_frames":0,"frozen_reason":""}"#
             ),
             "missing inactive decay block on the airplay fixture: {j}"
         );
@@ -1700,11 +1742,14 @@ mod tests {
             j.contains(r#""held_target_frames":1024"#),
             "missing the direct fixture's live (decayed) held target: {j}"
         );
+        // The ACTIVE decay block carries its live drain demand — the exact
+        // term build_obs subtracts from the host-clock observable (#3466), so
+        // an operator can see the decontamination magnitude on /state.
         assert!(
             j.contains(
-                r#""decay":{"enabled":true,"active":true,"floor_frames":544,"frozen_reason":""}"#
+                r#""decay":{"enabled":true,"active":true,"demand_ppm":125.33,"floor_frames":544,"frozen_reason":""}"#
             ),
-            "missing active decay block on the direct fixture: {j}"
+            "missing active decay block (with live demand) on the direct fixture: {j}"
         );
         assert!(
             j.contains(r#""lock_count":1"#),

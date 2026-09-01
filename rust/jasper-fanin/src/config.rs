@@ -343,8 +343,11 @@ pub struct Config {
     /// `1..=64`; default 6. Demand ppm = step × 20833 / interval_ms (at the
     /// 48 kHz default rate): 6 ≈ 125 ppm, 4x headroom under the inner
     /// resampler's ±500 ppm authority (`input_resampler_max_adjust_ppm`) — the
-    /// ±400 ppm cascade guard below is a different budget and does not cover
-    /// decay demand. See issue #3466. Env:
+    /// ONLY budget the demand consumes: the decay publishes its live demand and
+    /// the host-clock observable subtracts it (decontamination, issue #3466),
+    /// so the outer servo never chases a descent, and the ±400 ppm cascade
+    /// guard below therefore compares a clean outer command against a separate
+    /// budget that never includes decay demand. Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES`.
     pub input_resampler_cushion_decay_step_frames: u32,
     /// Wall interval between decay steps, in ms (converted to render periods by
@@ -878,7 +881,9 @@ impl Config {
         // old default (18 ≈ 375 ppm, 3/4 of that authority) railed it against a
         // real ~190 ppm host offset, live-verified on jts3 — the ±400 ppm
         // cascade guard below never budgeted for decay demand, so it did not
-        // catch this; see issue #3466. The floor (576 frames = 12 ms) is
+        // catch this; see issue #3466 (the demand is now subtracted from the
+        // outer host-clock observable at the source — see the field doc on
+        // `input_resampler_cushion_decay_step_frames`). The floor (576 frames = 12 ms) is
         // unchanged, so settled latency is identical; the descent from ceiling
         // to floor lengthens from ~110 s to ~331 s. Range floor stays 1 (a
         // gentle single-frame step); ceiling stays 64 so a lab operator can
@@ -1480,11 +1485,12 @@ mod tests {
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
                 // Demand-ppm pin (config.rs documents this number): step_frames
                 // dropped over interval_ms, as ppm of the frames that pass in
-                // that interval. 6 frames / 1000 ms @ 48 kHz = 125 ppm. This
-                // guard is a DIFFERENT budget from the inner resampler's ±500
-                // ppm authority (pinned above) — it never counted decay demand,
-                // so staying inside it is a coincidence, not the safety margin;
-                // see issue #3466.
+                // that interval. 6 frames / 1000 ms @ 48 kHz = 125 ppm. The
+                // inner resampler's ±max_adjust_ppm authority is the ONLY
+                // budget this demand consumes (the outer host-clock observable
+                // subtracts the decay-published demand — decontamination,
+                // #3466), and the default must keep the documented 4x headroom
+                // under it so a real host offset still has room to track.
                 let step_demand_ppm = (cfg.input_resampler_cushion_decay_step_frames as f64)
                     / ((cfg.input_resampler_cushion_decay_interval_ms as f64 / 1000.0)
                         * cfg.sample_rate as f64)
@@ -1494,10 +1500,10 @@ mod tests {
                     "default step demand is ~125 ppm, got {step_demand_ppm}"
                 );
                 assert!(
-                    step_demand_ppm < crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM,
-                    "default decay step demand {step_demand_ppm} ppm must stay inside the \
-                     {} ppm cascade guard",
-                    crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM
+                    step_demand_ppm * 4.0 <= cfg.input_resampler_max_adjust_ppm as f64,
+                    "default decay step demand {step_demand_ppm} ppm must keep 4x headroom \
+                     under the inner ±{} ppm authority",
+                    cfg.input_resampler_max_adjust_ppm
                 );
                 // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
                 // path; auto is the opt-in convenience).

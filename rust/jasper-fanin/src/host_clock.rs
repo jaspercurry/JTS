@@ -117,8 +117,19 @@ pub struct HostClockSignals {
     /// observable: with the resampler absorbing the host clock, its correction ppm
     /// is the honest host-vs-DAC rate-error readout (the fill slope is dead
     /// weight). Decoded in [`build_obs`] the same way the STATUS layer does
-    /// (`(load() as i64) as f64 / 1000.0`).
+    /// (`(load() as i64) as f64 / 1000.0`) — MINUS the cushion decay's own
+    /// demand (`decay_demand_milli_ppm` below), which rides the same ratio but
+    /// is not clock error (#3466).
     pub correction_milli_ppm: Arc<AtomicU64>,
+    /// The cushion decay's LIVE rate demand on the inner resampler (milli-ppm,
+    /// same i64-bits-in-u64 encoding as `correction_milli_ppm`; 0 whenever the
+    /// decay is idle). An active descent drains the ring on purpose, so the
+    /// resampler's ratio embeds `genuine clock offset + decay demand`;
+    /// [`build_obs`] subtracts this term so the probe/servo observable is only
+    /// the genuine offset — without it the L0 servo chased the decay ramp
+    /// (live: cmd wandering −120..−350 ppm through a descent, #3466). Published
+    /// by the decay itself (the single source of truth for its own demand).
+    pub decay_demand_milli_ppm: Arc<AtomicU64>,
     /// The resampler's LIVE HELD target fill — the ONE setpoint the outer loop
     /// shares with the inner `RateController` (single source of truth). Equal to
     /// `target + warmup cushion` unless the DEFAULT-OFF post-lock cushion decay
@@ -195,9 +206,19 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         // DAC-paced — the divergence anchor.
         playback_frames: signals.output_frames.load(Ordering::Relaxed),
         // The lane resampler's LIVE correction ppm — the COMBO-mode probe/servo
-        // observable. Decoded from the milli-ppm atomic exactly as the STATUS
-        // layer does: the value is an i64 (signed) stored in the u64's bits.
-        correction_ppm: (signals.correction_milli_ppm.load(Ordering::Relaxed) as i64) as f64
+        // observable — DECONTAMINATED of the cushion decay's own rate demand
+        // (#3466). While a descent is active the resampler deliberately runs
+        // ~`demand` ppm fast to drain the cushion; that term is commanded, not
+        // clock error, so feeding it to the L0 servo makes the outer loop chase
+        // the decay ramp. Subtracting the decay-published demand leaves only
+        // the genuine host-vs-DAC offset: the servo drives THAT to 0 and the
+        // ratio settles at exactly the demand while descending. Both atomics
+        // are signed milli-ppm stored as i64 bits in a u64 (the STATUS
+        // decoding); the demand is 0 whenever the decay is idle, making this a
+        // plain ratio read outside descents.
+        correction_ppm: ((signals.correction_milli_ppm.load(Ordering::Relaxed) as i64)
+            - (signals.decay_demand_milli_ppm.load(Ordering::Relaxed) as i64))
+            as f64
             / 1000.0,
     }
 }
@@ -611,6 +632,7 @@ mod tests {
             present: Arc::new(AtomicBool::new(false)),
             capture_generation: Arc::new(AtomicU64::new(1)),
             correction_milli_ppm: Arc::new(AtomicU64::new(0)),
+            decay_demand_milli_ppm: Arc::new(AtomicU64::new(0)),
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
             commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
@@ -712,7 +734,10 @@ mod tests {
         // atomic STATUS reads): milli-ppm, i64-bits-in-u64. build_obs must decode
         // it the SAME way the state layer does — `(load() as i64) as f64 / 1000`
         // — so a NEGATIVE correction (resampler running slower than nominal) reads
-        // back with the right sign, not a giant positive u64.
+        // back with the right sign, not a giant positive u64. The decay-demand
+        // gauge is 0 here (decay idle), so the FULL ratio must pass through
+        // untouched — the decontamination term must never bias a
+        // no-decay/frozen/at-floor lane.
         let s = signals();
         // +120.5 ppm ⇒ 120_500 milli-ppm.
         s.correction_milli_ppm.store(120_500, Ordering::Relaxed);
@@ -724,6 +749,33 @@ mod tests {
             build_obs(&s).correction_ppm,
             -250.0,
             "a negative correction must decode with the right sign"
+        );
+    }
+
+    #[test]
+    fn obs_correction_ppm_subtracts_the_live_decay_demand() {
+        // Decontamination (#3466): during an active cushion descent the
+        // resampler's ratio is `genuine clock offset + decay demand` — the
+        // demand is commanded drain, not clock error. The observable the
+        // probe/servo consume must therefore be ratio − demand, so the L0 servo
+        // steers only the genuine offset instead of chasing the decay ramp.
+        let s = signals();
+        // Ratio +315.33 ppm = genuine +190.0 ppm + decay demand +125.33 ppm
+        // (the shipped default step 6 / 1000 ms at 48 kHz / 256).
+        s.correction_milli_ppm.store(315_330, Ordering::Relaxed);
+        s.decay_demand_milli_ppm.store(125_330, Ordering::Relaxed);
+        assert_eq!(
+            build_obs(&s).correction_ppm,
+            190.0,
+            "the observable must exclude the decay's own demand"
+        );
+        // A NEGATIVE genuine offset stays correctly signed under subtraction:
+        // ratio +50.33 = genuine −75.0 + demand +125.33.
+        s.correction_milli_ppm.store(50_330, Ordering::Relaxed);
+        assert_eq!(
+            build_obs(&s).correction_ppm,
+            -75.0,
+            "a demand larger than the ratio must yield the negative remainder"
         );
     }
 

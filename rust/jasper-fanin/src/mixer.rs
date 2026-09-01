@@ -483,12 +483,12 @@ const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
 /// is in transient, so lowering the setpoint would fight the loop — the exact
 /// two-controller oscillation class the cascade design avoids. 400 ppm is well
 /// inside the ±1000 ppm servo authority: it flags "actively correcting" without
-/// tripping on the small steady-state trims a settled loop makes.
-///
-/// `pub(crate)` so the config test can pin the derived-margin invariant: the
-/// default decay step demand (step_frames / interval → ppm) must sit inside this
-/// guard, or a settled decay step could perturb the DLL cascade.
-pub(crate) const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
+/// tripping on the small steady-state trims a settled loop makes. The command
+/// compared here carries no decay term: the decay's own demand is subtracted
+/// from the servo's observable at the source (decontamination, #3466), so this
+/// guard fires only on genuine host-clock transients — never on a descent's
+/// self-inflicted command.
+const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread (which owns the `LaneResampler` and performs the actual ring trim)
@@ -1739,6 +1739,10 @@ impl Mixer {
             // only ever READS it (single source of truth, no new hot-path work —
             // just clones the existing Arc).
             correction_milli_ppm: Arc::clone(&resampler.ratio_milli_ppm),
+            // The cushion decay's live demand gauge, published by the decay
+            // itself. `build_obs` subtracts it from the ratio above so the
+            // servo's observable is only genuine clock offset (#3466).
+            decay_demand_milli_ppm: Arc::clone(&resampler.decay_demand_milli_ppm),
             // The LIVE held-target gauge — the single source of truth the servo
             // thread re-pins its setpoint to each tick (tracks the cushion decay).
             held_target_frames: Arc::clone(&resampler.held_target_frames),
