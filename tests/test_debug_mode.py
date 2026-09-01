@@ -224,8 +224,7 @@ def test_apply_for_no_future_expiry_arms_no_timer(
 
 
 class _NotAConsoleStreamHandler(logging.StreamHandler):
-    """Stand-in for pytest's own LogCaptureHandler: a StreamHandler
-    subclass whose stream is neither stderr nor stdout."""
+    pass
 
 
 def test_set_console_debug_ignores_non_console_streamhandler_subclass(

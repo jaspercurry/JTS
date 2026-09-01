@@ -146,12 +146,12 @@ def install(
         logger.info("flight recorder: disabled via JASPER_FLIGHT_RECORDER")
         return False
     debug_mode.set_console_debug(False)  # pin journal at INFO — keep DEBUG off the SD card
-    logging.getLogger("jasper").setLevel(logging.DEBUG)  # records exist for the ring
+    jasper_logger = logging.getLogger("jasper")
+    jasper_logger.setLevel(logging.DEBUG)  # records exist for the ring
     # NOTE: with the logger pinned at DEBUG, `logger.isEnabledFor(DEBUG)` is
     # always True for jasper.* — so a per-frame `logger.debug(...)` on a hot
     # audio path is no longer free (it builds a record + a formatted string
     # every frame). Keep hot-loop logging coarser than DEBUG, or rate-limit it.
-    jasper_logger = logging.getLogger("jasper")
     if _ring is not None:
         jasper_logger.removeHandler(_ring)
     _ring = RingFlushHandler(capacity, dump_stream or sys.stderr)

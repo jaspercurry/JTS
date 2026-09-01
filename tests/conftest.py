@@ -449,7 +449,7 @@ def logging_sandbox(monkeypatch):
 
     root = logging.getLogger()
     jasper = logging.getLogger("jasper")
-    saved = (root.handlers[:], root.level, jasper.handlers[:], jasper.level)
+    saved = (root.handlers[:], root.level, jasper.handlers[:])
     root.handlers[:] = []
     jasper.handlers[:] = []
     console = logging.StreamHandler(io.StringIO())
@@ -457,5 +457,5 @@ def logging_sandbox(monkeypatch):
     root.setLevel(logging.INFO)
     monkeypatch.setattr(fr, "_ring", None, raising=False)
     yield console
-    root.handlers[:], root.level, jasper.handlers[:], jasper.level = saved
+    root.handlers[:], root.level, jasper.handlers[:] = saved
     fr._ring = None

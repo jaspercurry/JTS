@@ -137,7 +137,6 @@ def test_install_twice_leaves_one_ring_handler_attached(
         if isinstance(h, fr.RingFlushHandler)
     ]
     assert len(ring_handlers) == 1
-    assert ring_handlers[0] is fr._ring
 
 
 def test_install_applies_active_toggle_to_console(

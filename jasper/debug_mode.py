@@ -199,11 +199,10 @@ def _console_handler() -> "logging.Handler | None":
     consoles = (sys.stderr, sys.stdout)
     fallback = None
     for h in logging.getLogger().handlers:
-        if type(h) is logging.StreamHandler:
-            if getattr(h, "stream", None) in consoles:
-                return h
-            if fallback is None:
-                fallback = h
+        if getattr(h, "stream", None) in consoles:
+            return h
+        if fallback is None and type(h) is logging.StreamHandler:
+            fallback = h
     return fallback
 
 
