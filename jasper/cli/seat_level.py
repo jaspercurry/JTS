@@ -72,6 +72,7 @@ import math
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -157,8 +158,32 @@ def _restore_phrase(restored: bool | None) -> str:
     return "Whether the household volume was restored could not be observed."
 
 
-def stimulus_peak_dbfs(path: Path) -> float:
-    """True peak of a stimulus WAV, dBFS, across ALL channels.
+@dataclass(frozen=True)
+class StimulusLevels:
+    """What one stimulus WAV measures — the two numbers, from one read.
+
+    Together because they answer one question between them. The PEAK is what
+    bounds the volume ceiling (``unsegmented_stimulus_ceiling_db``: full scale
+    less the peak). The RMS is what the seat actually hears at a given volume.
+    Their difference is the crest factor, and it is the number that decides
+    whether a target is reachable at all: a band-limited-noise program at
+    -20 dBFS peak carries ~14 dB of crest, so it measures ~-34 dBFS RMS and
+    reaches the seat 19 dB quieter than one peaking at -1 dBFS would — at a
+    fader that cannot go above 0 dB, that is 19 dB of target simply out of
+    reach. The ramp carries both onto its unreachable-target refusal so that
+    sum is visible there rather than inferred.
+    """
+
+    peak_dbfs: float
+    rms_dbfs: float
+
+
+def stimulus_levels_dbfs(path: Path) -> StimulusLevels:
+    """True peak and RMS of a stimulus WAV, dBFS, across ALL channels.
+
+    ONE read of the file for both, because both describe the same samples and a
+    second read is a second answer the day the path is a symlink somebody
+    swapped.
 
     The max over the whole interleaved array — deliberately NOT a downmix.
     ``sweep.read_wav_mono`` averages channels, which halves the peak of a
@@ -166,21 +191,33 @@ def stimulus_peak_dbfs(path: Path) -> float:
     an under-reported peak would RAISE the derived volume ceiling. This reads
     the worst case instead, which is the only direction that is safe.
 
+    The RMS is over the same whole array and is therefore a DIGITAL level, not
+    an acoustic one: on a program whose stimulus sits on one channel it counts
+    the silent channel too, which understates what one driver receives. It
+    bounds nothing — it is disclosure — so the conservative direction does not
+    apply and the honest one (what the file as a whole measures) does.
+
     A peak of zero raises: a silent file would derive an absurdly high ceiling.
     """
     import numpy as np
     from scipy.io import wavfile
 
     _rate, data = wavfile.read(str(path))
-    magnitudes = np.abs(np.asarray(data).astype(np.float64))
-    peak = float(magnitudes.max()) if magnitudes.size else 0.0
-    if np.issubdtype(np.asarray(data).dtype, np.integer):
-        peak /= float(np.iinfo(np.asarray(data).dtype).max)
+    samples = np.asarray(data).astype(np.float64)
+    full_scale = (
+        float(np.iinfo(np.asarray(data).dtype).max)
+        if np.issubdtype(np.asarray(data).dtype, np.integer)
+        else 1.0
+    )
+    peak = float(np.abs(samples).max()) / full_scale if samples.size else 0.0
     if not (peak > 0.0) or not math.isfinite(peak):
         raise ValueError(
             f"{path} carries no signal; a silent stimulus cannot bound a volume"
         )
-    return 20.0 * math.log10(peak)
+    rms = float(np.sqrt(np.mean((samples / full_scale) ** 2)))
+    return StimulusLevels(
+        peak_dbfs=20.0 * math.log10(peak), rms_dbfs=20.0 * math.log10(rms)
+    )
 
 
 def _applied_branch_peaks(
@@ -228,8 +265,15 @@ def _applied_branch_peaks(
     return peaks
 
 
-def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, float]:
-    """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``."""
+def _derive_bounds(
+    args: argparse.Namespace, stimulus: Path, levels: StimulusLevels
+) -> tuple[float, float]:
+    """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``.
+
+    ``levels`` is measured once by the caller rather than read again here: the
+    ramp needs the same numbers for its refusal, and two reads of one file are
+    two answers.
+    """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
@@ -259,7 +303,7 @@ def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, flo
     ceiling_db = unsegmented_stimulus_ceiling_db(
         safety_profile,
         fingerprints,
-        stimulus_peak_dbfs=stimulus_peak_dbfs(stimulus),
+        stimulus_peak_dbfs=levels.peak_dbfs,
         declared_sensitivities=declared_effective_driver_sensitivities(draft),
         branch_peaks_dbfs=_applied_branch_peaks(stimulus, targets),
     )
@@ -367,7 +411,8 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         )
 
     try:
-        ceiling_db, spl_ceiling = _derive_bounds(args, stimulus)
+        levels = stimulus_levels_dbfs(stimulus)
+        ceiling_db, spl_ceiling = _derive_bounds(args, stimulus, levels)
     except (
         SessionVolumePlanError,
         CommissionPresetResolutionError,
@@ -420,6 +465,11 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
                 play_continuous_tone=_play,
                 cancel_tone=_cancel,
                 next_samples=_samples,
+                # Disclosure, not a bound: what the signal being played
+                # measures, so `spl_target_unreachable` can show its own
+                # arithmetic instead of reading as a nanny.
+                stimulus_rms_dbfs=levels.rms_dbfs,
+                stimulus_peak_dbfs=levels.peak_dbfs,
             )
         )
     except _OperatorStopped as stop:

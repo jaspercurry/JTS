@@ -270,7 +270,9 @@ how the coordinate is chosen.
 3. **Dispose, acoustically.** Play the null at the computed optimum and its two
    neighbours — three takes, not a blind nine to twenty-five — with the branch
    inverted and the candidate delay in the measurement graph, and measure what
-   actually cancels. **Level-match first where the gap warrants it.** The branch
+   actually cancels. **Three takes is the economy of a landscape you trust**;
+   when the landscape itself is what is in doubt, spend the grid instead (the
+   escalation below). **Level-match first where the gap warrants it.** The branch
    levels this graph plays are whatever §5's trim derivation resolved, so on a
    speaker whose declared gap exceeds the bound below, §5's banked evidence
    precedes this confirm — otherwise you are grading a null the levels capped
@@ -310,6 +312,20 @@ compared: a modelled cancellation can be arbitrarily deep while a measured one
 floors on noise, so what the model claims — and what is checked — is *where* the
 null is. The measured-minus-computed delta is banked either way; it is the
 controllability evidence for this band.
+
+**When the instruments disagree, run the experiment.** The computed optimum, the
+phase overlay and the three-take confirm are three proxies, and arguing between
+them settles nothing a grid will not — so on any disagreement, or any delay
+conclusion you are not sure of, escalate to the direct measurement:
+`jasper-null --polarity keep --delays <grid>` plays the in-phase summed graph at
+each coordinate through the measurement graph only and banks one row per
+coordinate, about a minute of audio for a full lobe. Nudge the delay, read which
+coordinate sums best. Put a **repeated coordinate** in the grid: near the optimum
+the in-phase corner level is second-order flat in delay, so small-step
+discrimination is bounded by the measured σ rather than by the step size, and the
+repeat is the only thing that measures that floor — then read the **inverted**
+pair at whichever coordinates survive, the sharp instrument where the in-phase
+one has gone blunt. The measurement decides.
 
 **What ships.** `audio_measurement/null_walk.py` carries the spec, the bounded
 schedule, the geometry seed and the selectors — decision content, no DSP of its
@@ -426,6 +442,18 @@ move barred here.
 families beside the verdicts. The reading rules below are guidance with their
 provenance stated — never vetoes:
 
+- **Below ~1 kHz, read the capture's gate geometry BEFORE the feature row.**
+  Any feature in the lower decades — or sitting within a third-octave of the
+  trusted floor (`validity_floor_hz`) — triggers this pull first: the packet's
+  position rows carry `gate_reflection_delay_ms` and `gate_moved_rms_db` per
+  capture, and `verify.gate` carries the same pair for the verify. A reflected
+  copy arriving Δt ms after the direct sound combs the response at `1/Δt` kHz
+  spacing — first constructive peak at `≈ 1000/Δt` Hz, so 2.8 ms puts one near
+  357 Hz and the rest at its multiples — so a "feature" landing on that grid, or
+  hugging the floor, is the room and the analysis window speaking, not the
+  driver. `gate_rungs` below is the same question asked per feature, and the
+  rule is one rule: **a feature that moves with the gate is the gate's.**
+  [Geometry, not convention: the comb spacing is the arrival delay's reciprocal.]
 - `gate_rungs` — every commanded window's own depth/centre, the primary
   included. The ladder is a jackknife over the analysis window (research 03
   grounds it in multitaper practice): a feature whose level swings more than

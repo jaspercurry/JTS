@@ -327,6 +327,8 @@ async def _level(
     sensitivity: MicSensitivity = UMIK2,
     max_main_volume_db: float = CEILING_DB,
     spl_ceiling_db_spl: float = SPL_CEILING,
+    stimulus_rms_dbfs: float | None = None,
+    stimulus_peak_dbfs: float | None = None,
 ):
     clock = FakeClock()
     result = await slr.run_seat_level_ramp(
@@ -334,6 +336,8 @@ async def _level(
         sensitivity=sensitivity,
         max_main_volume_db=max_main_volume_db,
         spl_ceiling_db_spl=spl_ceiling_db_spl,
+        stimulus_rms_dbfs=stimulus_rms_dbfs,
+        stimulus_peak_dbfs=stimulus_peak_dbfs,
         get_main_volume_db=volume.get,
         set_main_volume_db=volume.set,
         play_continuous_tone=tone.play,
@@ -1508,6 +1512,58 @@ def test_an_unreachable_target_refuses_and_banks_nothing(tmp_path):
     assert "raise the external amplifier" in (result.detail or "")
     assert result.reference_volume_db is None
     assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_the_unreachable_refusal_shows_the_level_of_the_signal_it_played(
+    tmp_path, caplog
+):
+    """Field report: this refusal read as a nanny because a number was missing.
+
+    "77.5 dB SPL is out of reach at the ceiling" is a claim about four things —
+    the target, the mic's sensitivity, the volume ceiling and the LEVEL OF THE
+    SIGNAL — and only the first three were on the line. The owner's own
+    stimulus measured -33.6 dBFS RMS at -20.0 dBFS peak: ~13.6 dB of crest and
+    20 dB of digital headroom unspent, at a fader that cannot go above 0 dB. So
+    the remedy was a hotter stimulus, and the refusal pointed at the amplifier.
+
+    Both surfaces, because the terminal reader and the journal reader are
+    different people.
+    """
+    volume, tone, mic = _rig(
+        gain_db=gain_for_seat_spl(TARGET.low_db_spl - 1.0, at_volume_db=CEILING_DB)
+    )
+    with caplog.at_level(logging.INFO, logger=slr.logger.name):
+        result = asyncio.run(
+            _level(
+                mic=mic, volume=volume, tone=tone, tmp_path=tmp_path,
+                stimulus_rms_dbfs=-33.58, stimulus_peak_dbfs=-20.0,
+            )
+        )
+
+    assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
+    refusal = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=active_speaker.seat_level_refused" in record.getMessage()
+    )
+    assert "stimulus_rms_dbfs=-33.58" in refusal
+    assert "stimulus_peak_dbfs=-20.00" in refusal
+    # …and the operator reading a terminal gets the same arithmetic in prose.
+    assert "-33.6 dBFS RMS" in (result.detail or "")
+    assert "13.6 dB crest" in (result.detail or "")
+    assert "20.0 dB of digital headroom unused" in (result.detail or "")
+
+
+def test_a_pass_that_measured_no_stimulus_level_says_nothing_about_one(tmp_path):
+    """An absent number is silent, never a zero — every optional quantity's rule."""
+    volume, tone, mic = _rig(
+        gain_db=gain_for_seat_spl(TARGET.low_db_spl - 1.0, at_volume_db=CEILING_DB)
+    )
+
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
+    assert "stimulus" not in (result.detail or "")
 
 
 def test_the_watchdog_refuses_a_pass_whose_feed_never_returns(tmp_path, monkeypatch):

@@ -270,6 +270,52 @@ REFUSE_ISOLATION_UNAVAILABLE = "measurement_isolation_unavailable"
 CLIPPED_CAPTURE_DETAIL = "the capture clipped; no level can be read from it"
 
 
+def stimulus_level_phrase(
+    *, rms_dbfs: float | None, peak_dbfs: float | None
+) -> str:
+    """What the SIGNAL measures, so an unreachable target reads as arithmetic.
+
+    A target out of reach is a statement about four numbers — the target SPL,
+    the mic's sensitivity, the volume ceiling, and the level of the signal being
+    played — and this refusal named only the first three. Read without the
+    fourth it is a nanny ("77.5 dB SPL is out of reach, raise your amplifier");
+    read beside it the remedy is in the sentence, because a program at -20 dBFS
+    peak with 13.6 dB of crest measures -33.6 dBFS RMS and is giving away 20 dB
+    of digital headroom at a fader that cannot go above 0 dB.
+
+    Empty when the caller measured no stimulus: an absent number says nothing
+    rather than guessing, which is every other optional quantity's rule here.
+    The peak half is likewise omitted rather than defaulted — the ceiling is
+    derived from it, so a missing one is not a zero.
+    """
+    if rms_dbfs is None:
+        return ""
+    if peak_dbfs is None:
+        return f"; the stimulus measures {rms_dbfs:.1f} dBFS RMS"
+    return (
+        f"; the stimulus measures {rms_dbfs:.1f} dBFS RMS at {peak_dbfs:.1f} dBFS "
+        f"peak ({peak_dbfs - rms_dbfs:.1f} dB crest), leaving "
+        f"{-peak_dbfs:.1f} dB of digital headroom unused"
+    )
+
+
+def _stimulus_event_fields(
+    *, rms_dbfs: float | None, peak_dbfs: float | None
+) -> dict[str, Any]:
+    """The same two numbers as ``event=`` fields, absent when unmeasured.
+
+    Beside the prose rather than instead of it: the terminal reader and the
+    journal reader are different people, and this is the field an operator
+    greps to compare two passes' stimuli without re-reading either WAV.
+    """
+    out: dict[str, Any] = {}
+    if rms_dbfs is not None:
+        out["stimulus_rms_dbfs"] = f"{rms_dbfs:.2f}"
+    if peak_dbfs is not None:
+        out["stimulus_peak_dbfs"] = f"{peak_dbfs:.2f}"
+    return out
+
+
 def over_ceiling_detail(*, observed_db_spl: float, spl_ceiling_db_spl: float) -> str:
     """What a sample above the profile's commissioning SPL stop reports."""
     return (
@@ -1051,6 +1097,8 @@ async def run_seat_level_ramp(
     play_continuous_tone: Callable[[], Awaitable[Any]],
     cancel_tone: Callable[[], None],
     next_samples: SampleSource,
+    stimulus_rms_dbfs: float | None = None,
+    stimulus_peak_dbfs: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     session_id: str = "seat_level",
@@ -1068,6 +1116,12 @@ async def run_seat_level_ramp(
     :func:`jasper.active_speaker.session_volume_plan.unsegmented_stimulus_ceiling_db`
     — the loudest volume at which the actual stimulus still has digital headroom
     in every driver's branch. The ramp never commands above it.
+
+    ``stimulus_rms_dbfs``/``stimulus_peak_dbfs`` are what that stimulus
+    MEASURES, and they bound nothing: they are carried so
+    :data:`REFUSE_SPL_TARGET_UNREACHABLE` can show its own arithmetic (see
+    :func:`stimulus_level_phrase`). ``None`` when the caller measured neither,
+    and the refusal then says nothing about them rather than guessing.
 
     The hold rides the crossover session's own volume plan, on the SAME durable
     statefile a measurement session uses, so the recovery machinery already
@@ -1263,6 +1317,8 @@ async def run_seat_level_ramp(
                     agree_db=agree_db,
                     settle_timeout_s=settle_timeout_s,
                     watchdog_s=watchdog_s,
+                    stimulus_rms_dbfs=stimulus_rms_dbfs,
+                    stimulus_peak_dbfs=stimulus_peak_dbfs,
                     set_main_volume_db=set_main_volume_db,
                     play_continuous_tone=play_continuous_tone,
                     cancel_tone=cancel_tone,
@@ -1553,6 +1609,8 @@ async def _walk_to_the_band(
     agree_db: float,
     settle_timeout_s: float,
     watchdog_s: float,
+    stimulus_rms_dbfs: float | None,
+    stimulus_peak_dbfs: float | None,
     set_main_volume_db: SetMainVolumeDb,
     play_continuous_tone: Callable[[], Awaitable[Any]],
     cancel_tone: Callable[[], None],
@@ -2001,8 +2059,17 @@ async def _walk_to_the_band(
                     REFUSE_SPL_TARGET_UNREACHABLE,
                     f"{observed_db_spl:.1f} dB SPL is short of the "
                     f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}] dB SPL "
-                    f"band and the ramp cannot climb further; {remedy}",
+                    f"band and the ramp cannot climb further; {remedy}"
+                    # The fourth number the sum needs. Only this refusal carries
+                    # it: it is the one whose remedy DEPENDS on it, and a level
+                    # the pass never used on every other line would be noise.
+                    + stimulus_level_phrase(
+                        rms_dbfs=stimulus_rms_dbfs, peak_dbfs=stimulus_peak_dbfs
+                    ),
                     observed_db_spl=f"{observed_db_spl:.1f}",
+                    **_stimulus_event_fields(
+                        rms_dbfs=stimulus_rms_dbfs, peak_dbfs=stimulus_peak_dbfs
+                    ),
                 )
             # Only a step that commanded the WHOLE measured gap is a prediction
             # the chain can miss. A capped or ceiling-clamped step is a

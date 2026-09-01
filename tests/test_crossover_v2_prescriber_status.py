@@ -450,6 +450,46 @@ def test_the_staged_state_comes_from_the_spools_own_predicate(
     assert payload["staged"]["pending"] is True
 
 
+def test_a_spool_this_user_cannot_stat_is_disclosed_rather_than_raised(
+    tmp_path, capsys, monkeypatch
+):
+    """Run as ``pi`` rather than root, the 0640 spool raises out of the stat.
+
+    That used to be a raw traceback, which is the one thing an orientation verb
+    may not do. The section now answers in the shape its three neighbours use —
+    unavailable, with the reason — and ``pending`` is ``None`` rather than
+    ``False``, because a prescriber told "nothing waiting" would stage over a
+    document nobody could see.
+
+    The spool's own predicate still raises: ``stage`` needs the real error, so
+    the catch is this verb's, not the module's.
+    """
+    session, _ = _speaker_dirs(tmp_path)
+
+    def _denied() -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(cli, "staged_prescription_pending", _denied)
+
+    code, payload = _status([str(session)], capsys)
+    _, out = _report([str(session)], capsys)
+
+    assert code == cli.EXIT_OK, "a partial answer still beats no answer"
+    assert payload["staged"]["available"] is False
+    assert payload["staged"]["pending"] is None
+    assert payload["staged"]["reason"] == cli.SPOOL_UNREADABLE_REASON
+    sudo = [action for action in payload["next_actions"] if "sudo" in action]
+    assert len(sudo) == 1
+    assert cli.SPOOL_UNREADABLE_REASON in sudo[0]
+    # Both surfaces, one wording — the same pin the four sections carry.
+    assert payload["staged"]["summary"] in out
+    assert sudo[0] in out
+    # …and nothing anywhere claims a document is or is not waiting.
+    assert not any(
+        cli.STAGED_LIFECYCLE_NOTE in action for action in payload["next_actions"]
+    )
+
+
 def test_the_staged_sentence_is_the_one_stage_itself_prints(tmp_path, capsys):
     """Two wordings of "what becomes of this file" would be two answers."""
     session, _ = _speaker_dirs(tmp_path)

@@ -192,13 +192,32 @@ def test_stimulus_peak_reads_the_loudest_channel_not_a_downmix(tmp_path):
     # would average to a quarter and report ~-12 dBFS, which would hand the
     # ceiling 6 dB it has not earned.
     wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
-    assert seat_level.stimulus_peak_dbfs(wav) == pytest.approx(-6.02, abs=0.05)
+    assert seat_level.stimulus_levels_dbfs(wav).peak_dbfs == pytest.approx(
+        -6.02, abs=0.05
+    )
+
+
+def test_the_same_read_measures_the_RMS_the_refusal_discloses(tmp_path):
+    """One read, both numbers — a second read is a second answer.
+
+    A constant half-scale on one channel of two: the peak is -6.02 dBFS and the
+    RMS over the whole interleaved array is 3 dB below it, because half the
+    samples are the silent channel. The crest that falls out is what decides
+    whether a seat-SPL target is reachable at all, so it is measured rather
+    than assumed.
+    """
+    wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
+
+    levels = seat_level.stimulus_levels_dbfs(wav)
+
+    assert levels.peak_dbfs == pytest.approx(-6.02, abs=0.05)
+    assert levels.rms_dbfs == pytest.approx(-9.03, abs=0.05)
 
 
 def test_a_silent_stimulus_is_refused_not_treated_as_infinitely_quiet(tmp_path):
     wav = _stereo_wav(tmp_path / "silent.wav", peak_int16=0)
     with pytest.raises(ValueError, match="no signal"):
-        seat_level.stimulus_peak_dbfs(wav)
+        seat_level.stimulus_levels_dbfs(wav)
 
 
 def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
@@ -228,7 +247,7 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda args, stim: (-30.0, 85.0)
+        seat_level, "_derive_bounds", lambda args, stim, levels: (-30.0, 85.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
@@ -263,6 +282,11 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
     assert handed["spl_ceiling_db_spl"] == 85.0
     assert handed["sensitivity"].sens_factor_db == -12.07
     assert (handed["target"].low_db_spl, handed["target"].high_db_spl) == (75.0, 80.0)
+    # …and so did what the stimulus itself MEASURES, which bounds nothing and
+    # is what lets `spl_target_unreachable` show its own arithmetic. Full scale
+    # on one channel of two: 0 dBFS peak, 3 dB down in RMS.
+    assert handed["stimulus_peak_dbfs"] == pytest.approx(0.0, abs=0.05)
+    assert handed["stimulus_rms_dbfs"] == pytest.approx(-3.01, abs=0.05)
 
 
 def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
@@ -297,7 +321,9 @@ def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tm
     )
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
-    ceiling_db, spl_ceiling = seat_level._derive_bounds(args, stimulus)
+    ceiling_db, spl_ceiling = seat_level._derive_bounds(
+        args, stimulus, seat_level.stimulus_levels_dbfs(stimulus)
+    )
 
     assert ceiling_db == -30.0
     # A real number from a real preset — never an AttributeError on None.
@@ -375,6 +401,7 @@ def test_seat_level_hands_the_ceiling_the_PAD_FOLDED_sensitivities(
     seat_level._derive_bounds(
         seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)]),
         stimulus,
+        seat_level.stimulus_levels_dbfs(stimulus),
     )
 
     assert seen["declared_sensitivities"] == {
@@ -702,9 +729,11 @@ def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkey
     _stub_draft(monkeypatch, _draft_with_a_padded_tweeter(profile), targets)
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
-    ceiling_db, spl_ceiling = seat_level._derive_bounds(args, stimulus)
+    ceiling_db, spl_ceiling = seat_level._derive_bounds(
+        args, stimulus, seat_level.stimulus_levels_dbfs(stimulus)
+    )
 
-    peak = seat_level.stimulus_peak_dbfs(stimulus)
+    peak = seat_level.stimulus_levels_dbfs(stimulus).peak_dbfs
     fingerprints = [t["target_fingerprint"] for t in targets]
     full_band = unsegmented_stimulus_ceiling_db(
         profile, fingerprints, stimulus_peak_dbfs=peak,
@@ -771,7 +800,9 @@ def _stub_a_ramp_result(monkeypatch, tmp_path, result):
         return result
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
-    monkeypatch.setattr(seat_level, "_derive_bounds", lambda args, stim: (0.0, 80.0))
+    monkeypatch.setattr(
+        seat_level, "_derive_bounds", lambda args, stim, levels: (0.0, 80.0)
+    )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
         lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),

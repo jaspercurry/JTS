@@ -2842,6 +2842,129 @@ def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
     ).hexdigest()
 
 
+def _saved_packet(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
+    """One packet emitted to a file, and its value — the ``--packet`` flow.
+
+    Built with the same evidence inputs the bare CLI resolves by default, so the
+    file is what ``packet`` on this machine would have written.
+    """
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(
+        session,
+        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
+        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+    )
+    path = tmp_path / "packet.json"
+    path.write_text(json.dumps(packet))
+    return path, packet
+
+
+def _never_rebuilds(monkeypatch) -> None:
+    """Make a rebuild fail loudly, so only the FILE can answer."""
+
+    def _raise(*_args, **_kwargs):  # pragma: no cover - asserted by not firing
+        raise AssertionError("the packet was rebuilt instead of read from --packet")
+
+    monkeypatch.setattr(cli, "build_crossover_evidence_packet", _raise)
+
+
+def test_propose_judges_a_document_against_a_saved_packet_FILE(tmp_path, monkeypatch):
+    """Emit once, answer that file — and no second packet is built.
+
+    The dance this removes: a packet emitted on the speaker and a packet
+    rebuilt on a laptop resolve ``--drivers``/``--applied-profile`` against
+    different machines, fingerprint differently, and the document written
+    against the first is refused against the second. The builder is replaced
+    with a raiser here, so the only thing that can answer is the file.
+    """
+    packet_path, packet = _saved_packet(tmp_path)
+    document = _write_document(tmp_path, _document([_cut(-1.5)], packet))
+    _never_rebuilds(monkeypatch)
+
+    code, out, _ = _run_cli([
+        "propose", "--packet", str(packet_path),
+        "--prescription", str(document), "--json",
+    ])
+
+    assert code == cli.EXIT_OK
+    assert json.loads(out)["accepted"] is True
+
+
+def test_a_document_echoing_another_packet_still_refuses_against_the_file(
+    tmp_path, monkeypatch
+):
+    """``--packet`` removes the second packet; it does not weaken the echo.
+
+    A fingerprint is provenance, so the flag that makes matching easy must not
+    make mismatching survivable — nothing here re-stamps a document.
+    """
+    packet_path, packet = _saved_packet(tmp_path)
+    document = _write_document(
+        tmp_path, _document([_cut(-1.5)], packet, packet_fingerprint="another-round")
+    )
+    _never_rebuilds(monkeypatch)
+
+    code, out, _ = _run_cli([
+        "propose", "--packet", str(packet_path),
+        "--prescription", str(document), "--json",
+    ])
+
+    assert code == cli.EXIT_REFUSED
+    assert json.loads(out)["reason"] == "prescription_packet_mismatch"
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param(["--drivers", "draft.json"], id="drivers"),
+    pytest.param(["--applied-profile", "applied.json"], id="applied-profile"),
+    pytest.param(["--state", "state.json"], id="state"),
+    pytest.param(["session-dir"], id="session_dir"),
+])
+def test_a_rebuild_input_beside_the_packet_file_is_refused(tmp_path, extra):
+    """ONE evidence source. Ignoring the second would be the silent failure.
+
+    The rebuild would win, the document would echo the file's fingerprint, and
+    the operator would be told their prescription answers the wrong round.
+    """
+    packet_path, packet = _saved_packet(tmp_path)
+    document = _write_document(tmp_path, _document([_cut(-1.5)], packet))
+
+    code, _, err = _run_cli([
+        "propose", *extra, "--packet", str(packet_path),
+        "--prescription", str(document),
+    ])
+
+    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert err.startswith("error:")
+
+
+@pytest.mark.parametrize("blob", [
+    pytest.param("{not json", id="not-json"),
+    pytest.param("[]", id="wrong-shape"),
+])
+def test_an_unreadable_packet_file_exits_one(tmp_path, blob):
+    """The tool's own "the evidence could not be read" code, not a crash."""
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(blob)
+    document = _write_document(tmp_path, {"kind": "whatever"})
+
+    code, _, err = _run_cli([
+        "propose", "--packet", str(packet_path), "--prescription", str(document),
+    ])
+
+    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert err.startswith("error:")
+
+
+def test_naming_no_evidence_at_all_exits_one_with_a_sentence(tmp_path):
+    """``session_dir`` is optional only because ``--packet`` can replace it."""
+    document = _write_document(tmp_path, {"kind": "whatever"})
+
+    code, _, err = _run_cli(["propose", "--prescription", str(document)])
+
+    assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert "--packet" in err
+
+
 def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(

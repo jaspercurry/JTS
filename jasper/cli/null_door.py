@@ -903,7 +903,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--delays", type=_delay_list, default=None,
         help="signed microsecond coordinates, comma separated; the propose "
-             "door's optimum and one neighbour either side when omitted",
+             "door's optimum and one neighbour either side when omitted. A "
+             "value starting with '-' must use the --delays=-200,-100,0 form: "
+             "argparse reads a leading dash as the next flag",
     )
     parser.add_argument(
         "--polarity", default=POLARITY_BOTH,
