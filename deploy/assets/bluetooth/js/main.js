@@ -104,15 +104,21 @@ function renderToggles() {
     || (unavailable && !state.desired);
   const sd = document.getElementById('sw-disc');
   sd.checked = !!state.discoverable;
-  // Activation needs a ready radio; an already-active pairing window must
+  // Activation needs a ready radio and, since the window exists to accept an
+  // inbound bond, a running pairing agent. An already-active window must
   // remain switchable Off as cleanup even when availability later degrades.
   sd.disabled = busy || parked || (!state.discoverable
-    && (unavailable || !state.desired || !state.powered));
+    && (unavailable || !state.desired || !state.powered
+      || state.pairingReady === false));
   let hint;
   if (parked) {
     hint = 'Managed by this speaker’s stereo pair.';
   } else if (unavailable) {
     hint = state.unavailableReason || state.error || 'Bluetooth state unavailable.';
+  } else if (state.pairingReady === false && state.pairingBlockedReason) {
+    // Outranks the generic degraded line: it names the one thing the
+    // household is here to do and cannot.
+    hint = state.pairingBlockedReason;
   } else if (state.effective === 'degraded') {
     hint = state.degradedReason || (state.desired
       ? 'Set to on, but the Bluetooth radio is not ready.'
@@ -476,6 +482,9 @@ function deviceActionDisabled(action, currentState, mutationPending) {
   if (action === 'disconnect' || action === 'forget') {
     return currentState.powered === false;
   }
+  // Forming a new bond needs the pairing agent; reconnecting an existing one
+  // does not. Gate on the server's verdict, never on degradedReason prose.
+  if (action === 'pair' && currentState.pairingReady === false) return true;
   return currentState.available === false || currentState.parked
     || !currentState.desired || currentState.powered !== true;
 }

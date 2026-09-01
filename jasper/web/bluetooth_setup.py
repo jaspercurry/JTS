@@ -209,6 +209,41 @@ def _effective_bluetooth_state(
     return effective, "; ".join(reasons)
 
 
+def _annotate_pairing_readiness(
+    payload: dict[str, Any],
+    unit_snapshot: UnitSnapshot,
+) -> None:
+    """Stamp one structured pairing-readiness verdict onto a state payload.
+
+    BlueZ answers a pairing authorization request through a registered agent;
+    with none registered it refuses the request outright ("No agent available
+    for request type N") and no new bond can form. Scanning, and reconnecting
+    an existing bond, need no agent — so `advertise_units` is deliberately
+    narrower than the degraded-reason unit list, which also covers audio units
+    pairing does not need.
+
+    A field of its own rather than a `degradedReason` substring: the UI must
+    gate its Pair controls on a value, never on prose. Skipped while parked —
+    the stereo pair owns the whole local stack there, the UI already blocks
+    every control on `parked`, and probing source units is exactly what a
+    parked snapshot must not do.
+    """
+    if payload.get("parked"):
+        return
+    inactive = [
+        unit
+        for unit in _BLUETOOTH_LIFECYCLE.advertise_units
+        if not unit_snapshot.active(unit)
+    ]
+    payload["pairingReady"] = not inactive
+    if inactive:
+        payload["pairingBlockedReason"] = (
+            "Pairing is unavailable while these services are stopped: "
+            + ", ".join(inactive)
+            + ". If a deploy is running, they come back when it finishes."
+        )
+
+
 def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     """Return one desired/effective snapshot and its HTTP status.
 
@@ -285,6 +320,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
         state["degradedReason"] = degraded_reason
     else:
         state.pop("degradedReason", None)
+    _annotate_pairing_readiness(state, unit_snapshot)
     return state, HTTPStatus.OK
 
 

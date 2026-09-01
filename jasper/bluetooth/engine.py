@@ -6,14 +6,16 @@
 
 One generic flow regardless of device class:
 
-  trust → pair → connect → handler
+  pair → trust → connect → handler
 
 Async generator yielding StatusEvent dicts; the web layer streams them
 over SSE. Per-class behaviour is dispatched through `handlers.pick()`.
 
 Designed to be run inside one long-lived `BluetoothEngine` instance
 on the daemon. Each `pair(mac)` call is independent. Pairing
-authorization is owned by the always-on JTS no-code default agent.
+authorization is owned by the JTS no-code default agent, which is not
+always running — a low-memory deploy parks bt-agent.service for the
+length of its build.
 """
 
 from __future__ import annotations
@@ -421,9 +423,9 @@ class BluetoothEngine:
 
         Events:
           {"stage": "starting"}
-          {"stage": "trusting"}
           {"stage": "pairing"}
           {"stage": "paired"}
+          {"stage": "trusting"}
           {"stage": "connecting"}
           {"stage": "wiring", "detail": ...}    (handler-specific)
           {"stage": "ready", "detail": ...}     (terminal — success)
@@ -455,24 +457,12 @@ class BluetoothEngine:
 
         yield {"stage": "starting", "name": dev.name, "address": dev.address}
 
-        # Trust early so a successful pair stays trusted even if the user closes
-        # the browser tab before the connect/handler stages finish. Doesn't
-        # grant Connect — that's a separate call below.
-        yield {"stage": "trusting"}
         dev_intro = await bus.introspect(BLUEZ_BUS, dev.path)
         dev_obj = bus.get_proxy_object(BLUEZ_BUS, dev.path, dev_intro)
         dev_iface = dev_obj.get_interface("org.bluez.Device1")
         dev_props = dev_obj.get_interface(
             "org.freedesktop.DBus.Properties",
         )
-        try:
-            await dev_props.call_set(
-                "org.bluez.Device1",
-                "Trusted",
-                Variant("b", True),
-            )
-        except DBusError as e:
-            logger.warning("Trust set failed (continuing): %s", e)
 
         yield {"stage": "pairing"}
         try:
@@ -485,6 +475,27 @@ class BluetoothEngine:
             return
 
         yield {"stage": "paired", "address": dev.address}
+
+        # Trust only once the bond exists. Trust is what makes BlueZ
+        # auto-reconnect the device on every advertisement, so setting it
+        # before Pair() survives a FAILED pair: an unbonded HID cannot bring
+        # its profile up (`input-hog profile accept failed`) and the attempt
+        # repeats for as long as the device is in range. The remote then
+        # reads as connected, works for nothing, and stops advertising as
+        # pairable — so it can be neither used nor paired again, and
+        # RemoveDevice races the auto-reconnect instead of clearing it.
+        # Set here rather than after the connect/handler stages so trust
+        # still survives the user closing the browser tab mid-flow. Doesn't
+        # grant Connect — that's a separate call below.
+        yield {"stage": "trusting"}
+        try:
+            await dev_props.call_set(
+                "org.bluez.Device1",
+                "Trusted",
+                Variant("b", True),
+            )
+        except DBusError as e:
+            logger.warning("Trust set failed (continuing): %s", e)
 
         # Re-fetch device props post-pair so connection / uuid lists
         # reflect post-pairing state.

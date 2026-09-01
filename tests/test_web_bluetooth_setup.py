@@ -1780,6 +1780,10 @@ def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
     assert state["available"] is True
     assert state["effective"] == "degraded"
     assert "bt-agent.service" in state["degradedReason"]
+    # Structured verdict beside the prose: the UI gates its Pair controls on
+    # this value, never on a degradedReason substring.
+    assert state["pairingReady"] is False
+    assert "bt-agent.service" in state["pairingBlockedReason"]
 
 
 @pytest.mark.parametrize(

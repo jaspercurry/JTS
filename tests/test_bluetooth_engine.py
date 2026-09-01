@@ -282,6 +282,36 @@ async def test_pair_refreshes_accessory_profiles_before_ready_event():
     assert refresh_index < ready_index
 
 
+@pytest.mark.parametrize("bond_succeeds", (True, False))
+async def test_trust_follows_the_bond(bond_succeeds: bool):
+    """Trust is granted only once BlueZ has actually bonded the device.
+
+    Trust is what makes BlueZ auto-reconnect a device on every
+    advertisement. Granting it before Pair() survives a FAILED pair, and an
+    unbonded HID cannot then bring its profile up, so the attempt repeats
+    for as long as the device is in range: the remote reads as connected,
+    works for nothing, and stops advertising as pairable, leaving it
+    neither usable nor re-pairable.
+    """
+    engine = _engine([])
+    bus = engine._bus
+    assert isinstance(bus, _FakeBus)
+
+    if not bond_succeeds:
+        async def refuse() -> None:
+            raise DBusError("org.bluez.Error.AuthenticationFailed", "no agent")
+
+        bus.proxy.device.call_pair = refuse
+
+    events = [
+        event
+        async for event in engine.pair("CA:AC:04:04:09:D7", timeout_s=1.0)
+    ]
+
+    assert bus.proxy.props.trusted is bond_succeeds
+    assert (events[-1]["stage"] == "error") is not bond_succeeds
+
+
 async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     reasons: list[str] = []
     engine = _engine(reasons)
