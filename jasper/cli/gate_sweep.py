@@ -66,7 +66,7 @@ def _refused(reason: str, detail: str) -> int:
 def _cmd_sweep(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     try:
-        report = sweep_round(round_dir, rungs_ms=args.rungs_ms)
+        report = sweep_round(round_dir, rungs_ms=args.rungs_ms, at_hz=args.at_hz or ())
     except GateSweepRefused as exc:
         return _refused(exc.reason, json.dumps(exc.detail, sort_keys=True, default=str))
     out = Path(args.out) if args.out else round_dir / DEFAULT_OUT_NAME
@@ -97,6 +97,23 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             + " ".join(f"{rung}ms={value:.2f}" for rung, value in means.items()),
             file=sys.stderr,
         )
+    for feature in report["features"]:
+        sensitivity = feature["sensitivity"]
+        head = f"  at {feature['requested_hz']:g} Hz (bin {feature['bin_hz']:.1f} Hz)"
+        if sensitivity is None:
+            print(
+                f"{head}: no sensitivity ({feature['sensitivity_null_reason']})",
+                file=sys.stderr,
+            )
+            continue
+        print(
+            f"{head}: sigma growth "
+            f"{sensitivity['sigma_growth_ratio']:.2f}x over "
+            f"{sensitivity['shortest_valid_rung_ms']:g}-"
+            f"{sensitivity['longest_valid_rung_ms']:g} ms, corrected long-rung "
+            f"delta {sensitivity['corrected_delta_db']:+.2f} dB",
+            file=sys.stderr,
+        )
     return EXIT_OK
 
 
@@ -117,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
             "  null-model corrected, because the window's own bias on a narrow\n"
             "  feature is large and never vanishes.\n"
             "\n"
+            "ANCHORING\n"
+            "  Per band the report anchors on that band's deepest bin, which is\n"
+            "  not in general its most window-divergent one. --at-hz names the\n"
+            "  bin you already care about -- the spec verdict's worst bin -- and\n"
+            "  reads it the same way, null model included.\n"
+            "\n"
             "WHEN NOT TO USE\n"
             "  Not for a round with one pose (across-pose sigma needs two), not\n"
             "  for prescribing EQ, and not as a verdict: it publishes evidence\n"
@@ -125,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
             "EXAMPLE\n"
             "  jasper-gate-sweep captures/<campaign>/<round> --out /tmp/sweep.json\n"
             "  jasper-gate-sweep <round> --rungs-ms 3 5 7 12 20\n"
+            "  jasper-gate-sweep <round> --at-hz 441.6 358\n"
             "\n"
             "EXIT CODES\n"
             "  0  EXIT_OK -- swept; the report was written\n"
@@ -146,6 +170,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "gate ladder, in milliseconds "
             f"(default: {' '.join(f'{r:g}' for r in DEFAULT_RUNGS_MS)})"
+        ),
+    )
+    parser.add_argument(
+        "--at-hz",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="HZ",
+        help=(
+            "also read these frequencies, whatever each band's deepest bin is "
+            "(the spec verdict's worst bin belongs here); each is snapped to "
+            "the nearest analysis-grid bin"
         ),
     )
     parser.add_argument(

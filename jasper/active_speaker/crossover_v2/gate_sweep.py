@@ -13,6 +13,21 @@ sigma => room" mis-attributes it (issue #3495's 2026-09-01 amendment 2, from
 ``captures/recommission-day2-2026-09-01/p1-position-window/P1-REPORT.md``
 §5b: 5.5x at 441.6 Hz and 5.1x at 1 kHz against 0.94x-1.4x above 2.5 kHz).
 
+Those P1 figures are 3->20 ms. The ``sigma_growth_ratio`` this module
+publishes is over the feature's resolution-VALID rungs only, so at 441.6 Hz
+it is the 7->20 ms ratio (~3.5x) and not 5.5x, while 1 kHz clears 2.5 cycles
+at 3 ms and keeps the full 3->20 ms span (~5x). Below 2.5 cycles the read is
+the window's, not the feature's, and a ratio anchored there is set by its own
+tiny denominator. The 3->20 ms figure stays readable: ``sigma_map`` banks the
+across-pose sigma on the whole analysis grid at every rung.
+
+Which bin the ratio is about is the CALLER's choice, not an argmax: a band's
+deepest median-detrended bin is not always its most window-divergent one
+(on ``r9-verify-clean`` the deepest bin in 250-2000 Hz grows 1.9x while
+441.6 Hz in the same band grows 3.5x). ``at_hz`` anchors the report on the
+frequency the spec verdict flagged; the per-band worst bin is published
+beside it, unchanged.
+
 Three measured hazards this module exists to not repeat:
 
 * **The window's own bias is not small and never vanishes.** A -4.5 dB,
@@ -387,15 +402,11 @@ def gated_curve(
     grid: np.ndarray,
 ) -> np.ndarray:
     """A rung's smoothed magnitude, in dB on ``grid``. Not normalised."""
-    segment, _ = gated_segment(
-        ir, sample_rate, gate_ms=gate_ms, peak_idx=peak_idx
-    )
+    segment, _ = gated_segment(ir, sample_rate, gate_ms=gate_ms, peak_idx=peak_idx)
     spectrum = np.fft.rfft(segment, n=N_FFT)
     freqs = np.fft.rfftfreq(N_FFT, d=1.0 / sample_rate)
     db = 20.0 * np.log10(np.maximum(np.abs(spectrum), 1e-15))
-    keep = (
-        np.isfinite(db) & (freqs >= GRID_LO_HZ * 0.7) & (freqs <= GRID_HI_HZ * 1.3)
-    )
+    keep = np.isfinite(db) & (freqs >= GRID_LO_HZ * 0.7) & (freqs <= GRID_HI_HZ * 1.3)
     smoothed = smooth_fractional_octave(
         freqs[keep], db[keep], MAGNITUDE_SMOOTH_FRACTION
     )
@@ -442,7 +453,9 @@ def _read_curves(
             peak_idx=capture.peak_idx,
             grid=grid,
         )
-        capture.reference_const_db = _band_mean_db(reference_curve, grid, reference_band)
+        capture.reference_const_db = _band_mean_db(
+            reference_curve, grid, reference_band
+        )
         for rung in rungs_ms:
             raw = (
                 reference_curve
@@ -571,12 +584,8 @@ def window_bias_db(
         without = gated_curve(
             clean, sample_rate, gate_ms=rung, peak_idx=peak_idx, grid=grid
         )
-        read_with = float(
-            np.interp(fit.centre_hz, grid, detrend(with_notch, grid))
-        )
-        read_without = float(
-            np.interp(fit.centre_hz, grid, detrend(without, grid))
-        )
+        read_with = float(np.interp(fit.centre_hz, grid, detrend(with_notch, grid)))
+        read_without = float(np.interp(fit.centre_hz, grid, detrend(without, grid)))
         bias[rung] = read_with - read_without
     return bias
 
@@ -608,11 +617,112 @@ def _across_pose_sigma(
     means the spread is the poses disagreeing, and nothing else.
     """
     return {
-        rung: np.std(
-            np.array([cap.curves[rung] for cap in captures]), axis=0, ddof=1
-        )
+        rung: np.std(np.array([cap.curves[rung] for cap in captures]), axis=0, ddof=1)
         for rung in rungs_ms
     }
+
+
+def _feature_result(
+    captures: Sequence[PoseCapture],
+    grid: np.ndarray,
+    sigma: Mapping[float, np.ndarray],
+    hz: float,
+    *,
+    rungs_ms: Sequence[float],
+) -> dict[str, Any]:
+    """One bin read through the whole ladder: table, poses, null model.
+
+    ``hz`` is snapped to the nearest analysis-grid bin and the snapped
+    ``bin_hz`` is what every number below is read at.
+    """
+    grid_index = int(np.argmin(np.abs(grid - float(hz))))
+    bin_hz = float(grid[grid_index])
+    valid = [rung for rung in rungs_ms if _resolution(bin_hz, rung) != "invalid"]
+    bin_sigma = {rung: float(sigma[rung][grid_index]) for rung in rungs_ms}
+    result: dict[str, Any] = {
+        "bin_hz": bin_hz,
+        "cycles_by_rung": {_key(r): _cycles(bin_hz, r) for r in rungs_ms},
+        "resolution_by_rung": {_key(r): _resolution(bin_hz, r) for r in rungs_ms},
+        "sigma_db_by_rung": {_key(r): bin_sigma[r] for r in rungs_ms},
+        "n_valid_rungs": len(valid),
+        "valid_rungs_ms": list(valid),
+        "poses": [
+            {
+                "pose_key": cap.pose_key,
+                "capture_id": cap.capture_id,
+                "azimuth_deg": cap.azimuth_deg,
+                "vertical_deg": cap.vertical_deg,
+                "mark_distance_m": cap.mark_distance_m,
+                "value_db_by_rung": {
+                    _key(r): float(cap.curves[r][grid_index]) for r in rungs_ms
+                },
+                "detrended_db_by_rung": {
+                    _key(r): float(cap.detrended[r][grid_index]) for r in rungs_ms
+                },
+            }
+            for cap in captures
+        ],
+    }
+    if len(valid) < 2:
+        result["sensitivity"] = None
+        result["sensitivity_null_reason"] = NULL_INSUFFICIENT_VALID_RUNGS
+        return result
+
+    short, long_ = min(valid), max(valid)
+    if bin_sigma[short] <= 0.0:
+        result["sensitivity"] = None
+        result["sensitivity_null_reason"] = NULL_DEGENERATE_SHORT_RUNG
+        return result
+
+    fit = fit_notch(captures, grid, rung_ms=long_, nominal_hz=bin_hz)
+    host = captures[0]
+    hosts = null_model_hosts(host, host_rung_ms=long_)
+    bias_by_host = {
+        name: window_bias_db(
+            ir,
+            host.sample_rate,
+            peak_idx=peak,
+            grid=grid,
+            fit=fit,
+            rungs_ms=(short, long_),
+        )
+        for name, (ir, peak) in hosts.items()
+    }
+    bias = bias_by_host["real"]
+    raw_delta = float(
+        np.median([cap.detrended[long_][grid_index] for cap in captures])
+        - np.median([cap.detrended[short][grid_index] for cap in captures])
+    )
+    bias_delta = bias[long_] - bias[short]
+    synthetic = bias_by_host["synthetic"]
+    synthetic_delta = synthetic[long_] - synthetic[short]
+    result["sensitivity"] = {
+        "shortest_valid_rung_ms": short,
+        "longest_valid_rung_ms": long_,
+        "sigma_growth_ratio": bin_sigma[long_] / bin_sigma[short],
+        "raw_delta_db": raw_delta,
+        "bias_delta_db": bias_delta,
+        "corrected_delta_db": raw_delta - bias_delta,
+        # The same bias through a bare-impulse host. It corrects nothing —
+        # it is the disclosure that says whether the real host was still
+        # additive at this depth (see :func:`null_model_hosts`).
+        "bias_delta_synthetic_host_db": synthetic_delta,
+        "null_model": {
+            "centre_hz": fit.centre_hz,
+            "depth_db": fit.depth_db,
+            "q": fit.q,
+            "per_pose_centre_hz": list(fit.per_pose_centre_hz),
+            "per_pose_depth_db": list(fit.per_pose_depth_db),
+            "per_pose_q": list(fit.per_pose_q),
+            "host_capture_id": host.capture_id,
+            "read_db_by_rung": {_key(r): bias[r] for r in (short, long_)},
+            "synthetic_host_read_db_by_rung": {
+                _key(r): synthetic[r] for r in (short, long_)
+            },
+        },
+    }
+    result["sensitivity_null_reason"] = None
+    return result
 
 
 def _band_result(
@@ -647,107 +757,23 @@ def _band_result(
     )
     worst_index = int(np.argmax(np.abs(median_detrended[mask])))
     worst_hz = float(grid[mask][worst_index])
-    grid_index = int(np.flatnonzero(mask)[worst_index])
 
-    valid = [rung for rung in rungs_ms if _resolution(worst_hz, rung) != "invalid"]
-    worst_sigma = {rung: float(sigma[rung][grid_index]) for rung in rungs_ms}
-    result.update(
-        {
-            "worst_bin_hz": worst_hz,
-            "cycles_by_rung": {_key(r): _cycles(worst_hz, r) for r in rungs_ms},
-            "resolution_by_rung": {_key(r): _resolution(worst_hz, r) for r in rungs_ms},
-            "sigma_db_by_rung": {_key(r): worst_sigma[r] for r in rungs_ms},
-            "n_valid_rungs": len(valid),
-            "valid_rungs_ms": list(valid),
-            # The band's deepest feature is not always its most window-
-            # divergent one (on r9-verify-clean the deepest bin in 250-2000 Hz
-            # grows 1.9x while 442 Hz in the same band grows 3.5x), so the
-            # whole band's mean sigma is published beside the worst bin's.
-            # It pools every graded bin at every rung, including bins below
-            # their own resolution floor at the short rungs: that is P1 §5b's
-            # statistic, and the frame's resolution bars price it. No ratio is
-            # published for it — a ratio of two sigmas over 700 bins is set by
-            # its smallest denominator, not by the room.
-            "band_mean_sigma_db_by_rung": {
-                _key(r): float(np.mean(sigma[r][mask])) for r in rungs_ms
-            },
-            "poses": [
-                {
-                    "pose_key": cap.pose_key,
-                    "capture_id": cap.capture_id,
-                    "azimuth_deg": cap.azimuth_deg,
-                    "vertical_deg": cap.vertical_deg,
-                    "mark_distance_m": cap.mark_distance_m,
-                    "value_db_by_rung": {
-                        _key(r): float(cap.curves[r][grid_index]) for r in rungs_ms
-                    },
-                    "detrended_db_by_rung": {
-                        _key(r): float(cap.detrended[r][grid_index]) for r in rungs_ms
-                    },
-                }
-                for cap in captures
-            ],
-        }
-    )
-    if len(valid) < 2:
-        result["sensitivity"] = None
-        result["sensitivity_null_reason"] = NULL_INSUFFICIENT_VALID_RUNGS
-        return result
-
-    short, long_ = min(valid), max(valid)
-    if worst_sigma[short] <= 0.0:
-        result["sensitivity"] = None
-        result["sensitivity_null_reason"] = NULL_DEGENERATE_SHORT_RUNG
-        return result
-
-    fit = fit_notch(captures, grid, rung_ms=long_, nominal_hz=worst_hz)
-    host = captures[0]
-    hosts = null_model_hosts(host, host_rung_ms=long_)
-    bias_by_host = {
-        name: window_bias_db(
-            ir,
-            host.sample_rate,
-            peak_idx=peak,
-            grid=grid,
-            fit=fit,
-            rungs_ms=(short, long_),
-        )
-        for name, (ir, peak) in hosts.items()
+    feature = _feature_result(captures, grid, sigma, worst_hz, rungs_ms=rungs_ms)
+    result["worst_bin_hz"] = feature.pop("bin_hz")
+    # The band's deepest feature is not always its most window-divergent one
+    # (on r9-verify-clean the deepest bin in 250-2000 Hz grows 1.9x while
+    # 442 Hz in the same band grows 3.5x), so the whole band's mean sigma is
+    # published beside the worst bin's — and a caller that already knows
+    # which bin it is asking about names it with ``at_hz`` instead. The mean
+    # pools every graded bin at every rung, including bins below their own
+    # resolution floor at the short rungs: that is P1 §5b's statistic, and
+    # the frame's resolution bars price it. No ratio is published for it — a
+    # ratio of two sigmas over 700 bins is set by its smallest denominator,
+    # not by the room.
+    result["band_mean_sigma_db_by_rung"] = {
+        _key(r): float(np.mean(sigma[r][mask])) for r in rungs_ms
     }
-    bias = bias_by_host["real"]
-    raw_delta = float(
-        np.median([cap.detrended[long_][grid_index] for cap in captures])
-        - np.median([cap.detrended[short][grid_index] for cap in captures])
-    )
-    bias_delta = bias[long_] - bias[short]
-    synthetic = bias_by_host["synthetic"]
-    synthetic_delta = synthetic[long_] - synthetic[short]
-    result["sensitivity"] = {
-        "shortest_valid_rung_ms": short,
-        "longest_valid_rung_ms": long_,
-        "sigma_growth_ratio": worst_sigma[long_] / worst_sigma[short],
-        "raw_delta_db": raw_delta,
-        "bias_delta_db": bias_delta,
-        "corrected_delta_db": raw_delta - bias_delta,
-        # The same bias through a bare-impulse host. It corrects nothing —
-        # it is the disclosure that says whether the real host was still
-        # additive at this depth (see :func:`null_model_hosts`).
-        "bias_delta_synthetic_host_db": synthetic_delta,
-        "null_model": {
-            "centre_hz": fit.centre_hz,
-            "depth_db": fit.depth_db,
-            "q": fit.q,
-            "per_pose_centre_hz": list(fit.per_pose_centre_hz),
-            "per_pose_depth_db": list(fit.per_pose_depth_db),
-            "per_pose_q": list(fit.per_pose_q),
-            "host_capture_id": host.capture_id,
-            "read_db_by_rung": {_key(r): bias[r] for r in (short, long_)},
-            "synthetic_host_read_db_by_rung": {
-                _key(r): synthetic[r] for r in (short, long_)
-            },
-        },
-    }
-    result["sensitivity_null_reason"] = None
+    result.update(feature)
     return result
 
 
@@ -800,16 +826,72 @@ def frame_descriptor(rungs_ms: Sequence[float], grid: np.ndarray) -> dict[str, A
     }
 
 
+def _spec_band_of(hz: float) -> list[float] | None:
+    """The spec band ``hz`` falls in, on the table's own edge rule."""
+    for lo_hz, hi_hz, _tolerance in SPEC_BANDS:
+        if lo_hz <= hz < hi_hz:
+            return [lo_hz, hi_hz]
+    return None
+
+
+def _feature_at(
+    captures: Sequence[PoseCapture],
+    grid: np.ndarray,
+    sigma: Mapping[float, np.ndarray],
+    hz: float,
+    *,
+    rungs_ms: Sequence[float],
+) -> dict[str, Any]:
+    result = _feature_result(captures, grid, sigma, hz, rungs_ms=rungs_ms)
+    return {
+        "requested_hz": hz,
+        "band_hz": _spec_band_of(result["bin_hz"]),
+        **result,
+    }
+
+
+def _sigma_map(
+    grid: np.ndarray, sigma: Mapping[float, np.ndarray], rungs_ms: Sequence[float]
+) -> dict[str, Any]:
+    """The whole across-pose sigma surface, so no reader has to re-run this.
+
+    P1 §5b's artifact: any bin's growth across any pair of rungs — including
+    pairs the published ``sensitivity`` refuses as resolution-invalid — is a
+    subtraction away once this is banked.
+    """
+    return {
+        "grid_hz": np.round(grid, 3).tolist(),
+        "sigma_db_by_rung": {
+            _key(rung): np.round(sigma[rung], 3).tolist() for rung in rungs_ms
+        },
+    }
+
+
 def sweep_round(
-    round_dir: Path, *, rungs_ms: Sequence[float] = DEFAULT_RUNGS_MS
+    round_dir: Path,
+    *,
+    rungs_ms: Sequence[float] = DEFAULT_RUNGS_MS,
+    at_hz: Sequence[float] = (),
 ) -> dict[str, Any]:
     """Sweep one banked round's gate and report what moved with the window.
+
+    ``at_hz`` names the bins the caller already cares about — the spec
+    verdict's worst bin, typically, which is not in general the band's own
+    deepest one. Each is read exactly as a band's worst bin is, null model
+    included, and reported under ``features``.
 
     Raises :class:`GateSweepRefused` naming the missing input.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     if len(rungs) < 2:
         raise ValueError("a gate sweep needs at least two rungs")
+    wanted = tuple(float(hz) for hz in at_hz)
+    for hz in wanted:
+        if not GRID_LO_HZ <= hz <= GRID_HI_HZ:
+            raise ValueError(
+                f"{hz:g} Hz is outside the analysis grid "
+                f"({GRID_LO_HZ:g}-{GRID_HI_HZ:g} Hz)"
+            )
     captures = discover_captures(Path(round_dir))
     grid = analysis_grid()
     _read_curves(captures, grid, rungs)
@@ -841,4 +923,8 @@ def sweep_round(
             _band_result(captures, grid, sigma, band, rungs_ms=rungs)
             for band in SPEC_BANDS
         ],
+        "features": [
+            _feature_at(captures, grid, sigma, hz, rungs_ms=rungs) for hz in wanted
+        ],
+        "sigma_map": _sigma_map(grid, sigma, rungs),
     }

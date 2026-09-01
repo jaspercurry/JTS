@@ -48,6 +48,8 @@ FEATURE_Q = 8.0
 LATE_COPY_GAIN = 0.20
 AZIMUTHS_DEG = (-22.0, -7.0, 0.0, 7.0, 22.0)
 LOW_BAND = 0  # SPEC_BANDS[0] == 250-2000 Hz
+#: A named bin that is resolution-valid at 20 ms and not at 5 ms.
+ANCHOR_UNRESOLVED_HZ = 300.0
 
 
 def _pose_ir(index: int, *, late_copy_ms: float | None) -> np.ndarray:
@@ -89,9 +91,7 @@ def _write_round(
     summed.mkdir(parents=True)
 
     played, _ = synchronized_swept_sine(duration_approx_s=1.0, sample_rate=RATE)
-    other, _ = synchronized_swept_sine(
-        f1=30.0, duration_approx_s=1.0, sample_rate=RATE
-    )
+    other, _ = synchronized_swept_sine(f1=30.0, duration_approx_s=1.0, sample_rate=RATE)
     write_sweep_wav(programs / "cloud_verify_program.wav", played, RATE)
     write_sweep_wav(programs / "verify_program.wav", other, RATE)
     played_sha = hashlib.sha256(
@@ -146,10 +146,7 @@ def pose_varying_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Each pose sees the late arrival at its own delay."""
     root = _write_round(
         tmp_path_factory.mktemp("varying"),
-        [
-            _pose_ir(i, late_copy_ms=8.0 + 0.9 * i)
-            for i in range(len(AZIMUTHS_DEG))
-        ],
+        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(len(AZIMUTHS_DEG))],
     )
     return sweep_round(root)
 
@@ -162,6 +159,25 @@ def direct_only_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
         [_pose_ir(i, late_copy_ms=None) for i in range(len(AZIMUTHS_DEG))],
     )
     return sweep_round(root)
+
+
+@pytest.fixture(scope="module")
+def anchored_reports(tmp_path_factory: pytest.TempPathFactory) -> tuple[dict, dict]:
+    """One round read twice: bands alone, then bands plus caller-named bins.
+
+    ``ANCHOR_UNRESOLVED_HZ`` has 1.5 cycles in the 5 ms rung and 6 in the
+    20 ms one, so it leaves exactly one resolution-valid rung and exercises
+    the null-reason branch a named bin can land in.
+    """
+    root = _write_round(
+        tmp_path_factory.mktemp("anchored"),
+        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
+    )
+    rungs = (5.0, 20.0)
+    return (
+        sweep_round(root, rungs_ms=rungs),
+        sweep_round(root, rungs_ms=rungs, at_hz=(FEATURE_HZ, ANCHOR_UNRESOLVED_HZ)),
+    )
 
 
 def test_common_mode_arrival_leaves_across_pose_sigma_flat(
@@ -263,9 +279,7 @@ def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> 
     The table itself still publishes every value with its cycles count: a
     read that cannot be trusted is flagged, never silently dropped.
     """
-    root = _write_round(
-        tmp_path, [_pose_ir(i, late_copy_ms=None) for i in range(3)]
-    )
+    root = _write_round(tmp_path, [_pose_ir(i, late_copy_ms=None) for i in range(3)])
     report = sweep_round(root, rungs_ms=(1.0, 2.0))
     band = _low_band(report)
 
@@ -311,3 +325,64 @@ def test_the_frame_every_number_is_stated_in_is_published(
     assert frame["reference"]["band_hz"] == [2500.0, 8000.0]
     assert frame["reference"]["intersected_with_radiated_band"] is True
     assert frame["rungs_ms"] == list(gate_sweep.DEFAULT_RUNGS_MS)
+
+
+def test_a_named_frequency_is_read_the_way_a_worst_bin_is(
+    anchored_reports: tuple[dict, dict],
+) -> None:
+    """``at_hz`` anchors on the caller's bin, snapped, with its own null model."""
+    _plain, anchored = anchored_reports
+    named, unresolved = anchored["features"]
+
+    assert named["requested_hz"] == FEATURE_HZ
+    assert named["bin_hz"] == pytest.approx(FEATURE_HZ, rel=0.02)
+    assert named["band_hz"] == [250.0, 2000.0]
+    assert named["sensitivity_null_reason"] is None
+    assert named["valid_rungs_ms"] == [5.0, 20.0]
+    assert named["sensitivity"]["sigma_growth_ratio"] > 1.0
+    assert named["sensitivity"]["null_model"]["centre_hz"] == pytest.approx(
+        FEATURE_HZ, rel=0.06
+    )
+    assert {pose["pose_key"] for pose in named["poses"]} == {
+        pose["pose_key"] for pose in anchored["poses"]
+    }
+
+    assert unresolved["requested_hz"] == ANCHOR_UNRESOLVED_HZ
+    assert unresolved["n_valid_rungs"] == 1
+    assert unresolved["sensitivity"] is None
+    assert (
+        unresolved["sensitivity_null_reason"]
+        == gate_sweep.NULL_INSUFFICIENT_VALID_RUNGS
+    )
+
+
+def test_naming_a_frequency_does_not_move_the_bands(
+    anchored_reports: tuple[dict, dict],
+) -> None:
+    """The per-band worst-bin report is what it was; ``features`` is additive."""
+    plain, anchored = anchored_reports
+    assert plain["features"] == []
+    assert anchored["bands"] == plain["bands"]
+
+
+@pytest.mark.parametrize(
+    "hz", [gate_sweep.GRID_LO_HZ - 1.0, gate_sweep.GRID_HI_HZ + 1.0]
+)
+def test_a_frequency_off_the_analysis_grid_is_an_input_error(
+    tmp_path: Path, hz: float
+) -> None:
+    with pytest.raises(ValueError):
+        sweep_round(tmp_path, at_hz=(hz,))
+
+
+def test_the_whole_sigma_surface_is_banked(anchored_reports: tuple[dict, dict]) -> None:
+    """P1 §5b's artifact: any bin, any rung pair, without re-running the sweep."""
+    _plain, anchored = anchored_reports
+    sigma_map = anchored["sigma_map"]
+    points = gate_sweep.analysis_grid().size
+
+    assert len(sigma_map["grid_hz"]) == points
+    assert set(sigma_map["sigma_db_by_rung"]) == {"5", "20"}
+    assert all(
+        len(values) == points for values in sigma_map["sigma_db_by_rung"].values()
+    )
