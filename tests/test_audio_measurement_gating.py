@@ -987,6 +987,42 @@ def test_f_trusted_floor_guards_nonpositive_and_nonfinite_like_its_sibling():
 
 
 @pytest.mark.parametrize(
+    ("t_first_bounce_s", "expected_hz"), [(0.0025, 1000.0), (0.003, 2500.0 / 3.0)]
+)
+def test_f_entanglement_floor_divides_the_multiplier_by_the_bounce_time(
+    t_first_bounce_s, expected_hz
+):
+    """#3495's second floor: the same 2.5 over the ROOM's first arrival rather
+    than over the window. At this rig class's 2.5-3 ms the floor lands near
+    1 kHz, above every rung the ladder can offer."""
+    assert gating.f_entanglement_floor_hz(t_first_bounce_s) == pytest.approx(expected_hz)
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.001, float("nan"), float("inf")])
+def test_f_entanglement_floor_refuses_rather_than_returning_a_floor(bad):
+    """Deliberately NOT its siblings' ``+inf``. A window that cannot resolve
+    has a pessimistic floor; a bounce time that is absent or non-physical has
+    no floor at all, and the caller must reach for
+    :data:`gating.ENTANGLEMENT_SOURCE_UNKNOWN` instead of a number."""
+    with pytest.raises(ValueError):
+        gating.f_entanglement_floor_hz(bad)
+
+
+def test_the_measured_entanglement_word_is_the_gate_bound_word():
+    """One vocabulary, not two: a floor timed off the gate's own reflection is
+    spelt with the source that named the bound, so a consumer comparing the
+    two fields never sees synonyms."""
+    assert gating.ENTANGLEMENT_SOURCE_MEASURED == gating.FLOOR_MEASURED
+    assert len(
+        {
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+        }
+    ) == 3
+
+
+@pytest.mark.parametrize(
     "name", ["measured_4.0ms_-10dB", "fallback_bare_delta", "ungateable_silent"]
 )
 def test_disclosure_fields_are_present_on_every_bound_source(name):

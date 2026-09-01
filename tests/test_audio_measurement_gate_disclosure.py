@@ -255,7 +255,7 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
             {"floor_source": gating.FLOOR_MEASURED,
              "direct_peak_ms": 10.0, "first_reflection_ms": 12.5},
             0.010,
-            gate_disclosure.ENTANGLEMENT_SOURCE_MEASURED,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
             0.0025,
         ),
         # Nothing found to time (this rig class, always): the declared
@@ -263,7 +263,7 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
         (
             {"floor_source": gating.FLOOR_SEARCH_BOUND, "window_ms": 7.0},
             0.0025,
-            gate_disclosure.ENTANGLEMENT_SOURCE_DECLARED,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
             0.0025,
         ),
         # A measured bound whose arrival did not survive into the record has
@@ -271,21 +271,21 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
         (
             {"floor_source": gating.FLOOR_MEASURED, "direct_peak_ms": 10.0},
             0.005,
-            gate_disclosure.ENTANGLEMENT_SOURCE_DECLARED,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
             0.005,
         ),
         # Neither source: unknown, and no number stands in for one.
         (
             {"floor_source": gating.FLOOR_SEARCH_BOUND},
             None,
-            gate_disclosure.ENTANGLEMENT_SOURCE_UNKNOWN,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
             None,
         ),
         # A non-physical declared bounce is not a floor either.
         (
             {"floor_source": gating.FLOOR_SEARCH_BOUND},
             0.0,
-            gate_disclosure.ENTANGLEMENT_SOURCE_UNKNOWN,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
             None,
         ),
     ],

@@ -32,6 +32,11 @@ This module does no I/O and holds no state:
 * :func:`f_trusted_floor_hz` is the *disclosed-beside-it* stricter floor
   (see "The gating contract" below). It sizes no window here; what reads it
   is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
+* :func:`f_entanglement_floor_hz` is the same multiplier over the room's
+  first-bounce time rather than the window — the floor no window choice can
+  lower (#3495). This module states the formula and the provenance words;
+  :mod:`~jasper.audio_measurement.gate_disclosure` decides which source a
+  given capture has.
 
 Pipeline stage: **derive**. This module turns a deconvolved impulse
 response into a windowed one plus the record of what it did. It owns
@@ -336,6 +341,17 @@ FLOOR_MEASURED = "measured_reflection"
 FLOOR_SEARCH_BOUND = "search_span_bound"
 NEAR_FIELD_EXEMPT = "near_field"
 
+# Provenance of an entanglement floor (:func:`f_entanglement_floor_hz`), and
+# the vocabulary's single home — a declared geometry is spelt the same word
+# here and in :mod:`jasper.audio_measurement.measurement_geometry` (#3502).
+# The measured word is FLOOR_MEASURED's own: the entanglement floor is
+# measured exactly when the gate's bound was, off the same reflection.
+ENTANGLEMENT_SOURCE_MEASURED = FLOOR_MEASURED
+ENTANGLEMENT_SOURCE_DECLARED = "declared_geometry"
+#: No reflection measured and no geometry declared. NEVER read as clean:
+#: it says nothing was proven, not that no room is in the read.
+ENTANGLEMENT_SOURCE_UNKNOWN = "unknown"
+
 
 @dataclass(frozen=True)
 class ReflectionDetection:
@@ -381,6 +397,28 @@ def f_trusted_floor_hz(window_s: float) -> float:
     spec's band clamps do — see :data:`TRUSTED_FLOOR_MULTIPLIER`.
     """
     return TRUSTED_FLOOR_MULTIPLIER * f_valid_floor_hz(window_s)
+
+
+def f_entanglement_floor_hz(t_first_bounce_s: float) -> float:
+    """The ROOM's floor, ``2.5 / t_first_bounce`` — the other one (#3495).
+
+    :func:`f_trusted_floor_hz` divides the multiplier by the WINDOW and
+    answers "can a window this long resolve a feature here"; this divides it
+    by the time to the room's first arrival and answers "can any window
+    exclude the room here". Below this frequency every window long enough to
+    resolve is already long enough to admit the first bounce, so no gate
+    length separates speaker from room, and between the two floors a read is
+    resolved and room-entangled at once. Unlike its sibling this raises
+    rather than returning ``+inf``: a non-positive or non-finite bounce time
+    is not a pessimistic floor, it is an absent one, and absent has its own
+    word (:data:`ENTANGLEMENT_SOURCE_UNKNOWN`) that no number may stand in
+    for.
+    """
+    if not (t_first_bounce_s > 0) or not math.isfinite(t_first_bounce_s):
+        raise ValueError(
+            f"t_first_bounce_s must be finite and positive: {t_first_bounce_s!r}"
+        )
+    return TRUSTED_FLOOR_MULTIPLIER / t_first_bounce_s
 
 
 def analytic_signal(x: np.ndarray) -> np.ndarray:

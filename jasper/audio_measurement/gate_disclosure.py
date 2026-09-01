@@ -67,8 +67,9 @@ window choice separates speaker from room there. Both are published here,
 the second with its provenance beside it, because on a rig whose first
 bounce lands while the direct sound is still decaying the reflection finder
 structurally never fires (#3502) and the honest answer is
-:data:`ENTANGLEMENT_SOURCE_UNKNOWN` forever. Unknown is rendered as unknown;
-it is not a clean gate.
+``unknown`` forever
+(:data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCE_UNKNOWN`).
+Unknown is rendered as unknown; it is not a clean gate.
 """
 
 from __future__ import annotations
@@ -89,14 +90,6 @@ from jasper.audio_measurement import gating
 #: numbers from the same impulse response.
 DELTA_NFFT = 1 << 16
 DELTA_CEILING_HZ = 20000.0
-
-#: Provenance of :attr:`GateDisclosure.entanglement_floor_hz`. The measured
-#: word is :data:`~jasper.audio_measurement.gating.FLOOR_MEASURED`'s own: the
-#: entanglement floor is measured exactly when the gate's bound was, from the
-#: same reflection.
-ENTANGLEMENT_SOURCE_MEASURED = gating.FLOOR_MEASURED
-ENTANGLEMENT_SOURCE_DECLARED = "declared_geometry"
-ENTANGLEMENT_SOURCE_UNKNOWN = "unknown"
 
 #: Below this, ``describe_gate`` calls the gate's spectral effect "small".
 #: A rendering threshold for one adjective, not a decision boundary —
@@ -293,9 +286,10 @@ class GateDisclosure:
     #: which no window separates speaker from room. ``None`` is UNKNOWN, and
     #: unknown is not clean: nothing was proven about any band.
     entanglement_floor_hz: float | None = None
-    #: Which of the three ``ENTANGLEMENT_SOURCE_*`` words the floor came from.
+    #: Which of :mod:`~jasper.audio_measurement.gating`'s three
+    #: ``ENTANGLEMENT_SOURCE_*`` words the floor came from.
     #: A declared geometry never masquerades as a measurement (#3502).
-    entanglement_floor_source: str = ENTANGLEMENT_SOURCE_UNKNOWN
+    entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
     @property
     def gated_anything(self) -> bool:
@@ -335,16 +329,17 @@ def _finite(value: Any) -> float | None:
 
 
 def _floor_from_bounce_s(t_first_bounce_s: float | None) -> float | None:
-    """``TRUSTED_FLOOR_MULTIPLIER / t`` in Hz, or ``None`` for an unusable ``t``.
+    """:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`, or
+    ``None`` for a bounce time this module cannot use.
 
-    The multiplier is imported, never restated: the entanglement floor and
-    the trusted floor ask the same "how many cycles fit" question of two
-    different times, so one constant governs both (#3502).
+    The formula stays gating's; what this adds is the reader's contract —
+    a missing or non-physical time is UNKNOWN here, not an exception, since
+    this runs on records written by builds that never wrote the field.
     """
     t = _finite(t_first_bounce_s)
     if t is None or t <= 0.0:
         return None
-    return gating.TRUSTED_FLOOR_MULTIPLIER / t
+    return gating.f_entanglement_floor_hz(t)
 
 
 def _entanglement_floor(
@@ -364,11 +359,11 @@ def _entanglement_floor(
             reflection_delay_ms / 1000.0 if reflection_delay_ms is not None else None
         )
         if measured is not None:
-            return measured, ENTANGLEMENT_SOURCE_MEASURED
+            return measured, gating.ENTANGLEMENT_SOURCE_MEASURED
     declared = _floor_from_bounce_s(declared_first_bounce_s)
     if declared is not None:
-        return declared, ENTANGLEMENT_SOURCE_DECLARED
-    return None, ENTANGLEMENT_SOURCE_UNKNOWN
+        return declared, gating.ENTANGLEMENT_SOURCE_DECLARED
+    return None, gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
 
 def build_gate_disclosure(
@@ -515,7 +510,7 @@ def _entanglement_clause(d: GateDisclosure) -> str:
         )
     provenance = (
         "the measured reflection"
-        if d.entanglement_floor_source == ENTANGLEMENT_SOURCE_MEASURED
+        if d.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_MEASURED
         else "declared room geometry"
     )
     return (

@@ -37,7 +37,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from jasper.audio_measurement.gate_disclosure import ENTANGLEMENT_SOURCE_UNKNOWN
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
@@ -324,7 +324,7 @@ class FlatSpecReport:
         GATED_SPEC_LOWER_EDGE_HZ, BEST_EFFORT_ABOVE_HZ,
     )
     entanglement_floor_hz: float | None = None
-    entanglement_floor_source: str = ENTANGLEMENT_SOURCE_UNKNOWN
+    entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -475,7 +475,7 @@ def evaluate_flat_spec(
     trusted_ceiling_hz: float | None = None,
     reference_db_override: float | None = None,
     entanglement_floor_hz: float | None = None,
-    entanglement_floor_source: str = ENTANGLEMENT_SOURCE_UNKNOWN,
+    entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN,
 ) -> FlatSpecReport:
     """Evaluate the flat-linearization spec against one combined, 1/3-oct-
     smoothed magnitude curve (docs/historical/linearization-campaign-2026-07.md, "The spec --
@@ -528,14 +528,14 @@ def evaluate_flat_spec(
             ordinary way.
         entanglement_floor_hz: the ROOM's floor in Hz,
             ``2.5/t_first_bounce``
-            (:attr:`jasper.audio_measurement.gate_disclosure.GateDisclosure.entanglement_floor_hz`)
+            (:func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`)
             -- below it no window length separates speaker from room, however
             the operator chooses it. **Nothing is clamped and no grade
             changes**: it only sets each band's
             :attr:`BandResult.room_entangled_below_hz`. ``None`` (the
             default) is unknown, which marks nothing and proves nothing.
         entanglement_floor_source: which of
-            :mod:`jasper.audio_measurement.gate_disclosure`'s three
+            :mod:`jasper.audio_measurement.gating`'s three
             ``ENTANGLEMENT_SOURCE_*`` words the floor came from, echoed onto
             the report verbatim so a declared geometry can never be read back
             as a measurement (#3502). Provenance only, like

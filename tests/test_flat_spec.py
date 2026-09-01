@@ -42,7 +42,7 @@ from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
 )
-from jasper.audio_measurement import gate_disclosure
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.interference_nulls import identify_interference_nulls
 from jasper.audio_measurement.spatial_combine import (
     combine_positions,
@@ -457,7 +457,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
     assert all(type(v) is float for v in d["graded_band_hz"])
     # No entanglement floor supplied: unknown, which is not clean.
     assert d["entanglement_floor_hz"] is None
-    assert d["entanglement_floor_source"] == gate_disclosure.ENTANGLEMENT_SOURCE_UNKNOWN
+    assert d["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
     assert isinstance(d["bands"], list)
     assert len(d["bands"]) == len(SPEC_BANDS)
@@ -569,7 +569,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
         trusted_ceiling_hz=15000.0,
         graded_band_hz=(142.86, 15000.0),
         entanglement_floor_hz=1000.0,
-        entanglement_floor_source=gate_disclosure.ENTANGLEMENT_SOURCE_DECLARED,
+        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_DECLARED,
     )
     assert FlatSpecReport.from_dict(report.to_dict()) == report
 
@@ -1420,18 +1420,18 @@ def test_an_unevaluable_band_states_no_edge_verdict():
     ("entanglement_floor_hz", "source", "expected"),
     [
         # Unknown marks nothing -- and marking nothing is not a clean read.
-        (None, gate_disclosure.ENTANGLEMENT_SOURCE_UNKNOWN, (None, None, None)),
+        (None, gating.ENTANGLEMENT_SOURCE_UNKNOWN, (None, None, None)),
         # Below every graded band: nothing in the table is entangled.
-        (150.0, gate_disclosure.ENTANGLEMENT_SOURCE_DECLARED, (None, None, None)),
+        (150.0, gating.ENTANGLEMENT_SOURCE_DECLARED, (None, None, None)),
         # Straddling band 1: only the part of it below the floor is marked.
-        (1000.0, gate_disclosure.ENTANGLEMENT_SOURCE_DECLARED, (1000.0, None, None)),
+        (1000.0, gating.ENTANGLEMENT_SOURCE_DECLARED, (1000.0, None, None)),
         # Exactly a shared band edge: band 1 is wholly entangled, band 2 wholly
         # clear of it -- the same inclusive-lower rule membership uses.
-        (2000.0, gate_disclosure.ENTANGLEMENT_SOURCE_MEASURED, (2000.0, None, None)),
+        (2000.0, gating.ENTANGLEMENT_SOURCE_MEASURED, (2000.0, None, None)),
         # Above the whole graded span: every band is marked to its own top.
         (
             30000.0,
-            gate_disclosure.ENTANGLEMENT_SOURCE_MEASURED,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
             (2000.0, 8000.0, BEST_EFFORT_ABOVE_HZ),
         ),
     ],
@@ -1467,7 +1467,7 @@ def test_the_entanglement_floor_moves_no_graded_number():
         _FREQS_HZ,
         db,
         entanglement_floor_hz=1000.0,
-        entanglement_floor_source=gate_disclosure.ENTANGLEMENT_SOURCE_DECLARED,
+        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_DECLARED,
     )
     assert marked.bands[0].room_entangled_below_hz == 1000.0
     assert marked.overall_passed == plain.overall_passed
@@ -1476,3 +1476,27 @@ def test_the_entanglement_floor_moves_no_graded_number():
         dataclasses.replace(band, room_entangled_below_hz=None)
         for band in marked.bands
     ) == plain.bands
+
+
+def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
+    """The keys are new, so every banked report predates them. Their absence
+    must read as UNKNOWN -- ``None`` floor, ``unknown`` source, no band marked
+    -- and never as a report that was evaluated and found clear of the room.
+    """
+    report = evaluate_flat_spec(
+        _FREQS_HZ,
+        _flat_db(),
+        entanglement_floor_hz=1000.0,
+        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_MEASURED,
+    )
+    raw = report.to_dict()
+    del raw["entanglement_floor_hz"]
+    del raw["entanglement_floor_source"]
+    for band in raw["bands"]:
+        del band["room_entangled_below_hz"]
+
+    older = FlatSpecReport.from_dict(raw)
+    assert older.entanglement_floor_hz is None
+    assert older.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    assert all(band.room_entangled_below_hz is None for band in older.bands)
+    assert older.overall_passed == report.overall_passed
