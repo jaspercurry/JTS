@@ -151,8 +151,11 @@ def install(
     # always True for jasper.* — so a per-frame `logger.debug(...)` on a hot
     # audio path is no longer free (it builds a record + a formatted string
     # every frame). Keep hot-loop logging coarser than DEBUG, or rate-limit it.
+    jasper_logger = logging.getLogger("jasper")
+    if _ring is not None:
+        jasper_logger.removeHandler(_ring)  # idempotent: drop any prior install's handler
     _ring = RingFlushHandler(capacity, dump_stream or sys.stderr)
-    logging.getLogger("jasper").addHandler(_ring)
+    jasper_logger.addHandler(_ring)
     # Apply the persisted Tier-B debug toggle for this subsystem (raises the
     # journal handler to DEBUG when this subsystem is toggled on).
     try:

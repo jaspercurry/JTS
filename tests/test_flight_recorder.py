@@ -144,6 +144,22 @@ def test_install_sets_logger_debug_console_info_and_attaches_ring(
     assert fr._ring in logging.getLogger("jasper").handlers
 
 
+def test_install_twice_leaves_one_ring_handler_attached(
+    logging_sandbox, monkeypatch, tmp_path
+):
+    """install() is idempotent: a second call must not stack a second
+    RingFlushHandler onto the jasper logger (issue #3471 item 1)."""
+    monkeypatch.setattr(debug_mode, "DEBUG_FILE", str(tmp_path / "debug.env"))
+    fr.install("voice", capacity=50, dump_stream=io.StringIO())
+    fr.install("voice", capacity=50, dump_stream=io.StringIO())
+    ring_handlers = [
+        h for h in logging.getLogger("jasper").handlers
+        if isinstance(h, fr.RingFlushHandler)
+    ]
+    assert len(ring_handlers) == 1
+    assert ring_handlers[0] is fr._ring
+
+
 def test_install_applies_active_toggle_to_console(
     logging_sandbox, monkeypatch, tmp_path
 ):
