@@ -1065,9 +1065,14 @@ async def apply_dsp_config(
             # refuses — the child then blocks on its own process's flock until
             # the admission timeout. Reloading here needs lock ownership to
             # follow the task, which is its own change.
+            # Not at ``persist``: that phase is reached only after the load
+            # AND the confirm passed, so the graph on this file is proven and
+            # running. Putting the old bytes back would leave the file
+            # disagreeing with the box, and the next boot undoing a good apply.
             if (
                 candidate_restore is not None
                 and state.result == "in_progress"
+                and state.phase != "persist"
                 and same_config_file(state.prior_config_path, candidate)
             ):
                 restore_error = _restore_candidate_bytes(candidate_restore)
