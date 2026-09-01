@@ -60,7 +60,10 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
-from jasper.sound.runtime import reconcile_current_dsp
+from jasper.sound.runtime import (
+    _config_without_id_header,
+    reconcile_current_dsp,
+)
 from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
@@ -242,6 +245,46 @@ class _RejectingCamilla(_FakeCamilla):
             self.loaded_path = path
             return True
         return False
+
+
+async def test_the_reconcile_writes_only_what_the_shared_recompose_produces(
+    tmp_path: Path, monkeypatch,
+):
+    """ONE DERIVER: the reconcile chooses the destination, never the content.
+
+    A re-anchor makes the reconcile write a file the commissioning path also
+    writes. That is only compatible with AGENTS.md's single-writer rule while
+    both produce their bytes from the SAME recompose of the same immutable
+    record — one deriver with two triggers, rather than two writers. If this
+    branch ever computed its own graph, that would be the moment the rule broke,
+    and nothing else would notice.
+    """
+    from jasper.sound.runtime import _render_saved_dsp_on_carrier
+
+    candidate, config_dir, camilla = _reigning_candidate_box(tmp_path, monkeypatch)
+    profile_path = tmp_path / "sound_profile.json"
+    saved = SoundProfile(simple_eq=SimpleEq(bass_db=6.0))
+    save_profile(saved, profile_path)
+
+    # What the SHARED recompose says this box's graph should be...
+    expected = _render_saved_dsp_on_carrier(
+        str(candidate),
+        profile_path=profile_path,
+        config_dir=config_dir,
+        write=False,
+    ).yaml
+
+    await reconcile_current_dsp(
+        profile_path=profile_path,
+        config_dir=config_dir,
+        camilla_factory=lambda: camilla,
+    )
+
+    # ...is byte-for-byte what the re-anchor put on disk, modulo the cosmetic
+    # id header the two renders stamp differently.
+    assert _config_without_id_header(
+        candidate.read_text(encoding="utf-8")
+    ) == _config_without_id_header(expected)
 
 
 async def test_a_rejected_re_anchor_leaves_the_candidate_pristine(

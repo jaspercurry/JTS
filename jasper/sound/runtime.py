@@ -543,6 +543,15 @@ async def reconcile_current_dsp(
                 }
             )
 
+        # ONE DERIVER, TWO TRIGGERS — not a second writer. The candidate is a
+        # DERIVED artifact, and both the commissioning path and this one produce
+        # it through the SAME carrier recompose of that candidate's own
+        # immutable applied-profile record (`load_profile_config` ->
+        # `carrier.reemit`). This branch may never write candidate bytes that
+        # differ from that shared recompose; it chooses the destination, never
+        # the content. Written that way deliberately so AGENTS.md's
+        # single-writer rule survives intact rather than acquiring an exception.
+        #
         # RE-ANCHOR, don't displace. The bytes differ, so this box does need a
         # refreshed graph — but a speaker running a kept active-crossover
         # candidate must keep running THAT file. Writing the refresh under
