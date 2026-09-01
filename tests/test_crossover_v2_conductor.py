@@ -11519,6 +11519,58 @@ def test_an_ungradeable_tracking_claim_discloses_instead_of_refusing():
     assert c.verify_claims["absolute"]["status"] == CLAIM_PASS
 
 
+@pytest.mark.parametrize(
+    ("verify_absolute", "badged"),
+    [
+        pytest.param(_absolute(1.503), True, id="absolute_graded"),
+        pytest.param(
+            {"not_evaluated": "no_trusted_crossover_region"}, False,
+            id="nothing_graded",
+        ),
+    ],
+)
+def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
+    verify_absolute, badged,
+):
+    """The corner of the pin above: a capture that graded NOTHING.
+
+    Accepting an ungradeable tracking claim (#3487) is what makes this
+    reachable — and when the same capture also finds no trusted crossover
+    region, the absolute claim is ``not_evaluated`` too, so the accepted
+    VERIFY carries four claims and not one verdict. The badge over it must
+    then not be the one that means *verified at the mark*: the republish
+    door's own contract, which is where this shape comes from, is that such a
+    VERIFY grades INDETERMINATE and never a false pass.
+
+    The first case is the witnessed one and is unchanged — one claim graded,
+    none failed, badge at the mark. What separates the two is not the
+    ``outcome``, which is a ``pass`` in both: it is whether any claim was
+    graded at all.
+    """
+    from jasper.web.correction_crossover_v2 import (
+        GRADE_INCONCLUSIVE,
+        GRADE_MARK_VERIFIED,
+        _post_apply_grade,
+    )
+
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=None, verify_absolute=verify_absolute,
+    )
+    _run_phase(c, 3, 3)
+
+    assert c.verify_outcome == "pass"
+    assert c.verify_claims["integration"]["status"] == CLAIM_NOT_EVALUATED
+    grade = _post_apply_grade({
+        "applied": True,
+        "verify": {"outcome": c.verify_outcome, "claims": c.verify_claims},
+    })
+
+    assert grade["state"] == (GRADE_MARK_VERIFIED if badged else GRADE_INCONCLUSIVE)
+    assert grade["graded"] is badged
+
+
 def test_a_tracking_claim_that_missed_its_tolerance_still_refuses():
     """The control for the pin above, and the reason the refusal keeps its name.
 

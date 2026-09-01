@@ -1544,6 +1544,42 @@ def test_a_round_that_graded_before_it_refused_is_still_banked(checkout, tmp_pat
     assert len(bank_lines) == 1  # …and its evidence came off the Pi anyway
 
 
+def test_a_bank_that_fails_on_a_refused_round_keeps_the_rounds_own_verdict(
+    checkout, tmp_path
+):
+    """The other half of #3486's ordering: the pull can itself fail.
+
+    Exactly the rounds the fix exists for — graded, then refused — reach the
+    bank with a verdict of their own, and a bank that then fails was replacing
+    it with ``bank_refused``: the round's ``session_failed`` disappeared from
+    the rc a chaining caller reads. ``EXIT_BANK`` says "the ROUND was fine and
+    only the pull was not", which is a different sentence and not this one.
+
+    And the evidence is still on the Pi with nothing having pulled it, so the
+    one command that keeps it must be printed here too — the arm that skipped
+    it was the arm reached by the restore-ending rounds this whole ordering
+    was written for.
+    """
+    server = _Wizard(after_open={
+        "phase": "review", "session_id": "after", "candidate": CANDIDATE,
+        "failure": {"code": "correction_level_shortfall"},
+        "round_receipt": {"round_id": "after", "adoption": "restore",
+                          "row": "row5_trusted_safe_regressed"},
+    })
+    with _serving(server):
+        proc, _, bank_lines = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote"],
+            FAKE_BANK_EXIT="2",
+        )
+
+    assert proc.returncode == 8  # EXIT_SESSION_FAILED, not EXIT_BANK's 9
+    assert len(bank_lines) == 1  # the bank did run, and did not keep anything
+    repo, _, _ = checkout
+    assert str(repo / "scripts" / "bank-crossover-round.sh") in proc.stderr
+    assert "SINCE=" in proc.stderr
+
+
 def test_a_stage_that_never_finishes_times_out_instead_of_banking(checkout, tmp_path):
     """A previous round's terminal phase must not read as this round's finish."""
     server = _Wizard(after_open={"phase": "cloud_measure", "session_id": "after"})

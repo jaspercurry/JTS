@@ -1168,7 +1168,14 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
 
     bank_rc = bank(dest, since=since, target=target, trail=trail)
     if bank_rc != 0:
-        return EXIT_BANK
+        # Nothing was kept, so the operator gets the hand command here too —
+        # and a round that had already refused keeps ITS rc. ``EXIT_BANK``
+        # says "the round was fine and only the pull was not"; overwriting a
+        # ``session_failed`` with it drops the round's own verdict from what a
+        # chaining caller reads, on exactly the restore-ending rounds #3486
+        # ordered the bank for.
+        _say_bank_by_hand(dest, since, target)
+        return EXIT_BANK if rc == EXIT_OK else rc
 
     if args.angles:
         bank_position_cycle(
@@ -1181,12 +1188,13 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
 
 
 def _say_bank_by_hand(dest: Path, since: str, target: Target) -> None:
-    """A round that never GRADED banks nothing; say how to keep the evidence.
+    """Nothing was banked; say how to keep the evidence anyway.
 
-    Reached only where no round receipt was written for this session — a walk
-    that stopped, a stage that never finished. A round that graded and then
-    refused banks itself (#3486); its evidence is complete and its verdict is
-    on the receipt. The evidence is still on the Pi until the next round
+    Reached the two ways a round ends with its evidence unpulled: no round
+    receipt was written for this session at all (a walk that stopped, a stage
+    that never finished), or the bank itself refused. A round that graded and
+    then refused banks itself (#3486); its evidence is complete and its verdict
+    is on the receipt. The evidence is still on the Pi until the next round
     overwrites the dump ring, so the operator gets the one command that keeps it
     rather than a decision made for them.
 

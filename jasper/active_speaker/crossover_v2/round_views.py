@@ -236,12 +236,27 @@ class BankedRound:
 
     @property
     def graded_positions(self) -> tuple[PositionCurve, ...]:
-        """The round's cloud seats, or :class:`RoundViewsError`."""
-        if not self.positions:
+        """The round's cloud seats, or :class:`RoundViewsError`.
+
+        TWO refusals, because two different things are missing. A round that
+        banked no cloud group is the measure-stage SHAPE above; a block that
+        says ``available`` with nothing left after the ``magnitude_db`` filter
+        is a TRUNCATED packet from a round that did walk one
+        (``evidence_packet._positions_block`` sets ``available`` to
+        ``bool(rows)``, so the two cannot be confused). The shape sentence over
+        a corrupt packet reads as "this round is fine, you asked it the wrong
+        question".
+        """
+        if self.positions:
+            return self.positions
+        block = self.packet.get("positions") or {}
+        if block.get("available"):
             raise RoundViewsError(
-                f"{self.round_dir}: evidence packet carries no position evidence"
+                f"{self.round_dir}: every position row is missing its magnitude_db"
             )
-        return self.positions
+        raise RoundViewsError(
+            f"{self.round_dir}: evidence packet carries no position evidence"
+        )
 
 
 def _bundle_session_dir(round_dir: Path) -> Path:
@@ -662,24 +677,20 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
         position.position_id: _own_reference_db(position, baseline.graded_report)
         for position in baseline.graded_positions
     }
-    missing = [
-        p.position_id for p in target.graded_positions
-        if p.position_id not in baseline_refs
-    ]
+    positions = target.graded_positions
+    missing = [p.position_id for p in positions if p.position_id not in baseline_refs]
     if missing:
         raise RoundViewsError(
             f"target round has position(s) {missing} with no baseline counterpart "
             f"(baseline has {sorted(baseline_refs)})"
         )
-    target_own_refs = {
-        position.position_id: _own_reference_db(position, target.graded_report)
-        for position in target.positions
-    }
     report = target.graded_report
-    shipped_pooled, shipped_positions = _grade_positions(target.positions, report, None)
-    frozen_pooled, frozen_positions = _grade_positions(
-        target.positions, report, baseline_refs
-    )
+    target_own_refs = {
+        position.position_id: _own_reference_db(position, report)
+        for position in positions
+    }
+    shipped_pooled, shipped_positions = _grade_positions(positions, report, None)
+    frozen_pooled, frozen_positions = _grade_positions(positions, report, baseline_refs)
     return FrozenReferenceResult(
         baseline_round_dir=str(baseline.round_dir),
         target_round_dir=str(target.round_dir),

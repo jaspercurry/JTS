@@ -202,6 +202,32 @@ def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
         load_banked_round(round_dir)
 
 
+def test_a_cloud_group_whose_every_row_lost_its_curve_is_named_as_that(tmp_path):
+    """A TRUNCATED packet and a round that banked no cloud group are two
+    different absences, and only one of them is a round shape.
+
+    The seat rows are there, the block says ``available``, and not one row
+    carries a ``magnitude_db``: nothing measured that is readable, which is a
+    corrupt or half-written packet. Told apart from the stage-1 shape below
+    because the two send an operator to different places — one to the bank,
+    one to the stage they asked for — and the shape sentence over a corrupt
+    packet reads as "this round is fine, you asked the wrong view of it".
+    """
+    corrupt = load_banked_round(_make_round_dir(
+        tmp_path, "r1",
+        position_curves={"cloud_verify_02": ("onax", np.asarray([]))},
+        combined_db=_flat_curve(),
+    ))
+    with pytest.raises(RoundViewsError, match="every position row is missing its magnitude_db"):
+        corrupt.graded_positions
+
+    # The control: a round that banked no cloud group at all keeps the shape
+    # sentence, which is what #3478 made it mean.
+    stage_one = load_banked_round(bank_measure_round(tmp_path))
+    with pytest.raises(RoundViewsError, match="carries no position evidence"):
+        stage_one.graded_positions
+
+
 # --------------------------------------------------------------------------- #
 # View 1 — frozen_reference_grade
 # --------------------------------------------------------------------------- #
