@@ -95,21 +95,31 @@ def test_output_trim_emits_single_preamp_before_filters():
     assert "names: [sound_preamp, sound_curve_harman_bass" in yaml
 
 
-def test_default_has_no_preamp_so_boosts_boost():
+def test_default_preamp_is_inert_so_boosts_boost():
+    """No trim configured means the preamp is present and 0 dB, not absent."""
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=6.0))
     yaml = emit_sound_config(profile)
 
     assert "  sound_preamp:" in yaml
+    assert "gain: 0.0000" in yaml
+    assert "gain: -" not in yaml.split("sound_preamp:")[1].split("filters:")[0]
     assert "sound_simple_bass:" in yaml
 
 
-def test_output_trim_is_ignored_when_profile_has_no_filters():
-    # A flat profile can't clip from EQ, so a configured trim is a no-op.
+def test_a_configured_trim_applies_even_on_a_flat_profile():
+    """The dropped promise, pinned in the direction it now runs.
+
+    A flat profile used to ignore a configured trim ("it can't clip from EQ").
+    That rule is what made the preamp appear and disappear as a gain crossed
+    the flat window — a structural change. The trim is a number now, so it
+    applies whatever the profile is doing, and that is max SPL given up.
+    """
     yaml = emit_sound_config(
         SoundProfile(enabled=True, curve_id="flat"), output_trim_db=6.0
     )
 
     assert "  sound_preamp:" in yaml
+    assert "gain: -6.0000" in yaml
 
 
 def _legacy_correction_config_text(

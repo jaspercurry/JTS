@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -604,11 +605,31 @@ async def reconcile_current_dsp(
                 # The file is pristine again; make the box run it again too,
                 # because the failed apply's own rollback just re-loaded this
                 # same path while it still held the rejected graph.
-                await cam.set_config_file_path(str(reanchor_path), best_effort=True)
+                #
+                # Through the house verdict, not a bare call: `best_effort`
+                # returns False for BOTH "CamillaDSP rejected it" and "the
+                # daemon is gone", and a restore log that cannot tell those
+                # apart asserts a recovery that may not have happened — #2198
+                # is what collapsing them costs. Shielded because an
+                # interrupted restore leaves the bytes back and the box still
+                # on the rejected graph, which is the worse half.
+                from jasper.active_speaker.web_commissioning import (
+                    attempt_graph_restore,
+                )
+
+                took_effect, raise_message = await asyncio.shield(
+                    attempt_graph_restore(
+                        lambda: cam.set_config_file_path(
+                            str(reanchor_path), best_effort=True,
+                        )
+                    )
+                )
                 log_event(
                     logger,
                     "sound.reconcile_reanchor_restored",
                     candidate=str(reanchor_path),
+                    result="restored" if took_effect else "not_reloaded",
+                    error=raise_message or "",
                     level=logging.WARNING,
                 )
     return _log_reconcile_result(

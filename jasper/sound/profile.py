@@ -17,14 +17,13 @@ this model, not own a parallel EQ representation.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import math
 import os
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -781,20 +780,26 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     return tuple(specs)
 
 
-def _bypassed_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """The frame at unity: the same filters, every one of them doing nothing.
+def _neutralised(spec: FilterSpec) -> FilterSpec:
+    """One slot at unity, keeping as much of its identity as it can.
 
-    The CURVE's filters are neutralised rather than dropped. A curve preset
-    contributes named shelves and tilts, so dropping them would change the
-    filter set and make bypass a pipeline change after all — for exactly the
-    households who chose a preset. Their gains go to zero and their names stay.
+    A gain-bearing biquad at 0 dB is an exact identity, so it keeps its NAME,
+    its TYPE and its frequency and only loses its gain — which makes bypass a
+    parameter write for it. A gainless type (Highpass, Lowpass, Notch) filters
+    regardless of gain, so the only way to silence it is to become the idle
+    Peaking; that IS a recipe change, and it is why bypass still costs one
+    ducked swap for a household using one. That exception is inherent; every
+    other type's is not, and an earlier cut of this rebuilt the whole advanced
+    family from empty inputs and silently turned every SHELF into that same
+    swap.
     """
 
-    return (
-        *(dataclasses.replace(spec, gain=0.0) for spec in _curve_filters(profile.curve_id)),
-        *_simple_filters(SimpleEq()),
-        *_advanced_filters(()),
-    )
+    if spec.biquad_type in GAINLESS_BIQUAD_TYPES:
+        idle = ParametricBand()
+        return FilterSpec(
+            spec.name, idle.biquad_type, idle.freq_hz, idle.gain_db, q=idle.q,
+        )
+    return replace(spec, gain=0.0)
 
 
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
@@ -837,13 +842,15 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     commissioned candidate in place instead (#2572 is about not moving the
     ANCHOR, not about never changing the content).
 
-    The standing cost is 13 identity biquads per channel, measured at +0.43
+    The standing cost is 13 filters per channel on a ``flat`` profile — 5
+    Simple bands and the 8-slot advanced pool, all identities when idle — and
+    15 on a curve preset, whose two shelves are real. Measured at +0.43
     percentage points of CamillaDSP processing load against a bypassed control
     (0.451 % -> 0.877 %) on a path already running a crossover and a limiter.
     """
 
     # Bypass is spelled as VALUES, not as a missing frame. Emitting nothing
-    # would strip 13 filters out of the pipeline, and a pipeline change is what
+    # would strip the whole frame out of the pipeline, and a pipeline change is what
     # rebuilds CamillaDSP's filter group and resets the state of every filter in
     # it — so toggling bypass would cost the same ducked swap this frame exists
     # to remove. A bypassed profile is therefore the same shape at unity: the
@@ -862,13 +869,18 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     # rather than tone, and bypassing tone must not silently change level
     # policy. It is 0 dB by default, so this is invisible unless a household has
     # dialled one in.
-    if not profile.enabled:
-        return _bypassed_slots(profile)
-    return (
+    declared = (
         *_curve_filters(profile.curve_id),
         *_simple_filters(profile.simple_eq),
         *_advanced_filters(profile.parametric_bands),
     )
+    if not profile.enabled:
+        # A PROJECTION over the frame, not a second construction of it. Building
+        # the bypassed list from empty inputs instead would enumerate the three
+        # families twice, and the two enumerations would drift the day a fourth
+        # is added — silently, as a click.
+        return tuple(_neutralised(spec) for spec in declared)
+    return declared
 
 
 # The clamp floor _biquad_coeffs applies to eff_q below, and the smallest Q

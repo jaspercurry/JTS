@@ -399,6 +399,49 @@ def test_a_neutral_band_holds_a_slot_but_does_not_count_as_doing_anything():
     assert estimate_headroom_db(profile) == 0.0
 
 
+@pytest.mark.parametrize(
+    "biquad_type, patchable",
+    [
+        ("Peaking", True),
+        ("Lowshelf", True),
+        ("Highshelf", True),
+        # Inherent exception: a gainless type filters regardless of gain, so
+        # silencing it REQUIRES becoming the idle Peaking — a recipe change.
+        ("Highpass", False),
+        ("Notch", False),
+    ],
+)
+def test_bypass_keeps_each_bands_type_unless_it_is_gainless(biquad_type, patchable):
+    """A shelf at 0 dB is an identity, so bypass must not retype it.
+
+    An earlier cut rebuilt the advanced family from empty inputs, which made
+    EVERY non-Peaking band change type on bypass — turning a parameter write
+    into the ducked pipeline replace this frame exists to remove. The pin that
+    missed it used profiles with no bands and compared only names.
+    """
+    kwargs = dict(biquad_type=biquad_type, freq_hz=100.0, q=1.0)
+    on = SoundProfile(enabled=True, parametric_bands=(
+        ParametricBand(gain_db=4.0, **kwargs),
+    ))
+    off = SoundProfile(enabled=False, parametric_bands=(
+        ParametricBand(gain_db=4.0, **kwargs),
+    ))
+
+    live = next(
+        s for s in build_sound_filter_slots(on) if s.name == "sound_advanced_1"
+    )
+    bypassed = next(
+        s for s in build_sound_filter_slots(off) if s.name == "sound_advanced_1"
+    )
+
+    assert (live.biquad_type == bypassed.biquad_type) is patchable
+    # Silent either way, and the frame never changes shape.
+    assert not any(s.active() for s in build_sound_filter_slots(off))
+    assert [s.name for s in build_sound_filter_slots(on)] == [
+        s.name for s in build_sound_filter_slots(off)
+    ]
+
+
 @pytest.mark.parametrize("curve_id", ["flat", "harman", "bk"])
 def test_bypass_keeps_the_frame_and_only_moves_values(curve_id):
     """Bypass is spelled as values, including for a curve preset.

@@ -20,7 +20,7 @@ implementation instead of a copy:
 DATA — already-built preference :class:`FilterSpec` objects and room
 :class:`PeqFilter` objects — never a ``SoundProfile``, so it imports
 nothing from ``jasper.sound`` (and nothing from ``jasper.active_speaker``).
-The caller builds the ``FilterSpec`` list (``build_sound_filters``) and
+The caller builds the ``FilterSpec`` list (``build_sound_filter_slots``) and
 passes it in. This is what lets both the sound and active emitters reuse
 the builder without an active→sound dependency.
 
@@ -113,13 +113,13 @@ def build_stereo_prefix(
     NOT emit the mixer/pipeline, so there is no master_gain-vs-split
     coupling here.
 
-    ``sound_filters`` is the already-built preference filter list. The durable
-    path passes ``build_sound_filters(profile)`` (only ``.active()`` specs); the
-    LIVE editing draft passes ``build_sound_filter_slots(profile)``, a slot per
-    declared band with the neutral ones KEPT. It is normalized to a tuple at the
-    boundary, so a generator is safe. Whether any spec is ``.active()`` — not
-    whether the list is empty — gates the optional preamp, so an all-flat
-    profile plays at unity either way.
+    ``sound_filters`` is the already-built preference filter list: EVERY caller
+    passes ``build_sound_filter_slots(profile)``, a slot per declared band with
+    the neutral ones kept, so the graph's shape follows the profile's
+    declaration and never its values. It is normalized to a tuple at the
+    boundary, so a generator is safe. The preamp is emitted unconditionally and
+    its gain carries the trim — see the comment at the emit for why, and for
+    the promise that change deliberately drops.
 
     ``chain_names_right`` is ``None`` when ``room_peqs_right`` is ``None``
     (solo — channel 1 duplicates channel 0, byte-identical to before this
