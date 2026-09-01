@@ -223,25 +223,24 @@ def _annotate_pairing_readiness(
     pairing does not need.
 
     A field of its own rather than a `degradedReason` substring: the UI must
-    gate its Pair controls on a value, never on prose. Skipped while parked —
-    the stereo pair owns the whole local stack there, the UI already blocks
-    every control on `parked`, and probing source units is exactly what a
-    parked snapshot must not do.
+    gate its Pair controls on a value, never on prose. `degradedReason`
+    remains the one explanation shown to the household — it already names
+    every inactive unit, including the audio ones a narrower message here
+    would hide.
+
+    Skipped while parked (the stereo pair owns the whole local stack, the UI
+    already blocks every control on `parked`, and probing source units is
+    exactly what a parked snapshot must not do) and skipped when the probe
+    itself failed: `UnitSnapshot.active` cannot tell "stopped" from "not in
+    the output", so stamping a verdict on a failed probe would disable
+    pairing on a healthy speaker.
     """
-    if payload.get("parked"):
+    if payload.get("parked") or unit_snapshot.error:
         return
-    inactive = [
-        unit
+    payload["pairingReady"] = all(
+        unit_snapshot.active(unit)
         for unit in _BLUETOOTH_LIFECYCLE.advertise_units
-        if not unit_snapshot.active(unit)
-    ]
-    payload["pairingReady"] = not inactive
-    if inactive:
-        payload["pairingBlockedReason"] = (
-            "Pairing is unavailable while these services are stopped: "
-            + ", ".join(inactive)
-            + ". If a deploy is running, they come back when it finishes."
-        )
+    )
 
 
 def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:

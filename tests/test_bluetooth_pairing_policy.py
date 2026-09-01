@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from dbus_next import Variant
 from dbus_next.errors import DBusError
 
 from jasper.bluetooth import adapter
@@ -24,9 +25,14 @@ class _FakeProps:
         self,
         calls: list[tuple[str, object]],
         fail_on: tuple[str, object] | None = None,
+        paired: bool = True,
     ) -> None:
         self.calls = calls
         self.fail_on = fail_on
+        self.paired = paired
+
+    async def call_get_all(self, _iface: str) -> dict:
+        return {"Paired": Variant("b", self.paired)}
 
     async def call_set(self, _iface: str, key: str, value) -> None:
         self.calls.append((key, value.value))
@@ -254,13 +260,33 @@ def test_no_code_agent_accepts_no_code_authorization():
     ) is None
 
 
-def test_no_code_agent_trusts_authorized_devices():
+@pytest.mark.parametrize(
+    "authorization",
+    (
+        ("RequestAuthorization", ()),
+        ("AuthorizeService", ("0000110b-0000-1000-8000-00805f9b34fb",)),
+    ),
+    ids=("pairing", "service"),
+)
+@pytest.mark.parametrize("paired", (True, False))
+def test_no_code_agent_trusts_only_bonded_devices(authorization, paired):
+    """Trust never reaches a device BlueZ has not bonded.
+
+    Trust is what makes BlueZ auto-reconnect a device on every
+    advertisement. Granting it to an unbonded device strands it: the HID
+    profile cannot come up without a bond, the reconnect repeats for as long
+    as it is in range, and the device stops advertising as pairable, leaving
+    it neither usable nor re-pairable. RequestAuthorization in particular
+    fires before the bond exists, so a pairing that then fails would
+    otherwise leave that residue behind.
+    """
+    method, extra_args = authorization
     calls: list[tuple[str, object]] = []
-    agent = NoCodeAgent(_FakeBus(_FakeProps(calls)))
+    agent = NoCodeAgent(_FakeBus(_FakeProps(calls, paired=paired)))
 
-    asyncio.run(_agent_call(agent, "RequestAuthorization", "/dev"))
+    asyncio.run(_agent_call(agent, method, "/dev", *extra_args))
 
-    assert calls == [("Trusted", True)]
+    assert calls == ([("Trusted", True)] if paired else [])
 
 
 def test_no_code_agent_release_notifies_owner():

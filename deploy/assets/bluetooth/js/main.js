@@ -115,10 +115,6 @@ function renderToggles() {
     hint = 'Managed by this speaker’s stereo pair.';
   } else if (unavailable) {
     hint = state.unavailableReason || state.error || 'Bluetooth state unavailable.';
-  } else if (state.pairingReady === false && state.pairingBlockedReason) {
-    // Outranks the generic degraded line: it names the one thing the
-    // household is here to do and cannot.
-    hint = state.pairingBlockedReason;
   } else if (state.effective === 'degraded') {
     hint = state.degradedReason || (state.desired
       ? 'Set to on, but the Bluetooth radio is not ready.'

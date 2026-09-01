@@ -145,6 +145,18 @@ class NoCodeAgent(ServiceInterface):
         log_event(logger, "bluetooth_agent.cancel")
 
     async def _trust_device(self, device: str) -> None:
+        """Grant Trusted, but only to a device BlueZ has actually bonded.
+
+        Trust is what makes BlueZ auto-reconnect a device on every
+        advertisement, so granting it to an unbonded device strands it: an
+        unbonded HID cannot bring its profile up (`input-hog profile accept
+        failed`), the reconnect repeats for as long as it is in range, and
+        the device stops advertising as pairable, leaving it neither usable
+        nor re-pairable. RequestAuthorization fires BEFORE the bond exists,
+        so this check is what keeps a pairing that later fails from leaving
+        that residue; AuthorizeService fires after it, which is where an
+        inbound pairing (the phone or remote initiating) gets its trust.
+        """
         if self._bus is None:
             return
         try:
@@ -152,6 +164,15 @@ class NoCodeAgent(ServiceInterface):
             props = self._bus.get_proxy_object(
                 "org.bluez", device, intro,
             ).get_interface("org.freedesktop.DBus.Properties")
+            all_props = await props.call_get_all("org.bluez.Device1")
+            paired = all_props.get("Paired")
+            if paired is None or not paired.value:
+                log_event(
+                    logger,
+                    "bluetooth_agent.trust_skipped_unbonded",
+                    device=device,
+                )
+                return
             await props.call_set(
                 "org.bluez.Device1", "Trusted", Variant("b", True),
             )
