@@ -118,6 +118,11 @@ call and neither extends:
   nothing has played: a round's two banked solos summed through one
   candidate's filters, trims, delay and polarity, offline, and the
   predicted-vs-measured delta where the round also banked a VERIFY sum.
+* :mod:`.gate_sweep` — room or speaker, decided on a ladder of gate windows:
+  one round's captures read at every rung and every declared pose, so a
+  feature whose across-pose spread grows as the window admits the room can be
+  told from directivity that is merely large, with the window's own bias
+  subtracted by a matched null model.
 * :mod:`.record_store` — the record seam filled: one durable writer over the
   write-once evidence bundle and the session's own state file, and the kind
   table that says where each banked artifact lands.
