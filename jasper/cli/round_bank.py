@@ -41,46 +41,40 @@ EXIT_BANK_FAILED = 3
 AUTHORITY_TIER = "mutating (copies evidence; changes nothing played)"
 
 
-def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-
-
 def _cmd_bank(args: argparse.Namespace) -> int:
+    payload: dict[str, Any]
     try:
         banked = bank_round(
             Path(args.session_dir), campaign_root=Path(args.campaign_root)
         )
     except RoundBankError as exc:
-        _emit(
-            {"banked": False, "reason": exc.reason, "detail": str(exc)},
-            as_json=args.json,
-        )
+        payload = {"banked": False, "reason": exc.reason, "detail": str(exc)}
+        code = EXIT_REFUSED
         print(f"refused ({exc.reason}): {exc}", file=sys.stderr)
-        return EXIT_REFUSED
     except OSError as exc:
-        _emit(
-            {"banked": False, "reason": "write_failed", "detail": str(exc)},
-            as_json=args.json,
-        )
+        payload = {"banked": False, "reason": "write_failed", "detail": str(exc)}
+        code = EXIT_BANK_FAILED
         print(f"could not bank {args.session_dir}: {exc}", file=sys.stderr)
-        return EXIT_BANK_FAILED
-    provenance = json.loads((banked / "provenance.json").read_text(encoding="utf-8"))
-    _emit(
-        {"banked": True, "round_dir": str(banked), "provenance": provenance},
-        as_json=args.json,
-    )
-    if not args.json:
-        missing = provenance["missing"] or ["none"]
-        print(str(banked))
-        print(
-            f"  session={provenance['session_id']} "
-            f"banked_at={provenance['banked_at']} "
-            f"installed_sha={provenance['installed_sha'] or 'unknown'} "
-            f"missing={','.join(missing)}",
-            file=sys.stderr,
-        )
-    return EXIT_OK
+    else:
+        provenance = banked.provenance
+        payload = {
+            "banked": True,
+            "round_dir": str(banked.path),
+            "provenance": provenance,
+        }
+        code = EXIT_OK
+        if not args.json:
+            print(str(banked.path))
+            print(
+                f"  session={provenance['session_id']} "
+                f"banked_at_utc={provenance['banked_at_utc']} "
+                f"installed_sha={provenance['installed_sha'] or 'unknown'} "
+                f"missing={','.join(provenance['missing'] or ['none'])}",
+                file=sys.stderr,
+            )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,8 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  EXIT_OK -- banked; the round directory is on stdout\n"
-            "  2  EXIT_REFUSED -- not a session bundle, or that round is\n"
-            "     already banked (never overwritten)\n"
+            "  2  EXIT_REFUSED -- not a session bundle, a session that has\n"
+            "     not finished, or that round is already banked (never\n"
+            "     overwritten)\n"
             "  3  EXIT_BANK_FAILED -- the copy could not be written -- a\n"
             "     filesystem problem, not a request problem"
         ),

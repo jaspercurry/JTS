@@ -20,6 +20,12 @@ reads::
       applied-profile.json       applied baseline profile SSOT (optional)
       provenance.json            when it was banked, off which build
 
+``provenance.json``'s key set is owned here, and the two banking paths agree
+on the shared one: ``banked_at_utc`` is spelled and formatted as
+``scripts/bank-crossover-round.sh`` writes it. Each path then adds only what it
+alone knows — ``session_id``, ``source``, ``installed_sha``, ``git_absent`` and
+``missing`` here; ``pi_host``, ``pi_user`` and ``script_commit`` there.
+
 **Nothing here evicts.** The campaign store is operator-pruned: no enforced
 budget, size disclosed by ``jasper-doctor``'s active-speaker storage check — so
 the tuning plan's retention rule (eviction never crosses an active round's
@@ -34,19 +40,22 @@ pay the wizard stack's (or numpy's) import cost.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 
 from .baseline_profile import DEFAULT_STATE_PATH as _APPLIED_PROFILE_PATH
-from .bundles import _detect_build_sha
+from .bundles import _UNFINISHED_STATES, _detect_build_sha
 from .design_draft import DEFAULT_DESIGN_DRAFT_PATH
 
 __all__ = [
     "DEFAULT_CAMPAIGN_ROOT",
     "REASON_ALREADY_BANKED",
     "REASON_NOT_A_BUNDLE",
+    "REASON_SESSION_UNFINISHED",
+    "BankedRound",
     "RoundBankError",
     "bank_round",
 ]
@@ -58,6 +67,22 @@ DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
 
 REASON_NOT_A_BUNDLE = "not_a_bundle"
 REASON_ALREADY_BANKED = "already_banked"
+REASON_SESSION_UNFINISHED = "session_unfinished"
+
+#: A round id names a directory under the campaign root, so it must be one
+#: plain token: a superset of the ``uuid4().hex`` charset
+#: ``bundles.open_bundle`` mints session ids from. Rejects ``.``, ``..`` and
+#: anything carrying a separator.
+_ROUND_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+class BankedRound(NamedTuple):
+    """What :func:`bank_round` assembled: the round directory and the exact
+    ``provenance.json`` payload written into it (so a caller never re-reads a
+    file it just wrote)."""
+
+    path: Path
+    provenance: dict[str, Any]
 
 
 class RoundBankError(Exception):
@@ -94,9 +119,9 @@ def _round_id(session_dir: Path, session_id: str) -> str:
 
     The receipt is located with ``round_artifact_dir`` — the same public reader
     every other producer and consumer of that directory uses — so the receipt a
-    packet would be built from is the one read here. A ``round_id`` names a
-    directory under the campaign root, so one that is not a single path segment
-    falls back to the session id rather than banking outside the store.
+    packet would be built from is the one read here. A ``round_id`` that is not
+    a plain :data:`_ROUND_ID_RE` token falls back to the session id rather than
+    banking outside the store.
     """
     from .crossover_v2.evidence_packet import round_artifact_dir
 
@@ -110,7 +135,7 @@ def _round_id(session_dir: Path, session_id: str) -> str:
     except (OSError, ValueError):
         return session_id
     candidate = receipt.get("round_id") if isinstance(receipt, Mapping) else None
-    if isinstance(candidate, str) and candidate == Path(candidate).name != "":
+    if isinstance(candidate, str) and _ROUND_ID_RE.fullmatch(candidate):
         return candidate
     return session_id
 
@@ -122,33 +147,47 @@ def bank_round(
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
-) -> Path:
+) -> BankedRound:
     """Copy one live session bundle and its SSOT documents into the campaign home.
 
-    Returns the banked round directory, and writes ``provenance.json`` beside
-    the bundle naming when it was banked, which session it came from, and the
-    installed build's SHA (``None`` with ``git_absent`` when the box records
-    none).
+    Returns the banked round directory and the ``provenance.json`` payload
+    written beside the bundle: when it was banked, which session it came from,
+    and the installed build's SHA (``None`` with ``git_absent`` when the box
+    records none).
 
     Raises :class:`RoundBankError` with ``reason`` :data:`REASON_NOT_A_BUNDLE`
-    (no readable ``info.json``) or :data:`REASON_ALREADY_BANKED` — a banked
-    round is never overwritten. An absent SSOT document is skipped and named in
-    ``provenance.json``'s ``missing``, because a partially banked round is a
-    normal thing to want to read (``build_crossover_evidence_packet``'s own
-    posture).
+    (nothing at that path reads as a bundle),
+    :data:`REASON_SESSION_UNFINISHED` (the session is still
+    ``open``/``proposal_ready``: banking it would claim
+    its round id mid-flight, and the id is never re-banked) or
+    :data:`REASON_ALREADY_BANKED` — a banked round is never overwritten. An
+    absent SSOT document is skipped and named in ``provenance.json``'s
+    ``missing``, because a partially banked round is a normal thing to want to
+    read (``build_crossover_evidence_packet``'s own posture).
+
+    A filesystem failure (an unreadable ``info.json``, a copy that cannot be
+    written) is not a refusal: the :class:`OSError` propagates, so the CLI
+    exits on its filesystem-failure code rather than telling the operator this
+    was not a bundle.
     """
     session_dir = Path(session_dir)
     try:
         info: Any = json.loads(
             (session_dir / "info.json").read_text(encoding="utf-8")
         )
-    except (OSError, ValueError) as exc:
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RoundBankError(
             REASON_NOT_A_BUNDLE, f"{session_dir}: no readable info.json ({exc})"
         ) from exc
     if not isinstance(info, Mapping):
         raise RoundBankError(
             REASON_NOT_A_BUNDLE, f"{session_dir}: info.json is not a JSON object"
+        )
+    if info.get("state") in _UNFINISHED_STATES:
+        raise RoundBankError(
+            REASON_SESSION_UNFINISHED,
+            f"{session_dir}: session state is {info.get('state')!r}; "
+            "bank it once the session has finished",
         )
     session_id = str(info.get("session_id") or session_dir.name)
     target = Path(campaign_root) / _round_id(session_dir, session_id)
@@ -166,26 +205,22 @@ def bank_round(
             else:
                 missing.append(name)
         sha = _detect_build_sha()
+        provenance: dict[str, Any] = {
+            "banked_at_utc": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "session_id": session_id,
+            "source": "on-box",
+            "installed_sha": sha,
+            "git_absent": sha is None,
+            "missing": missing,
+        }
         (target / "provenance.json").write_text(
-            json.dumps(
-                {
-                    "banked_at": datetime.now(timezone.utc).isoformat(
-                        timespec="seconds"
-                    ),
-                    "session_id": session_id,
-                    "source": "on-box",
-                    "installed_sha": sha,
-                    "git_absent": sha is None,
-                    "missing": missing,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
+            json.dumps(provenance, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     except OSError:
         # Never leave a half-assembled round where a reader would find one.
         shutil.rmtree(target, ignore_errors=True)
         raise
-    return target
+    return BankedRound(target, provenance)

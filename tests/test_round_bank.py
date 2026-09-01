@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import (
     _bundle_session_dir,
     load_banked_round,
@@ -24,6 +26,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
 from jasper.active_speaker.round_bank import (
     REASON_ALREADY_BANKED,
     REASON_NOT_A_BUNDLE,
+    REASON_SESSION_UNFINISHED,
     RoundBankError,
     bank_round,
 )
@@ -32,10 +35,15 @@ from jasper.cli import round_bank as cli
 from tests.crossover_v2_banked_round import bank_measure_round
 
 
-def _live_session(tmp_path: Path) -> tuple[Path, Path]:
-    """``(live session bundle, the flow state banked beside it)``."""
+def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
+    """``(live session bundle, the flow state banked beside it)``.
+
+    Banking is a post-apply act, so the bundle is marked ``applied`` unless a
+    test is about an unfinished one.
+    """
     source = bank_measure_round(tmp_path / "live")
     session_dir = _bundle_session_dir(source)
+    mark_state(session_dir, state)
     return session_dir, source / "state.json"
 
 
@@ -66,18 +74,22 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present):
     )
 
     # The round id is the receipt's, not the bundle's session id.
-    assert banked == tmp_path / "campaigns" / "r1"
-    assert _bundle_session_dir(banked).name == session_dir.name
-    assert (banked / "bundle" / session_dir.name / "info.json").is_file()
-    assert load_banked_round(banked).session_dir == _bundle_session_dir(banked)
-    provenance = json.loads((banked / "provenance.json").read_text())
+    assert banked.path == tmp_path / "campaigns" / "r1"
+    assert _bundle_session_dir(banked.path).name == session_dir.name
+    assert (banked.path / "bundle" / session_dir.name / "info.json").is_file()
+    assert load_banked_round(banked.path).session_dir == _bundle_session_dir(
+        banked.path
+    )
+    provenance = json.loads((banked.path / "provenance.json").read_text())
+    # What the caller is handed is what landed on disk -- no re-read needed.
+    assert provenance == banked.provenance
     assert provenance["source"] == "on-box"
     assert provenance["session_id"] == session_dir.name
     assert provenance["missing"] == (
         [] if present else ["design-draft.json", "applied-profile.json"]
     )
     for name in ("state.json", "design-draft.json", "applied-profile.json"):
-        assert (banked / name).is_file() is (name not in provenance["missing"])
+        assert (banked.path / name).is_file() is (name not in provenance["missing"])
 
 
 @pytest.mark.parametrize(
@@ -98,9 +110,10 @@ def test_provenance_records_the_installed_build_or_says_it_cannot(
         **_ssot(tmp_path, present=False),
     )
 
-    provenance = json.loads((banked / "provenance.json").read_text())
-    assert provenance["installed_sha"] == sha
-    assert provenance["git_absent"] is git_absent
+    assert banked.provenance["installed_sha"] == sha
+    assert banked.provenance["git_absent"] is git_absent
+    # One key spelling across both banking paths (scripts/bank-crossover-round.sh).
+    assert banked.provenance["banked_at_utc"].endswith("Z")
 
 
 def test_a_banked_round_is_never_overwritten(tmp_path):
@@ -116,7 +129,7 @@ def test_a_banked_round_is_never_overwritten(tmp_path):
         bank_round(session_dir, **kwargs)
 
     assert excinfo.value.reason == REASON_ALREADY_BANKED
-    assert (first / "provenance.json").is_file()
+    assert (first.path / "provenance.json").is_file()
 
 
 def test_a_directory_that_is_not_a_bundle_is_refused(tmp_path):
@@ -128,6 +141,64 @@ def test_a_directory_that_is_not_a_bundle_is_refused(tmp_path):
 
     assert excinfo.value.reason == REASON_NOT_A_BUNDLE
     assert not (tmp_path / "campaigns").exists()
+
+
+@pytest.mark.parametrize("state", ["open", "proposal_ready"])
+def test_an_unfinished_session_is_refused_rather_than_claiming_its_round_id(
+    tmp_path, state
+):
+    """A round id is banked once and never overwritten, so banking a session
+    still in flight would permanently claim it for a partial round."""
+    session_dir, state_path = _live_session(tmp_path, state=state)
+
+    with pytest.raises(RoundBankError) as excinfo:
+        bank_round(
+            session_dir, campaign_root=tmp_path / "campaigns", state_path=state_path
+        )
+
+    assert excinfo.value.reason == REASON_SESSION_UNFINISHED
+    assert not (tmp_path / "campaigns").exists()
+
+
+@pytest.mark.parametrize("round_id", [".", "..", "../escape", "a/b"])
+def test_a_round_id_that_is_not_a_plain_token_falls_back_to_the_session_id(
+    tmp_path, round_id
+):
+    """The round id names a directory under the campaign root; anything that
+    could walk out of it banks under the session id instead."""
+    session_dir, state_path = _live_session(tmp_path)
+    round_dir, _why = round_artifact_dir(session_dir)
+    receipt_path = round_dir / "round_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["round_id"] = round_id
+    receipt_path.write_text(json.dumps(receipt))
+
+    banked = bank_round(
+        session_dir, campaign_root=tmp_path / "campaigns", state_path=state_path
+    )
+
+    assert banked.path == tmp_path / "campaigns" / session_dir.name
+
+
+def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
+    tmp_path, monkeypatch, capsys
+):
+    """An OSError that is not "no bundle here" must not read as a refusal: the
+    operator gets the filesystem-failure exit, not "not a session bundle"."""
+    session_dir, _state = _live_session(tmp_path)
+
+    def _denied(self: Path, *args: object, **kwargs: object) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", _denied)
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [str(session_dir), "--campaign-root", str(tmp_path / "campaigns"), "--json"]
+    )
+
+    assert args.func(args) == cli.EXIT_BANK_FAILED
+
+    assert json.loads(capsys.readouterr().out)["reason"] == "write_failed"
 
 
 def test_cli_json_carries_the_banked_path_and_its_provenance(tmp_path, capsys):

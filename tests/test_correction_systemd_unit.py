@@ -73,6 +73,7 @@ def test_install_sh_creates_correction_state_dirs():
         # them root:root 0700 and locks jasper-web out until the next
         # deploy's heal_shared_state_modes runs.
         "/var/lib/jasper/active_speaker",
+        "/var/lib/jasper/active_speaker/campaigns",
         "/var/lib/jasper/active_speaker/sessions",
         "/var/lib/jasper/active_speaker_captures",
         "/var/lib/jasper/active_speaker_sweeps",
