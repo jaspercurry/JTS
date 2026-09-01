@@ -120,9 +120,9 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # rust/jasper-fanin/src/config.rs's RING_SLOT_FRAMES/ring_slots) — while
 # Ring B counts only the one-slot floor: there is no equivalent pinned-full
 # evidence for it, so only the proven minimum is charged.
-# test_ring_a/b_default_matches_shipped_conf_via_ring_assets pins these
-# equal to a fresh jasper.ring_assets parse of the real shipped file, so a
-# retune that moves the conf and forgets these constants fails loud.
+# test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets pins
+# these equal to a fresh jasper.ring_assets parse of the real shipped file,
+# so a retune that moves the conf and forgets these constants fails loud.
 DEFAULT_RING_A_LATENCY_FRAMES=256
 DEFAULT_RING_B_LATENCY_FRAMES=128
 
@@ -153,10 +153,30 @@ camilla_config_path() {
     fi
 }
 
-camilla_devices_int() {
+# Scans devices: ONCE for samplerate, chunksize, and target_level together
+# — the three separate camilla_devices_int calls this replaced each forked
+# their own awk process for just one key (each exiting as soon as it found
+# its key or the block ended, so the saving here is three process forks
+# collapsed to one, not scan depth). Prints the three values, in that
+# order, "|"-joined on one line; a key the block never sets prints as an
+# empty field.
+#
+# Deliberately NOT converged onto jasper.camilla_config_contract's
+# parse_camilla_devices_config (the repo's richer Camilla YAML reader).
+# Several helpers below are already python-free like this one, but this
+# is the one python-free reader on the HARD-REQUIRED path: missing
+# samplerate/chunksize fails the whole offset computation (falls to
+# 0.0), with no further tier to fall through to. The STATUS and
+# ring_assets tiers below are different in kind, not just in being
+# python-free — they were already python-OPTIONAL, each with its own
+# next tier to degrade to. Converging this one onto a python parser
+# would gate AirPlay startup on venv health for the first time.
+camilla_devices_ints() {
     local config="$1"
-    local key="$2"
-    awk -v key="$key" '
+    awk '
+        BEGIN {
+            n = split("samplerate chunksize target_level", keys, " ")
+        }
         /^[[:space:]]*devices:[[:space:]]*($|#)/ {
             in_devices = 1
             next
@@ -167,15 +187,20 @@ camilla_devices_int() {
         in_devices {
             line = $0
             sub(/[[:space:]]*#.*/, "", line)
-            pattern = "^[[:space:]]*" key "[[:space:]]*:[[:space:]]*"
-            if (line ~ pattern) {
-                sub(pattern, "", line)
-                sub(/[[:space:]]*$/, "", line)
-                if (line ~ /^[0-9]+$/) {
-                    print line
-                    exit
+            for (i = 1; i <= n; i++) {
+                key = keys[i]
+                if (result[key] != "") continue
+                pattern = "^[[:space:]]*" key "[[:space:]]*:[[:space:]]*"
+                if (line ~ pattern) {
+                    value = line
+                    sub(pattern, "", value)
+                    sub(/[[:space:]]*$/, "", value)
+                    if (value ~ /^[0-9]+$/) result[key] = value
                 }
             }
+        }
+        END {
+            print result["samplerate"] "|" result["chunksize"] "|" result["target_level"]
         }
     ' "$config"
 }
@@ -253,42 +278,64 @@ resolve_jasper_python() {
     fi
 }
 
-status_json_value() {
+# One-fetch contract: a daemon's STATUS reply already carries every field
+# this script wants from it in one JSON blob, so this connects and reads
+# ONCE per call (via jasper.route_latency.status_socket.
+# read_status_socket_or_none, the module that already owns this connect+
+# `STATUS\n`+recv-to-EOF+parse mechanic for doctor/AEC/route-latency
+# callers) and pulls out however many dotted paths are asked for — never
+# one connect+read per field.
+#
+# Contract: exactly one field per requested dotted path, in that order,
+# "|"-joined on one line — a call site's IFS-read must list exactly as
+# many variables as paths, or a missing one silently absorbs the next
+# path's value into the last variable and degrades that tier without
+# erroring. A field is empty when it is absent/null/non-scalar in the
+# reply, OR when its string form contains "|" or a newline (never emit a
+# value that would shear the join — every JTS STATUS field today is a
+# plain number, so this is a defensive floor, not an observed case). The
+# WHOLE line is empty when the fetch itself fails (no python, no jasper
+# import, no socket, connect/read/parse error) — every caller already
+# treats an empty field as "this tier has nothing." Trade-off, deliberate:
+# one connect per socket means every field comes from one consistent
+# snapshot, but it also means a transient connect failure now empties
+# that daemon's whole live tier at once, where per-field fetching failed
+# each field independently.
+status_json_values() {
     local socket="$1"
-    local dotted_path="$2"
+    shift
     local python
     python="$(resolve_jasper_python || true)"
     [[ -n "$python" ]] || return 0
     [[ -S "$socket" ]] || return 0
-    "$python" - "$socket" "$dotted_path" <<'PY' 2>/dev/null || true
-import json
-import socket
+    "$python" - "$socket" "$@" <<'PY' 2>/dev/null || true
 import sys
 
-sock_path, dotted_path = sys.argv[1], sys.argv[2]
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
-    sock.settimeout(1.0)
-    sock.connect(sock_path)
-    sock.sendall(b"STATUS\n")
-    chunks = []
-    while True:
-        chunk = sock.recv(65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-finally:
-    sock.close()
-
-value = json.loads(b"".join(chunks).decode("utf-8"))
-for part in dotted_path.split("."):
-    if not isinstance(value, dict):
-        sys.exit(0)
-    value = value.get(part)
-if isinstance(value, bool) or value is None:
+    from jasper.route_latency.status_socket import read_status_socket_or_none
+except ImportError:
     sys.exit(0)
-if isinstance(value, (int, float, str)):
-    print(value)
+
+sock_path = sys.argv[1]
+dotted_paths = sys.argv[2:]
+status = read_status_socket_or_none(sock_path)
+if status is None:
+    sys.exit(0)
+
+fields = []
+for dotted_path in dotted_paths:
+    value = status
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict):
+            value = None
+            break
+        value = value.get(part)
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        value = None
+    elif isinstance(value, str) and ("|" in value or "\n" in value):
+        value = None
+    fields.append("" if value is None else str(value))
+print("|".join(fields))
 PY
 }
 
@@ -359,9 +406,12 @@ outputd_dac_buffer_frames() {
 #   tier=default — DEFAULT_RING_A_LATENCY_FRAMES, reached only when the
 #     conf itself cannot be read or parsed either.
 ring_a_latency_frames() {
+    # Args: fanin's pre-fetched output.snd_pcm_delay_frames,
+    # output.ring.occupancy, output.period_frames — one status_json_values
+    # call per render (see derive_audio_backend_latency_offset) supplies
+    # all three; this function fetches nothing itself.
     local value
-    value="$(status_json_value "$FANIN_STATUS_SOCKET" output.snd_pcm_delay_frames || true)"
-    value="$(nonnegative_int_or_empty "$value")"
+    value="$(nonnegative_int_or_empty "$1")"
     if [[ -n "$value" ]]; then
         echo "jasper-apply-airplay-mode: ring_a tier=live-status basis=alsa-delay frames=$value" >&2
         printf '%s\n' "$value"
@@ -369,10 +419,8 @@ ring_a_latency_frames() {
     fi
 
     local occupancy period
-    occupancy="$(status_json_value "$FANIN_STATUS_SOCKET" output.ring.occupancy || true)"
-    occupancy="$(nonnegative_int_or_empty "$occupancy")"
-    period="$(status_json_value "$FANIN_STATUS_SOCKET" output.period_frames || true)"
-    period="$(nonnegative_int_or_empty "$period")"
+    occupancy="$(nonnegative_int_or_empty "$2")"
+    period="$(nonnegative_int_or_empty "$3")"
     if [[ -n "$occupancy" && -n "$period" ]]; then
         value="$((occupancy * period))"
         echo "jasper-apply-airplay-mode: ring_a tier=live-status basis=ring-occupancy occupancy=$occupancy period_frames=$period frames=$value" >&2
@@ -402,11 +450,12 @@ ring_a_latency_frames() {
 #     charged; see DEFAULT_RING_B_LATENCY_FRAMES's comment above).
 #   tier=default — DEFAULT_RING_B_LATENCY_FRAMES.
 ring_b_latency_frames() {
+    # Args: outputd's pre-fetched shm_ring.occupancy, shm_ring.slot_frames
+    # — see ring_a_latency_frames's comment; same one-fetch-per-render
+    # contract, outputd's socket instead of fanin's.
     local occupancy slot_frames value
-    occupancy="$(status_json_value "$OUTPUTD_STATUS_SOCKET" shm_ring.occupancy || true)"
-    occupancy="$(nonnegative_int_or_empty "$occupancy")"
-    slot_frames="$(status_json_value "$OUTPUTD_STATUS_SOCKET" shm_ring.slot_frames || true)"
-    slot_frames="$(nonnegative_int_or_empty "$slot_frames")"
+    occupancy="$(nonnegative_int_or_empty "$1")"
+    slot_frames="$(nonnegative_int_or_empty "$2")"
     if [[ -n "$occupancy" && -n "$slot_frames" ]]; then
         value="$((occupancy * slot_frames))"
         echo "jasper-apply-airplay-mode: ring_b tier=live-status occupancy=$occupancy slot_frames=$slot_frames frames=$value" >&2
@@ -426,9 +475,11 @@ ring_b_latency_frames() {
 }
 
 outputd_dac_latency_frames() {
+    # Arg: outputd's pre-fetched dac.snd_pcm_delay_frames — same fetch as
+    # ring_b_latency_frames's args, shared once per render (see
+    # derive_audio_backend_latency_offset), not fetched again here.
     local value
-    value="$(status_json_value "$OUTPUTD_STATUS_SOCKET" dac.snd_pcm_delay_frames || true)"
-    value="$(nonnegative_int_or_empty "$value")"
+    value="$(nonnegative_int_or_empty "$1")"
     if [[ -n "$value" ]]; then
         echo "jasper-apply-airplay-mode: outputd_dac tier=live-status frames=$value" >&2
         printf '%s\n' "$value"
@@ -472,6 +523,10 @@ derive_audio_backend_latency_offset() {
     local ring_b_latency
     local outputd_dac_latency
     local bonded_extra_sec
+    local camilla_fields
+    local fanin_fields outputd_fields
+    local fanin_delay_frames fanin_ring_occupancy fanin_period_frames
+    local outputd_ring_occupancy outputd_slot_frames outputd_dac_delay_frames
 
     config="$(camilla_config_path || true)"
     if [[ ! -r "$config" ]]; then
@@ -480,9 +535,8 @@ derive_audio_backend_latency_offset() {
         return
     fi
 
-    sample_rate="$(camilla_devices_int "$config" samplerate || true)"
-    chunksize="$(camilla_devices_int "$config" chunksize || true)"
-    target_level="$(camilla_devices_int "$config" target_level || true)"
+    camilla_fields="$(camilla_devices_ints "$config" || true)"
+    IFS='|' read -r sample_rate chunksize target_level <<< "$camilla_fields"
 
     if [[ -z "$sample_rate" || -z "$chunksize" ]]; then
         echo "jasper-apply-airplay-mode: could not read samplerate/chunksize from $config; using latency offset 0.0" >&2
@@ -497,16 +551,33 @@ derive_audio_backend_latency_offset() {
         target_level="$chunksize"
     fi
 
+    # ONE STATUS fetch per daemon per render (status_json_values), not one
+    # per dotted field: fanin serves Ring A's three candidate fields and
+    # outputd serves Ring B's and the DAC's in a single JSON reply apiece,
+    # so a fetch per field cost four extra round-trips for nothing — six
+    # total (3 fanin + 3 outputd), unconditionally: fanin's ALSA-delay
+    # field is null every period on the only transport (ADR-0100 deleted
+    # the loopback route this field once served), so the old code always
+    # walked the 3-field path on both sockets, never fewer.
+    fanin_fields="$(status_json_values "$FANIN_STATUS_SOCKET" \
+        output.snd_pcm_delay_frames output.ring.occupancy output.period_frames || true)"
+    IFS='|' read -r fanin_delay_frames fanin_ring_occupancy fanin_period_frames <<< "$fanin_fields"
+    outputd_fields="$(status_json_values "$OUTPUTD_STATUS_SOCKET" \
+        shm_ring.occupancy shm_ring.slot_frames dac.snd_pcm_delay_frames || true)"
+    IFS='|' read -r outputd_ring_occupancy outputd_slot_frames outputd_dac_delay_frames <<< "$outputd_fields"
+
     # Ring A: fan-in's output queue (between jasper-fanin and
     # CamillaDSP/AEC). This is downstream of shairport's private input
     # lane, so it is also invisible to shairport's snd_pcm_delay(). See
     # ring_a_latency_frames for the tier cascade.
-    ring_a_latency="$(ring_a_latency_frames || true)"
+    ring_a_latency="$(ring_a_latency_frames \
+        "$fanin_delay_frames" "$fanin_ring_occupancy" "$fanin_period_frames" || true)"
 
     # Ring B: CamillaDSP's output queue into outputd. Also downstream of
     # shairport's private lane and of CamillaDSP, so shairport cannot
     # observe it via snd_pcm_delay() either. See ring_b_latency_frames.
-    ring_b_latency="$(ring_b_latency_frames || true)"
+    ring_b_latency="$(ring_b_latency_frames \
+        "$outputd_ring_occupancy" "$outputd_slot_frames" || true)"
 
     # outputd's DAC queue is downstream of shairport's private lane
     # and of CamillaDSP. shairport cannot observe it via
@@ -514,7 +585,7 @@ derive_audio_backend_latency_offset() {
     # explicitly. Prefer outputd's live snd_pcm_delay over the configured
     # buffer size because ALSA/DAC presentation delay can be larger than
     # the requested buffer.
-    outputd_dac_latency="$(outputd_dac_latency_frames || true)"
+    outputd_dac_latency="$(outputd_dac_latency_frames "$outputd_dac_delay_frames" || true)"
 
     # Bonded-leader-only extra delay (seconds): the Snapcast round-trip
     # playout buffer. 0.0 unless jasper-grouping-reconcile wrote it for an

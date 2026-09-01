@@ -73,6 +73,10 @@ while [ "$attempt" -lt 3 ]; do
     # dropping it costs nothing — the holder re-reads the file each pass and
     # ends on the newest value. flock's lock is released by the kernel when
     # the holder dies, so an OOM kill cannot strand it.
+    # Every external command forked below, while fd 9 is open, inherits it
+    # and is safe ONLY because it runs foreground-synchronous: backgrounding
+    # ANY of them would hold the flock past this tenure and silently
+    # self-block the next acquire.
     exec 9>"$lock" || exit 0
     flock -n 9 || exit 0
     # 25 passes x 200 ms covers a five-second drag. 200 ms is half

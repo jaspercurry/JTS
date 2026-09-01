@@ -15,6 +15,12 @@ genuinely differ:
 * the click/capture harness wants a fail-soft ``None`` per surface (an
   unreachable daemon is an expected snapshot state) and logs at DEBUG; it uses
   :func:`read_status_socket_or_none`.
+* ``deploy/bin/jasper-apply-airplay-mode``'s ``ExecStartPre`` heredoc — a
+  shell script, not a Python module, invoking this one via ``python -`` at
+  boot to derive shairport's AirPlay latency offset — also uses
+  :func:`read_status_socket_or_none`. It has no except-block of its own on
+  the shell side, so it depends on every failure mode landing on ``None``
+  rather than an uncaught exception reaching the interpreter's exit code.
 
 Deliberately NOT unifying the ``coupling_reconcile`` / ``audio_validation``
 copies here: those return different shapes (``(dict|None, str)``; a
