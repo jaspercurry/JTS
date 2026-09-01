@@ -3043,6 +3043,11 @@ def bind_position_retention(
         carried = provenance.take() if provenance is not None else None
         if carried is not None:
             record["provenance"] = carried.to_dict()
+            # The PLAYED program's digest, beside the record's ``wav_sha256``
+            # and never merged into it: that key is the CAPTURED audio's
+            # (``spatial._take_identity``), and the two answer different
+            # questions — what was emitted versus what came back.
+            record["stimulus_wav_sha256"] = carried.stimulus_wav_sha256
         # A geometry retake re-uses its position id — same prompted spot,
         # measured again from further out — so the id alone does NOT identify a
         # take. The evidence store is write-once (a repeated path is a
@@ -3668,7 +3673,8 @@ def bind_production_play(
     )
 
     def _observe_stimulus(
-        open_cam: Callable[[], Any], graph_kind: str, program: Any, artifact: Any,
+        open_cam: Callable[[], Any], graph_kind: str, program: Any,
+        artifact: Any, phase: str,
     ) -> Any:
         """Awaitable: record what this stimulus plays THROUGH, fail-soft.
 
@@ -3684,7 +3690,7 @@ def bind_production_play(
         """
         return record_capture_provenance(
             provenance, open_cam=open_cam, graph_kind=graph_kind,
-            program=program, artifact=artifact,
+            program=program, phase=phase, artifact=artifact,
             read_volume_plan=session_volume_plan,
         )
 
@@ -3773,7 +3779,9 @@ def bind_production_play(
                 )
 
         def _observe(open_cam: Callable[[], Any], graph_kind: str) -> Any:
-            return _observe_stimulus(open_cam, graph_kind, program, artifact)
+            return _observe_stimulus(
+                open_cam, graph_kind, program, artifact, phase,
+            )
 
         async def _hold_fader(open_cam: Callable[[], Any]) -> None:
             await _hold_fader_for(open_cam, phase)
@@ -3997,6 +4005,7 @@ def bind_production_play(
             async def _play_wav_observed() -> Any:
                 await _observe_stimulus(
                     lambda: cam, GRAPH_KIND_PROGRAM_ROUTING, program, artifact,
+                    phase,
                 )
                 return await pre_provenance_play_wav()
 
