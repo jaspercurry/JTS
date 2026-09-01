@@ -27,6 +27,11 @@ this cannot read at all.
 Distances are DECLARED here, not read from the sidecar: today's sidecars pin
 ``mark_distance_m = 1.0`` for every pose (#3498). Both values are published.
 
+Each window's gate comes from ``--close-gate-ms``/``--far-gate-ms`` when given,
+else from the declared rig geometry's own first bounce at that distance
+(``--geometry``, ``jasper-declare-geometry``'s file), else from the pipeline's
+reflection-search ceiling. The report says which, per window.
+
 Nothing here decides anything about a graph. A close reference is an
 instrument; what a room-dominated band MEANS for a tune is the reader's
 judgement.
@@ -43,11 +48,11 @@ from typing import Any, Sequence
 
 from jasper.active_speaker.crossover_v2.close_reference import (
     REFUSE_UNREADABLE_ROUND,
-    CloseReferenceRefused,
     compare_rounds,
     recommended_distance,
 )
-from jasper.audio_measurement.gating import SEARCH_T_MAX_MS
+from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+from jasper.audio_measurement.measurement_geometry import DEFAULT_PATH, DeclaredGeometry
 
 from ._logging import configure_verbose_logging
 
@@ -104,6 +109,15 @@ def _cmd_distance(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _geometry(path: str) -> DeclaredGeometry | None:
+    """The declared rig geometry, or ``None`` when none has been declared.
+
+    Absent is the ordinary case, not a refusal: the caller's own
+    ``--close-gate-ms`` is then the only gate there is.
+    """
+    return DeclaredGeometry.load(path) if Path(path).is_file() else None
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     try:
         report = compare_rounds(
@@ -117,8 +131,9 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             driver_diameter_m=_diameter_m(args),
             far_gate_ms=args.far_gate_ms,
             close_gate_ms=args.close_gate_ms,
+            geometry=_geometry(args.geometry),
         )
-    except CloseReferenceRefused as exc:
+    except RoundCapturesRefused as exc:
         return _refused(exc.reason, exc.detail)
     except (ValueError, OSError) as exc:
         return _refused(REFUSE_UNREADABLE_ROUND, {"error": str(exc)})
@@ -140,6 +155,13 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     for window in report["windows"]:
+        declared = window["declared_clean_window_ms"]
+        print(
+            f"  {window['name']} gated at {window['gate_ms']:.2f} ms "
+            f"({window['gate_source']}); declared clean window "
+            + ("undeclared" if declared is None else f"{declared:.2f} ms"),
+            file=sys.stderr,
+        )
         for row in window["bands"]:
             graded = row["graded_band_hz"]
             span = (
@@ -210,14 +232,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_driver(compare)
     compare.add_argument(
-        "--far-gate-ms", type=float, default=SEARCH_T_MAX_MS,
-        help="declared clean window at the far position",
+        "--far-gate-ms", type=float, default=None,
+        help="override the far window; default is the declared geometry's own "
+             "first bounce at --far-m, or the pipeline's reflection ceiling",
     )
     compare.add_argument(
-        "--close-gate-ms", type=float, default=SEARCH_T_MAX_MS,
-        help="declared clean window at the close position — LONGER than the "
-             "far one whenever the declared heights are known, because the "
-             "first bounce's excess path grows as the direct path shrinks",
+        "--close-gate-ms", type=float, default=None,
+        help="override the close window. Derived from the declared heights by "
+             "default and LONGER than the far one, because the first bounce's "
+             "excess path grows as the direct path shrinks",
+    )
+    compare.add_argument(
+        "--geometry", default=DEFAULT_PATH,
+        help=f"declared rig geometry (default: {DEFAULT_PATH}); absent means "
+             "no derived window",
     )
     compare.add_argument("--out", default=None, help="also write the report here")
     compare.set_defaults(func=_cmd_compare)

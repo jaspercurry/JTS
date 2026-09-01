@@ -26,6 +26,14 @@ What this module computes, given the two impulse responses:
    far read, the far read was speaker-dominated; where they disagree and the
    subtraction residual is large, the far read was the room.
 
+**The gate has three sources and says which one it had.** A declared rig
+geometry (:class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`)
+gives each window its own first bounce, and the close capture's is the longer
+one because that excess path grows as the direct path shrinks. An explicit
+gate overrides that; with neither, the gate is the pipeline's own
+reflection-search ceiling. Whichever it was, the window each capture's
+declared geometry allows is published beside the gate actually used.
+
 **Every number carries its frame.** Window shape, lead, taper, smoothing
 fraction, grid, transform length, alignment band and upsample ride in the
 report's ``frame`` block, because the P1 offline run showed a banked
@@ -39,27 +47,25 @@ published and the declared one is used.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from jasper.active_speaker.flat_spec import SPEC_BANDS
-from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.gating import (
     SEARCH_T_MAX_MS,
     TAPER_FRACTION,
-    build_gate_window,
     f_trusted_floor_hz,
+)
+from jasper.audio_measurement.measurement_geometry import (
+    DeclaredGeometry,
+    GeometryFieldError,
 )
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program_analysis import GCC_UPSAMPLE, gcc_phat
-from jasper.audio_measurement.sweep import read_wav_mono
 
 from .feature_classifier import (
     DETREND_FRACTION,
@@ -71,11 +77,11 @@ from .feature_classifier import (
     detrend,
     smoothed_curve,
 )
+from .gate_sweep import gated_segment
+from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures
 
 __all__ = [
     "ALIGNMENT_CONFIDENCE_FLOOR",
-    "CloseReferenceRefused",
-    "RoundCapture",
     "CLOSE_REFERENCE_SCHEMA_VERSION",
     "DEFAULT_GATE_MS",
     "K_MARGIN",
@@ -87,13 +93,13 @@ __all__ = [
     "VERDICT_UNRESOLVED",
     "GENERATED_BY",
     "cancellation_depth_db",
-    "capture_impulse_response",
     "compare_impulse_responses",
     "compare_rounds",
+    "declared_clean_window_ms",
     "far_field_ceiling_hz",
-    "load_round_capture",
     "placement_tolerance_db",
     "recommended_distance",
+    "select_capture",
 ]
 
 CLOSE_REFERENCE_SCHEMA_VERSION = 1
@@ -116,11 +122,9 @@ PLACEMENT_TOLERANCE_M = 0.0127
 #: band: the woofer is omnidirectional there, so +/-5 deg is free.
 AIM_TOLERANCE_DEG = 5.0
 
-#: Declared gate length, ms, when the caller states none. The pipeline's own
-#: reflection-search ceiling -- the longest window the product ever calls
-#: reflection-free. The close capture's clean window is LONGER (its first
-#: bounce arrives later), and a caller that knows the declared heights should
-#: say so rather than inherit this.
+#: Gate length, ms, with neither an explicit gate nor a declared geometry to
+#: derive one from: the pipeline's own reflection-search ceiling, the longest
+#: window the product ever calls reflection-free.
 DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
 #: Transform length for the residual and reference spectra. Fixed, so bin
@@ -262,24 +266,54 @@ def _fractional_shift(x: np.ndarray, samples: float) -> np.ndarray:
     return np.fft.irfft(spectrum * np.exp(-2j * np.pi * freqs * samples), n=n)
 
 
-def _windowed(
-    ir: np.ndarray,
-    *,
-    peak_idx: int,
-    span: int,
-    lead: int,
-) -> np.ndarray:
-    """The pipeline gate applied at a DECLARED span, sliced to its own support.
+#: Where the gate length actually used came from.
+GATE_SOURCE_CALLER = "caller"
+GATE_SOURCE_DECLARED = "declared_geometry"
+GATE_SOURCE_DEFAULT = "default"
 
-    ``lead`` is :func:`~jasper.audio_measurement.gating.build_gate_window`'s
-    own raised-cosine head: unbounded, the window would run to the array start
-    and a slice of it would open on a hard edge.
+
+def _gate(explicit_ms: float | None, declared_ms: float | None) -> tuple[float, str]:
+    """The gate this window is cut at, and which of the three said so."""
+    if explicit_ms is not None:
+        return float(explicit_ms), GATE_SOURCE_CALLER
+    if declared_ms is not None:
+        return float(declared_ms), GATE_SOURCE_DECLARED
+    return DEFAULT_GATE_MS, GATE_SOURCE_DEFAULT
+
+
+def _segment(
+    ir: np.ndarray, sample_rate: int, *, gate_ms: float, peak_idx: int
+) -> np.ndarray:
+    """The pipeline gate at a DECLARED length, sliced to its own support.
+
+    :func:`~.gate_sweep.gated_segment` is the one owner of a forced-span
+    window, lead included; this comparison gates two IRs with it at the same
+    length so that what survives the subtraction is the speaker, not the two
+    windows disagreeing.
     """
-    n = ir.size
-    span = min(span, n - 1 - peak_idx)
-    win = build_gate_window(n, peak_idx=peak_idx, span=span, lead=lead)
-    start = max(0, peak_idx - lead)
-    return (ir * win)[start : peak_idx + span + 1]
+    return gated_segment(
+        ir, sample_rate, gate_ms=gate_ms, peak_idx=peak_idx,
+        lead_ms=PHASE_GATE_LEAD_MS,
+    )[0]
+
+
+def declared_clean_window_ms(
+    geometry: DeclaredGeometry, distance_m: float
+) -> float | None:
+    """This rig's reflection-free window at ``distance_m``, ms, or ``None``.
+
+    The first bounce's EXCESS path over the direct one grows as the mic nears
+    the speaker, so a close capture's clean window is longer than the far
+    one's — which is half of why the close capture can say anything the far
+    one cannot. ``None`` when the declared geometry cannot be evaluated there
+    at all (:class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`
+    accepts 0.15-3 m), so a mic closer than the declaration allows keeps the
+    caller's gate — or the default — rather than inventing a window.
+    """
+    try:
+        return 1e3 * replace(geometry, distance_m=float(distance_m)).first_bounce_s()
+    except GeometryFieldError:
+        return None
 
 
 def _band_spectra(
@@ -392,8 +426,9 @@ def compare_impulse_responses(
     close_m: float,
     fc_hz: float | None = None,
     driver_diameter_m: float | None = None,
-    far_gate_ms: float = DEFAULT_GATE_MS,
-    close_gate_ms: float = DEFAULT_GATE_MS,
+    far_gate_ms: float | None = None,
+    close_gate_ms: float | None = None,
+    geometry: DeclaredGeometry | None = None,
     sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
 ) -> dict[str, Any]:
     """Correct the close IR to the far distance and say what the far read owed
@@ -433,10 +468,20 @@ def compare_impulse_responses(
             close[src_lo:src_hi] * scale
         )
 
+    declared_far_ms = (
+        declared_clean_window_ms(geometry, far_m) if geometry else None
+    )
+    declared_close_ms = (
+        declared_clean_window_ms(geometry, close_m) if geometry else None
+    )
+    far_gate_ms, far_gate_source = _gate(far_gate_ms, declared_far_ms)
+    close_gate_ms, close_gate_source = _gate(close_gate_ms, declared_close_ms)
+
     far_span = int(round(far_gate_ms * 1e-3 * sr))
     close_span = int(round(close_gate_ms * 1e-3 * sr))
     lead = int(round(PHASE_GATE_LEAD_MS * 1e-3 * sr))
     align_span = max(far_span, close_span)
+    align_ms = max(far_gate_ms, close_gate_ms)
 
     # Validity: the gate's own resolution floor at the bottom, and the lower of
     # the crossover's half and the driver's far-field ceiling at the top.
@@ -455,10 +500,8 @@ def compare_impulse_responses(
     comparison_band_hz = (lo_edge, max(lo_edge, hi_edge))
 
     align_lo, align_hi = comparison_band_hz
-    far_align = _windowed(far, peak_idx=far_peak, span=align_span, lead=lead)
-    close_align = _windowed(
-        corrected, peak_idx=far_peak, span=align_span, lead=lead
-    )
+    far_align = _segment(far, sr, gate_ms=align_ms, peak_idx=far_peak)
+    close_align = _segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak)
     lag, _sign, confidence, at_edge = gcc_phat(
         far_align,
         close_align,
@@ -470,7 +513,7 @@ def compare_impulse_responses(
     corrected = _fractional_shift(corrected, lag)
     refined = gcc_phat(
         far_align,
-        _windowed(corrected, peak_idx=far_peak, span=align_span, lead=lead),
+        _segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak),
         sample_rate=sr,
         band_hz=(align_lo, align_hi),
         upsample=GCC_UPSAMPLE,
@@ -486,12 +529,12 @@ def compare_impulse_responses(
 
     grid = analysis_grid()
     windows: list[dict[str, Any]] = []
-    for name, gate_ms, span in (
-        (WINDOW_FAR, far_gate_ms, far_span),
-        (WINDOW_CLOSE, close_gate_ms, close_span),
+    for name, gate_ms, span, gate_source, declared_ms in (
+        (WINDOW_FAR, far_gate_ms, far_span, far_gate_source, declared_far_ms),
+        (WINDOW_CLOSE, close_gate_ms, close_span, close_gate_source, declared_close_ms),
     ):
-        far_seg = _windowed(far, peak_idx=far_peak, span=span, lead=lead)
-        close_seg = _windowed(corrected, peak_idx=far_peak, span=span, lead=lead)
+        far_seg = _segment(far, sr, gate_ms=gate_ms, peak_idx=far_peak)
+        close_seg = _segment(corrected, sr, gate_ms=gate_ms, peak_idx=far_peak)
         residual_seg = far_seg - close_seg
         freqs, far_power = _band_spectra(far_seg, sr)
         _, direct_power = _band_spectra(close_seg, sr)
@@ -502,6 +545,11 @@ def compare_impulse_responses(
         windows.append({
             "name": name,
             "gate_ms": float(gate_ms),
+            "gate_source": gate_source,
+            # The clean window the DECLARED heights allow at this window's own
+            # distance, beside the gate actually used, so a reader can see a
+            # caller's gate outrunning the rig's first bounce.
+            "declared_clean_window_ms": declared_ms,
             "trusted_floor_hz": f_trusted_floor_hz(span / sr),
             "comparison_band_hz": list(window_band),
             "bands": _bands(
@@ -548,6 +596,14 @@ def compare_impulse_responses(
             "geometric_delay_us": geometric_delay_s * 1e6,
             "placement_tolerance_db": placement_tolerance_db(close_m),
             "aim_tolerance_deg": AIM_TOLERANCE_DEG,
+            "declared_geometry": None if geometry is None else {
+                "speaker_height_m": geometry.speaker_height_m,
+                "mic_height_m": geometry.mic_height_m,
+                "declared_distance_m": geometry.distance_m,
+                "ceiling_height_m": geometry.ceiling_height_m,
+                "clean_window_far_ms": declared_far_ms,
+                "clean_window_close_ms": declared_close_ms,
+            },
         },
         "validity": {
             "driver_diameter_m": (
@@ -595,206 +651,76 @@ def compare_impulse_responses(
 
 
 # --------------------------------------------------------------------------- #
-# binding a banked round to the two impulse responses
+# which capture of a banked round this comparison reads
 # --------------------------------------------------------------------------- #
 
-#: Where a wired round banks its summed captures: sidecar JSON with the WAV
-#: beside it, one directory per bundle.
-SUMMED_SIDECAR_GLOB = "**/summed/summed_*.json"
-
-#: How the program a capture was played through is named on disk.
-PROGRAM_WAV_GLOB = "**/*_program.wav"
-
+#: Named refusals this comparison owns. Discovery's own — a round with no
+#: captures, a capture whose declared program hash matches nothing — are
+#: :mod:`.round_captures`'s and are raised there.
 REFUSE_UNREADABLE_ROUND = "close_reference_unreadable_round"
 REFUSE_NO_CAPTURE = "close_reference_no_capture"
-REFUSE_PROGRAM_UNMATCHED = "close_reference_program_unmatched"
 REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
 
 
-class CloseReferenceRefused(RuntimeError):
-    """This round cannot answer, and ``reason`` says which input is missing."""
+def select_capture(
+    round_dir: Path, *, capture_id: str | None = None
+) -> PoseCapture:
+    """The one capture this comparison reads out of ``round_dir``.
 
-    def __init__(self, reason: str, detail: Mapping[str, Any] | None = None):
-        super().__init__(reason)
-        self.reason = reason
-        self.detail: dict[str, Any] = dict(detail or {})
-
-
-@dataclass(frozen=True)
-class RoundCapture:
-    """One banked summed capture, bound to the program its BYTES were played
-    through.
-
-    The binding is ``provenance.stimulus.wav_sha256`` against the sha256 of
-    each banked program WAV — never ``provenance.stimulus.phase``, which
-    #3504 observed declaring ``verify`` on five captures whose bytes were
-    ``cloud_verify_program.wav``.
-    """
-
-    sidecar: Path
-    wav: Path
-    program: Path
-    take_id: str
-    phase: str
-    position_deg: int | None
-    vertical_deg: int | None
-    mark_distance_m: float | None
-    stimulus_sha256: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "take_id": self.take_id,
-            "phase": self.phase,
-            "sidecar": self.sidecar.name,
-            "wav": self.wav.name,
-            "program": self.program.name,
-            "position_deg": self.position_deg,
-            "vertical_deg": self.vertical_deg,
-            "mark_distance_m": self.mark_distance_m,
-            "stimulus_wav_sha256": self.stimulus_sha256,
-        }
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _int_or_none(value: Any) -> int | None:
-    return int(value) if isinstance(value, (int, float)) and not isinstance(
-        value, bool
-    ) else None
-
-
-def load_round_capture(round_dir: Path, *, capture_id: str | None = None) -> RoundCapture:
-    """The capture this comparison reads out of ``round_dir``, bound by content.
-
-    ``capture_id`` selects by take id (or by any sidecar-stem substring). With
-    none, the on-axis summed capture wins: ``position_deg == 0`` and
-    ``vertical_deg == 0``, earliest take id. Raises
-    :class:`CloseReferenceRefused` rather than guessing.
+    ``capture_id`` selects by the capture's own id or its WAV stem. With none,
+    the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
+    Raises :class:`~.round_captures.RoundCapturesRefused` rather than guessing.
     """
     root = Path(round_dir)
     if not root.is_dir():
-        raise CloseReferenceRefused(
-            REFUSE_UNREADABLE_ROUND, {"round_dir": str(root)}
-        )
-    programs = {_sha256(path): path for path in sorted(root.glob(PROGRAM_WAV_GLOB))}
-    sidecars = sorted(root.glob(SUMMED_SIDECAR_GLOB))
-    if not sidecars:
-        raise CloseReferenceRefused(
-            REFUSE_NO_CAPTURE,
-            {"round_dir": str(root), "glob": SUMMED_SIDECAR_GLOB},
-        )
-
-    census: list[dict[str, Any]] = []
-    matched: list[RoundCapture] = []
-    unmatched: list[dict[str, Any]] = []
-    for sidecar in sidecars:
-        try:
-            doc = json.loads(sidecar.read_text())
-        except (OSError, UnicodeDecodeError, ValueError):
-            census.append({"sidecar": sidecar.name, "admitted": False})
-            continue
-        if not isinstance(doc, Mapping):
-            census.append({"sidecar": sidecar.name, "admitted": False})
-            continue
-        take_id = str(doc.get("take_id") or sidecar.stem)
-        if capture_id is not None and capture_id not in (take_id, sidecar.stem):
-            continue
-        wav = sidecar.with_suffix(".wav")
-        provenance = doc.get("provenance")
-        stimulus = (
-            provenance.get("stimulus") if isinstance(provenance, Mapping) else None
-        )
-        sha = stimulus.get("wav_sha256") if isinstance(stimulus, Mapping) else None
-        program = programs.get(sha) if isinstance(sha, str) else None
-        position_deg = _int_or_none(doc.get("position_deg"))
-        vertical_deg = _int_or_none(doc.get("vertical_deg"))
-        row: dict[str, Any] = {
-            "sidecar": sidecar.name,
-            "take_id": take_id,
-            "position_deg": position_deg,
-            "vertical_deg": vertical_deg,
-            "stimulus_wav_sha256": sha if isinstance(sha, str) else None,
-            "admitted": bool(program is not None and wav.is_file()),
-        }
-        census.append(row)
-        if program is None or not wav.is_file():
-            unmatched.append(row)
-            continue
-        matched.append(
-            RoundCapture(
-                sidecar=sidecar,
-                wav=wav,
-                program=program,
-                take_id=take_id,
-                phase=str(doc.get("phase") or ""),
-                position_deg=position_deg,
-                vertical_deg=vertical_deg,
-                mark_distance_m=(
-                    float(doc["mark_distance_m"])
-                    if isinstance(doc.get("mark_distance_m"), (int, float))
-                    and not isinstance(doc.get("mark_distance_m"), bool)
-                    else None
-                ),
-                stimulus_sha256=str(sha),
-            )
-        )
-
-    if not matched:
-        raise CloseReferenceRefused(
-            REFUSE_PROGRAM_UNMATCHED if unmatched else REFUSE_NO_CAPTURE,
-            {
-                "round_dir": str(root),
-                "capture_id": capture_id,
-                "programs_present": sorted(path.name for path in programs.values()),
-                "captures": census,
-            },
-        )
+        raise RoundCapturesRefused(REFUSE_UNREADABLE_ROUND, {"round_dir": str(root)})
+    captures = discover_captures(root)
     if capture_id is not None:
-        return matched[0]
+        named = [
+            capture
+            for capture in captures
+            if capture_id in (capture.capture_id, capture.wav.stem)
+        ]
+        if not named:
+            raise RoundCapturesRefused(
+                REFUSE_NO_CAPTURE,
+                {
+                    "round_dir": str(root),
+                    "capture_id": capture_id,
+                    "captures": [capture.capture_id for capture in captures],
+                },
+            )
+        return named[0]
     on_axis = [
         capture
-        for capture in matched
-        if capture.position_deg == 0 and capture.vertical_deg == 0
+        for capture in captures
+        if capture.azimuth_deg == 0 and capture.vertical_deg == 0
     ]
     if not on_axis:
-        raise CloseReferenceRefused(
+        raise RoundCapturesRefused(
             REFUSE_NO_CAPTURE,
             {
                 "round_dir": str(root),
-                "note": "no capture declares position_deg 0 / vertical_deg 0",
-                "captures": census,
+                "note": "no capture declares azimuth 0 / elevation 0",
+                "poses": [capture.pose_key for capture in captures],
             },
         )
-    return sorted(on_axis, key=lambda capture: capture.take_id)[0]
+    return on_axis[0]
 
 
-def capture_impulse_response(capture: RoundCapture) -> tuple[np.ndarray, int]:
-    """Deconvolve one banked capture against the program its bytes name."""
-    signal, rate = read_wav_mono(capture.wav)
-    program, program_rate = read_wav_mono(capture.program)
-    if rate != program_rate:
-        raise CloseReferenceRefused(
-            REFUSE_RATE_MISMATCH,
-            {
-                "capture_hz": rate,
-                "program_hz": program_rate,
-                "wav": capture.wav.name,
-                "program": capture.program.name,
-            },
-        )
-    ir = regularized_deconvolution_full(
-        np.asarray(signal, dtype=np.float32),
-        np.asarray(program, dtype=np.float32),
-        rate,
-    )
-    return np.asarray(ir, dtype=np.float64), int(rate)
-
+def _capture_row(capture: PoseCapture) -> dict[str, Any]:
+    """What the report says about a capture it read."""
+    return {
+        "capture_id": capture.capture_id,
+        "phase": capture.phase,
+        "pose_key": capture.pose_key,
+        "wav": capture.wav.name,
+        "program": capture.program.name,
+        "position_deg": capture.azimuth_deg,
+        "vertical_deg": capture.vertical_deg,
+        "mark_distance_m": capture.mark_distance_m,
+        "stimulus_wav_sha256": capture.program_sha256,
+    }
 
 def compare_rounds(
     far_round: Path,
@@ -806,34 +732,38 @@ def compare_rounds(
     close_capture_id: str | None = None,
     fc_hz: float | None = None,
     driver_diameter_m: float | None = None,
-    far_gate_ms: float = DEFAULT_GATE_MS,
-    close_gate_ms: float = DEFAULT_GATE_MS,
+    far_gate_ms: float | None = None,
+    close_gate_ms: float | None = None,
+    geometry: DeclaredGeometry | None = None,
     sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
 ) -> dict[str, Any]:
     """Two banked rounds in, one close-reference report out."""
-    far_capture = load_round_capture(far_round, capture_id=far_capture_id)
-    close_capture = load_round_capture(close_round, capture_id=close_capture_id)
-    far_ir, far_rate = capture_impulse_response(far_capture)
-    close_ir, close_rate = capture_impulse_response(close_capture)
-    if far_rate != close_rate:
-        raise CloseReferenceRefused(
-            REFUSE_RATE_MISMATCH, {"far_hz": far_rate, "close_hz": close_rate}
+    far_capture = select_capture(far_round, capture_id=far_capture_id)
+    close_capture = select_capture(close_round, capture_id=close_capture_id)
+    if far_capture.sample_rate != close_capture.sample_rate:
+        raise RoundCapturesRefused(
+            REFUSE_RATE_MISMATCH,
+            {
+                "far_hz": far_capture.sample_rate,
+                "close_hz": close_capture.sample_rate,
+            },
         )
     report = compare_impulse_responses(
-        far_ir,
-        close_ir,
-        sample_rate=far_rate,
+        far_capture.ir,
+        close_capture.ir,
+        sample_rate=far_capture.sample_rate,
         far_m=far_m,
         close_m=close_m,
         fc_hz=fc_hz,
         driver_diameter_m=driver_diameter_m,
         far_gate_ms=far_gate_ms,
         close_gate_ms=close_gate_ms,
+        geometry=geometry,
         sound_speed_m_s=sound_speed_m_s,
     )
     report["captures"] = {
-        "far": far_capture.to_dict() | {"round_dir": str(far_round)},
-        "close": close_capture.to_dict() | {"round_dir": str(close_round)},
+        "far": _capture_row(far_capture) | {"round_dir": str(far_round)},
+        "close": _capture_row(close_capture) | {"round_dir": str(close_round)},
     }
     # The sidecar's own mark_distance_m is published beside the declared one
     # rather than silently overridden: today it is pinned to 1.0 for every

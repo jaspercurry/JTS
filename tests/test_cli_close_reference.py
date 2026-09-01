@@ -24,9 +24,11 @@ from scipy.io import wavfile
 from scipy.signal import fftconvolve
 
 from jasper.active_speaker.crossover_v2.close_reference import (
+    GATE_SOURCE_DECLARED,
     REFUSE_NO_CAPTURE,
-    REFUSE_PROGRAM_UNMATCHED,
 )
+from jasper.active_speaker.crossover_v2.round_captures import REFUSE_PROGRAM_UNMATCHED
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.sweep import synchronized_swept_sine
 from jasper.cli.close_reference import AUTHORITY_TIER, build_parser, main
 
@@ -67,12 +69,13 @@ def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> 
     program_pcm = wavfile.read(program_path)[1].astype(np.float64) / 32768.0
     _write_wav(wav, fftconvolve(program_pcm, _ir(distance_m)))
     (bundle / "summed" / f"{stem}.json").write_text(json.dumps({
-        "take_id": take_id,
+        "position_id": take_id,
         "phase": "verify",
         "position_deg": 0,
         "vertical_deg": 0,
         "mark_distance_m": 1.0,
         "wav_path": f"summed/{stem}.wav",
+        "curves": [{"role": "summed", "band_hz": [100.0, 8000.0]}],
         "provenance": {
             "stimulus": {
                 "phase": "verify",
@@ -91,12 +94,16 @@ def rounds(tmp_path: Path) -> tuple[Path, Path]:
     )
 
 
-def _compare_argv(rounds: tuple[Path, Path], out: Path) -> list[str]:
+def _compare_argv(
+    rounds: tuple[Path, Path], out: Path, *, geometry: Path | None = None
+) -> list[str]:
+    """Every invocation names a geometry path, so no test reads /var/lib."""
     far, close = rounds
     return [
         "compare", "--far-round", str(far), "--close-round", str(close),
         "--close-m", "0.30", "--far-m", "1.0", "--fc-hz", "6000",
         "--driver-diameter-in", "5.5", "--out", str(out),
+        "--geometry", str(geometry or out.parent / "undeclared.json"),
     ]
 
 
@@ -138,6 +145,27 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
     assert payload["reason"] == reason
+
+
+def test_a_declared_geometry_sets_each_windows_gate(rounds, tmp_path, capsys):
+    """The close capture's own clean window is longer, and says where it came
+    from: the first bounce's excess path grows as the mic nears the woofer."""
+    geometry = tmp_path / "geometry.json"
+    DeclaredGeometry(
+        speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0
+    ).save(geometry)
+    out = tmp_path / "report.json"
+    assert main(_compare_argv(rounds, out, geometry=geometry)) == EXIT_OK
+
+    report = json.loads(out.read_text())["close_reference"]
+    windows = {window["name"]: window for window in report["windows"]}
+    assert {window["gate_source"] for window in windows.values()} == {
+        GATE_SOURCE_DECLARED
+    }
+    for window in windows.values():
+        assert window["gate_ms"] == pytest.approx(window["declared_clean_window_ms"])
+    assert windows["close_window"]["gate_ms"] > windows["far_window"]["gate_ms"]
+    assert report["geometry"]["declared_geometry"]["mic_height_m"] == 0.84
 
 
 def test_distance_verb_prints_both_terms(capsys):

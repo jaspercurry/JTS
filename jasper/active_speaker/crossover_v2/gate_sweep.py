@@ -48,10 +48,8 @@ business.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -59,13 +57,11 @@ import numpy as np
 
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.gating import (
     TAPER_FRACTION,
     TRUSTED_FLOOR_MULTIPLIER,
     build_gate_window,
 )
-from jasper.audio_measurement.sweep import read_wav_mono
 
 from .feature_classifier import (
     CENTRE_SEARCH_OCT,
@@ -76,6 +72,7 @@ from .feature_classifier import (
     detrend,
     feature_q,
 )
+from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures
 
 SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
@@ -125,13 +122,8 @@ NULL_MODEL_HOST_S = 0.2
 
 # --- refusals: every one names the input that was missing --------------------
 
-REFUSE_NO_CAPTURES = "gate_sweep_no_captures"
-REFUSE_NO_PROGRAMS = "gate_sweep_no_programs"
-REFUSE_PROGRAM_UNMATCHED = "gate_sweep_program_hash_unmatched"
-REFUSE_RADIATED_BAND_MISSING = "gate_sweep_radiated_band_missing"
 REFUSE_REFERENCE_BAND_EMPTY = "gate_sweep_reference_band_empty"
 REFUSE_SINGLE_POSE = "gate_sweep_single_pose"
-REFUSE_CAPTURE_UNREADABLE = "gate_sweep_capture_unreadable"
 
 # --- why a band has no sensitivity -------------------------------------------
 
@@ -141,229 +133,10 @@ NULL_BAND_BELOW_GRID_RESOLUTION = "graded_band_narrower_than_grid"
 NULL_DEGENERATE_SHORT_RUNG = "short_rung_sigma_is_zero"
 
 
-class GateSweepRefused(Exception):
-    """A named refusal with the evidence behind it. Never a bare failure."""
-
-    def __init__(self, reason: str, detail: Mapping[str, Any]) -> None:
-        super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
-        self.reason = reason
-        self.detail = dict(detail)
-
-
-@dataclass
-class PoseCapture:
-    """One banked capture, its declared pose, and its gated curves."""
-
-    capture_id: str
-    phase: str | None
-    wav: Path
-    program: Path
-    program_sha256: str
-    azimuth_deg: float | None
-    vertical_deg: float | None
-    mark_distance_m: float | None
-    radiated_band_hz: tuple[float, float]
-    sample_rate: int
-    ir: np.ndarray
-    peak_idx: int
-    reference_const_db: float = 0.0
-    #: Normalised dB on the analysis grid, keyed by rung in ms.
-    curves: dict[float, np.ndarray] = field(default_factory=dict)
-    #: The same curves with their one-octave broad tilt removed.
-    detrended: dict[float, np.ndarray] = field(default_factory=dict)
-
-    @property
-    def pose_key(self) -> str:
-        """The FULL declared pose. Never a seat index (#3503)."""
-        return "az{}_el{}_d{}".format(
-            _pose_field(self.azimuth_deg),
-            _pose_field(self.vertical_deg),
-            _pose_field(self.mark_distance_m),
-        )
-
-
-def _pose_field(value: float | None) -> str:
-    return "na" if value is None else f"{value:+.2f}"
-
-
 def analysis_grid() -> np.ndarray:
     """Log grid at :data:`GRID_FRACTION` points per octave."""
     n = int(round(GRID_FRACTION * np.log2(GRID_HI_HZ / GRID_LO_HZ))) + 1
     return GRID_LO_HZ * 2.0 ** (np.arange(n) / GRID_FRACTION)
-
-
-# --------------------------------------------------------------------------- #
-# discovery — capture to program by content hash, never by label
-# --------------------------------------------------------------------------- #
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
-    """The program hash this sidecar declares, or one hashed from its bytes.
-
-    The sidecar's ``provenance.stimulus.wav_sha256`` is the authority. When
-    it is absent the stimulus PATH is hashed from its own bytes instead —
-    still content, never ``provenance.stimulus.phase``, which declares
-    ``verify`` on captures whose played bytes were ``cloud_verify`` (#3504).
-    """
-    provenance = doc.get("provenance")
-    stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
-    if not isinstance(stimulus, Mapping):
-        return None
-    declared = stimulus.get("wav_sha256")
-    if isinstance(declared, str) and declared:
-        return declared
-    for key in ("wav_path", "path", "program_path"):
-        named = stimulus.get(key)
-        if isinstance(named, str) and named:
-            candidate = Path(named)
-            if not candidate.is_absolute():
-                candidate = root / named
-            if candidate.is_file():
-                return _sha256(candidate)
-    return None
-
-
-def _radiated_band(doc: Mapping[str, Any]) -> tuple[float, float] | None:
-    """The band this capture's DUT actually radiates, from its own curves.
-
-    Absent yields ``None`` rather than a default span, for the reason
-    :mod:`~jasper.audio_measurement.gate_disclosure`'s header records: the
-    un-intersected band priced a tweeter from 357 Hz where it has no output
-    and over-reported by 3x (E5, #1969).
-    """
-    curves = doc.get("curves")
-    if not isinstance(curves, Sequence):
-        return None
-    los: list[float] = []
-    his: list[float] = []
-    for curve in curves:
-        band = curve.get("band_hz") if isinstance(curve, Mapping) else None
-        if isinstance(band, Sequence) and len(band) == 2:
-            los.append(float(band[0]))
-            his.append(float(band[1]))
-    if not los:
-        return None
-    return (min(los), max(his))
-
-
-def discover_captures(round_dir: Path) -> tuple[PoseCapture, ...]:
-    """Every summed capture under ``round_dir``, bound to its own program.
-
-    ``round_dir`` is a banked round directory (the one holding ``bundle/``)
-    or the bundle itself. Raises :class:`GateSweepRefused` naming the missing
-    input — an empty result is a finding, never an empty tuple.
-    """
-    round_dir = Path(round_dir)
-    sidecars = sorted(round_dir.glob("**/summed/summed_*.json"))
-    if not sidecars:
-        raise GateSweepRefused(
-            REFUSE_NO_CAPTURES,
-            {"round_dir": str(round_dir), "looked_for": "**/summed/summed_*.json"},
-        )
-    programs: dict[str, Path] = {}
-    for candidate in sorted(round_dir.glob("**/*program*.wav")):
-        programs.setdefault(_sha256(candidate), candidate)
-    if not programs:
-        raise GateSweepRefused(
-            REFUSE_NO_PROGRAMS,
-            {"round_dir": str(round_dir), "looked_for": "**/*program*.wav"},
-        )
-
-    captures: list[PoseCapture] = []
-    # Decoded once per unique program, not once per capture.
-    program_audio: dict[str, tuple[np.ndarray, int]] = {}
-    for sidecar in sidecars:
-        try:
-            doc = json.loads(sidecar.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise GateSweepRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "detail": str(exc)},
-            ) from exc
-        wav = sidecar.with_suffix(".wav")
-        if not wav.is_file():
-            raise GateSweepRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "detail": "no WAV beside the sidecar"},
-            )
-        sha = _declared_program_sha(doc, round_dir)
-        program = programs.get(sha) if sha is not None else None
-        if program is None:
-            raise GateSweepRefused(
-                REFUSE_PROGRAM_UNMATCHED,
-                {
-                    "sidecar": sidecar.name,
-                    "declared_stimulus_sha256": sha,
-                    "programs_present": sorted(
-                        {path.name for path in programs.values()}
-                    ),
-                    "note": (
-                        "capture-to-program binding is by content hash; the "
-                        "sidecar's declared stimulus phase is not consulted"
-                    ),
-                },
-            )
-        band = _radiated_band(doc)
-        if band is None:
-            raise GateSweepRefused(
-                REFUSE_RADIATED_BAND_MISSING,
-                {
-                    "sidecar": sidecar.name,
-                    "note": (
-                        "the reference band is intersected with the band the "
-                        "DUT radiates; without it no honest band exists"
-                    ),
-                },
-            )
-        signal, rate = read_wav_mono(wav)
-        program_key = str(sha)
-        if program_key not in program_audio:
-            program_audio[program_key] = read_wav_mono(program)
-        program_signal, program_rate = program_audio[program_key]
-        if rate != program_rate:
-            raise GateSweepRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {
-                    "sidecar": sidecar.name,
-                    "detail": f"{rate} Hz capture against {program_rate} Hz program",
-                },
-            )
-        ir = regularized_deconvolution_full(signal, program_signal, rate).astype(
-            np.float64
-        )
-        captures.append(
-            PoseCapture(
-                capture_id=str(doc.get("position_id") or sidecar.stem),
-                phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
-                wav=wav,
-                program=program,
-                program_sha256=str(sha),
-                azimuth_deg=_number(doc.get("position_deg")),
-                vertical_deg=_number(doc.get("vertical_deg")),
-                mark_distance_m=_number(doc.get("mark_distance_m")),
-                radiated_band_hz=band,
-                sample_rate=int(rate),
-                ir=ir,
-                peak_idx=int(np.argmax(np.abs(ir))),
-            )
-        )
-    if len(captures) < 2:
-        raise GateSweepRefused(
-            REFUSE_SINGLE_POSE,
-            {
-                "captures": [cap.capture_id for cap in captures],
-                "note": "across-pose sigma needs at least two poses",
-            },
-        )
-    return tuple(sorted(captures, key=lambda cap: cap.capture_id))
-
-
-def _number(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) else None
 
 
 # --------------------------------------------------------------------------- #
@@ -442,7 +215,7 @@ def _read_curves(
     for capture in captures:
         reference_band = _intersect(REFERENCE_BAND_HZ, capture.radiated_band_hz)
         if reference_band is None:
-            raise GateSweepRefused(
+            raise RoundCapturesRefused(
                 REFUSE_REFERENCE_BAND_EMPTY,
                 {
                     "capture": capture.capture_id,
@@ -893,7 +666,7 @@ def sweep_round(
     deepest one. Each is read exactly as a band's worst bin is, null model
     included, and reported under ``features``.
 
-    Raises :class:`GateSweepRefused` naming the missing input.
+    Raises :class:`RoundCapturesRefused` naming the missing input.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     if len(rungs) < 2:
@@ -906,6 +679,14 @@ def sweep_round(
                 f"({GRID_LO_HZ:g}-{GRID_HI_HZ:g} Hz)"
             )
     captures = discover_captures(Path(round_dir))
+    if len(captures) < 2:
+        raise RoundCapturesRefused(
+            REFUSE_SINGLE_POSE,
+            {
+                "captures": [cap.capture_id for cap in captures],
+                "note": "across-pose sigma needs at least two poses",
+            },
+        )
     grid = analysis_grid()
     _read_curves(captures, grid, rungs)
     sigma = _across_pose_sigma(captures, rungs)
