@@ -113,19 +113,12 @@ def _preset_ceiling_db_spl() -> float:
 
     from jasper.output_topology import load_output_topology_strict
 
-    from .commission_wiring import resolve_capture_preset
+    from .commission_wiring import commissioning_spl_ceiling_db
 
     try:
-        preset = resolve_capture_preset(load_output_topology_strict())
-        ceiling = finite_float(preset.safety.max_commissioning_level_db_spl)
+        return commissioning_spl_ceiling_db(load_output_topology_strict())
     except (OSError, ValueError, KeyError, AttributeError) as exc:
         raise LevelUnresolved(PRESET_UNAVAILABLE, str(exc)) from exc
-    if ceiling is None:
-        raise LevelUnresolved(
-            PRESET_UNAVAILABLE,
-            "the preset declares no finite max_commissioning_level_db_spl",
-        )
-    return ceiling
 
 
 def resolve_program_level(

@@ -387,7 +387,7 @@ def _derive_bounds(
     two answers), and ``declarations`` is loaded once by the caller for the
     same reason.
     """
-    from jasper.active_speaker.commission_wiring import resolve_capture_preset
+    from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
     )
@@ -411,13 +411,7 @@ def _derive_bounds(
         declared_sensitivities=declared_effective_driver_sensitivities(draft),
         branch_peaks_dbfs=_applied_branch_peaks(stimulus, targets),
     )
-    # ``resolve_capture_preset`` is the sibling every capture-analysis surface
-    # uses: it resolves the preview-compiled preset and only then falls back to
-    # the bundled one. ``resolve_commission_inputs()`` alone returns ``None``
-    # for the preset on an ordinary box.
-    preset = resolve_capture_preset(topology)
-    spl_ceiling = float(preset.safety.max_commissioning_level_db_spl)
-    return ceiling_db, spl_ceiling
+    return ceiling_db, commissioning_spl_ceiling_db(topology)
 
 
 class _OperatorStopped(Exception):

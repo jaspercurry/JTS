@@ -13,7 +13,6 @@ was guessed is worse than no number.
 from __future__ import annotations
 
 import dataclasses
-from types import SimpleNamespace
 
 import pytest
 
@@ -155,20 +154,20 @@ def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeyp
 
 
 def test_the_ceiling_comes_from_the_presets_own_declaration(monkeypatch):
-    """One owner for the hard stop: the preset's ``max_commissioning_level_db_spl``.
+    """This door reads the hard stop through the one reader that owns it.
 
     Stubbed, not read off this box: a ceiling compared against the same live
     resolution it came from asserts nothing, and would move with whatever
     topology the machine running the suite happens to have.
+    ``commission_wiring.commissioning_spl_ceiling_db`` is the seam; what it
+    resolves out of a preset is pinned where it lives.
     """
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", lambda: "topology"
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.commission_wiring.resolve_capture_preset",
-        lambda _topology: SimpleNamespace(
-            safety=SimpleNamespace(max_commissioning_level_db_spl=91.5)
-        ),
+        "jasper.active_speaker.commission_wiring.commissioning_spl_ceiling_db",
+        lambda _topology: 91.5,
     )
 
     assert ml._preset_ceiling_db_spl() == 91.5
@@ -177,7 +176,8 @@ def test_the_ceiling_comes_from_the_presets_own_declaration(monkeypatch):
         raise ValueError("no preset on this box")
 
     monkeypatch.setattr(
-        "jasper.active_speaker.commission_wiring.resolve_capture_preset", _unresolvable
+        "jasper.active_speaker.commission_wiring.commissioning_spl_ceiling_db",
+        _unresolvable,
     )
     with pytest.raises(ml.LevelUnresolved) as excinfo:
         ml._preset_ceiling_db_spl()
