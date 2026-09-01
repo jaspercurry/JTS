@@ -2651,9 +2651,9 @@ def bind_production_analyze(
     and ``crossover_v2_flow.AnalyzeCapture`` declares it. It is NOT the same
     value as ``program.phase``: every cloud position plays the verify-shaped
     summed sweep, so ``program.phase == "verify"`` even during
-    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. This binding no longer reads it —
-    the capture-dump ring that labelled clips by it is gone — but the
-    protocol keeps it, so the parameter stays until the protocol changes.
+    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. It keys the per-phase calibration
+    annotation and labels this binding's log lines, so those name the capture
+    rather than the shared program object.
 
     ``provenance`` (optional) is the session's
     :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`
@@ -2729,7 +2729,7 @@ def bind_production_analyze(
                 setup_calibration_id=setup_calibration_id,
             )
         if meta is not None:
-            meta.setdefault("calibration", {})[program.phase] = {
+            meta.setdefault("calibration", {})[phase] = {
                 "applied": curve is not None,
                 "calibration_id": getattr(record, "calibration_id", None),
             }
