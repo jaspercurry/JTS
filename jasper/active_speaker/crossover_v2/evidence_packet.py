@@ -351,9 +351,13 @@ _POSITIONS_SUBDIR = "positions"
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 #: What :func:`_capture_snr_block` reads off one banked take: the two
-#: identities the packet's other take rows already carry, the phase that says
-#: which capture it was, and the analysis block the SNR columns live in.
-_TAKE_DIAGNOSTIC_FIELDS = ("take_id", "wav_sha256", "phase", "diagnostic")
+#: identities the packet's other take rows already carry, the digest of the
+#: stimulus that was PLAYED (a different quantity from ``wav_sha256``, which
+#: is the captured audio's), the phase that says which capture it was, and the
+#: analysis block the SNR columns live in.
+_TAKE_DIAGNOSTIC_FIELDS = (
+    "take_id", "wav_sha256", "stimulus_wav_sha256", "phase", "diagnostic",
+)
 
 #: The substring that identifies a signal-to-noise field in a banked take's
 #: flat ``diagnostic`` block.
@@ -1337,6 +1341,7 @@ def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
         captures.append({
             "take_id": take.get("take_id"),
             "wav_sha256": take.get("wav_sha256"),
+            "stimulus_wav_sha256": take.get("stimulus_wav_sha256"),
             "phase": take.get("phase"),
             "snr": snr,
         })

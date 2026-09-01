@@ -31,13 +31,11 @@ from jasper.active_speaker.capture_provenance import (
     observe_capture_provenance,
     record_capture_provenance,
 )
-# The phase these tests drive is the SESSION phase, not the stimulus one: it
-# is the first argument of ``bind_production_play``'s seam, which branches on
-# ``phase in SUMMED_SWEEP_PHASES``. (The STIMULUS phase reaches the record
-# separately and without passing through here — the playback path calls
-# ``record_capture_provenance``, whose fail-soft belt wraps
-# ``observe_capture_provenance``, and it is THAT function which reads
-# ``program.phase`` into ``provenance.stimulus.phase``.) Until
+# The phase these tests drive is the SESSION phase: it is the first argument of
+# ``bind_production_play``'s seam, which branches on
+# ``phase in SUMMED_SWEEP_PHASES`` — and it is also the phase that reaches
+# ``provenance.stimulus.phase``, because a composed program object serves
+# several phases and its own ``phase`` names only one of them. Until
 # master-plan ticket 2.9 gave the stimulus family its ``PROGRAM_`` prefix, this
 # file imported ``PHASE_CHECK`` from ``jasper.audio_measurement.program`` and
 # was right only by accident: the two families spelled the name identically and
@@ -202,6 +200,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
             cam=cam,
             graph_kind=GRAPH_KIND_PROGRAM_ROUTING,
             program=program,
+            phase=PHASE_CHECK,
             artifact=artifact,
             volume_plan=_FakePlan(measurement_volume_db=-20.0),
         )
@@ -217,7 +216,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert block["graph"]["config_path"] == ANCHOR_PATH
     assert block["graph"]["fingerprint"]
     assert block["stimulus"]["program_id"] == program.program_id
-    assert block["stimulus"]["phase"] == program.phase
+    assert block["stimulus"]["phase"] == PHASE_CHECK
     assert block["stimulus"]["wav_sha256"] == "a" * 64
     # The composer's own declared digital peak for the loudest stimulus
     # segment — reused, never recomputed off the rendered WAV.
@@ -240,6 +239,7 @@ def test_the_fingerprint_is_the_running_graph_not_the_config_path() -> None:
                 cam=_FakeCam(active_raw=active_raw),
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=program,
+                phase=PHASE_CHECK,
             )
         ).graph_fingerprint
 
@@ -258,6 +258,7 @@ def test_an_unreadable_surface_nulls_only_itself_and_names_itself_once(caplog) -
                 cam=cam,
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=_program(),
+                phase=PHASE_CHECK,
                 volume_plan=_FakePlan(),
             )
         )
@@ -279,6 +280,7 @@ def test_a_closed_session_volume_is_an_answer_not_an_unreadable_field(caplog) ->
                 cam=_FakeCam(),
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=_program(),
+                phase=PHASE_CHECK,
                 volume_plan=_FakePlan(measurement_volume_db=None),
             )
         )
@@ -298,6 +300,7 @@ def test_a_raising_surface_cannot_escape_into_the_capture(caplog) -> None:
                 cam=_Exploding(),
                 graph_kind=GRAPH_KIND_PROGRAM_ROUTING,
                 program=_program(),
+                phase=PHASE_CHECK,
             )
         )
 
@@ -328,6 +331,7 @@ def test_an_unforeseen_exception_type_still_cannot_reach_the_capture(
                 open_cam=_FakeCam,
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=_program(),
+                phase=PHASE_CHECK,
             )
         )
 
@@ -351,6 +355,7 @@ def test_no_recorder_is_a_silent_no_op_not_a_provenance_failure(caplog) -> None:
                 open_cam=lambda: opened.append("cam") or _FakeCam(),
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=_program(),
+                phase=PHASE_CHECK,
             )
         )
 
@@ -383,6 +388,7 @@ def test_resolving_the_cam_or_the_plan_happens_inside_the_belt(
                 recorder,
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=_program(),
+                phase=PHASE_CHECK,
                 **kwargs,
             )
         )
@@ -593,6 +599,27 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
     assert routed["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
     assert summed["graph"]["kind"] == GRAPH_KIND_APPLIED
     assert routed["graph"]["fingerprint"] != summed["graph"]["fingerprint"]
+
+
+def test_the_stimulus_phase_is_the_capture_s_own_not_the_program_object_s(
+    monkeypatch, tmp_path
+):
+    """One program object serves several phases, so it cannot name the capture.
+
+    ``crossover_v2.programs.program_for_phase`` answers every
+    ``GROUP_SUMMED_SWEEP_PHASES`` position, the compared VERIFY/entry-baseline
+    pair, and MEASURE/LATERAL with ONE composed object each, by identity — so
+    ``program.phase`` is the name of whichever phase composed it, and a record
+    that took its label from there said "verify" for a cloud position and
+    "measure" for a lateral pose. The capture's own phase is the one the play
+    seam was called with, which is also the phase the banked record carries.
+    """
+    provenance = _drive_one_capture(
+        monkeypatch, tmp_path, phase=PHASE_VERIFY, cam=_FakeCam(volume_db=-20.0),
+    )
+    assert provenance is not None
+    assert _program().phase != PHASE_VERIFY
+    assert provenance["stimulus"]["phase"] == PHASE_VERIFY
 
 
 def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(

@@ -223,6 +223,7 @@ async def record_capture_provenance(
     open_cam: Callable[[], Any],
     graph_kind: str,
     program: Any,
+    phase: str,
     artifact: Any = None,
     read_volume_plan: Callable[[], Any] | None = None,
 ) -> None:
@@ -262,6 +263,7 @@ async def record_capture_provenance(
                 cam=cam,
                 graph_kind=graph_kind,
                 program=program,
+                phase=phase,
                 artifact=artifact,
                 volume_plan=volume_plan,
             )
@@ -282,6 +284,7 @@ async def observe_capture_provenance(
     cam: Any,
     graph_kind: str,
     program: Any,
+    phase: str,
     artifact: Any = None,
     volume_plan: Any = None,
 ) -> CaptureProvenance:
@@ -336,12 +339,15 @@ async def observe_capture_provenance(
         except _READ_ERRORS:
             unreadable.append("session_volume_db")
 
+    # ``phase`` is the CAPTURE's phase, passed in, never ``program.phase``:
+    # ``programs.program_for_phase`` answers several phases with one composed
+    # object by identity (every GROUP_SUMMED_SWEEP_PHASES position, the
+    # compared VERIFY/baseline pair, MEASURE and a lateral pose), so the
+    # object's own phase names only one of the phases that play it.
     program_id: str | None = None
-    phase: str | None = None
     peak_dbfs: float | None = None
     try:
         program_id = str(program.program_id)
-        phase = str(program.phase)
     except _READ_ERRORS:
         unreadable.append("stimulus.program_id")
     try:
@@ -390,7 +396,7 @@ async def observe_capture_provenance(
             level=logging.WARNING,
             result="volume_disagreement",
             graph_kind=graph_kind,
-            phase=phase or "",
+            phase=phase,
             # ``repr``, not a float format: this branch is reached precisely
             # BECAUSE a value failed the numeric agreement test, so it may not
             # be a number at all — and formatting it as one would raise inside

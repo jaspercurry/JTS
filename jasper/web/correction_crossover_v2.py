@@ -2651,9 +2651,9 @@ def bind_production_analyze(
     and ``crossover_v2_flow.AnalyzeCapture`` declares it. It is NOT the same
     value as ``program.phase``: every cloud position plays the verify-shaped
     summed sweep, so ``program.phase == "verify"`` even during
-    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. This binding no longer reads it —
-    the capture-dump ring that labelled clips by it is gone — but the
-    protocol keeps it, so the parameter stays until the protocol changes.
+    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. It keys the per-phase calibration
+    annotation and labels this binding's log lines, so those name the capture
+    rather than the shared program object.
 
     ``provenance`` (optional) is the session's
     :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`
@@ -2699,7 +2699,7 @@ def bind_production_analyze(
                     logger,
                     "correction.crossover_v2_calibration_resolve_failed",
                     level=logging.WARNING,
-                    phase=program.phase,
+                    phase=phase,
                 )
                 record = None
         curve = getattr(record, "curve", None)
@@ -2724,12 +2724,12 @@ def bind_production_analyze(
                 logger,
                 "correction.crossover_v2_uncalibrated_capture",
                 level=logging.WARNING,
-                phase=program.phase,
+                phase=phase,
                 setup_mode=setup_mode,
                 setup_calibration_id=setup_calibration_id,
             )
         if meta is not None:
-            meta.setdefault("calibration", {})[program.phase] = {
+            meta.setdefault("calibration", {})[phase] = {
                 "applied": curve is not None,
                 "calibration_id": getattr(record, "calibration_id", None),
             }
@@ -3043,6 +3043,11 @@ def bind_position_retention(
         carried = provenance.take() if provenance is not None else None
         if carried is not None:
             record["provenance"] = carried.to_dict()
+            # The PLAYED program's digest, beside the record's ``wav_sha256``
+            # and never merged into it: that key is the CAPTURED audio's
+            # (``spatial._take_identity``), and the two answer different
+            # questions — what was emitted versus what came back.
+            record["stimulus_wav_sha256"] = carried.stimulus_wav_sha256
         # A geometry retake re-uses its position id — same prompted spot,
         # measured again from further out — so the id alone does NOT identify a
         # take. The evidence store is write-once (a repeated path is a
@@ -3668,7 +3673,8 @@ def bind_production_play(
     )
 
     def _observe_stimulus(
-        open_cam: Callable[[], Any], graph_kind: str, program: Any, artifact: Any,
+        open_cam: Callable[[], Any], graph_kind: str, program: Any,
+        artifact: Any, phase: str,
     ) -> Any:
         """Awaitable: record what this stimulus plays THROUGH, fail-soft.
 
@@ -3684,7 +3690,7 @@ def bind_production_play(
         """
         return record_capture_provenance(
             provenance, open_cam=open_cam, graph_kind=graph_kind,
-            program=program, artifact=artifact,
+            program=program, phase=phase, artifact=artifact,
             read_volume_plan=session_volume_plan,
         )
 
@@ -3773,7 +3779,9 @@ def bind_production_play(
                 )
 
         def _observe(open_cam: Callable[[], Any], graph_kind: str) -> Any:
-            return _observe_stimulus(open_cam, graph_kind, program, artifact)
+            return _observe_stimulus(
+                open_cam, graph_kind, program, artifact, phase,
+            )
 
         async def _hold_fader(open_cam: Callable[[], Any]) -> None:
             await _hold_fader_for(open_cam, phase)
@@ -3997,6 +4005,7 @@ def bind_production_play(
             async def _play_wav_observed() -> Any:
                 await _observe_stimulus(
                     lambda: cam, GRAPH_KIND_PROGRAM_ROUTING, program, artifact,
+                    phase,
                 )
                 return await pre_provenance_play_wav()
 
