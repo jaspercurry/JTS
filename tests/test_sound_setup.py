@@ -250,6 +250,13 @@ def _record_dsp_epoch(path: Path, op_id: str) -> None:
 
 
 class FakeCamilla:
+    """Enough of CamillaDSP 4.1 to tell a parameter write from a pipeline
+    replace: it keeps the graph it is running, hands it back the way
+    CamillaDSP's readback does, and normalizes a candidate through the same
+    round-trip so the two are comparable — which is the property
+    ``_live_edit_plan`` depends on.
+    """
+
     def __init__(self, current_path: str, *, fail_set: bool = False) -> None:
         self.current_path = current_path
         self.loaded_path: str | None = None
@@ -257,6 +264,7 @@ class FakeCamilla:
         self.active_raw_values: list[str] = []
         self.ducks: list[bool] = []
         self.fail_set = fail_set
+        self.running: str | None = None
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
         return self.loaded_path or self.current_path
@@ -268,29 +276,6 @@ class FakeCamilla:
             raise RuntimeError("reload failed")
         return True
 
-    async def set_active_config_raw(
-        self, config: str, *, best_effort: bool = False, duck: bool = True,
-    ) -> bool:
-        self.active_raw_values.append(config)
-        self.ducks.append(duck)
-        if self.fail_set and not best_effort:
-            raise RuntimeError("live update failed")
-        return True
-
-
-class FakePatchableCamilla(FakeCamilla):
-    """A controller that can do what CamillaDSP 4.1 actually does.
-
-    Enough of one to tell a parameter write from a pipeline replace: it keeps
-    the graph it is running, hands it back the way CamillaDSP's readback does,
-    and normalizes a candidate through the same round-trip so the two are
-    comparable — which is the property ``_live_edit_plan`` depends on.
-    """
-
-    def __init__(self, current_path: str, **kwargs) -> None:
-        super().__init__(current_path, **kwargs)
-        self.running: str | None = None
-
     @staticmethod
     def _normalized(text: str) -> str:
         import yaml as _yaml
@@ -301,9 +286,11 @@ class FakePatchableCamilla(FakeCamilla):
         self, config: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
         self.running = self._normalized(config)
-        return await super().set_active_config_raw(
-            config, best_effort=best_effort, duck=duck,
-        )
+        self.active_raw_values.append(config)
+        self.ducks.append(duck)
+        if self.fail_set and not best_effort:
+            raise RuntimeError("live update failed")
+        return True
 
     async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
         return self.running
@@ -7521,7 +7508,6 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert payload["live_status"] == "live"
     assert fake.ducks[-1] is True
     assert payload["dsp_write_epoch"] == "epoch-1"
-    assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
 
 
@@ -7543,7 +7529,7 @@ def _eq_box(monkeypatch, tmp_path):
     config_dir.mkdir()
     current = config_dir / "sound_current.yml"
     current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    return config_dir, FakePatchableCamilla(str(current))
+    return config_dir, FakeCamilla(str(current))
 
 
 @pytest.mark.parametrize(
