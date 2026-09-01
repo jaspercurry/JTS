@@ -25,8 +25,10 @@ from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
+    resolve_camilla_chunksize,
 )
 from ...config import Config
+from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ... import ring_assets
 from ...mics import xvf3800
 from ...output_hardware import (
@@ -1083,6 +1085,80 @@ def check_camilla_volume_limit() -> CheckResult:
         "CamillaDSP volume_limit", "ok",
         f"{config_path} devices.volume_limit={limit:.1f} dB",
     )
+
+@doctor_check(order=28.2, group="audio")
+def check_camilla_ring_chunk_fits() -> CheckResult:
+    """Verify a ring-crossing Camilla config asks for a chunk the ring can hold.
+
+    CamillaDSP sets ``avail_min`` to its chunksize and ALSA refuses an
+    ``avail_min`` above the device's buffer, so a config naming a ring PCM with
+    a chunk over the ring's capacity does not degrade — CamillaDSP exits at open
+    and systemd restart-loops it, and the speaker emits nothing at all.
+
+    The emitters cannot land that config any more
+    (``resolve_camilla_latency_for_devices`` clamps the resolved chunk), so this
+    is the standing surface for the case the clamp cannot reach: a config
+    written by an OLDER build and still on disk. That is not hypothetical — it
+    is jts4 on 2026-09-01, whose InnoMaker floor put chunk 1024 on
+    ``jts_ring_playback`` and took the box silent through ten restarts while
+    every other check stayed green.
+
+    Removal condition: delete this check once no supported upgrade path can
+    still carry a pre-clamp config onto a box.
+    """
+    label = "camilla ring chunk"
+    statefile, config_path = _active_camilla_config_path()
+    if config_path is None:
+        return CheckResult(label, "warn", f"could not read config_path from {statefile}")
+    path = Path(config_path)
+    if not path.exists():
+        return CheckResult(
+            label, "fail", f"statefile points at missing config {config_path}"
+        )
+    try:
+        devices = parse_camilla_devices_config(path.read_text())
+    except (OSError, ValueError) as e:
+        return CheckResult(label, "fail", f"could not read {config_path}: {e}")
+
+    ring_ends = [
+        name
+        for name in (devices.get("capture_device"), devices.get("playback_device"))
+        if name in RING_PCM_DEVICES
+    ]
+    chunksize = devices.get("chunksize")
+    if not ring_ends or chunksize is None:
+        return CheckResult(
+            label, "ok",
+            f"{config_path} names no ring end (chunksize={chunksize})",
+        )
+    capacity = ring_capacity_frames()
+    if int(chunksize) > capacity:
+        return CheckResult(
+            label, "fail",
+            f"{config_path} sets devices.chunksize={chunksize} on "
+            f"{'/'.join(ring_ends)}, above the ring's {capacity}-frame capacity. "
+            "CamillaDSP cannot open the ring with it and will restart-loop. "
+            "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
+            speaker_silent=True,
+        )
+    # Say so when the clamp is what put this number here. Otherwise the box runs
+    # a chunk its own DacProfile does not declare, with the only explanation in
+    # source comments — the reading gap that let this bug live. Asked of the
+    # SAME resolver the emitters fall back to, never of a second derivation of
+    # "which DAC is active": disagreeing answers to that question are the whole
+    # bug, and a disclosure that re-derived it could name a floor no emitter used.
+    unclamped = resolve_camilla_chunksize()
+    clamped = (
+        f", clamped from the {unclamped} this box's DAC floor resolves to"
+        if unclamped > capacity
+        else ""
+    )
+    return CheckResult(
+        label, "ok",
+        f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
+        f"({'/'.join(ring_ends)}){clamped}",
+    )
+
 
 @doctor_check(order=28.5, group="audio")
 def check_active_speaker_runtime_graph() -> CheckResult:

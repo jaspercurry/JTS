@@ -2424,13 +2424,19 @@ def _effective_camilla_target_setting(
     target_setting: RuntimeSetting,
     coupling: str,
 ) -> RuntimeSetting:
-    """Return the Camilla target that generated YAML actually emits.
+    """Return the Camilla target this route's POLICY names.
 
     In the ordinary ALSA loopback topology, CamillaDSP's target_level is a real
-    playback-buffer latency/stability knob. Under shm_ring, the emitter uses the
-    validated ring geometry (target 128) instead of the loopback DAC floor. Keep
-    the route plan/hash on those same effective values so they describe the
-    loaded graph instead of the generated env floor used by loopback profiles.
+    playback-buffer latency/stability knob. Under shm_ring the route policy is
+    the validated ring geometry, and the route plan/hash is kept on it so it
+    describes the transport rather than the loopback profiles' env floor.
+
+    NOT a claim about the emitted YAML, which this once said and did not check:
+    only the callers that pass the ring set explicitly (the armed active path,
+    the fresh-install boot graph) put target 128 in a config. Every other ring
+    graph carries the box's own floor — jts.local runs 1536 across the ring
+    healthily — because ``resolve_camilla_latency_for_devices`` clamps only
+    CHUNKSIZE, the one field the ring's capacity actually bounds.
     """
 
     normalized = resolve_coupling(coupling)
@@ -2467,7 +2473,14 @@ def _effective_camilla_chunksize_setting(
     chunksize_setting: RuntimeSetting,
     coupling: str,
 ) -> RuntimeSetting:
-    """Return the Camilla chunksize generated YAML actually emits."""
+    """Return the Camilla chunksize this route's POLICY names.
+
+    The twin of :func:`_effective_camilla_target_setting`, and the same
+    correction applies: this is the ring's certified geometry, not a read of the
+    emitted config. What a generated YAML carries is the box's floor clamped to
+    the ring's capacity (``resolve_camilla_latency_for_devices``), so a box whose
+    floor already fits — jts.local's 256 — emits that floor, not this value.
+    """
 
     if resolve_coupling(coupling) != COUPLING_SHM_RING:
         return chunksize_setting

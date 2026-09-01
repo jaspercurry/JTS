@@ -12,7 +12,7 @@
 
 devices:
   samplerate: 48000
-  chunksize: 1024
+  chunksize: 256
   queuelimit: 4
   target_level: 2048
   volume_limit: 0.0
