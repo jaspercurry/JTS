@@ -31,6 +31,25 @@ Two consequences, and they are the pins:
 equality and discloses :data:`COMPARABILITY_BOUNDARY`; nothing here says *why*
 the graph changed, because the round does not act differently per cause.
 
+**Two limits of the scope, stated rather than discovered later.**
+
+* ``active_baseline_headroom`` is IN scope (it is the common program
+  attenuation every layer below plays through) and it is coupled to the
+  preference layer: ``_emit_baseline_filter_definitions`` folds
+  ``output_trim_db`` into it whenever some preference band is active, and on a
+  box with ``match_loudness`` on that trim is profile-dependent. There, an EQ
+  save moves this fingerprint too. Correct as far as it goes — the level really
+  did change — but it means the quiet-on-EQ-save property above is a default-box
+  property, not a universal one, and the term cannot be separated back out of a
+  single summed gain.
+* Membership of ``programs.SUMMED_SWEEP_PHASES`` measures the STANDING
+  production graph rather than a measurement graph, and that graph carries the
+  household's preference EQ. A save between two summed sweeps therefore does
+  change what those captures went through while this fingerprint stays put. The
+  layering rule says such a capture should not have played through preference
+  EQ at all; closing that is the measurement path's work, not this
+  fingerprint's.
+
 The substrate is unchanged and shared:
 :func:`~..commissioning_admission.parse_running_graph` reads the graph and
 :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint` hashes it,
@@ -55,8 +74,14 @@ __all__ = ["COMPARABILITY_BOUNDARY", "tuning_scope_fingerprint"]
 COMPARABILITY_BOUNDARY = "tuning_scope_graph_changed"
 
 
-def tuning_scope_fingerprint(running_config_raw: str | None) -> str:
+def tuning_scope_fingerprint(graph_text: str | None) -> str:
     """Hash one CamillaDSP graph's tuning layers, preference slots excluded.
+
+    ``graph_text`` is whatever the caller holds — a config FILE's contents or a
+    live readback. The two are not the same document: ``set_active_config_raw``
+    deliberately leaves the persisted ``config_file_path`` alone, so a
+    live-only change is invisible to a caller hashing the file. Each caller
+    says which one it passed.
 
     Raises :class:`~..commissioning_admission.ActiveCommissioningAdmissionError`
     on a graph that will not parse, for the reason
@@ -68,7 +93,7 @@ def tuning_scope_fingerprint(running_config_raw: str | None) -> str:
     from ..commissioning_admission import parse_running_graph
 
     return json_fingerprint(
-        _without_preference_layer(parse_running_graph(running_config_raw))
+        _without_preference_layer(parse_running_graph(graph_text))
     )
 
 

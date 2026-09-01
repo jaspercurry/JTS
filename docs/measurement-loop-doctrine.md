@@ -53,6 +53,15 @@ through layer N and everything *below* it, and never anything above it.
   boundary on every household EQ save, which is noise that trains a driver to
   ignore the flag.
 
+**Known departure, open at writing time.** The rule above is the ruling; the
+code does not yet meet it everywhere. Routed stimuli satisfy it by construction
+— `measurement_emit.emit_measurement_graph` takes no `SoundProfile`, pinned by
+`test_the_measurement_graph_never_carries_preference_eq`. The
+`programs.SUMMED_SWEEP_PHASES` captures (VERIFY and both position clouds) do
+not: they deliberately measure the STANDING production graph, which carries the
+household's preference EQ. Closing that is measurement-path work and has no
+issue of its own yet.
+
 ## 2. The authority model
 
 - **The LLM recommends; the measurement decides.** Priors, confidence scores

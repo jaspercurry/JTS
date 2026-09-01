@@ -156,6 +156,9 @@ class MeasurementSessionGraph:
         different tuning layers they are not comparable, and a later re-entry
         that happens to match again does not repair the pair already banked.
         Provenance for the round to disclose, never a gate.
+
+        No production reader today — the WARNING this property is set beside is
+        the whole disclosure surface until a round banks it.
         """
         return self._comparability_boundary
 
@@ -331,6 +334,15 @@ class MeasurementSessionGraph:
         anchors on the first entry graph it CAN name. A late anchor is still a
         real one; refusing to anchor at all would cost the round every later
         disclosure as well as the one it could not make.
+
+        The hash is taken from the entry config FILE — the text :meth:`restore`
+        will put back — not from a readback, so a live-only graph change that
+        left the statefile alone is invisible here. That is the same document
+        this class already treats as the thing it entered on.
+
+        A boundary re-disclosed on every later re-entry is deliberate: each one
+        brackets different captures, and a reader has to be able to tell which
+        of them fell after it.
         """
         from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 

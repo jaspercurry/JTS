@@ -120,7 +120,9 @@ class OpenMeasurementDoor:
     #: ``graph_fingerprint``, which names the MEASUREMENT graph the door then
     #: installed. ``""`` when the entry graph could not be named; the live
     #: verdict is ``graph.comparability_boundary``, which latches when a later
-    #: re-entry finds a different one.
+    #: re-entry finds a different one. Nothing in the flow reads either yet —
+    #: the session graph's WARNING is the whole disclosure surface until a
+    #: round banks this beside its entry baseline.
     entry_scope_fingerprint: str = ""
 
 
