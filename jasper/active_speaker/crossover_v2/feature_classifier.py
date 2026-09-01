@@ -629,17 +629,22 @@ def load_round_captures(
     missing_program: list[str] = []
     census: list[dict[str, Any]] = []
 
-    def note(sidecar: Path, phase: Any, reason: str) -> None:
+    def note(
+        sidecar: Path, phase: Any, reason: str, stimulus_sha: str | None = None,
+    ) -> None:
         """One row of the per-capture admissibility table.
 
         Every drop below records why, so a refusal names the captures the ring
-        listing just handed the caller instead of only counting them (#3480).
+        listing just handed the caller instead of only counting them (#3480),
+        and the banked stimulus digest rides along so a program-missing row
+        says what it matched against.
         """
         census.append({
             "sidecar": sidecar.name,
             "phase": phase if isinstance(phase, str) else None,
             "admissible": reason == CAPTURE_ADMISSIBLE,
             "reason": reason,
+            "stimulus_wav_sha256_12": stimulus_sha[:12] if stimulus_sha else None,
         })
 
     for sidecar in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
@@ -655,21 +660,6 @@ def load_round_captures(
         if not isinstance(phase, str):
             note(sidecar, None, CAPTURE_UNREADABLE_SIDECAR)
             continue
-        identity = doc.get("jts_session_identity")
-        banked_session = (
-            identity.get("session_id") if isinstance(identity, Mapping) else None
-        )
-        if session_id is not None and banked_session != session_id:
-            note(sidecar, phase, CAPTURE_OTHER_SESSION)
-            continue
-        seen_phases[phase] = seen_phases.get(phase, 0) + 1
-        if phase == PHASE_LATERAL:
-            lateral.append(sidecar.name)
-            note(sidecar, phase, CAPTURE_LATERAL_SHAPE)
-            continue
-        if phase not in ADMISSIBLE_PHASES:
-            note(sidecar, phase, CAPTURE_PHASE_NOT_ADMISSIBLE)
-            continue
         # Which program played is the bytes' hash the capture banked, never
         # the phase label: a cloud position's stimulus is labelled "verify"
         # whatever it actually emitted (#3504).
@@ -678,25 +668,41 @@ def load_round_captures(
             provenance.get("stimulus") if isinstance(provenance, Mapping) else None
         )
         banked = stimulus.get("wav_sha256") if isinstance(stimulus, Mapping) else None
-        if not isinstance(banked, str) or not banked:
+        banked = banked if isinstance(banked, str) and banked else None
+        identity = doc.get("jts_session_identity")
+        banked_session = (
+            identity.get("session_id") if isinstance(identity, Mapping) else None
+        )
+        if session_id is not None and banked_session != session_id:
+            note(sidecar, phase, CAPTURE_OTHER_SESSION, banked)
+            continue
+        seen_phases[phase] = seen_phases.get(phase, 0) + 1
+        if phase == PHASE_LATERAL:
+            lateral.append(sidecar.name)
+            note(sidecar, phase, CAPTURE_LATERAL_SHAPE, banked)
+            continue
+        if phase not in ADMISSIBLE_PHASES:
+            note(sidecar, phase, CAPTURE_PHASE_NOT_ADMISSIBLE, banked)
+            continue
+        if banked is None:
             note(sidecar, phase, CAPTURE_PROGRAM_UNIDENTIFIED)
             continue
         program = programs.get(banked)
         if program is None:
             missing_program.append(phase)
-            note(sidecar, phase, CAPTURE_PROGRAM_MISSING)
+            note(sidecar, phase, CAPTURE_PROGRAM_MISSING, banked)
             continue
         wav = sidecar.parent.parent / "wav" / f"{sidecar.stem}.wav"
         if not wav.is_file():
-            note(sidecar, phase, CAPTURE_WAV_MISSING)
+            note(sidecar, phase, CAPTURE_WAV_MISSING, banked)
             continue
         # The dump filename opens with its own microsecond stamp.
         try:
             stamp = float(sidecar.stem.split("_")[0]) / 1e6
         except ValueError:
-            note(sidecar, phase, CAPTURE_UNSTAMPED_NAME)
+            note(sidecar, phase, CAPTURE_UNSTAMPED_NAME, banked)
             continue
-        note(sidecar, phase, CAPTURE_ADMISSIBLE)
+        note(sidecar, phase, CAPTURE_ADMISSIBLE, banked)
         captures.append(
             RoundCapture(
                 wav=wav,

@@ -845,24 +845,26 @@ def test_a_capture_binds_to_the_program_whose_bytes_it_heard_not_its_phase_label
 
 
 @pytest.mark.parametrize(
-    ("stimulus_sha", "expected_reason", "expected_capture_reason"),
+    ("stimulus_sha", "expected_reason", "expected_capture_reason", "expected_digest"),
     [
         pytest.param(
             lambda phase, shas: None,
             fx.CAPTURES_UNREADABLE,
             fx.CAPTURE_PROGRAM_UNIDENTIFIED,
+            None,
             id="no_hash_banked",
         ),
         pytest.param(
             lambda phase, shas: "0" * 64,
             fx.PROGRAM_MISSING,
             fx.CAPTURE_PROGRAM_MISSING,
+            "0" * 12,
             id="hash_no_program_carries",
         ),
     ],
 )
 def test_a_stimulus_hash_that_binds_to_no_program_refuses_by_name(
-    tmp_path, stimulus_sha, expected_reason, expected_capture_reason
+    tmp_path, stimulus_sha, expected_reason, expected_capture_reason, expected_digest
 ):
     """#3504 itself: without proven bytes there is nothing to deconvolve.
 
@@ -878,6 +880,9 @@ def test_a_stimulus_hash_that_binds_to_no_program_refuses_by_name(
 
     assert caught.value.reason == expected_reason
     census = caught.value.detail["captures"]
+    # The row names the digest it matched against, so a refusal is checkable
+    # from its own payload.
+    assert {row["stimulus_wav_sha256_12"] for row in census} == {expected_digest}
     assert {row["reason"] for row in census} == {expected_capture_reason}
     assert {row["reason"] for row in census} <= fx.CAPTURE_ADMISSIBILITY_REASONS
     assert not any(row["admissible"] for row in census)
