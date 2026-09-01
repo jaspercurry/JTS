@@ -17,6 +17,9 @@
   they legitimately differ by exactly the published `decay.demand_ppm`. An
   armed decay must leave `demand × 2 ≤ max_adjust_ppm` (fail-loud at config).
 - **Consequences:** The servo steers only genuine clock offset; the ratio
-  settles at the demand while descending. Not decontaminated (disclosed
+  settles at the demand while descending. During a descent, /state's
+  `host_clock.fill_frames` (the compensated mean) reads ~ceiling while the
+  lane's `resampler.fill_frames` reads the true descending fill — two
+  same-named fields that legitimately diverge. Not decontaminated (disclosed
   residuals on #3466): the refill window after a still-locked snap-back, and
   a ~one-interval EW transient at descent phase edges.

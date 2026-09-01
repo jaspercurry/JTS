@@ -2855,7 +2855,7 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
                     "fill_frames": 512,
                     "target_fill_frames": 512,
                     "held_target_frames": 1024,
-                    "decay": {"enabled": True, "floor_frames": 1024},
+                    "decay": {"enabled": True, "floor_frames": 1024, "demand_ppm": 125.33},
                 },
             }
         ],
@@ -2890,6 +2890,8 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
     assert fanin["inputs"]["usbsink"]["resampler"]["clamp_count"] == 7
     assert fanin["inputs"]["usbsink"]["resampler"]["anti_windup_count"] == 2
     assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["enabled"] is True
+    # The decontamination gauge rides the wholesale decay deepcopy (#3466).
+    assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["demand_ppm"] == 125.33
     assert fanin["inputs"]["spotify"]["present"] is False
     assert fanin["host_clock"]["ladder"] == "l0_locked"
     assert fanin["output"]["snd_pcm_delay_frames"] == 864

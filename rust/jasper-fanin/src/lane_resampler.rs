@@ -1589,6 +1589,28 @@ mod decay {
                 expected_ppm,
                 "resumed stepping re-publishes"
             );
+            // Unlock mid-descent: `snap_back` must ALSO clear the stepping
+            // latch (the cascade branch's twin reset is pinned above) — after
+            // recovery re-earns the warm-up, the pre-first-step window drains
+            // nothing again, so a stale `has_stepped` would publish the exact
+            // false pulse this gauge exists to prevent.
+            d.tick(DecaySignals {
+                locked: false,
+                dll_l0_locked: true,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Unlocked));
+            assert_eq!(d.demand_ppm(), 0.0, "an unlock snap-back exerts no demand");
+            for _ in 0..STABILITY + INTERVAL - 2 {
+                d.tick(locked_l0(0.0));
+                assert_eq!(d.demand_ppm(), 0.0, "no demand until stepping re-earns");
+            }
+            d.tick(locked_l0(0.0));
+            assert_eq!(
+                d.demand_ppm(),
+                expected_ppm,
+                "post-unlock stepping re-publishes"
+            );
             // At floor: idle again.
             for _ in 0..STABILITY + INTERVAL * ((CEIL - FLOOR) / STEP + 2) {
                 d.tick(locked_l0(0.0));

@@ -203,9 +203,13 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         // limit-cycle falsifier) with the decay's own ramp — the same #3466
         // contamination class as the correction observable below. A tracked
         // descent now feeds ~ceiling (flat); with the decay idle
-        // (held == ceiling) this is bit-identical to the raw fill. The refill
-        // after a locked snap-back still rides through raw — part of the
-        // disclosed refill residual (#3466).
+        // (held == ceiling) this is bit-identical to the raw fill. Second
+        // consumer: the ladder's `published_fill_frames()` mean, so during a
+        // descent /state's `host_clock.fill_frames` reads ~ceiling while the
+        // lane's `resampler.fill_frames` reads the true descending fill — two
+        // same-named fields that legitimately diverge. The refill after a
+        // locked snap-back still rides through raw — part of the disclosed
+        // refill residual (#3466).
         fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64
             + signals.ceiling_fill_frames as f64
             - signals.held_target_frames.load(Ordering::Relaxed) as f64,
@@ -549,10 +553,14 @@ pub fn run_host_clock_thread(
                 // Single-source-of-truth setpoint: re-pin the ladder's target to
                 // the resampler's LIVE held target every tick (the DEFAULT-OFF
                 // cushion decay lowers it over time). The resampler OWNS the value
-                // via its `held_target_frames` gauge; the ladder only reads it, so
-                // the outer loop can never disagree with the inner controller
-                // about where the fill should sit. A no-op when decay is off (the
-                // gauge stays at the ceiling forever).
+                // via its `held_target_frames` gauge; the ladder only reads it.
+                // NOTE the frames mismatch: `build_obs` feeds a
+                // CEILING-compensated fill (#3466) while this setpoint is
+                // held-relative — inert because Correction mode (the only live
+                // mode here) never computes the Fill-mode `fill − target`
+                // error; reviving `ObsMode::Fill` on this adapter would
+                // miscompute it during descents. A no-op when decay is off
+                // (gauge at the ceiling, compensation zero).
                 hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed) as f64);
 
                 let mut write_failed = false;
