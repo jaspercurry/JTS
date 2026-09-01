@@ -12,6 +12,7 @@ from jasper.active_speaker.driver_protection import (
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_STYLE_DEFAULT,
     derive_hf_measurement_ceiling_dbfs,
+    driver_excitation_floor_hz,
     driver_protection_payload,
     driver_protection_profile,
     format_low_limit,
@@ -432,3 +433,101 @@ def test_a_declared_low_limit_above_the_class_default_still_tightens() -> None:
     assert payload["band_limit_highpass_ok"] is False
     assert payload["low_limit_hz"] == 10000.0
     assert payload["low_limit_provenance"] == LOW_LIMIT_DECLARED
+
+
+# --- the full_range (way-1) protection class --------------------------------
+
+FULL_RANGE_LOW_LIMIT_HZ = 80.0
+
+
+def test_a_declared_full_range_driver_is_admitted_as_its_own_class() -> None:
+    """``full_range`` matched no class, so a way-1 speaker's only driver was
+    blocked as ``driver_role_not_supported`` and could never be tested.
+
+    Its own class rather than a fourth member of ``LOW_FREQUENCY_ROLES``: a
+    woofer is admitted at full scale and floor-tested at a fixed 120 Hz, and a
+    small full-range cone is a different excursion regime whose floor only its
+    own declaration knows.
+    """
+
+    payload = driver_protection_payload(
+        "full_range", declared_floor_hz=FULL_RANGE_LOW_LIMIT_HZ
+    )
+
+    assert payload["role_class"] == "full_range"
+    assert payload["audio_allowed"] is True
+    assert payload["issues"] == []
+    assert payload["floor_test_frequency_hz"] == FULL_RANGE_LOW_LIMIT_HZ
+
+    # The stricter figure of the two existing classes on each axis, derived
+    # rather than restated -- a class default that moves takes this one with it.
+    tweeter = driver_protection_profile("tweeter", driver_style="dome_tweeter")
+    woofer = driver_protection_profile("woofer")
+    profile = driver_protection_profile(
+        "full_range", declared_floor_hz=FULL_RANGE_LOW_LIMIT_HZ
+    )
+    assert profile.max_auto_level_dbfs == min(
+        tweeter.max_auto_level_dbfs, woofer.max_auto_level_dbfs
+    )
+    assert profile.floor_test_duration_ms == min(
+        tweeter.floor_test_duration_ms, woofer.floor_test_duration_ms
+    )
+    # No style anchor, so no code figure can stand in for a declaration.
+    assert profile.min_highpass_hz is None
+
+
+def test_an_undeclared_full_range_driver_refuses_by_its_own_name() -> None:
+    """Silence is still the answer for a driver nobody has described — but for a
+    reason that names the missing declaration, rather than one that says the
+    role is unsupported and sends an operator nowhere."""
+
+    payload = driver_protection_payload("full_range")
+
+    assert payload["role_class"] == "full_range"
+    assert payload["audio_allowed"] is False
+    assert payload["floor_test_frequency_hz"] is None
+    assert {issue["code"] for issue in payload["issues"]} == {
+        "full_range_low_edge_undeclared"
+    }
+
+
+@pytest.mark.parametrize(
+    "driver, expected",
+    [
+        pytest.param(
+            {
+                "recommended_highpass_hz": 80.0,
+                "measurement_band_hz": [40.0, 15000.0],
+            },
+            80.0,
+            id="the_declared_owner_wins_over_the_band",
+        ),
+        pytest.param(
+            {
+                "required_protection_filters": [
+                    {"kind": "highpass", "cutoff_hz": 90.0},
+                ],
+                "measurement_band_hz": [40.0, 15000.0],
+            },
+            90.0,
+            id="a_stored_protective_highpass_when_no_owner_is_declared",
+        ),
+        pytest.param(
+            {"measurement_band_hz": [60.0, 15000.0]},
+            60.0,
+            id="the_declared_measurement_band_low_edge",
+        ),
+        pytest.param({"model": "Example"}, None, id="nothing_declared_is_no_floor"),
+    ],
+)
+def test_the_excitation_floor_reads_the_declaration_and_never_invents_one(
+    driver, expected
+) -> None:
+    """The resolution order, and the ``None`` at the end of it.
+
+    The class table is deliberately not consulted: it anchors plausibility and
+    the tone gate's fallback, and the frequency a driver may be DRIVEN to is a
+    different question that only a declaration answers.
+    """
+
+    assert driver_excitation_floor_hz(driver) == expected

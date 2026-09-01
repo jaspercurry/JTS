@@ -31,6 +31,7 @@ from .driver_protection import (
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_PLAUSIBILITY_FACTOR,
     apply_driver_low_limit,
+    driver_excitation_floor_hz,
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
     driver_protection_profile,
@@ -2396,9 +2397,13 @@ def _profile_core(
             "field_provenance": provenance,
             "authority": "operator_visible_values",
         }
+        # Read off ``entry``, not ``visible``: the shape validator re-derives
+        # this policy from the STORED target and compares it for equality, so
+        # both sides must resolve the floor from the same three stamped fields.
         policy = driver_protection_profile(
             role,
             driver_style=driver_styles.get(target_id) or "unspecified",
+            declared_floor_hz=driver_excitation_floor_hz(entry),
         )
         entry["code_owned_policy"] = {
             "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
@@ -2790,6 +2795,7 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         current_policy = driver_protection_profile(
             target.get("role"),
             driver_style=target.get("driver_style"),
+            declared_floor_hz=driver_excitation_floor_hz(target),
         )
         expected_policy = {
             "policy_version": DRIVER_PROTECTION_POLICY_VERSION,

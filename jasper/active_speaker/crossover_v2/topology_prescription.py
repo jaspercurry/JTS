@@ -170,6 +170,7 @@ from .fc_sweep import (
 
 __all__ = [
     "TOPOLOGY_AUTHORITY_OPERATOR_PINNED",
+    "TOPOLOGY_NO_CROSSOVER_REGION",
     "TOPOLOGY_PRESCRIPTION_KEY",
     "TOPOLOGY_PRESCRIPTION_KIND",
     "TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS",
@@ -219,6 +220,12 @@ TOPOLOGY_AUTHORITY_OPERATOR_PINNED = "operator_pinned_no_measured_ranking"
 #: type and code, never by prose.
 TOPOLOGY_MALFORMED = "topology_malformed"
 TOPOLOGY_FC_INVALID = "topology_fc_invalid"
+#: The speaker has ONE way, so there is no corner to re-topologize. Its own
+#: reason rather than :data:`TOPOLOGY_FC_INVALID`, on
+#: :data:`~.alignment_prescription.ALIGNMENT_NO_CROSSOVER_REGION`'s rule: an
+#: inadmissible corner on a real two-way is a number to re-choose, while a
+#: ``full_range_passive`` speaker has no corner for any number to be.
+TOPOLOGY_NO_CROSSOVER_REGION = "topology_no_crossover_region"
 TOPOLOGY_ORDER_INVALID = "topology_order_invalid"
 #: An order the graph cannot emit.  Its own reason rather than
 #: :data:`TOPOLOGY_ORDER_INVALID`, because "6" is a well-formed integer and a
@@ -239,6 +246,7 @@ TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED = "topology_prescription_schema_unsuppo
 TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     TOPOLOGY_MALFORMED,
     TOPOLOGY_FC_INVALID,
+    TOPOLOGY_NO_CROSSOVER_REGION,
     TOPOLOGY_ORDER_INVALID,
     TOPOLOGY_ORDER_UNSUPPORTED,
     TOPOLOGY_PROVENANCE_MISSING,
@@ -690,17 +698,22 @@ def read_topology_prescription(
     here, and the same ruling's reasoning: exactness is legal in this
     repository's gates, and a strict comparison would make the legality of a
     round depend on floating-point noise.
+
+    ``way_count`` is the speaker's own declared way count, on
+    :func:`~.alignment_prescription.read_alignment_prescription`'s rule and with
+    its default: ``1`` is a ``full_range_passive`` speaker with no corner to
+    pin, and ``None`` is "the caller did not state it".
     """
     if raw is None:
         return None
+    # Before the parse and the two declared bands: a pin re-corners a
+    # crossover, and a way-1 main declares none, so the pinned frequency is not
+    # what is wrong and the bounds below name nothing.
     if way_count == 1:
-        # A pin re-corners a crossover; a 1-way main declares none, so there is
-        # no corner to move and the four bounds below name nothing. Refused
-        # HERE, at the gate that owns "may this prescription run", rather than
-        # at a host that would have to read two role bands to ask.
         raise TopologyPrescriptionRefused(
-            TOPOLOGY_FC_INVALID,
-            "this speaker declares no crossover region to re-corner",
+            TOPOLOGY_NO_CROSSOVER_REGION,
+            "this speaker is full_range_passive (way-1): it has no crossover "
+            "region, so there is no corner or order to re-topologize",
         )
     if declared_floor_hz is None or lower_driver_ceiling_hz is None:
         # The only caller that omits them is one with no second role to read

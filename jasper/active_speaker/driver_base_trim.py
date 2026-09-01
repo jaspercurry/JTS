@@ -108,6 +108,13 @@ REFUSE_NO_TRIM_SOURCE = "base_trim_no_trim_source"
 REFUSE_NO_SPEAKER_GROUP = "base_trim_no_speaker_group"
 REFUSE_ROLES_INCOMPLETE = "base_trim_roles_incomplete"
 REFUSE_NOT_ATTENUATION = "base_trim_not_attenuation"
+#: Fewer than two roles to level against each other. A base trim is a FRAME —
+#: one role's level relative to the others — so on a ``full_range_passive``
+#: (way-1) speaker there is nothing to be relative to, and the only value the
+#: writer could bank is the vacuous ``{"full_range": 0.0}``. Banking that would
+#: make an unlevelled speaker indistinguishable from a levelled one on every
+#: surface that reads this record.
+REFUSE_NO_FRAME = "base_trim_no_frame"
 
 #: What the APPLY SEAM (``baseline_profile._bank_applied_base_trim``) did and
 #: why. A second closed vocabulary, deliberately separate from ``REFUSE_*``
@@ -367,6 +374,15 @@ def write_base_trim(
         raise DriverBaseTrimError(
             REFUSE_NO_SPEAKER_GROUP,
             "a base trim must name the speaker groups it covers",
+        )
+    # Structural, so it is asked before coverage: a way-1 speaker's trims DO
+    # cover its declared roles, and answering it with a coverage complaint
+    # would send an operator to re-measure something that cannot exist.
+    if len(set(ordered)) < 2:
+        raise DriverBaseTrimError(
+            REFUSE_NO_FRAME,
+            f"a base trim levels roles against each other; {sorted(set(ordered))!r} "
+            "is not a frame",
         )
     if set(trims_db) != set(ordered):
         raise DriverBaseTrimError(

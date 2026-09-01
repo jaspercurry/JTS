@@ -229,7 +229,7 @@ def _round_frequency(value: float) -> float:
 def _candidate_frequency(
     *,
     role: str,
-    profile_floor_hz: float,
+    profile_floor_hz: float | None,
     highpass_hz: float | None,
     lowpass_hz: float | None,
     minimum_tone_hz: float,
@@ -257,7 +257,9 @@ def _candidate_frequency(
             "one_octave_below_lowpass_edge"
         )
     if highpass_hz is not None:
-        preferred = max(profile_floor_hz, minimum_tone_hz)
+        # A class with no floor figure of its own (``full_range``) contributes
+        # nothing here: the margin-bounded band's minimum is the only floor.
+        preferred = max(profile_floor_hz or 0.0, minimum_tone_hz)
         if preferred >= maximum_tone_hz:
             return None, "highpass_floor_exceeds_frequency_ceiling"
         return preferred, "above_strictest_highpass_edge"
