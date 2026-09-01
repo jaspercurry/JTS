@@ -28,8 +28,9 @@ Deliberate omissions, so absence reads as a decision:
   would be a second definition of one thing.
 * No ``tournament`` row. Its consumer is the per-pose candidate cycle, which
   is not wired (plan, decision register R7); the row arrives with the cycle.
-* No level fields. ``level_re_anchor`` and absolute-SPL resolution land with
-  the reader that consumes them (plan, "Drive level is anchor-relative").
+* No absolute level. ``level_re_anchor_db`` is the only level a program
+  states; :mod:`jasper.active_speaker.measurement_level` turns it into dB SPL
+  against the banked seat-level anchor.
 """
 
 from __future__ import annotations
@@ -66,6 +67,9 @@ class MeasurementProgram:
     size: str
     poses: tuple[ProgramPose, ...]
     mark_distance_m: float = MARK_DISTANCE_M
+    # dB relative to the measurement anchor, never an absolute constant (plan,
+    # "Drive level is anchor-relative, never an absolute program constant").
+    level_re_anchor_db: float = 0.0
 
     @property
     def mic_move_count(self) -> int:

@@ -147,6 +147,9 @@ def test_shipped_rows(
     assert row.mic_move_count == moves
     assert row.capture_count == captures
     assert row.mark_distance_m == 1.0
+    # Every shipped row drives AT the anchor: the plan states the level
+    # relative, and 0 is what "the ratified measurement anchor" means.
+    assert row.level_re_anchor_db == 0.0
 
 
 def test_express_geometry() -> None:
@@ -222,4 +225,5 @@ def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -
     assert (row.mic_move_count, row.capture_count) == (1, 1)
     assert (row.program_id, row.size) == ("spot", "express")
     assert row.mark_distance_m == 1.0
+    assert row.level_re_anchor_db == 0.0
 
