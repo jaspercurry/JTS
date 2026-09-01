@@ -1168,6 +1168,71 @@ def test_the_artifact_name_has_one_owner():
     assert read_distortion.HARMONICS_ARTIFACT is HARMONICS_ARTIFACT
 
 
+def test_the_cli_reads_its_roles_off_the_round_it_was_handed():
+    """#3507: the distortion door composes the shape the round actually swept.
+
+    The 1-way arm of ``rebuild_measure_program`` is only reachable if the CLI
+    stops asserting a pair. Both directions are pinned, because a derivation
+    that answered ``full_range`` for every round would break every 2-way one.
+    """
+    from jasper.cli import read_distortion
+
+    overrides = {
+        "woofer": (150.0, 4000.0),
+        "tweeter": (1600.0, 20000.0),
+        "full_range": (150.0, 20000.0),
+    }
+
+    assert read_distortion.round_bands_hz(
+        {"gain_plan_db": {"woofer": -6.0, "tweeter": -31.2}}, overrides,
+    ) == {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
+    assert read_distortion.round_bands_hz(
+        {"gain_plan_db": {"full_range": -11.0}}, overrides,
+    ) == {"full_range": (150.0, 20000.0)}
+    # A state that banks no gain plan names no roles, which the rebuild refuses
+    # by name rather than composing a pair nobody measured.
+    assert read_distortion.round_bands_hz({}, overrides) == {}
+
+
+def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
+    """The 1-way arm, driven by the CLI's own derivation rather than a literal.
+
+    The program is real and the rebuild proves itself against its banked
+    ``program_id``, so a two-role composition here could only refuse.
+    """
+    from jasper.audio_measurement.program import (
+        FrequencyBand,
+        RoleBand,
+        build_measure_program,
+    )
+    from jasper.active_speaker.crossover_v2.programs import (
+        PILOT_LEVEL_DELTA_DB,
+        courtesy_prelude_for_phase,
+    )
+    from jasper.cli import read_distortion
+
+    band = read_distortion.DEFAULT_BANDS_HZ["full_range"]
+    program = build_measure_program(
+        {"full_range": -11.0},
+        (RoleBand("full_range", 0, FrequencyBand(*band)),),
+        downstream_gain_db=-20.0,
+        leading_pilot_gains_db=(-11.0 - PILOT_LEVEL_DELTA_DB, -11.0),
+        leading_pilot_role="full_range",
+        courtesy_prelude=courtesy_prelude_for_phase("measure"),
+    )
+    state = {
+        "gain_plan_db": {"full_range": -11.0},
+        "candidate": {"program_id": program.program_id},
+    }
+
+    rebuilt, downstream, _prelude = he.rebuild_measure_program(
+        state, read_distortion.round_bands_hz(state, read_distortion.DEFAULT_BANDS_HZ),
+    )
+
+    assert rebuilt.program_id == program.program_id
+    assert downstream == pytest.approx(-20.0)
+
+
 def test_the_orders_the_product_publishes_are_not_the_kernels_ceiling():
     """A kernel that learned a 4th order must not widen a banked schema."""
     from jasper.audio_measurement import distortion

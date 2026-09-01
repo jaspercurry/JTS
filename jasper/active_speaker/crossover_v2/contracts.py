@@ -81,6 +81,7 @@ __all__ = [
     "EvidenceTrust",
     "InterventionProposal",
     "IterationHeadroom",
+    "LINEARIZATION_OUTCOME_SINGLE_BRANCH",
     "MEASURE_KINDS",
     "MEASURE_KIND_BASELINE",
     "MEASURE_KIND_CANDIDATE",
@@ -428,6 +429,32 @@ class CandidateAcousticContext:
             )
         return cls(fc_hz=corners.pop(), sections_by_role=sections_by_role)
 
+    @classmethod
+    def for_candidate(
+        cls,
+        sections_by_role: Mapping[str, Sequence[CrossoverSection]],
+        *,
+        roles: Sequence[str],
+    ) -> "CandidateAcousticContext | None":
+        """The context a candidate of this SHAPE is planned and proposed at.
+
+        ``None`` for the one shape that legitimately has no corner: a 1-way
+        main, whose single branch runs full range and whose preset declares no
+        region. Every other shape still fails closed on an empty section set —
+        a preset naming two branches and no crossover describes no crossover,
+        and guessing one is the 2026-08-10 defect wearing a new hat.
+
+        THE one derivation. The planner (``planning.plan_for_candidate``) and
+        the proposal assembler (``proposal.build_intervention_proposal``) both
+        ask this question about the same candidate, and two implementations
+        deriving the role count independently is how they come to disagree
+        about whether a speaker has a corner.
+        """
+
+        if len(roles) == 1 and not any(sections_by_role.values()):
+            return None
+        return cls.from_sections(sections_by_role)
+
     @property
     def sections_by_role(self) -> dict[str, tuple[CrossoverSection, ...]]:
         """A fresh mapping each call — the stored value stays immutable."""
@@ -545,6 +572,27 @@ class TrimStrategy(str, Enum):
     COMMITTED_PAIR_UNRECORDED = "committed_pair_unrecorded"
     """A trim pair was committed, in margin; the artifact does not say which."""
 
+    NO_PAIR_TO_TRIM = "no_pair_to_trim"
+    """The speaker has ONE branch, so no inter-driver trim exists to commit.
+
+    Distinct from :attr:`NOT_FITTED`, which says a fit that could have produced
+    a pair did not. This says the pair itself does not exist: a 1-way main's
+    branch IS fitted and ships at a fixed 0 dB, and calling that "not fitted"
+    would report the correction as absent. Reached from
+    :data:`LINEARIZATION_OUTCOME_SINGLE_BRANCH`.
+    """
+
+
+#: :attr:`~.intervention.LinearizationPlan.outcome` for a round whose speaker
+#: has ONE branch — the fit ran and its filters ship, and there was no pair to
+#: trim (#3507).
+#:
+#: A sibling of ``"fitted"`` rather than that same value, because the two are
+#: read: ``"fitted"`` is mapped to
+#: :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED`, which would claim a
+#: committed trim pair for a speaker that solved none.
+LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
+
 
 # --------------------------------------------------------------------------
 # the proposal
@@ -571,8 +619,11 @@ class InterventionProposal:
     candidate: Any
     """The complete ``MeasuredCrossoverCandidate`` this proposal would apply."""
 
-    context: CandidateAcousticContext
-    """The one Fc owner: candidate corner and sections, agreeing by construction."""
+    context: CandidateAcousticContext | None
+    """The one Fc owner: candidate corner and sections, agreeing by construction.
+
+    ``None`` on a 1-way main, which declares no crossover for a context to own.
+    """
 
     evidence_identities: Mapping[str, Any]
     """Source evidence identities (session, program, candidate fingerprint, …)."""
@@ -607,7 +658,7 @@ class InterventionProposal:
         self,
         *,
         candidate: Any,
-        context: CandidateAcousticContext,
+        context: CandidateAcousticContext | None,
         evidence_identities: Mapping[str, Any] | None = None,
         predicted_response_before: Any = None,
         predicted_response_after: Any = None,
@@ -626,7 +677,7 @@ class InterventionProposal:
     ) -> None:
         if candidate is None:
             raise CrossoverV2ContractError("a proposal needs a measured candidate")
-        if not isinstance(context, CandidateAcousticContext):
+        if context is not None and not isinstance(context, CandidateAcousticContext):
             raise CrossoverV2ContractError(
                 "context must be a CandidateAcousticContext"
             )
@@ -710,10 +761,14 @@ class InterventionProposal:
         object.__setattr__(self, "fingerprint", json_fingerprint(self._core()))
 
     @property
-    def fc_hz(self) -> float:
-        """The candidate corner — read from the context, never from a session."""
+    def fc_hz(self) -> float | None:
+        """The candidate corner — read from the context, never from a session.
 
-        return self.context.fc_hz
+        ``None`` when there is no context, which is a 1-way main declaring no
+        corner rather than a corner that could not be read.
+        """
+
+        return None if self.context is None else self.context.fc_hz
 
     @property
     def candidate_fingerprint(self) -> str:
@@ -724,7 +779,7 @@ class InterventionProposal:
             "schema_version": SCHEMA_VERSION,
             "kind": "jts_crossover_v2_intervention_proposal",
             "candidate_fingerprint": self.candidate_fingerprint,
-            "context": self.context.to_dict(),
+            "context": None if self.context is None else self.context.to_dict(),
             "evidence_identities": dict(self.evidence_identities),
             "predicted_response_before": _curve_json(self.predicted_response_before),
             "predicted_response_after": _curve_json(self.predicted_response_after),

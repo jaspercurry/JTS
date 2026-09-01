@@ -208,7 +208,7 @@ class FailureRecord:
 
 
 def alignment_to_candidate_fields(
-    analysis: ProgramAnalysis, *, woofer_role: str, tweeter_role: str,
+    analysis: ProgramAnalysis, *, roles: Sequence[str],
 ) -> tuple[float | None, str | None, str | None]:
     """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
 
@@ -219,7 +219,8 @@ def alignment_to_candidate_fields(
     wants a non-negative magnitude + the delayed role, so the sign is folded into
     the role choice. Returns ``(None, None, None)`` when there is no trustworthy
     alignment (missing, or the estimator clamped at the search-window edge), so
-    the candidate falls back to a trims-only apply.
+    the candidate falls back to a trims-only apply — and likewise for a lone
+    branch, which has nothing to be delayed against.
     """
     from jasper.active_speaker.crossover_alignment import (
         POLARITY_INVERT,
@@ -227,8 +228,9 @@ def alignment_to_candidate_fields(
     )
 
     est = analysis.alignment
-    if est is None or est.status != ALIGNMENT_OK:
+    if est is None or est.status != ALIGNMENT_OK or len(roles) < 2:
         return None, None, None
+    woofer_role, tweeter_role = roles[0], roles[1]
     delay_us = float(est.delay_us)
     if delay_us >= 0.0:
         role, magnitude = tweeter_role, delay_us
@@ -397,11 +399,11 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
 
 
 def ineligible_reason(
-    analysis: ProgramAnalysis, *, woofer_role: str, tweeter_role: str,
+    analysis: ProgramAnalysis, *, roles: Sequence[str],
 ) -> str | None:
     """HARD GATE for the Layer-1a fit path, as a named reason or ``None``.
 
-    Eligible means a reference-tier mic AND both drivers paired
+    Eligible means a reference-tier mic AND every driver paired
     N >= :data:`~jasper.active_speaker.crossover_v2.intervention.LINEARIZATION_MIN_PAIRED_OCCURRENCES`
     in-capture occurrences. Anything else falls back to the plain trims-only
     candidate, byte-identical to the pre-PR-C path.
@@ -415,18 +417,15 @@ def ineligible_reason(
     """
     if analysis.mic_tier != "reference":
         return "ineligible_mic_tier"
-    woofer_resp = driver_response_by_role(analysis, woofer_role)
-    tweeter_resp = driver_response_by_role(analysis, tweeter_role)
-    if woofer_resp is None or tweeter_resp is None:
-        return "ineligible_repeats"
-    woofer_n = 1 + len(woofer_resp.repeat_responses)
-    tweeter_n = 1 + len(tweeter_resp.repeat_responses)
-    if (
-        woofer_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
-        and tweeter_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
-    ):
-        return None
-    return "ineligible_repeats"
+    for role in roles:
+        response = driver_response_by_role(analysis, role)
+        if (
+            response is None
+            or 1 + len(response.repeat_responses)
+            < LINEARIZATION_MIN_PAIRED_OCCURRENCES
+        ):
+            return "ineligible_repeats"
+    return None
 
 
 def exclusion_evidence_json(
@@ -557,8 +556,7 @@ def plan_for_candidate(
     candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
     preset: Any,
     program_for_phase: Callable[[str], Any],
-    woofer_role: str,
-    tweeter_role: str,
+    roles: Sequence[str],
     driver_class_by_role: Mapping[str, str],
     post_apply_verifies: bool,
     cloud_phase_planned: bool,
@@ -593,6 +591,13 @@ def plan_for_candidate(
     whose own preset names no crossover has no crossover to plan for, and
     guessing one from the session would be the defect wearing a new hat.
 
+    **A 1-way main is the one shape for which no context is the right answer**
+    rather than a missing one: one branch, no region, nothing to corner. That
+    discrimination has ONE owner,
+    :meth:`~..contracts.CandidateAcousticContext.for_candidate`, which the
+    proposal assembler asks the same question through — so the fail-closed rule
+    above is unchanged where it applies, and cannot come to mean two things.
+
     Only called after :func:`ineligible_reason` returns ``None`` — the planner
     assumes eligibility and does not re-check.
 
@@ -618,28 +623,27 @@ def plan_for_candidate(
     ``test_crossover_v2_planner_wiring`` pins that it reaches the flow's own
     logger.
     """
-    context = CandidateAcousticContext.from_sections(
-        _sections_for_candidate(candidate_sections, preset)
+    context = CandidateAcousticContext.for_candidate(
+        _sections_for_candidate(candidate_sections, preset), roles=roles,
     )
     measure_program = program_for_phase(PHASE_MEASURE)
-    seg_w = measure_program.segment("sweep_w")
-    seg_t = measure_program.segment("sweep_t")
-    # ProgramSegment.f1_hz/f2_hz are typed float | None (the general
-    # ProgramSegment shape also covers non-stimulus/silence segments);
-    # __post_init__ guarantees a KIND_SWEEP stimulus segment (which
-    # "sweep_w"/"sweep_t" always are) never has either as None. Narrow
-    # explicitly for mypy and as a defensive invariant check.
-    assert seg_w.f1_hz is not None and seg_w.f2_hz is not None
-    assert seg_t.f1_hz is not None and seg_t.f2_hz is not None
+    # The MEASURE program keeps its ``_w``/``_t`` segment spelling whatever the
+    # roles are called, and a 1-way program carries only the first.
+    excited_band_hz: dict[str, tuple[float, float]] = {}
+    for role, segment_id in zip(roles, ("sweep_w", "sweep_t")):
+        segment = measure_program.segment(segment_id)
+        # ProgramSegment.f1_hz/f2_hz are typed float | None (the general
+        # ProgramSegment shape also covers non-stimulus/silence segments);
+        # __post_init__ guarantees a KIND_SWEEP stimulus segment (which these
+        # always are) never has either as None. Narrow explicitly for mypy and
+        # as a defensive invariant check.
+        assert segment.f1_hz is not None and segment.f2_hz is not None
+        excited_band_hz[role] = (segment.f1_hz, segment.f2_hz)
     request = request_from_analysis(
         analysis, cand,
         context=context,
-        woofer_role=woofer_role,
-        tweeter_role=tweeter_role,
-        excited_band_hz={
-            woofer_role: (seg_w.f1_hz, seg_w.f2_hz),
-            tweeter_role: (seg_t.f1_hz, seg_t.f2_hz),
-        },
+        roles=roles,
+        excited_band_hz=excited_band_hz,
         driver_class_by_role=driver_class_by_role,
         # Boost permission's ONE necessary condition, and the clause that
         # tells "no cloud by design" (R15's driver-only path) apart from
@@ -659,8 +663,7 @@ def build_candidate(
     *,
     candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
     source_preset: Any,
-    woofer_role: str,
-    tweeter_role: str,
+    roles: Sequence[str],
     plan: Callable[..., LinearizationPlan],
     exclusion_evidence: Callable[[CloudFitEvidence], Mapping[str, Any]],
     journal: Callable[[Any], None],
@@ -678,9 +681,11 @@ def build_candidate(
     candidate returned beside it.
 
     ``cand`` is ``analysis.candidate``, passed rather than re-read: the host
-    has already refused an analysis carrying none, under its own error
-    vocabulary, and re-deriving it here would give this function a second
-    opinion about a fact the caller already settled.
+    has already refused an analysis carrying none on a shape that owes one,
+    under its own error vocabulary, and re-deriving it here would give this
+    function a second opinion about a fact the caller already settled. ``None``
+    is legal for exactly one shape — a 1-way main, whose MEASURE is one routed
+    solo and whose absent candidate is the honest answer rather than a refusal.
 
     ``plan`` and ``exclusion_evidence`` are ports; ``journal`` is the
     disclosure port the SF2 arm below says its one line through.  See the
@@ -710,7 +715,7 @@ def build_candidate(
     )
 
     delay_us, delay_role, polarity = alignment_to_candidate_fields(
-        analysis, woofer_role=woofer_role, tweeter_role=tweeter_role,
+        analysis, roles=roles,
     )
     alignment = (
         MeasuredCrossoverAlignment(
@@ -724,16 +729,19 @@ def build_candidate(
     # mic AND both drivers paired N>=3 — anything else is byte-identical
     # to the pre-PR-C trims-only path (analysis.candidate.trim_db, empty
     # linearization dict). See ineligible_reason / plan_for_candidate.
-    role_attenuations_db: Mapping[str, float] = dict(cand.trim_db)
+    # ``cand`` is ``None`` on a 1-way main: the measured pair candidate is a
+    # statement about two branches, so the analysis publishes none and the lone
+    # branch's attenuation is a fixed 0 dB rather than a solved one.
+    role_attenuations_db: Mapping[str, float] = (
+        {role: 0.0 for role in roles} if cand is None else dict(cand.trim_db)
+    )
     linearization: Mapping[str, Any] = {}
     # The plan itself, held so the per-driver merge below can recompose the
     # prediction from the frame it composed one. ``None`` on every arm that
     # produced no fit, which is the same set of arms that leaves
     # ``state.linearized_predicted_sum`` ``None``.
     fit_plan: LinearizationPlan | None = None
-    ineligible = ineligible_reason(
-        analysis, woofer_role=woofer_role, tweeter_role=tweeter_role,
-    )
+    ineligible = ineligible_reason(analysis, roles=roles)
     state = LinearizationState(outcome=ineligible or "")
     if ineligible is None:
         try:
@@ -805,7 +813,9 @@ def build_candidate(
                     reason=type(port_exc).__name__,
                     exc_info=True,
                 )
-            role_attenuations_db = dict(cand.trim_db)
+            role_attenuations_db = (
+                {role: 0.0 for role in roles} if cand is None else dict(cand.trim_db)
+            )
             linearization = {}
             # PR-L4 item 1: a fit that raised part-way may already have
             # produced a partial verdict, and none of it survives — a

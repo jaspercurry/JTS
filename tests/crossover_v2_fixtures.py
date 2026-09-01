@@ -65,6 +65,7 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    MEASURE_PAIR_SINGLE_DRIVER,
     AlignmentEstimate,
     CrossoverCandidate,
     DriftEstimate,
@@ -1794,6 +1795,61 @@ def _eligible_measure_analysis(
         predicted_sum=_fixture_raw_predicted_sum(
             woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
         ),
+        glitch_detected=False,
+    )
+
+
+def _way1_branch_db() -> np.ndarray:
+    """The 1-way fixture's ONE measured branch magnitude.
+
+    :func:`_fixture_branch_db`'s sibling, and deliberately NOT one of its two
+    curves: a full-range branch carries no crossover, so folding a section in
+    would model a graph this speaker never emits.
+
+    One dip a lift would target and one bump a cut would remove, on a flat
+    baseline. Flat rather than the pair fixture's tilt because the tilt is
+    there for the ripple-optimal trim solve, which a lone branch never runs —
+    and a broadband tilt makes the fit's whole lift budget an HF-tail request
+    the envelope refuses, which would leave a cut-only round looking like a
+    decision when it was an absence of material. It lands the boost at
+    +4.94 dB / 400 Hz, beside the real 2026-07-28 JTS3 profile's
+    +4.8807 dB / 377.4 Hz.
+    """
+    freqs = _LINEARIZABLE_FREQS_HZ
+    dip = -5.0 * np.exp(-0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2))
+    bump = 3.0 * np.exp(-0.5 * ((np.log2(freqs / 4000.0) / 0.25) ** 2))
+    return dip + bump
+
+
+def _way1_measure_analysis(
+    program, *, mic_tier="reference", repeats=2, magnitude_db=None,
+) -> ProgramAnalysis:
+    """:func:`_eligible_measure_analysis`'s 1-way twin.
+
+    Every inter-driver field is ABSENT WITH A NAME rather than defaulted — no
+    alignment, no measured pair candidate, no raw two-branch predicted sum —
+    which is exactly what ``_analyze_measure`` returns for a one-role program.
+    """
+    return ProgramAnalysis(
+        phase="measure",
+        program_id=program.program_id,
+        locations=(_loc("sweep_w"), _loc("sweep_w_rep")),
+        drift=DriftEstimate(
+            epsilon_ppm=5.0, max_residual_samples=0.1, glitch_detected=False,
+        ),
+        mic_tier=mic_tier,
+        driver_responses=(
+            _linearizable_response(
+                "full_range",
+                _way1_branch_db() if magnitude_db is None else magnitude_db,
+                n_repeats=repeats,
+            ),
+        ),
+        alignment=None,
+        candidate=None,
+        measure_pair_not_evaluated=MEASURE_PAIR_SINGLE_DRIVER,
+        linearity_ok=True,
+        predicted_sum=None,
         glitch_detected=False,
     )
 

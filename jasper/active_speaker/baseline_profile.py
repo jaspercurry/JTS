@@ -41,7 +41,10 @@ from jasper.dsp_apply import (
     validate_camilla_config,
 )
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import (
+    OutputTopology,
+    topology_is_subless_passive_mains,
+)
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (
@@ -1296,6 +1299,40 @@ def _load_saved_state(path: Path) -> dict[str, Any] | None:
     return raw
 
 
+def _subless_passive_is_roleful(
+    measured_candidate: Any, applied_anchor: Mapping[str, Any] | None,
+) -> bool:
+    """Has a measured round given this subless passive box a Layer-A graph?
+
+    A subless passive main has no bass-management split and no inter-driver
+    crossover, so by default it takes the flat ``emit_sound_config`` lane and
+    compiles no roleful preset at all. Exactly ONE thing gives it one: a
+    recommissioning round that measured its single full-range branch and fitted
+    a linearization for it (#3507).
+
+    That fact reaches this compiler two ways, and BOTH are it — a rule that
+    read only the first would compile the profile and then grade the read-back
+    of that same applied profile as blocked:
+
+    * the candidate being compiled, on the apply itself; and
+    * the fingerprint the ALREADY-APPLIED profile's own source records, on
+      every later read-back, where nothing hands the compiler a candidate.
+
+    Read off the applied anchor rather than the mutable saved candidate: what
+    the question asks is what the speaker is PLAYING, and a superseded or
+    half-written candidate state is not that.
+    """
+    if measured_candidate is not None:
+        return True
+    if not isinstance(applied_anchor, Mapping):
+        return False
+    source = applied_anchor.get("source")
+    return bool(
+        isinstance(source, Mapping)
+        and str(source.get("measured_candidate_fingerprint") or "")
+    )
+
+
 def _applied_profile_anchor(
     saved: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -2352,19 +2389,41 @@ def build_baseline_profile_candidate(
         if candidate_evidence["summed"]
         else ("measurements" if summed_validation_complete else "missing")
     )
-    # A passive-mains + local-subwoofer topology has NO inter-driver crossover, so
-    # it never produces an active crossover preview and has no per-driver / summed
-    # active-crossover measurements to complete. It is still roleful (bass
-    # management splits the program), so it rides the SAME multi-output emitter as
+    # PASSIVE MAINS have NO inter-driver crossover, so they never produce an
+    # active crossover preview and have no per-driver / summed active-crossover
+    # measurements to complete. They still ride the SAME multi-output emitter as
     # the active path — but via a degenerate 1-way preset built directly from the
     # topology, skipping the preview-readiness and active-measurement gates that
-    # only apply to a real active crossover. A SUBLESS passive speaker never
-    # reaches here (it takes the flat emit_sound_config lane).
-    passive_sub = topology_is_passive_mains_with_sub(topology)
+    # only apply to a real active crossover.
+    #
+    # BOTH passive shapes take this arm (#3507), on two different grounds. With
+    # a local subwoofer the box is roleful UNCONDITIONALLY, because bass
+    # management splits the program. SUBLESS it is roleful only where a
+    # recommissioning round has measured its one full-range branch and fitted a
+    # linearization for it — that is a Layer-A graph and has to be emitted as
+    # one — so this arm asks :func:`_subless_passive_is_roleful` rather than
+    # reading the topology alone. Where nothing has, a subless passive box
+    # keeps the flat ``emit_sound_config`` lane it has always had.
+    #
+    # Before #3507 the subless box fell into the ACTIVE arm below whatever it
+    # brought, and was blocked there by a crossover preview it can never save
+    # and a summed validation that is a two-branch claim — so a measured way-1
+    # candidate could be built, proposed and reviewed and then had nowhere to
+    # land.
+    #
+    # The preset comes from the same ``build_passive_mains_preset`` that
+    # ``commission_wiring.resolve_capture_preset`` answers a passive box with,
+    # so the graph compiled here and the plant the round measured are ONE preset
+    # rather than two that agree by inspection — which the
+    # ``measured_candidate_preset_mismatch`` check below then proves.
+    passive_mains = topology_is_passive_mains_with_sub(topology) or (
+        topology_is_subless_passive_mains(topology)
+        and _subless_passive_is_roleful(measured_candidate, applied_anchor)
+    )
 
     preset: ActiveSpeakerPreset | None = None
     preset_gates: list[dict[str, Any]] = []
-    if passive_sub:
+    if passive_mains:
         if not resolved_playback_device:
             issues.append(_issue(
                 "blocker",

@@ -13,6 +13,7 @@ trim, so those axes do not exist rather than being defaulted.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,6 +29,11 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    LINEARIZATION_OUTCOME_SINGLE_BRANCH,
+    TrimStrategy,
+)
+from jasper.active_speaker.crossover_v2.proposal import trim_strategy_for_outcome
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_REGISTRY,
@@ -53,6 +59,7 @@ from tests.crossover_v2_fixtures import (
     _one_way_preset,
     _roles_way1,
     _way1_conductor,
+    _way1_measure_analysis,
 )
 
 
@@ -335,14 +342,15 @@ def test_a_three_role_session_is_still_refused():
         )
 
 
-def test_a_way1_measure_capture_banks_the_solo_and_publishes_no_candidate():
+def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
     """The full walk's middle: analysis and verdict, end to end.
 
     Nothing here is faked past the microphone — a real one-role MEASURE program
     is rendered, convolved with a synthetic full-range IR, and put through
-    ``analyze_program_capture``. The alignment and the candidate come back
-    ABSENT WITH A NAME; the solo's own evidence (its response, its repeat drift)
-    is what the round banks.
+    ``analyze_program_capture``. The alignment and the MEASURED PAIR candidate
+    come back ABSENT WITH A NAME; the solo's own evidence (its response, its
+    repeat drift) is what the round banks, and what the single-branch
+    prescription it publishes is built from.
     """
     from tests.test_audio_measurement_program_analysis import (
         SR,
@@ -376,23 +384,194 @@ def test_a_way1_measure_capture_banks_the_solo_and_publishes_no_candidate():
     assert verdict.accepted is True
     assert verdict.code is None
     assert verdict.payload["measurement_phase"] == PHASE_MEASURE
-    assert verdict.payload["candidate"] == {
+    # The INTER-DRIVER absence is named; it is not the candidate's absence.
+    assert verdict.payload["pair"] == {
         "status": "not_evaluated",
         "reason": MEASURE_PAIR_SINGLE_DRIVER,
     }
+    # A single-branch prescription IS published, and it covers the one role.
+    assert verdict.payload["candidate_fingerprint"]
+    published = conductor._candidate
+    assert set(published.role_attenuations_db) == {"full_range"}
+    assert published.role_attenuations_db["full_range"] == 0.0
+    assert published.alignment.delay_role is None
 
 
-def test_the_candidate_door_itself_still_refuses_one_role():
-    """The Phase-2b door, closed rather than degraded.
+def test_the_way1_candidate_carries_the_fit_and_no_inter_driver_axis():
+    """The Phase-2b product: one fitted branch, no pair, no trim.
 
-    The walk above never reaches it (the verdict publishes a named absence
-    instead), so this is the belt: were a caller to drive the fit directly it is
-    refused, not handed a single-branch lookalike of a two-branch answer.
+    Driven through the same ``_build_candidate`` the 2-way walk uses, on a
+    reference-tier analysis whose one role clears the paired-N gate, so the fit
+    runs rather than degrading to the trims-only lane.
     """
-    conductor = _way1_conductor(FakeSeams(), index_phase_map=_way1_index_phase_map())
+    conductor = _way1_conductor(
+        FakeSeams(),
+        index_phase_map=_way1_index_phase_map(),
+        gain_plan_db={"full_range": -11.0},
+    )
+    analysis = _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
 
-    with pytest.raises(crossover_v2_flow.CrossoverV2FlowError):
-        conductor._build_candidate(object())
+    candidate, state = conductor._build_candidate(analysis)
+
+    # The fit RAN — and says so in the shape's own word, not the pair's, so the
+    # proposal below cannot map it onto a committed-pair trim strategy.
+    assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
+    assert candidate.linearization_outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
+    assert trim_strategy_for_outcome(candidate.linearization_outcome)[0] is (
+        TrimStrategy.NO_PAIR_TO_TRIM
+    )
+    assert candidate.role_attenuations_db == {"full_range": 0.0}
+    assert set(candidate.linearization) == {"full_range"}
+    assert candidate.linearization["full_range"]["filters"]
+    # Every inter-driver verdict is absent, not defaulted.
+    assert state.realized_level_match is None
+    assert state.level_consistency is None
+    assert state.trim_band_estimate_db == {}
+    assert state.polish_delta_db == {}
+    assert candidate.alignment.delay_us is None
+    assert candidate.alignment.polarity is None
+
+
+@pytest.mark.parametrize("verifies", [True, False])
+def test_the_way1_boost_probe_rule_is_the_pair_paths_own(verifies):
+    """Boost needs a post-apply measurement — a way-1 round buys no exemption.
+
+    The same ONE necessary condition the pair path is held to, on the same
+    branch material: the fixture's in-band dip is what a lift would target, so
+    a cut-only outcome is the rule deciding rather than the curve offering
+    nothing to lift.
+    """
+    conductor = _way1_conductor(
+        FakeSeams(),
+        index_phase_map=_way1_index_phase_map(),
+        gain_plan_db={"full_range": -11.0},
+        post_apply_verifies=verifies,
+    )
+    assert conductor.post_apply_verifies is verifies
+    analysis = _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
+
+    candidate, _state = conductor._build_candidate(analysis)
+
+    gains = [
+        float(f["gain"]) for f in candidate.linearization["full_range"]["filters"]
+    ]
+    assert gains
+    assert (max(gains) > 0.0) is verifies
+
+
+def test_a_way1_banked_round_rebuilds_its_one_role_measure_program():
+    """The distortion door's replay, on a round that swept one driver.
+
+    ``rebuild_measure_program`` proves itself against the banked
+    ``program_id``, so composing a two-role program for a one-role round could
+    only ever REFUSE — the reading an operator would then be told is
+    ``state_unreadable``, blaming the bank for a shape it never had.
+    """
+    from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
+    from jasper.active_speaker.crossover_v2 import priors
+
+    conductor = _way1_conductor(
+        FakeSeams(),
+        index_phase_map=_way1_index_phase_map(),
+        gain_plan_db={"full_range": -11.0},
+    )
+    program = conductor.program_for_phase(PHASE_MEASURE)
+    state = {
+        "gain_plan_db": {"full_range": -11.0},
+        "candidate": {"program_id": program.program_id},
+        "measure_sweep_durations_s": priors.measure_sweep_durations_s(program),
+    }
+
+    rebuilt, downstream_db, prelude = he.rebuild_measure_program(
+        state, {"full_range": (WAY1_BAND.lower_hz, WAY1_BAND.upper_hz)},
+    )
+
+    assert rebuilt.program_id == program.program_id
+    assert downstream_db == pytest.approx(-20.0)
+    assert prelude is False
+    assert [seg.role for seg in rebuilt.segments if seg.segment_id == "sweep_t"] == []
+
+
+def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
+    """The whole Phase-2 loop, end to end: banked solo -> profile on disk.
+
+    The candidate is the one ``_build_candidate`` returned; the YAML is the one
+    the COMPILE GATE wrote, not a hand-built emit. The shape is the subless
+    passive main PAIR, which is what a real one is — its mono sibling declares
+    one physical output and the active ring's accept-set starts at two, so the
+    emitter refuses that width by name before this graph is reachable.
+
+    Non-negotiable tier (hearing): the ceiling, the headroom charge and the
+    per-branch limiter are asserted structurally on a profile carrying a real
+    fitted linearization, so a way-1 apply cannot ship a chain whose limiter
+    was dropped with the crossover it never had.
+    """
+    import yaml as yaml_lib
+
+    from jasper.active_speaker.baseline_profile import (
+        build_baseline_profile_candidate,
+    )
+    from tests.active_speaker_fixtures import (
+        passive_stereo_output_topology,
+        valid_camilla_config,
+    )
+
+    topology = passive_stereo_output_topology()
+    preset = commission_wiring.resolve_capture_preset(topology)
+    conductor = _way1_conductor(
+        FakeSeams(),
+        index_phase_map=_way1_index_phase_map(),
+        gain_plan_db={"full_range": -11.0},
+        source_preset=preset,
+    )
+    candidate, state = conductor._build_candidate(
+        _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
+    )
+    assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        # A passive box saves no crossover preview and completes no summed
+        # active-crossover validation; both are two-branch artifacts. Passing
+        # them empty is the real shape, not a shortcut.
+        design_draft={},
+        crossover_preview={},
+        measurements={},
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=valid_camilla_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["permissions"]["may_apply"] is True
+    config = yaml_lib.safe_load(
+        Path(payload["config"]["path"]).read_text(encoding="utf-8")
+    )
+
+    assert config["devices"]["volume_limit"] == 0.0
+    assert "active_baseline_headroom" in config["filters"]
+    assert list(config["mixers"]) == ["split_active_1way"]
+    branch = next(
+        step["names"] for step in config["pipeline"]
+        if step.get("type") == "Filter"
+        and "active_baseline_headroom" not in step["names"]
+    )
+    limiters = [name for name in branch if name.endswith("_baseline_limiter")]
+    assert limiters == ["as_full_range_baseline_limiter"]
+    assert branch[-1] == "as_full_range_baseline_limiter"
+    # No crossover: nothing in the graph is a high- or low-pass section.
+    assert not [
+        name for name, spec in config["filters"].items()
+        if spec.get("type") == "BiquadCombo"
+    ]
+    # The fit's filters sit ahead of the branch gain, where the chain charges
+    # them, not after it.
+    fitted = [name for name in branch if "_linearization_" in name]
+    assert fitted
+    assert branch.index(fitted[-1]) < branch.index("as_full_range_baseline_gain")
 
 
 def test_the_one_way_preset_emits_a_protected_neutral_program_graph(tmp_path):

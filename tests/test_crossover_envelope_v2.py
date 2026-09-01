@@ -2182,6 +2182,36 @@ def test_the_browser_and_python_agree_on_the_out_of_band_octave_code():
     assert match.group(1) == ReasonCode.OUT_OF_BAND.value
 
 
+def test_the_browser_and_python_agree_on_every_linearization_outcome():
+    """Same guard shape as the two octave-code tests below, one layer up.
+
+    The renderer maps this enum to plain language and renders NOTHING for a
+    value it does not know, so a Python outcome the browser has never heard of
+    makes the round go silent about whether linearization ran — the exact
+    failure the line was added to kill (#3507 added ``fitted_single_branch``).
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.active_speaker.measured_crossover_candidate import (
+        _LINEARIZATION_OUTCOME_VALUES,
+    )
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    block = re.search(
+        r"const LINEARIZATION_OUTCOME_TEXT = \{(.*?)\n\};", source, re.S,
+    )
+    assert block, "the renderer no longer carries a linearization-outcome map"
+    rendered = set(re.findall(r"^\s{2}([a-z0-9_]+):", block.group(1), re.M))
+
+    # "" is the one Python value with no line to render — it means linearization
+    # was never evaluated this attempt, and silence is the honest rendering.
+    assert rendered == _LINEARIZATION_OUTCOME_VALUES - {""}
+
+
 def test_the_browser_and_python_agree_on_the_class_prior_octave_code():
     """The second cross-language reason literal, pinned (audit item 4i).
 

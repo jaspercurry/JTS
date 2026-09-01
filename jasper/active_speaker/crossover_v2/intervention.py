@@ -62,6 +62,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 
 from .contracts import (
+    LINEARIZATION_OUTCOME_SINGLE_BRANCH,
     CandidateAcousticContext,
     CrossoverV2ContractError,
     TrimStrategy,
@@ -424,17 +425,29 @@ class DriverEvidence:
 class LinearizationRequest:
     """Everything :func:`plan_linearization` reads. Nothing else is in scope.
 
-    Holds exactly one corner — ``context.fc_hz`` — and nothing that could
-    disagree with it.
+    Holds at most one corner — ``context.fc_hz`` — and nothing that could
+    disagree with it. A 1-way main holds none: it declares no crossover, so
+    there is no corner in scope for the planner to read either way.
     """
 
-    context: CandidateAcousticContext
-    """The one Fc owner: this candidate's corner and the sections realizing it."""
+    context: CandidateAcousticContext | None
+    """The one Fc owner: this candidate's corner and the sections realizing it.
 
-    woofer: DriverEvidence
-    tweeter: DriverEvidence
+    ``None`` on a 1-way passive main: one branch radiates the whole band, so
+    there is no corner to own and no section to realize one. A two-branch
+    request without a context is refused below — the pair's whole vocabulary is
+    derived from the corner.
+    """
+
+    drivers: tuple[DriverEvidence, ...]
+    """The branches to fit, lowest first. One (a 1-way main) or two."""
+
     raw_trim_db: Mapping[str, float]
-    """``candidate.trim_db`` — the raw solve's applied per-role attenuation."""
+    """``candidate.trim_db`` — the raw solve's applied per-role attenuation.
+
+    Empty on a 1-way main: the trim solve places a PAIR, so a round with one
+    branch ran none and the anchor it feeds is never reached.
+    """
 
     trim_band_average_db: Mapping[str, float]
     """``candidate.trim_band_average_db`` — one SUBORDINATE level estimate.
@@ -470,17 +483,27 @@ class LinearizationRequest:
     trim_sanity_margin_db: float = LINEARIZATION_TRIM_SANITY_MARGIN_DB
 
     def __post_init__(self) -> None:
-        if not isinstance(self.context, CandidateAcousticContext):
+        drivers = tuple(self.drivers)
+        if not 1 <= len(drivers) <= 2:
+            raise PlannerInputError("a request carries one or two drivers")
+        if self.context is None and len(drivers) != 1:
+            raise PlannerInputError("a two-branch request needs a context")
+        if self.context is not None and not isinstance(
+            self.context, CandidateAcousticContext
+        ):
             raise PlannerInputError("context must be a CandidateAcousticContext")
-        for name, driver in (("woofer", self.woofer), ("tweeter", self.tweeter)):
+        for driver in drivers:
             if not isinstance(driver, DriverEvidence):
-                raise PlannerInputError(f"{name} must be a DriverEvidence")
+                raise PlannerInputError("drivers must be DriverEvidence values")
             if driver.response is None:
-                raise PlannerInputError(f"{name} evidence carries no response")
-        if self.woofer.role == self.tweeter.role:
+                raise PlannerInputError(
+                    f"{driver.role!r} evidence carries no response"
+                )
+        if len({driver.role for driver in drivers}) != len(drivers):
             raise PlannerInputError(
-                f"woofer and tweeter share the role {self.woofer.role!r}"
+                f"two branches share the role {drivers[0].role!r}"
             )
+        object.__setattr__(self, "drivers", drivers)
         if int(self.polarity_sign) not in (-1, 1):
             raise PlannerInputError("polarity_sign must be -1 or +1")
         # The hearing-safety coupling, checked rather than trusted. NaN is
@@ -526,8 +549,8 @@ class LinearizationRequest:
         )
 
     @property
-    def roles(self) -> tuple[str, str]:
-        return (self.woofer.role, self.tweeter.role)
+    def roles(self) -> tuple[str, ...]:
+        return tuple(driver.role for driver in self.drivers)
 
     def sections_for(self, role: str) -> tuple[CrossoverSection, ...]:
         """This candidate's sections for ``role`` — empty when it has none.
@@ -539,8 +562,11 @@ class LinearizationRequest:
         :func:`plan_linearization` names it in the journal.
 
         The *context* separately guarantees that every section which does exist
-        names this candidate's corner.
+        names this candidate's corner. A 1-way main carries no context at all,
+        and every role it names runs full range.
         """
+        if self.context is None:
+            return ()
         return self.context.sections_by_role.get(role, ())
 
 
@@ -939,14 +965,15 @@ class SummationFrame:
     ``residual_delay_us`` is already the RESIDUAL relative to the
     argmax-referenced frame (:func:`summed_model_residual_delay_us`'s answer),
     never the applied delay — passing the applied delay double-counts the
-    measured peak gap.
+    measured peak gap. It and ``polarity_sign`` both describe how a SECOND
+    branch is summed onto the first, so both are inert on a 1-way frame.
     """
 
     freqs_hz: np.ndarray
-    woofer_role: str
-    tweeter_role: str
-    woofer_tf: np.ndarray
-    tweeter_tf: np.ndarray
+    roles: tuple[str, ...]
+    """The branches, lowest first — one (a 1-way main) or two."""
+    branch_tf: tuple[np.ndarray, ...]
+    """Each role's RAW measured transfer function, in ``roles`` order."""
     polarity_sign: int
     residual_delay_us: float
 
@@ -979,21 +1006,29 @@ def compose_linearized_prediction(
     corrected by unity: :func:`~..branch_chain.chain_response` returns ones for
     an empty filter list, so an unfitted, unprescribed branch survives raw.
     """
-    corrections = {
-        role: chain_response(
+    corrected = [
+        tf * chain_response(
             [dict(f) for f in filters_by_role.get(role, ())], frame.freqs_hz,
         )
-        for role in (frame.woofer_role, frame.tweeter_role)
-    }
-    predicted = predicted_branch_sum(
-        frame.woofer_tf * corrections[frame.woofer_role],
-        frame.tweeter_tf * corrections[frame.tweeter_role],
-        role_attenuations_db[frame.woofer_role],
-        role_attenuations_db[frame.tweeter_role],
-        int(frame.polarity_sign),
-        freqs_hz=frame.freqs_hz,
-        residual_delay_us=frame.residual_delay_us,
-    )
+        for role, tf in zip(frame.roles, frame.branch_tf)
+    ]
+    if len(corrected) == 1:
+        # One branch radiates the whole band, so the "sum" is that branch at its
+        # own trim. Neither the polarity term nor the residual delay applies:
+        # both state how a SECOND branch lands against this one.
+        predicted = corrected[0] * 10.0 ** (
+            float(role_attenuations_db[frame.roles[0]]) / 20.0
+        )
+    else:
+        predicted = predicted_branch_sum(
+            corrected[0],
+            corrected[1],
+            role_attenuations_db[frame.roles[0]],
+            role_attenuations_db[frame.roles[1]],
+            int(frame.polarity_sign),
+            freqs_hz=frame.freqs_hz,
+            residual_delay_us=frame.residual_delay_us,
+        )
     return (
         frame.freqs_hz,
         20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12)),
@@ -1004,10 +1039,16 @@ def compose_linearized_prediction(
 class LinearizationPlan:
     """One candidate's complete prescription, as a value."""
 
-    fc_hz: float
+    fc_hz: float | None
+    """This candidate's corner; ``None`` on a 1-way main, which declares none."""
     role_attenuations_db: Mapping[str, float]
     linearization: Mapping[str, Any]
-    trim: TrimDecision
+    trim: TrimDecision | None
+    """The committed inter-driver trim pair, or ``None`` when there is no pair.
+
+    A 1-way main has one branch and therefore no handoff to level: nothing is
+    solved, nothing is graded, and every role ships at a fixed 0 dB.
+    """
     core_level_evidence: Mapping[str, Mapping[str, Any]]
     """Per role: the fit's core-band median, and the two bands behind it.
 
@@ -1057,11 +1098,20 @@ class LinearizationPlan:
 
     @property
     def outcome(self) -> str:
+        """The persisted ``linearization_outcome`` string.
+
+        No trim decision means no PAIR existed to decide one for, which is its
+        own value rather than a bare ``"fitted"``: the proposal maps that one
+        onto a committed-pair strategy, which would claim a trim this speaker
+        never solved.
+        """
+        if self.trim is None:
+            return LINEARIZATION_OUTCOME_SINGLE_BRANCH
         return self.trim.outcome
 
     @property
-    def realized_level_match(self) -> RealizedLevelMatch:
-        return self.trim.committed_match
+    def realized_level_match(self) -> RealizedLevelMatch | None:
+        return None if self.trim is None else self.trim.committed_match
 
 
 def plan_linearization(
@@ -1069,12 +1119,18 @@ def plan_linearization(
     *,
     journal: Callable[[JournalRecord], None] | None = None,
 ) -> LinearizationPlan:
-    """Fit both drivers, correct in the linear domain, and commit one trim pair.
+    """Fit every branch, correct in the linear domain, commit one trim pair.
 
     The ordering is load-bearing: fit each branch, apply the correction as a
     COMPLEX (minimum-phase) response, then re-solve the trim from the
     LINEARIZED branch pair, which is what structurally defuses the
     band-average trim bias.
+
+    **On a 1-way main the second half does not exist.** One branch radiates the
+    whole band, so there is no corner, no overlap, no handoff to level and no
+    pair to grade: the branch is fitted exactly as either branch of a pair is,
+    ships at a fixed 0 dB, and the plan carries no trim decision and no
+    inter-driver verdict rather than a single-branch lookalike of one.
 
     Assumes eligibility (reference-tier mic, both drivers paired
     N ≥ :data:`LINEARIZATION_MIN_PAIRED_OCCURRENCES`) and does not re-check —
@@ -1088,25 +1144,22 @@ def plan_linearization(
     port that raises is contained — the record still reaches the plan and the
     refusal is listed in :attr:`LinearizationPlan.journal_dropped`.
     """
-    woofer_role, tweeter_role = request.roles
+    roles = request.roles
     context = request.context
-    fc_hz = context.fc_hz
-    responses = {
-        woofer_role: request.woofer.response,
-        tweeter_role: request.tweeter.response,
-    }
+    fc_hz = None if context is None else context.fc_hz
+    responses = {driver.role: driver.response for driver in request.drivers}
+    # The σ gate reads each branch's REPEAT count against its sibling's. A lone
+    # branch is its OWN sibling, which reduces the paired-N gate to its own
+    # occurrences rather than inventing a partner's — the honest reading, since
+    # there is no second capture whose repeatability could void this one's.
     siblings = {
-        woofer_role: request.tweeter.response,
-        tweeter_role: request.woofer.response,
+        role: responses[next((other for other in roles if other != role), role)]
+        for role in roles
     }
     excited_band_hz = {
-        woofer_role: request.woofer.excited_band_hz,
-        tweeter_role: request.tweeter.excited_band_hz,
+        driver.role: driver.excited_band_hz for driver in request.drivers
     }
-    driver_class = {
-        woofer_role: request.woofer.driver_class,
-        tweeter_role: request.tweeter.driver_class,
-    }
+    driver_class = {driver.role: driver.driver_class for driver in request.drivers}
     records: list[JournalRecord] = []
     dropped: list[str] = []
 
@@ -1147,33 +1200,32 @@ def plan_linearization(
     # one of them names ``fc_hz``: that is checked at construction, not here.
     # Each Fc candidate must be fitted against ITS OWN crossover, or the
     # comparison measures the fit's mismatch instead of the crossover's.
-    sections = {
-        role: request.sections_for(role) for role in (woofer_role, tweeter_role)
-    }
+    sections = {role: request.sections_for(role) for role in roles}
+    rounded_fc_hz = None if fc_hz is None else round(float(fc_hz), 3)
     # The named defect, disclosed at the site that detects it. See
     # :meth:`LinearizationRequest.sections_for` for why the condition is
-    # representable and still a defect.
-    for role in (woofer_role, tweeter_role):
-        if not sections[role]:
-            emit(
-                "correction.crossover_v2_linearization_no_crossover",
-                {"role": role, "fc_hz": round(float(fc_hz), 3)},
-                logging.WARNING,
-            )
-    radiating_bands = {
-        role: radiating_band_hz(sections[role]) for role in (woofer_role, tweeter_role)
-    }
+    # representable and still a defect. It is only a defect where a crossover
+    # was declared at all: a 1-way main's branch runs full range BY DESIGN, and
+    # carries no context to name a corner in the record with.
+    if context is not None:
+        for role in roles:
+            if not sections[role]:
+                emit(
+                    "correction.crossover_v2_linearization_no_crossover",
+                    {"role": role, "fc_hz": rounded_fc_hz},
+                    logging.WARNING,
+                )
+    radiating_bands = {role: radiating_band_hz(sections[role]) for role in roles}
     # At the CANDIDATE's corner, like every corner-driven call below.
     emit(
         "correction.crossover_v2_linearization_fit_band",
         {
-            "fc_hz": round(float(fc_hz), 3),
+            "fc_hz": rounded_fc_hz,
             "radiating_band_hz": {
                 role: rounded_band_hz(band) for role, band in radiating_bands.items()
             },
             "crossover_order": {
-                role: tuple(s.order for s in sections[role])
-                for role in (woofer_role, tweeter_role)
+                role: tuple(s.order for s in sections[role]) for role in roles
             },
         },
     )
@@ -1183,7 +1235,7 @@ def plan_linearization(
     # Every envelope is composed FIRST, so each driver's own core-passband level
     # is read off it before any driver is fitted.
     envelopes: dict[str, Any] = {}
-    for role in (woofer_role, tweeter_role):
+    for role in roles:
         resp = responses[role]
         sigma_db = compose_sigma_db(
             resp,
@@ -1209,7 +1261,7 @@ def plan_linearization(
         )
     core_levels_db = {
         role: level
-        for role in (woofer_role, tweeter_role)
+        for role in roles
         if (
             level := driver_core_level_db(
                 responses[role],
@@ -1258,7 +1310,7 @@ def plan_linearization(
         role: core_level_band_hz(
             envelopes[role], radiating_band_hz=radiating_bands[role]
         )
-        for role in (woofer_role, tweeter_role)
+        for role in roles
     }
     core_level_evidence = {
         role: {
@@ -1277,7 +1329,7 @@ def plan_linearization(
     # single-branch function that is told things rather than one that knows
     # about crossovers. Full precision, not the journal's rounded copy.
     blind_bands_hz = measurement_hole_bands_hz(
-        [core_bands_hz[role] for role in (woofer_role, tweeter_role)]
+        [core_bands_hz[role] for role in roles]
     )
 
     # The overlap-band estimator, for the banked finding. Restricted to the
@@ -1329,7 +1381,7 @@ def plan_linearization(
 
     fits: dict[str, Any] = {}
     corrections: dict[str, np.ndarray] = {}
-    for role in (woofer_role, tweeter_role):
+    for role in roles:
         resp = responses[role]
         fit = fit_driver_linearization(
             resp,
@@ -1413,6 +1465,126 @@ def plan_linearization(
         # feed all three consumers (the trim re-solve, the ripple-optimal scan,
         # and the persisted VERIFY prediction).
         corrections[role] = complex_correction_response(fit.filters, resp.freqs_hz)
+
+    def _plan(
+        *,
+        role_attenuations_db: Mapping[str, float],
+        trim: TrimDecision | None,
+        polish_delta_db: Mapping[str, float],
+        summation_frame: SummationFrame,
+        linearized_predicted_sum: tuple[np.ndarray, np.ndarray],
+    ) -> LinearizationPlan:
+        """Charge the fitted chains and assemble the plan.
+
+        Every branch is charged the same way whatever settled its trim, so the
+        lone-branch arm and the pair arm reach ONE assembly rather than two
+        that agree by inspection. The five arguments are exactly what a
+        committed pair decides and a lone branch does not.
+        """
+        # The headroom charge, computed now that the trim is committed.
+        #
+        # A correction's cost is a property of the CHAIN it is emitted into — the
+        # crossover that follows it and the trim that follows that — so the
+        # topology-agnostic fit core cannot compute it. This is the same
+        # ``branch_headroom_db`` the emitter charges ``active_baseline_headroom``
+        # with, over the same three terms, so the number the household is told and
+        # the number the speaker gives up are one number.
+        #
+        # ``role_attenuations_db`` and not ``anchored``/``resolved``: whichever pair
+        # the decision above committed is the trim the graph will run, and the
+        # charge follows the emitted graph.
+        #
+        # ``normalize_shift_db`` is NET-NEUTRAL under this rule. Subtracting a
+        # common S from every branch's trim lowers every branch's chain peak by S,
+        # so it lowers this charge by S too, and the pre-split attenuation the
+        # emitter applies falls by the same S the branches gained: identical output,
+        # no lost loudness. The one non-neutral case is a branch whose whole chain
+        # already sits below unity — the charge floors at 0 and cannot fall further
+        # — which the ``normalize_shift_db`` field above still discloses.
+        charge_db: dict[str, float] = {}
+        peak_db: dict[str, float] = {}
+        linearization: dict[str, Any] = {}
+        for role, fit in fits.items():
+            emitted = [f.to_dict() for f in fit.filters]
+            trim_db = float(role_attenuations_db.get(role, 0.0))
+            peak_db[role] = branch_chain_peak_db(
+                emitted, sections=sections[role], trim_db=trim_db
+            )
+            charge_db[role] = headroom_charge_db(peak_db[role])
+            linearization[role] = replace(fit, headroom_cost_db=charge_db[role]).to_dict()
+        emit(
+        "correction.crossover_v2_linearization_headroom",
+        {
+            # What the branch actually puts above unity at its loudest
+            # bin...
+            "chain_peak_db": {r: round(v, 3) for r, v in peak_db.items()},
+            # ...what that costs the speaker's maximum level (peak + margin,
+            # 0.0 for a chain that never exceeds unity)...
+            "headroom_cost_db": {r: round(v, 3) for r, v in charge_db.items()},
+            # ...and what a sum-of-positives rule would charge instead, kept so
+            # the reclaimed loudness is visible in the journal.
+            "sum_of_positives_db": {
+                role: round(
+                    math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3
+                )
+                for role, fit in fits.items()
+            },
+            "trim_db": {
+                role: round(float(role_attenuations_db.get(role, 0.0)), 3)
+                for role in fits
+            },
+            "margin_db": HEADROOM_MARGIN_DB,
+        },
+        )
+
+        return LinearizationPlan(
+            fc_hz=fc_hz,
+            role_attenuations_db=role_attenuations_db,
+            linearization=linearization,
+            trim=trim,
+            core_level_evidence=core_level_evidence,
+            trim_band_estimate_db=banked_trim_estimate_db,
+            polish_delta_db=dict(polish_delta_db),
+            level_consistency=level_consistency,
+            linearized_predicted_sum=linearized_predicted_sum,
+            summation_frame=summation_frame,
+            radiating_band_hz=radiating_bands,
+            journal=tuple(records),
+            journal_dropped=tuple(dropped),
+        )
+
+    if len(roles) == 1:
+        # ONE branch radiates the whole band. There is no handoff to level, so
+        # no trim is solved, none is graded, and the branch ships at a fixed
+        # 0 dB with the fit's own filters — :func:`_plan`'s headroom charge
+        # absorbs whatever they cost, exactly as it does for a pair.
+        role = roles[0]
+        attenuations = {role: 0.0}
+        frame = SummationFrame(
+            freqs_hz=responses[role].freqs_hz,
+            roles=(role,),
+            branch_tf=(responses[role].complex_tf,),
+            polarity_sign=1,
+            residual_delay_us=0.0,
+        )
+        return _plan(
+            role_attenuations_db=attenuations,
+            trim=None,
+            polish_delta_db={},
+            summation_frame=frame,
+            linearized_predicted_sum=compose_linearized_prediction(
+                frame,
+                filters_by_role={
+                    role: [f.to_dict() for f in fits[role].filters]
+                },
+                role_attenuations_db=attenuations,
+            ),
+        )
+
+    woofer_role, tweeter_role = roles
+    # A narrowing, not a check: a two-branch request carries a context and a
+    # context carries a corner — both established at construction.
+    assert fc_hz is not None
 
     freqs = responses[woofer_role].freqs_hz
     w_lin = responses[woofer_role].complex_tf * corrections[woofer_role]
@@ -1834,104 +2006,39 @@ def plan_linearization(
     # the same :func:`compose_linearized_prediction`.
     summation_frame = SummationFrame(
         freqs_hz=freqs,
-        woofer_role=woofer_role,
-        tweeter_role=tweeter_role,
-        woofer_tf=responses[woofer_role].complex_tf,
-        tweeter_tf=responses[tweeter_role].complex_tf,
+        roles=(woofer_role, tweeter_role),
+        branch_tf=(
+            responses[woofer_role].complex_tf,
+            responses[tweeter_role].complex_tf,
+        ),
         polarity_sign=int(request.polarity_sign),
         residual_delay_us=summed_model_residual_delay_us(
             request.anchor_delay_us, request.delay_us
         ),
     )
-    linearized_predicted_sum = compose_linearized_prediction(
-        summation_frame,
-        filters_by_role={
-            role: [f.to_dict() for f in fits[role].filters]
-            for role in (woofer_role, tweeter_role)
-        },
+    return _plan(
         role_attenuations_db=role_attenuations_db,
-    )
-
-    # The headroom charge, computed now that the trim is committed.
-    #
-    # A correction's cost is a property of the CHAIN it is emitted into — the
-    # crossover that follows it and the trim that follows that — so the
-    # topology-agnostic fit core cannot compute it. This is the same
-    # ``branch_headroom_db`` the emitter charges ``active_baseline_headroom``
-    # with, over the same three terms, so the number the household is told and
-    # the number the speaker gives up are one number.
-    #
-    # ``role_attenuations_db`` and not ``anchored``/``resolved``: whichever pair
-    # the decision above committed is the trim the graph will run, and the
-    # charge follows the emitted graph.
-    #
-    # ``normalize_shift_db`` is NET-NEUTRAL under this rule. Subtracting a
-    # common S from every branch's trim lowers every branch's chain peak by S,
-    # so it lowers this charge by S too, and the pre-split attenuation the
-    # emitter applies falls by the same S the branches gained: identical output,
-    # no lost loudness. The one non-neutral case is a branch whose whole chain
-    # already sits below unity — the charge floors at 0 and cannot fall further
-    # — which the ``normalize_shift_db`` field above still discloses.
-    charge_db: dict[str, float] = {}
-    peak_db: dict[str, float] = {}
-    linearization: dict[str, Any] = {}
-    for role, fit in fits.items():
-        emitted = [f.to_dict() for f in fit.filters]
-        trim_db = float(role_attenuations_db.get(role, 0.0))
-        peak_db[role] = branch_chain_peak_db(
-            emitted, sections=sections[role], trim_db=trim_db
-        )
-        charge_db[role] = headroom_charge_db(peak_db[role])
-        linearization[role] = replace(fit, headroom_cost_db=charge_db[role]).to_dict()
-    emit(
-    "correction.crossover_v2_linearization_headroom",
-    {
-        # What the branch actually puts above unity at its loudest
-        # bin...
-        "chain_peak_db": {r: round(v, 3) for r, v in peak_db.items()},
-        # ...what that costs the speaker's maximum level (peak + margin,
-        # 0.0 for a chain that never exceeds unity)...
-        "headroom_cost_db": {r: round(v, 3) for r, v in charge_db.items()},
-        # ...and what a sum-of-positives rule would charge instead, kept so
-        # the reclaimed loudness is visible in the journal.
-        "sum_of_positives_db": {
-            role: round(
-                math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3
-            )
-            for role, fit in fits.items()
-        },
-        "trim_db": {
-            role: round(float(role_attenuations_db.get(role, 0.0)), 3)
-            for role in fits
-        },
-        "margin_db": HEADROOM_MARGIN_DB,
-    },
-    )
-
-    return LinearizationPlan(
-        fc_hz=fc_hz,
-        role_attenuations_db=role_attenuations_db,
-        linearization=linearization,
         trim=trim,
-        core_level_evidence=core_level_evidence,
-        trim_band_estimate_db=banked_trim_estimate_db,
-        polish_delta_db=dict(polish_delta_db),
-        level_consistency=level_consistency,
-        linearized_predicted_sum=linearized_predicted_sum,
+        polish_delta_db=polish_delta_db,
         summation_frame=summation_frame,
-        radiating_band_hz=radiating_bands,
-        journal=tuple(records),
-        journal_dropped=tuple(dropped),
+        linearized_predicted_sum=compose_linearized_prediction(
+            summation_frame,
+            filters_by_role={
+                role: [f.to_dict() for f in fits[role].filters]
+                for role in (woofer_role, tweeter_role)
+            },
+            role_attenuations_db=role_attenuations_db,
+        ),
     )
+
 
 
 def request_from_analysis(
     analysis: Any,
     candidate: Any,
     *,
-    context: CandidateAcousticContext,
-    woofer_role: str,
-    tweeter_role: str,
+    context: CandidateAcousticContext | None,
+    roles: Sequence[str],
     excited_band_hz: Mapping[str, tuple[float, float]],
     driver_class_by_role: Mapping[str, str],
     post_apply_verifies: bool,
@@ -1946,14 +2053,18 @@ def request_from_analysis(
     (``post_apply_verifies``, ``cloud_phase_planned``) are the host's to pass.
 
     Raises :class:`PlannerInputError` when the analysis lacks a driver response
-    for either role or carries no alignment — both of which the host's own
-    eligibility gate is supposed to have excluded, so reaching them means the
-    gate and this derivation disagree and the plan must not be guessed at.
+    for a role, or when a PAIR carries no alignment — both of which the host's
+    own eligibility gate is supposed to have excluded, so reaching them means
+    the gate and this derivation disagree and the plan must not be guessed at.
+    A 1-way analysis legitimately carries no alignment and no candidate: delay,
+    polarity and inter-branch trim are statements about two branches, and the
+    absences travel as the neutral values the plan never reads.
     """
-    if analysis.alignment is None:
+    alignment = analysis.alignment
+    if alignment is None and len(roles) > 1:
         raise PlannerInputError("a MEASURE analysis must carry an alignment")
     drivers: dict[str, DriverEvidence] = {}
-    for role in (woofer_role, tweeter_role):
+    for role in roles:
         response = driver_response_by_role(analysis, role)
         if response is None:
             raise PlannerInputError(f"no measured response for role {role!r}")
@@ -1966,23 +2077,27 @@ def request_from_analysis(
             excited_band_hz=(float(band[0]), float(band[1])),
             driver_class=str(driver_class_by_role.get(role, "unknown")),
         )
-    alignment = analysis.alignment
     return LinearizationRequest(
         context=context,
-        woofer=drivers[woofer_role],
-        tweeter=drivers[tweeter_role],
-        raw_trim_db=dict(candidate.trim_db),
-        trim_band_average_db=dict(candidate.trim_band_average_db or {}),
-        predicted_ripple_db=float(candidate.predicted_ripple_db),
-        polarity_sign=int(alignment.polarity_sign),
-        delay_us=float(alignment.delay_us),
+        drivers=tuple(drivers[role] for role in roles),
+        raw_trim_db={} if candidate is None else dict(candidate.trim_db),
+        trim_band_average_db=(
+            {} if candidate is None else dict(candidate.trim_band_average_db or {})
+        ),
+        predicted_ripple_db=(
+            0.0 if candidate is None else float(candidate.predicted_ripple_db)
+        ),
+        polarity_sign=1 if alignment is None else int(alignment.polarity_sign),
+        delay_us=0.0 if alignment is None else float(alignment.delay_us),
         # ``None`` when the alignment is not OK is load-bearing, not a default:
         # ``summed_model_residual_delay_us`` treats an absent anchor differently
         # from a zero one. The candidate's own ``anchor_delay_us`` is NOT used —
         # it is ``None`` on the no-declared-bounds path where the alignment's is
         # not, and the two models must not disagree.
         anchor_delay_us=(
-            alignment.anchor_delay_us if alignment.status == ALIGNMENT_OK else None
+            alignment.anchor_delay_us
+            if alignment is not None and alignment.status == ALIGNMENT_OK
+            else None
         ),
         mic_tier=str(analysis.mic_tier),
         branch_floor_hz=measure_validity_floor_hz(analysis),

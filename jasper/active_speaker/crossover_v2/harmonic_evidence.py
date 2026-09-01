@@ -331,7 +331,7 @@ def _banked_sweep_durations_s(
     from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 
     durations: dict[str, float] = {}
-    for role in ("woofer", "tweeter"):
+    for role in bands:
         value = raw.get(role)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
@@ -403,8 +403,15 @@ def rebuild_measure_program(
         build_measure_program,
     )
 
+    from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
+
     from .programs import PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase
 
+    # WHICH branches this round swept, read off the bands the caller resolved
+    # from the round's own preset rather than assumed to be a pair: a 1-way
+    # main banks one role and its MEASURE program carries one sweep. Empty for
+    # a band count no speaker shape declares, which the check below names.
+    roles = DRIVER_ROLES_BY_WAY.get(len(bands), ())
     gains = state.get("gain_plan_db") or {}
     candidate = state.get("candidate") or {}
     want = candidate.get("program_id") if isinstance(candidate, Mapping) else None
@@ -420,14 +427,26 @@ def rebuild_measure_program(
                 ),
             },
         )
-    if not isinstance(gains, Mapping) or not {"woofer", "tweeter"} <= set(gains):
+    if not roles or set(bands) != set(roles):
         raise HarmonicEvidenceRefused(
             STATE_UNREADABLE,
-            {"missing": "gain_plan_db.woofer/tweeter", "program_id": want[:12]},
+            {
+                "missing": "bands_hz for the roles this round's shape declares",
+                "supplied": sorted(bands),
+                "program_id": want[:12],
+            },
         )
-    roles = (
-        RoleBand("woofer", 0, FrequencyBand(*bands["woofer"])),
-        RoleBand("tweeter", 1, FrequencyBand(*bands["tweeter"])),
+    if not isinstance(gains, Mapping) or not set(roles) <= set(gains):
+        raise HarmonicEvidenceRefused(
+            STATE_UNREADABLE,
+            {
+                "missing": "gain_plan_db." + "/".join(roles),
+                "program_id": want[:12],
+            },
+        )
+    roles_bands = tuple(
+        RoleBand(role, index, FrequencyBand(*bands[role]))
+        for index, role in enumerate(roles)
     )
     # WHETHER the state carries a banking attempt at all, independent of
     # whether that attempt turned out usable (:func:`_banked_sweep_durations_s`
@@ -440,18 +459,20 @@ def rebuild_measure_program(
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
+    # The leading pilot rides the LOWEST branch, whatever it is called.
+    pilot_role = roles[0]
     for prelude in (shipped, not shipped):
         for downstream in _DOWNSTREAM_GRID_DB:
             program = build_measure_program(
-                {role: float(gains[role]) for role in ("woofer", "tweeter")},
-                roles,
+                {role: float(gains[role]) for role in roles},
+                roles_bands,
                 sweep_durations=banked_durations,
                 downstream_gain_db=float(downstream),
                 leading_pilot_gains_db=(
-                    float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB,
-                    float(gains["woofer"]),
+                    float(gains[pilot_role]) - PILOT_LEVEL_DELTA_DB,
+                    float(gains[pilot_role]),
                 ),
-                leading_pilot_role="woofer",
+                leading_pilot_role=pilot_role,
                 courtesy_prelude=prelude,
             )
             if program.program_id == want:

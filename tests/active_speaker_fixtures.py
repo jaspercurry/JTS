@@ -171,6 +171,60 @@ def mono_output_topology(
     return topology
 
 
+def passive_stereo_output_topology() -> OutputTopology:
+    """Full-range passive left+right mains with no subwoofer.
+
+    The subless passive shape a recommissioning round actually measures and
+    applies to: TWO physical outputs, so the roleful Layer-A graph it compiles
+    fits the active ring's 2..8-channel accept-set. Its mono sibling
+    (``mono_output_topology(mode="full_range_passive")``) is one output and the
+    ring emitter refuses that width by name.
+    """
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_stereo_passive",
+        "name": "Bench stereo passive",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    },
+                ],
+            },
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
 def dual_apple_output_topology() -> OutputTopology:
     """Build the suite's standard two-DAC active-speaker topology."""
     return mono_output_topology(

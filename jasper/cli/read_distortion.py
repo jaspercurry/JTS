@@ -43,7 +43,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 
@@ -76,6 +76,12 @@ AUTHORITY_TIER = "advisory"
 DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
     "woofer": (150.0, 4000.0),
     "tweeter": (1600.0, 20000.0),
+    # A 1-way passive main sweeps ONE band, and what it declared is the
+    # speaker's own measurement band — nothing here can derive it. This default
+    # is the whole measurable span; a round that swept a narrower one fails the
+    # program-id proof loudly (``PROGRAM_NOT_REPRODUCIBLE``) instead of being
+    # read at the wrong drive, so the operator is told to pass the band.
+    "full_range": (150.0, 20000.0),
 }
 
 
@@ -90,6 +96,29 @@ def _band(text: str) -> tuple[float, float]:
     if not 0.0 < lo < hi:
         raise argparse.ArgumentTypeError(f"band must satisfy 0 < lo < hi, got {text!r}")
     return lo, hi
+
+
+def round_bands_hz(
+    state: Mapping[str, Any], overrides: Mapping[str, tuple[float, float]]
+) -> dict[str, tuple[float, float]]:
+    """The band each role THIS round swept, keyed by role.
+
+    The ROLES come from the round's own banked ``gain_plan_db`` rather than a
+    literal pair: a 1-way passive main banks one, and reading it as a pair
+    composes a program the round never played — which
+    :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.rebuild_measure_program`
+    can then only refuse, blaming the bank for a shape it never had.
+
+    A role the bank names and this CLI has no band for is dropped rather than
+    guessed at; the shape check downstream names what was left.
+    """
+    gains = state.get("gain_plan_db")
+    banked = set(gains) if isinstance(gains, Mapping) else set()
+    return {
+        role: overrides[role]
+        for role in DEFAULT_BANDS_HZ
+        if role in banked and role in overrides
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -178,6 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="tweeter sweep band in Hz (default %(default)s)",
     )
     parser.add_argument(
+        "--full-range-band",
+        type=_band,
+        default=DEFAULT_BANDS_HZ["full_range"],
+        metavar="LO:HI",
+        help=(
+            "1-way (passive full-range main) sweep band in Hz; used only when "
+            "the round banked one full-range role (default %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--calibration",
         type=Path,
         default=None,
@@ -259,7 +298,11 @@ def main(argv: list[str] | None = None) -> int:
             round_dir,
             args.dumps,
             state,
-            {"woofer": args.woofer_band, "tweeter": args.tweeter_band},
+            round_bands_hz(state, {
+                "woofer": args.woofer_band,
+                "tweeter": args.tweeter_band,
+                "full_range": args.full_range_band,
+            }),
             session_id=session_id,
             orders=HARMONIC_ORDERS,
             calibration_text=calibration_text,

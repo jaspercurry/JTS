@@ -240,6 +240,7 @@ from jasper.audio_measurement.program_analysis import (
     CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_SWEEP_HEARD,
+    MEASURE_PAIR_SINGLE_DRIVER,
     AppliedAlignment,
     CaptureIntegrity,
     GainPlan,
@@ -3008,20 +3009,6 @@ class CrossoverV2Session:
         """The upper driver's role, or ``None`` on a 1-way main."""
         return None if self._tweeter is None else self._tweeter.role
 
-    def _require_tweeter(self) -> RoleBand:
-        """The upper declaration, or refuse — this path belongs to a PAIR.
-
-        Every caller sits on an axis that is a statement about two branches:
-        corner, delay, polarity, inter-branch trim. A 1-way session reaching one
-        is refused rather than degraded into a single-branch lookalike of a
-        two-branch answer.
-        """
-        if self._tweeter is None:
-            raise CrossoverV2FlowError(
-                "a 1-way session has no inter-driver pair to read"
-            )
-        return self._tweeter
-
     def _applied_alignment(self) -> AppliedAlignment | None:
         """What this speaker's applied graph plays, for the low-SNR refusal.
 
@@ -5086,17 +5073,16 @@ class CrossoverV2Session:
         # guessed into a reservation it never earned).
         if analysis.mic_calibrated is False:
             self._note_mic_calibration_reservation()
+        pair_claim: dict[str, Any] = {}
         if analysis.measure_pair_not_evaluated is not None:
             # #3507: a 1-way session's MEASURE is ONE routed solo of the plant.
-            # Every axis a candidate carries — corner, delay, polarity,
-            # inter-branch trim — is a statement about two branches, so this
-            # round publishes none. It is ACCEPTED, not refused: the solo's own
-            # evidence (its driver response, its repeat drift, its pilots) is
-            # what the round measured and every screen above has already passed
-            # it, and the entry baseline still follows to bracket the apply.
-            # The absence travels as the packet's own ``not_evaluated`` shape so
-            # no reader can take a missing candidate for a clean one.
-            self._measure_gate_window_ms = self._measure_gate(analysis)
+            # The INTER-DRIVER axes a pair carries — corner, delay, polarity,
+            # inter-branch trim — are statements about two branches, so this
+            # round evaluates none of them and says so by name rather than
+            # publishing a single-branch lookalike of a two-branch answer. It
+            # still builds and publishes a candidate below: the solo's own
+            # evidence is what the linearization is fitted from, and every
+            # screen above has already passed that capture.
             log_event(
                 logger, "correction.crossover_v2_measure_solo",
                 session_id=self.session_id,
@@ -5104,17 +5090,13 @@ class CrossoverV2Session:
                 roles=",".join(rb.role for rb in self._roles),
                 responses=len(analysis.driver_responses),
             )
-            return PhaseVerdict(
-                True,
-                payload={
-                    "measurement_phase": PHASE_MEASURE,
-                    "candidate": {
-                        "status": CLAIM_NOT_EVALUATED,
-                        "reason": analysis.measure_pair_not_evaluated,
-                    },
+            pair_claim = {
+                "pair": {
+                    "status": CLAIM_NOT_EVALUATED,
+                    "reason": analysis.measure_pair_not_evaluated,
                 },
-            )
-        if analysis.candidate is None:
+            }
+        elif analysis.candidate is None:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call
             # deeper and one line later (``_build_candidate``'s own identical
@@ -5180,7 +5162,10 @@ class CrossoverV2Session:
         # on and fitting here ages nothing.
         if PHASE_CLOUD_MEASURE in self._journey.plan.phases:
             self._measure_analysis = analysis
-            return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
+            return PhaseVerdict(
+                True,
+                payload={"measurement_phase": PHASE_MEASURE, **pair_claim},
+            )
         # The no-deferral shape, and the SHIPPED stage-1 branch: with the cloud
         # flag off ``prepare_v2_session`` builds ``CHECK, MEASURE,
         # ENTRY_BASELINE``, so the configured Fc's candidate is published right
@@ -5203,6 +5188,7 @@ class CrossoverV2Session:
             True,
             payload={
                 "measurement_phase": PHASE_MEASURE,
+                **pair_claim,
                 **self._publish_measure_candidate(analysis, None),
             },
         )
@@ -6563,7 +6549,7 @@ class CrossoverV2Session:
             level_frame_finding=built.level_frame_finding,
             # #2392's other half of the same one-line re-supply: the walk reads
             # the verdict off its own build's state.
-            realized_branch_level=built.linearization.realized_branch_level,
+            realized_branch_level=self._realized_branch_level(built.linearization),
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -6611,6 +6597,26 @@ class CrossoverV2Session:
             # answer to different readers, and both come from
             # ``worst_headroom_cost_db`` so they cannot drift.
             "headroom_cost_db": self._candidate_headroom_cost_db(),
+        }
+
+    def _realized_branch_level(
+        self, state: _LinearizationState,
+    ) -> Mapping[str, Any] | None:
+        """The committed pair's realized level, or the named absence of a pair.
+
+        THREE states, not two. A graded verdict; ``None`` when a pair existed
+        and nothing graded it (an ineligible mic tier, an under-repeated
+        branch, a failed fit); and — on a 1-way main — the pair's own absence
+        stated by name, in the same ``not_evaluated`` vocabulary the MEASURE
+        verdict already publishes it under, so no reader can take "nothing
+        graded this" for "there was nothing to grade".
+        """
+        verdict = state.realized_branch_level
+        if verdict is not None or self._tweeter is not None:
+            return verdict
+        return {
+            "status": CLAIM_NOT_EVALUATED,
+            "reason": MEASURE_PAIR_SINGLE_DRIVER,
         }
 
     def _publish_level_frame_finding(
@@ -8759,11 +8765,8 @@ class CrossoverV2Session:
         align = analysis.alignment
         cand = analysis.candidate
         tweeter_role = self._tweeter_role
-        delay_us, delay_role, polarity = (
-            (None, None, None) if tweeter_role is None
-            else alignment_to_candidate_fields(
-                analysis, woofer_role=self._woofer.role, tweeter_role=tweeter_role,
-            )
+        delay_us, delay_role, polarity = alignment_to_candidate_fields(
+            analysis, roles=tuple(band.role for band in self._roles),
         )
         woofer_snr_db, woofer_snr_verdict, woofer_snr_band = _driver_snr_fields(
             _driver_response_by_role(analysis, self._woofer.role)
@@ -9073,6 +9076,11 @@ class CrossoverV2Session:
         :class:`CrossoverV2FlowError` is this module's phase-transition error,
         which a pure module has no business raising.
 
+        The second is scoped to a session that OWES a measured pair candidate.
+        A 1-way main's MEASURE is one routed solo, so its analysis carries none
+        by design and the organ builds the single-branch prescription from the
+        solo's own evidence (#3507).
+
         The first is ABOVE the SF2 degrade handler on purpose: raised inside it
         this was caught and degraded to a committable trims-only candidate
         (panel B1/SF2) in the wrong polarity convention. Severity, per the
@@ -9087,11 +9095,11 @@ class CrossoverV2Session:
         sites across two suites reach the first of them — six substituting the
         class attribute, three substituting it on a session instance.
         """
-        tweeter = self._require_tweeter()
+        roles = tuple(band.role for band in self._roles)
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
             raise ValueError("protected-neutral capture reached the fitter uncomposed")
-        if analysis.candidate is None:
+        if analysis.candidate is None and len(roles) > 1:
             # ``_measure_verdict`` hoisted this same check to the capture that
             # produces the analysis (2026-07-27 timing move), so reaching it
             # here means a caller that did not walk that path.
@@ -9122,8 +9130,7 @@ class CrossoverV2Session:
             analysis, analysis.candidate, cloud,
             candidate_sections=candidate_sections,
             source_preset=source_preset or self._preset,
-            woofer_role=self._woofer.role,
-            tweeter_role=tweeter.role,
+            roles=roles,
             plan=self._plan_linearization,
             exclusion_evidence=self._exclusion_evidence_json,
             journal=self._journal_linearization,
@@ -9230,14 +9237,12 @@ class CrossoverV2Session:
         in exactly the case it exists for — a host formatter that throws on
         every record throws on the notice too.
         """
-        tweeter = self._require_tweeter()
         plan = _planning.plan_for_candidate(
             analysis, cand, cloud,
             candidate_sections=candidate_sections,
             preset=self._preset,
             program_for_phase=self.program_for_phase,
-            woofer_role=self._woofer.role,
-            tweeter_role=tweeter.role,
+            roles=tuple(band.role for band in self._roles),
             driver_class_by_role=self._driver_class_by_role,
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,

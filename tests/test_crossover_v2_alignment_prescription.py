@@ -1286,7 +1286,7 @@ def test_a_pinned_basin_reaches_the_candidate_as_the_graphs_polarity_field(
     assert analysis.alignment.polarity_agrees_with_sum is None
 
     _magnitude, _role, polarity = alignment_to_candidate_fields(
-        analysis, woofer_role="woofer", tweeter_role="tweeter",
+        analysis, roles=("woofer", "tweeter"),
     )
     assert polarity == word
 
@@ -1618,7 +1618,7 @@ def _candidate_for(delay_us: float) -> MeasuredCrossoverCandidate:
     )
     analysis = type("_A", (), {"alignment": estimate})()
     magnitude, role, polarity = alignment_to_candidate_fields(
-        analysis, woofer_role="woofer", tweeter_role="tweeter",
+        analysis, roles=("woofer", "tweeter"),
     )
     return MeasuredCrossoverCandidate(
         program_id="prog-abc123",

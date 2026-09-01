@@ -1308,7 +1308,7 @@ def test_applied_profile_delay_reads_back_in_the_analysis_sign_frame(
         ),
     )
     magnitude, role, _polarity = alignment_to_candidate_fields(
-        analysis, woofer_role="woofer", tweeter_role="tweeter",
+        analysis, roles=("woofer", "tweeter"),
     )
     assert magnitude == pytest.approx(abs(expected_us))
     assert role == ("tweeter" if expected_us >= 0.0 else "woofer")
@@ -2312,24 +2312,24 @@ def test_alignment_to_candidate_fields_sign_contract():
 
     # positive ⇒ tweeter earlier ⇒ tweeter delayed.
     delay, role, polarity = alignment_to_candidate_fields(
-        analysis_with(150.0), woofer_role="woofer", tweeter_role="tweeter",
+        analysis_with(150.0), roles=("woofer", "tweeter"),
     )
     assert (delay, role, polarity) == (150.0, "tweeter", "keep")
     # negative ⇒ woofer delayed, magnitude non-negative.
     delay, role, polarity = alignment_to_candidate_fields(
-        analysis_with(-90.0), woofer_role="woofer", tweeter_role="tweeter",
+        analysis_with(-90.0), roles=("woofer", "tweeter"),
     )
     assert (delay, role, polarity) == (90.0, "woofer", "keep")
     # inverted polarity maps to the W4 "invert" vocabulary.
     delay, role, polarity = alignment_to_candidate_fields(
         analysis_with(150.0, polarity="inverted"),
-        woofer_role="woofer", tweeter_role="tweeter",
+        roles=("woofer", "tweeter"),
     )
     assert polarity == "invert"
     # An edge-clamped estimate is not applied: trims-only candidate.
     delay, role, polarity = alignment_to_candidate_fields(
         analysis_with(150.0, status=ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW),
-        woofer_role="woofer", tweeter_role="tweeter",
+        roles=("woofer", "tweeter"),
     )
     assert (delay, role, polarity) == (None, None, None)
 

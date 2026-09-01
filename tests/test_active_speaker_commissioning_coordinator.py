@@ -25,58 +25,14 @@ from jasper.active_speaker.commissioning_coordinator import (
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
-from tests.active_speaker_fixtures import mono_output_topology as _topology
+from tests.active_speaker_fixtures import (
+    mono_output_topology as _topology,
+    passive_stereo_output_topology as _passive_stereo_topology,
+)
 
 
 def _step(view: dict, step_id: str) -> dict:
     return next(step for step in view["steps"] if step["id"] == step_id)
-
-
-def _passive_stereo_topology() -> OutputTopology:
-    """Full-range passive left+right mains with no subwoofer."""
-
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_stereo_passive",
-        "name": "Bench stereo passive",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "DAC8",
-        },
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [
-                    {
-                        "role": "full_range",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                ],
-            },
-            {
-                "id": "right",
-                "label": "Right",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "channels": [
-                    {
-                        "role": "full_range",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                    },
-                ],
-            },
-        ],
-        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
-    })
 
 
 def _no_measurements() -> dict:

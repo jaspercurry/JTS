@@ -111,10 +111,10 @@ def test_the_request_carries_the_measure_programs_own_sweep_bands():
         c._plan_linearization(analysis, analysis.candidate, None)
 
     request = seen[0]
-    assert request.woofer.excited_band_hz == (seg_w.f1_hz, seg_w.f2_hz)
-    assert request.tweeter.excited_band_hz == (seg_t.f1_hz, seg_t.f2_hz)
-    assert request.woofer.role == c._woofer.role
-    assert request.tweeter.role == c._tweeter.role
+    woofer, tweeter = request.drivers
+    assert woofer.excited_band_hz == (seg_w.f1_hz, seg_w.f2_hz)
+    assert tweeter.excited_band_hz == (seg_t.f1_hz, seg_t.f2_hz)
+    assert request.roles == (c._woofer.role, c._tweeter.role)
 
 
 def test_the_request_carries_the_two_facts_the_analysis_cannot_know():
@@ -575,12 +575,12 @@ def test_the_no_candidate_refusal_is_not_the_same_as_its_fallback():
     builtin — so a named, classified refusal silently becomes an unclassified
     internal error.
 
-    **Two — the organ contracts on the caller having refused it.**
-    ``planning.build_candidate`` takes ``cand`` as an argument rather than
-    re-reading ``analysis.candidate``, precisely so it does not hold a second
-    opinion about a fact the caller settled. It carries no ``None`` guard of
-    its own, so deleting this one does not move the responsibility — it drops
-    it.
+    **Two — the organ would not refuse in its place.** Since #3507 phase 2b
+    ``planning.build_candidate`` accepts ``cand=None``: that is the honest
+    shape of a 1-way main, whose MEASURE is one routed solo. Handed a
+    two-branch analysis with no candidate it therefore BUILDS one — a
+    trims-only candidate at a fixed 0 dB — instead of refusing, so deleting
+    this raise would not move the responsibility, it would drop it.
     """
     from jasper.web.correction_crossover_v2 import classify_program_failure
 
@@ -596,8 +596,14 @@ def test_the_no_candidate_refusal_is_not_the_same_as_its_fallback():
     for fallback in (AttributeError("NoneType"), TypeError("NoneType"), ValueError("x")):
         assert classify_program_failure(fallback) is None
 
-    # Two: the organ really does have no guard of its own to fall back on.
-    body = inspect.getsource(planning.build_candidate)
-    signature, _, _ = body.partition('"""')
-    assert "cand" in signature, "build_candidate still takes the candidate as an argument"
-    assert "cand is None" not in body
+    # Two: the organ does not refuse in its place — it builds.
+    built, state = planning.build_candidate(
+        replace(analysis, candidate=None), None,
+        source_preset=c._preset,
+        roles=(c._woofer.role, c._tweeter.role),
+        plan=c._plan_linearization,
+        exclusion_evidence=c._exclusion_evidence_json,
+        journal=c._journal_linearization,
+    )
+    assert set(built.role_attenuations_db) == {c._woofer.role, c._tweeter.role}
+    assert state.outcome
