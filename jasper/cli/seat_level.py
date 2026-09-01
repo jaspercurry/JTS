@@ -21,16 +21,22 @@ This module is wiring only. Every decision it makes belongs to someone else:
 * the SPL ceiling — the profile's ``max_commissioning_level_db_spl``
 * the absolute level reference — the mic's own calibration file
 * the mic feed — :class:`jasper.audio_measurement.wired_level_meter.WiredLevelMeter`
-* the stimulus — an operator-named WAV, played on the correction lane
+* the stimulus — generated from the drivers' own declarations
+  (:func:`default_stimulus_wav`), or an operator-named WAV, played on the
+  correction lane
 
-**Why the stimulus is named, not designed here.** Choosing a safe excitation for
-a summed, seat-position measurement is the excitation-admission subsystem's job,
-not a CLI's. Point ``--stimulus-wav`` at the program this session will actually
-measure with; its true peak is read from the bytes, each driver's branch peak is
-rendered from those same bytes through the graph that is actually applied, and
-the ceiling is solved so no branch reaches full scale at any commanded volume.
-When that render cannot be exact — no applied graph, a filter type the renderer
-does not model — the ceiling falls back to bounding every branch by the
+**Why the stimulus is derived, not designed here.** A settled-window SPL read
+needs a CONTINUOUS signal, and a session's own programs are silence-separated
+bursts and sweeps — so "point it at the program you will measure with" named a
+class of file that structurally cannot work, and every operator substituted an
+ad-hoc WAV nothing could later identify. The default is now synthesized from
+declarations that already exist (:func:`default_stimulus_wav` states which);
+``--stimulus-wav`` remains the override. Either way its true peak is read from
+the bytes, each driver's branch peak is rendered from those same bytes through
+the graph that is actually applied, and the ceiling is solved so no branch
+reaches full scale at any commanded volume. When that render cannot be exact —
+no applied graph, a filter type the renderer does not model, a stimulus past
+the render bound — the ceiling falls back to bounding every branch by the
 full-band peak, which is the conservative answer this verb shipped with.
 
 **The declared per-driver level caps do not hold this volume down** — a
@@ -49,8 +55,7 @@ control at 100% before trusting any absolute SPL this prints.
 
 Usage::
 
-    jasper-seat-level --stimulus-wav /var/lib/jasper/.../check.wav \\
-        --mic-serial 810-8494
+    jasper-seat-level --mic-serial 810-8494
 
 Exit 0 only on a converged, banked reference; 1 on any refusal, with the
 ``REFUSE_*`` reason on stderr and in the ``event=`` line. A refusal's line also
@@ -72,9 +77,8 @@ import math
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
@@ -89,6 +93,7 @@ from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TOLERANCE_DB,
     SeatLevelTarget,
     SeatLevelTargetError,
+    StimulusProvenance,
 )
 from jasper.active_speaker import ActiveSpeakerConfigError
 from jasper.active_speaker.commission_wiring import CommissionPresetResolutionError
@@ -113,7 +118,6 @@ REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
 # each driver's permitted band), and it is a stable operator-facing string.
 REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
 REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
-
 
 def _refused(
     reason: str, detail: str, *, restored: bool | None = None
@@ -158,41 +162,31 @@ def _restore_phrase(restored: bool | None) -> str:
     return "Whether the household volume was restored could not be observed."
 
 
-@dataclass(frozen=True)
-class StimulusLevels:
-    """What one stimulus WAV measures — the two numbers, from one read.
+def stimulus_provenance(
+    path: Path, *, band_hz: tuple[float, float] | None = None
+) -> StimulusProvenance:
+    """Which stimulus WAV this is, and what it measures — from ONE read.
 
-    Together because they answer one question between them. The PEAK is what
-    bounds the volume ceiling (``unsegmented_stimulus_ceiling_db``: full scale
-    less the peak). The RMS is what the seat actually hears at a given volume.
-    Their difference is the crest factor, and it is the number that decides
-    whether a target is reachable at all. Crest is a property of the program
-    (band, length and draw), so it is MEASURED here rather than assumed; to
-    read the size of the effect, one 20 s 150-8000 Hz noise draw measured
-    ~14 dB of crest, so peak-normalized to -20 dBFS it sits at ~-34 dBFS RMS
-    and reaches the seat 19 dB quieter than the same draw peak-normalized to
-    -1 dBFS — at a fader that cannot go above 0 dB, that is 19 dB of target
-    simply out of reach. The ramp carries both numbers onto its
-    unreachable-target refusal so that sum is visible there rather than
-    inferred.
-    """
+    The identity and both levels come out of the same bytes, because a second
+    read is a second answer the day the path is a symlink somebody swapped —
+    and telling those two files apart is the whole reason the sha is recorded.
 
-    peak_dbfs: float
-    rms_dbfs: float
+    The PEAK bounds the volume ceiling (``unsegmented_stimulus_ceiling_db``:
+    full scale less the peak). The RMS is what the seat actually hears at a
+    given volume. Their difference is the crest factor, and it is the number
+    that decides whether a target is reachable at all. Crest is a property of
+    the program (band, length and draw), so it is MEASURED here rather than
+    assumed; to read the size of the effect, one 20 s 150-8000 Hz noise draw
+    measured ~14 dB of crest, so peak-normalized to -20 dBFS it sits at
+    ~-34 dBFS RMS and reaches the seat 19 dB quieter than the same draw
+    peak-normalized to -1 dBFS — at a fader that cannot go above 0 dB, that is
+    19 dB of target simply out of reach.
 
-
-def stimulus_levels_dbfs(path: Path) -> StimulusLevels:
-    """True peak and RMS of a stimulus WAV, dBFS, across ALL channels.
-
-    ONE read of the file for both, because both describe the same samples and a
-    second read is a second answer the day the path is a symlink somebody
-    swapped.
-
-    The max over the whole interleaved array — deliberately NOT a downmix.
-    ``sweep.read_wav_mono`` averages channels, which halves the peak of a
-    program whose stimulus sits on one channel while the other is silent, and
-    an under-reported peak would RAISE the derived volume ceiling. This reads
-    the worst case instead, which is the only direction that is safe.
+    The peak is the max over the whole interleaved array — deliberately NOT a
+    downmix. ``sweep.read_wav_mono`` averages channels, which halves the peak
+    of a program whose stimulus sits on one channel while the other is silent,
+    and an under-reported peak would RAISE the derived volume ceiling. This
+    reads the worst case instead, which is the only direction that is safe.
 
     The RMS is over the same whole array and is therefore a DIGITAL level, not
     an acoustic one: on a program whose stimulus sits on one channel it counts
@@ -200,12 +194,20 @@ def stimulus_levels_dbfs(path: Path) -> StimulusLevels:
     bounds nothing — it is disclosure — so the conservative direction does not
     apply and the honest one (what the file as a whole measures) does.
 
+    ``band_hz`` is the band a GENERATED default was synthesized over, passed in
+    rather than estimated from the samples: it is a declaration, and a measured
+    approximation of it would be a second, disagreeing answer.
+
     A peak of zero raises: a silent file would derive an absurdly high ceiling.
     """
+    import hashlib
+    import io
+
     import numpy as np
     from scipy.io import wavfile
 
-    _rate, data = wavfile.read(str(path))
+    raw = path.read_bytes()
+    _rate, data = wavfile.read(io.BytesIO(raw))
     samples = np.asarray(data).astype(np.float64)
     full_scale = (
         float(np.iinfo(np.asarray(data).dtype).max)
@@ -218,8 +220,115 @@ def stimulus_levels_dbfs(path: Path) -> StimulusLevels:
             f"{path} carries no signal; a silent stimulus cannot bound a volume"
         )
     rms = float(np.sqrt(np.mean((samples / full_scale) ** 2)))
-    return StimulusLevels(
-        peak_dbfs=20.0 * math.log10(peak), rms_dbfs=20.0 * math.log10(rms)
+    return StimulusProvenance(
+        path=str(path),
+        sha256=hashlib.sha256(raw).hexdigest(),
+        peak_dbfs=20.0 * math.log10(peak),
+        rms_dbfs=20.0 * math.log10(rms),
+        band_hz=band_hz,
+    )
+
+
+class _Declarations(NamedTuple):
+    """One load of the topology and design draft, shared by the whole pass."""
+
+    topology: Any
+    draft: dict[str, Any]
+    safety_profile: dict[str, Any]
+
+
+def _load_declarations(args: argparse.Namespace) -> _Declarations:
+    """Load ONCE what both derivations below read.
+
+    The default-stimulus band and the volume ceiling both come off the same
+    topology and design draft; loading per consumer would do the draft's
+    derived-field stamping twice and give the missing-profile refusal two
+    homes to drift between.
+    """
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.output_topology import load_output_topology_strict
+
+    topology = load_output_topology_strict(args.topology)
+    draft = load_design_draft(topology=topology)
+    safety_profile = draft.get("driver_safety_profile")
+    if not isinstance(safety_profile, dict):
+        raise SessionVolumePlanError(
+            "the design draft carries no driver_safety_profile; commission the "
+            "drivers before leveling"
+        )
+    return _Declarations(topology, draft, safety_profile)
+
+
+def default_stimulus_wav(
+    declarations: _Declarations,
+) -> tuple[Path, tuple[float, float]]:
+    """Synthesize the default stimulus, and say which band it covers.
+
+    Every parameter is read off a declaration this box already carries, so
+    nothing here is a property of one rig, one room, or one operator's home
+    directory:
+
+    * the BAND is the hull of the drivers' declared ``measurement_band_hz``,
+      clamped to the global driver-test limits and to Nyquist. The hull and not
+      the intersection: this is ONE unsegmented signal that the applied
+      crossover splits, so it has to cover every driver's declared window, and
+      a two-way's two windows can fail to overlap at all;
+    * the LEVEL is the level driver-capture excitation already runs at, so a
+      reference banked against the default sits at the same digital level as
+      the programs the session goes on to measure with;
+    * the DURATION is the branch-peak render bound — the longest stimulus whose
+      per-branch peak solve stays EXACT. Past it the ceiling silently falls
+      back to the conservative full-band bound.
+
+    It is cached under the installer-registered stimulus directory
+    (``speech_stimulus.DEFAULT_CACHE_DIR``, created by ``deploy/install.sh``),
+    so the file an operator is asked about is discoverable rather than an
+    unbanked path in somebody's home directory.
+    """
+    from jasper.active_speaker.branch_peak import MAX_STIMULUS_SAMPLES
+    from jasper.active_speaker.commissioning_admission import (
+        ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+    )
+    from jasper.active_speaker.excitation_safety_plan import (
+        resolve_driver_measurement_band_hz,
+    )
+    from jasper.active_speaker.measurement import active_driver_targets
+    from jasper.active_speaker.speech_stimulus import DEFAULT_CACHE_DIR
+    from jasper.active_speaker.test_signal_plan import (
+        MAX_DRIVER_TEST_FREQUENCY_HZ,
+        MIN_DRIVER_TEST_FREQUENCY_HZ,
+    )
+    from jasper.audio_measurement.playback import ensure_bandlimited_noise_wav
+    from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
+
+    bands = [
+        resolve_driver_measurement_band_hz(
+            declarations.safety_profile, str(target["target_fingerprint"])
+        )
+        for target in active_driver_targets(declarations.topology)
+    ]
+    if not bands:
+        raise SessionVolumePlanError(
+            "this topology declares no active driver targets, so no stimulus "
+            "band can be derived; name one with --stimulus-wav"
+        )
+    f_lo = max(MIN_DRIVER_TEST_FREQUENCY_HZ, min(lo for lo, _hi in bands))
+    f_hi = min(
+        MAX_DRIVER_TEST_FREQUENCY_HZ,
+        PROGRAM_SAMPLE_RATE_HZ / 2.0 - 1.0,
+        max(hi for _lo, hi in bands),
+    )
+    band = (float(f_lo), float(f_hi))
+    return (
+        ensure_bandlimited_noise_wav(
+            f_lo_hz=band[0],
+            f_hi_hz=band[1],
+            duration_s=MAX_STIMULUS_SAMPLES / PROGRAM_SAMPLE_RATE_HZ,
+            dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+            sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+            cache_dir=DEFAULT_CACHE_DIR,
+        ),
+        band,
     )
 
 
@@ -269,30 +378,22 @@ def _applied_branch_peaks(
 
 
 def _derive_bounds(
-    args: argparse.Namespace, stimulus: Path, levels: StimulusLevels
+    stimulus: Path, levels: StimulusProvenance, declarations: _Declarations
 ) -> tuple[float, float]:
     """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``.
 
-    ``levels`` is measured once by the caller rather than read again here: the
+    ``levels`` is measured once by the caller rather than read again here (the
     ramp needs the same numbers for its refusal, and two reads of one file are
-    two answers.
+    two answers), and ``declarations`` is loaded once by the caller for the
+    same reason.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
-        load_design_draft,
     )
     from jasper.active_speaker.measurement import active_driver_targets
-    from jasper.output_topology import load_output_topology_strict
 
-    topology = load_output_topology_strict(args.topology)
-    draft = load_design_draft(topology=topology)
-    safety_profile = draft.get("driver_safety_profile")
-    if not isinstance(safety_profile, dict):
-        raise SessionVolumePlanError(
-            "the design draft carries no driver_safety_profile; commission the "
-            "drivers before leveling"
-        )
+    topology, draft, safety_profile = declarations
     targets = active_driver_targets(topology)
     fingerprints = [str(target["target_fingerprint"]) for target in targets]
     # The PAD-FOLDED sensitivities, not the naked datasheet ones. An L-pad'd
@@ -385,14 +486,12 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     from jasper.audio_measurement.wired_level_meter import WiredLevelMeter
     from jasper.camilla import primary_controller
 
-    stimulus = Path(args.stimulus_wav)
-    if not stimulus.is_file():
+    if args.stimulus_wav is not None and not Path(args.stimulus_wav).is_file():
         return _refused(
             REFUSE_STIMULUS_MISSING,
-            f"no such stimulus WAV: {stimulus}. On a virgin speaker no "
-            "stimulus exists until a session generates one -- run "
-            "jasper-driver-trim (or open a session) first, then point "
-            "--stimulus-wav at its program",
+            f"no such stimulus WAV: {args.stimulus_wav}. Omit --stimulus-wav "
+            "and the verb generates its own from the drivers' declared "
+            "measurement bands",
         )
 
     sensitivity = resolve_mic_sensitivity(
@@ -414,8 +513,14 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         )
 
     try:
-        levels = stimulus_levels_dbfs(stimulus)
-        ceiling_db, spl_ceiling = _derive_bounds(args, stimulus, levels)
+        declarations = _load_declarations(args)
+        stimulus, band_hz = (
+            (Path(args.stimulus_wav), None)
+            if args.stimulus_wav is not None
+            else default_stimulus_wav(declarations)
+        )
+        provenance = stimulus_provenance(stimulus, band_hz=band_hz)
+        ceiling_db, spl_ceiling = _derive_bounds(stimulus, provenance, declarations)
     except (
         SessionVolumePlanError,
         CommissionPresetResolutionError,
@@ -468,11 +573,11 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
                 play_continuous_tone=_play,
                 cancel_tone=_cancel,
                 next_samples=_samples,
-                # Disclosure, not a bound: what the signal being played
-                # measures, so `spl_target_unreachable` can show its own
-                # arithmetic instead of reading as a nanny.
-                stimulus_rms_dbfs=levels.rms_dbfs,
-                stimulus_peak_dbfs=levels.peak_dbfs,
+                # Disclosure, not a bound: WHICH signal is being played and
+                # what it measures, so `spl_target_unreachable` can show its
+                # own arithmetic instead of reading as a nanny, and so the
+                # banked reference names the stimulus half of its definition.
+                stimulus=provenance,
             )
         )
     except _OperatorStopped as stop:
@@ -530,7 +635,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    PRECONDITION above) -- level first, then re-run this\n"
             "\n"
             "EXAMPLE\n"
-            "  jasper-seat-level --stimulus-wav captures/pink_noise.wav \\\n"
+            "  jasper-seat-level \\\n"
             "      --calibration-file /var/lib/jasper/mic-cal/umik2-7003219.txt\n"
             "\n"
             "EXIT CODES\n"
@@ -545,9 +650,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stimulus-wav",
-        required=True,
-        help="continuous stimulus to level against (the program this session "
-        "will measure with)",
+        default=None,
+        help="override the generated default with a CONTINUOUS, band-limited "
+        "WAV under the branch-peak render bound; omit it and one is "
+        "synthesized from the drivers' declared measurement bands",
     )
     parser.add_argument(
         "--target-db-spl",

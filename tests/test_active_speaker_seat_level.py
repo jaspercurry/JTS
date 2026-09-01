@@ -64,6 +64,7 @@ from jasper.active_speaker.session_volume_plan import (
 from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
+    StimulusProvenance,
     load_seat_level_reference,
     seat_level_reference_volume_db,
     write_seat_level_reference,
@@ -327,8 +328,7 @@ async def _level(
     sensitivity: MicSensitivity = UMIK2,
     max_main_volume_db: float = CEILING_DB,
     spl_ceiling_db_spl: float = SPL_CEILING,
-    stimulus_rms_dbfs: float | None = None,
-    stimulus_peak_dbfs: float | None = None,
+    stimulus: StimulusProvenance | None = None,
 ):
     clock = FakeClock()
     result = await slr.run_seat_level_ramp(
@@ -336,8 +336,7 @@ async def _level(
         sensitivity=sensitivity,
         max_main_volume_db=max_main_volume_db,
         spl_ceiling_db_spl=spl_ceiling_db_spl,
-        stimulus_rms_dbfs=stimulus_rms_dbfs,
-        stimulus_peak_dbfs=stimulus_peak_dbfs,
+        stimulus=stimulus,
         get_main_volume_db=volume.get,
         set_main_volume_db=volume.set,
         play_continuous_tone=tone.play,
@@ -1205,6 +1204,56 @@ def test_a_converged_ramp_banks_the_volume_that_measured_the_band(tmp_path):
     assert banked["mic_sensitivity"]["analog_gain_db"] == 18.0
 
 
+def test_a_banked_reference_names_the_stimulus_it_was_measured_against(tmp_path):
+    """#3477: the stimulus is half the reference's definition, and was dropped.
+
+    A reference is "the volume that produced this SPL FOR THIS STIMULUS", and
+    ``dB SPL = stimulus dBFS + chain gain + volume``. With the stimulus term
+    unrecorded, two references taken against different WAVs differ by a number
+    no consumer can see, and the difference reads as a chain change — which is
+    what a driver comparing a 14.3 dB volume delta actually concluded. The
+    identity rides beside the levels so the comparison is determined.
+    """
+    volume, tone, mic = _rig(gain_db=-10.0)
+    stimulus = StimulusProvenance(
+        path="/var/lib/jasper/active_speaker_stimuli/noise_45-18000Hz.wav",
+        sha256="b" * 64,
+        peak_dbfs=-12.0,
+        rms_dbfs=-26.204,
+        band_hz=(45.0, 18_000.0),
+    )
+
+    asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path, stimulus=stimulus)
+    )
+
+    banked = load_seat_level_reference(
+        state_path=tmp_path / "seat_level_reference.json"
+    )
+    assert banked["stimulus"] == {
+        "path": "/var/lib/jasper/active_speaker_stimuli/noise_45-18000Hz.wav",
+        "sha256": "b" * 64,
+        "peak_dbfs": -12.0,
+        "rms_dbfs": -26.2,
+        "band_hz": [45.0, 18_000.0],
+    }
+
+
+def test_a_reference_banked_against_an_unrecorded_stimulus_says_so(tmp_path):
+    """An absent stimulus is null, never an omitted key.
+
+    A consumer must be able to tell "measured against a stimulus nobody
+    recorded" from "this build does not record stimuli"; a missing key cannot.
+    """
+    volume, tone, mic = _rig(gain_db=-10.0)
+    asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    banked = load_seat_level_reference(
+        state_path=tmp_path / "seat_level_reference.json"
+    )
+    assert banked["stimulus"] is None
+
+
 def test_the_banked_artifact_keeps_its_exact_shape(tmp_path):
     """The document's consumers did not change, so neither may its keys.
 
@@ -1226,6 +1275,7 @@ def test_the_banked_artifact_keeps_its_exact_shape(tmp_path):
         "target",
         "mic_sensitivity",
         "max_main_volume_db",
+        "stimulus",
     }
     assert banked["artifact_schema_version"] == 1
     assert banked["kind"] == "jts_active_speaker_seat_level_reference"
@@ -1473,6 +1523,79 @@ def test_a_measured_level_over_the_commissioning_ceiling_aborts(tmp_path):
     assert not (tmp_path / "seat_level_reference.json").exists()
 
 
+def test_a_ceiling_trip_carries_the_target_this_room_can_still_reach(tmp_path):
+    """#3476: the stop is correct; re-deriving a safe target by hand is not.
+
+    A room with out-of-band rumble spends the target-to-stop margin on its own
+    crest: the pass settles inside the band and one sample rides over the
+    profile's commissioning stop. The stop fires, as it must — but the operator
+    then has to re-derive a lower target by hand, at the cost of another
+    audible near-ceiling ramp, from numbers the pass already measured. The
+    excursion is measured at the volume the pass had SETTLED at, so no chain
+    model is assumed: it is one measured level and one measured sample.
+    """
+    # This room's own crest over its settled tone. A labeled example; the field
+    # report's was 85.02 dB SPL against an 85.0 stop.
+    OVER_CEILING_DB = 0.02
+
+    class CrestMic(Mic):
+        """One out-of-band crest sample riding on a settled, in-band tone."""
+
+        def __init__(self, *args, crest_after: int, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._crest_after = crest_after
+            self._in_band = 0
+
+        async def next_samples(self):
+            batch = await super().next_samples()
+            if UMIK2.db_spl_from_dbfs(batch[0].rms_dbfs) >= TARGET.low_db_spl:
+                self._in_band += 1
+                if self._in_band == self._crest_after:
+                    return _poll(
+                        batch[0].seq,
+                        UMIK2.dbfs_from_db_spl(SPL_CEILING + OVER_CEILING_DB),
+                    )
+            return batch
+
+    volume = Volume()
+    tone = BlockingTone()
+    # Past the 20 samples one settled reading spends, so the crest lands in the
+    # bank CONFIRM — the re-read at the same commanded volume.
+    mic = CrestMic(volume, tone, gain_db=-10.0, crest_after=25)
+
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    trip = result.ramp["stopped_window"]["trip_db_spl"]
+    settled = result.ramp["steps"][-1]["observed_db_spl"]
+    assert settled <= SPL_CEILING < trip
+    assert result.reachable_target_db_spl == pytest.approx(
+        SPL_CEILING - (trip - settled) - TARGET.tolerance_db, abs=0.01
+    )
+    # Actionable, not advice: a band aimed there carries this run's measured
+    # excursion and still lands under the stop.
+    assert (
+        result.reachable_target_db_spl + TARGET.tolerance_db + (trip - settled)
+        <= SPL_CEILING + 1e-9
+    )
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_a_ceiling_trip_with_no_settled_level_beneath_it_derives_nothing(tmp_path):
+    """An absent number is silent, never a guess.
+
+    The very first tone trips the stop, so no level was ever settled to measure
+    the excursion against and there is no derivable target.
+    """
+    volume, tone, mic = _rig(
+        gain_db=gain_for_seat_spl(90.0, at_volume_db=slr.SEAT_LEVEL_START_DB)
+    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert result.reachable_target_db_spl is None
+
+
 def test_a_clipped_capture_aborts_rather_than_reading_a_level(tmp_path):
     volume = Volume()
     tone = BlockingTone()
@@ -1536,7 +1659,12 @@ def test_the_unreachable_refusal_shows_the_level_of_the_signal_it_played(
         result = asyncio.run(
             _level(
                 mic=mic, volume=volume, tone=tone, tmp_path=tmp_path,
-                stimulus_rms_dbfs=-33.58, stimulus_peak_dbfs=-20.0,
+                stimulus=StimulusProvenance(
+                    path="/var/lib/jasper/active_speaker_stimuli/quiet.wav",
+                    sha256="0" * 64,
+                    peak_dbfs=-20.0,
+                    rms_dbfs=-33.58,
+                ),
             )
         )
 

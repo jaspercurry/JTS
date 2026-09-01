@@ -49,6 +49,7 @@ from jasper.log_event import log_event
 from .seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
+    StimulusProvenance,
     write_seat_level_reference,
 )
 from .session_volume_plan import (
@@ -270,9 +271,7 @@ REFUSE_ISOLATION_UNAVAILABLE = "measurement_isolation_unavailable"
 CLIPPED_CAPTURE_DETAIL = "the capture clipped; no level can be read from it"
 
 
-def stimulus_level_phrase(
-    *, rms_dbfs: float | None, peak_dbfs: float | None
-) -> str:
+def stimulus_level_phrase(stimulus: StimulusProvenance | None) -> str:
     """What the SIGNAL measures, so an unreachable target reads as arithmetic.
 
     A target out of reach is a statement about four numbers — the target SPL,
@@ -285,35 +284,58 @@ def stimulus_level_phrase(
 
     Empty when the caller measured no stimulus: an absent number says nothing
     rather than guessing, which is every other optional quantity's rule here.
-    The peak half is likewise omitted rather than defaulted — the ceiling is
-    derived from it, so a missing one is not a zero.
     """
-    if rms_dbfs is None:
+    if stimulus is None:
         return ""
-    if peak_dbfs is None:
-        return f"; the stimulus measures {rms_dbfs:.1f} dBFS RMS"
     return (
-        f"; the stimulus measures {rms_dbfs:.1f} dBFS RMS at {peak_dbfs:.1f} dBFS "
-        f"peak ({peak_dbfs - rms_dbfs:.1f} dB crest), leaving "
-        f"{-peak_dbfs:.1f} dB of digital headroom unused"
+        f"; the stimulus measures {stimulus.rms_dbfs:.1f} dBFS RMS at "
+        f"{stimulus.peak_dbfs:.1f} dBFS peak "
+        f"({stimulus.peak_dbfs - stimulus.rms_dbfs:.1f} dB crest), leaving "
+        f"{-stimulus.peak_dbfs:.1f} dB of digital headroom unused"
     )
 
 
-def _stimulus_event_fields(
-    *, rms_dbfs: float | None, peak_dbfs: float | None
-) -> dict[str, Any]:
-    """The same two numbers as ``event=`` fields, absent when unmeasured.
+def _stimulus_event_fields(stimulus: StimulusProvenance | None) -> dict[str, Any]:
+    """The same numbers as ``event=`` fields, absent when unmeasured.
 
     Beside the prose rather than instead of it: the terminal reader and the
-    journal reader are different people, and this is the field an operator
+    journal reader are different people, and these are the fields an operator
     greps to compare two passes' stimuli without re-reading either WAV.
     """
-    out: dict[str, Any] = {}
-    if rms_dbfs is not None:
-        out["stimulus_rms_dbfs"] = f"{rms_dbfs:.2f}"
-    if peak_dbfs is not None:
-        out["stimulus_peak_dbfs"] = f"{peak_dbfs:.2f}"
-    return out
+    if stimulus is None:
+        return {}
+    return {
+        "stimulus_rms_dbfs": f"{stimulus.rms_dbfs:.2f}",
+        "stimulus_peak_dbfs": f"{stimulus.peak_dbfs:.2f}",
+        "stimulus_sha256": stimulus.sha256,
+    }
+
+
+def reachable_target_db_spl(
+    *, spl_ceiling_db_spl: float, trip_db_spl: float, settled_db_spl: float,
+    tolerance_db: float,
+) -> float:
+    """The highest target this run's OWN excursion still fits under the stop.
+
+    A room with out-of-band content (LF rumble, HVAC) spends the
+    target-to-stop margin on its crest: the level settles inside the band and a
+    single sample rides over ``max_commissioning_level_db_spl``. The stop is
+    right to fire — but the operator then re-derives a lower target by hand,
+    from numbers this pass already measured, at the cost of another audible
+    near-ceiling ramp.
+
+    Both inputs are MEASURED at the same commanded volume (the caller's
+    precondition), so no chain model is assumed:
+
+        excursion = trip - settled
+        band top  = ceiling - excursion
+        target    = band top - tolerance
+
+    Derived from the profile's declared ceiling and this run's own two
+    readings; nothing here is a property of a rig or a room.
+    """
+    excursion_db = max(0.0, float(trip_db_spl) - float(settled_db_spl))
+    return float(spl_ceiling_db_spl) - excursion_db - float(tolerance_db)
 
 
 def over_ceiling_detail(*, observed_db_spl: float, spl_ceiling_db_spl: float) -> str:
@@ -358,6 +380,10 @@ class SeatLevelResult:
     ``restored`` says whether the household volume actually came back: ``None``
     before anything was moved, and a MEASURED outcome after, because the volume
     seam can reject a write (CamillaDSP down mid-pass).
+
+    ``reachable_target_db_spl`` is :func:`reachable_target_db_spl`'s answer on
+    a pass the commissioning stop ended, and ``None`` everywhere else — a
+    structured next step for the caller, not advice in prose.
     """
 
     status: str
@@ -366,6 +392,7 @@ class SeatLevelResult:
     reference_volume_db: float | None = None
     measured_db_spl: float | None = None
     restored: bool | None = None
+    reachable_target_db_spl: float | None = None
     ramp: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -380,6 +407,7 @@ class SeatLevelResult:
             "reference_volume_db": self.reference_volume_db,
             "measured_db_spl": self.measured_db_spl,
             "restored": self.restored,
+            "reachable_target_db_spl": self.reachable_target_db_spl,
             "ramp": self.ramp,
         }
 
@@ -1097,8 +1125,7 @@ async def run_seat_level_ramp(
     play_continuous_tone: Callable[[], Awaitable[Any]],
     cancel_tone: Callable[[], None],
     next_samples: SampleSource,
-    stimulus_rms_dbfs: float | None = None,
-    stimulus_peak_dbfs: float | None = None,
+    stimulus: StimulusProvenance | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     session_id: str = "seat_level",
@@ -1117,11 +1144,13 @@ async def run_seat_level_ramp(
     — the loudest volume at which the actual stimulus still has digital headroom
     in every driver's branch. The ramp never commands above it.
 
-    ``stimulus_rms_dbfs``/``stimulus_peak_dbfs`` are what that stimulus
-    MEASURES, and they bound nothing: they are carried so
-    :data:`REFUSE_SPL_TARGET_UNREACHABLE` can show its own arithmetic (see
-    :func:`stimulus_level_phrase`). ``None`` when the caller measured neither,
-    and the refusal then says nothing about them rather than guessing.
+    ``stimulus`` is WHICH signal is playing and what it measures. It bounds
+    nothing: it is carried so :data:`REFUSE_SPL_TARGET_UNREACHABLE` can show
+    its own arithmetic (see :func:`stimulus_level_phrase`) and so a banked
+    reference names the stimulus half of its own definition
+    (:class:`~jasper.active_speaker.seat_level_reference.StimulusProvenance`).
+    ``None`` when the caller measured none, and the refusal then says nothing
+    about it rather than guessing.
 
     The hold rides the crossover session's own volume plan, on the SAME durable
     statefile a measurement session uses, so the recovery machinery already
@@ -1317,8 +1346,7 @@ async def run_seat_level_ramp(
                     agree_db=agree_db,
                     settle_timeout_s=settle_timeout_s,
                     watchdog_s=watchdog_s,
-                    stimulus_rms_dbfs=stimulus_rms_dbfs,
-                    stimulus_peak_dbfs=stimulus_peak_dbfs,
+                    stimulus=stimulus,
                     set_main_volume_db=set_main_volume_db,
                     play_continuous_tone=play_continuous_tone,
                     cancel_tone=cancel_tone,
@@ -1609,8 +1637,7 @@ async def _walk_to_the_band(
     agree_db: float,
     settle_timeout_s: float,
     watchdog_s: float,
-    stimulus_rms_dbfs: float | None,
-    stimulus_peak_dbfs: float | None,
+    stimulus: StimulusProvenance | None,
     set_main_volume_db: SetMainVolumeDb,
     play_continuous_tone: Callable[[], Awaitable[Any]],
     cancel_tone: Callable[[], None],
@@ -1776,6 +1803,7 @@ async def _walk_to_the_band(
             "" if summary is None else _window_phrase(summary, windows=windows)
         )
         window_fields: dict[str, Any] = {}
+        reachable = None
         if summary is not None:
             window_fields.update(_window_event_fields(summary))
             # Only beside a window: this is the number the window has to be read
@@ -1783,6 +1811,21 @@ async def _walk_to_the_band(
             if last is not None:
                 window_fields["prior_db_spl"] = f"{last['observed_db_spl']:.1f}"
                 window_fields["prior_volume_db"] = f"{last['volume_db']:.2f}"
+                # A trip is recorded ONLY by the commissioning SPL stop (a
+                # clipped capture has no readable level), and only when the
+                # prior settled reading was taken at the SAME commanded volume
+                # is the difference an EXCURSION rather than a volume step —
+                # which is what lets the derived target assume no chain model.
+                if summary["trip_db_spl"] is not None and (
+                    abs(fader_db - last["volume_db"]) <= STEP_EPSILON_DB
+                ):
+                    reachable = reachable_target_db_spl(
+                        spl_ceiling_db_spl=spl_ceiling_db_spl,
+                        trip_db_spl=summary["trip_db_spl"],
+                        settled_db_spl=last["observed_db_spl"],
+                        tolerance_db=target.tolerance_db,
+                    )
+                    window_fields["reachable_target_db_spl"] = f"{reachable:.1f}"
         log_event(
             logger,
             "active_speaker.seat_level_refused",
@@ -1799,6 +1842,7 @@ async def _walk_to_the_band(
             status="refused",
             reason=reason,
             detail=f"{detail} ({stopped}{'' if not phrase else f'; {phrase}'})",
+            reachable_target_db_spl=reachable,
             ramp=telemetry(fader_db, window=summary),
         )
 
@@ -1948,6 +1992,7 @@ async def _walk_to_the_band(
                         target=target,
                         sensitivity=sensitivity,
                         ceiling_db=ceiling_db,
+                        stimulus=stimulus,
                         session_id=session_id,
                         reference_state_path=reference_state_path,
                         telemetry=telemetry(volume_db),
@@ -2063,13 +2108,9 @@ async def _walk_to_the_band(
                     # The fourth number the sum needs. Only this refusal carries
                     # it: it is the one whose remedy DEPENDS on it, and a level
                     # the pass never used on every other line would be noise.
-                    + stimulus_level_phrase(
-                        rms_dbfs=stimulus_rms_dbfs, peak_dbfs=stimulus_peak_dbfs
-                    ),
+                    + stimulus_level_phrase(stimulus),
                     observed_db_spl=f"{observed_db_spl:.1f}",
-                    **_stimulus_event_fields(
-                        rms_dbfs=stimulus_rms_dbfs, peak_dbfs=stimulus_peak_dbfs
-                    ),
+                    **_stimulus_event_fields(stimulus),
                 )
             # Only a step that commanded the WHOLE measured gap is a prediction
             # the chain can miss. A capped or ceiling-clamped step is a
@@ -2152,6 +2193,7 @@ def _bank(
     target: SeatLevelTarget,
     sensitivity: MicSensitivity,
     ceiling_db: float,
+    stimulus: StimulusProvenance | None,
     session_id: str,
     reference_state_path: str | Path | None,
     telemetry: dict[str, Any],
@@ -2164,6 +2206,7 @@ def _bank(
             target=target,
             sensitivity=sensitivity.to_dict(),
             max_main_volume_db=float(ceiling_db),
+            stimulus=stimulus,
             state_path=reference_state_path,
         )
     except (SeatLevelTargetError, OSError) as exc:
@@ -2189,6 +2232,10 @@ def _bank(
         measured_db_spl=f"{measured_db_spl:.1f}",
         band_db_spl=f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}]",
         readings=str(len(telemetry.get("steps", []))),
+        # The success path names the stimulus too: a reference volume without
+        # the level it was measured against is half an answer, and this is the
+        # line the journal keeps.
+        **_stimulus_event_fields(stimulus),
     )
     return SeatLevelResult(
         status="converged",

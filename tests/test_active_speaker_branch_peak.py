@@ -587,10 +587,10 @@ def test_a_stimulus_past_the_render_bound_refuses(tmp_path, monkeypatch):
     # The shipped bound leaves a real seat-leveling stimulus far inside it:
     # seconds of program against a 60-second ceiling. Asserted BEFORE the
     # monkeypatch, which is still in force for the rest of this test.
-    assert branch_peak._MAX_STIMULUS_SAMPLES == 48_000 * 60
+    assert branch_peak.MAX_STIMULUS_SAMPLES == 48_000 * 60
 
     wav = _tone_wav(tmp_path / "s.wav", seconds=1.0)
-    monkeypatch.setattr(branch_peak, "_MAX_STIMULUS_SAMPLES", 4096)
+    monkeypatch.setattr(branch_peak, "MAX_STIMULUS_SAMPLES", 4096)
     _refuses(
         {
             "devices": _devices(),
@@ -770,7 +770,7 @@ def test_the_frame_bound_is_checked_BEFORE_the_float64_allocation(tmp_path, monk
             x if isinstance(x, _AstypeSpy) else _AstypeSpy(real_asarray(x, *a, **k))
         ),
     )
-    monkeypatch.setattr(branch_peak, "_MAX_STIMULUS_SAMPLES", 1024)
+    monkeypatch.setattr(branch_peak, "MAX_STIMULUS_SAMPLES", 1024)
 
     with pytest.raises(BranchPeakError, match="render bound"):
         branch_peak.read_stimulus_samples(tmp_path / "unused.wav")

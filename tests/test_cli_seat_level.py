@@ -29,15 +29,6 @@ CAL_WITH_SENS = (
 CAL_CURVE_ONLY = "10.0\t-6.6\n10.2\t-6.5\n"
 
 
-def _args(**overrides):
-    args = seat_level.build_parser().parse_args(
-        ["--stimulus-wav", overrides.pop("stimulus_wav", "/nonexistent.wav")]
-    )
-    for key, value in overrides.items():
-        setattr(args, key, value)
-    return args
-
-
 def test_resolve_sensitivity_reads_an_explicit_calibration_file(tmp_path):
     path = tmp_path / "umik2.txt"
     path.write_text(CAL_WITH_SENS)
@@ -192,7 +183,7 @@ def test_stimulus_peak_reads_the_loudest_channel_not_a_downmix(tmp_path):
     # would average to a quarter and report ~-12 dBFS, which would hand the
     # ceiling 6 dB it has not earned.
     wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
-    assert seat_level.stimulus_levels_dbfs(wav).peak_dbfs == pytest.approx(
+    assert seat_level.stimulus_provenance(wav).peak_dbfs == pytest.approx(
         -6.02, abs=0.05
     )
 
@@ -208,7 +199,7 @@ def test_the_same_read_measures_the_RMS_the_refusal_discloses(tmp_path):
     """
     wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
 
-    levels = seat_level.stimulus_levels_dbfs(wav)
+    levels = seat_level.stimulus_provenance(wav)
 
     assert levels.peak_dbfs == pytest.approx(-6.02, abs=0.05)
     assert levels.rms_dbfs == pytest.approx(-9.03, abs=0.05)
@@ -217,7 +208,155 @@ def test_the_same_read_measures_the_RMS_the_refusal_discloses(tmp_path):
 def test_a_silent_stimulus_is_refused_not_treated_as_infinitely_quiet(tmp_path):
     wav = _stereo_wav(tmp_path / "silent.wav", peak_int16=0)
     with pytest.raises(ValueError, match="no signal"):
-        seat_level.stimulus_levels_dbfs(wav)
+        seat_level.stimulus_provenance(wav)
+
+
+def test_the_stimulus_read_carries_the_file_identity_the_reference_banks(tmp_path):
+    """#3477: a level with no identity beside it is a half-recorded stimulus.
+
+    ``dB SPL = stimulus dBFS + chain gain + volume``. Two references banked
+    against different WAVs differ by the stimulus term, and a consumer holding
+    only the levels cannot tell that from a chain change — so WHICH file was
+    played is part of the same one read, never a second one that could see a
+    swapped symlink.
+    """
+    import hashlib
+
+    wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
+
+    provenance = seat_level.stimulus_provenance(wav)
+
+    assert provenance.path == str(wav)
+    assert provenance.sha256 == hashlib.sha256(wav.read_bytes()).hexdigest()
+    assert provenance.band_hz is None
+    assert provenance.peak_dbfs == pytest.approx(-6.02, abs=0.05)
+
+
+def _band_profile(*bands):
+    """A driver-safety profile that declares nothing but each driver's band."""
+    return {
+        "targets": [
+            {"target_fingerprint": f"fp-{index}", "measurement_band_hz": list(band)}
+            for index, band in enumerate(bands)
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "bands, expected",
+    [
+        # Two declared bands that do not overlap: the generated default has to
+        # cover BOTH drivers, so the hull is the answer and an intersection
+        # would be empty.
+        pytest.param(([45.0, 3000.0], [2000.0, 18000.0]), (45.0, 18000.0), id="two_way"),
+        # A single declaration is its own hull.
+        pytest.param(([60.0, 16000.0],), (60.0, 16000.0), id="full_range"),
+        # Declarations outside the global driver-test limits are clamped to
+        # them, never obeyed past them.
+        pytest.param(([1.0, 40_000.0],), (20.0, 23_000.0), id="clamped_to_the_limits"),
+    ],
+)
+def test_the_default_stimulus_is_derived_from_the_declared_bands(
+    tmp_path, monkeypatch, bands, expected
+):
+    """#3475: with no ``--stimulus-wav`` the tool synthesizes its own.
+
+    Band, level and duration all come from declarations that already exist —
+    the drivers' ``measurement_band_hz``, the active-driver capture source
+    level, and the branch-peak render bound — so nothing here is a property of
+    one rig, one room, or one operator's home directory.
+    """
+    from jasper.active_speaker.branch_peak import MAX_STIMULUS_SAMPLES
+    from jasper.active_speaker.commissioning_admission import (
+        ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+    )
+
+    profile = _band_profile(*bands)
+    targets = [
+        {"target_fingerprint": target["target_fingerprint"]}
+        for target in profile["targets"]
+    ]
+    _stub_draft(monkeypatch, {"driver_safety_profile": profile}, targets)
+
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return tmp_path / "generated.wav"
+
+    monkeypatch.setattr(
+        "jasper.audio_measurement.playback.ensure_bandlimited_noise_wav", _capture
+    )
+
+    args = seat_level.build_parser().parse_args([])
+    assert args.stimulus_wav is None
+    declarations = seat_level._load_declarations(args)
+    path, band_hz = seat_level.default_stimulus_wav(declarations)
+
+    assert path == tmp_path / "generated.wav"
+    assert band_hz == expected
+    assert (seen["f_lo_hz"], seen["f_hi_hz"]) == expected
+    # The level is the one the driver-capture excitation already uses, so a
+    # reference banked against the default sits at the same digital level the
+    # session's own programs do.
+    assert seen["dbfs"] == ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS
+    # Long enough to be worth playing, short enough that the per-branch peak
+    # solve stays EXACT — past the render bound it degrades to the conservative
+    # full-band bound, which is exactly the second-order effect #3475 reports.
+    assert seen["duration_s"] * seen["sample_rate"] <= MAX_STIMULUS_SAMPLES
+
+
+def test_the_generated_default_reaches_the_ramp_with_its_own_provenance(
+    tmp_path, monkeypatch, capsys
+):
+    """No ``--stimulus-wav`` is a supported run, not ``stimulus_wav_missing``."""
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+    generated = _stereo_wav(tmp_path / "noise.wav", peak_int16=8192)
+
+    handed: dict = {}
+
+    async def _fake_ramp(**kwargs):
+        handed.update(kwargs)
+        from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+
+        return SeatLevelResult(
+            status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
+        )
+
+    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
+    monkeypatch.setattr(
+        seat_level,
+        "default_stimulus_wav",
+        lambda declarations: (generated, (45.0, 18_000.0)),
+    )
+    monkeypatch.setattr(
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
+        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",
+        lambda *a, **k: SimpleNamespace(
+            start=lambda **kw: None, drain=lambda: [], stop=lambda: None
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller",
+        lambda: SimpleNamespace(get_volume_db=None, set_volume_db=None),
+    )
+
+    code = seat_level.main(["--calibration-file", str(cal)])
+
+    assert code == 0
+    assert "converged" in capsys.readouterr().out
+    assert handed["stimulus"].path == str(generated)
+    # The declared band rides with the file, so the reference banks WHAT was
+    # generated rather than leaving it to be re-parsed out of a filename.
+    assert handed["stimulus"].band_hz == (45.0, 18_000.0)
 
 
 def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
@@ -246,8 +385,9 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
         )
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda args, stim, levels: (-30.0, 85.0)
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
@@ -285,8 +425,8 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
     # …and so did what the stimulus itself MEASURES, which bounds nothing and
     # is what lets `spl_target_unreachable` show its own arithmetic. Full scale
     # on one channel of two: 0 dBFS peak, 3 dB down in RMS.
-    assert handed["stimulus_peak_dbfs"] == pytest.approx(0.0, abs=0.05)
-    assert handed["stimulus_rms_dbfs"] == pytest.approx(-3.01, abs=0.05)
+    assert handed["stimulus"].peak_dbfs == pytest.approx(0.0, abs=0.05)
+    assert handed["stimulus"].rms_dbfs == pytest.approx(-3.01, abs=0.05)
 
 
 def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
@@ -322,7 +462,9 @@ def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tm
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        args, stimulus, seat_level.stimulus_levels_dbfs(stimulus)
+        stimulus,
+        seat_level.stimulus_provenance(stimulus),
+        seat_level._load_declarations(args),
     )
 
     assert ceiling_db == -30.0
@@ -355,6 +497,15 @@ def _draft_with_a_padded_tweeter(safety_profile):
             ]
         },
     }
+
+
+def _stub_declarations(monkeypatch):
+    """Stub the one declaration load for tests that stub the derivations too."""
+    monkeypatch.setattr(
+        seat_level,
+        "_load_declarations",
+        lambda args: seat_level._Declarations(None, {}, {}),
+    )
 
 
 def _stub_draft(monkeypatch, draft, targets):
@@ -398,10 +549,11 @@ def test_seat_level_hands_the_ceiling_the_PAD_FOLDED_sensitivities(
         return -30.0
 
     monkeypatch.setattr(seat_level, "unsegmented_stimulus_ceiling_db", _capture)
+    args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     seat_level._derive_bounds(
-        seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)]),
         stimulus,
-        seat_level.stimulus_levels_dbfs(stimulus),
+        seat_level.stimulus_provenance(stimulus),
+        seat_level._load_declarations(args),
     )
 
     assert seen["declared_sensitivities"] == {
@@ -730,10 +882,12 @@ def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkey
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        args, stimulus, seat_level.stimulus_levels_dbfs(stimulus)
+        stimulus,
+        seat_level.stimulus_provenance(stimulus),
+        seat_level._load_declarations(args),
     )
 
-    peak = seat_level.stimulus_levels_dbfs(stimulus).peak_dbfs
+    peak = seat_level.stimulus_provenance(stimulus).peak_dbfs
     fingerprints = [t["target_fingerprint"] for t in targets]
     full_band = unsegmented_stimulus_ceiling_db(
         profile, fingerprints, stimulus_peak_dbfs=peak,
@@ -800,8 +954,9 @@ def _stub_a_ramp_result(monkeypatch, tmp_path, result):
         return result
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda args, stim, levels: (0.0, 80.0)
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (0.0, 80.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
