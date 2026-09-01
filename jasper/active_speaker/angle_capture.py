@@ -81,7 +81,7 @@ from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import ExcitationProgram
 
-from .crossover_v2.capture_plan import stage1_base_entries
+from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
@@ -626,7 +626,9 @@ def request_for_program(
     )
 
 
-def walk_price(request: AngleCaptureRequest) -> dict[str, int]:
+def walk_price(
+    request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
+) -> dict[str, int]:
     """What this walk costs the person holding the microphone.
 
     Derived from the stops rather than read off a program, so a named walk and
@@ -639,12 +641,20 @@ def walk_price(request: AngleCaptureRequest) -> dict[str, int]:
     :func:`stage1_base_entries` -- the SAME count the adoption site hands the
     take as ``base_entries`` -- so flipping a ``STAGE1_INCLUDES_*`` flag moves
     the stated price with the session rather than leaving it under-priced.
+
+    ``plan_shape`` names WHICH session: base entries are a property of the
+    resolved shape, so a chooser offering the same walk on two tier cards
+    prices each card against that tier's own shape. ``None`` keeps the default
+    shape, which is what a surface pricing a walk before any tier is chosen
+    has.
     """
     return {
         "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
         "captures": len(request.stops),
         "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(stage1_base_entries() + len(request.stops)) / 60
+            wall_clock_ceiling_s(
+                stage1_base_entries(plan_shape) + len(request.stops)
+            ) / 60
         ),
     }
 

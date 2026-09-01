@@ -61,7 +61,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Mapping, NoReturn
+from typing import Any, Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
@@ -483,6 +483,17 @@ def _consume(pending: Path) -> None:
     )
 
 
+def _coerced_delay_us(raw: Any) -> float:
+    """``delay_us`` as a number, or the spool's own refusal naming the field."""
+    try:
+        return float(raw or 0.0)
+    except (TypeError, ValueError):
+        _refuse(
+            SPOOL_MALFORMED,
+            f"the staged walk's delay_us is not a number: {raw!r}",
+        )
+
+
 def _validate(raw: bytes) -> AngleCaptureRequest:
     """Rebuild the request from the banked fields, through its own constructors.
 
@@ -502,6 +513,14 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     **R-1's two pairs are ADDITIVE and defaulted** — the delay coordinate reads
     back exactly as the polarity pair does, so a document spooled before either
     existed still reads as a normal, undelayed walk. Neither is judged here.
+
+    **A value this function COERCES refuses in this vocabulary**, never as a
+    bare ``ValueError``: ``delay_us`` is the one field read through ``float``,
+    and a hand-edited ``"12us"`` must reach every reader as
+    :data:`SPOOL_MALFORMED` naming the field. The peek behind the page's price
+    (``_staged_walk_request``) catches only ``CrossoverV2FlowError``, so an
+    uncaught coercion there would take the whole chooser down on every poll
+    rather than costing it one offer.
 
     ``level_matched`` reads back on the same terms and is a BOOLEAN, never
     numbers: an absent (or false) key is a walk whose graph carries no level
@@ -561,7 +580,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         polarity=str(doc.get("polarity") or POLARITY_NORMAL),
         inverted_role=str(doc.get("inverted_role") or ""),
         delayed_role=str(doc.get("delayed_role") or ""),
-        delay_us=float(doc.get("delay_us") or 0.0),
+        delay_us=_coerced_delay_us(doc.get("delay_us")),
         level_matched=bool(doc.get("level_matched")),
         program=str(doc.get("program") or ""),
     )

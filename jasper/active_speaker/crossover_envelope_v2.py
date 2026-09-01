@@ -50,7 +50,7 @@ import time
 from typing import Any, Mapping
 
 from ..log_event import log_event
-from .angle_capture import walk_price
+from .angle_capture import AngleCaptureRequest, walk_price
 from .angle_capture_spool import peek_staged_angle_request
 from .attempts_loop import (
     PROVENANCE_MODEL_GRADED,
@@ -104,6 +104,7 @@ from .crossover_v2_flow import (
     TIER_EXPRESS,
     TIER_REMOTE,
     TIER_FULL,
+    resolve_plan_shape,
     tier_display_info,
 )
 from .crossover_v2.contracts import (
@@ -2768,8 +2769,8 @@ def _recommended_tier(status: Mapping[str, Any]) -> str:
     return TIER_EXPRESS if str(_v2(status).get("tier") or "") == TIER_FULL else TIER_FULL
 
 
-def _staged_walk_offer() -> dict[str, Any] | None:
-    """The staged walk's identity and price, or ``None`` when none is staged.
+def _staged_walk_request() -> AngleCaptureRequest | None:
+    """The staged walk, or ``None`` when none is staged.
 
     A PEEK: the session open is still the only take, so a household that reads
     this price and never presses Start leaves the walk staged.
@@ -2777,20 +2778,17 @@ def _staged_walk_offer() -> dict[str, Any] | None:
     A slot that cannot be read, or a document that no longer validates, says
     NOTHING here — the session open refuses that loudly in the producing
     module's own words, and a chooser that repeated the refusal would be a
-    second vocabulary for one fact.
+    second vocabulary for one fact. Every refusal the spool raises is a
+    ``CrossoverV2FlowError``, a hand-edited field it cannot coerce included,
+    so a corrupt document costs this screen an offer and nothing else.
+
+    PRICING is the caller's: one document, but its ceiling belongs to the
+    session that takes it, so each tier card prices it against its own shape.
     """
     try:
-        request = peek_staged_angle_request()
+        return peek_staged_angle_request()
     except CrossoverV2FlowError:
         return None
-    if request is None:
-        return None
-    price = walk_price(request)
-    return {
-        "program": request.program,
-        "mic_moves": price["mic_moves"],
-        "captures": price["captures"],
-    }
 
 
 def _tier_action(
@@ -2798,7 +2796,7 @@ def _tier_action(
     info: Mapping[str, Mapping[str, int]],
     *,
     recommended: bool,
-    staged_walk: Mapping[str, Any] | None = None,
+    staged_walk: AngleCaptureRequest | None = None,
 ) -> dict[str, Any]:
     detail = info[tier]
     action: dict[str, Any] = {
@@ -2829,11 +2827,25 @@ def _tier_action(
         # session open (``_take_staged_angle_walk``) whichever tier is pressed:
         # the household is agreeing to these extra mic moves either way, so the
         # chooser is the last screen that can say so.
-        action["staged_walk"] = dict(staged_walk)
+        # Priced against THIS tier's shape through ``resolve_plan_shape``, the
+        # same tier → shape resolution the capture plans themselves use — a
+        # second map here would be the desync ``V2PlanShape`` exists to close.
+        price = walk_price(staged_walk, plan_shape=resolve_plan_shape(tier))
+        action["staged_walk"] = {
+            "program": staged_walk.program,
+            "mic_moves": price["mic_moves"],
+            "captures": price["captures"],
+            # The WHOLE session's ceiling, not the walk's own share of it: the
+            # line above quotes stage minutes for a session these stops
+            # lengthen, so a card that stopped at the extra spots would
+            # under-state what the household is agreeing to.
+            "ceiling_min": price["ceiling_min"],
+        }
         action["description"] += (
-            f" Plus a staged walk ({staged_walk['program'] or 'free-form'}): "
-            f"{staged_walk['mic_moves']} more spots, "
-            f"{staged_walk['captures']} more measurements."
+            f" Plus a staged walk ({staged_walk.program or 'free-form'}): "
+            f"{price['mic_moves']} more spots, "
+            f"{price['captures']} more measurements; up to "
+            f"{price['ceiling_min']} min for the whole session."
         )
     return action
 
@@ -2851,9 +2863,10 @@ def _tier_choice_actions(
     info = tier_display_info()
     recommended = _recommended_tier(status)
     other = TIER_FULL if recommended == TIER_EXPRESS else TIER_EXPRESS
-    # Read ONCE, for both actions: a staged walk is the session's, not a tier's,
-    # so the two descriptions must state one price.
-    staged_walk = _staged_walk_offer()
+    # Read ONCE, for both actions — one document, one peek per poll. Each
+    # action prices it against its own tier: the walk belongs to the session,
+    # and the session is whichever tier the household presses.
+    staged_walk = _staged_walk_request()
     return (
         _tier_action(recommended, info, recommended=True, staged_walk=staged_walk),
         [_tier_action(other, info, recommended=False, staged_walk=staged_walk)],

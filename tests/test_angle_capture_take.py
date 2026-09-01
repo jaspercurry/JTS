@@ -205,6 +205,28 @@ def test_a_peek_reads_the_staged_walk_without_spending_it(slot):
     assert spool.peek_staged_angle_request() is None
 
 
+@pytest.mark.parametrize(
+    "read", [spool.peek_staged_angle_request, spool.take_staged_angle_request],
+)
+def test_a_field_the_document_cannot_coerce_refuses_by_name(slot, read):
+    """A hand-edited ``delay_us`` is a REFUSAL, not a bare ``ValueError``.
+
+    Both readers, because the page peeks this slot on every poll while only the
+    session open takes it: a coercion escaping as ``ValueError`` would take the
+    tier chooser down on every poll and 500 the open, instead of costing the
+    chooser one offer and refusing the open by name.
+    """
+    path = spool.angle_request_spool_path()
+    spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["delay_us"] = "12us"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        read()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED
+
+
 def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
     """A program's clocks are honoured STRUCTURALLY, not wired a second time.
 
