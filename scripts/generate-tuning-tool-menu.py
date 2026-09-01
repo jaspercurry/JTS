@@ -65,6 +65,7 @@ TUNING_TOOL_MODULES: tuple[str, ...] = (
     "jasper.cli.forward_model",
     "jasper.cli.null_door",
     "jasper.cli.audition",
+    "jasper.cli.declare_geometry",
 )
 
 
