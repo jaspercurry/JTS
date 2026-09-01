@@ -597,7 +597,13 @@ def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
             tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
         )
 
-    assert "ring_a tier=live-status basis=ring-occupancy" in result.stderr
+    # Labeled values, not just the tier name: occupancy*period is commutative,
+    # so an accidental occupancy<->period_frames swap at the call site would
+    # still land on the same 300 and pass an unlabeled assertion here.
+    assert (
+        "ring_a tier=live-status basis=ring-occupancy occupancy=3 period_frames=100"
+        in result.stderr
+    )
     # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
     # DAC default 3072 = 5548 / 48000.
     assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered

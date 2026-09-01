@@ -59,10 +59,6 @@ pct="$(
 
 printf '%s\n' "$pct" > "${state}.tmp.$$" 2>/dev/null || exit 0
 mv -f "${state}.tmp.$$" "$state" 2>/dev/null || exit 0
-# $pct above is already the value just written to $state; the winning
-# holder's very first pass below uses it directly instead of re-reading
-# the file we ourselves just wrote.
-pct_fresh=1
 
 last=""
 attempt=0
@@ -74,9 +70,12 @@ while [ "$attempt" -lt 3 ]; do
     attempt=$((attempt + 1))
     # One poster at a time. A slider drag or a held volume key fires a burst
     # of these; every loser has already published its value above, so
-    # dropping it costs nothing — the holder re-reads the file on every pass
-    # but the first and ends on the newest value. flock's lock is released
-    # by the kernel when the holder dies, so an OOM kill cannot strand it.
+    # dropping it costs nothing — the holder re-reads the file each pass and
+    # ends on the newest value. flock's lock is released by the kernel when
+    # the holder dies, so an OOM kill cannot strand it.
+    # Every child below (curl/cat/rm) inherits fd 9 and is safe ONLY because
+    # it runs foreground-synchronous: backgrounding any of them would hold
+    # the flock past this tenure and silently self-block the next acquire.
     exec 9>"$lock" || exit 0
     flock -n 9 || exit 0
     # 25 passes x 200 ms covers a five-second drag. 200 ms is half
@@ -85,11 +84,7 @@ while [ "$attempt" -lt 3 ]; do
     passes=0
     failures=0
     while [ "$passes" -lt 25 ]; do
-        if [ "$pct_fresh" -eq 1 ]; then
-            pct_fresh=0
-        else
-            pct="$(cat "$state" 2>/dev/null)" || break
-        fi
+        pct="$(cat "$state" 2>/dev/null)" || break
         [ "$pct" = "$last" ] && break
         body="{\"percent\": ${pct}, \"source\": \"airplay\""
         # `rm` succeeds only for the process that actually removes the

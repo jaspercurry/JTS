@@ -39,10 +39,16 @@ HOOK = REPO / "deploy" / "bin" / "jasper-airplay-volume"
 INSTALLED_HOOK_PATH = "/usr/local/sbin/jasper-airplay-volume"
 STATE_NAME = "airplay-volume.pct"
 
-_FLOCK = shutil.which("flock")
+# The exact PATH the hook subprocess gets (see _hook_env below) — resolving
+# the skip marker against the AMBIENT pytest PATH instead would find flock
+# on a Homebrew Mac (/opt/homebrew/bin), then FAIL rather than skip the six
+# gated tests below when the hook itself can't see it on this narrower PATH.
+_HOOK_PATH = "/usr/bin:/bin:/usr/local/bin"
+
+_FLOCK = shutil.which("flock", path=_HOOK_PATH)
 requires_flock = pytest.mark.skipif(
     _FLOCK is None,
-    reason="the hook serialises with flock(1), which macOS does not ship",
+    reason="the hook serialises with flock(1), not on its PATH here",
 )
 
 
@@ -55,7 +61,7 @@ def test_flock_is_available_on_linux():
 
 def _hook_env(runtime_dir: Path, port: int | None = None) -> dict[str, str]:
     env = {
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "PATH": _HOOK_PATH,
         "RUNTIME_DIRECTORY": str(runtime_dir),
     }
     if port is not None:
@@ -275,7 +281,7 @@ def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     running = []
     for db in messages:
         running.append(subprocess.Popen(["sh", str(HOOK), db], env=env))
-        time.sleep(0.02)
+        time.sleep(0.05)
     for process in running:
         assert process.wait(timeout=60) == 0
 

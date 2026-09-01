@@ -154,10 +154,20 @@ camilla_config_path() {
 }
 
 # Scans devices: ONCE for samplerate, chunksize, and target_level together
-# — the three separate camilla_devices_int calls this replaced each ran a
-# full awk pass over the same YAML for just one key. Prints the three
-# values, in that order, "|"-joined on one line; a key the block never
-# sets prints as an empty field.
+# — the three separate camilla_devices_int calls this replaced each forked
+# their own awk process for just one key (each exiting as soon as it found
+# its key or the block ended, so the saving here is three process forks
+# collapsed to one, not scan depth). Prints the three values, in that
+# order, "|"-joined on one line; a key the block never sets prints as an
+# empty field.
+#
+# Deliberately NOT converged onto jasper.camilla_config_contract's
+# parse_camilla_devices_config (the repo's richer Camilla YAML reader):
+# this awk is the one path in the file with no python dependency at all,
+# on a render step that is otherwise unconditional (unlike the STATUS and
+# ring_assets tiers below, which were already python-optional and degrade
+# gracefully). Requiring python here would trade a working, dependency-free
+# offset for a python/venv-availability gate on every render.
 camilla_devices_ints() {
     local config="$1"
     awk '
@@ -267,12 +277,27 @@ resolve_jasper_python() {
 
 # One-fetch contract: a daemon's STATUS reply already carries every field
 # this script wants from it in one JSON blob, so this connects and reads
-# ONCE per call and pulls out however many dotted paths are asked for —
-# never one connect+read per field. Prints the requested values, in the
-# same order, "|"-joined on one line; a field is empty when it is
-# absent/null/non-scalar in the reply, and the WHOLE line is empty when
-# the fetch itself fails (no python, no socket, connect/read/parse error)
-# — every caller already treats an empty field as "this tier has nothing."
+# ONCE per call (via jasper.route_latency.status_socket.
+# read_status_socket_or_none, the module that already owns this connect+
+# `STATUS\n`+recv-to-EOF+parse mechanic for doctor/AEC/route-latency
+# callers) and pulls out however many dotted paths are asked for — never
+# one connect+read per field.
+#
+# Contract: exactly one field per requested dotted path, in that order,
+# "|"-joined on one line — a call site's IFS-read must list exactly as
+# many variables as paths, or a missing one silently absorbs the next
+# path's value into the last variable and degrades that tier without
+# erroring. A field is empty when it is absent/null/non-scalar in the
+# reply, OR when its string form contains "|" or a newline (never emit a
+# value that would shear the join — every JTS STATUS field today is a
+# plain number, so this is a defensive floor, not an observed case). The
+# WHOLE line is empty when the fetch itself fails (no python, no jasper
+# import, no socket, connect/read/parse error) — every caller already
+# treats an empty field as "this tier has nothing." Trade-off, deliberate:
+# one connect per socket means every field comes from one consistent
+# snapshot, but it also means a transient connect failure now empties
+# that daemon's whole live tier at once, where per-field fetching failed
+# each field independently.
 status_json_values() {
     local socket="$1"
     shift
@@ -281,27 +306,17 @@ status_json_values() {
     [[ -n "$python" ]] || return 0
     [[ -S "$socket" ]] || return 0
     "$python" - "$socket" "$@" <<'PY' 2>/dev/null || true
-import json
-import socket
 import sys
+
+try:
+    from jasper.route_latency.status_socket import read_status_socket_or_none
+except ImportError:
+    sys.exit(0)
 
 sock_path = sys.argv[1]
 dotted_paths = sys.argv[2:]
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-try:
-    sock.settimeout(1.0)
-    sock.connect(sock_path)
-    sock.sendall(b"STATUS\n")
-    chunks = []
-    while True:
-        chunk = sock.recv(65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-finally:
-    sock.close()
+status = read_status_socket_or_none(sock_path)
 
-status = json.loads(b"".join(chunks).decode("utf-8"))
 fields = []
 for dotted_path in dotted_paths:
     value = status
@@ -311,6 +326,8 @@ for dotted_path in dotted_paths:
             break
         value = value.get(part)
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        value = None
+    elif isinstance(value, str) and ("|" in value or "\n" in value):
         value = None
     fields.append("" if value is None else str(value))
 print("|".join(fields))
@@ -532,7 +549,10 @@ derive_audio_backend_latency_offset() {
     # ONE STATUS fetch per daemon per render (status_json_values), not one
     # per dotted field: fanin serves Ring A's three candidate fields and
     # outputd serves Ring B's and the DAC's in a single JSON reply apiece,
-    # so a fetch per field bought nothing but five extra round-trips.
+    # so a fetch per field cost up to four extra round-trips for nothing —
+    # six total (3 fanin + 3 outputd) on the now-common ring topology,
+    # where fanin's ALSA-delay field always misses (ADR-0100); as few as
+    # two extra (four total) when that field is live on a loopback box.
     fanin_fields="$(status_json_values "$FANIN_STATUS_SOCKET" \
         output.snd_pcm_delay_frames output.ring.occupancy output.period_frames || true)"
     IFS='|' read -r fanin_delay_frames fanin_ring_occupancy fanin_period_frames <<< "$fanin_fields"
