@@ -506,6 +506,28 @@ provenance stated — never vetoes:
   floor's `2.5/T`, and a boost there is unsupportable on gated data alone
   (research 03).
 
+**There are TWO floors, and the lower one is the room's.** `2.5/T` answers
+"can this window resolve a feature here" — a RESOLUTION bound, and you will
+read it as a trustworthiness bound unless you hold the second number beside
+it. That second floor is `2.5/t_first_bounce`: below it every window long
+enough to resolve is already long enough to admit the room's first arrival, so
+NO choice of `T` separates speaker from room there. It is set by geometry, not
+by you. Between the two floors a read is resolved and room-entangled at once —
+`gate_disclosure` publishes the number as `entanglement_floor_hz` and each spec
+band carries its own `room_entangled_below_hz` (#3495). Where `t_bounce` is
+~2.5–3 ms, as on a rig measured at listening distance in a small room, EVERY
+rung including 3 ms admits the first bounce: nothing this pipeline publishes
+was ever gated clean, and trust above the entanglement floor rests on MEASURED
+window-invariance (the rung ladder above) plus directivity, never on gate
+cleanliness. Read `entanglement_floor_source` before the floor: `unknown` means
+no reflection was measured and no geometry was declared — the finder's
+thresholds are unreachable at the geometric first bounce on this rig class, so
+`search_span_bound` is structural rather than incidental (#3502) — and
+**unknown is not clean**. It says nothing was proven, which is the opposite of
+saying nothing is there. Below the entanglement floor the honest instruments
+are physical, not analytical: the close-reference capture (#3501) and
+elevation poses.
+
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
 (`classify_delta_probe`) grades realized against commanded — `matched`,
 `model_error`, `level_dependent_shortfall` and five more. **Trust it over any
