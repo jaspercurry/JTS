@@ -86,26 +86,23 @@ same branch for months:
 bound                            restored from                       value
 ===============================  ==================================  =========
 :data:`DRIVER_MAX_BOOST_Q`       ``linearization_fit._PEAKING_Q_MAX``  8.0
-:data:`DRIVER_MAX_FILTER_CUT_DB` ``linearization_fit.PER_FILTER_CUT_CAP_DB``  12.0
-:data:`DRIVER_MAX_COMPOSED_CUT_DB` ``linearization_fit.MAX_NORMALIZATION_SPEND_DB``  18.0
 :data:`DRIVER_MAX_FILTERS_PER_ROLE` ``linearization_fit.MAX_FILTERS_PER_DRIVER``  8
-:data:`DRIVER_MIN_Q`             ``blend_prescription.PRESCRIPTION_MIN_Q``  0.5
 :data:`DRIVER_MAX_FILTER_BOOST_DB` ``linearization_fit.PER_FILTER_BOOST_CAP_DB``  12.0
 :data:`DRIVER_MAX_COMPOSED_BOOST_DB` owner policy, ruling R8                   12.0
 ===============================  ==================================  =========
 
-Two of that table's neighbours are no longer BOUNDS, and so are not in it:
-:data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB` (0.5, restored from
-``linearization_fit._MIN_FILTER_GAIN_DB`` like the rows above) and
-:data:`RATIONALE_MAX_CHARS` (1,200, the blend gate's).  Both refused until
-2026-08-29 and both DISCLOSE now, on the owner's ruling that a hard bound is
-for hearing or hardware and nothing else: a 0.3 dB probe filter is a reversible
-experiment a fit engine's audibility heuristic has no standing to veto, and a
-long rationale is text nothing parses.  See :func:`_subaudible_filters` and
-:func:`_rationale`.
+The bounds that used to sit beside those are no longer BOUNDS, and so are not
+in the table.  :data:`DRIVER_MIN_CUT_DB` / :data:`DRIVER_MIN_BOOST_DB` (0.5)
+and :data:`RATIONALE_MAX_CHARS` (1,200) refused until 2026-08-29 and DISCLOSE
+now; the per-filter and composed CUT ceilings (12.0 / 18.0) and the min-Q
+floor (0.5) refused until ADR-0207 (owner ruling 2026-08-31) and are simply
+gone — a cut cannot clip, no downstream check re-imposes a depth or width
+bound on one, and the round's own measured verify with auto-restore is the
+net.  A hard bound is for hearing or hardware and nothing else.  See
+:func:`_subaudible_filters` and :func:`_rationale`.
 
-The per-filter BOOST ceiling is restored from the fit engine like the cut
-ceilings above it.  **It was not always**: until 2026-08-22 both boost ceilings
+The per-filter BOOST ceiling is restored from the fit engine.  **It was not
+always**: until 2026-08-22 both boost ceilings
 came from the sibling ``blend_prescription`` class (3.0 and 4.0) on the owner's
 2026-08-18 ruling that "a new permission should not open at the ceiling of an
 old one", whose stated reason was that the fit's 12 dB rests on a closed-loop
@@ -206,11 +203,14 @@ from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
 # never produce, and `MeasuredCrossoverCandidate` re-proves the same bound.
 from jasper.active_speaker.level_trim import MAX_ATTENUATION_DB
 
-from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
+from jasper.sound.profile import (
+    EVALUABLE_Q_MAX,
+    EVALUABLE_Q_MIN,
+    RESPONSE_SAMPLE_RATE_HZ,
+)
 
 from .blend_prescription import (
     PACKET_FINGERPRINT_FIELD,
-    PRESCRIPTION_MIN_Q,
     PROHIBITED_PRESCRIPTION_KEYS,
     BlendPrescriptionRefused,
     find_prohibited_keys,
@@ -233,13 +233,10 @@ DriverPassbands = Mapping[str, tuple[float, float]]
 __all__ = [
     "DRIVER_MAX_BOOST_Q",
     "DRIVER_MAX_COMPOSED_BOOST_DB",
-    "DRIVER_MAX_COMPOSED_CUT_DB",
     "DRIVER_MAX_FILTERS_PER_ROLE",
     "DRIVER_MAX_FILTER_BOOST_DB",
-    "DRIVER_MAX_FILTER_CUT_DB",
     "DRIVER_MIN_BOOST_DB",
     "DRIVER_MIN_CUT_DB",
-    "DRIVER_MIN_Q",
     "DRIVER_PRESCRIPTION_KIND",
     "DRIVER_PRESCRIPTION_MAX_BYTES",
     "DRIVER_PRESCRIPTION_REFUSAL_REASONS",
@@ -345,17 +342,21 @@ LINEARIZATION_CANDIDATE_FIELD = "linearization"
 #: _PEAKING_Q_MAX``, the fit engine's PEAKING ceiling, which is also the number
 #: #2730 restored for the blend cut class on the 2026-08-19 ruling.
 #:
-#: **The CUT arm has no ceiling at all**, on that same ruling — width is free,
-#: "filters can be whatever works best to get flat" — and it used to have this
-#: one, which was the ruling being restated as its own opposite: a cut only ever
-#: removes level, so a narrow one carries no headroom hazard however sharp it
-#: is, and #2730 already made exactly this argument for the sibling class. What
-#: bounds a cut is what a cut actually spends: :data:`DRIVER_MAX_FILTER_CUT_DB`,
-#: :data:`DRIVER_MAX_COMPOSED_CUT_DB`, and the eight slots
-#: :data:`DRIVER_MAX_FILTERS_PER_ROLE` allows. The emitter agrees — its own
-#: ``camilla_yaml._validated_biquad_entry`` asks a biquad's ``q`` only to be
-#: positive and finite — so an unbounded cut Q is emittable rather than accepted
-#: here and refused downstream.
+#: **The CUT arm carries no POLICY ceiling**, on that same ruling — width is
+#: free, "filters can be whatever works best to get flat", and #2730 already
+#: made exactly this argument for the sibling class: a cut only ever removes
+#: level, so a narrow one carries no headroom hazard however sharp it is.
+#: What bounds a cut's DEPTH is the eight slots
+#: :data:`DRIVER_MAX_FILTERS_PER_ROLE` allows (depth ceilings retired by
+#: ADR-0207). Its Q is a different story: ADR-0207 also bounds a cut's Q to
+#: :data:`~jasper.sound.profile.EVALUABLE_Q_MAX` — not policy but INSTRUMENT
+#: fidelity, because past that ceiling the f64 biquad cascade stops
+#: evaluating the filter that was actually asked for (measured +6.99 dB
+#: REALIZED from a requested Q 8e14, admitted -3.0 dB cut). The emitter's own
+#: ``camilla_yaml._validated_biquad_entry`` still asks only that a biquad's
+#: ``q`` be positive and finite, so this ceiling is accepted here rather than
+#: refused downstream — the same "gate rather than build-time crash" posture
+#: every Tier-3 bound in this door follows.
 #:
 #: A BOOST keeps the ceiling because a boost is the sign that spends the
 #: household's maximum SPL, and the caps that bound that spend
@@ -373,20 +374,6 @@ LINEARIZATION_CANDIDATE_FIELD = "linearization"
 #: (:func:`_check_classification`); since 2026-08-23 it refuses nothing.
 DRIVER_MAX_BOOST_Q = 8.0
 
-#: Narrowest Q, taken from the family's owner. Below this a Peaking filter is a
-#: broadband tilt rather than a shape correction, and broadband per-driver level
-#: is the trim's fact — which a prescriber names as a trim
-#: (``pinned_trim_db``) or not at all, never smuggled in as a filter wide enough
-#: to be one.
-#:
-#: Deliberately the PRESCRIPTION floor (0.5) and not the fit engine's own
-#: ``_PEAKING_Q_MIN`` (1.0). That constant is load-bearing for a different
-#: property in a different module: it is the #1967 boost-exclusion DROP RADIUS,
-#: and its docstring says so in as many words. Adopting a boost bound as a cut
-#: bound would be borrowing a number for the one reason it was not chosen.
-DRIVER_MIN_Q = PRESCRIPTION_MIN_Q
-
-
 def driver_max_q_for_gain(gain_db: float) -> float:
     """The widest Q one prescribed filter may use, by the SIGN of its gain.
 
@@ -394,40 +381,29 @@ def driver_max_q_for_gain(gain_db: float) -> float:
     message it prints, and the response format a prescriber is handed cannot
     disagree about which ceiling applies to which filter. Same shape as
     ``blend_prescription.max_q_for_gain``, deliberately not a call to it: the
-    two classes' arms are different numbers (that one bounds a boost at 2.0 and
-    a cut at 8.0), so sharing the function would share the wrong answer.
+    two classes' BOOST arms are different numbers (this one 8.0, blend's 2.0),
+    so sharing the function would share the wrong answer for that sign.
 
-    ``gain_db > 0`` is a boost and gets :data:`DRIVER_MAX_BOOST_Q`; everything
-    else — including exactly ``0.0`` — is unbounded above. That is the same
-    predicate :func:`_check_bounds` derives
+    ``gain_db > 0`` is a boost and gets :data:`DRIVER_MAX_BOOST_Q` — a POLICY
+    ceiling, because a boost's composed SPL spend is read on a sampled grid
+    with no fixed resolution that bounds an arbitrarily narrow peak.
+
+    Everything else — including exactly ``0.0`` — gets
+    :data:`~jasper.sound.profile.EVALUABLE_Q_MAX`. Unlike the boost arm that
+    is NOT policy: a cut still spends no headroom and is free up to it, but
+    past it the f64 biquad cascade stops evaluating the filter that was
+    actually asked for — measured +6.99 dB REALIZED from a requested Q 8e14,
+    admitted -3.0 dB cut. It is INSTRUMENT fidelity, owned by
+    :mod:`jasper.sound.profile` and imported rather than restated, so both
+    classes share the identical cut-arm number because they share the one
+    evaluator.
+
+    That is the same predicate :func:`_check_bounds` derives
     :attr:`DriverPrescription.prescription_class` from, so a filter can never be
     a cut for the class receipt and a boost for its Q bound.
     """
-    return DRIVER_MAX_BOOST_Q if gain_db > 0.0 else math.inf
+    return DRIVER_MAX_BOOST_Q if gain_db > 0.0 else EVALUABLE_Q_MAX
 
-
-#: Deepest ONE prescribed cut may go, dB — ``linearization_fit.
-#: PER_FILTER_CUT_CAP_DB``, the ceiling the fit engine re-proves as a hard
-#: invariant with an explicit ``raise`` before it returns.
-#:
-#: Four times the blend class's 3.0 dB, and the asymmetry is not a loosening. The
-#: blend ceiling is "what the blind zone was shown to hide, plus one model
-#: error" over a few hundred Hz of SUMMED response; this one bounds a cut into
-#: ONE branch, where the fit engine has been emitting up to it since Layer 1a
-#: shipped. A prescriber allowed less than the engine that shares its seam would
-#: be unable to express a defect the deterministic path can already correct.
-DRIVER_MAX_FILTER_CUT_DB = 12.0
-
-#: Ceiling on the COMPOSED cut's worst point over one role's passband, dB —
-#: ``linearization_fit.MAX_NORMALIZATION_SPEND_DB``, the engine's own total
-#: ledger for how far below its core-passband peak a driver may be taken.
-#:
-#: Enforced on the EVALUATED cascade rather than on a sum of gains, for
-#: ``blend_prescription._check_composed``'s reason: two filters whose skirts
-#: overlap deliver more than either alone. Per ROLE rather than across the
-#: document, because the quantity being bounded is one branch's own spend and
-#: two drivers do not share it.
-DRIVER_MAX_COMPOSED_CUT_DB = 18.0
 
 #: The depth below which the FIT ENGINE calls a cut cosmetic —
 #: ``linearization_fit._MIN_FILTER_GAIN_DB``, whose comment is its argument:
@@ -492,10 +468,10 @@ DRIVER_MAX_FILTER_BOOST_DB = 12.0
 #: peak cannot exceed this and ``branch_chain.headroom_charge_db`` cannot
 #: charge more than :data:`MAX_SPL_SPEND_BOUND_DB`. **The span clause is
 #: load-bearing**: a band-limited reading made this same sentence false while
-#: every word of it about the other terms stayed true. Per ROLE for
-#: :data:`DRIVER_MAX_COMPOSED_CUT_DB`'s reason, and the emitter folds the roles
-#: by worst branch rather than by sum, so the document's total spend is that
-#: bound and not a multiple of it.
+#: every word of it about the other terms stayed true. Per ROLE because the
+#: quantity bounded is one branch's own spend and two drivers do not share
+#: it; the emitter folds the roles by worst branch rather than by sum, so the
+#: document's total spend is that bound and not a multiple of it.
 DRIVER_MAX_COMPOSED_BOOST_DB = 12.0
 
 #: The magnitude below which the fit engine calls a boost cosmetic, dB. The same
@@ -632,10 +608,8 @@ MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
 #: every digit anything published carries.
 #:
 #: **Boost side only**, on the house rule against mirroring a fix into a sibling
-#: path that is not broken. The cut comparison has the same shape but no such
-#: collision — :data:`DRIVER_MAX_FILTER_CUT_DB` (12.0) sits well under
-#: :data:`DRIVER_MAX_COMPOSED_CUT_DB` (18.0), so one filter at the per-filter cut
-#: rail comes nowhere near the composed one.
+#: path that is not broken — and the cut side no longer has a composed bound
+#: to collide with at all (ADR-0207).
 _COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 
 #: How many filters one role may carry — ``linearization_fit.
@@ -686,25 +660,26 @@ ROLE_UNKNOWN = "driver_role_unknown"
 PASSBAND_UNAVAILABLE = "driver_passband_unavailable"
 FILTER_OUTSIDE_PASSBAND = "driver_filter_outside_passband"
 FILTER_Q_OUT_OF_RANGE = "driver_filter_q_out_of_range"
-FILTER_CUT_TOO_DEEP = "driver_filter_cut_too_deep"
-COMPOSED_CUT_EXCEEDED = "driver_composed_cut_exceeded"
 FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
 
-# NINE slugs stood here and every one is now a DISCLOSURE. Six went on
-# 2026-08-23, all the classification bar's: `driver_feature_not_classified`,
+# ELEVEN slugs stood here and every one is gone. Six went on 2026-08-23 to
+# DISCLOSURES, all the classification bar's: `driver_feature_not_classified`,
 # `driver_feature_not_cuttable`, `driver_feature_not_boostable`,
 # `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth`,
 # and `driver_boost_unvouched` (the same bar restated at the route) — see
-# `_check_classification`. The seventh, `driver_boost_in_crossover_overlap`,
-# went with the nanny burn-down: see `_boosts_in_crossover_overlap`, which
-# counts what it used to refuse. The last two went on 2026-08-29 —
-# `driver_filter_cut_too_shallow` and `driver_filter_boost_too_shallow`, the
-# audibility floor, now counted by `_subaudible_filters`. All nine are deleted
-# rather than registered-but-unreachable: no reader maps a refusal slug back,
-# and a vocabulary naming an answer this door can no longer give would mislead
-# the prescriber reading `refusal_reasons`.
+# `_check_classification`. `driver_boost_in_crossover_overlap` went with the
+# nanny burn-down: see `_boosts_in_crossover_overlap`, which counts what it
+# used to refuse. `driver_filter_cut_too_shallow` and
+# `driver_filter_boost_too_shallow` (the audibility floor) went on
+# 2026-08-29, now counted by `_subaudible_filters`. `driver_filter_cut_too_deep`
+# and `driver_composed_cut_exceeded` went with ADR-0207: a cut spends no
+# headroom, so its depth is the prescriber's to spend and the measured verify
+# is the net — nothing to disclose that the banked filters do not already
+# say. All are deleted rather than registered-but-unreachable: no reader maps
+# a refusal slug back, and a vocabulary naming an answer this door can no
+# longer give would mislead the prescriber reading `refusal_reasons`.
 
 DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     DRIVER_PRESCRIPTION_TOO_LARGE,
@@ -719,8 +694,6 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PASSBAND_UNAVAILABLE,
     FILTER_OUTSIDE_PASSBAND,
     FILTER_Q_OUT_OF_RANGE,
-    FILTER_CUT_TOO_DEEP,
-    COMPOSED_CUT_EXCEEDED,
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
     TRIM_PIN_MALFORMED,
@@ -1356,39 +1329,51 @@ def _check_bounds(
                 freq_hz=freq,
                 passband_hz=[lo, hi],
             )
+        # The evaluator's own floor: below EVALUABLE_Q_MIN, _biquad_coeffs
+        # silently clamps eff_q and the emitter spells the filter "q:
+        # 0.0000" — not a shape this system can realize, whatever the
+        # gain's sign (this also covers the old zero/negative check). The
+        # old policy floor and the cut-depth ceilings are gone (ADR-0207);
+        # `driver_max_q_for_gain` owns the boost arm's policy ceiling and
+        # the cut arm's instrument-fidelity one.
+        if q < EVALUABLE_Q_MIN:
+            _refuse(
+                FILTER_MALFORMED,
+                f"filter {position} q {q:g} is below {EVALUABLE_Q_MIN:g}: "
+                "spelled 'q: 0.0000' by the emitter and clamped by the "
+                "evaluator, not a shape this system can realize",
+            )
         q_max = driver_max_q_for_gain(gain)
-        if not DRIVER_MIN_Q <= q <= q_max:
+        if q > q_max:
             _refuse(
                 FILTER_Q_OUT_OF_RANGE,
-                f"filter {position} Q {q:g} is outside "
-                f"{DRIVER_MIN_Q:g}-{q_max:g} for a "
+                f"filter {position} Q {q:g} is past {q_max:g} for a "
                 f"{'boost' if gain > 0.0 else 'cut'}",
                 q=q,
-                q_min=DRIVER_MIN_Q,
                 q_max=q_max,
             )
-        if gain > 0.0:
-            if gain > DRIVER_MAX_FILTER_BOOST_DB:
-                _refuse(
-                    FILTER_BOOST_TOO_HIGH,
-                    f"filter {position} boosts {gain:.2f} dB at {freq:.1f} Hz, "
-                    f"past the {DRIVER_MAX_FILTER_BOOST_DB:g} dB per-filter "
-                    "ceiling, which is the same rail the deterministic fit "
-                    "engine emits up to and the emitter re-validates against",
-                    role=role,
-                    freq_hz=freq,
-                    gain_db=gain,
-                    max_boost_db=DRIVER_MAX_FILTER_BOOST_DB,
-                )
-            continue
-        if gain < -DRIVER_MAX_FILTER_CUT_DB:
+        # A gain this deep underflows 64-bit arithmetic: 10**(gain/40) is
+        # exactly 0.0 below ~-12960 dB, and _biquad_coeffs divides by it (the
+        # Peaking denominator's alpha/amp) — an uncaught ZeroDivisionError.
+        # The gate must fail closed on its own input rather than let it
+        # escape as an unhandled exception at evaluation time.
+        if 10.0 ** (gain / 40.0) == 0.0:
             _refuse(
-                FILTER_CUT_TOO_DEEP,
-                f"filter {position} cuts {-gain:.2f} dB, past the "
-                f"{DRIVER_MAX_FILTER_CUT_DB:g} dB per-filter ceiling",
+                FILTER_MALFORMED,
+                f"filter {position} gain {gain:g} dB underflows 64-bit "
+                "arithmetic and cannot be evaluated or emitted",
+            )
+        if gain > DRIVER_MAX_FILTER_BOOST_DB:
+            _refuse(
+                FILTER_BOOST_TOO_HIGH,
+                f"filter {position} boosts {gain:.2f} dB at {freq:.1f} Hz, "
+                f"past the {DRIVER_MAX_FILTER_BOOST_DB:g} dB per-filter "
+                "ceiling, which is the same rail the deterministic fit "
+                "engine emits up to and the emitter re-validates against",
                 role=role,
+                freq_hz=freq,
                 gain_db=gain,
-                max_cut_db=DRIVER_MAX_FILTER_CUT_DB,
+                max_boost_db=DRIVER_MAX_FILTER_BOOST_DB,
             )
     return "boost" if any(float(e["gain"]) > 0.0 for e in filters) else "cut"
 
@@ -1445,7 +1430,7 @@ def _composed_grid(
 def _check_composed(
     filters: tuple[dict[str, Any], ...], passbands: DriverPassbands
 ) -> tuple[float, str | None]:
-    """Both composed caps, per role, on the EVALUATED cascade.
+    """The composed BOOST cap, per role, on the EVALUATED cascade.
 
     Returns ``(worst composed BOOST across the document in dB, the role it
     belongs to)`` — ``(0.0, None)`` when nothing rises above unity. That number
@@ -1467,11 +1452,9 @@ def _check_composed(
     cascade whose extremum sat BELOW the band entirely (3.58 read against a
     10.75 dB charge). ``_composed_grid`` carries the argument for each half.
 
-    **The boost extreme is read off the SAME grid as the cut extreme**, so the
-    two bounds cannot disagree about what the cascade does — and each widening
-    incidentally tightened the CUT side too (a band-edge −3.0 dB cut had been
-    reading −1.23). That was harmless, because a cut cannot clip and a cut
-    bound reading low only ever refuses less, and it is now consistent.
+    **The cut-side reading was retired by ADR-0207**: a cut spends no
+    headroom, so this grid's widenings only ever needed to serve the boost
+    extreme, and that is the only one checked here.
 
     Both are read WITHOUT the crossover sections and WITHOUT the branch trim,
     and BOTH of those terms are non-positive to within 1e-8 dB — the trim by
@@ -1510,23 +1493,11 @@ def _check_composed(
         # "over its own band" is what this grid is deliberately NOT limited to
         # — `_composed_grid` reads the CHARGE's whole span, so an extremum can
         # and does land outside the declared band (measured as low as 1.92 Hz
-        # and as high as 21.5 kHz). Both refusals therefore name the FREQUENCY
+        # and as high as 21.5 kHz). The refusal therefore names the FREQUENCY
         # rather than an interval the number may not be inside: a reader told
         # only "at its peak over its own band" goes looking for a filter there
-        # and finds none.
-        worst_cut_index = int(np.argmin(composed))
-        worst_cut = float(composed[worst_cut_index])
-        if worst_cut < -DRIVER_MAX_COMPOSED_CUT_DB:
-            _refuse(
-                COMPOSED_CUT_EXCEEDED,
-                f"the {role}'s composed cascade cuts {-worst_cut:.2f} dB at its "
-                f"worst ({grid[worst_cut_index]:.1f} Hz), past the "
-                f"{DRIVER_MAX_COMPOSED_CUT_DB:g} dB ceiling",
-                role=role,
-                composed_cut_db=worst_cut,
-                composed_cut_hz=float(grid[worst_cut_index]),
-                max_composed_cut_db=DRIVER_MAX_COMPOSED_CUT_DB,
-            )
+        # and finds none. The composed CUT arm is gone (ADR-0207): a cut
+        # spends no headroom, and no downstream check re-imposes one.
         peak_index = int(np.argmax(composed))
         peak_boost = max(0.0, float(composed[peak_index]))
         if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
@@ -2371,16 +2342,17 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "after a Lowshelf lead. Anywhere else the emitter cannot name "
                 "the filter and the document is refused. Peaking sits anywhere"
             ),
-            "q_min": DRIVER_MIN_Q,
             "q_max_boost": DRIVER_MAX_BOOST_Q,
-            "q_max_cut": (
-                "none — a cut's width is free. It only removes level and cannot "
-                "clip at any width, so make it as narrow as the feature you are "
-                "aiming at; what a cut spends is max_filter_cut_db, "
-                "max_composed_cut_db and one of max_filters_per_role's slots"
+            "cuts_are_free": (
+                "a cut (gain <= 0) carries no depth ceiling and no composed "
+                "ceiling: it only removes level and cannot clip at any "
+                "depth, and the round's own measured verify with "
+                "auto-restore is the net. Its Q must sit in "
+                f"[{EVALUABLE_Q_MIN:g}, {EVALUABLE_Q_MAX:g}] (ADR-0207) — "
+                "not a policy ceiling but the range this system's evaluator "
+                "and emitter realize faithfully. What a cut spends is one "
+                "of max_filters_per_role's slots"
             ),
-            "max_filter_cut_db": DRIVER_MAX_FILTER_CUT_DB,
-            "max_composed_cut_db": DRIVER_MAX_COMPOSED_CUT_DB,
             "max_filter_boost_db": DRIVER_MAX_FILTER_BOOST_DB,
             "max_composed_boost_db": DRIVER_MAX_COMPOSED_BOOST_DB,
             "subaudible_below_db": DRIVER_MIN_CUT_DB,

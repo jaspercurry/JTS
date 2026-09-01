@@ -459,7 +459,11 @@ a bin counts only if it cleared every capture's own gate — and the ceiling fro
 takes the **min** of tier limit, repeatability, linearity, invertibility and
 class prior, naming which term bound each bin (`envelope_limited_by_mic_tier`,
 `…_repeatability`, `…_class_prior`, …). Read the reason code: it says *why* a
-region is uncorrectable, a different fact from *whether*.
+region is uncorrectable, a different fact from *whether*. **The envelope bounds
+the deterministic fitter, never your prescriptions** — the door admits your
+filter anywhere in the declared passband and the measurement grades it
+afterward, so a correction where the envelope gives the algorithm zero
+permission is yours to try, and yours to defend from the verify.
 
 **Above the HF driver's beaming onset, weight the LISTENING WINDOW, not on-axis
 flat.** On-axis-flat above beaming realizes hot and sounds bright; accept a
