@@ -98,10 +98,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITIES,
     POLARITY_NORMAL,
 )
-from jasper.active_speaker.crossover_v2.capture_plan import wall_clock_ceiling_s
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CAPTURE_PLAN_TARGET,
+    wall_clock_ceiling_s,
+)
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
-from jasper.cli.crossover_prescriber import CROSSOVER_PAGE_PATH
-from jasper.identity import speaker_url
+from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -111,10 +113,13 @@ EXIT_STAGE_FAILED = 3
 #: so it does not borrow ``WALK_REFUSAL_REASONS``' vocabulary.
 UNKNOWN_PROGRAM = "unknown_program"
 
-#: The program ids this door offers. ``baseline`` is looked up in the registry
-#: by ``(id, size)``; ``spot`` carries the caller's own bearing instead, which
-#: is why it is not a registry row.
-PROGRAM_IDS = ("baseline", "spot")
+#: The program ids this door offers, derived from the registry so a new row
+#: reaches the registry's own refusal rather than an argparse "invalid choice".
+#: ``spot`` is appended because it carries the caller's own bearing instead of
+#: being a registry row.
+PROGRAM_IDS = tuple(sorted({
+    pid for pid, _size in measurement_programs.available_programs()
+})) + ("spot",)
 PROGRAM_SIZES = tuple(sorted({
     size for _pid, size in measurement_programs.available_programs()
 }))
@@ -230,13 +235,16 @@ def _price(request: AngleCaptureRequest) -> dict[str, int]:
     Derived from the stops rather than read off a program, so a named walk and
     a free-form one are priced by one rule and the receipt has one shape.
     ``mic_moves`` counts DISTINCT poses because repeats stay at one bearing;
-    ``ceiling_min`` is the session's own ``wall_clock_ceiling_s`` rounded UP to
-    whole minutes, so the printed number is never under the real ceiling.
+    ``ceiling_min`` prices the SESSION that takes the walk, whose capture
+    target is the plan's base entries PLUS these stops, rounded UP to whole
+    minutes so the printed number is never under the real ceiling.
     """
     return {
         "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
         "captures": len(request.stops),
-        "ceiling_min": math.ceil(wall_clock_ceiling_s(len(request.stops)) / 60),
+        "ceiling_min": math.ceil(
+            wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + len(request.stops)) / 60
+        ),
     }
 
 
@@ -370,7 +378,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
     price = payload["price"]
     print(
         f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
-        f"up to {price['ceiling_min']} min"
+        f"up to {price['ceiling_min']} min for the session that takes it"
     )
     print(
         f"  open {payload['handoff_url']} on the household's phone; the page "

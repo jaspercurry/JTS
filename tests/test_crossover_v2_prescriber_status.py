@@ -422,8 +422,29 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
         "available": True,
         "n_takes": 8,
         "angles_deg": [-20, 0, 20],
+        "elevations_deg": [],
         "reason": None,
     }
+
+
+def test_a_raised_walk_publishes_its_elevations():
+    """A walk off mark height says so; a horizontal one reads as it always did."""
+    raised = cli.status_document(
+        {"lateral_poses": {"available": True, "n_takes": 2,
+                           "angles_deg": [0], "elevations_deg": [0, 10]}},
+        "",
+        state_supplied=False,
+    )["banked"]
+    flat = cli.status_document(
+        {"lateral_poses": {"available": True, "n_takes": 2,
+                           "angles_deg": [0], "elevations_deg": [0]}},
+        "",
+        state_supplied=False,
+    )["banked"]
+
+    assert raised["walk"]["elevations_deg"] == [0, 10]
+    assert "elevations 0, 10 deg" in raised["summary"]
+    assert flat["summary"].endswith("2 walk take(s) at 0 deg")
 
 
 def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():

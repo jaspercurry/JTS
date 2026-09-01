@@ -496,7 +496,7 @@ stage --program baseline --size express|full` (or `--program spot --azimuth N
 [--elevation M]`) walks a named pose table from
 [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py)
 rather than geometry you invented; `--angles` remains the operator escape hatch.
-The price is `mic_move_count` — distinct poses, i.e. how many times somebody
+The price is `price.mic_moves` — distinct poses, i.e. how many times somebody
 moves the microphone — printed beside the capture count and the session
 ceiling. Multiple DSP *configs* per position has a door but no
 wiring: republish-then-apply reaches a named prior config between takes, and

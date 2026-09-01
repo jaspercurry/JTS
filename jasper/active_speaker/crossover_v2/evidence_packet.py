@@ -1166,6 +1166,19 @@ def _banked_takes(
     return [take for take in takes if take is not None]
 
 
+def _distinct_degrees(
+    takes: list[Any], field: str, *, default: int | None = None
+) -> list[int]:
+    """The sorted whole degrees ``field`` carries across ``takes``."""
+
+    values = set()
+    for take in takes:
+        value = take.get(field, default)
+        if isinstance(value, int) and not isinstance(value, bool):
+            values.add(value)
+    return sorted(values)
+
+
 def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
     """The signed bearings a lateral walk banked, one row per accepted take.
 
@@ -1216,13 +1229,12 @@ def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
         "available": True,
         "n_takes": len(takes),
         "takes": takes,
-        # ``bool`` subclasses ``int``, so a ``true`` in this field would
-        # otherwise publish 1 as a bearing.
-        "angles_deg": sorted({
-            take["position_deg"] for take in takes
-            if isinstance(take.get("position_deg"), int)
-            and not isinstance(take.get("position_deg"), bool)
-        }),
+        # ``bool`` subclasses ``int``, so a ``true`` in either field would
+        # otherwise publish 1 as a degree.
+        "angles_deg": _distinct_degrees(takes, "position_deg"),
+        # Absent on a take banked before elevation was sayable, which is a
+        # pose at mark height: an unstated raise is an honest 0.
+        "elevations_deg": _distinct_degrees(takes, "vertical_deg", default=0),
         "source": f"{_POSITIONS_SUBDIR}/<take_id>.json",
         "note": (
             "position_deg is signed whole degrees, negative LEFT of the design "

@@ -118,7 +118,12 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
 )
-from jasper.identity import read_identity, speaker_url
+from jasper.identity import (
+    CROSSOVER_PAGE_PATH,
+    SOUND_SETUP_PAGE_PATH,
+    read_identity,
+    speaker_url,
+)
 
 EXIT_OK = 0
 EXIT_EVIDENCE_UNREADABLE = 1
@@ -130,16 +135,6 @@ EXIT_STAGE_FAILED = 3
 #: one owner: the generator reads this rather than the runbook restating it.
 #: Three of the four verbs only read; `stage` is the one that writes.
 AUTHORITY_TIER = "advisory (`stage` mutates)"
-
-#: Where a human goes to run, apply, or undo a crossover round.
-CROSSOVER_PAGE_PATH = "/sound/crossover/"
-
-#: Where a human DECLARES the speaker — drivers, their safety profile, the
-#: corner. A second page rather than a second spelling of the first: the
-#: per-driver bound comes from the design draft that page writes, and an
-#: operator whose speaker has never been commissioned cannot satisfy
-#: ``--drivers`` by pointing harder at a file that does not exist yet.
-SOUND_SETUP_PAGE_PATH = "/sound/setup/"
 
 #: What happens to a document sitting in the spool, said once. ``stage`` says it
 #: at the moment of banking and ``status`` says it to an operator who arrived
@@ -823,6 +818,13 @@ def _declared_section(
     }
 
 
+def _degree_list(block: dict[str, Any], key: str) -> list[int]:
+    """One of the packet's whole-degree lists, or empty when it published none."""
+
+    value = block.get(key)
+    return list(value) if isinstance(value, list) else []
+
+
 def _banked_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
@@ -862,16 +864,19 @@ def _banked_section(
         ),
     }
     lateral = _block(packet, "lateral_poses")
-    lateral_angles = lateral.get("angles_deg")
     walk: dict[str, Any] = {
         "available": bool(lateral.get("available")),
         "n_takes": lateral.get("n_takes") or 0,
-        "angles_deg": list(lateral_angles) if isinstance(lateral_angles, list) else [],
+        "angles_deg": _degree_list(lateral, "angles_deg"),
+        "elevations_deg": _degree_list(lateral, "elevations_deg"),
         "reason": (
             None if lateral.get("available")
             else _reason(lateral, packet_error)
         ),
     }
+    # A walk at mark height reads exactly the sentence it read before elevation
+    # was sayable: "0 deg" is not a raise worth a clause.
+    raised = [deg for deg in walk["elevations_deg"] if deg]
     round_block = _block(packet, "round")
     session = _block(packet, "session")
     available = bool(round_block.get("available"))
@@ -896,6 +901,12 @@ def _banked_section(
     ) + (
         f"; {walk['n_takes']} walk take(s) at "
         f"{', '.join(str(deg) for deg in walk['angles_deg'])} deg"
+        + (
+            f", elevations {', '.join(str(deg) for deg in walk['elevations_deg'])}"
+            " deg"
+            if raised
+            else ""
+        )
         if walk["available"]
         else f"; no walk takes ({walk['reason']})"
     )

@@ -134,6 +134,17 @@ def _resolve_hostname() -> str:
     return recorded or DEFAULT_HOSTNAME
 
 
+#: Where a human goes to run, apply, or undo a crossover round.
+CROSSOVER_PAGE_PATH = "/sound/crossover/"
+
+#: Where a human DECLARES the speaker — drivers, their safety profile, the
+#: corner. A second page rather than a second spelling of the first: the
+#: per-driver bound comes from the design draft that page writes, and an
+#: operator whose speaker has never been commissioned cannot satisfy
+#: ``--drivers`` by pointing harder at a file that does not exist yet.
+SOUND_SETUP_PAGE_PATH = "/sound/setup/"
+
+
 def speaker_url(path: str) -> str:
     """A handoff URL for THIS speaker. TOTAL — never raises.
 

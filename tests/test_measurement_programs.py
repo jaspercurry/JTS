@@ -20,7 +20,6 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import measurement_programs as mp
-from jasper.active_speaker.crossover_v2.capture_plan import wall_clock_ceiling_s
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLAN_DOC = REPO_ROOT / "docs" / "tuning-master-plan.md"
@@ -130,21 +129,16 @@ def test_full_baseline_matches_the_plans_repeat_structure() -> None:
 
 
 @pytest.mark.parametrize(
-    ("program_id", "size", "poses", "moves", "captures", "ceiling_s"),
+    ("program_id", "size", "poses", "moves", "captures"),
     [
-        ("baseline", "full", 13, 13, 16, 3360),
-        ("baseline", "express", 5, 5, 8, 2400),
+        ("baseline", "full", 13, 13, 16),
+        ("baseline", "express", 5, 5, 8),
     ],
 )
 def test_shipped_rows(
-    program_id: str,
-    size: str,
-    poses: int,
-    moves: int,
-    captures: int,
-    ceiling_s: int,
+    program_id: str, size: str, poses: int, moves: int, captures: int
 ) -> None:
-    """The shipped numbers, including the ceilings the module's prose states."""
+    """The shipped numbers."""
 
     row = mp.program(program_id, size)
 
@@ -153,7 +147,6 @@ def test_shipped_rows(
     assert row.mic_move_count == moves
     assert row.capture_count == captures
     assert row.mark_distance_m == 1.0
-    assert (row.hold_budget_s, row.session_ceiling_s) == (600, ceiling_s)
 
 
 def test_express_geometry() -> None:
@@ -210,8 +203,6 @@ def test_counts_split_moves_from_captures(
             mp.ProgramPose(0, 0, repeats[1]),
             mp.ProgramPose(10, 0, repeats[2]),
         ),
-        hold_budget_s=mp.HOLD_BUDGET_S,
-        session_ceiling_s=0,
     )
 
     assert row.mic_move_count == moves
@@ -232,18 +223,3 @@ def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -
     assert (row.program_id, row.size) == ("spot", "express")
     assert row.mark_distance_m == 1.0
 
-
-@pytest.mark.parametrize(
-    "row",
-    [
-        mp.program("baseline", "full"),
-        mp.program("baseline", "express"),
-        mp.spot_program(0, 0),
-    ],
-    ids=["full", "express", "spot"],
-)
-def test_clocks_are_program_owned(row: mp.MeasurementProgram) -> None:
-    """Every program's ceiling scales with its own capture count."""
-
-    assert row.hold_budget_s == mp.HOLD_BUDGET_S
-    assert row.session_ceiling_s == int(wall_clock_ceiling_s(row.capture_count))

@@ -61,9 +61,12 @@ from jasper.active_speaker.session_volume_plan import (
     SCHEMA_VERSION,
     STATE_KIND,
 )
-from jasper.active_speaker.crossover_v2.capture_plan import wall_clock_ceiling_s
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CAPTURE_PLAN_TARGET,
+    wall_clock_ceiling_s,
+)
 from jasper.cli import angle_capture as cli
-from jasper.cli.crossover_prescriber import CROSSOVER_PAGE_PATH
+from jasper.identity import CROSSOVER_PAGE_PATH
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 
@@ -833,8 +836,10 @@ def test_withdraw_is_quiet_and_zero_when_nothing_is_staged(slot, capsys):
 def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     """The door a driver reads: one name in, a walk plus a price out.
 
-    The receipt's three numbers are asserted against the program row's own
-    derived counts, not transcribed, so the table stays their one owner.
+    The two counts are asserted against the program row's own derived counts,
+    not transcribed, so the table stays their one owner. ``ceiling_min`` is a
+    literal because it prices the SESSION that takes this walk -- the base
+    entries plus these stops -- which is not a number the row carries.
     """
     express = mp.program("baseline", "express")
     args = cli.build_parser().parse_args(
@@ -848,7 +853,7 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert body["price"] == {
         "mic_moves": express.mic_move_count,
         "captures": express.capture_count,
-        "ceiling_min": math.ceil(express.session_ceiling_s / 60),
+        "ceiling_min": 46,
     }
     assert body["handoff_url"].startswith("http://")
     assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
@@ -883,7 +888,7 @@ def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
     assert body["price"] == {
         "mic_moves": 2,
         "captures": 2,
-        "ceiling_min": math.ceil(wall_clock_ceiling_s(2) / 60),
+        "ceiling_min": math.ceil(wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + 2) / 60),
     }
     assert spool.take_staged_angle_request().program == ""
 
