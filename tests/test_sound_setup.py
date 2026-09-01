@@ -7566,12 +7566,6 @@ def _eq_box(monkeypatch, tmp_path):
             )),
             id="q",
         ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),
-            )),
-            id="gain_dragged_to_zero",
-        ),
     ],
 )
 async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
@@ -7593,14 +7587,45 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
     assert len(fake.active_raw_values) == swaps_after_install
 
 
-async def test_adding_and_removing_a_band_writes_parameters_too(
-    tmp_path: Path, monkeypatch,
+@pytest.mark.parametrize(
+    "changed",
+    [
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+                ParametricBand(freq_hz=60.0, gain_db=3.0, q=1.0),
+            )),
+            id="band_added",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=()),
+            id="band_removed",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),
+            )),
+            id="gain_dragged_to_exactly_flat",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(biquad_type="Highshelf", freq_hz=1000.0,
+                               gain_db=2.0, q=1.0),
+            )),
+            id="band_retyped",
+        ),
+    ],
+)
+async def test_an_edit_that_changes_the_filter_set_still_swaps(
+    tmp_path: Path, monkeypatch, changed,
 ):
-    """The band pool is fixed, so taking a slot into use is a number change.
+    """A different set of filters is a different pipeline, and that ducks.
 
-    Restructuring a pipeline is what makes CamillaDSP rebuild the filter group
-    and reset every filter's state, so keeping the slot count still is what
-    keeps adding a band silent.
+    Adding, removing or retyping a band changes which filters exist, and so
+    does dragging a gain into the flat window, because a neutral band is
+    dropped from the graph. Restructuring a pipeline makes CamillaDSP rebuild
+    the filter group and reset every filter's state, so these must keep the
+    fader bracket rather than skip it.
     """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
@@ -7608,18 +7633,12 @@ async def test_adding_and_removing_a_band_writes_parameters_too(
     ))
     await _live(fake, one, config_dir)
     swaps_after_install = len(fake.active_raw_values)
-    two = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-        ParametricBand(freq_hz=60.0, gain_db=3.0, q=1.0),
-    ))
 
-    added = await _live(fake, two, config_dir)
-    removed = await _live(fake, one, config_dir)
+    payload = await _live(fake, changed, config_dir)
 
-    assert added["live_method"] == "patch_config"
-    assert removed["live_method"] == "patch_config"
-    assert len(fake.patches) == 2
-    assert len(fake.active_raw_values) == swaps_after_install
+    assert payload["live_method"] == "active_config_raw"
+    assert fake.patches == []
+    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 async def test_a_redraw_that_changed_nothing_writes_nothing(

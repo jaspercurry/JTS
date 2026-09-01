@@ -3207,45 +3207,16 @@ def test_baseline_preference_step_is_before_split_mixer() -> None:
     assert pipeline.index("names: [pref_pk]") < pipeline.index("type: Mixer")
 
 
-def test_baseline_without_preference_eq_is_byte_identical() -> None:
-    # A household with no preference EQ at all emits nothing extra: the
-    # baseline is byte-for-byte the pre-PR-3 config.
+def test_baseline_empty_preference_is_byte_identical() -> None:
+    # An all-flat preference profile emits nothing extra: the baseline is
+    # byte-for-byte the pre-PR-3 config. Inactive bands (near-zero gain) drop out
+    # exactly like the stereo emitter's build_sound_filters does.
     base = _active_baseline_yaml("mono", 2)
-
     assert _active_baseline_yaml("mono", 2, preference_filters=()) == base
-
-
-def test_a_neutral_band_holds_its_slot_without_moving_the_speaker() -> None:
-    """A flat band is emitted, and costs nothing that matters.
-
-    Its slot is what lets ``/eq/`` drag a gain through 0 dB as a parameter
-    write instead of a new pipeline (see
-    :func:`jasper.sound.profile.build_sound_filter_slots`). What must NOT move
-    is the driver-domain graph: Layer A is the crossover, protection and
-    routing evidence a commissioned speaker is bound to, and re-fingerprinting
-    it on an EQ edit would invalidate that evidence.
-    """
-    import re
-
-    from jasper.active_speaker.baseline_profile import active_layer_a_fingerprint
-
-    base = _active_baseline_yaml("mono", 2)
     near_zero = (
         FilterSpec(name="pref_noop", biquad_type="Peaking", freq=1000.0, gain=0.0, q=1.0),
     )
-
-    with_slot = _active_baseline_yaml("mono", 2, preference_filters=near_zero)
-
-    assert "pref_noop" in with_slot
-    assert "pref_noop" not in base
-    # Neutral: a 0 dB Peaking biquad is an identity filter, so no headroom is
-    # charged and the safety classification is untouched.
-    headroom = r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)"
-    assert re.search(headroom, with_slot)[1] == re.search(headroom, base)[1]
-    assert classify_camilla_graph(
-        topology=_active_topology("mono", "active_2_way"), text=with_slot
-    ).allowed is True
-    assert active_layer_a_fingerprint(with_slot) == active_layer_a_fingerprint(base)
+    assert _active_baseline_yaml("mono", 2, preference_filters=near_zero) == base
 
 
 def test_tweeter_commissioning_requires_protective_highpass() -> None:

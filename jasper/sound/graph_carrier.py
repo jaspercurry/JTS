@@ -542,7 +542,7 @@ def _recompose_active_baseline_with_eq(
     )
     from jasper.bass_extension.profile import evaluate_bass_extension_profile
     from jasper.output_topology import load_output_topology
-    from jasper.sound.profile import build_sound_filter_slots
+    from jasper.sound.profile import build_sound_filters
 
     topology = load_output_topology()
     applied_profile = load_applied_baseline_profile_state() or {}
@@ -556,7 +556,7 @@ def _recompose_active_baseline_with_eq(
         else None
     )
     bass_proof_profile = bass_evaluation.profile
-    preference_filters = build_sound_filter_slots(profile)
+    preference_filters = build_sound_filters(profile)
     live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     # The L0 emit gates inside emit_active_speaker_baseline_config raise
     # ActiveSpeakerConfigError (a ValueError) rather than returning an issue
@@ -647,11 +647,7 @@ def recompose_active_baseline_for_bass_extension(
     )
     from jasper.active_speaker.playback_route import resolve_live_active_endpoint
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.sound.profile import (
-        PROFILE_PATH,
-        SoundProfile,
-        build_sound_filter_slots,
-    )
+    from jasper.sound.profile import PROFILE_PATH, SoundProfile, build_sound_filters
     from jasper.sound.settings import (
         SETTINGS_PATH,
         SoundSettings,
@@ -721,7 +717,7 @@ def recompose_active_baseline_for_bass_extension(
             topology,
             applied_profile=applied_profile,
             room_peqs=room_peqs,
-            preference_filters=build_sound_filter_slots(preference),
+            preference_filters=build_sound_filters(preference),
             output_trim_db=output_trim_db(preference, settings),
             out_path=None,
             playback_device=live_endpoint,

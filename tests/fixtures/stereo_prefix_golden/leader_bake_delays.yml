@@ -83,13 +83,6 @@ filters:
       freq: 3500.0000
       q: 0.7071068
       gain: -2.0000
-  sound_simple_sub_bass:
-    type: Biquad
-    parameters:
-      type: Lowshelf
-      freq: 60.0000
-      q: 0.7071068
-      gain: 0.0000
   sound_simple_bass:
     type: Biquad
     parameters:
@@ -97,83 +90,6 @@ filters:
       freq: 150.0000
       q: 1.0000
       gain: 2.0000
-  sound_simple_mid:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_simple_presence:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 4000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_simple_treble:
-    type: Biquad
-    parameters:
-      type: Highshelf
-      freq: 10000.0000
-      q: 0.7071068
-      gain: 0.0000
-  sound_advanced_1:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_2:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_3:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_4:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_5:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_6:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_7:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
-  sound_advanced_8:
-    type: Biquad
-    parameters:
-      type: Peaking
-      freq: 1000.0000
-      q: 1.0000
-      gain: 0.0000
 
 mixers:
   master_gain:
@@ -189,7 +105,7 @@ pipeline:
     name: master_gain
   - type: Filter
     channels: [0]
-    names: [room_delay_l, room_peq_1, room_headroom, sound_preamp, sound_curve_harman_bass, sound_curve_harman_tilt, sound_simple_sub_bass, sound_simple_bass, sound_simple_mid, sound_simple_presence, sound_simple_treble, sound_advanced_1, sound_advanced_2, sound_advanced_3, sound_advanced_4, sound_advanced_5, sound_advanced_6, sound_advanced_7, sound_advanced_8, flat]
+    names: [room_delay_l, room_peq_1, room_headroom, sound_preamp, sound_curve_harman_bass, sound_curve_harman_tilt, sound_simple_bass, flat]
   - type: Filter
     channels: [1]
-    names: [room_delay_r, room_peq_r1, room_peq_r2, room_headroom, sound_preamp, sound_curve_harman_bass, sound_curve_harman_tilt, sound_simple_sub_bass, sound_simple_bass, sound_simple_mid, sound_simple_presence, sound_simple_treble, sound_advanced_1, sound_advanced_2, sound_advanced_3, sound_advanced_4, sound_advanced_5, sound_advanced_6, sound_advanced_7, sound_advanced_8, flat]
+    names: [room_delay_r, room_peq_r1, room_peq_r2, room_headroom, sound_preamp, sound_curve_harman_bass, sound_curve_harman_tilt, sound_simple_bass, flat]

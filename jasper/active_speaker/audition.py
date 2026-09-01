@@ -178,14 +178,14 @@ def _household_layers(
     """
 
     from jasper.sound.camilla_yaml import extract_room_peqs_from_config
-    from jasper.sound.profile import build_sound_filter_slots, load_profile
+    from jasper.sound.profile import build_sound_filters, load_profile
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
     profile = load_profile()
     settings = load_sound_settings()
     return (
         extract_room_peqs_from_config(anchor_path),
-        list(build_sound_filter_slots(profile)),
+        list(build_sound_filters(profile)),
         output_trim_db(profile, settings),
     )
 

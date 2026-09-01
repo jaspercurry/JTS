@@ -719,35 +719,10 @@ def _simple_filters(simple: SimpleEq) -> tuple[FilterSpec, ...]:
     )
 
 
-# An unused advanced slot: a Peaking biquad at 0 dB, which is an exact identity
-# (its zeros cancel its poles). Frequency and Q are arbitrary because the filter
-# does nothing; they match what the editor gives a freshly added band, so taking
-# a slot into use is a change of numbers and not of the biquad's recipe.
-_IDLE_ADVANCED_SLOT = ("Peaking", 1000.0, 0.0, 1.0)
-
-
 def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]:
-    """One slot per advanced band the editor can hold, always all of them.
-
-    The pool is fixed at :data:`MAX_PARAMETRIC_BANDS` so the PIPELINE never
-    changes while a household edits: adding, removing or reordering a band
-    writes numbers into slots that are already running. Measured on jts3 —
-    restructuring a pipeline makes CamillaDSP rebuild the filter group and
-    reset the state of EVERY filter in it (its own log says ``Build filter
-    group from config``), which tears the waveform ~24 dB above the noise
-    floor even when the graph's response is unchanged. Rewriting a running
-    filter's parameters instead is bit-for-bit clean over the same test.
-    """
-
     specs = []
-    band_list = list(bands)
-    for i in range(1, MAX_PARAMETRIC_BANDS + 1):
-        band = band_list[i - 1] if i <= len(band_list) else None
-        if band is None or not band.enabled:
-            biquad_type, freq_hz, gain_db, q = _IDLE_ADVANCED_SLOT
-            specs.append(
-                FilterSpec(f"sound_advanced_{i}", biquad_type, freq_hz, gain_db, q=q)
-            )
+    for i, band in enumerate(bands, start=1):
+        if not band.enabled:
             continue
         if band.biquad_type in {"Lowshelf", "Highshelf"}:
             # No steepness field: the emitter spells every shelf at SHELF_Q,
@@ -784,47 +759,17 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     return tuple(specs)
 
 
-def _declared_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Every filter this profile declares, in canonical order."""
+def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
+    """Return active sound filters in canonical order."""
 
     if not profile.enabled:
         return ()
-    return (
+    filters = (
         *_curve_filters(profile.curve_id),
         *_simple_filters(profile.simple_eq),
         *_advanced_filters(profile.parametric_bands),
     )
-
-
-def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Return active sound filters in canonical order.
-
-    What the profile DOES: neutral bands are dropped, so this is the list to
-    count, to draw a response from, and to ask "is this profile audible".
-    :func:`build_sound_filter_slots` is what the GRAPH holds.
-    """
-
-    return tuple(spec for spec in _declared_sound_filters(profile) if spec.active())
-
-
-def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Return every declared filter in canonical order, neutral ones included.
-
-    What the GRAPH holds, and the list every emitter takes. Shape follows the
-    profile's declaration and never its values, so dragging a band's gain
-    across 0 dB stays a change of one number instead of adding or removing a
-    filter. That is what lets a live edit ride ``PatchConfig`` rather than a
-    pipeline replace, which must duck the fader across the swap
-    (:meth:`jasper.camilla.CamillaController._graph_mutation`).
-
-    The advanced pool is fixed at :data:`MAX_PARAMETRIC_BANDS` for the same
-    reason, one step further: a household can add, remove or reorder bands
-    without the PIPELINE changing at all, because the slots they move between
-    are always running. A band switched off, and every slot past the last
-    declared band, is an idle Peaking at 0 dB — an exact identity.
-    """
-
-    return _declared_sound_filters(profile)
+    return tuple(spec for spec in filters if spec.active())
 
 
 # The clamp floor _biquad_coeffs applies to eff_q below, and the smallest Q
