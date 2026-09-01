@@ -1413,9 +1413,8 @@ pub struct Input {
     /// to zero across `lane_fade`'s 10 ms window — silent within a period or
     /// two, not within a sample — WITHOUT touching this lane's capture,
     /// `frames_read`, or `rms_dbfs_x100` telemetry, which are accounted BEFORE
-    /// the gate. This is
-    /// mux's latest-source-wins arbitration primitive for the USB lane — the
-    /// sole USB-silencing mechanism in the one-pipeline design.
+    /// the gate. This is mux's latest-source-wins arbitration primitive for the
+    /// USB lane — the sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
     /// Default `false` (contribute).
     muted: Arc<AtomicBool>,

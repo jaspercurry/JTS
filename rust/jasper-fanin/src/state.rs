@@ -431,10 +431,11 @@ impl StateServer {
 
     /// Handle a `MUTE <label>` (`muted=true`) / `UNMUTE <label>` (`muted=false`)
     /// control command. Sets the target lane's shared `muted` flag; the mixer
-    /// work loop reads it at the SUM stage and drops the lane's contribution
-    /// while set (`lane_mix_contributes`), WITHOUT touching the lane's `frames_read`
-    /// / `rms_dbfs_x100` telemetry — so mux still sees a muted-but-streaming host
-    /// as active (the combo-arbitration invariant).
+    /// work loop reads it at the SUM stage (`lane_mix_contributes`) and fades the
+    /// lane's contribution out over `mixer::lane_fade`'s 10 ms window — a mute
+    /// lands within a period or two, not within a sample — WITHOUT touching the
+    /// lane's `frames_read` / `rms_dbfs_x100` telemetry, so mux still sees a
+    /// muted-but-streaming host as active (the combo-arbitration invariant).
     ///
     /// Idempotent: re-issuing the same state is a no-op store; the transition is
     /// logged ONCE (only when the flag actually flips), so mux's per-tick
