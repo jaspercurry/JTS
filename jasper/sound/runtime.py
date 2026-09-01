@@ -569,6 +569,7 @@ async def reconcile_current_dsp(
             if reanchor_path is not None
             else None
         )
+        applied = False
         try:
             apply_state, applied_path, _ = await load_profile_config(
                 profile,
@@ -581,8 +582,12 @@ async def reconcile_current_dsp(
                 profile_id=RECONCILE_PROFILE_ID,
                 out_path=reanchor_path,
             )
-        except Exception:
-            if reanchor_path is not None and reanchor_backup is not None:
+            applied = True
+        finally:
+            # ``finally`` rather than a broad ``except``: this puts bytes back
+            # and re-raises nothing, so it must run for EVERY way the apply can
+            # fail, including ones no handler here would think to name.
+            if not applied and reanchor_path is not None and reanchor_backup is not None:
                 atomic_write_text(
                     Path(reanchor_path), reanchor_backup, mode=0o640,
                 )
@@ -596,7 +601,6 @@ async def reconcile_current_dsp(
                     candidate=str(reanchor_path),
                     level=logging.WARNING,
                 )
-            raise
     return _log_reconcile_result(
         {
             "status": "reconciled",
