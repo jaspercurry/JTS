@@ -16,9 +16,9 @@ one absolute number, from the three facts that make it absolute:
   owns that relation, at the one place it is applied);
 * the **microphone**, resolved NOW through the path ``jasper-seat-level``
   uses, because the session about to run must be able to read its own captures
-  absolutely. The banked record names WHICH mic the anchor was measured with;
-  whether that mic's calibration is still readable is a question only a live
-  lookup answers;
+  absolutely. The banked record names WHICH mic the anchor was measured with
+  and at WHAT sensitivity; whether that mic's calibration is still readable,
+  and still the same one, are questions only a live lookup answers;
 * the preset's ``max_commissioning_level_db_spl`` **ceiling**, which is a hard
   stop on the doctrine's closed list: a level above it refuses by name rather
   than being quietly shrunk.
@@ -30,16 +30,15 @@ that looks absolute and is not.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.audio_measurement.calibration import (
-    MIC_CALIBRATION_UNAVAILABLE_DETAIL,
     REFUSE_MIC_CALIBRATION_UNAVAILABLE,
     resolve_mic_sensitivity,
 )
 
+from ._common import finite_float
 from .measurement_programs import MeasurementProgram
 from .seat_level_reference import load_seat_level_reference
 
@@ -48,13 +47,19 @@ SEAT_REFERENCE_MISSING_DETAIL = (
     "no seat-level reference is banked, so there is no anchor to drive "
     "relative to — run jasper-seat-level first"
 )
+MIC_CALIBRATION_CHANGED = "mic_calibration_changed"
 LEVEL_OVER_CEILING = "level_over_ceiling"
 PRESET_UNAVAILABLE = "preset_unavailable"
+
+#: Two sens factors this close are one number in two float reprs, not two
+#: calibrations. A real recalibration moves the figure by whole tenths.
+SENS_FACTOR_TOLERANCE_DB = 0.05
 
 #: The closed vocabulary a refusal's ``reason`` comes from.
 LEVEL_REFUSAL_REASONS = (
     SEAT_REFERENCE_MISSING,
     REFUSE_MIC_CALIBRATION_UNAVAILABLE,
+    MIC_CALIBRATION_CHANGED,
     LEVEL_OVER_CEILING,
     PRESET_UNAVAILABLE,
 )
@@ -77,14 +82,30 @@ class ResolvedLevel:
     anchor_db_spl: float
     level_re_anchor_db: float
     reference_volume_db: float
-    mic_sens_factor_db: float
     mic_serial: str | None
 
 
-def _finite(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value) if math.isfinite(value) else None
+def _mic_unavailable_detail(serial: str | None) -> str:
+    """Why no absolute reference resolved, and the remedy THIS door can follow.
+
+    ``jasper-angle-capture`` deliberately has no ``--calibration-file``: the
+    mic it must resolve is the one the anchor was measured with, so the
+    remedies are the wizard that stores that mic's vendor file and re-running
+    the anchor with the mic actually in hand.
+    """
+
+    if not serial:
+        return (
+            "the seat-level reference banks no mic serial, so no stored "
+            "calibration can be looked up for it — re-run jasper-seat-level "
+            "with the mic you will measure with"
+        )
+    return (
+        f"the anchor was measured with mic serial {serial} and no stored "
+        "calibration resolves for it — store its vendor file through the "
+        "calibration wizard (/correction/calibration/fetch), or re-run "
+        "jasper-seat-level with the mic you will measure with"
+    )
 
 
 def _preset_ceiling_db_spl() -> float:
@@ -96,7 +117,7 @@ def _preset_ceiling_db_spl() -> float:
 
     try:
         preset = resolve_capture_preset(load_output_topology_strict())
-        ceiling = _finite(preset.safety.max_commissioning_level_db_spl)
+        ceiling = finite_float(preset.safety.max_commissioning_level_db_spl)
     except (OSError, ValueError, KeyError, AttributeError) as exc:
         raise LevelUnresolved(PRESET_UNAVAILABLE, str(exc)) from exc
     if ceiling is None:
@@ -125,20 +146,40 @@ def resolve_program_level(
 
     level_re_anchor_db = 0.0 if program is None else program.level_re_anchor_db
     record = load_seat_level_reference(state_path=state_path)
-    anchor = _finite((record or {}).get("measured_db_spl"))
-    reference_volume_db = _finite((record or {}).get("reference_volume_db"))
+    anchor = finite_float((record or {}).get("measured_db_spl"))
+    reference_volume_db = finite_float((record or {}).get("reference_volume_db"))
     if anchor is None or reference_volume_db is None:
         raise LevelUnresolved(SEAT_REFERENCE_MISSING, SEAT_REFERENCE_MISSING_DETAIL)
 
-    banked = (record or {}).get("mic_sensitivity")
-    banked_serial = banked.get("serial") if isinstance(banked, dict) else None
+    banked_raw = (record or {}).get("mic_sensitivity")
+    banked = banked_raw if isinstance(banked_raw, dict) else {}
+    banked_serial = banked.get("serial")
+    serial = mic_serial or (str(banked_serial) if banked_serial else None)
+    # The banked block is ``MicSensitivity.to_dict()`` — sens factor, gain and
+    # serial, no model — while a stored record is keyed provider/model/serial,
+    # so the lookup runs under ``resolve_mic_sensitivity``'s default model.
     sensitivity = resolve_mic_sensitivity(
-        calibration_file=calibration_file,
-        mic_serial=mic_serial or (str(banked_serial) if banked_serial else None),
+        calibration_file=calibration_file, mic_serial=serial
     )
     if sensitivity is None:
         raise LevelUnresolved(
-            REFUSE_MIC_CALIBRATION_UNAVAILABLE, MIC_CALIBRATION_UNAVAILABLE_DETAIL
+            REFUSE_MIC_CALIBRATION_UNAVAILABLE, _mic_unavailable_detail(serial)
+        )
+    banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
+    if (
+        banked_sens_factor_db is not None
+        and abs(sensitivity.sens_factor_db - banked_sens_factor_db)
+        > SENS_FACTOR_TOLERANCE_DB
+    ):
+        raise LevelUnresolved(
+            MIC_CALIBRATION_CHANGED,
+            "the anchor was measured with mic "
+            f"{serial or sensitivity.serial} at a sens factor of "
+            f"{banked_sens_factor_db:g} dB, but that mic resolves now at "
+            f"{sensitivity.sens_factor_db:g} dB — an anchor measured with one "
+            "calibration cannot make a session measured with another absolute; "
+            "re-run jasper-seat-level with the calibration you will measure "
+            "with",
         )
 
     target_db_spl = anchor + level_re_anchor_db
@@ -157,6 +198,5 @@ def resolve_program_level(
         anchor_db_spl=anchor,
         level_re_anchor_db=level_re_anchor_db,
         reference_volume_db=reference_volume_db,
-        mic_sens_factor_db=sensitivity.sens_factor_db,
         mic_serial=sensitivity.serial,
     )

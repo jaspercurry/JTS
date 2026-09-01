@@ -101,6 +101,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 from jasper.active_speaker.measurement_level import (
     LevelUnresolved,
+    ResolvedLevel,
     resolve_program_level,
 )
 from jasper.active_speaker.measurement_programs import MeasurementProgram
@@ -257,16 +258,29 @@ def _build_request(args: argparse.Namespace) -> _Stated:
     )
 
 
-def _level_block(program: MeasurementProgram | None) -> dict[str, Any]:
+def _resolved_level(
+    program: MeasurementProgram | None,
+) -> ResolvedLevel | LevelUnresolved:
+    """This walk's absolute level, or the refusal that stops it being knowable.
+
+    Resolved ONCE per verb and carried as the object it is: ``plan`` prints the
+    refusal, ``stage`` hands the SAME exception to :func:`_refuse`, so neither
+    verb rebuilds one from the receipt it just flattened.
+    """
+    try:
+        return resolve_program_level(program)
+    except LevelUnresolved as exc:
+        return exc
+
+
+def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
     """What this walk drives at, or the input that stops it being knowable.
 
     Never a relative fallback: a receipt that printed ``+0 dB`` with no anchor
     behind it would read as an absolute level nobody measured.
     """
-    try:
-        level = resolve_program_level(program)
-    except LevelUnresolved as exc:
-        return {"resolved": False, "reason": exc.reason, "detail": exc.detail}
+    if isinstance(level, LevelUnresolved):
+        return {"resolved": False, "reason": level.reason, "detail": level.detail}
     return {
         "resolved": True,
         "target_db_spl": round(level.target_db_spl, 2),
@@ -278,7 +292,7 @@ def _level_block(program: MeasurementProgram | None) -> dict[str, Any]:
 
 
 def _walk_payload(
-    request: AngleCaptureRequest, program: MeasurementProgram | None = None
+    request: AngleCaptureRequest, level: ResolvedLevel | LevelUnresolved
 ) -> dict[str, Any]:
     """The resolved walk, as one JSON-able document.
 
@@ -301,7 +315,7 @@ def _walk_payload(
     return {
         "program": request.program,
         "price": walk_price(request),
-        "level": _level_block(program),
+        "level": _level_block(level),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
@@ -468,7 +482,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         return _refuse(exc, as_json=args.json)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
-    payload = _walk_payload(*stated)
+    payload = _walk_payload(stated.request, _resolved_level(stated.program))
     if args.json:
         print(json.dumps({"ok": True, **payload}, indent=2))
     else:
@@ -483,16 +497,14 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
-    payload = _walk_payload(*stated)
     # The methodology levels the seat before anything measures, so a level this
     # door cannot resolve names the step the operator skipped rather than
     # staging a walk whose captures nobody could read absolutely. It is not
     # written to the spool -- nothing downstream reads a level yet.
-    level = payload["level"]
-    if not level["resolved"]:
-        return _refuse(
-            LevelUnresolved(level["reason"], level["detail"]), as_json=args.json
-        )
+    level = _resolved_level(stated.program)
+    if isinstance(level, LevelUnresolved):
+        return _refuse(level, as_json=args.json)
+    payload = _walk_payload(stated.request, level)
     try:
         path = stage_angle_request(stated.request)
     except AngleRequestRefused as exc:

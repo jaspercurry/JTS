@@ -13,6 +13,7 @@ was guessed is worse than no number.
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,10 @@ ANCHOR_DB_SPL = 77.5
 REFERENCE_VOLUME_DB = -18.0
 CEILING_DB_SPL = 85.0
 CAL_WITH_SENS = '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
+# The same mic, recalibrated (3 dB away) and re-quoted (0.04 dB away, inside
+# :data:`ml.SENS_FACTOR_TOLERANCE_DB`) since the anchor banked -12.07.
+CAL_RECALIBRATED = '"Sens Factor =-9.0dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
+CAL_REQUOTED = '"Sens Factor =-12.03dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_CURVE_ONLY = "10.0\t-6.6\n10.2\t-6.5\n"
 
 
@@ -75,6 +80,14 @@ def _program(level_re_anchor_db: float) -> mp.MeasurementProgram:
             REFUSE_MIC_CALIBRATION_UNAVAILABLE,
             id="no_absolute_mic_reference",
         ),
+        # The pair that pins the banked-vs-live comparison: a mic recalibrated
+        # since the anchor refuses, and a re-quoted one inside the tolerance
+        # still resolves, so neither dropping the comparison nor tightening it
+        # to equality passes both rows.
+        pytest.param(
+            True, CAL_RECALIBRATED, 0.0, ml.MIC_CALIBRATION_CHANGED, id="recalibrated"
+        ),
+        pytest.param(True, CAL_REQUOTED, 0.0, None, id="requoted_within_tolerance"),
     ],
 )
 def test_a_level_resolves_or_names_the_input_it_is_missing(
@@ -108,7 +121,6 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
         anchor_db_spl=ANCHOR_DB_SPL,
         level_re_anchor_db=level_re_anchor_db,
         reference_volume_db=REFERENCE_VOLUME_DB,
-        mic_sens_factor_db=-12.07,
         mic_serial="8108494",
     )
 
@@ -143,14 +155,23 @@ def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeyp
 
 
 def test_the_ceiling_comes_from_the_presets_own_declaration(monkeypatch):
-    """One owner for the hard stop: the preset's ``max_commissioning_level_db_spl``."""
-    from jasper.active_speaker.commission_wiring import resolve_capture_preset
-    from jasper.output_topology import load_output_topology_strict
+    """One owner for the hard stop: the preset's ``max_commissioning_level_db_spl``.
 
-    preset = resolve_capture_preset(load_output_topology_strict())
-    assert ml._preset_ceiling_db_spl() == float(
-        preset.safety.max_commissioning_level_db_spl
+    Stubbed, not read off this box: a ceiling compared against the same live
+    resolution it came from asserts nothing, and would move with whatever
+    topology the machine running the suite happens to have.
+    """
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", lambda: "topology"
     )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_wiring.resolve_capture_preset",
+        lambda _topology: SimpleNamespace(
+            safety=SimpleNamespace(max_commissioning_level_db_spl=91.5)
+        ),
+    )
+
+    assert ml._preset_ceiling_db_spl() == 91.5
 
     def _unresolvable(*_a, **_k):
         raise ValueError("no preset on this box")

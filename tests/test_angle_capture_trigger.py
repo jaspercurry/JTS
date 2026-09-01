@@ -80,6 +80,9 @@ CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 # at ``level_re_anchor_db == 0``.
 ANCHOR_DB_SPL = 77.5
 REFERENCE_VOLUME_DB = -18.0
+# Stubbed so the receipt's level does not depend on the output topology of
+# whatever machine runs the suite; every shipped program clears it.
+CEILING_DB_SPL = 90.0
 CAL_WITH_SENS = (
     '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 )
@@ -110,6 +113,7 @@ def _bank_an_anchor(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ml, "resolve_mic_sensitivity", lambda **_kw: real(calibration_file=str(cal))
     )
+    monkeypatch.setattr(ml, "_preset_ceiling_db_spl", lambda: CEILING_DB_SPL)
 
 
 @pytest.fixture
@@ -305,7 +309,8 @@ def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
     assert "tweeter" in human
     assert "128.588" in human
 
-    payload = cli._walk_payload(*cli._build_request(args))
+    stated = cli._build_request(args)
+    payload = cli._walk_payload(stated.request, cli._resolved_level(stated.program))
     assert payload["delayed_role"] == "tweeter"
     assert payload["delay_us"] == 128.588
 
@@ -385,7 +390,9 @@ def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
     from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
     record_fields = set(inspect.signature(cloud_position_record).parameters)
-    payload = cli._walk_payload(per_driver_at(CAMPAIGN_ANGLES))
+    payload = cli._walk_payload(
+        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
+    )
     banked = payload["stops"][0]["banks_as"]
 
     # Every planned field is a real field of the record…
@@ -403,7 +410,9 @@ def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
 
 
 def test_the_banked_pose_round_trips_the_commanded_bearing(slot):
-    payload = cli._walk_payload(per_driver_at(CAMPAIGN_ANGLES))
+    payload = cli._walk_payload(
+        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
+    )
     assert [s["banks_as"]["position_angle_deg"] for s in payload["stops"]] == (
         CAMPAIGN_ANGLES
     )
@@ -1078,6 +1087,7 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     import jasper.active_speaker.measurement_level as ml
     _real = ml.resolve_mic_sensitivity
     ml.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
+    ml._preset_ceiling_db_spl = lambda: 90.0
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
     )

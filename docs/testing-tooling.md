@@ -2413,9 +2413,11 @@ seat-level anchor, with the mic's parsed sensitivity resolved live and the
 preset's `max_commissioning_level_db_spl` as a hard ceiling. It never falls
 back to a relative number — `plan` prints the missing input, `stage` refuses
 with it as the `reason`: `seat_reference_missing` (run `jasper-seat-level`
-first), `mic_calibration_unavailable` (no parseable `Sens Factor` for this
-mic), `level_over_ceiling` (the program asks for more than the preset permits),
-or `preset_unavailable`.
+first), `mic_calibration_unavailable` (no stored calibration resolves for the
+mic the anchor names — store its vendor file via `/correction/calibration/fetch`),
+`mic_calibration_changed` (that mic resolves at a different sens factor than
+the anchor was measured with), `level_over_ceiling` (the program asks for more
+than the preset permits), or `preset_unavailable`.
 
 `plan` is the **dry run of** `stage` — the same constructors, the same
 refusals, the same resolved walk — exactly as `propose` is the dry run of the
