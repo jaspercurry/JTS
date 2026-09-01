@@ -100,13 +100,20 @@ def test_playback_scrubs_the_emulated_mmap_area():
         src,
     ), "jts_ring_transfer must zero the frames it copied out of the mmap area"
     assert re.search(
-        r"if\s*\(p->mmap_base\)\s*memset\(p->mmap_base,\s*0,\s*p->mmap_bytes\);",
+        r"jts_ring_scrub_mmap_area\(io\);",
         src,
     ), "jts_ring_prepare must scrub the whole emulated mmap area"
     assert re.search(
-        r"p->mmap_base\s*=\s*NULL;",
+        r"snd_pcm_areas_silence\(areas,\s*offset,\s*io->channels,\s*frames,\s*io->format\)",
         src,
-    ), "hw_params must drop the cached base — alsa-lib may reallocate the area"
+    ), "the prepare scrub must silence the area alsa-lib hands back"
+    assert re.search(
+        r"snd_pcm_ioplug_set_state\(io,\s*SND_PCM_STATE_PREPARED\);",
+        src,
+    ), (
+        "the scrub must assert PREPARED first — snd_pcm_mmap_begin rejects the OPEN "
+        "state the FIRST prepare still carries, which is the session-start case"
+    )
 
 
 def test_ring_a_default_slots_match_conf_d_and_ioplug_period():
