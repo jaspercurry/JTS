@@ -93,6 +93,14 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
 from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as _DRIVERS_DEFAULT_PATH,
 )
+from jasper.active_speaker.seat_level_reference import (
+    DEFAULT_TARGET_DB_SPL,
+    DEFAULT_TOLERANCE_DB,
+    seat_level_reference_volume_db,
+)
+from jasper.active_speaker.session_volume_plan import (
+    MEASUREMENT_REFERENCE_VOLUME_DB,
+)
 from jasper.identity import read_identity
 
 EXIT_OK = 0
@@ -965,6 +973,23 @@ def _next_actions(
 
     if sections["staged"]["pending"]:
         out.append(f"a prescription is already staged — {STAGED_LIFECYCLE_NOTE}")
+
+    # `seat_level_reference_volume_db()` already fails soft to `None` both
+    # when this box never ran the leveling step and when /var/lib/jasper does
+    # not exist at all (a laptop checkout) -- the same shape
+    # `staged_prescription_pending()` above relies on -- so no on-box guard
+    # is needed here. A banked reference adds NO line: the absence of this
+    # warning is itself the signal, so a converged box stays uncluttered.
+    if seat_level_reference_volume_db() is None:
+        out.append(
+            "no seat-level measurement reference is banked — measurement "
+            f"sessions ride the {MEASUREMENT_REFERENCE_VOLUME_DB:g} dBFS "
+            "fallback; `jasper-seat-level` sets the seat to the declared "
+            f"{DEFAULT_TARGET_DB_SPL - DEFAULT_TOLERANCE_DB:g}-"
+            f"{DEFAULT_TARGET_DB_SPL + DEFAULT_TOLERANCE_DB:g} dB SPL target "
+            "and banks the reference"
+        )
+
     out.append(f"run, apply, or undo a round at {crossover_url}")
     return out
 

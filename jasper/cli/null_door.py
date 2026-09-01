@@ -7,7 +7,7 @@
 ``jasper-delay-sweep propose`` computes a coordinate from banked per-driver
 curves. This plays it. One command, one mic position, one row per coordinate:
 
-* **§1a, the polarity proof** — ``--polarity both`` (the default) plays the
+* **§1b, the polarity proof** — ``--polarity both`` (the default) plays the
   in-phase and inverted takes at delay 0. A correct, time-aligned crossover
   cancels when one branch is flipped, so the PAIR is the proof; neither half
   means anything alone.

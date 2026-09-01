@@ -488,7 +488,7 @@ def _args(polarity=null_door.POLARITY_BOTH):
 
 
 def test_polarity_both_plays_the_pair_at_zero():
-    """§1a is a PAIR: the in-phase take is the reference the inverted one is read
+    """§1b is a PAIR: the in-phase take is the reference the inverted one is read
     against. That reference is a property of the speaker, not of a candidate
     delay, so it is measured once."""
     coordinates = null_door._coordinates(_spec(), _args(), (0.0,))

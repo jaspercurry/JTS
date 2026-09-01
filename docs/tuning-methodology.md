@@ -92,14 +92,31 @@ program. Below the gate floor stays §9's problem — disclosed, never guessed.
 
 ## 1. PROVE THE PLUMBING
 
-**1a — Polarity, by reverse-null.** Invert one branch and measure through the
+**1a — Set the measurement level, before anything else measures.** Run
+`jasper-seat-level` first: it ramps the measurement volume until a calibrated
+wired mic at the seat reads the declared `SeatLevelTarget` (default 77.5 ± 2.5
+dB SPL — owner ruling 2026-08-19: a representative listening level of 75-80
+dB SPL), then banks that volume as the session's measurement reference. Skip
+it and nothing refuses — every session below instead rides the codified
+-20 dBFS fallback (`session_volume_plan.measurement_reference_volume_db`),
+a level nobody measured, not one anyone chose.
+
+**The tool's own precondition:** the mic's calibration Sens Factor is quoted
+at its maximum capture volume, so the wired mic's capture control must
+already sit at 100%, or every absolute SPL below is wrong by the shortfall;
+the phone mic carries no per-serial calibration and cannot produce absolute
+SPL at all (§0). This is not §5's LEVEL MATCH: that step trims one driver
+against the other at whatever session volume is already in force; this step
+sets that volume itself, once, before either driver is measured.
+
+**1b — Polarity, by reverse-null.** Invert one branch and measure through the
 crossover region: a correct chain nulls deeply there while the un-inverted
 capture sums. The pair is the proof — one in-phase capture that looks fine
 proves nothing. Measured null depth decides `POLARITY_KEEP` vs `POLARITY_INVERT`
 (`crossover_alignment.py`), and the commissioning evidence path banks the
 `normal` / `reverse` / `delay_null` kinds. Read the DEPTH, not the label.
 
-**1b — Rig repeatability, before any delta.** Repeat one measurement N times
+**1c — Rig repeatability, before any delta.** Repeat one measurement N times
 touching nothing, and take the spread as your instrument's noise floor. **Act
 only on differences larger than it**, and state it in the receipt beside any
 delta you claim. Two spreads exist and they never pool: `compute_sigma_curve` is
@@ -575,7 +592,7 @@ intervention whose measured evidence stands.
 
 | In the receipts | What it means | What to do |
 |---|---|---|
-| **Over-EQ'd narrow corrections** — high-Q filters that do not reproduce across repeats, answering a feature inside the repeat spread | you fitted the instrument, not the speaker | widen or drop them; re-read §1b's spread first |
+| **Over-EQ'd narrow corrections** — high-Q filters that do not reproduce across repeats, answering a feature inside the repeat spread | you fitted the instrument, not the speaker | widen or drop them; re-read §1c's spread first |
 | **Correcting into a positional dip** — the dip moves with position, the feature carries an excess-GD spike, the classifier says `interference-barred` or `room` | a cancellation or boundary effect | **no EQ, ever**; route it to position, placement, or corner choice |
 | **Flat on-axis but hot** — top-octave overshoot after an on-axis-flat fit above the beaming onset; realization matches, listeners call it bright | you targeted the wrong curve | refit weighted to the listening window (§6) |
 | **Delay masquerading as a response error** — a ripple centred on fc that EQ cannot remove and that changes with a polarity flip | the branches are not time-aligned | stop EQ-ing, go to §4, re-verify, resume |
