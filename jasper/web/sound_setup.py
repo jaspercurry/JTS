@@ -104,6 +104,7 @@ from jasper.audio_hardware.usb_port_role import (
     read_i2s_hat_intent,
     write_i2s_hat_intent,
 )
+from jasper.dsp_apply import same_config_file
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputHardware,
@@ -154,7 +155,6 @@ from jasper.active_speaker.commission_wiring import (
 # message, and the logic around them had already drifted apart underneath. One
 # owner, one sentence, imported — see the factories' own comment over there.
 from jasper.active_speaker._common import blocker_issue as _issue
-from jasper.dsp_apply import same_config_file
 from jasper.active_speaker.web_commissioning import (
     COMMISSION_TONE_DURATION_S,
     COMMISSION_TONE_RESTART_MARGIN_S,

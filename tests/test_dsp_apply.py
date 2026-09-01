@@ -993,23 +993,68 @@ async def test_a_failed_prepare_leaves_the_candidate_as_it_was_found(tmp_path: P
     assert state.rollback_attempted is False
 
 
+async def test_a_rejected_apply_keeps_the_graph_it_emitted_when_not_in_place(
+    tmp_path: Path,
+):
+    """A rejected candidate that is not the running graph stays on disk.
+
+    It is the evidence — the graph CamillaDSP refused. Reverting it would also
+    leave ``config_sha256`` describing bytes nobody can read any more.
+    """
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nstale: true\n")
+    running = tmp_path / "running.yml"
+    running.write_text("---\nrunning: true\n")
+    emitted = "---\nrejected: true\n"
+
+    def prepare() -> None:
+        cfg.write_text(emitted)
+
+    async def load(path: str) -> bool:
+        if path == str(cfg):
+            raise RuntimeError("CamillaDSP rejected the candidate")
+        return True
+
+    async def current() -> str:
+        return str(running)
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="sound",
+            candidate_path=cfg,
+            load_config=load,
+            get_current_config_path=current,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    assert cfg.read_text() == emitted
+    assert excinfo.value.state.config_sha256 == config_file_sha256(cfg)
+
+
 async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path):
+    """The FILE goes back; the box is deliberately not reloaded onto it.
+
+    Reloading would re-enter the DSP writer lock, and the runner that survives a
+    cancellation does it from a spawned task — which the lock's re-entrancy gate
+    (keyed on the current task) refuses. So the durable half is repaired and the
+    recorded verdict declines to claim the box came back with it.
+    """
+
     cfg = tmp_path / "candidate.yml"
     cfg.write_text("---\nrunning: true\n")
     pristine = cfg.read_text()
-    reload_saw: list[str] = []
+    loaded: list[str] = []
 
     def prepare() -> None:
         cfg.write_text("---\nunproven: true\n")
 
     async def load(path: str) -> bool:
-        # Only the first call is the cancelled apply; a second call is the
-        # recovery reload, and what it finds on disk is the whole question.
-        if not reload_saw:
-            reload_saw.append(cfg.read_text())
-            raise asyncio.CancelledError
-        reload_saw.append(cfg.read_text())
-        return True
+        loaded.append(path)
+        raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
         await apply_dsp_config(
@@ -1024,9 +1069,10 @@ async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path
         )
 
     assert cfg.read_text() == pristine
-    # The reload ran, and by then the file was the graph the box had been
-    # running — not the unproven one the cancelled apply left there.
-    assert reload_saw == ["---\nunproven: true\n", pristine]
+    assert loaded == [str(cfg)]
+    state = last_dsp_apply_state(state_path=tmp_path / "dsp_apply_state.json")
+    assert state["rollback_attempted"] is True
+    assert state["rollback_succeeded"] is None
 
 
 async def test_a_cancelled_apply_never_loads_a_candidate_it_was_not_running(
