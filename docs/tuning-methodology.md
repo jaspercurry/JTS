@@ -205,6 +205,15 @@ measure it.
 Depth is PULLED afterwards through the analysis verbs — the receipt
 is a stage-and-price statement, not a report.
 
+**Way-1: the sequence collapses.** A `full_range_passive` speaker — one amp
+channel, one role, no crossover — walks §1a, §1c, §2, §6, §7 and §10 unchanged,
+except that §2's plant IS the whole speaker: one driver, nothing to isolate.
+§3 (the corner), §4 (time alignment) and §5 (branch level match) vanish by
+construction, not by refusal — there is no second branch to align, delay or
+trim against. The alignment, topology and blend doors say so by name
+(`alignment_no_crossover_region`, `topology_no_crossover_region`,
+`region_unavailable`) rather than searching for a corner that cannot exist.
+
 ## 3. THE CROSSOVER CORNER — three criteria, ranked
 
 A corner is **declared and executed, never measured-searched**. You choose it

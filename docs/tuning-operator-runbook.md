@@ -97,6 +97,14 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
 (#2773). Both surfaces are cataloged in
 [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 
+**A way-1 (`full_range_passive`) speaker runs the same nine steps with fewer
+doors live.** `status` reports one role, `full_range`, on the single-branch
+baseline candidate — no corner, delay or polarity step, and no per-role trim
+(`base_trim_no_frame`). Only the **driver** door prescribes; alignment,
+topology and blend refuse by name (`alignment_no_crossover_region`,
+`topology_no_crossover_region`, `region_unavailable`) instead of searching for
+a crossover region that cannot exist.
+
 1. **Orient.** `jasper-crossover-prescriber status` — declared / banked /
    staged / applied state and the possible next actions, read from the same
    builders the doors read. `status` orients rather than prescribes: it is the
