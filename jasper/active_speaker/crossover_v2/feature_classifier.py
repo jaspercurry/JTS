@@ -376,8 +376,11 @@ LOGMAG_FLOOR_DB = 60.0
 #: crossfade. The cepstral transform is a Hilbert transform over the WHOLE
 #: spectrum, so leaving the gate's low-frequency floor and the deconvolution
 #: regulariser's roll-off raw injects a large fake minimum-phase slope right
-#: through the features. Holding them can only make excess phase FLATTER — it
-#: cannot invent an excursion.
+#: through the features. That holds for a capture, whose out-of-band magnitude
+#: the gate has already destroyed. It does NOT hold for magnitude a synthetic
+#: control puts down there deliberately: the phase is kept while the magnitude
+#: is replaced, and the mismatch lands in band as excess GD rising as ~1/f^2
+#: toward the low edge — see :func:`injection_excess_gd` and issue #3493.
 EDGE_LO_HZ = 250.0
 EDGE_HI_HZ = 17000.0
 EDGE_BLEND_OCT = 0.5
@@ -1213,6 +1216,50 @@ def tau_for_first_null_ms(fc: float) -> float:
     return 1e3 / (2.0 * fc)
 
 
+def injection_excess_gd(
+    gain: float,
+    delay_ms: float,
+    sample_rate: int,
+    *,
+    trusted_band_hz: tuple[float, float],
+) -> ExcessPhase:
+    """What this chain reports for a delayed-copy injection ON ITS OWN.
+
+    ``|gain| < 1`` makes ``1 + g*z^-N`` minimum phase, so a correct reading is
+    zero everywhere and whatever comes back is this chain's own artifact —
+    which is what makes subtracting it sound rather than a rubber stamp, and
+    why a non-minimum-phase gain is refused instead of corrected.
+
+    The artifact is :func:`_hold_band_edges`: it replaces the log-magnitude
+    below :data:`EDGE_LO_HZ` with a constant, while :func:`excess_group_delay`
+    keeps the measured phase there. A NEGATIVE gain puts the comb's DC null —
+    the sharpest feature of its magnitude — inside that discarded band (-6.0 dB
+    true against -3.1 dB held at ``g = -0.5``), and the cepstral reconstruction
+    is then handed a magnitude the phase does not match. Because the Hilbert
+    relation is global, the mismatch lands in the analysed band as excess GD
+    rising roughly as 1/f^2 towards the low edge: 12.7 us at 465 Hz on a bare
+    impulse, against C3's 10.0 us bar. C1's peaking filter is unity at DC and
+    C4's positive-gain combs sit on a broad DC maximum, so neither is touched;
+    only C3 is. See issue #3493.
+
+    Read through the identical chain — same transform, smoothing, hold and
+    local-slope differentiator — so the correction is made the way the reading
+    is, and goes to zero exactly when the hold does.
+    """
+    if abs(gain) >= 1.0:
+        raise ValueError(
+            f"injection gain {gain} is not minimum phase; its reading is "
+            "signal, not artifact, and removing it would blind the control"
+        )
+    kernel = np.zeros(PHASE_NFFT)
+    kernel[0] = 1.0
+    return excess_group_delay(
+        add_delayed_copy(kernel, gain, delay_ms, sample_rate),
+        sample_rate,
+        trusted_band_hz=trusted_band_hz,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # the run
 # --------------------------------------------------------------------------- #
@@ -1395,10 +1442,36 @@ def _run_controls(
     # C3 — the research spec's own interference case, run as specified and
     # reported honestly: |gain| = 0.5 is MINIMUM phase, so a correct pipeline
     # must read it flat. Flagging it would be a false positive, not a pass.
+    #
+    # "Flat" is the known answer for the FILTER, not for this chain's reading
+    # of it, for the same reason C2's known answer is the exact filter's own
+    # group delay and not the textbook 4Q/w0 peak: the declared edge hold
+    # discards the comb's DC null, and the reconstruction error lands in band.
+    # :func:`injection_excess_gd` derives that from the injection and the edge
+    # constants alone — no capture enters it — so it is removed rather than
+    # tolerated by a wider bar (#3493). Subtracted from the CURVE, because
+    # ``excursion_us`` peak-picks and so does not carry an offset additively.
     echo = add_delayed_copy(ir, CONTROL_ECHO_GAIN, CONTROL_ECHO_MS, sample_rate)
-    c3 = excursions(phase_of(echo))
+    c3_bias = injection_excess_gd(
+        CONTROL_ECHO_GAIN,
+        CONTROL_ECHO_MS,
+        sample_rate,
+        trusted_band_hz=trusted_band_hz,
+    )
+    c3_ep = phase_of(echo)
+    c3 = excursions(
+        ExcessPhase(
+            freqs=c3_ep.freqs,
+            excess_phase=c3_ep.excess_phase - c3_bias.excess_phase,
+            excess_gd_us=c3_ep.excess_gd_us - c3_bias.excess_gd_us,
+            bulk_delay_us=c3_ep.bulk_delay_us,
+        )
+    )
     c3_delta = {
         key: c3[key]["excursion_us"] - baseline[key]["excursion_us"] for key in keys
+    }
+    c3_bias_removed = {
+        key: reading["excursion_us"] for key, reading in excursions(c3_bias).items()
     }
 
     # C4 / C4b — the discriminating pair, at every feature. Same comb geometry,
@@ -1454,6 +1527,9 @@ def _run_controls(
         "C2_ratio_band": [ratio_lo, ratio_hi],
         "C3_max_false_positive_us": c3_max,
         "C3_limit_us": CONTROL_MAX_ECHO_FALSE_POSITIVE_US,
+        # What the bar did NOT have to be widened by. Rides the verdict rather
+        # than the block below because only the verdict reaches a refusal.
+        "C3_injection_bias_removed_us": max(map(abs, c3_bias_removed.values())),
         "C4_min_separation_us": separation,
         "C4_required_separation_us": required,
         "failed": failed,
@@ -1481,6 +1557,7 @@ def _run_controls(
                 "so MINIMUM phase"
             ),
             "expect": "flat; flagging it would be a false positive, not a pass",
+            "injection_bias_removed_us": c3_bias_removed,
             "delta_us": c3_delta,
         },
         "C4_pair": {
