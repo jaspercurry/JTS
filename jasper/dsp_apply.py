@@ -40,6 +40,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -419,15 +420,22 @@ def config_file_sha256(path: str | Path) -> str | None:
     return _sha256(Path(path))
 
 
-def same_config_file(left: str | Path, right: str | Path) -> bool:
+def same_config_file(
+    left: str | Path | None, right: str | Path | None
+) -> bool:
     """Do two paths name ONE config file? (#2537)
 
     Beside :func:`config_file_sha256` and public for the same reason: every
-    caller asking "is this the same config" must get one answer — today the
-    applied-profile record against CamillaDSP's statefile
-    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`).
-    It shipped as two near-verbatim copies until an adversarial gate caught
-    them.
+    caller asking "is this the same config" must get one answer — the applied-
+    profile record against CamillaDSP's statefile
+    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`),
+    the reconcile deciding whether its write lands in place, the apply deciding
+    whether its rollback can be a re-load. It shipped as two near-verbatim
+    copies until an adversarial gate caught them.
+
+    **A missing path is not a match.** ``None`` means "nothing is loaded there",
+    which is never the same file as something; callers that used to guard the
+    falsy case themselves get the same answer from here.
 
     **Resolved rather than string-compared.** A statefile carries whatever
     CamillaDSP was handed and a record carries what the apply wrote, so a
@@ -444,6 +452,8 @@ def same_config_file(left: str | Path, right: str | Path) -> bool:
     both because a same-fingerprint recompile can rewrite a file under its own
     name.
     """
+    if not left or not right:
+        return False
     try:
         return Path(left).resolve() == Path(right).resolve()
     except (OSError, ValueError, RuntimeError):
@@ -730,15 +740,65 @@ async def _maybe_call(fn: Callable[[], Any] | None) -> Any:
     return value
 
 
+# Phases from which CamillaDSP may already hold the candidate graph, so a
+# restore of the FILE also owes a reload. Earlier phases never asked it to load.
+_PHASES_AFTER_LOAD_BEGINS = frozenset({"load", "confirm", "persist"})
+
+
+def _restore_candidate_bytes(candidate_restore: tuple[Path, str]) -> str | None:
+    """Put a candidate's pre-apply bytes back. Returns an error, or None on success.
+
+    ``preserve_target_stat`` because this rewrites a file the writing process
+    may not own, and ``durable`` because the file being repaired is what the box
+    loads at boot — a restore lost to a power cut leaves exactly the state the
+    restore exists to prevent.
+    """
+
+    path, pristine = candidate_restore
+    try:
+        atomic_write_text(path, pristine, preserve_target_stat=True, durable=True)
+    except OSError as e:
+        return f"candidate restore failed: {e}"
+    return None
+
+
 async def _rollback(
     *,
     state: DspApplyState,
     load_config: Callable[[str], Awaitable[bool]],
     prior_config_path: str | None,
+    candidate_restore: tuple[Path, str] | None = None,
 ) -> None:
+    """Put the prior graph back, and say honestly whether it went back.
+
+    Rolling back means re-LOADING ``prior_config_path`` — which is correct only
+    while the candidate and the prior graph are DIFFERENT FILES. An in-place
+    apply (the reconcile's re-anchor writes a refreshed graph back over the kept
+    active-crossover candidate it is already running) breaks that: the prepare
+    step has already overwritten the very file this would reload, so the
+    "rollback" would re-load the graph that just failed, report itself failed,
+    and leave the candidate holding a config CamillaDSP will not load — which is
+    also what the box boots from.
+
+    ``candidate_restore`` is that file's pristine bytes, captured before
+    ``prepare`` ran. Putting them back before the reload makes the reload a real
+    restore, so ``rollback_succeeded`` means what it says — and it is read:
+    ``jasper.cli.doctor.audio`` grades ``rollback_attempted and not
+    rollback_succeeded`` as a doctor FAIL, so a dishonest verdict here is a
+    permanent red row on a speaker that is playing correctly.
+    """
+
     if not prior_config_path:
         return
     state.rollback_attempted = True
+    if candidate_restore is not None and same_config_file(
+        prior_config_path, candidate_restore[0]
+    ):
+        restore_error = _restore_candidate_bytes(candidate_restore)
+        if restore_error is not None:
+            state.rollback_succeeded = False
+            state.rollback_error = restore_error
+            return
     try:
         ok = await load_config(prior_config_path)
     except Exception as e:  # noqa: BLE001
@@ -818,149 +878,198 @@ async def apply_dsp_config(
         sound_filter_count=sound_filter_count,
     )
 
-    async with _dsp_apply_lock(
-        lock,
-        timeout_s=lock_timeout_s,
-        source=source,
-    ):
-        if prepare is not None:
-            state.phase = "prepare"
-            record_dsp_apply_state(state, state_path=state_path)
-            try:
-                metadata = await _maybe_call(prepare)
-                if isinstance(metadata, dict):
-                    if (
-                        metadata.get("prior_config_path")
-                        and not state.prior_config_path
-                    ):
-                        state.prior_config_path = str(metadata["prior_config_path"])
-                    if "room_peq_count" in metadata:
-                        state.room_peq_count = metadata["room_peq_count"]
-                    if "sound_filter_count" in metadata:
-                        state.sound_filter_count = metadata["sound_filter_count"]
-            except Exception as e:  # noqa: BLE001
-                state.result = "prepare_failed"
-                state.prepare_error = str(e)
+    # Declared out here so the restore below can run for the ways out that
+    # no branch inside the lock gets to name — cancellation above all, which
+    # is a BaseException the failure handlers deliberately do not catch.
+    candidate_restore: tuple[Path, str] | None = None
+    try:
+        async with _dsp_apply_lock(
+            lock,
+            timeout_s=lock_timeout_s,
+            source=source,
+        ):
+            # An apply whose candidate IS the graph already loaded rewrites that
+            # file in place, which is the only shape whose rollback cannot be a
+            # re-load (see ``_rollback``). Keep the bytes while they are still the
+            # running graph's; ``prepare`` is what overwrites them. The read is a
+            # few KB and only happens when the candidate could be the prior graph,
+            # which is not knowable yet when the prior path is discovered later.
+            if prior_config_path is None or same_config_file(
+                prior_config_path, candidate
+            ):
+                try:
+                    candidate_restore = (candidate, candidate.read_text(encoding="utf-8"))
+                except OSError:
+                    candidate_restore = None
+
+            if prepare is not None:
+                state.phase = "prepare"
+                record_dsp_apply_state(state, state_path=state_path)
+                try:
+                    metadata = await _maybe_call(prepare)
+                    if isinstance(metadata, dict):
+                        if (
+                            metadata.get("prior_config_path")
+                            and not state.prior_config_path
+                        ):
+                            state.prior_config_path = str(metadata["prior_config_path"])
+                        if "room_peq_count" in metadata:
+                            state.room_peq_count = metadata["room_peq_count"]
+                        if "sound_filter_count" in metadata:
+                            state.sound_filter_count = metadata["sound_filter_count"]
+                except Exception as e:  # noqa: BLE001
+                    state.result = "prepare_failed"
+                    state.prepare_error = str(e)
+                    # Nothing was loaded, so there is no graph to roll back — but a
+                    # prepare that failed PART WAY through leaves its half-written
+                    # graph on a file the box may already be running and will
+                    # certainly boot from. Give the file back what it had.
+                    if candidate_restore is not None:
+                        state.rollback_attempted = True
+                        restore_error = _restore_candidate_bytes(candidate_restore)
+                        state.rollback_succeeded = restore_error is None
+                        state.rollback_error = restore_error
+                    state.finished_at = _utc_now()
+                    record_dsp_apply_state(state, state_path=state_path)
+                    raise DspApplyError(f"DSP config preparation failed: {e}", state) from e
+
+            state.config_sha256 = _sha256(candidate)
+
+            if state.prior_config_path is None and get_current_config_path is not None:
+                state.phase = "snapshot"
+                try:
+                    current = await get_current_config_path()
+                    state.prior_config_path = str(current) if current else None
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        logger,
+                        "dsp.apply",
+                        op_id=state.op_id,
+                        source=source,
+                        phase="snapshot",
+                        result="error",
+                        err=repr(e),
+                        level=logging.WARNING,
+                    )
+
+            state.phase = "validate"
+            validation = validate(candidate)
+            state.validator = validation.to_dict()
+            if not validation.ok_to_apply:
+                state.result = validation.status.value
                 state.finished_at = _utc_now()
                 record_dsp_apply_state(state, state_path=state_path)
-                raise DspApplyError(f"DSP config preparation failed: {e}", state) from e
-
-        state.config_sha256 = _sha256(candidate)
-
-        if state.prior_config_path is None and get_current_config_path is not None:
-            state.phase = "snapshot"
-            try:
-                current = await get_current_config_path()
-                state.prior_config_path = str(current) if current else None
-            except Exception as e:  # noqa: BLE001
-                log_event(
-                    logger,
-                    "dsp.apply",
-                    op_id=state.op_id,
-                    source=source,
-                    phase="snapshot",
-                    result="error",
-                    err=repr(e),
-                    level=logging.WARNING,
+                raise DspApplyError(
+                    _validation_failure_message(validation),
+                    state,
                 )
 
-        state.phase = "validate"
-        validation = validate(candidate)
-        state.validator = validation.to_dict()
-        if not validation.ok_to_apply:
-            state.result = validation.status.value
-            state.finished_at = _utc_now()
+            if expected_candidate_sha256 is not None:
+                state.phase = "proof"
+                state.config_sha256 = _sha256(candidate)
+                proof_failure = _proof_failure(
+                    state.config_sha256, expected_candidate_sha256
+                )
+                if proof_failure is not None:
+                    state.result, proof_message = proof_failure
+                    state.finished_at = _utc_now()
+                    record_dsp_apply_state(state, state_path=state_path)
+                    raise DspApplyError(proof_message, state)
+
+            state.phase = "load"
             record_dsp_apply_state(state, state_path=state_path)
-            raise DspApplyError(
-                _validation_failure_message(validation),
-                state,
-            )
-
-        if expected_candidate_sha256 is not None:
-            state.phase = "proof"
-            state.config_sha256 = _sha256(candidate)
-            proof_failure = _proof_failure(
-                state.config_sha256, expected_candidate_sha256
-            )
-            if proof_failure is not None:
-                state.result, proof_message = proof_failure
-                state.finished_at = _utc_now()
-                record_dsp_apply_state(state, state_path=state_path)
-                raise DspApplyError(proof_message, state)
-
-        state.phase = "load"
-        record_dsp_apply_state(state, state_path=state_path)
-        try:
-            ok = await load_config(str(candidate))
-            if not ok:
-                raise RuntimeError("CamillaDSP rejected candidate config path")
-        except Exception as e:  # noqa: BLE001
-            state.load_error = str(e)
-            await _rollback(
-                state=state,
-                load_config=load_config,
-                prior_config_path=state.prior_config_path,
-            )
-            state.result = _rollback_result("load_failed", state)
-            state.finished_at = _utc_now()
-            record_dsp_apply_state(state, state_path=state_path)
-            raise DspApplyError(f"CamillaDSP reload failed: {e}", state) from e
-
-        if get_current_config_path is not None:
-            state.phase = "confirm"
             try:
-                active = await get_current_config_path()
-                state.active_config_path = active
-                if active and Path(active) != candidate:
-                    raise RuntimeError(
-                        f"active config is {active}, expected {candidate}"
-                    )
+                ok = await load_config(str(candidate))
+                if not ok:
+                    raise RuntimeError("CamillaDSP rejected candidate config path")
             except Exception as e:  # noqa: BLE001
-                state.confirm_error = str(e)
+                state.load_error = str(e)
                 await _rollback(
                     state=state,
                     load_config=load_config,
                     prior_config_path=state.prior_config_path,
+                    candidate_restore=candidate_restore,
                 )
-                state.result = _rollback_result("confirm_failed", state)
+                state.result = _rollback_result("load_failed", state)
+                state.finished_at = _utc_now()
+                record_dsp_apply_state(state, state_path=state_path)
+                raise DspApplyError(f"CamillaDSP reload failed: {e}", state) from e
+
+            if get_current_config_path is not None:
+                state.phase = "confirm"
+                try:
+                    active = await get_current_config_path()
+                    state.active_config_path = active
+                    if active and not same_config_file(active, candidate):
+                        raise RuntimeError(
+                            f"active config is {active}, expected {candidate}"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    state.confirm_error = str(e)
+                    await _rollback(
+                        state=state,
+                        load_config=load_config,
+                        prior_config_path=state.prior_config_path,
+                        candidate_restore=candidate_restore,
+                    )
+                    state.result = _rollback_result("confirm_failed", state)
+                    state.finished_at = _utc_now()
+                    record_dsp_apply_state(state, state_path=state_path)
+                    raise DspApplyError(
+                        f"CamillaDSP reload confirmation failed: {e}", state
+                    ) from e
+
+            state.phase = "persist"
+            try:
+                await _maybe_call(persist)
+            except Exception as e:  # noqa: BLE001
+                state.persist_error = str(e)
+                await _rollback(
+                    state=state,
+                    load_config=load_config,
+                    prior_config_path=state.prior_config_path,
+                    candidate_restore=candidate_restore,
+                )
+                state.result = _rollback_result("persist_failed", state)
                 state.finished_at = _utc_now()
                 record_dsp_apply_state(state, state_path=state_path)
                 raise DspApplyError(
-                    f"CamillaDSP reload confirmation failed: {e}", state
+                    f"DSP config applied but state persistence failed: {e}", state
                 ) from e
 
-        state.phase = "persist"
-        try:
-            await _maybe_call(persist)
-        except Exception as e:  # noqa: BLE001
-            state.persist_error = str(e)
-            await _rollback(
-                state=state,
-                load_config=load_config,
-                prior_config_path=state.prior_config_path,
-            )
-            state.result = _rollback_result("persist_failed", state)
+            if state.active_config_path is None:
+                state.active_config_path = str(candidate)
+            state.phase = "done"
+            state.result = "success"
             state.finished_at = _utc_now()
             record_dsp_apply_state(state, state_path=state_path)
-            raise DspApplyError(
-                f"DSP config applied but state persistence failed: {e}", state
-            ) from e
-
-        if state.active_config_path is None:
-            state.active_config_path = str(candidate)
-        state.phase = "done"
-        state.result = "success"
-        state.finished_at = _utc_now()
-        record_dsp_apply_state(state, state_path=state_path)
-        log_event(
-            logger,
-            "dsp.apply",
-            op_id=state.op_id,
-            source=source,
-            result="success",
-            candidate=candidate,
-        )
-        return state
+            log_event(
+                logger,
+                "dsp.apply",
+                op_id=state.op_id,
+                source=source,
+                result="success",
+                candidate=candidate,
+            )
+            return state
+    finally:
+        # ``state.result`` is still "in_progress" only when the apply left
+        # without settling on any outcome: cancelled, or an error class no
+        # handler here names. Everything else — success, and every
+        # ``DspApplyError`` — has already recorded its result and run whatever
+        # rollback it owed. The bytes go back synchronously (nothing to
+        # interrupt); the reload is shielded because an interrupted recovery
+        # leaves the file repaired and the box still playing the graph the file
+        # no longer holds, which is the worse half of the two.
+        if candidate_restore is not None and state.result == "in_progress":
+            state.rollback_attempted = True
+            restore_error = _restore_candidate_bytes(candidate_restore)
+            state.rollback_succeeded = restore_error is None
+            state.rollback_error = restore_error
+            if restore_error is None and state.phase in _PHASES_AFTER_LOAD_BEGINS:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(load_config(str(candidate_restore[0])))
+            record_dsp_apply_state(state, state_path=state_path)
 
 
 def _rollback_result(prefix: str, state: DspApplyState) -> str:
