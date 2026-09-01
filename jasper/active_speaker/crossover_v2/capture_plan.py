@@ -1293,7 +1293,7 @@ class V2PlanShape:
         pre-apply cloud (anchor plus ``N − 1`` prompted positions), 10 at
         Full's defaults, 6 for express. NOT what stage 1 runs: the
         ``STAGE1_INCLUDES_*`` flags decide that, and the real count is
-        :func:`_stage1_capture_target` — two readers have been misled by the
+        :func:`stage1_base_entries` — two readers have been misled by the
         older wording (#2098, and the remote session-open journal). Stage 1
         applies nothing (D1), so it carries no post-apply entry at all."""
         return 1 + self.cloud_measure_positions
@@ -1750,7 +1750,7 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # adoption table) is already merged, and the capture is what it has been
 # waiting on.
 #
-# Applied at the PRODUCTION seams (``_stage1_capture_target``,
+# Applied at the PRODUCTION seams (``stage1_base_entries``,
 # ``prepare_v2_session``) exactly like its two siblings — the builders below
 # keep whatever a caller asks for.
 STAGE1_INCLUDES_ENTRY_BASELINE = True
@@ -1769,10 +1769,18 @@ STAGE1_INCLUDES_ENTRY_BASELINE = True
 # ``lateral_mark_return_drift_db`` all serve that walk; only the stage-1 arming
 # is gone, so the two builders below still take ``include_lateral`` from
 # whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
-def _stage1_capture_target(shape: Any) -> int:
-    """Stage 1's REAL capture count, not the cloud-inclusive shape target."""
+def stage1_base_entries(plan_shape: V2PlanShape | None = None) -> int:
+    """Stage 1's REAL capture count, not the cloud-inclusive shape target.
+
+    Also the ``base_entries`` a session hands a staged angle walk — the
+    captures it takes that are NOT the walk (``include_lateral=False``) — so a
+    price stated before Start counts the same base the session will run,
+    whichever way the ``STAGE1_INCLUDES_*`` flags are set. ``None`` resolves
+    the default shape, which is what a surface pricing a walk before any tier
+    is chosen has.
+    """
     return len(build_v2_cloud_index_phase_map(
-        plan_shape=shape,
+        plan_shape=plan_shape,
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
@@ -2867,14 +2875,14 @@ def tier_display_info() -> dict[str, dict[str, int]]:
         )
         return {
             tier: {
-                "capture_target": (_stage1_capture_target(shape)
+                "capture_target": (stage1_base_entries(shape)
                                    + shape.verify_capture_target),
                 "estimated_minutes": 0,
                 # Present even here: the chooser's copy reads both, and a
                 # KeyError on the degraded path would take the whole
                 # microphone_check screen down over a duration it already
                 # knows how to render as unknown.
-                "stage1_captures": _stage1_capture_target(shape),
+                "stage1_captures": stage1_base_entries(shape),
                 "stage2_captures": shape.verify_capture_target,
             }
             for tier, shape in ((t, resolve_plan_shape(t)) for t in TIERS)

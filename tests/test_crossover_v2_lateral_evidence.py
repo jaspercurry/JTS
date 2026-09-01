@@ -185,7 +185,7 @@ def test_stage_1_is_the_pinned_three_capture_shape():
     ]
     assert plan.capture_target == 3
     assert plan.max_attempts == 3 + flow.CLOUD_RETAKE_ALLOWANCE
-    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 3
+    assert flow.stage1_base_entries(resolve_plan_shape("full")) == 3
 
     # No pose reaches the wire — this plan is what the phone renders.
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")

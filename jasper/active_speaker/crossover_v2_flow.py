@@ -414,7 +414,6 @@ _LATERAL_POSE_OFFSETS_CM = _plan._LATERAL_POSE_OFFSETS_CM
 _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
 _program_duration_ms = _plan._program_duration_ms
-_stage1_capture_target = _plan._stage1_capture_target
 announced_capture_indexes = _plan.announced_capture_indexes
 assert_cloud_plan_fits_relay_capacity = _plan.assert_cloud_plan_fits_relay_capacity
 build_v2_capture_plan = _plan.build_v2_capture_plan
@@ -442,6 +441,7 @@ remote_cloud_verify_positions = _plan.remote_cloud_verify_positions
 remote_position_prompt = _plan.remote_position_prompt
 resolve_plan_shape = _plan.resolve_plan_shape
 session_wall_clock_ceiling_s = _plan.session_wall_clock_ceiling_s
+stage1_base_entries = _plan.stage1_base_entries
 stage1_plan_max_attempts = _plan.stage1_plan_max_attempts
 tier_display_info = _plan.tier_display_info
 tier_is_externally_positioned = _plan.tier_is_externally_positioned
@@ -9161,6 +9161,7 @@ __all__ = [
     "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
+    "stage1_base_entries",
     "stage1_plan_max_attempts",
     "LATERAL_POSE_PROMPTS",
     "CLOUD_VERIFY_POSE_PROMPTS",

@@ -22,6 +22,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 from types import SimpleNamespace
 
@@ -31,7 +32,6 @@ from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_PLAN_TARGET
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
@@ -227,11 +227,12 @@ def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
     )
     assert plan.capture_target >= express.capture_count
     session_ceiling_s = flow.session_wall_clock_ceiling_s(plan)
-    assert ac.walk_price(request)["ceiling_min"] * 60 >= session_ceiling_s
-    # The stops are the ONLY entries this walk adds to the base plan, so before
-    # rounding the two ceilings are the same seconds, not merely bounded.
+    # The stops are the ONLY entries this walk adds to the base plan, so the
+    # stated price is that session's own ceiling rounded up -- not merely a
+    # bound over it, and not a base the price counted for itself.
+    assert ac.walk_price(request)["ceiling_min"] == math.ceil(session_ceiling_s / 60)
     assert (
-        flow.wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + len(request.stops))
+        flow.wall_clock_ceiling_s(flow.stage1_base_entries() + len(request.stops))
         == session_ceiling_s
     )
 

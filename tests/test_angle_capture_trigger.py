@@ -62,7 +62,7 @@ from jasper.active_speaker.session_volume_plan import (
     STATE_KIND,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    CAPTURE_PLAN_TARGET,
+    stage1_base_entries,
     wall_clock_ceiling_s,
 )
 from jasper.cli import angle_capture as cli
@@ -888,7 +888,9 @@ def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
     assert body["price"] == {
         "mic_moves": 2,
         "captures": 2,
-        "ceiling_min": math.ceil(wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + 2) / 60),
+        "ceiling_min": math.ceil(
+            wall_clock_ceiling_s(stage1_base_entries() + 2) / 60
+        ),
     }
     assert spool.take_staged_angle_request().program == ""
 
