@@ -114,7 +114,7 @@ def test_stopping_thresholds_refuse_a_record_with_no_aggregate_row():
 def test_write_then_load_round_trips_the_record(tmp_path):
     path = tmp_path / "repeat-floor.json"
     written = write_repeat_floor(_record(0.4), state_path=path)
-    assert written["state_path"] == str(path)
+    assert "state_path" not in written
     loaded = load_repeat_floor(state_path=path)
     assert loaded == written
 

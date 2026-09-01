@@ -28,13 +28,13 @@ from __future__ import annotations
 
 import json
 import math
-import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TypeGuard
 
 from jasper.atomic_io import atomic_write_json
 
 from .attempts_loop import FloorStats, percentile
+from .seat_level_reference import _utc_now
 
 SCHEMA_VERSION = 1
 REPEAT_FLOOR_KIND = "jts_active_speaker_repeat_floor"
@@ -44,10 +44,6 @@ DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_floor.json")
 #: number, which is what the tournament reads. Named here rather than in the
 #: round views so the writer, the CLI and the packet all spell it once.
 SHIPPED_POOL_METRIC = "shipped_linear_pool_db"
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _state_path(path: str | Path | None) -> Path:
@@ -118,11 +114,16 @@ def derive_repeat_floor(
 def write_repeat_floor(
     payload: Mapping[str, Any], *, state_path: str | Path | None = None
 ) -> dict[str, Any]:
-    """Publish one floor. Returns the payload as written, ``state_path``
-    included, so a caller can report where it landed."""
-    path = _state_path(state_path)
-    record = {**dict(payload), "state_path": str(path)}
-    atomic_write_json(path, record, mode=0o640, group_from_parent=True)
+    """Publish one floor at ``state_path`` and return the record as written.
+
+    The path is NOT part of the record: it is written on a laptop and read on
+    the speaker, so a local path is nobody's provenance — the reader names the
+    file it actually read. World-readable and un-chowned for the same reason:
+    the operator places the file by hand, and the writer's directory says
+    nothing about the speaker's group.
+    """
+    record = dict(payload)
+    atomic_write_json(_state_path(state_path), record)
     return record
 
 
@@ -179,7 +180,7 @@ def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
             metric=str(record.get("aggregate_metric") or ""),
             median_db=median,
             p95_db=p95,
-            source=f"{REPEAT_FLOOR_KIND} {record.get('state_path') or ''}".strip(),
+            source=REPEAT_FLOOR_KIND,
             measured_at=str(record.get("measured_at") or ""),
         )
     except ValueError:  # from_repeat_study refuses p95 <= 0 and an empty metric name

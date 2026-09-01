@@ -1036,6 +1036,15 @@ def test_cli_repeat_floor_writes_the_banked_record(tmp_path):
     assert [row["label"] for row in payload["rounds"]] == ["r1", "r2"]
 
 
+def test_cli_repeat_floor_refuses_stdout_as_a_destination(tmp_path, monkeypatch):
+    from jasper.cli.round_views import main
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["repeat-floor", "r1", "r2", "--out", "-"])
+    assert not (tmp_path / "-").exists()
+
+
 def test_cli_repeat_floor_refuses_a_single_round(tmp_path, capsys):
     from jasper.cli.round_views import main
 

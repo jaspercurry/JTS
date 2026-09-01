@@ -262,8 +262,15 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _record_path(value: str) -> Path:
+    """``--out`` for a verb that publishes a file: ``-`` is not a path."""
+    if value == "-":
+        raise argparse.ArgumentTypeError("repeat-floor publishes a file; '-' is not a path")
+    return Path(value)
+
+
 def _cmd_repeat_floor(args: argparse.Namespace) -> int:
-    path = Path(args.out)
+    path = args.out
     try:
         rounds = _load_rounds(args.round_dirs)
         payload = derive_repeat_floor(
@@ -477,7 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="two or more TOUCHED-NOTHING fixed-pose repeat round directories",
     )
     repeat_floor.add_argument(
-        "--out", required=True,
+        "--out", required=True, type=_record_path,
         help=(
             "where to write the record; place it on the speaker at "
             f"{_REPEAT_FLOOR_DEFAULT_PATH} so bank-crossover-round.sh pulls it "

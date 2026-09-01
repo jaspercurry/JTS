@@ -140,7 +140,7 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
-from ..repeat_floor import load_repeat_floor, stopping_thresholds
+from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from .contracts import POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
 from .record_index import bundle_measurements
@@ -2047,13 +2047,14 @@ def _read_candidate(round_dir: Path) -> dict[str, Any]:
     return _mapping(raw)
 
 
-def _unmeasured_repeat_floor(reason: str) -> dict[str, Any]:
-    """The shared shape for both absences below — no record, or one that
-    cannot be read — thresholds falling back to the two ``round_evidence``
-    constants that self-describe as assumptions."""
+def _unmeasured_repeat_floor(absence: str, reason: str) -> dict[str, Any]:
+    """The shared shape for every absence — thresholds falling back to the two
+    ``round_evidence`` constants that self-describe as assumptions. ``absence``
+    is the closed vocabulary a reader keys on; ``reason`` is for a human."""
     return {
         "kind": UNCERTAINTY_RANDOM,
         "available": False,
+        "absence": absence,
         "reason": reason,
         "thresholds": {
             "source": "codified_assumption",
@@ -2067,34 +2068,60 @@ def _unmeasured_repeat_floor(reason: str) -> dict[str, Any]:
     }
 
 
-def _repeat_floor_component(record: dict[str, Any] | None) -> dict[str, Any]:
-    """The RANDOM repeat floor as banked, or the honest absence.
+#: Why the repeat floor is not available: never measured, a file that is not
+#: a readable record, or a record whose aggregate row cannot yield thresholds.
+#: Three different errands (run E2 / re-copy the file / re-bank it), so the
+#: packet names which rather than one shared reason.
+REPEAT_FLOOR_UNMEASURED = "unmeasured"
+REPEAT_FLOOR_UNREADABLE = "unreadable"
+REPEAT_FLOOR_UNUSABLE = "unusable"
 
-    Two different absences, told apart: no record at all is "nobody ran the
-    repeats", while a record whose aggregate row carries no usable p95/median
-    is a BANKED floor that cannot be read — one is work never done, the other
-    is work to redo, and one shared reason would send the operator after the
-    wrong one.
-    """
-    if record is None:
+
+def _repeat_floor_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
+    """The banked floor, or why there is none — ``source_absent`` when no file
+    was there to read, the read failure otherwise (same rule as
+    :func:`_applied_profile_source`)."""
+    if path is None:
+        return None, "source_absent"
+    record = load_repeat_floor(state_path=path)
+    if record is not None:
+        return record, ""
+    _, reason = _read_json(path)
+    return None, reason or f"not a {REPEAT_FLOOR_KIND} record"
+
+
+def _repeat_floor_component(
+    record: dict[str, Any] | None, read_reason: str
+) -> dict[str, Any]:
+    """The RANDOM repeat floor as banked, or one of three honest absences."""
+    if record is None and read_reason == "source_absent":
         return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNMEASURED,
             "unmeasured -- no banked repeat floor; calibration experiment "
             "E2 (N touched-nothing fixed-pose repeat rounds through "
             "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
-            "Calibration experiments)"
+            "Calibration experiments)",
+        )
+    if record is None:
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNREADABLE,
+            f"banked repeat floor could not be read ({read_reason}); re-copy "
+            "it, or re-bank it with jasper-round-views repeat-floor",
         )
     thresholds = stopping_thresholds(record)
     if thresholds is None:
         return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNUSABLE,
             f"banked repeat floor carries no usable {record.get('aggregate_metric')} "
-            "pairwise_abs_delta_p95_db (finite and positive; record at "
-            f"{record.get('state_path')}); re-bank it with "
-            "jasper-round-views repeat-floor"
+            "row (a finite, positive pairwise_abs_delta_p95_db and a finite "
+            "pairwise_abs_delta_median_db); re-bank it with "
+            "jasper-round-views repeat-floor",
         )
     rows = [row for row in record.get("rounds") or [] if isinstance(row, Mapping)]
     return {
         "kind": UNCERTAINTY_RANDOM,
         "available": True,
+        "absence": None,
         "source": (
             "repeat-floor.json (jts_active_speaker_repeat_floor, written by "
             "jasper-round-views repeat-floor)"
@@ -2133,6 +2160,7 @@ def _accuracy_budget_block(
     verify: dict[str, Any],
     round_dir: Path | None,
     repeat_floor: dict[str, Any] | None,
+    repeat_floor_reason: str,
 ) -> dict[str, Any]:
     """Random beside systematic (ADR-0202) — juxtaposed, never pooled.
 
@@ -2222,7 +2250,9 @@ def _accuracy_budget_block(
                     "duplicated here"
                 ),
             },
-            "in_capture_repeat_floor": _repeat_floor_component(repeat_floor),
+            "in_capture_repeat_floor": _repeat_floor_component(
+                repeat_floor, repeat_floor_reason
+            ),
             "gate_leakage": {
                 "kind": UNCERTAINTY_SYSTEMATIC,
                 "available": gate_available,
@@ -3131,11 +3161,7 @@ def build_crossover_evidence_packet(
     applied_profile, applied_profile_reason = _applied_profile_source(
         applied_profile_path
     )
-    repeat_floor = (
-        load_repeat_floor(state_path=repeat_floor_path)
-        if repeat_floor_path is not None
-        else None
-    )
+    repeat_floor, repeat_floor_reason = _repeat_floor_source(repeat_floor_path)
 
     draft_raw: Any = None
     draft_reason = "no driver design draft was supplied"
@@ -3281,6 +3307,7 @@ def build_crossover_evidence_packet(
             verify=verify,
             round_dir=round_dir,
             repeat_floor=repeat_floor,
+            repeat_floor_reason=repeat_floor_reason,
         ),
         # Ticket 6.6, widened by #3484: every structural axis's recent
         # per-round history, so a monotonic walk (a re-solved trim drifting

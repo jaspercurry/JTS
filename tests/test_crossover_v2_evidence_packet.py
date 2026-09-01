@@ -21,6 +21,9 @@ import pytest
 
 from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    REPEAT_FLOOR_UNMEASURED,
+    REPEAT_FLOOR_UNREADABLE,
+    REPEAT_FLOOR_UNUSABLE,
     STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
     round_artifact_dir,
@@ -118,6 +121,7 @@ def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is False
+    assert entry["absence"] == REPEAT_FLOOR_UNMEASURED
     assert "E2" in entry["reason"]
     # Absent means the consumers fall back to the two constants that
     # self-describe as assumptions, and the packet says which source it used.
@@ -146,9 +150,26 @@ def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_pa
 
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is False
+    assert entry["absence"] == REPEAT_FLOOR_UNUSABLE
     assert entry["thresholds"]["source"] == "codified_assumption"
     assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
     assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
+
+
+@pytest.mark.parametrize("on_disk", ["{not json", "{}"], ids=["not-json", "not-a-floor"])
+def test_repeat_floor_file_that_is_not_a_record_is_unreadable_not_unmeasured(
+    tmp_path, on_disk
+):
+    """A file that is there but is not a floor is a re-copy errand, never an
+    invitation to run E2 again."""
+    session, _ = _bundle(tmp_path)
+    floor_path = tmp_path / "repeat-floor.json"
+    floor_path.write_text(on_disk)
+    packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
+    entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
+    assert entry["available"] is False
+    assert entry["absence"] == REPEAT_FLOOR_UNREADABLE
+    assert entry["thresholds"]["source"] == "codified_assumption"
 
 
 def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
@@ -161,6 +182,7 @@ def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
 
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is True
+    assert entry["absence"] is None
     assert entry["n_repeats"] == record["n_repeats"]
     assert entry["aggregate_metric"] == SHIPPED_POOL_METRIC
     assert entry["bundle_session_ids"] == ["sess1", "sess2", "sess3"]
