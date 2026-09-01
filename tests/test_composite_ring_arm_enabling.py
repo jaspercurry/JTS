@@ -728,10 +728,14 @@ def test_the_wide_composite_graph_corrects_both_program_channels():
         for step in payload["pipeline"]
         if step["type"] == "Filter"
     }
+    # ROOM filters only. Every graph also carries the preference frame — 5
+    # simple bands and an 8-slot advanced pool, idle at 0 dB — and this test is
+    # about which SEAT's correction lands on which speaker, not about the frame.
     peq_freq = {
         name: spec["parameters"]["freq"]
         for name, spec in payload["filters"].items()
         if spec["parameters"].get("freq") is not None
+        and not name.startswith("sound_")
     }
 
     assert set(chains) == {0, 1, 2, 3}
