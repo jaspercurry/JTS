@@ -78,7 +78,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
@@ -118,13 +118,6 @@ REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
 # each driver's permitted band), and it is a stable operator-facing string.
 REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
 REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
-
-#: Where a generated default stimulus is cached: the installer-registered
-#: active-speaker stimulus directory (``deploy/install.sh``), so the file an
-#: operator is asked about is one the box owns rather than a home-directory path
-#: no later session can find.
-DEFAULT_STIMULUS_CACHE_DIR = Path("/var/lib/jasper/active_speaker_stimuli")
-
 
 def _refused(
     reason: str, detail: str, *, restored: bool | None = None
@@ -236,8 +229,38 @@ def stimulus_provenance(
     )
 
 
+class _Declarations(NamedTuple):
+    """One load of the topology and design draft, shared by the whole pass."""
+
+    topology: Any
+    draft: dict[str, Any]
+    safety_profile: dict[str, Any]
+
+
+def _load_declarations(args: argparse.Namespace) -> _Declarations:
+    """Load ONCE what both derivations below read.
+
+    The default-stimulus band and the volume ceiling both come off the same
+    topology and design draft; loading per consumer would do the draft's
+    derived-field stamping twice and give the missing-profile refusal two
+    homes to drift between.
+    """
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.output_topology import load_output_topology_strict
+
+    topology = load_output_topology_strict(args.topology)
+    draft = load_design_draft(topology=topology)
+    safety_profile = draft.get("driver_safety_profile")
+    if not isinstance(safety_profile, dict):
+        raise SessionVolumePlanError(
+            "the design draft carries no driver_safety_profile; commission the "
+            "drivers before leveling"
+        )
+    return _Declarations(topology, draft, safety_profile)
+
+
 def default_stimulus_wav(
-    args: argparse.Namespace,
+    declarations: _Declarations,
 ) -> tuple[Path, tuple[float, float]]:
     """Synthesize the default stimulus, and say which band it covers.
 
@@ -257,40 +280,32 @@ def default_stimulus_wav(
       per-branch peak solve stays EXACT. Past it the ceiling silently falls
       back to the conservative full-band bound.
 
-    It is cached under the installer-registered stimulus directory, so the file
-    an operator is asked about is discoverable rather than an unbanked path in
-    somebody's home directory.
+    It is cached under the installer-registered stimulus directory
+    (``speech_stimulus.DEFAULT_CACHE_DIR``, created by ``deploy/install.sh``),
+    so the file an operator is asked about is discoverable rather than an
+    unbanked path in somebody's home directory.
     """
     from jasper.active_speaker.branch_peak import MAX_STIMULUS_SAMPLES
     from jasper.active_speaker.commissioning_admission import (
         ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
     )
-    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.excitation_safety_plan import (
         resolve_driver_measurement_band_hz,
     )
     from jasper.active_speaker.measurement import active_driver_targets
+    from jasper.active_speaker.speech_stimulus import DEFAULT_CACHE_DIR
     from jasper.active_speaker.test_signal_plan import (
         MAX_DRIVER_TEST_FREQUENCY_HZ,
         MIN_DRIVER_TEST_FREQUENCY_HZ,
     )
     from jasper.audio_measurement.playback import ensure_bandlimited_noise_wav
     from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
-    from jasper.output_topology import load_output_topology_strict
 
-    topology = load_output_topology_strict(args.topology)
-    draft = load_design_draft(topology=topology)
-    safety_profile = draft.get("driver_safety_profile")
-    if not isinstance(safety_profile, dict):
-        raise SessionVolumePlanError(
-            "the design draft carries no driver_safety_profile; commission the "
-            "drivers before leveling, or name a stimulus with --stimulus-wav"
-        )
     bands = [
         resolve_driver_measurement_band_hz(
-            safety_profile, str(target["target_fingerprint"])
+            declarations.safety_profile, str(target["target_fingerprint"])
         )
-        for target in active_driver_targets(topology)
+        for target in active_driver_targets(declarations.topology)
     ]
     if not bands:
         raise SessionVolumePlanError(
@@ -311,7 +326,7 @@ def default_stimulus_wav(
             duration_s=MAX_STIMULUS_SAMPLES / PROGRAM_SAMPLE_RATE_HZ,
             dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
             sample_rate=PROGRAM_SAMPLE_RATE_HZ,
-            cache_dir=DEFAULT_STIMULUS_CACHE_DIR,
+            cache_dir=DEFAULT_CACHE_DIR,
         ),
         band,
     )
@@ -363,30 +378,22 @@ def _applied_branch_peaks(
 
 
 def _derive_bounds(
-    args: argparse.Namespace, stimulus: Path, levels: StimulusProvenance
+    stimulus: Path, levels: StimulusProvenance, declarations: _Declarations
 ) -> tuple[float, float]:
     """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``.
 
-    ``levels`` is measured once by the caller rather than read again here: the
+    ``levels`` is measured once by the caller rather than read again here (the
     ramp needs the same numbers for its refusal, and two reads of one file are
-    two answers.
+    two answers), and ``declarations`` is loaded once by the caller for the
+    same reason.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
-        load_design_draft,
     )
     from jasper.active_speaker.measurement import active_driver_targets
-    from jasper.output_topology import load_output_topology_strict
 
-    topology = load_output_topology_strict(args.topology)
-    draft = load_design_draft(topology=topology)
-    safety_profile = draft.get("driver_safety_profile")
-    if not isinstance(safety_profile, dict):
-        raise SessionVolumePlanError(
-            "the design draft carries no driver_safety_profile; commission the "
-            "drivers before leveling"
-        )
+    topology, draft, safety_profile = declarations
     targets = active_driver_targets(topology)
     fingerprints = [str(target["target_fingerprint"]) for target in targets]
     # The PAD-FOLDED sensitivities, not the naked datasheet ones. An L-pad'd
@@ -506,13 +513,14 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         )
 
     try:
+        declarations = _load_declarations(args)
         stimulus, band_hz = (
             (Path(args.stimulus_wav), None)
             if args.stimulus_wav is not None
-            else default_stimulus_wav(args)
+            else default_stimulus_wav(declarations)
         )
         provenance = stimulus_provenance(stimulus, band_hz=band_hz)
-        ceiling_db, spl_ceiling = _derive_bounds(args, stimulus, provenance)
+        ceiling_db, spl_ceiling = _derive_bounds(stimulus, provenance, declarations)
     except (
         SessionVolumePlanError,
         CommissionPresetResolutionError,

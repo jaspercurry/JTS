@@ -290,7 +290,8 @@ def test_the_default_stimulus_is_derived_from_the_declared_bands(
 
     args = seat_level.build_parser().parse_args([])
     assert args.stimulus_wav is None
-    path, band_hz = seat_level.default_stimulus_wav(args)
+    declarations = seat_level._load_declarations(args)
+    path, band_hz = seat_level.default_stimulus_wav(declarations)
 
     assert path == tmp_path / "generated.wav"
     assert band_hz == expected
@@ -324,11 +325,14 @@ def test_the_generated_default_reaches_the_ramp_with_its_own_provenance(
         )
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "default_stimulus_wav", lambda args: (generated, (45.0, 18_000.0))
+        seat_level,
+        "default_stimulus_wav",
+        lambda declarations: (generated, (45.0, 18_000.0)),
     )
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda args, stim, levels: (-30.0, 85.0)
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
@@ -381,8 +385,9 @@ def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
         )
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda args, stim, levels: (-30.0, 85.0)
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
@@ -457,7 +462,9 @@ def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tm
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        args, stimulus, seat_level.stimulus_provenance(stimulus)
+        stimulus,
+        seat_level.stimulus_provenance(stimulus),
+        seat_level._load_declarations(args),
     )
 
     assert ceiling_db == -30.0
@@ -490,6 +497,15 @@ def _draft_with_a_padded_tweeter(safety_profile):
             ]
         },
     }
+
+
+def _stub_declarations(monkeypatch):
+    """Stub the one declaration load for tests that stub the derivations too."""
+    monkeypatch.setattr(
+        seat_level,
+        "_load_declarations",
+        lambda args: seat_level._Declarations(None, {}, {}),
+    )
 
 
 def _stub_draft(monkeypatch, draft, targets):
@@ -533,10 +549,11 @@ def test_seat_level_hands_the_ceiling_the_PAD_FOLDED_sensitivities(
         return -30.0
 
     monkeypatch.setattr(seat_level, "unsegmented_stimulus_ceiling_db", _capture)
+    args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     seat_level._derive_bounds(
-        seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)]),
         stimulus,
         seat_level.stimulus_provenance(stimulus),
+        seat_level._load_declarations(args),
     )
 
     assert seen["declared_sensitivities"] == {
@@ -865,7 +882,9 @@ def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkey
 
     args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
     ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        args, stimulus, seat_level.stimulus_provenance(stimulus)
+        stimulus,
+        seat_level.stimulus_provenance(stimulus),
+        seat_level._load_declarations(args),
     )
 
     peak = seat_level.stimulus_provenance(stimulus).peak_dbfs
@@ -935,8 +954,9 @@ def _stub_a_ramp_result(monkeypatch, tmp_path, result):
         return result
 
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    _stub_declarations(monkeypatch)
     monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda args, stim, levels: (0.0, 80.0)
+        seat_level, "_derive_bounds", lambda stim, levels, declarations: (0.0, 80.0)
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",

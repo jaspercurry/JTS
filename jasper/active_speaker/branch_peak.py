@@ -83,7 +83,7 @@ frequencies.
 
 **"Peak" here is the SAMPLE peak**, the largest absolute output sample — the
 same quantity ``program_admission``'s ``effective_true_peak_dbfs`` and
-``seat_level.stimulus_peak_dbfs`` use, so the ledger compares like with like.
+``seat_level.stimulus_provenance`` use, so the ledger compares like with like.
 Inter-sample (true-peak) overshoot between samples is not modelled by any of
 them. That is a repo-wide convention rather than a gap this module opens, and it
 is stated here because the word "true peak" appears in the names around it.
@@ -191,7 +191,7 @@ def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
     """``(float64 samples shaped (frames, channels), sample_rate_hz)``.
 
     Integer PCM is normalised by its dtype's own maximum — the SAME convention
-    :func:`jasper.cli.seat_level.stimulus_peak_dbfs` uses, so a branch peak and
+    :func:`jasper.cli.seat_level.stimulus_provenance` uses, so a branch peak and
     the full-band peak it is compared against are on one scale by construction
     rather than by coincidence.
 
