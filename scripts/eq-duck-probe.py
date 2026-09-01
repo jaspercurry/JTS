@@ -24,7 +24,7 @@ import time
 from camilladsp import CamillaClient
 
 DURATION_S = float(os.environ.get("EQ_DUCK_PROBE_S", "60"))
-PERIOD_S = 0.02  # 50 Hz catches CamillaDSP's ~400 ms volume ramp many times over
+PERIOD_S = 0.05  # a duck holds the fader down for >0.45 s; 20 Hz sees it many times
 
 client = CamillaClient(
     os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
