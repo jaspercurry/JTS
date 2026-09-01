@@ -2699,7 +2699,7 @@ def bind_production_analyze(
                     logger,
                     "correction.crossover_v2_calibration_resolve_failed",
                     level=logging.WARNING,
-                    phase=program.phase,
+                    phase=phase,
                 )
                 record = None
         curve = getattr(record, "curve", None)
@@ -2724,7 +2724,7 @@ def bind_production_analyze(
                 logger,
                 "correction.crossover_v2_uncalibrated_capture",
                 level=logging.WARNING,
-                phase=program.phase,
+                phase=phase,
                 setup_mode=setup_mode,
                 setup_calibration_id=setup_calibration_id,
             )
