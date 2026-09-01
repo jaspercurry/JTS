@@ -340,10 +340,11 @@ pub struct Config {
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
     /// Frames dropped from the held target per decay step. Fail-loud range
-    /// `1..=64`; default 18 (~0.375 ms / ~375 ppm demand — 25 ppm inside the
-    /// ±400 ppm cascade guard, so a step never perturbs the DLL cascade; a touch
-    /// faster than the old 16 to shorten the descent, well short of the
-    /// hardware-refuted 64 that rails the ±500 ppm inner authority). Env:
+    /// `1..=64`; default 6. Demand ppm = step × 20833 / interval_ms (at the
+    /// 48 kHz default rate): 6 ≈ 125 ppm, 4x headroom under the inner
+    /// resampler's ±500 ppm authority (`input_resampler_max_adjust_ppm`) — the
+    /// ±400 ppm cascade guard below is a different budget and does not cover
+    /// decay demand. See issue #3466. Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES`.
     pub input_resampler_cushion_decay_step_frames: u32,
     /// Wall interval between decay steps, in ms (converted to render periods by
@@ -872,22 +873,23 @@ impl Config {
                 cushion_decay_ceiling,
             );
         }
-        // Default 18 (not 16): the descent is paced by step / interval, so a
-        // slightly larger step shortens the ~2.5-min floor descent proportionally
-        // (18 vs 16 ≈ 12 % faster). 18 frames per 1000 ms ≈ 375 ppm of demanded
-        // rate — 25 ppm INSIDE the ±400 ppm cascade-stability guard, so the decay
-        // still pauses before it can perturb the DLL cascade. The hardware pass
-        // (jts.local 2026-07-03) REFUTED 64 (rails the ±500 ppm inner authority);
-        // 18 is the measured sweet spot that speeds the descent without touching
-        // the inner loop. Range floor stays 1 (a gentle single-frame step);
-        // ceiling stays 64 so a lab operator can still push it (at their own risk).
+        // Default 6 (not 18). Demand ppm = step × 20833 / interval_ms: 6 ≈ 125
+        // ppm, 4x headroom under the inner resampler's ±500 ppm authority. The
+        // old default (18 ≈ 375 ppm, 3/4 of that authority) railed it against a
+        // real ~190 ppm host offset, live-verified on jts3 — the ±400 ppm
+        // cascade guard below never budgeted for decay demand, so it did not
+        // catch this; see issue #3466. The floor (576 frames = 12 ms) is
+        // unchanged, so settled latency is identical; the descent from ceiling
+        // to floor lengthens from ~110 s to ~331 s. Range floor stays 1 (a
+        // gentle single-frame step); ceiling stays 64 so a lab operator can
+        // still push it (at their own risk).
         let input_resampler_cushion_decay_step_frames =
-            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 18)?;
+            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 6)?;
         if !(1..=64).contains(&input_resampler_cushion_decay_step_frames) {
             anyhow::bail!(
                 "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES={} out of range 1..=64 \
-                 (a gentle per-step frame drop; 18 ≈ 0.375 ms / ~375 ppm demand stays \
-                 25 ppm inside the ±400 ppm cascade guard so a step never perturbs the DLL)",
+                 (a gentle per-step frame drop; default 6 ≈ 125 ppm, 4x headroom under \
+                 the inner resampler's ±500 ppm authority — see issue #3466)",
                 input_resampler_cushion_decay_step_frames,
             );
         }
@@ -1462,8 +1464,8 @@ mod tests {
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
                 // Post-lock cushion DECAY is DEFAULT-OFF (latency lever 1); its
                 // knobs default to the hardware-validated floor (576, the jts.local
-                // combo-armed gate value — clamped into [derived_min, ceiling]), an
-                // 18-frame gentle step, and a 1 s interval. (P3 default-coherence:
+                // combo-armed gate value — clamped into [derived_min, ceiling]), a
+                // 6-frame gentle step, and a 1 s interval. (P3 default-coherence:
                 // the shipped default is the validated 576, not the tighter derived
                 // 544 = target 512 + 32-frame margin.)
                 assert!(
@@ -1474,23 +1476,22 @@ mod tests {
                     cfg.input_resampler_cushion_decay_floor_frames,
                     DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
                 );
-                assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 18);
+                assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 6);
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
-                // Cascade-margin invariant (pins the 375-vs-400 ppm claim documented
-                // in config.rs and .env.example): the default decay
-                // step's demanded rate (step_frames dropped over interval_ms, as a
-                // fraction of the frames that pass in that interval) must sit INSIDE
-                // the DLL cascade-stability guard, or a settled decay step could
-                // perturb the inner loop. 18 frames / 1000 ms @ 48 kHz = 375 ppm,
-                // 25 ppm inside the 400 ppm guard. A future default-step bump or
-                // guard lowering that inverts this margin fails here.
+                // Demand-ppm pin (config.rs documents this number): step_frames
+                // dropped over interval_ms, as ppm of the frames that pass in
+                // that interval. 6 frames / 1000 ms @ 48 kHz = 125 ppm. This
+                // guard is a DIFFERENT budget from the inner resampler's ±500
+                // ppm authority (pinned above) — it never counted decay demand,
+                // so staying inside it is a coincidence, not the safety margin;
+                // see issue #3466.
                 let step_demand_ppm = (cfg.input_resampler_cushion_decay_step_frames as f64)
                     / ((cfg.input_resampler_cushion_decay_interval_ms as f64 / 1000.0)
                         * cfg.sample_rate as f64)
                     * 1_000_000.0;
                 assert!(
-                    (step_demand_ppm - 375.0).abs() < 1.0,
-                    "default step demand is ~375 ppm, got {step_demand_ppm}"
+                    (step_demand_ppm - 125.0).abs() < 1.0,
+                    "default step demand is ~125 ppm, got {step_demand_ppm}"
                 );
                 assert!(
                     step_demand_ppm < crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM,
