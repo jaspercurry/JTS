@@ -1779,17 +1779,6 @@ def test_the_bank_window_is_utc_with_its_zone_spelled_out(
     assert stamp <= datetime.now(timezone.utc) + timedelta(seconds=5)
 
 
-def test_the_apply_body_key_is_the_one_the_server_requires():
-    """The endpoint reads ONE field, and a rename here would 400 every apply."""
-    import inspect
-
-    from jasper.web.correction_crossover_v2 import handle_v2_apply
-
-    source = inspect.getsource(handle_v2_apply)
-    assert 'raw.get("expected_candidate_fingerprint")' in source
-    assert _runner().APPLY_PATH.endswith("/v2/apply")
-
-
 def _runner():
     """The runner imported as a module, for the contract assertions."""
     import importlib.util
@@ -1808,31 +1797,8 @@ def _runner():
     return runner
 
 
-def test_the_endpoints_are_the_products_own():
-    runner = _runner()
+def test_the_arm_walk_exit_vocabulary_is_the_walks_own():
+    """The paths and phases themselves are pinned by ``tests/test_cli_round.py``."""
+    from jasper.active_speaker.arm_walk import EXIT_NAMES
 
-    from jasper.active_speaker.crossover_v2.journey import CAPTURE_PHASES
-    from jasper.web.correction_setup import _POST_ROUTES
-
-    for path in (runner.SESSION_PATH, runner.VERIFY_PATH, runner.APPLY_PATH):
-        assert path.startswith("/correction/")
-        assert path[len("/correction"):] in _POST_ROUTES
-
-    from jasper.active_speaker.arm_walk import EXIT_NAMES, STATUS_PATH
-
-    assert runner.ARM_WALK_EXIT_NAMES is EXIT_NAMES
-    assert runner.STATUS_PATH == STATUS_PATH
-
-    # The COMPLEMENT, not a subset: `set(CAPTURE_PHASES) <= RUNNING_PHASES`
-    # survives deleting `| {PHASE_CLOSING, PHASE_APPLYING}` entirely, which is
-    # the bug it was supposed to catch. Every phase the journey defines must be
-    # classified, and exactly two of them are places a round STOPS.
-    from jasper.active_speaker.crossover_v2 import journey
-
-    all_phases = {
-        value for name, value in vars(journey).items()
-        if name.startswith("PHASE_") and isinstance(value, str)
-    }
-    assert all_phases - runner.RUNNING_PHASES == {journey.PHASE_REVIEW,
-                                                  journey.PHASE_DONE}
-    assert set(CAPTURE_PHASES) <= runner.RUNNING_PHASES
+    assert _runner().ARM_WALK_EXIT_NAMES is EXIT_NAMES

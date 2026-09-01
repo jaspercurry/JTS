@@ -125,17 +125,24 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
    single-slot mailbox at
    `/var/lib/jasper/active_speaker_crossover_v2_prescription.json`, consumed on
    take. One slot, last write wins, logged.
-6. **Measure.** `scripts/run-crossover-round.py` (laptop) runs one round end to
-   end (stage · walk · open · await · bank). Hand the human the measurement URL,
-   hostname-derived; they move the mic pose to pose. On the box itself,
-   `jasper-round-bank <session-dir>` banks the finished session into the
-   campaign home (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where
-   it outlives session retention and `jasper-round-views` reads it. That home is
+6. **Measure.** *(laptop)* `scripts/run-crossover-round.py` runs one round end
+   to end (stage · walk · open · await · bank). Hand the human the measurement
+   URL, hostname-derived; they move the mic pose to pose.
+   *(on the box)* `jasper-round open --tier <tier>` then `jasper-round wait` —
+   the same two wizard verbs, over the same transport, for when there is no
+   laptop on the network. It stages no walk (that stays `jasper-angle-capture`)
+   and banks nothing: `jasper-round-bank <session-dir>` banks the finished
+   session into the campaign home
+   (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where it outlives
+   session retention and `jasper-round-views` reads it. That home is
    operator-pruned — nothing evicts a banked round; `jasper-doctor` discloses
    the two stores' size.
 7. **Grade.** Read the round's grading and compose the final prescription.
-8. **Apply.** `scripts/run-crossover-round.py --apply <fingerprint>` — a
-   *second* invocation. A measurement run never applies.
+8. **Apply.** *(laptop)* `scripts/run-crossover-round.py --apply <fingerprint>`
+   — a *second* invocation. A measurement run never applies.
+   *(on the box)* `jasper-round apply --expected-fingerprint <fingerprint>`,
+   the same gate: a fingerprint that is not the live one is refused before
+   anything is sent.
 9. **Verify.** A verify round, then check the stopping rule (plan, "Measurement
    program constants"). Done, or iterate.
 
@@ -455,6 +462,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
 | `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
+| `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
