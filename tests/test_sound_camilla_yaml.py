@@ -1362,9 +1362,12 @@ def test_production_call_shape_reads_the_saved_topology_from_disk(
 
     yaml = emit_flat_outputd_cutover_config()
 
-    assert _pipeline_names(yaml, 1) == (
-        _pipeline_names(yaml, 1)  # frame + terminal mute; see _room_prefix
+    # Mono on output 0 means channel 1 is hard-muted, and the mute is TERMINAL
+    # — last in its chain, after the preference frame.
+    assert _pipeline_names(yaml, 1).endswith(
+        f"flat, {output_commission_mute_name(1)}]"
     )
+    assert output_commission_mute_name(0) not in yaml
 
 
 def test_production_call_shape_missing_topology_renders_the_golden(
