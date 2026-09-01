@@ -17,6 +17,7 @@ this model, not own a parallel EQ representation.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -780,6 +781,22 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     return tuple(specs)
 
 
+def _bypassed_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
+    """The frame at unity: the same filters, every one of them doing nothing.
+
+    The CURVE's filters are neutralised rather than dropped. A curve preset
+    contributes named shelves and tilts, so dropping them would change the
+    filter set and make bypass a pipeline change after all — for exactly the
+    households who chose a preset. Their gains go to zero and their names stay.
+    """
+
+    return (
+        *(dataclasses.replace(spec, gain=0.0) for spec in _curve_filters(profile.curve_id)),
+        *_simple_filters(SimpleEq()),
+        *_advanced_filters(()),
+    )
+
+
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     """Return active sound filters in canonical order.
 
@@ -825,8 +842,20 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     (0.451 % -> 0.877 %) on a path already running a crossover and a limiter.
     """
 
+    # Bypass is spelled as VALUES, not as a missing frame. Emitting nothing
+    # would strip 13 filters out of the pipeline, and a pipeline change is what
+    # rebuilds CamillaDSP's filter group and resets the state of every filter in
+    # it — so toggling bypass would cost the same ducked swap this frame exists
+    # to remove. A bypassed profile is therefore the same shape at unity: the
+    # curve is dropped and every simple band and advanced slot is idle.
+    #
+    # The trim is deliberately NOT dropped with it. "Extra headroom" is a global
+    # output setting for clip safety into an external amp, so it is level policy
+    # rather than tone, and bypassing tone must not silently change level
+    # policy. It is 0 dB by default, so this is invisible unless a household has
+    # dialled one in.
     if not profile.enabled:
-        return ()
+        return _bypassed_slots(profile)
     return (
         *_curve_filters(profile.curve_id),
         *_simple_filters(profile.simple_eq),

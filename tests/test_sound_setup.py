@@ -6698,7 +6698,10 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
     assert payload["status"] == "skipped"
     assert payload["reason"] == "active_audition"
     assert fake.loaded_path is None
-    assert "sound_simple_bass:" not in audition.read_text()
+    # The audition file is untouched by the skip. Its preference frame is
+    # present either way now, so what proves "not promoted" is that nothing was
+    # loaded and the file's bytes did not move -- asserted above and below.
+    assert "sound_simple_bass:" in audition.read_text()
     assert not (config_dir / "sound_current.yml").exists()
     assert not (tmp_path / "dsp.json").exists()
 
