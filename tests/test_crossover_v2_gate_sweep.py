@@ -76,6 +76,7 @@ def _write_round(
     declared_sha: str | None = None,
     vertical_deg: float = 0.0,
     distance_m: float | None = 1.0,
+    radiated_band_hz: tuple[float, float] = (150.0, 20000.0),
 ) -> Path:
     """A banked-round-shaped directory whose captures are known convolutions.
 
@@ -112,7 +113,7 @@ def _write_round(
                     "position_deg": AZIMUTHS_DEG[index % len(AZIMUTHS_DEG)],
                     "vertical_deg": vertical_deg,
                     "mark_distance_m": distance_m,
-                    "curves": [{"role": "summed", "band_hz": [150.0, 20000.0]}],
+                    "curves": [{"role": "summed", "band_hz": list(radiated_band_hz)}],
                     "provenance": {
                         "stimulus": {
                             "phase": "verify",
@@ -290,6 +291,31 @@ def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> 
     assert len(band["poses"]) == 3
     for pose in band["poses"]:
         assert set(pose["value_db_by_rung"]) == {"1", "2"}
+
+
+@pytest.mark.parametrize("radiated_lo_hz", [1990.0, 1999.0])
+def test_a_graded_band_narrower_than_the_grid_nulls_by_name(
+    tmp_path: Path, radiated_lo_hz: float
+) -> None:
+    """A band the DUT radiates only a few Hz of holds no bin to be worst.
+
+    The graded span is non-empty while the set of analysis bins inside it is,
+    so the argmax that picks the worst bin has nothing to pick from. That is
+    a named null, never a crash.
+    """
+    root = _write_round(
+        tmp_path,
+        [_pose_ir(i, late_copy_ms=8.0) for i in range(3)],
+        radiated_band_hz=(radiated_lo_hz, 20000.0),
+    )
+    band = _low_band(sweep_round(root, rungs_ms=(5.0, 20.0)))
+
+    assert band["graded_band_hz"] == [radiated_lo_hz, 2000.0]
+    assert band["sensitivity"] is None
+    assert (
+        band["sensitivity_null_reason"] == gate_sweep.NULL_BAND_BELOW_GRID_RESOLUTION
+    )
+    assert "worst_bin_hz" not in band
 
 
 def test_poses_are_keyed_on_the_full_declared_pose(tmp_path: Path) -> None:

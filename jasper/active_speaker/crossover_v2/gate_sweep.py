@@ -9,37 +9,30 @@ lengths, and read pose by pose. What separates a room feature from a
 loudspeaker one is **across-pose sigma that GROWS with window length**, not
 sigma that is large: an azimuth-only pose cloud produces big, perfectly
 window-invariant HF scatter that is pure directivity, and reading "high
-sigma => room" mis-attributes it (issue #3495's 2026-09-01 amendment 2, from
-``captures/recommission-day2-2026-09-01/p1-position-window/P1-REPORT.md``
-§5b: 5.5x at 441.6 Hz and 5.1x at 1 kHz against 0.94x-1.4x above 2.5 kHz).
+sigma => room" mis-attributes it (#3495; the evidence is P1, at
+``captures/recommission-day2-2026-09-01/p1-position-window/P1-REPORT.md``).
 
-Those P1 figures are 3->20 ms. The ``sigma_growth_ratio`` this module
-publishes is over the feature's resolution-VALID rungs only, so at 441.6 Hz
-it is the 7->20 ms ratio (~3.5x) and not 5.5x, while 1 kHz clears 2.5 cycles
-at 3 ms and keeps the full 3->20 ms span (~5x). Below 2.5 cycles the read is
-the window's, not the feature's, and a ratio anchored there is set by its own
-tiny denominator. The 3->20 ms figure stays readable: ``sigma_map`` banks the
+The published ``sigma_growth_ratio`` spans the feature's resolution-VALID
+rungs only: below :data:`RESOLUTION_INVALID_CYCLES` the read is the window's,
+not the feature's, and a ratio anchored there is set by its own tiny
+denominator. Every other rung pair stays readable — ``sigma_map`` banks the
 across-pose sigma on the whole analysis grid at every rung.
 
 Which bin the ratio is about is the CALLER's choice, not an argmax: a band's
-deepest median-detrended bin is not always its most window-divergent one
-(on ``r9-verify-clean`` the deepest bin in 250-2000 Hz grows 1.9x while
-441.6 Hz in the same band grows 3.5x). ``at_hz`` anchors the report on the
-frequency the spec verdict flagged; the per-band worst bin is published
-beside it, unchanged.
+deepest median-detrended bin is not always its most window-divergent one.
+``at_hz`` anchors the report on the frequency the spec verdict flagged; the
+per-band worst bin is published beside it, unchanged.
 
-Three measured hazards this module exists to not repeat:
+Three measured hazards this module exists to not repeat (all P1):
 
-* **The window's own bias is not small and never vanishes.** A -4.5 dB,
-  Q~17 notch at 441.6 Hz reads -1.3 dB at 7 ms and only -2.7 dB at 20 ms
-  (P1 §5d). A raw long-rung delta therefore conflates the window with the
-  room, so the published delta is null-model corrected: the fitted notch is
-  synthesized, injected into a real capture IR, and re-read through the same
-  rungs, and its own change is subtracted.
-* **A number without its frame does not reproduce.** The same capture and
-  the same feature read -6.25 dB in an ad-hoc frame and -1.07 dB under the
-  gate ladder's own window shape (P1 §6). Every result carries the frame
-  descriptor that produced it.
+* **The window's own bias is not small and never vanishes.** A raw long-rung
+  delta conflates the window with the room, so the published delta is
+  null-model corrected: the fitted notch is synthesized, injected into a real
+  capture IR, and re-read through the same rungs, and its own change is
+  subtracted.
+* **A number without its frame does not reproduce.** One capture and one
+  feature read a materially different depth under each defensible frame, so
+  every result carries the frame descriptor that produced it.
 * **The pose label is not the pose** (#3503) **and the phase label is not
   the program** (#3504). Poses are keyed on the full declared
   (azimuth, elevation, distance) triple, never on a seat index at an assumed
@@ -67,7 +60,11 @@ import numpy as np
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
-from jasper.audio_measurement.gating import TAPER_FRACTION, build_gate_window
+from jasper.audio_measurement.gating import (
+    TAPER_FRACTION,
+    TRUSTED_FLOOR_MULTIPLIER,
+    build_gate_window,
+)
 from jasper.audio_measurement.sweep import read_wav_mono
 
 from .feature_classifier import (
@@ -83,24 +80,29 @@ from .feature_classifier import (
 SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
 
-#: The ladder, shortest first. It reaches 20 ms deliberately: 441.6 Hz does
-#: not have 5 cycles in a window until 12 ms and 358 Hz is not resolvable at
-#: all below 12 ms, so a (3, 5, 7) ladder cannot price the contested band it
-#: is being asked about. Short rungs test resolution validity; long rungs are
-#: a deliberate room-admittance probe, and the two are never averaged.
+#: The ladder, shortest first. It reaches 20 ms because the contested
+#: sub-500 Hz features do not clear the cycles bars below ~12 ms at all, so a
+#: (3, 5, 7) ladder cannot price the band it is being asked about (P1). Short
+#: rungs test resolution validity; long rungs are a deliberate
+#: room-admittance probe, and the two are never averaged.
 DEFAULT_RUNGS_MS: tuple[float, ...] = (3.0, 4.0, 5.0, 7.0, 9.0, 12.0, 20.0)
 
-#: Cycles-in-window bars. Below 2.5 the read is not resolution-valid (the
-#: same 2.5/T the gate's own trusted floor is built on); below 5 it is grey.
-#: Flags, not filters, on the published table — but ``2.5`` does bound which
+#: Cycles-in-window bars. Below the invalid bar the read is not
+#: resolution-valid — it is the gate's own trusted floor
+#: (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`) read as
+#: cycles-in-window; below the grey bar it is merely doubtful. Flags, not
+#: filters, on the published table — but the invalid bar does bound which
 #: rungs a sensitivity may be computed across.
-RESOLUTION_INVALID_CYCLES = 2.5
+RESOLUTION_INVALID_CYCLES = TRUSTED_FLOOR_MULTIPLIER
 RESOLUTION_GREY_CYCLES = 5.0
 
 #: One normalisation constant per capture, from THIS band at THIS rung,
 #: applied to every rung of that capture. Per-window normalisation would
-#: poison exactly the cross-rung deltas this instrument publishes: it moved
-#: the 441.6 Hz 7->20 ms read by 0.49 dB in P1 §6 on its own.
+#: poison exactly the cross-rung deltas this instrument publishes, by a
+#: margin of the same order as the deltas themselves (P1). Deliberately NOT
+#: the sibling :data:`.feature_classifier.NORMALISE_BAND_HZ` (400-8000 Hz,
+#: median, per rung): 400-1200 Hz is the band that moves most with the rung,
+#: and a reference must not drift with the thing it is referencing (P1).
 REFERENCE_BAND_HZ = (2500.0, 8000.0)
 REFERENCE_RUNG_MS = 7.0
 
@@ -135,6 +137,7 @@ REFUSE_CAPTURE_UNREADABLE = "gate_sweep_capture_unreadable"
 
 NULL_INSUFFICIENT_VALID_RUNGS = "insufficient_valid_rungs"
 NULL_BAND_NOT_RADIATED = "band_outside_radiated_band"
+NULL_BAND_BELOW_GRID_RESOLUTION = "graded_band_narrower_than_grid"
 NULL_DEGENERATE_SHORT_RUNG = "short_rung_sigma_is_zero"
 
 
@@ -271,6 +274,8 @@ def discover_captures(round_dir: Path) -> tuple[PoseCapture, ...]:
         )
 
     captures: list[PoseCapture] = []
+    # Decoded once per unique program, not once per capture.
+    program_audio: dict[str, tuple[np.ndarray, int]] = {}
     for sidecar in sidecars:
         try:
             doc = json.loads(sidecar.read_text())
@@ -315,7 +320,10 @@ def discover_captures(round_dir: Path) -> tuple[PoseCapture, ...]:
                 },
             )
         signal, rate = read_wav_mono(wav)
-        program_signal, program_rate = read_wav_mono(program)
+        program_key = str(sha)
+        if program_key not in program_audio:
+            program_audio[program_key] = read_wav_mono(program)
+        program_signal, program_rate = program_audio[program_key]
         if rate != program_rate:
             raise GateSweepRefused(
                 REFUSE_CAPTURE_UNREADABLE,
@@ -376,8 +384,8 @@ def gated_segment(
     The window is :func:`~jasper.audio_measurement.gating.build_gate_window`'s
     — the shipped gate's own shape at a forced span — with a 1.0 ms lead. The
     lead is load-bearing and measured: a zero-lead window truncates the direct
-    arrival's own low-frequency pre-ringing and read 441.6 Hz at -14.6 dB
-    against -2.5 dB with the lead (P1 §7).
+    arrival's own low-frequency pre-ringing and reads a sub-500 Hz feature
+    many dB too deep (P1).
     """
     span = int(round(gate_ms * 1e-3 * sample_rate))
     lead = int(round(lead_ms * 1e-3 * sample_rate))
@@ -500,8 +508,8 @@ def fit_notch(
 
     The centre is searched over +/-:data:`.feature_classifier.CENTRE_SEARCH_OCT`
     (1/6 octave), NOT the classifier's 1/3-octave neighbourhood: the wider
-    span walked off onto a different feature near 377 Hz on three of six
-    poses (P1 §7) and fitted the null model to the wrong thing.
+    span walked off onto a neighbouring feature on half the poses and fitted
+    the null model to the wrong thing (P1).
     """
     lo = nominal_hz * 2.0**-CENTRE_SEARCH_OCT
     hi = nominal_hz * 2.0**CENTRE_SEARCH_OCT
@@ -538,7 +546,7 @@ def null_model_hosts(
     ``synthetic`` is a bare impulse, and it is disclosed beside the real one
     for a measured reason: injecting a feature into a host that ALREADY has
     one at that frequency stops being additive once the pair is deep, and
-    the two hosts then disagree (P1 §5d reports both for the same reason).
+    the two hosts then disagree (P1 reports both for the same reason).
     A reader who sees them agree knows the correction is in its regime.
     """
     rate = capture.sample_rate
@@ -751,6 +759,13 @@ def _band_result(
         return result
 
     mask = (grid >= graded[0]) & (grid < graded[1])
+    if not mask.any():
+        # A graded band narrower than one grid step is non-empty as a span and
+        # empty as a set of bins. There is nothing to be worst.
+        result["sensitivity"] = None
+        result["sensitivity_null_reason"] = NULL_BAND_BELOW_GRID_RESOLUTION
+        return result
+
     longest = max(rungs_ms)
     median_detrended = np.median(
         np.array([cap.detrended[longest] for cap in captures]), axis=0
@@ -761,15 +776,13 @@ def _band_result(
     feature = _feature_result(captures, grid, sigma, worst_hz, rungs_ms=rungs_ms)
     result["worst_bin_hz"] = feature.pop("bin_hz")
     # The band's deepest feature is not always its most window-divergent one
-    # (on r9-verify-clean the deepest bin in 250-2000 Hz grows 1.9x while
-    # 442 Hz in the same band grows 3.5x), so the whole band's mean sigma is
-    # published beside the worst bin's — and a caller that already knows
-    # which bin it is asking about names it with ``at_hz`` instead. The mean
-    # pools every graded bin at every rung, including bins below their own
-    # resolution floor at the short rungs: that is P1 §5b's statistic, and
-    # the frame's resolution bars price it. No ratio is published for it — a
-    # ratio of two sigmas over 700 bins is set by its smallest denominator,
-    # not by the room.
+    # (P1), so the whole band's mean sigma is published beside the worst
+    # bin's — and a caller that already knows which bin it is asking about
+    # names it with ``at_hz`` instead. The mean pools every graded bin at
+    # every rung, including bins below their own resolution floor at the
+    # short rungs: that is P1's statistic, and the frame's resolution bars
+    # price it. No ratio is published for it — a ratio of two sigmas over
+    # hundreds of bins is set by its smallest denominator, not by the room.
     result["band_mean_sigma_db_by_rung"] = {
         _key(r): float(np.mean(sigma[r][mask])) for r in rungs_ms
     }
@@ -782,11 +795,11 @@ def _key(rung_ms: float) -> str:
 
 
 def frame_descriptor(rungs_ms: Sequence[float], grid: np.ndarray) -> dict[str, Any]:
-    """The frame every number in this report is stated in (#3495 amendment 3).
+    """The frame every number in this report is stated in (#3495).
 
-    Same capture, same feature, four defensible frames: -6.25, -3.50, -2.79
-    and -1.07 dB (P1 §6). A sensitivity without its frame is the frame's
-    number, not the room's.
+    Same capture, same feature, four defensible frames, four different depths
+    (P1). A sensitivity without its frame is the frame's number, not the
+    room's.
     """
     return {
         "window": {
@@ -855,7 +868,7 @@ def _sigma_map(
 ) -> dict[str, Any]:
     """The whole across-pose sigma surface, so no reader has to re-run this.
 
-    P1 §5b's artifact: any bin's growth across any pair of rungs — including
+    P1's artifact: any bin's growth across any pair of rungs — including
     pairs the published ``sensitivity`` refuses as resolution-invalid — is a
     subtraction away once this is banked.
     """

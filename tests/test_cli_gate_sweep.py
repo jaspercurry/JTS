@@ -63,9 +63,7 @@ def test_a_ladder_of_one_rung_is_an_input_error(
     assert not (round_dir / cli.DEFAULT_OUT_NAME).exists()
 
 
-def test_at_hz_reports_the_named_bin(
-    round_dir: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_at_hz_reports_the_named_bin(round_dir: Path) -> None:
     assert (
         cli.main([str(round_dir), "--rungs-ms", "5", "20", "--at-hz", "800"])
         == cli.EXIT_OK
@@ -74,7 +72,6 @@ def test_at_hz_reports_the_named_bin(
     report = json.loads((round_dir / cli.DEFAULT_OUT_NAME).read_text())
     (feature,) = report["features"]
     assert feature["requested_hz"] == 800.0
-    assert "at 800 Hz" in capsys.readouterr().err
 
 
 def test_at_hz_off_the_analysis_grid_is_an_input_error(round_dir: Path) -> None:

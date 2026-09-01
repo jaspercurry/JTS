@@ -10,7 +10,7 @@ spec band, per declared pose — what moves with the window and what does
 not. A feature whose across-pose spread GROWS as the window admits the room
 is the room's; one whose spread is large but window-invariant is the
 speaker's directivity, and the two are the discrimination this tool exists
-to make (issue #3495's 2026-09-01 amendment).
+to make (#3495).
 
 **A refusal is an output, not an error.** Every refusal names the input that
 was missing — no captures, no programs, a capture whose program could not be
@@ -29,8 +29,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from jasper.active_speaker.crossover_v2.gate_sweep import (
     DEFAULT_RUNGS_MS,
@@ -39,6 +40,7 @@ from jasper.active_speaker.crossover_v2.gate_sweep import (
 )
 
 from ._logging import configure_verbose_logging
+from ._refusal import refused
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -52,15 +54,21 @@ DEFAULT_OUT_NAME = "gate_sweep.json"
 
 
 def _refused(reason: str, detail: str) -> int:
-    print(
-        json.dumps(
-            {"status": "refused", "reason": reason, "detail": detail},
-            indent=2,
-            sort_keys=True,
-        )
+    return refused(reason, detail, exit_code=EXIT_REFUSED)
+
+
+def _sensitivity_line(label: str, payload: Mapping[str, Any]) -> str:
+    """One report entry as the operator reads it: its label, then its numbers."""
+    sensitivity = payload["sensitivity"]
+    if sensitivity is None:
+        return f"{label}: no sensitivity ({payload['sensitivity_null_reason']})"
+    return (
+        f"{label}: sigma growth "
+        f"{sensitivity['sigma_growth_ratio']:.2f}x over "
+        f"{sensitivity['shortest_valid_rung_ms']:g}-"
+        f"{sensitivity['longest_valid_rung_ms']:g} ms, corrected long-rung "
+        f"delta {sensitivity['corrected_delta_db']:+.2f} dB"
     )
-    print(f"refused ({reason}): {detail}", file=sys.stderr)
-    return EXIT_REFUSED
 
 
 def _cmd_sweep(args: argparse.Namespace) -> int:
@@ -74,46 +82,21 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     out.write_text(json.dumps(report, indent=2, sort_keys=True, default=float))
     print(json.dumps({"status": "swept", "out": str(out)}, indent=2, sort_keys=True))
     for band in report["bands"]:
-        sensitivity = band["sensitivity"]
-        if sensitivity is None:
+        label = f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
+        worst_bin_hz = band.get("worst_bin_hz")
+        if worst_bin_hz is not None:
+            label += f" (worst bin {worst_bin_hz:.1f} Hz)"
+        print(_sensitivity_line(label, band), file=sys.stderr)
+        means = band.get("band_mean_sigma_db_by_rung")
+        if means:
             print(
-                f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz: no sensitivity "
-                f"({band['sensitivity_null_reason']})",
+                "      band mean sigma "
+                + " ".join(f"{rung}ms={value:.2f}" for rung, value in means.items()),
                 file=sys.stderr,
             )
-            continue
-        print(
-            f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz: worst bin "
-            f"{band['worst_bin_hz']:.1f} Hz, sigma growth "
-            f"{sensitivity['sigma_growth_ratio']:.2f}x over "
-            f"{sensitivity['shortest_valid_rung_ms']:g}-"
-            f"{sensitivity['longest_valid_rung_ms']:g} ms, corrected long-rung "
-            f"delta {sensitivity['corrected_delta_db']:+.2f} dB",
-            file=sys.stderr,
-        )
-        means = band["band_mean_sigma_db_by_rung"]
-        print(
-            "      band mean sigma "
-            + " ".join(f"{rung}ms={value:.2f}" for rung, value in means.items()),
-            file=sys.stderr,
-        )
     for feature in report["features"]:
-        sensitivity = feature["sensitivity"]
-        head = f"  at {feature['requested_hz']:g} Hz (bin {feature['bin_hz']:.1f} Hz)"
-        if sensitivity is None:
-            print(
-                f"{head}: no sensitivity ({feature['sensitivity_null_reason']})",
-                file=sys.stderr,
-            )
-            continue
-        print(
-            f"{head}: sigma growth "
-            f"{sensitivity['sigma_growth_ratio']:.2f}x over "
-            f"{sensitivity['shortest_valid_rung_ms']:g}-"
-            f"{sensitivity['longest_valid_rung_ms']:g} ms, corrected long-rung "
-            f"delta {sensitivity['corrected_delta_db']:+.2f} dB",
-            file=sys.stderr,
-        )
+        label = f"  at {feature['requested_hz']:g} Hz (bin {feature['bin_hz']:.1f} Hz)"
+        print(_sensitivity_line(label, feature), file=sys.stderr)
     return EXIT_OK
 
 
