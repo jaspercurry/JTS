@@ -52,6 +52,7 @@ END_MARKER = "<!-- END GENERATED TOOL MENU -->"
 # something the generator infers -- see the module docstring for who is
 # excluded and why.
 TUNING_TOOL_MODULES: tuple[str, ...] = (
+    "jasper.cli.basic_profile",
     "jasper.cli.seat_level",
     "jasper.cli.angle_capture",
     "jasper.cli.arm_walk",

@@ -421,7 +421,9 @@ class TurntableMover:
 # the correction wizard, as a Session
 # --------------------------------------------------------------------------- #
 
-#: The page that mints the correction backend's CSRF cookie + meta token pair.
+#: The page that mints the correction backend's CSRF cookie + meta token pair,
+#: and this client's default. A caller POSTing to a DIFFERENT wizard daemon
+#: passes that daemon's own page as ``csrf_page_path`` -- see the constructor.
 CSRF_PAGE_PATH = "/sound/crossover/"
 STATUS_PATH = "/correction/crossover/status"
 POSITION_READY_PATH = "/correction/crossover/v2/position-ready"
@@ -445,7 +447,11 @@ class WizardClient:
       believes it is talking to.
     * **The double-submit CSRF pair** on every mutating POST -- the cookie from
       the jar and the token from the page's ``<meta name="jts-csrf">`` --
-      exactly as a browser's ``fetch()`` does.
+      exactly as a browser's ``fetch()`` does. ``csrf_page_path`` names which
+      page mints it, because nginx fronts SEVERAL wizard daemons on one host
+      (``/sound/crossover/`` is jasper-correction-web, ``/sound/setup/`` is
+      jasper-web) and a caller should mint from the daemon it is about to POST
+      to rather than rely on the two keeping one token scheme.
 
     Bodies come back as TEXT, not parsed: the two consumers want different
     things from them (this module's ``poll`` builds a typed Poll, the laptop
@@ -460,10 +466,12 @@ class WizardClient:
         base_url: str = "http://127.0.0.1",
         timeout_s: float = 30.0,
         opener: Any | None = None,
+        csrf_page_path: str = CSRF_PAGE_PATH,
     ) -> None:
         self._host = host_header
         self._base = base_url.rstrip("/")
         self._timeout = timeout_s
+        self._csrf_page = csrf_page_path
         if opener is None:
             jar = http.cookiejar.CookieJar()
             opener = urllib.request.build_opener(
@@ -501,7 +509,7 @@ class WizardClient:
         """
         if self._csrf:
             return self._csrf
-        _, body = self.open(CSRF_PAGE_PATH)
+        _, body = self.open(self._csrf_page)
         match = _CSRF_META_RE.search(body)
         self._csrf = match.group(1) if match else None
         return self._csrf or ""
