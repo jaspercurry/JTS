@@ -4088,12 +4088,12 @@ def emit_active_speaker_baseline_config(
     safe_linearization = _validated_linearization(preset, linearization)
     safe_blend_correction = _validated_blend_correction(blend_correction)
 
-    # Drop inactive bands (a near-zero gain rounds to a no-op) exactly like the
-    # stereo emitter's build_sound_filters does, so an "all flat" preference
-    # profile emits nothing and stays byte-identical to the pre-PR-3 baseline.
-    active_preference_filters = tuple(
-        spec for spec in preference_filters if spec.active()
-    )
+    # Emit what the caller handed over, verbatim. The durable path hands a list
+    # `build_sound_filters` has already filtered, so nothing changes there; the
+    # LIVE draft hands a slot per band and needs the neutral ones KEPT, because
+    # a filter appearing or disappearing is what forces a ducked pipeline
+    # replace. Re-filtering here would have quietly undone that.
+    emitted_preference_filters = tuple(preference_filters)
     room_peqs = tuple(room_peqs)
 
     # queuelimit rides the same coercion as every other integer knob here.
@@ -4114,7 +4114,7 @@ def emit_active_speaker_baseline_config(
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
         room_peqs=room_peqs,
-        preference_filters=active_preference_filters,
+        preference_filters=emitted_preference_filters,
         output_trim_db=output_trim_db,
         bass_extension=bass_extension,
         linearization=safe_linearization,
@@ -4127,7 +4127,7 @@ def emit_active_speaker_baseline_config(
     pipeline_yaml = _emit_baseline_pipeline(
         preset,
         room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
-        preference_filter_names=[spec.name for spec in active_preference_filters],
+        preference_filter_names=[spec.name for spec in emitted_preference_filters],
         bass_extension=bass_extension,
         linearization=safe_linearization,
         blend_correction_names=[

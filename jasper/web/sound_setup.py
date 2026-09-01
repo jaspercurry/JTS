@@ -2035,11 +2035,30 @@ async def _live_draft_profile(
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.profile import build_sound_filter_slots, load_profile
 
     cam = camilla_factory()
     config_path = Path(config_dir)
     settings = load_sound_settings()
-    output_trim_db = _output_trim(profile, settings)
+    # The trim is FROZEN for the editing session: it is derived from the SAVED
+    # profile, not the draft, so it cannot move while a household edits. Two
+    # reasons, and the second is the load-bearing one.
+    #
+    # Match-loudness makes the trim a function of the draft's own EQ, so a live
+    # trim would fold into `active_baseline_headroom`'s VALUE and be written by
+    # PatchConfig — an instant, un-ducked, full-spectrum level step mid-drag on
+    # any trim-configured box. Its stereo twin is `sound_preamp`, which is
+    # emitted only when the trim is positive, so a moving trim would add and
+    # remove a FILTER and force the ducked swap this path exists to avoid.
+    # Freezing kills both: the trim is one number for the whole session, and
+    # the durable save realises any change across a swap that ducks anyway.
+    #
+    # Safe because the trim is comfort accounting, not a clip guard —
+    # `devices.volume_limit` stays the hard ceiling regardless
+    # (`jasper.camilla_stereo_prefix`). The cost is that match-loudness stops
+    # tracking the draft until save; the comparison stays internally consistent
+    # because every draft in the session is heard at the same trim.
+    output_trim_db = _output_trim(load_profile(), settings)
     sound_filter_count = len(build_sound_filters(profile))
     try:
         loader = getattr(cam, "set_active_config_raw")
@@ -2129,6 +2148,12 @@ async def _live_draft_profile(
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
             fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
+            # A slot per band, neutral ones kept, so the pipeline holds still
+            # while the household edits and every edit is a parameter write.
+            # ONLY here: the durable save leaves this None, so what it writes
+            # stays byte-identical to what `reconcile_current_dsp` recomposes
+            # on the next deploy (#2572).
+            preference_filters=build_sound_filter_slots(profile),
         )
         yaml = result.yaml
         plan = await _live_edit_plan(cam, yaml)

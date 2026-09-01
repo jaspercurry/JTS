@@ -51,6 +51,7 @@ from jasper.sound.profile import (
     SimpleEq,
     SoundProfile,
     load_profile,
+    loudness_compensation_db,
     load_profile_library,
     save_profile,
 )
@@ -7607,25 +7608,16 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
             )),
             id="gain_dragged_to_exactly_flat",
         ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(biquad_type="Highshelf", freq_hz=1000.0,
-                               gain_db=2.0, q=1.0),
-            )),
-            id="band_retyped",
-        ),
     ],
 )
-async def test_an_edit_that_changes_the_filter_set_still_swaps(
+async def test_the_live_graphs_slots_keep_the_pipeline_still(
     tmp_path: Path, monkeypatch, changed,
 ):
-    """A different set of filters is a different pipeline, and that ducks.
+    """Adding, removing, or flattening a band writes numbers, not a pipeline.
 
-    Adding, removing or retyping a band changes which filters exist, and so
-    does dragging a gain into the flat window, because a neutral band is
-    dropped from the graph. Restructuring a pipeline makes CamillaDSP rebuild
-    the filter group and reset every filter's state, so these must keep the
-    fader bracket rather than skip it.
+    The live draft carries a slot per band, so none of these changes which
+    filters exist — which is what would otherwise rebuild CamillaDSP's filter
+    group and reset every filter's state.
     """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
@@ -7635,6 +7627,81 @@ async def test_an_edit_that_changes_the_filter_set_still_swaps(
     swaps_after_install = len(fake.active_raw_values)
 
     payload = await _live(fake, changed, config_dir)
+
+    assert payload["live_method"] == "patch_config"
+    assert len(fake.active_raw_values) == swaps_after_install
+
+
+async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
+    tmp_path: Path, monkeypatch,
+):
+    """Match-loudness must not move the trim mid-edit.
+
+    The trim is a function of the profile's own EQ when match-loudness is on.
+    Derived from the DRAFT it would fold into ``active_baseline_headroom``'s
+    value and be written by PatchConfig — an instant, un-ducked, full-spectrum
+    level step — and its stereo twin ``sound_preamp`` is emitted only when the
+    trim is positive, so it would add and remove a FILTER and force the very
+    swap this path exists to avoid. Derived from the SAVED profile it is one
+    number for the whole session.
+    """
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text('{"match_loudness": true}')
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    # Saved intent is flat, so the frozen trim is whatever flat earns...
+    profile_path = tmp_path / "sound_profile.json"
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
+    save_profile(SoundProfile(), profile_path)
+
+    quiet = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=1.0, q=1.0),
+    ))
+    # ...and a draft loud enough that a LIVE trim would visibly differ.
+    loud = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=100.0, gain_db=12.0, q=0.5),
+        ParametricBand(freq_hz=1000.0, gain_db=12.0, q=0.5),
+        ParametricBand(freq_hz=8000.0, gain_db=12.0, q=0.5),
+    ))
+    assert loudness_compensation_db(loud) > loudness_compensation_db(quiet)
+
+    await _live(fake, quiet, config_dir)
+    after_quiet = fake.running
+    second = await _live(fake, loud, config_dir)
+    after_loud = fake.running
+
+    # Saved intent is flat, so the frozen trim is 0 and no preamp is emitted --
+    # for EITHER draft. A live trim would have added one for the loud draft.
+    assert "sound_preamp" not in after_quiet
+    assert "sound_preamp" not in after_loud
+    # Same filter set both times, so the edit is a parameter write and the
+    # broadband gain never steps.
+    import yaml as _yaml
+
+    assert set(_yaml.safe_load(after_quiet)["filters"]) == set(
+        _yaml.safe_load(after_loud)["filters"]
+    )
+    assert second["live_method"] == "patch_config"
+
+
+async def test_retyping_a_band_still_swaps(tmp_path: Path, monkeypatch):
+    """A different biquad recipe is a different filter, and that ducks.
+
+    A gainless type carries no gain to neutralise, so "off" and "Highpass"
+    cannot be spelled as values in a Peaking slot. Honest, and a dropdown
+    rather than a gesture.
+    """
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    one = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, one, config_dir)
+    swaps_after_install = len(fake.active_raw_values)
+    retyped = SoundProfile(parametric_bands=(
+        ParametricBand(biquad_type="Highshelf", freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+
+    payload = await _live(fake, retyped, config_dir)
 
     assert payload["live_method"] == "active_config_raw"
     assert fake.patches == []

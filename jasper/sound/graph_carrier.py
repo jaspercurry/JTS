@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -32,6 +32,7 @@ from typing import cast
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
 from jasper.fanin_coupling import capture_half
+from jasper.camilla_config_contract import FilterSpec
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
     FlatChannelPlan,
@@ -198,6 +199,7 @@ class _StereoHostCarrier:
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
+        preference_filters: Sequence[FilterSpec] | None = None,
     ) -> ReemitResult:
         # Refuse (typed, honest) before emitting/loading a flat program graph
         # when the saved topology assigns a protected tweeter. This is the
@@ -263,6 +265,7 @@ class _StereoHostCarrier:
             output_trim_db=output_trim_db,
             muted_outputs=plan.muted_outputs,
             mono_fold_output=plan.mono_fold_output,
+            preference_filters=preference_filters,
             **emit_kwargs,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
@@ -332,6 +335,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
+        preference_filters: Sequence[FilterSpec] | None = None,
     ) -> ReemitResult:
         # CAPTURE HALF ONLY — same rule as apply_capture_precedence, which this
         # carrier does not route through; see it for why the half is not
@@ -348,6 +352,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
             room_peqs=room_peqs,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
+            preference_filters=preference_filters,
             **member_kwargs,
         )
         yaml = _restamp_program_bake_source(yaml)
@@ -408,6 +413,7 @@ class _ActiveGraphCarrier:
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
+        preference_filters: Sequence[FilterSpec] | None = None,
     ) -> ReemitResult:
         if not self._is_baseline:
             raise CarrierCannotHostEq(
@@ -448,6 +454,7 @@ class _ActiveGraphCarrier:
             room_peqs=room_peqs,
             output_trim_db=output_trim_db,
             out_path=out_path,
+            preference_filters=preference_filters,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
@@ -471,6 +478,7 @@ class _UnknownCarrier:
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
+        preference_filters: Sequence[FilterSpec] | None = None,
     ) -> ReemitResult:
         raise CarrierCannotHostEq(
             "unknown_config",
@@ -497,6 +505,7 @@ def _recompose_active_baseline_with_eq(
     room_peqs: list | None = None,
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
+    preference_filters: Sequence[FilterSpec] | None = None,
 ):
     """Recompose the SOLO active baseline with ``profile``'s preference EQ
     inserted pre-split, returning the emitted YAML (written to ``out_path`` when
@@ -556,7 +565,8 @@ def _recompose_active_baseline_with_eq(
         else None
     )
     bass_proof_profile = bass_evaluation.profile
-    preference_filters = build_sound_filters(profile)
+    if preference_filters is None:
+        preference_filters = build_sound_filters(profile)
     live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     # The L0 emit gates inside emit_active_speaker_baseline_config raise
     # ActiveSpeakerConfigError (a ValueError) rather than returning an issue

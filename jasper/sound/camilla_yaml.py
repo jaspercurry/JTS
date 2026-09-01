@@ -44,6 +44,7 @@ from jasper.camilla_emit import (
 from jasper.camilla_stereo_prefix import build_stereo_prefix
 
 from .profile import (
+    FilterSpec,
     SoundProfile,
     build_sound_filters,
 )
@@ -363,6 +364,7 @@ def emit_sound_config(
     mono_fold_output: int | None = None,
     width: int = FLAT_GRAPH_WIDTH,
     program_dest_map: Sequence[int] | None = None,
+    preference_filters: Sequence[FilterSpec] | None = None,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -544,7 +546,11 @@ def emit_sound_config(
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
     # preference filters once and pass them in (it drops inactive specs);
     # reuse the same list for the summary log below.
-    sound_filters = build_sound_filters(profile)
+    sound_filters = (
+        build_sound_filters(profile)
+        if preference_filters is None
+        else tuple(preference_filters)
+    )
     filter_yaml, chain_names, chain_names_right, trim_db = build_stereo_prefix(
         sound_filters,
         room_peqs or [],
