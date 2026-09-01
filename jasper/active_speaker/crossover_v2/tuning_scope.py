@@ -31,23 +31,37 @@ Two consequences, and they are the pins:
 equality and discloses :data:`COMPARABILITY_BOUNDARY`; nothing here says *why*
 the graph changed, because the round does not act differently per cause.
 
+**Compare within a namespace, never across one.** This hash belongs to a
+THIRD namespace, beside two that already name a graph and are easy to read as
+each other: the round candidate's fingerprint and the compiled baseline
+profile's. Those two name the same tune through different derivations — on
+jts3 the same commissioned speaker answered ``2f383a77`` and ``2af5b407`` —
+so a difference between any two of the three is a namespace difference, not
+drift. Only two values FROM THIS FUNCTION may be compared to each other.
+
 **Two limits of the scope, stated rather than discovered later.**
 
 * ``active_baseline_headroom`` is IN scope (it is the common program
-  attenuation every layer below plays through) and it is coupled to the
-  preference layer: ``_emit_baseline_filter_definitions`` folds
-  ``output_trim_db`` into it whenever some preference band is active, and on a
-  box with ``match_loudness`` on that trim is profile-dependent. There, an EQ
-  save moves this fingerprint too. Correct as far as it goes — the level really
-  did change — but it means the quiet-on-EQ-save property above is a default-box
-  property, not a universal one, and the term cannot be separated back out of a
-  single summed gain.
-* Membership of ``programs.SUMMED_SWEEP_PHASES`` measures the STANDING
-  production graph rather than a measurement graph, and that graph carries the
-  household's preference EQ. A save between two summed sweeps therefore does
-  change what those captures went through while this fingerprint stays put. The
-  layering rule says such a capture should not have played through preference
-  EQ at all; closing that is the measurement path's work, not this
+  attenuation every layer below plays through) and it carries
+  ``output_trim_db``, which the household owns. Since #3492 that fold is
+  UNCONDITIONAL, so a profile crossing flat↔non-flat no longer moves it; what
+  remains is the trim's own VALUE, which is profile-dependent only when
+  ``match_loudness`` is on (``sound.settings.output_trim_db`` adds
+  ``loudness_compensation_db(profile)``). On such a box an EQ save moves this
+  fingerprint too. Correct as far as it goes — the common program level really
+  did change — but it means the quiet-on-EQ-save property above is a
+  fixed-trim property, not a universal one, and the term cannot be separated
+  back out of a single summed gain.
+* Every member of ``programs.SUMMED_SWEEP_PHASES`` — VERIFY, both position
+  clouds, **and ENTRY_BASELINE** — measures the STANDING production graph
+  rather than a measurement graph, and that graph carries the household's
+  preference EQ. A save between two of them therefore does change what those
+  captures went through while this fingerprint stays put. ENTRY_BASELINE is the
+  sharpest case, because it and VERIFY are the pair
+  :func:`~.verification.evaluate_benefit` differences: a save between them
+  moves the "before" and the "after" apart for a reason no verdict attributes.
+  The layering rule says such a capture should not have played through
+  preference EQ at all; closing that is the measurement path's work, not this
   fingerprint's.
 
 The substrate is unchanged and shared:

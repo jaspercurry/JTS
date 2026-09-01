@@ -31,11 +31,14 @@ from jasper.camilla_config_contract import FilterSpec
 from jasper.camilla_emit import emit_gain_filter
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.sound.profile import (
+    CURVE_PRESETS,
+    MAX_PARAMETRIC_BANDS,
     ParametricBand,
     SimpleEq,
     SoundProfile,
     build_sound_filter_slots,
     build_sound_filters,
+    sound_filter_slot_names,
 )
 
 FLAT = SoundProfile()
@@ -87,25 +90,43 @@ def household_graph(
 
 
 @pytest.mark.parametrize(
-    "saved",
+    "before, after",
     [
-        pytest.param(build_sound_filters(SAVED), id="durable_active_only"),
-        pytest.param(build_sound_filter_slots(SAVED), id="fixed_frame_slots"),
+        pytest.param(
+            build_sound_filters(FLAT), build_sound_filters(SAVED),
+            id="legacy_active_bands_only",
+        ),
+        pytest.param(
+            build_sound_filter_slots(FLAT), build_sound_filter_slots(SAVED),
+            id="fixed_frame_slots",
+        ),
+        pytest.param(
+            build_sound_filters(FLAT), build_sound_filter_slots(SAVED),
+            id="frame_arrives_under_the_round",
+        ),
     ],
 )
-def test_a_preference_eq_save_is_not_a_comparability_boundary(saved):
-    """The false boundary this exists to prevent, in both graph shapes.
+def test_a_preference_eq_save_is_not_a_comparability_boundary(before, after):
+    """The false boundary this exists to prevent, in every graph shape.
 
-    ``durable_active_only`` is the graph that carries just the bands a
-    household actually set; ``fixed_frame_slots`` is the one that carries every
-    declared slot with the idle ones at 0 dB. The save is real either way — the
-    whole-graph content hash moves, which is the assertion that keeps this from
-    passing vacuously — and the tuning scope does not, because nothing the
-    round measures through changed.
+    ``fixed_frame_slots`` is what every emitter writes since #3492: a slot per
+    declared band, idle ones neutral. ``legacy_active_bands_only`` is what a
+    graph banked before it carries — still reachable, because a round can
+    re-read an entry graph written by an older build.
+
+    ``frame_arrives_under_the_round`` is the migration itself, and it is the
+    sharpest of the three: a round enters on a pre-frame graph, the box is
+    re-anchored onto a framed one underneath it, and thirteen filters plus a
+    whole pipeline step appear. Nothing the round measures through moved, so
+    the scope must not budge.
+
+    The save is real in every case — the whole-graph content hash moves, which
+    is the assertion that keeps this from passing vacuously — and the tuning
+    scope does not.
     """
 
-    flat = household_graph(build_sound_filters(FLAT))
-    after_save = household_graph(saved)
+    flat = household_graph(before)
+    after_save = household_graph(after)
 
     assert running_graph_fingerprint(flat) != running_graph_fingerprint(after_save)
     assert tuning_scope_fingerprint(flat) == tuning_scope_fingerprint(after_save)
@@ -138,3 +159,51 @@ def test_the_scope_refuses_a_graph_it_cannot_parse():
 
     with pytest.raises(ActiveCommissioningAdmissionError):
         tuning_scope_fingerprint("- not: a mapping\n")
+
+
+def test_the_exclusion_set_covers_every_name_the_emitter_can_produce():
+    """The invariant the two pins above only reach by consequence.
+
+    ``sound_filter_slot_names`` is a CLOSED set derived from the three
+    declarations; ``build_sound_filter_slots`` is what a profile actually
+    emits. A name the second can produce and the first does not know is a real
+    preference slot leaking into the tuning-scope hash, and it leaks SILENTLY:
+    an idle slot is identical either side of most saves, so the round-trip pins
+    stay green while the exclusion is wrong. This asks the question directly.
+
+    The advanced pool is the specific way this breaks. It is fixed at
+    ``MAX_PARAMETRIC_BANDS`` whatever a profile declares (#3492), so a
+    derivation reading a PROFILE's bands rather than the pool would
+    under-report for every household with fewer than eight.
+    """
+
+    names = sound_filter_slot_names()
+    pool = {f"sound_advanced_{i}" for i in range(1, MAX_PARAMETRIC_BANDS + 1)}
+    assert pool <= names
+
+    emitted: set[str] = set()
+    for enabled in (True, False):
+        for preset in CURVE_PRESETS:
+            for band_count in (0, 1, MAX_PARAMETRIC_BANDS):
+                for biquad_type in ("Peaking", "Highshelf", "Notch"):
+                    emitted |= {
+                        spec.name
+                        for spec in build_sound_filter_slots(
+                            SoundProfile(
+                                enabled=enabled,
+                                curve_id=preset.id,
+                                simple_eq=SimpleEq(bass_db=3.0),
+                                parametric_bands=tuple(
+                                    ParametricBand(
+                                        biquad_type=biquad_type,
+                                        freq_hz=800.0 + index,
+                                        gain_db=2.0,
+                                    )
+                                    for index in range(band_count)
+                                ),
+                            )
+                        )
+                    }
+
+    assert emitted, "the sweep emitted nothing — it would pass vacuously"
+    assert emitted <= names

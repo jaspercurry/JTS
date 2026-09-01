@@ -57,9 +57,14 @@ through layer N and everything *below* it, and never anything above it.
 code does not yet meet it everywhere. Routed stimuli satisfy it by construction
 — `measurement_emit.emit_measurement_graph` takes no `SoundProfile`, pinned by
 `test_the_measurement_graph_never_carries_preference_eq`. The
-`programs.SUMMED_SWEEP_PHASES` captures (VERIFY and both position clouds) do
-not: they deliberately measure the STANDING production graph, which carries the
-household's preference EQ. Closing that is measurement-path work and has no
+`programs.SUMMED_SWEEP_PHASES` captures do not: they deliberately measure the
+STANDING production graph, which carries the household's preference EQ. That
+set is VERIFY, both position clouds, **and ENTRY_BASELINE** — so it includes
+the very pair `evaluate_benefit` differences, and an EQ save between a round's
+"before" and its "after" moves them apart for a reason no verdict attributes.
+Harmless on the runs banked so far only because jts3's sound profile was
+`enabled=false` with 0 bands throughout both campaigns, which is a property of
+those runs and not a guarantee. Closing it is measurement-path work and has no
 issue of its own yet.
 
 ## 2. The authority model
