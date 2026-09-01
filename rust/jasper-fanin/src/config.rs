@@ -340,14 +340,15 @@ pub struct Config {
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
     /// Frames dropped from the held target per decay step. Fail-loud range
-    /// `1..=64`; default 6. Demand ppm = step × 20833 / interval_ms (at the
-    /// 48 kHz default rate): 6 ≈ 125 ppm, 4x headroom under the inner
-    /// resampler's ±500 ppm authority (`input_resampler_max_adjust_ppm`) — the
-    /// ONLY budget the demand consumes: the decay publishes its live demand and
-    /// the host-clock observable subtracts it (decontamination, issue #3466),
-    /// so the outer servo never chases a descent, and the ±400 ppm cascade
-    /// guard below therefore compares a clean outer command against a separate
-    /// budget that never includes decay demand. Env:
+    /// `1..=64`; default 6. The EXECUTED demand is the periods-space arithmetic
+    /// (`DecayParams::step_demand_ppm`; ms-space `step × 20833 / interval_ms`
+    /// approximates it): default 6 / 1000 ms at 48 kHz / 256 ⇒ ~125.3 ppm,
+    /// ~4x under the inner resampler's ±500 ppm authority
+    /// (`input_resampler_max_adjust_ppm`) — the ONLY budget the demand
+    /// consumes, because the host-clock observable subtracts the published
+    /// demand (#3466 — rationale at `host_clock::build_obs`). An ARMED pair
+    /// must pass the demand-vs-authority margin check in `from_env`
+    /// (demand × 2 ≤ authority). Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES`.
     pub input_resampler_cushion_decay_step_frames: u32,
     /// Wall interval between decay steps, in ms (converted to render periods by
@@ -876,25 +877,25 @@ impl Config {
                 cushion_decay_ceiling,
             );
         }
-        // Default 6 (not 18). Demand ppm = step × 20833 / interval_ms: 6 ≈ 125
-        // ppm, 4x headroom under the inner resampler's ±500 ppm authority. The
-        // old default (18 ≈ 375 ppm, 3/4 of that authority) railed it against a
-        // real ~190 ppm host offset, live-verified on jts3 — the ±400 ppm
-        // cascade guard below never budgeted for decay demand, so it did not
-        // catch this; see issue #3466 (the demand is now subtracted from the
-        // outer host-clock observable at the source — see the field doc on
-        // `input_resampler_cushion_decay_step_frames`). The floor (576 frames = 12 ms) is
-        // unchanged, so settled latency is identical; the descent from ceiling
-        // to floor lengthens from ~110 s to ~331 s. Range floor stays 1 (a
-        // gentle single-frame step); ceiling stays 64 so a lab operator can
-        // still push it (at their own risk).
+        // Default 6 (not 18). Executed demand ≈ 125.3 ppm, ~4x under the inner
+        // resampler's ±500 ppm authority. The old default (18 ≈ 375 ppm, 3/4
+        // of that authority) railed it against a real ~190 ppm host offset,
+        // live-verified on jts3 — the ±400 ppm cascade guard below never
+        // budgeted for decay demand, so it did not catch this; see issue #3466
+        // (the demand is now subtracted from the outer host-clock observable
+        // at the source — see the field doc on
+        // `input_resampler_cushion_decay_step_frames`). The floor (576 frames =
+        // 12 ms) is unchanged, so settled latency is identical; the descent
+        // from ceiling to floor lengthens from ~110 s to ~331 s. Range floor
+        // stays 1 (a gentle single-frame step); ceiling stays 64, but an ARMED
+        // pair must also pass the demand-vs-authority margin check below.
         let input_resampler_cushion_decay_step_frames =
             env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 6)?;
         if !(1..=64).contains(&input_resampler_cushion_decay_step_frames) {
             anyhow::bail!(
                 "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES={} out of range 1..=64 \
-                 (a gentle per-step frame drop; default 6 ≈ 125 ppm, 4x headroom under \
-                 the inner resampler's ±500 ppm authority — see issue #3466)",
+                 (a gentle per-step frame drop; default 6 ≈ 125 ppm demand — see issue #3466; \
+                 an armed decay must also pass the demand-vs-authority margin check)",
                 input_resampler_cushion_decay_step_frames,
             );
         }
@@ -906,6 +907,37 @@ impl Config {
                  (wall interval between decay steps; 1000 ms is the default)",
                 input_resampler_cushion_decay_interval_ms,
             );
+        }
+        // Decontamination precondition (#3466), armed-only like the floor
+        // check: the EXECUTED demand (`DecayParams::step_demand_ppm`) is
+        // subtracted from the host-clock observable, so it must leave real
+        // margin inside the inner ±max_adjust_ppm authority — demand a railed
+        // ratio cannot deliver would be subtracted anyway, fabricating
+        // inverted-sign clock error for the L0 servo. Require at least half
+        // the authority left for genuine host offset.
+        if input_resampler_cushion_decay_enabled {
+            let executed_demand_ppm = crate::lane_resampler::DecayParams::step_demand_ppm(
+                input_resampler_cushion_decay_step_frames as u64,
+                input_resampler_cushion_decay_interval_ms as u64,
+                period_frames,
+                sample_rate,
+            );
+            if executed_demand_ppm * 2.0 > input_resampler_max_adjust_ppm as f64 {
+                anyhow::bail!(
+                    "cushion-decay demand {:.1} ppm (STEP_FRAMES={} / INTERVAL_MS={} at \
+                     {} frames / {} Hz) exceeds half the inner ±{} ppm authority \
+                     (JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM): the demand is subtracted \
+                     from the host-clock observable (#3466), so it must leave at least as much \
+                     authority for genuine host offset as it consumes — lower the step or \
+                     lengthen the interval",
+                    executed_demand_ppm,
+                    input_resampler_cushion_decay_step_frames,
+                    input_resampler_cushion_decay_interval_ms,
+                    period_frames,
+                    sample_rate,
+                    input_resampler_max_adjust_ppm,
+                );
+            }
         }
         // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
         // only the exact literal `enabled` (case-insensitive) arms it; unset /
@@ -1483,26 +1515,28 @@ mod tests {
                 );
                 assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 6);
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
-                // Demand-ppm pin (config.rs documents this number): step_frames
-                // dropped over interval_ms, as ppm of the frames that pass in
-                // that interval. 6 frames / 1000 ms @ 48 kHz = 125 ppm. The
-                // inner resampler's ±max_adjust_ppm authority is the ONLY
-                // budget this demand consumes (the outer host-clock observable
-                // subtracts the decay-published demand — decontamination,
-                // #3466), and the default must keep the documented 4x headroom
-                // under it so a real host offset still has room to track.
-                let step_demand_ppm = (cfg.input_resampler_cushion_decay_step_frames as f64)
-                    / ((cfg.input_resampler_cushion_decay_interval_ms as f64 / 1000.0)
-                        * cfg.sample_rate as f64)
-                    * 1_000_000.0;
-                assert!(
-                    (step_demand_ppm - 125.0).abs() < 1.0,
-                    "default step demand is ~125 ppm, got {step_demand_ppm}"
+                // Demand-ppm pin, in the EXECUTED periods-space the machine
+                // publishes and the observable subtracts (#3466) — via the ONE
+                // shared derivation, never a re-derived ms-space approximation
+                // (6 / 1000 ms at 48 kHz / 256 truncates to 187 periods ⇒
+                // 125.33 ppm, not 125.0). The inner ±max_adjust_ppm authority
+                // is the ONLY budget this demand consumes, and from_env
+                // enforces demand × 2 ≤ authority for an ARMED decay; the
+                // default must clear that bound with real slack.
+                let step_demand_ppm = crate::lane_resampler::DecayParams::step_demand_ppm(
+                    cfg.input_resampler_cushion_decay_step_frames as u64,
+                    cfg.input_resampler_cushion_decay_interval_ms as u64,
+                    cfg.period_frames,
+                    cfg.sample_rate,
                 );
                 assert!(
-                    step_demand_ppm * 4.0 <= cfg.input_resampler_max_adjust_ppm as f64,
-                    "default decay step demand {step_demand_ppm} ppm must keep 4x headroom \
-                     under the inner ±{} ppm authority",
+                    (step_demand_ppm - 125.334).abs() < 0.01,
+                    "default executed step demand is ~125.33 ppm, got {step_demand_ppm}"
+                );
+                assert!(
+                    step_demand_ppm * 2.0 <= cfg.input_resampler_max_adjust_ppm as f64,
+                    "default decay step demand {step_demand_ppm} ppm must clear the armed \
+                     demand-vs-authority bound (±{} ppm)",
                     cfg.input_resampler_max_adjust_ppm
                 );
                 // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
@@ -2394,6 +2428,55 @@ mod tests {
                 let cfg = Config::from_env().expect("disabled decay must ignore a bad floor");
                 assert!(!cfg.input_resampler_cushion_decay_enabled);
                 assert_eq!(cfg.input_resampler_cushion_decay_floor_frames, 1);
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_demand_beyond_authority_margin_fails_loud_when_armed() {
+        // Armed decay whose EXECUTED demand eats more than half the inner
+        // ±max_adjust_ppm authority must refuse to boot: the demand is
+        // subtracted from the host-clock observable (#3466), and beyond the
+        // authority the subtraction fabricates clock error a railed ratio can
+        // never deliver. Default step 6 at the legal 250 ms interval floor is
+        // already over the line (≈509.5 ppm executed vs the ±500 authority).
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS",
+                    Some("250"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().expect_err("over-authority demand must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM"),
+                    "expected the demand-vs-authority error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_demand_bound_ignored_when_disabled() {
+        // The same aggressive pair on a decay-OFF box must NOT block boot —
+        // the margin check is gated on the feature being armed, like the floor
+        // range check above.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", None),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS",
+                    Some("250"),
+                ),
+            ],
+            || {
+                let cfg =
+                    Config::from_env().expect("disabled decay must ignore an aggressive demand");
+                assert!(!cfg.input_resampler_cushion_decay_enabled);
+                assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 250);
             },
         );
     }

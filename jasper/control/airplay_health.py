@@ -902,6 +902,11 @@ class AirPlayHealthSampler:
                             "silence_frames",
                             "overrun_frames",
                             "ratio_ppm",
+                            # Inner-controller rail counters (#3464): the
+                            # "ratio is railing" signal the ratio_ppm gauge
+                            # alone only shows if polled at the right moment.
+                            "clamp_count",
+                            "anti_windup_count",
                             "lock_count",
                             "unlock_count",
                             "fill_frames",

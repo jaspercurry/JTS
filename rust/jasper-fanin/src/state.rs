@@ -889,9 +889,8 @@ impl StateServer {
                 buf.push(',');
                 // Post-lock cushion-decay state (all inert while decay is off):
                 // enabled = startup config; active = actively decaying;
-                // demand_ppm = the live rate demand the descent exerts on the
-                // inner resampler (0 unless active — the exact term subtracted
-                // from the host-clock observable, #3466);
+                // demand_ppm = the live drain demand (the decontamination term
+                // subtracted from the host-clock observable, #3466);
                 // floor = the configured decay floor;
                 // frozen_reason = why decay is paused ("" while actively decaying,
                 // else unlocked / not_l0 / cascade / warmup / at_floor).
@@ -900,8 +899,7 @@ impl StateServer {
                 buf.push(',');
                 push_kv_bool(buf, "active", r.decay_active.load(Ordering::Relaxed));
                 buf.push(',');
-                let demand_ppm =
-                    (r.decay_demand_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
+                let demand_ppm = r.decay_demand_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0;
                 push_kv_f64(buf, "demand_ppm", demand_ppm, 2);
                 buf.push(',');
                 push_kv_u64(buf, "floor_frames", r.decay_floor_frames);
@@ -1328,6 +1326,7 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicI64;
 
     #[test]
     fn listener_poll_wakes_on_connection_before_shutdown_timeout() {
@@ -1448,7 +1447,7 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
-                        decay_demand_milli_ppm: Arc::new(AtomicU64::new(0)),
+                        decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
                     }),
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
@@ -1524,7 +1523,7 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
-                        decay_demand_milli_ppm: Arc::new(AtomicU64::new(125_330)),
+                        decay_demand_milli_ppm: Arc::new(AtomicI64::new(125_330)),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                     // The USB DIRECT (combo) lane starts unmuted; the mute-path

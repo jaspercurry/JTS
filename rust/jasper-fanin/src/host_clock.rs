@@ -117,19 +117,20 @@ pub struct HostClockSignals {
     /// observable: with the resampler absorbing the host clock, its correction ppm
     /// is the honest host-vs-DAC rate-error readout (the fill slope is dead
     /// weight). Decoded in [`build_obs`] the same way the STATUS layer does
-    /// (`(load() as i64) as f64 / 1000.0`) — MINUS the cushion decay's own
-    /// demand (`decay_demand_milli_ppm` below), which rides the same ratio but
-    /// is not clock error (#3466).
+    /// (`(load() as i64) as f64 / 1000.0`), minus the decay demand below
+    /// (#3466 — rationale at [`build_obs`]).
     pub correction_milli_ppm: Arc<AtomicU64>,
-    /// The cushion decay's LIVE rate demand on the inner resampler (milli-ppm,
-    /// same i64-bits-in-u64 encoding as `correction_milli_ppm`; 0 whenever the
-    /// decay is idle). An active descent drains the ring on purpose, so the
-    /// resampler's ratio embeds `genuine clock offset + decay demand`;
-    /// [`build_obs`] subtracts this term so the probe/servo observable is only
-    /// the genuine offset — without it the L0 servo chased the decay ramp
-    /// (live: cmd wandering −120..−350 ppm through a descent, #3466). Published
-    /// by the decay itself (the single source of truth for its own demand).
-    pub decay_demand_milli_ppm: Arc<AtomicU64>,
+    /// The cushion decay's LIVE rate demand on the inner resampler, in plain
+    /// signed milli-ppm (the `commanded_milli_ppm` idiom; 0 whenever the decay
+    /// is idle). Published by the decay itself (the single source of truth for
+    /// its own demand); [`build_obs`] subtracts it from the ratio — see the
+    /// decontamination rationale there (#3466).
+    pub decay_demand_milli_ppm: Arc<AtomicI64>,
+    /// The lane's static acquisition ceiling (`target + full warm-up cushion`)
+    /// — the value the held target snaps back to; constant for the lane's
+    /// life. Anchor for [`build_obs`]'s descent compensation of `fill_frames`
+    /// (#3466): equal to `held_target_frames` whenever the decay is idle.
+    pub ceiling_fill_frames: u64,
     /// The resampler's LIVE HELD target fill — the ONE setpoint the outer loop
     /// shares with the inner `RateController` (single source of truth). Equal to
     /// `target + warmup cushion` unless the DEFAULT-OFF post-lock cushion decay
@@ -195,8 +196,19 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         // the resampler lock IS both "audio flowing" and "warmup done"; the
         // ladder reads `locked` distinctly so the two roles stay explicit.
         locked: signals.locked.load(Ordering::Relaxed),
-        // Cursor-relative fill (frame-granular) — the DLL's error signal.
-        fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64,
+        // Cursor-relative fill (frame-granular), DESCENT-COMPENSATED into
+        // ceiling terms: `fill + (ceiling − held)`. During a cushion descent
+        // the raw fill follows the commanded held-target ramp down; fed raw it
+        // inflated the ladder's fill-variance telemetry (the cascade
+        // limit-cycle falsifier) with the decay's own ramp — the same #3466
+        // contamination class as the correction observable below. A tracked
+        // descent now feeds ~ceiling (flat); with the decay idle
+        // (held == ceiling) this is bit-identical to the raw fill. The refill
+        // after a locked snap-back still rides through raw — part of the
+        // disclosed refill residual (#3466).
+        fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64
+            + signals.ceiling_fill_frames as f64
+            - signals.held_target_frames.load(Ordering::Relaxed) as f64,
         // RAW cumulative input — NOT trim-compensated. A `trim_ring` only moves
         // the read cursor, never `input_frames` or `output_frames`, so the
         // divergence `capture − playback` is already smooth across a trim.
@@ -212,12 +224,15 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         // clock error, so feeding it to the L0 servo makes the outer loop chase
         // the decay ramp. Subtracting the decay-published demand leaves only
         // the genuine host-vs-DAC offset: the servo drives THAT to 0 and the
-        // ratio settles at exactly the demand while descending. Both atomics
-        // are signed milli-ppm stored as i64 bits in a u64 (the STATUS
-        // decoding); the demand is 0 whenever the decay is idle, making this a
-        // plain ratio read outside descents.
+        // ratio settles at exactly the demand while descending. The ratio
+        // atomic is signed milli-ppm as i64 bits in a u64 (the STATUS
+        // decoding); the demand is a plain signed AtomicI64, 0 whenever the
+        // decay is idle — a plain ratio read outside descents. The two relaxed loads are
+        // unpaired (published moments apart in one render period): a
+        // transition-tick tear is bounded by one demand for one 1 Hz sample
+        // and is crushed by the EW filter + slow integrator downstream.
         correction_ppm: ((signals.correction_milli_ppm.load(Ordering::Relaxed) as i64)
-            - (signals.decay_demand_milli_ppm.load(Ordering::Relaxed) as i64))
+            - signals.decay_demand_milli_ppm.load(Ordering::Relaxed))
             as f64
             / 1000.0,
     }
@@ -632,7 +647,8 @@ mod tests {
             present: Arc::new(AtomicBool::new(false)),
             capture_generation: Arc::new(AtomicU64::new(1)),
             correction_milli_ppm: Arc::new(AtomicU64::new(0)),
-            decay_demand_milli_ppm: Arc::new(AtomicU64::new(0)),
+            decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
+            ceiling_fill_frames: 2048,
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
             commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
@@ -723,9 +739,27 @@ mod tests {
 
     #[test]
     fn obs_fill_frames_is_frame_granular_from_the_gauge() {
+        // held == ceiling (decay idle) ⇒ the compensated feed IS the raw fill.
         let s = signals();
         s.fill_frames.store(2050, Ordering::Relaxed);
         assert_eq!(build_obs(&s).fill_frames, 2050.0);
+    }
+
+    #[test]
+    fn obs_fill_is_descent_compensated_into_ceiling_terms() {
+        // During a TRACKED descent the raw fill follows the held target down;
+        // fed raw, that commanded ramp inflates the ladder's fill-variance
+        // falsifier (#3466). The compensated feed `fill + (ceiling − held)`
+        // stays flat at ~ceiling through the descent and equals the raw fill
+        // whenever the decay is idle (pinned by the test above).
+        let s = signals();
+        s.fill_frames.store(1024, Ordering::Relaxed);
+        s.held_target_frames.store(1024, Ordering::Relaxed);
+        assert_eq!(
+            build_obs(&s).fill_frames,
+            2048.0,
+            "a tracked descent must feed a flat, ceiling-equivalent fill"
+        );
     }
 
     #[test]
