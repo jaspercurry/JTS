@@ -992,7 +992,16 @@ class CamillaController:
 
         **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
         A patch that rewrote a whole filter chain would step like any swap.
-        Both shipped callers are bounded, and differently:
+        All three shipped callers are bounded, and differently:
+
+    * ``jasper.web.sound_setup._live_draft_profile`` — the live preference-EQ
+      draft, the largest of them: it can rewrite every filter in the editing
+      graph in one patch. Bounded by the profile schema, which clamps a band to
+      ±``ADVANCED_GAIN_LIMIT_DB``, 20 Hz–20 kHz and Q 0.2–10, and by
+      ``jasper.sound.live_edit.plan_live_edit``, which refuses to patch at all
+      unless the running and wanted graphs differ ONLY in finite numbers inside
+      filters that already exist — anything structural falls back to the ducked
+      swap.
 
         * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
           balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,

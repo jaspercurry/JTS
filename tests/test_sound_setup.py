@@ -51,6 +51,7 @@ from jasper.sound.profile import (
     SimpleEq,
     SoundProfile,
     load_profile,
+    loudness_compensation_db,
     load_profile_library,
     save_profile,
 )
@@ -272,6 +273,51 @@ class FakeCamilla:
         self.active_raw_values.append(config)
         if self.fail_set and not best_effort:
             raise RuntimeError("live update failed")
+        return True
+
+
+class FakePatchableCamilla(FakeCamilla):
+    """A controller that can do what CamillaDSP 4.1 actually does.
+
+    Enough of one to tell a parameter write from a pipeline replace: it keeps
+    the graph it is running, hands it back the way CamillaDSP's readback does,
+    and normalizes a candidate through the same round-trip so the two are
+    comparable — which is the property ``_live_edit_plan`` depends on.
+    """
+
+    def __init__(self, current_path: str, **kwargs) -> None:
+        super().__init__(current_path, **kwargs)
+        self.running: str | None = None
+        self.patches: list[dict] = []
+
+    @staticmethod
+    def _normalized(text: str) -> str:
+        import yaml as _yaml
+
+        return str(_yaml.safe_dump(_yaml.safe_load(text)))
+
+    async def set_active_config_raw(
+        self, config: str, *, best_effort: bool = False, duck: bool = True,
+    ) -> bool:
+        self.running = self._normalized(config)
+        return await super().set_active_config_raw(config, best_effort=best_effort)
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
+        return self.running
+
+    async def normalize_config_raw(
+        self, config: str, *, best_effort: bool = False,
+    ) -> str | None:
+        return self._normalized(config)
+
+    async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
+        import yaml as _yaml
+
+        self.patches.append(patch)
+        running = _yaml.safe_load(self.running or "")
+        for name, definition in (patch.get("filters") or {}).items():
+            running["filters"][name] = definition
+        self.running = str(_yaml.safe_dump(running))
         return True
 
 
@@ -7477,6 +7523,206 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert payload["preserved_room_peqs"] == 1
     assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
+
+
+async def _live(fake, draft, config_dir):
+    return await sound_setup._live_draft_profile(
+        draft,
+        expected_dsp_write_epoch=dsp_write_epoch(),
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+
+def _eq_box(monkeypatch, tmp_path):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    state_path = tmp_path / "dsp_apply_state.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
+    _record_dsp_epoch(state_path, "epoch-1")
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "sound_current.yml"
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
+    return config_dir, FakePatchableCamilla(str(current))
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=5.0, q=1.0),
+            )),
+            id="gain",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=120.0, gain_db=2.0, q=1.0),
+            )),
+            id="frequency",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=4.5),
+            )),
+            id="q",
+        ),
+    ],
+)
+async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
+    tmp_path: Path, monkeypatch, moved,
+):
+    """The whole point: a drag must not reach the ducked swap path."""
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    start = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, start, config_dir)
+    swaps_after_install = len(fake.active_raw_values)
+
+    payload = await _live(fake, moved, config_dir)
+
+    assert payload["live_status"] == "live"
+    assert payload["live_method"] == "patch_config"
+    assert len(fake.patches) == 1
+    assert len(fake.active_raw_values) == swaps_after_install
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+                ParametricBand(freq_hz=60.0, gain_db=3.0, q=1.0),
+            )),
+            id="band_added",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=()),
+            id="band_removed",
+        ),
+        pytest.param(
+            SoundProfile(parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),
+            )),
+            id="gain_dragged_to_exactly_flat",
+        ),
+    ],
+)
+async def test_the_live_graphs_slots_keep_the_pipeline_still(
+    tmp_path: Path, monkeypatch, changed,
+):
+    """Adding, removing, or flattening a band writes numbers, not a pipeline.
+
+    The live draft carries a slot per band, so none of these changes which
+    filters exist — which is what would otherwise rebuild CamillaDSP's filter
+    group and reset every filter's state.
+    """
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    one = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, one, config_dir)
+    swaps_after_install = len(fake.active_raw_values)
+
+    payload = await _live(fake, changed, config_dir)
+
+    assert payload["live_method"] == "patch_config"
+    assert len(fake.active_raw_values) == swaps_after_install
+
+
+async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
+    tmp_path: Path, monkeypatch,
+):
+    """Match-loudness must not move the trim mid-edit.
+
+    The trim is a function of the profile's own EQ when match-loudness is on.
+    Derived from the DRAFT it would fold into ``active_baseline_headroom``'s
+    value and be written by PatchConfig — an instant, un-ducked, full-spectrum
+    level step — and its stereo twin ``sound_preamp`` is emitted only when the
+    trim is positive, so it would add and remove a FILTER and force the very
+    swap this path exists to avoid. Derived from the SAVED profile it is one
+    number for the whole session.
+    """
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text('{"match_loudness": true}')
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    # Saved intent is flat, so the frozen trim is whatever flat earns...
+    profile_path = tmp_path / "sound_profile.json"
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
+    save_profile(SoundProfile(), profile_path)
+
+    quiet = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=1.0, q=1.0),
+    ))
+    # ...and a draft loud enough that a LIVE trim would visibly differ.
+    loud = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=100.0, gain_db=12.0, q=0.5),
+        ParametricBand(freq_hz=1000.0, gain_db=12.0, q=0.5),
+        ParametricBand(freq_hz=8000.0, gain_db=12.0, q=0.5),
+    ))
+    assert loudness_compensation_db(loud) > loudness_compensation_db(quiet)
+
+    await _live(fake, quiet, config_dir)
+    after_quiet = fake.running
+    second = await _live(fake, loud, config_dir)
+    after_loud = fake.running
+
+    # Saved intent is flat, so the frozen trim is 0 and no preamp is emitted --
+    # for EITHER draft. A live trim would have added one for the loud draft.
+    assert "sound_preamp" not in after_quiet
+    assert "sound_preamp" not in after_loud
+    # Same filter set both times, so the edit is a parameter write and the
+    # broadband gain never steps.
+    import yaml as _yaml
+
+    assert set(_yaml.safe_load(after_quiet)["filters"]) == set(
+        _yaml.safe_load(after_loud)["filters"]
+    )
+    assert second["live_method"] == "patch_config"
+
+
+async def test_retyping_a_band_still_swaps(tmp_path: Path, monkeypatch):
+    """A different biquad recipe is a different filter, and that ducks.
+
+    A gainless type carries no gain to neutralise, so "off" and "Highpass"
+    cannot be spelled as values in a Peaking slot. Honest, and a dropdown
+    rather than a gesture.
+    """
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    one = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, one, config_dir)
+    swaps_after_install = len(fake.active_raw_values)
+    retyped = SoundProfile(parametric_bands=(
+        ParametricBand(biquad_type="Highshelf", freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+
+    payload = await _live(fake, retyped, config_dir)
+
+    assert payload["live_method"] == "active_config_raw"
+    assert fake.patches == []
+    assert len(fake.active_raw_values) == swaps_after_install + 1
+
+
+async def test_a_redraw_that_changed_nothing_writes_nothing(
+    tmp_path: Path, monkeypatch,
+):
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
+    draft = SoundProfile(parametric_bands=(
+        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+    ))
+    await _live(fake, draft, config_dir)
+
+    payload = await _live(fake, draft, config_dir)
+
+    assert payload["live_status"] == "live"
+    assert payload["live_method"] == "unchanged"
+    assert fake.patches == []
+    assert len(fake.active_raw_values) == 1
 
 
 async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(

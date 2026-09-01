@@ -113,11 +113,13 @@ def build_stereo_prefix(
     NOT emit the mixer/pipeline, so there is no master_gain-vs-split
     coupling here.
 
-    ``sound_filters`` is the already-built, already-filtered preference
-    filter list (``build_sound_filters(profile)`` — only ``.active()``
-    specs); it is normalized to a tuple at the boundary, so a generator is
-    safe. Its emptiness gates the optional preamp off — a flat profile
-    passes ``()``.
+    ``sound_filters`` is the already-built preference filter list. The durable
+    path passes ``build_sound_filters(profile)`` (only ``.active()`` specs); the
+    LIVE editing draft passes ``build_sound_filter_slots(profile)``, a slot per
+    declared band with the neutral ones KEPT. It is normalized to a tuple at the
+    boundary, so a generator is safe. Whether any spec is ``.active()`` — not
+    whether the list is empty — gates the optional preamp, so an all-flat
+    profile plays at unity either way.
 
     ``chain_names_right`` is ``None`` when ``room_peqs_right`` is ``None``
     (solo — channel 1 duplicates channel 0, byte-identical to before this
@@ -127,7 +129,7 @@ def build_stereo_prefix(
     SAME named filters referenced by both chains — defined once.
     """
     # Normalize at the boundary: this is a shared builder (the stereo emitter
-    # today, the active pre-split section next), so `if sound_filters` and the
+    # today, the active pre-split section next), so the boost scan and the
     # iteration below stay correct even if a caller hands a generator.
     sound_filters = tuple(sound_filters)
     lines: list[str] = []
@@ -200,7 +202,15 @@ def build_stereo_prefix(
     # volume_limit ceiling stays the hard clip guard regardless. The trim
     # only applies when the profile has filters; a flat profile can't clip
     # from EQ, so it plays at unity even if a headroom trim is configured.
-    trim_db = max(0.0, float(output_trim_db)) if sound_filters else 0.0
+    # "Does this profile boost" is a property of the specs' VALUES, not of the
+    # list being non-empty: the LIVE editing graph carries a slot per declared
+    # band so its shape can hold still, and an all-flat draft must still play
+    # at unity or the preview stops predicting what a save will sound like.
+    trim_db = (
+        max(0.0, float(output_trim_db))
+        if any(spec.active() for spec in sound_filters)
+        else 0.0
+    )
     if trim_db > 0.0:
         lines.extend(emit_gain_filter("sound_preamp", -trim_db))
         tail_names.append("sound_preamp")
