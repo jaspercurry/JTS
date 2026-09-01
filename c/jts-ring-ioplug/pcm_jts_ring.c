@@ -231,6 +231,9 @@ typedef struct {
     // alsa-lib's rw loop (which only poll-waits at avail == 0) is paced instead
     // of spinning an RT thread into the RLIMIT_RTTIME SIGKILL. Should stay 0.
     uint64_t transfer_starved_naps;
+    // Prepare-time mmap-area scrubs that failed (see jts_ring_scrub_mmap_area);
+    // logged at the first one per PCM. Should stay 0.
+    uint64_t scrub_failures;
     // Wall-clock pacing for the writer-dead silence: a new period is armed only
     // after one period of REAL time has elapsed since the last (CLOCK_MONOTONIC),
     // so silence flows at ~48 kHz instead of as-fast-as-the-app-asks. Without this
@@ -326,8 +329,9 @@ static void pace_log_edges(jts_ring_pcm_t *p, uint64_t now_ns) {
 // Zero alsa-lib's emulated mmap area. With mmap_rw=0 it is alsa-lib's own
 // malloc, never zeroed at allocation or prepare, and a rate-converting plug
 // chain commits whole slave periods with an unwritten head (rate_samplerate.c
-// right-aligns a short conversion). On the first commit after a prepare that
-// head is uninitialised process heap. See #3443.
+// right-aligns a short conversion). After the first prepare that head is
+// uninitialised process heap; after a flush's re-prepare it is the previous
+// session's samples. See #3443.
 //
 // The PREPARED assertion is load-bearing on EVERY prepare, not just the first:
 // snd_pcm_mmap_begin gates on P_STATE_RUNNABLE, ioplug carries OPEN into the
@@ -355,12 +359,11 @@ static void jts_ring_scrub_mmap_area(snd_pcm_ioplug_t *io) {
     }
     // A failed scrub must not fail the prepare (that is a silent session), but
     // it must not be silent either: this is the path the #3443 leak lives on.
-    static int scrub_failure_logged;
-    if (!scrub_failure_logged) {
-        scrub_failure_logged = 1;
-        SNDERR("jts_ring: playback mmap-area scrub failed rc=%d frames=%lu — "
+    jts_ring_pcm_t *p = io->private_data;
+    if (++p->scrub_failures == 1) {
+        SNDERR("jts_ring: playback mmap-area scrub failed rc=%d on %s — "
                "pre-audio heap leak (#3443) is unguarded on this lane",
-               rc, (unsigned long)frames);
+               rc, p->path);
     }
 }
 
