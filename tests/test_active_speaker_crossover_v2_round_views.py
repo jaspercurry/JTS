@@ -45,6 +45,12 @@ from jasper.active_speaker.crossover_v2.round_views import (
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
+from tests.crossover_v2_banked_round import (
+    SOLO_BAND_HZ,
+    bank_measure_round,
+    bank_verify_round,
+)
+
 #: A log-spaced curve grid spanning all three SPEC_BANDS rows
 #: (250-2000 / 2000-8000 / 8000-16000 Hz) with plenty of bins in each.
 GRID = np.geomspace(280.0, 16000.0, 90)
@@ -194,6 +200,32 @@ def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
     (round_dir / "bundle" / "second_session").mkdir()
     with pytest.raises(RoundViewsError, match="expected exactly one"):
         load_banked_round(round_dir)
+
+
+def test_a_cloud_group_whose_every_row_lost_its_curve_is_named_as_that(tmp_path):
+    """A TRUNCATED packet and a round that banked no cloud group are two
+    different absences, and only one of them is a round shape.
+
+    The seat rows are there, the block says ``available``, and not one row
+    carries a ``magnitude_db``: nothing measured that is readable, which is a
+    corrupt or half-written packet. Told apart from the stage-1 shape below
+    because the two send an operator to different places — one to the bank,
+    one to the stage they asked for — and the shape sentence over a corrupt
+    packet reads as "this round is fine, you asked the wrong view of it".
+    """
+    corrupt = load_banked_round(_make_round_dir(
+        tmp_path, "r1",
+        position_curves={"cloud_verify_02": ("onax", np.asarray([]))},
+        combined_db=_flat_curve(),
+    ))
+    with pytest.raises(RoundViewsError, match="every position row is missing its magnitude_db"):
+        corrupt.graded_positions
+
+    # The control: a round that banked no cloud group at all keeps the shape
+    # sentence, which is what #3478 made it mean.
+    stage_one = load_banked_round(bank_measure_round(tmp_path))
+    with pytest.raises(RoundViewsError, match="carries no position evidence"):
+        stage_one.graded_positions
 
 
 # --------------------------------------------------------------------------- #
@@ -372,100 +404,91 @@ def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
     assert result.reason
 
 
-def _bank_driver_solos(round_dir: Path, *, position_deg: int = 0) -> Path:
-    """Two per-driver solos on one MEASURE take, in the banked curve shape.
-
-    Written through ``spatial.pose_curve_record`` rather than hand-typed, for
-    this suite's standing reason: a drift in what the walk banks must fail here
-    instead of leaving the fixture agreeing with nothing that ships.
-    """
-    from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
-    from jasper.active_speaker.crossover_v2.spatial import (
-        LateralPoseCurve,
-        pose_curve_record,
-    )
-
-    relay_dir = (
-        round_dir / "bundle" / "sess1"
-        / "evidence/v1/artifacts/crossover_v2" / "cap1"
-    )
-    positions = relay_dir / "positions"
-    positions.mkdir(parents=True, exist_ok=True)
-    curves = [
-        pose_curve_record(LateralPoseCurve(
-            role=role,
-            freqs_hz=GRID,
-            complex_tf=np.full(GRID.shape, 0.5, dtype=complex),
-            band_hz=(float(GRID[0]), float(GRID[-1])),
-        ))
-        for role in ("woofer", "tweeter")
-    ]
-    path = positions / "p0_a01.json"
-    path.write_text(json.dumps({
-        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND,
-        "phase": PHASE_MEASURE, "take_id": "p0_a01",
-        "position_deg": position_deg, "curves": curves,
-    }))
-    return path
-
-
-def test_forward_model_verify_delta_compares_the_two_halves_a_round_carries(
+def test_forward_model_verify_delta_joins_the_two_rounds_the_flow_banks(
     tmp_path,
 ):
-    """A round carrying BOTH a prediction basis and a measured VERIFY sum gets
-    the delta as an additive field.
+    """The prediction basis and the measured VERIFY sum come from DIFFERENT
+    banked rounds, because that is where the flow puts them (#3482).
 
-    The two banked solos are flat and equal, so the in-phase prediction is
-    exactly ``+6.02 dB`` above either — and the measured curve here is flat
-    too, so the whole difference is LEVEL and the shape delta is zero. That
-    makes this a pin on the wiring (basis found, prediction composed, measured
-    curve read, delta computed) rather than on the arithmetic, which
-    ``test_crossover_v2_forward_model`` pins closed-form.
+    Stage 1 banks the per-driver solos and no VERIFY; stage 2 banks the VERIFY
+    and no solos — ``jasper.web.correction_crossover_v2`` opens a new bundle
+    for stage 2 — so a comparison that read one round for both halves could
+    never run on a banked corpus. Both fixture rounds come from the shared
+    real-shape builder, so this pin fails if either stage's writer moves.
     """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    _bank_verify_measured(round_dir)
-    _bank_driver_solos(round_dir)
+    basis = bank_measure_round(tmp_path)
+    measured = bank_verify_round(tmp_path)
 
     result = forward_model_verify_delta(
-        load_banked_round(round_dir), SummationCandidate(),
+        load_banked_round(basis), SummationCandidate(),
+        measured=load_banked_round(measured),
     )
 
     assert result.reason == ""
     assert result.delta is not None
-    assert result.delta["max_abs_db"] == pytest.approx(0.0, abs=1e-9)
     assert result.delta["compared_points"] > 0
-    assert result.delta["take_path"].endswith("positions/p0_a01.json")
+    assert result.delta["take_path"].endswith("positions/measure_02_a01.json")
+    # WHICH two rounds were joined, on the result rather than left for a reader
+    # to remember: a delta whose halves came from different rounds and does not
+    # say so is a number with no provenance.
+    assert result.basis_round_dir == str(basis)
+    assert result.measured_round_dir == str(measured)
 
 
 @pytest.mark.parametrize(
-    ("bank_verify", "bank_solos"),
+    ("bank_measured", "bank_basis"),
     [
         pytest.param(False, True, id="no_measured_verify_sum"),
         pytest.param(True, False, id="no_prediction_basis"),
     ],
 )
-def test_forward_model_verify_delta_names_the_half_the_round_is_missing(
-    tmp_path, bank_verify, bank_solos,
+def test_forward_model_verify_delta_names_the_half_it_was_not_given(
+    tmp_path, bank_measured, bank_basis,
 ):
     """Either half absent answers the same shape as every other view here: no
-    delta, WITH a reason, and never a raise."""
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    delta, WITH a reason, and never a raise.
+
+    The absent half is a REAL absence in each case — a stage-1 round banks no
+    VERIFY curve and a stage-2 round banks no solos — so each parameter is the
+    refusal an operator actually meets rather than a mutilated fixture.
+    """
+    basis = bank_measure_round(tmp_path) if bank_basis else bank_verify_round(tmp_path)
+    measured = (
+        bank_verify_round(tmp_path, name="measured")
+        if bank_measured else bank_measure_round(tmp_path, name="measured")
     )
-    if bank_verify:
-        _bank_verify_measured(round_dir)
-    if bank_solos:
-        _bank_driver_solos(round_dir)
 
     result = forward_model_verify_delta(
-        load_banked_round(round_dir), SummationCandidate(),
+        load_banked_round(basis), SummationCandidate(),
+        measured=load_banked_round(measured),
     )
 
     assert result.delta is None
     assert result.reason
+
+
+def test_forward_model_verify_delta_reads_the_verify_curve_off_its_own_grid(
+    tmp_path,
+):
+    """The banked VERIFY curve reaches the comparison VERBATIM.
+
+    It used to be resampled onto the round's cloud-position grid first, which
+    a round that banked no cloud group does not have — and the delta then
+    compared an empty curve. The measured curve here is flat, the solos sum to
+    a flat prediction, so the whole difference is LEVEL: a shape delta of zero
+    over the solos' own swept band is the tell that the real curve arrived.
+    """
+    basis = bank_measure_round(tmp_path)
+    measured = bank_verify_round(tmp_path)
+
+    result = forward_model_verify_delta(
+        load_banked_round(basis), SummationCandidate(),
+        measured=load_banked_round(measured),
+    )
+
+    assert result.delta is not None
+    assert result.delta["max_abs_db"] == pytest.approx(0.0, abs=1e-6)
+    assert result.delta["compared_band_hz"] == [SOLO_BAND_HZ[0], SOLO_BAND_HZ[1]]
 
 
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
@@ -1027,6 +1050,81 @@ def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
     )
     _bank_entry_baseline_take(round_dir, **kwargs)
     return round_dir
+
+
+def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path):
+    """Issue #3478: the entry view accepts a STAGE-1 round.
+
+    An entry baseline exists in exactly one round shape — the measure stage —
+    and that stage banks no cloud group, so it has neither cloud positions nor
+    a graded ``spec`` block. The loader used to refuse it on both counts,
+    which made the one view whose description names what stage 1 banks
+    unreachable on every rig.
+
+    The grade a round with no post-apply spec gets is stated in NO frame, and
+    the report says so on its face: there is no span in this round for a
+    before to be made comparable with.
+    """
+    banked = load_banked_round(bank_measure_round(tmp_path))
+
+    grade = entry_state_grade(banked)
+
+    assert grade.available is True
+    assert grade.reason == ""
+    assert grade.report is not None
+    assert len(grade.report.bands) == len(flat_spec.SPEC_BANDS)
+    assert grade.report.trusted_floor_hz is None
+    assert grade.report.trusted_ceiling_hz is None
+    assert grade.program_id == "prog-entry"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["per-seat"], id="per_seat"),
+        pytest.param(["repeat"], id="repeat"),
+        pytest.param(["agreement"], id="agreement"),
+        pytest.param(["co-metrics"], id="co_metrics"),
+    ],
+)
+def test_the_position_graded_views_still_refuse_a_round_with_no_cloud_group(
+    tmp_path, capsys, argv,
+):
+    """Relaxing the LOADER must not make the four position views answer.
+
+    Each of these grades cloud seats against the round's own spec, and a
+    stage-1 round banked neither. The refusal moved to the view that requires
+    them; what a caller must never get is an empty table that reads as a
+    graded round with nothing wrong in it.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = bank_measure_round(tmp_path)
+
+    assert cli.main([*argv, str(round_dir)]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
+    """Both verbs the campaign hit, through ``main`` and the real argv.
+
+    ``frequency`` was refused by the same loader gate and for the same wrong
+    reason: its own projector already renders an entry-baseline series from a
+    packet with no positions, so nothing but the gate stood between a stage-1
+    round and its curve.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = bank_measure_round(tmp_path)
+
+    assert cli.main(["entry", str(round_dir), "--out", "-"]) == 0
+    grade = json.loads(capsys.readouterr().out)
+    assert grade["available"] is True
+    assert grade["round_ordinal"] == 1
+
+    assert cli.main(["frequency", str(round_dir), "--out", "-"]) == 0
+    view = json.loads(capsys.readouterr().out)
+    assert [s["kind"] for s in view["runs"][0]["series"]] == ["entry_baseline"]
 
 
 def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):

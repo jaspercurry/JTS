@@ -709,6 +709,33 @@ def await_stage(
     return EXIT_INCOMPLETE
 
 
+def round_graded_this_session(wizard: Wizard, prior_session_id: str) -> bool:
+    """Did THIS session's round grade and bank a receipt? (#3486)
+
+    The one fact that separates "the stage failed with nothing to pull" from
+    "the round graded, then refused". A Full round's adoption tail runs inside
+    the group-closing capture's own call, so a ``restore`` row comes back AS
+    that capture's verdict and lands in the state's ``failure`` block — after
+    ``coordinator._write_round_receipt`` has already banked the round. Read
+    ``failure`` alone, precisely those rounds lose their evidence, and the
+    restored/edge rounds are disproportionately the interesting ones: the
+    campaign that filed this lost its first full spec pass that way.
+
+    ``round_id`` is the stage-2 relay session id (``coordinator._round_identity``),
+    so the equality below is what stops a PREVIOUS round's receipt — carried
+    forward in durable state — from vouching for this one.
+    """
+    block = wizard.v2_block()
+    session_id = str(block.get("session_id") or "")
+    receipt = block.get("round_receipt")
+    if not session_id or session_id == prior_session_id:
+        return False
+    return (
+        isinstance(receipt, Mapping)
+        and str(receipt.get("round_id") or "") == session_id
+    )
+
+
 def bank(dest: Path, *, since: str, target: Target, trail: Trail) -> int:
     """``bank-crossover-round.sh`` into ``dest``, with ITS verdict reported.
 
@@ -1118,7 +1145,15 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             wizard, prior_session_id=prior_session_id,
             timeout_s=args.stage_timeout_s, poll_s=args.poll_s, trail=trail,
         )
-        if rc != EXIT_OK:
+        # The BANK is ordered on whether a round graded, not on the verdict
+        # (#3486). A round that graded and then refused — every ``restore`` row
+        # — has all its evidence on the Pi and the receipt already banked, so
+        # skipping the pull loses exactly what doctrine §3 says every round
+        # keeps. ``rc`` is untouched and still returned below: the round's own
+        # verdict is the round's, and banking is not a second one.
+        if rc != EXIT_OK and not round_graded_this_session(
+            wizard, prior_session_id,
+        ):
             _say_bank_by_hand(dest, since, target)
             return rc
     finally:
@@ -1133,7 +1168,14 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
 
     bank_rc = bank(dest, since=since, target=target, trail=trail)
     if bank_rc != 0:
-        return EXIT_BANK
+        # Nothing was kept, so the operator gets the hand command here too —
+        # and a round that had already refused keeps ITS rc. ``EXIT_BANK``
+        # says "the round was fine and only the pull was not"; overwriting a
+        # ``session_failed`` with it drops the round's own verdict from what a
+        # chaining caller reads, on exactly the restore-ending rounds #3486
+        # ordered the bank for.
+        _say_bank_by_hand(dest, since, target)
+        return EXIT_BANK if rc == EXIT_OK else rc
 
     if args.angles:
         bank_position_cycle(
@@ -1142,17 +1184,19 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             trail=trail,
         )
     summarise_candidate(wizard, trail)
-    return EXIT_OK
+    return rc
 
 
 def _say_bank_by_hand(dest: Path, since: str, target: Target) -> None:
-    """A stopped round banks nothing; say how to keep the evidence anyway.
+    """Nothing was banked; say how to keep the evidence anyway.
 
-    The walk's rc, or the stage's failure to finish, IS the round's verdict,
-    and banking on top of it would put a second verdict on the same run. The
-    evidence is still on the Pi until the next round overwrites the dump ring,
-    so the operator gets the one command that keeps it rather than a decision
-    made for them.
+    Reached the two ways a round ends with its evidence unpulled: no round
+    receipt was written for this session at all (a walk that stopped, a stage
+    that never finished), or the bank itself refused. A round that graded and
+    then refused banks itself (#3486); its evidence is complete and its verdict
+    is on the receipt. The evidence is still on the Pi until the next round
+    overwrites the dump ring, so the operator gets the one command that keeps it
+    rather than a decision made for them.
 
     **It carries the host this round actually used.** Without it the pasted
     command re-resolves through ``.env.local``, which routinely names a

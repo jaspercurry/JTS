@@ -284,15 +284,24 @@ def test_a_verify_inside_tolerance_breaks_the_repeatability_pair():
     assert "terminal" not in verdict
 
 
-def test_an_ungraded_verify_clears_an_earlier_mismatch_from_the_pair():
-    """A capture with no tracking number graded nothing, so it is neither a
+def test_an_unmeasurable_verify_clears_an_earlier_mismatch_from_the_pair():
+    """A capture whose tracking number is NaN graded nothing, so it is neither a
     mismatch a later attempt can agree with nor one that can agree with an
     earlier attempt — absence of evidence is never agreement.
 
     It therefore CLEARS the pair rather than being skipped over. A real grade,
-    an ungraded capture, then a grade that happens to match the first is not two
-    consecutive measurements of anything; treating the absence as transparent
-    would let an older attempt supply the agreement."""
+    an unmeasurable capture, then a grade that happens to match the first is not
+    two consecutive measurements of anything; treating the absence as
+    transparent would let an older attempt supply the agreement.
+
+    **NaN is the shape this rule now lives in.** It used to be reached with a
+    tracking record carrying no comparator at all, which was a refusal only
+    because the gate collapsed R18's ``not_evaluated`` into a fail (#3487); that
+    capture is accepted now and ends the phase, so it can no longer sit between
+    two mismatches. NaN still refuses — the claim's own comparison against the
+    tolerance is False either way — and it is what ``_note_verify_mismatch``'s
+    non-finite guard was written for.
+    """
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
@@ -301,9 +310,7 @@ def test_an_ungraded_verify_clears_an_earlier_mismatch_from_the_pair():
 
     fakes.verify = _verify_at(3.66)
     assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = lambda program: dataclasses.replace(
-        _verify_analysis(program), verify_tracking={"rms_db": 0.4},
-    )
+    fakes.verify = _verify_at(float("nan"))
     assert _run_phase(c, 3, 4)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
     fakes.verify = _verify_at(3.66)
     verdict = _run_phase(c, 3, 5)

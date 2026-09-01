@@ -2265,8 +2265,22 @@ jasper-round-views repeat <round-dir> [<round-dir> ...]
 jasper-round-views agreement <round-dir>
 ```
 
-**A CLOUD position's own record carries a numeric bearing.** Every view here
-reads the cloud positions block (`spatial.cloud_position_record` rows),
+**`entry` and `frequency` need no cloud group, and that is what makes them
+reachable.** A cloud group is banked by the VERIFY stage; the MEASURE stage
+banks the per-driver solos and the entry baseline and no cloud at all
+(`STAGE1_INCLUDES_CLOUD_MEASURE` is `False`), so a stage-1 round has neither
+cloud positions nor a graded `spec` — and it is the only round shape that
+produces an entry baseline. `load_banked_round` used to refuse it on both
+counts, which made `entry` unrunnable on every rig (#3478). It now reads what
+the round banked; the four position-graded views (`frozen`, `per-seat`,
+`repeat`, `agreement`, `co-metrics`) raise the same two sentences themselves.
+An entry baseline in a round that graded no after is stated in NO frame — the
+report echoes `trusted_floor_hz`/`trusted_ceiling_hz` as `null`, which is its
+own "not stated", so the grade discloses which frame produced it.
+
+**A CLOUD position's own record carries a numeric bearing.** The four
+position-graded views read the cloud positions block
+(`spatial.cloud_position_record` rows),
 which carries a coarse `role` (`onax`/`offax`) and, since the 2026-08-24
 geometry ruling, a signed `position_deg` bearing on every retained row —
 ABSENT, not null, where none was commanded, because the serializer drops a
@@ -2887,16 +2901,18 @@ measurement reference — replacing the codified −20 dB
 `MEASUREMENT_REFERENCE_VOLUME_DB` that every session held before.
 
 ```sh
-# the ordinary run: converge on 75-80 dB SPL and bank the result
-jasper-seat-level --stimulus-wav /var/lib/jasper/.../check.wav --mic-serial 810-8494
+# the ordinary run: stimulus synthesized from the drivers' declared
+# measurement bands, converge on 75-80 dB SPL and bank the result
+jasper-seat-level --mic-serial 810-8494
 
-# a different band, an explicit calibration file, machine-readable
+# an explicit stimulus override, a different band, an explicit calibration
+# file, machine-readable
 jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
     --target-db-spl 72 --tolerance-db 2 --json
 
 # instrumented: every window's per-sample dB SPL series, one DEBUG line per
 # window, for when a stop needs explaining rather than just reporting
-jasper-seat-level --stimulus-wav check.wav --mic-serial 810-8494 --verbose
+jasper-seat-level --mic-serial 810-8494 --verbose
 ```
 
 **It owns its climb and reuses everything else.** The pass runs its own
@@ -3230,9 +3246,11 @@ Read the journal, not the code, to find out what happened:
 | `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
 | `_teardown_abandoned` | a teardown step was given up on after `TEARDOWN_SHIELD_ATTEMPTS` cancellations — the stimulus was cut abruptly and the fader left where the ramp had it; the durable latch is still on disk for the volume-recovery screen to drain |
 
-**What it does not do**: it designs no stimulus (point `--stimulus-wav` at the
-program the session will actually measure with — choosing a safe excitation is
-the admission subsystem's job) and it opens no measurement session. It writes one
+**What it does not do**: it designs no stimulus of its own judgment — the
+default is synthesized by the admission subsystem's own generator from the
+drivers' declared measurement bands (`default_stimulus_wav` states each
+parameter's source), and `--stimulus-wav` overrides it with an operator-named
+WAV — and it opens no measurement session. It writes one
 document to `/var/lib/jasper/active_speaker_seat_level_reference.json`; the next
 session reads it through `measurement_reference_volume_db`, and **absent is
 normal** — a box that never runs this behaves exactly as it did before the verb
