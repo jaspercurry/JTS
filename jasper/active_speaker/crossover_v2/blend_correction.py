@@ -79,6 +79,8 @@ arm                          what the next round applies
 :data:`BLEND_NO_TRUSTED_BAND` the incumbent, unchanged
 :data:`BLEND_REGION_NOT_IMPROVING` the incumbent, unchanged
 :data:`BLEND_NO_INCUMBENT`   nothing — there is no incumbent to hold
+``no_crossover_reason``      the incumbent, unchanged — a 1-way main has no
+                             region, so nothing here is ever prescribed
 ===========================  ================================================
 
 **Refusals hold rather than revert** (panel ruling, 2026-08-18). A round whose
@@ -546,6 +548,7 @@ def solve_blend_correction(
     band_hz: Any,
     incumbent: Sequence[Mapping[str, Any]] | None,
     previous_residual_db: float | None = None,
+    no_crossover_reason: str | None = None,
 ) -> BlendCorrection:
     """Prescribe the next round's blend-region correction from summed evidence.
 
@@ -566,6 +569,12 @@ def solve_blend_correction(
       incumbent: the blend correction the measured capture rode. ``None`` means
         it could not be established and the round refuses; ``()`` means it rode
         none, which is the ordinary first round.
+      no_crossover_reason: the caller's named answer to "does this speaker HAVE
+        a crossover region at all" — set only for a 1-way main, whose preset
+        declares none. It outranks every arm below, ``incumbent`` included:
+        those all describe a region a round could not establish, and one slug
+        covering that and "there is nothing here to blend" would send two
+        readers with two remedies to one door (#3480).
       previous_residual_db: the region residual the PREVIOUS round read, or
         ``None`` for the first round of a series. The narrow-defect stop below
         turns on it.
@@ -653,6 +662,14 @@ def solve_blend_correction(
     # next actions — and the receipt writer uses exactly this field to decide
     # whether the round had a blend question worth banking.
     band = _band_from(band_hz)
+    # …and "a round that had no crossover region at all" — the fact the comment
+    # above names — is the ONE refusal that legitimately carries no band, so it
+    # answers first and answers with its caller's own reason.
+    if no_crossover_reason is not None:
+        return _hold(
+            no_crossover_reason,
+            incumbent=tuple(dict(entry) for entry in (incumbent or ())),
+        )
     if incumbent is None:
         # Checked before the band, because "no incumbent" is the one arm whose
         # disposition does not depend on having a region: with nothing

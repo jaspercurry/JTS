@@ -565,6 +565,7 @@ def evaluate_region_benefit(
     post: MeasurementComparand | None,
     band_hz: tuple[float, float] | None,
     margin_db: float,
+    no_crossover_reason: str | None = None,
 ) -> Verdict[BenefitStatus]:
     """The benefit claim again, restricted to the crossover blend region.
 
@@ -589,8 +590,15 @@ def evaluate_region_benefit(
 
     The narrowing is applied to BOTH sides identically, so
     :func:`_comparability_mismatch`'s identical-mask guarantee is preserved.
+
+    ``no_crossover_reason`` is the caller's named answer to "does this speaker
+    HAVE a region at all", set only for a 1-way main. It is reported ahead of
+    :data:`BENEFIT_NO_REGION_BAND`, which says a round could not establish the
+    region its speaker does have — two facts with two remedies (#3480).
     """
 
+    if no_crossover_reason is not None:
+        return Verdict(BenefitStatus.INDETERMINATE, no_crossover_reason, {})
     if band_hz is None:
         return Verdict(BenefitStatus.INDETERMINATE, BENEFIT_NO_REGION_BAND, {})
     lo, hi = float(band_hz[0]), float(band_hz[1])

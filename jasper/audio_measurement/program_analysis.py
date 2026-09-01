@@ -1556,8 +1556,8 @@ class ProgramAnalysis:
     # numbers, or ``{"not_evaluated": <reason>}``; ``None`` elsewhere.
     verify_absolute: dict[str, Any] | None = None
     # Why a MEASURE analysis carries no ``alignment`` and no ``candidate``.
-    # Both are statements about TWO driver branches, and a 1-way program has one
-    # (#3507). ``None`` on every analysis that HAS them — absence spelled the
+    # Both are statements about TWO driver branches, and a 1-way program has
+    # one. ``None`` on every analysis that HAS them — absence spelled the
     # way its two siblings above spell it — so "nobody evaluated this" can never
     # be read as "this passed", the rule ``verify_absolute`` follows.
     measure_pair_not_evaluated: str | None = None
@@ -1574,9 +1574,11 @@ class ProgramAnalysis:
     # ``None`` whenever ``verify_tracking`` is (no prediction prior), and the
     # probe reads that as "no evidence", never as a pass.
     verify_tracking_curve: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)``: the two
+    # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)``: the
     # measured branches at the candidate's COMMITTED trim AND committed delay
-    # (``_build_candidate``'s ``predicted_applied``). The v2 session hands this
+    # (``_build_candidate``'s ``predicted_applied``), or — on a 1-way main,
+    # which has no second branch to commit either against — the single branch
+    # itself. The v2 session hands this
     # to the VERIFY analysis as ``MeasurementPriors.predicted_sum`` so VERIFY's
     # PASS is |measured − predicted| ≤ ±1.5 dB (design §5.2), not merely the
     # summed ripple.
@@ -5552,6 +5554,19 @@ def _analyze_measure(
                 seed_delay_us=alignment.delay_us,
                 confidence_source="gcc_phat_seed",
             )
+    else:
+        # One branch radiates the whole band, so the model of what this capture
+        # sums to IS that branch — the statement
+        # ``intervention.compose_linearized_prediction`` already makes for a
+        # 1-way frame, at the fixed zero trim such a round ships. Without it the
+        # delta probe's STATE axis has no reference and a way-1 round grades
+        # nothing.
+        solo_freqs, solo_tf, _solo_gate = _aligned_branch_tf(
+            woofer_full_ir, sample_rate, n_fft, calibration=calibration,
+        )
+        predicted_sum = (
+            solo_freqs, 20.0 * np.log10(np.maximum(np.abs(solo_tf), 1e-12)),
+        )
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a pre-pilot ambient window + a leading pilot pair; a
     # program carrying neither leaves the verdicts ``None``.
@@ -6029,6 +6044,12 @@ def _build_candidate(
 ABSOLUTE_NO_FC = "no_crossover_fc"
 ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
 ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
+#: The speaker HAS no crossover region — a 1-way main, whose preset declares
+#: none. Its own slug rather than a fourth reader of the three above, which all
+#: say a round could not establish the region its speaker does have: those send
+#: an operator to re-measure, this one to nothing at all (#3480's rule).
+#: Every downstream absence that reads this claim's band carries it forward.
+ABSOLUTE_NO_CROSSOVER_TOPOLOGY = "no_crossover_topology"
 
 
 def _verify_absolute_result(
@@ -6056,9 +6077,16 @@ def _verify_absolute_result(
     Measured is smoothed and the target is not: the target is an analytic
     response with no noise to smooth, and smoothing would round the knee.
     """
+    transfers = priors.configured_crossover_response_by_role
+    if transfers is not None and not transfers:
+        # An EMPTY map, never a missing one: the preset was read and declares no
+        # region. Asked BEFORE the corner because a 2-way whose caller passed no
+        # ``fc_hz`` also arrives with ``fc_hz is None``, and "this speaker has no
+        # crossover" and "nobody said where this speaker's crossover is" are two
+        # facts with two remedies.
+        return {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY}
     if fc_hz is None:
         return {"not_evaluated": ABSOLUTE_NO_FC}
-    transfers = priors.configured_crossover_response_by_role
     if not transfers:
         return {"not_evaluated": ABSOLUTE_NO_TARGET}
     band = crossover_region_band_hz(
@@ -6134,12 +6162,14 @@ def _analyze_verify(
     tracking = None
     tracking_curve = None
     measured_db = None
+    band: tuple[float, float] | None = None
     if fc_hz is not None:
         lo, hi = overlap_band_hz(
             fc_hz,
             tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
             woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
         )
+        band = (lo, hi)
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
         # The one null-depth definition in the tree. It lives in
         # `audio_measurement.analysis` rather than beside its consumers because
@@ -6163,151 +6193,161 @@ def _analyze_verify(
             reverse_null_depth = crossover_null_depth_db(
                 summed.freqs_hz, summed.magnitude_db, fc_hz,
             )
-        if priors.predicted_sum is not None:
-            pred_freqs, pred_db = priors.predicted_sum
-            measured_db = analysis_mod.smooth_fractional_octave(
-                summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
-            )
-            predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
-            predicted_db = analysis_mod.smooth_fractional_octave(
-                summed.freqs_hz,
-                predicted_db_interp,
-                VERIFY_TRACKING_SMOOTHING_FRACTION,
-            )
-            # Validity-floor clamp: this capture's OWN reflection gate
-            # (`summed.validity_floor_hz`, from the same `_driver_response`
-            # call above) can be tighter than the nominal Fc±1-oct band at a
-            # reflective mic position — bins below that floor are an artifact
-            # of a truncated gate window (gating.f_valid_floor_hz), not a
-            # measurement, so they must not decide PASS/FAIL either way. This
-            # generalizes the notch exclusion from "deep predicted notch" to
-            # "below measurement validity": a fixed 65 ms prediction window can
-            # bake a desk-bounce reflection into the predicted sum's sub-floor
-            # region, invisible to notch exclusion because the false notch is
-            # not always deep enough to trip it. Applies to BOTH rms and max,
-            # and to the notch-exclusion bin set — the two exclusions compose
-            # (clamp first, then still exclude a genuine deep predicted notch
-            # above the floor).
-            floor_hz = summed.validity_floor_hz
-            lo_clamped = (
-                max(lo, floor_hz) if floor_hz is not None and math.isfinite(floor_hz) else lo
-            )
-            tracking_band = (lo_clamped, hi)
-            rms, max_abs = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db, tracking_band,
-            )
-            # Notch-excluded: the actual gating comparator
-            # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
-            rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db, tracking_band,
+    else:
+        # A 1-way main declares no corner, so there is no overlap band to
+        # scope the comparison by. Its band is the branch's OWN declared
+        # radiated span -- the same span the verify program's no-crossover
+        # mode draws its pilots from -- and a segment declaring none leaves
+        # the comparison absent rather than graded over a band nobody
+        # stated. The ripple and the reverse null stay above: both are
+        # statements about a handoff this speaker has no second branch for.
+        band = _radiated_band_hz(seg)
+    if band is not None and priors.predicted_sum is not None:
+        lo, hi = band
+        pred_freqs, pred_db = priors.predicted_sum
+        measured_db = analysis_mod.smooth_fractional_octave(
+            summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
+        )
+        predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
+        predicted_db = analysis_mod.smooth_fractional_octave(
+            summed.freqs_hz,
+            predicted_db_interp,
+            VERIFY_TRACKING_SMOOTHING_FRACTION,
+        )
+        # Validity-floor clamp: this capture's OWN reflection gate
+        # (`summed.validity_floor_hz`, from the same `_driver_response`
+        # call above) can be tighter than the band above at a reflective
+        # mic position — bins below that floor are an artifact
+        # of a truncated gate window (gating.f_valid_floor_hz), not a
+        # measurement, so they must not decide PASS/FAIL either way. This
+        # generalizes the notch exclusion from "deep predicted notch" to
+        # "below measurement validity": a fixed 65 ms prediction window can
+        # bake a desk-bounce reflection into the predicted sum's sub-floor
+        # region, invisible to notch exclusion because the false notch is
+        # not always deep enough to trip it. Applies to BOTH rms and max,
+        # and to the notch-exclusion bin set — the two exclusions compose
+        # (clamp first, then still exclude a genuine deep predicted notch
+        # above the floor).
+        floor_hz = summed.validity_floor_hz
+        lo_clamped = (
+            max(lo, floor_hz) if floor_hz is not None and math.isfinite(floor_hz) else lo
+        )
+        tracking_band = (lo_clamped, hi)
+        rms, max_abs = analysis_mod.tracking_error_db(
+            summed.freqs_hz, measured_db, predicted_db, tracking_band,
+        )
+        # Notch-excluded: the actual gating comparator
+        # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
+        rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
+            summed.freqs_hz, measured_db, predicted_db, tracking_band,
+            notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+            notch_reference_db=predicted_db_interp,
+        )
+        # Raw full-band (pre-floor-clamp) numbers, kept as DIAGNOSTIC
+        # fields only — never consumed by the gate.
+        raw_rms, raw_max = analysis_mod.tracking_error_db(
+            summed.freqs_hz, measured_db, predicted_db, (lo, hi),
+        )
+        # Hand the delta probe the very curves these scalars were reduced
+        # from, so it grades one comparison rather than a second.
+        tracking_curve = (summed.freqs_hz, measured_db, predicted_db)
+        tracking = {
+            "rms_db": rms,
+            "max_db": max_abs,
+            "rms_db_notch_excluded": rms_excl,
+            "max_db_notch_excluded": max_excl,
+            "tracking_band_hz": [tracking_band[0], tracking_band[1]],
+            "rms_db_full_band": raw_rms,
+            "max_db_full_band": raw_max,
+        }
+        # FRAME DISCIPLINE. The two curves above are not in the same frame:
+        # ``predicted_db`` is an ON-AXIS two-branch model composed from the
+        # MEASURE sitting, and ``measured_db`` is an IN-ROOM gated point
+        # measurement from the VERIFY sitting. Differencing them raw cannot
+        # tell instrument frame from model error — on one corpus a single
+        # −0.79 dB/octave tilt between exactly these two frames accounted
+        # for 84% of a "predictions are 2.02× optimistic" headline. So the
+        # frame is fitted, the two terms are disclosed, and the residual is
+        # reported BOTH ways.
+        #
+        # ``max_db_notch_excluded`` remains what gates
+        # (``crossover_v2_flow._verify_verdict``) and every raw scalar keeps
+        # its value: a measured tilt is EVIDENCE, not permission to
+        # re-grade. Attributing it — directivity, mic, sitting — needs an
+        # instrument this fit does not have, and until it is attributed the
+        # raw number is the honest one to refuse on.
+        #
+        # FITTED OVER THE BINS THIS COMPARISON TRUSTS — the validity-floor
+        # clamped band MINUS the deep-predicted-notch bins the gating
+        # comparator already refuses to grade. Inside a modelled notch the
+        # depth is hypersensitive to sub-dB branch differences, and a
+        # straight line drawn through one lets the notch lever the slope: on
+        # a 25 dB notch at a band edge an injected −0.800 dB/octave frame
+        # recovers as +0.226, the wrong sign, and would then be "removed"
+        # from the residual as instrument tilt. The mask comes from
+        # ``notch_excluded_band_mask``, the only owner of that bin choice.
+        #
+        # This REDUCES the lever without removing it. The exclusion bounds a
+        # notch's DEPTH (12 dB) and says nothing about its skirt WIDTH, so a
+        # wide surviving skirt still biases the estimate: on this path, a
+        # 1/6-octave 25 dB edge notch, the whole-band fit reads +5.72 and the
+        # trusted-bin fit +0.31 against a −0.800 truth — 18× better and still
+        # the wrong sign. A disclosed tilt is not trustworthy over a
+        # notch-heavy prediction, and ``tilt_removed <= raw`` is not a
+        # theorem.
+        frame_mask = analysis_mod.notch_excluded_band_mask(
+            summed.freqs_hz, predicted_db, tracking_band,
+            notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+            notch_reference_db=predicted_db_interp,
+        )
+        frame = fit_frame(
+            summed.freqs_hz[frame_mask],
+            measured_db[frame_mask],
+            predicted_db[frame_mask],
+        )
+        tilt_removed_rms_db: float | None = None
+        tilt_removed_max_db: float | None = None
+        if frame.fitted:
+            # One frame, estimated once from the trusted bins, removed from
+            # the measured curve — then each grade is re-taken by its OWN
+            # grader over its OWN bins, so both keep their established
+            # conventions and only the frame changed. Both graders
+            # mean-centre their error, and mean-centring is invariant to
+            # ANY additive constant, so the frame's OFFSET term cannot move
+            # either number whatever bin set it was fitted on; only the
+            # TILT can. That is why these are ``tilt_removed``.
+            deframed_db = measured_db - frame.frame_db(summed.freqs_hz)
+            # Twins for exactly the two numbers that reach a gate or a
+            # screen — the notch-excluded max the tolerance reads, and the
+            # RMS the expert disclosure prints. Not a twin for every raw
+            # scalar in the record: a beside-number nobody reads is a
+            # second thing to keep true.
+            tilt_removed_rms_db = analysis_mod.tracking_error_db(
+                summed.freqs_hz, deframed_db, predicted_db, tracking_band,
+            )[0]
+            tilt_removed_max_db = analysis_mod.notch_excluded_tracking_error_db(
+                summed.freqs_hz, deframed_db, predicted_db, tracking_band,
                 notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
                 notch_reference_db=predicted_db_interp,
-            )
-            # Raw full-band (pre-floor-clamp) numbers, kept as DIAGNOSTIC
-            # fields only — never consumed by the gate.
-            raw_rms, raw_max = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db, (lo, hi),
-            )
-            # Hand the delta probe the very curves these scalars were reduced
-            # from, so it grades one comparison rather than a second.
-            tracking_curve = (summed.freqs_hz, measured_db, predicted_db)
-            tracking = {
-                "rms_db": rms,
-                "max_db": max_abs,
-                "rms_db_notch_excluded": rms_excl,
-                "max_db_notch_excluded": max_excl,
-                "tracking_band_hz": [tracking_band[0], tracking_band[1]],
-                "rms_db_full_band": raw_rms,
-                "max_db_full_band": raw_max,
-            }
-            # FRAME DISCIPLINE. The two curves above are not in the same frame:
-            # ``predicted_db`` is an ON-AXIS two-branch model composed from the
-            # MEASURE sitting, and ``measured_db`` is an IN-ROOM gated point
-            # measurement from the VERIFY sitting. Differencing them raw cannot
-            # tell instrument frame from model error — on one corpus a single
-            # −0.79 dB/octave tilt between exactly these two frames accounted
-            # for 84% of a "predictions are 2.02× optimistic" headline. So the
-            # frame is fitted, the two terms are disclosed, and the residual is
-            # reported BOTH ways.
-            #
-            # ``max_db_notch_excluded`` remains what gates
-            # (``crossover_v2_flow._verify_verdict``) and every raw scalar keeps
-            # its value: a measured tilt is EVIDENCE, not permission to
-            # re-grade. Attributing it — directivity, mic, sitting — needs an
-            # instrument this fit does not have, and until it is attributed the
-            # raw number is the honest one to refuse on.
-            #
-            # FITTED OVER THE BINS THIS COMPARISON TRUSTS — the validity-floor
-            # clamped band MINUS the deep-predicted-notch bins the gating
-            # comparator already refuses to grade. Inside a modelled notch the
-            # depth is hypersensitive to sub-dB branch differences, and a
-            # straight line drawn through one lets the notch lever the slope: on
-            # a 25 dB notch at a band edge an injected −0.800 dB/octave frame
-            # recovers as +0.226, the wrong sign, and would then be "removed"
-            # from the residual as instrument tilt. The mask comes from
-            # ``notch_excluded_band_mask``, the only owner of that bin choice.
-            #
-            # This REDUCES the lever without removing it. The exclusion bounds a
-            # notch's DEPTH (12 dB) and says nothing about its skirt WIDTH, so a
-            # wide surviving skirt still biases the estimate: on this path, a
-            # 1/6-octave 25 dB edge notch, the whole-band fit reads +5.72 and the
-            # trusted-bin fit +0.31 against a −0.800 truth — 18× better and still
-            # the wrong sign. A disclosed tilt is not trustworthy over a
-            # notch-heavy prediction, and ``tilt_removed <= raw`` is not a
-            # theorem.
-            frame_mask = analysis_mod.notch_excluded_band_mask(
-                summed.freqs_hz, predicted_db, tracking_band,
-                notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
-                notch_reference_db=predicted_db_interp,
-            )
-            frame = fit_frame(
-                summed.freqs_hz[frame_mask],
-                measured_db[frame_mask],
-                predicted_db[frame_mask],
-            )
-            tilt_removed_rms_db: float | None = None
-            tilt_removed_max_db: float | None = None
-            if frame.fitted:
-                # One frame, estimated once from the trusted bins, removed from
-                # the measured curve — then each grade is re-taken by its OWN
-                # grader over its OWN bins, so both keep their established
-                # conventions and only the frame changed. Both graders
-                # mean-centre their error, and mean-centring is invariant to
-                # ANY additive constant, so the frame's OFFSET term cannot move
-                # either number whatever bin set it was fitted on; only the
-                # TILT can. That is why these are ``tilt_removed``.
-                deframed_db = measured_db - frame.frame_db(summed.freqs_hz)
-                # Twins for exactly the two numbers that reach a gate or a
-                # screen — the notch-excluded max the tolerance reads, and the
-                # RMS the expert disclosure prints. Not a twin for every raw
-                # scalar in the record: a beside-number nobody reads is a
-                # second thing to keep true.
-                tilt_removed_rms_db = analysis_mod.tracking_error_db(
-                    summed.freqs_hz, deframed_db, predicted_db, tracking_band,
-                )[0]
-                tilt_removed_max_db = analysis_mod.notch_excluded_tracking_error_db(
-                    summed.freqs_hz, deframed_db, predicted_db, tracking_band,
-                    notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
-                    notch_reference_db=predicted_db_interp,
-                )[1]
-            # ONE writer, ONE typed record. The raw pair below is assigned from
-            # the very locals published above, not recomputed, so the
-            # disclosure cannot state a different raw number than the gate
-            # reads.
-            #
-            # ``raw_max_db`` is the NOTCH-EXCLUDED max, not ``max_abs``: on
-            # every surface that renders a "level error" for this comparison
-            # that is what the phrase means, because it is what the tolerance
-            # gates on. A record pairing a tilt-removed notch-excluded max
-            # against a raw non-excluded one would be two bin sets under one
-            # label.
-            tracking["frame"] = FrameComparison(
-                fit=frame,
-                raw_rms_db=rms,
-                raw_max_db=max_excl,
-                tilt_removed_rms_db=tilt_removed_rms_db,
-                tilt_removed_max_db=tilt_removed_max_db,
-            ).to_dict()
+            )[1]
+        # ONE writer, ONE typed record. The raw pair below is assigned from
+        # the very locals published above, not recomputed, so the
+        # disclosure cannot state a different raw number than the gate
+        # reads.
+        #
+        # ``raw_max_db`` is the NOTCH-EXCLUDED max, not ``max_abs``: on
+        # every surface that renders a "level error" for this comparison
+        # that is what the phrase means, because it is what the tolerance
+        # gates on. A record pairing a tilt-removed notch-excluded max
+        # against a raw non-excluded one would be two bin sets under one
+        # label.
+        tracking["frame"] = FrameComparison(
+            fit=frame,
+            raw_rms_db=rms,
+            raw_max_db=max_excl,
+            tilt_removed_rms_db=tilt_removed_rms_db,
+            tilt_removed_max_db=tilt_removed_max_db,
+        ).to_dict()
     # A v2 VERIFY program opens with a pre-pilot ambient window + a leading
     # pilot pair (design §5.2) so the post-apply capture carries its own
     # behavioral-linearity evidence AND the noise floor needed to trust it; a

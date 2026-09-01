@@ -68,8 +68,12 @@ from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
 
+from jasper.active_speaker.crossover_v2.alignment_prescription import (
+    ALIGNMENT_NO_CROSSOVER_REGION,
+)
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
+    REGION_UNAVAILABLE,
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
@@ -107,6 +111,9 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     REPEAT_FLOOR_DEFAULT_PATH,
     round_inputs,
 )
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    TOPOLOGY_NO_CROSSOVER_REGION,
+)
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TARGET_DB_SPL,
     DEFAULT_TOLERANCE_DB,
@@ -114,6 +121,9 @@ from jasper.active_speaker.seat_level_reference import (
 )
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
+)
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
 )
 from jasper.identity import (
     CROSSOVER_PAGE_PATH,
@@ -1080,6 +1090,18 @@ def _next_actions(
             out.append(
                 "a blend prescription can be written for the crossover region "
                 f"{_band_phrase(*region['band_hz'])}"
+            )
+        elif region["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
+            # Not "not yet": this speaker HAS no crossover, so all three doors
+            # that describe a handoff are shut for good and the per-driver one
+            # is the whole loop. Sending an operator to re-measure for a band
+            # that cannot exist is the wrong next action (#3480).
+            out.append(
+                "this speaker has no crossover region, so the blend, alignment "
+                "and topology doors do not apply and refuse by name "
+                f"({REGION_UNAVAILABLE}, {ALIGNMENT_NO_CROSSOVER_REGION}, "
+                f"{TOPOLOGY_NO_CROSSOVER_REGION}) — the per-driver door below "
+                "is the whole loop here"
             )
         else:
             out.append(

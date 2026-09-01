@@ -1826,10 +1826,17 @@ def _way1_measure_analysis(
 ) -> ProgramAnalysis:
     """:func:`_eligible_measure_analysis`'s 1-way twin.
 
-    Every inter-driver field is ABSENT WITH A NAME rather than defaulted — no
-    alignment, no measured pair candidate, no raw two-branch predicted sum —
-    which is exactly what ``_analyze_measure`` returns for a one-role program.
+    Every INTER-DRIVER field is ABSENT WITH A NAME rather than defaulted — no
+    alignment, no measured pair candidate — which is exactly what
+    ``_analyze_measure`` returns for a one-role program. ``predicted_sum`` is
+    NOT one of them: one branch sums to itself, and the delta probe's state
+    axis references it.
     """
+    solo = _linearizable_response(
+        "full_range",
+        _way1_branch_db() if magnitude_db is None else magnitude_db,
+        n_repeats=repeats,
+    )
     return ProgramAnalysis(
         phase="measure",
         program_id=program.program_id,
@@ -1838,18 +1845,12 @@ def _way1_measure_analysis(
             epsilon_ppm=5.0, max_residual_samples=0.1, glitch_detected=False,
         ),
         mic_tier=mic_tier,
-        driver_responses=(
-            _linearizable_response(
-                "full_range",
-                _way1_branch_db() if magnitude_db is None else magnitude_db,
-                n_repeats=repeats,
-            ),
-        ),
+        driver_responses=(solo,),
         alignment=None,
         candidate=None,
         measure_pair_not_evaluated=MEASURE_PAIR_SINGLE_DRIVER,
         linearity_ok=True,
-        predicted_sum=None,
+        predicted_sum=(solo.freqs_hz, solo.magnitude_db),
         glitch_detected=False,
     )
 

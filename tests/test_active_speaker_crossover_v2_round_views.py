@@ -57,6 +57,7 @@ from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import (
+    MODE_WAY1,
     SOLO_BAND_HZ,
     bank_measure_round,
     bank_verify_round,
@@ -536,6 +537,30 @@ def test_forward_model_verify_delta_names_the_half_it_was_not_given(
     assert result.reason
     # A result with no delta was judged by no measurement, and says so rather
     # than leaving the acceptance question to whoever reads it later (#3481).
+    assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
+    assert result.acceptance["judged_against"] is None
+
+
+def test_a_way1_round_loads_with_one_role_and_declines_the_pair_comparison(
+    tmp_path,
+):
+    """A subless passive main banks ONE solo, and the round still loads.
+
+    Most views here grade POSITIONS and so are blind to how many branches a
+    speaker has. The forward model is the one that is about a pair, and its
+    answer on this shape must be the ordinary named refusal: raising on a legal
+    speaker shape is the #3487 defect, and inventing a second branch is worse.
+    """
+    basis = bank_measure_round(tmp_path, mode=MODE_WAY1)
+    measured = bank_verify_round(tmp_path)
+
+    result = forward_model_verify_delta(
+        load_banked_round(basis), SummationCandidate(),
+        measured=load_banked_round(measured),
+    )
+
+    assert result.delta is None
+    assert result.reason
     assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
     assert result.acceptance["judged_against"] is None
 

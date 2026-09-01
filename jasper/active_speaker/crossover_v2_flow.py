@@ -6261,12 +6261,14 @@ class CrossoverV2Session:
             )
             return None
 
-        tweeter_role = self._tweeter_role
-        if tweeter_role is None or capture_fc_hz is None:
-            # The commanded axis is a statement about a crossover: which corner
-            # the branches were composed at, and whether the applied profile ran
-            # the same one. A 1-way main declares no corner, so there is no
-            # previous graph to name and the probe stays honestly unavailable.
+        roles = self._role_names
+        if len(roles) > 1 and capture_fc_hz is None:
+            # The commanded axis over a PAIR is a statement about a crossover:
+            # which corner the branches were composed at, and whether the
+            # applied profile ran the same one. A capture that names none leaves
+            # the previous graph unnameable and the probe honestly unavailable.
+            # A 1-way main is not that case — it declares no corner because it
+            # has none, and its lone branch's chain is a complete graph.
             return _absent("no_crossover_to_command")
         seam = self._seams.applied_profile
         if seam is None:
@@ -6285,18 +6287,28 @@ class CrossoverV2Session:
         # closed with the corner hunt.) This check never counted doors: it
         # compares corners, so it covers whichever ones exist.
         applied_fc_hz = _commanded.profile_crossover_fc_hz(profile)
-        if applied_fc_hz is None:
+        if capture_fc_hz is None:
+            # The 1-way arm of the SAME comparison: this capture ran no corner,
+            # so a profile that names one ran a shape these branches are not a
+            # model of, and the disagreement is the same defect under the same
+            # name.
+            if applied_fc_hz is not None:
+                return _absent(
+                    "crossover_corner_moved",
+                    applied_fc_hz=round(applied_fc_hz, 3),
+                    capture_fc_hz=None,
+                )
+        elif applied_fc_hz is None:
             return _absent("applied_profile_names_no_corner")
         # A relative tolerance, not equality: both numbers are floats that have
         # been through a JSON round trip, and the case this refuses is 1500 vs
         # 1800, never 1500 vs 1500.0000001.
-        if not math.isclose(applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6):
+        elif not math.isclose(applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6):
             return _absent(
                 "crossover_corner_moved",
                 applied_fc_hz=round(applied_fc_hz, 3),
                 capture_fc_hz=round(float(capture_fc_hz), 3),
             )
-        woofer_role = self._woofer.role
         # The DRAFT's declared per-role polarity, which the measured branches
         # already carry (``program_analysis._compose_configured_path_ir``). The
         # profile records absolute flags, so without this the previous side is
@@ -6308,8 +6320,7 @@ class CrossoverV2Session:
         except ActiveSpeakerConfigError as exc:
             return _absent("draft_polarity_unreadable", error=str(exc))
         graph = _commanded.profile_graph_summation(
-            profile, woofer_role=woofer_role, tweeter_role=tweeter_role,
-            draft_inverted_by_role=draft_inverted,
+            profile, roles=roles, draft_inverted_by_role=draft_inverted,
         )
         if graph is None:
             return _absent("applied_profile_names_no_graph")
@@ -6317,19 +6328,17 @@ class CrossoverV2Session:
             response.role: response
             for response in (analysis.driver_responses or ())
         }
-        if woofer_role not in responses or tweeter_role not in responses:
-            return _absent("capture_has_no_branch_pair")
+        if any(role not in responses for role in roles):
+            return _absent("capture_missing_a_declared_branch")
         alignment = analysis.alignment
         predicted = _commanded.graph_predicted_sum(
-            # The WOOFER's grid, which is the grid ``plan_linearization`` builds
-            # the applied side on (``freqs = responses[woofer_role].freqs_hz``),
-            # so both sides of the subtraction land on one grid without an
-            # interpolation nobody asked for.
-            responses[woofer_role].freqs_hz,
+            # The LOWEST branch's grid, which is the grid ``plan_linearization``
+            # builds the applied side on, so both sides of the subtraction land
+            # on one grid without an interpolation nobody asked for.
+            responses[roles[0]].freqs_hz,
             {role: response.complex_tf for role, response in responses.items()},
             graph,
-            woofer_role=woofer_role,
-            tweeter_role=tweeter_role,
+            roles=roles,
             # The SAME gate the applied side's residual is derived through
             # (``program_analysis._build_candidate``): an anchor the aligner
             # refused is no anchor, and both sides then model the frame the

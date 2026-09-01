@@ -74,6 +74,10 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+)
+
 from ..flat_spec import FlatSpecReport, GradedSpec
 from .contracts import (
     AdoptionDecision,
@@ -787,15 +791,20 @@ def evaluate_round(
         # (no Fc, no crossover target, no trusted region) becomes "no band"
         # for free instead of needing its own translation.
         band_hz = _crossover_region_band_hz(post_analysis)
+        # …and, when there is no band, whether the speaker HAS no region or this
+        # round failed to establish the one it has. Both blocks below report
+        # absent either way; only this tells their two readers apart.
+        no_crossover = _no_crossover_topology(post_analysis)
         blend = solve_blend_correction(
             graded=graded_spec,
             band_hz=band_hz,
             incumbent=applied_blend_correction,
             previous_residual_db=previous_blend_residual_db,
+            no_crossover_reason=no_crossover,
         )
         region_benefit = evaluate_region_benefit(
             entry_baseline=before, post=after, band_hz=band_hz,
-            margin_db=margin_db,
+            margin_db=margin_db, no_crossover_reason=no_crossover,
         )
 
     result = verification_result(
@@ -894,6 +903,23 @@ def _crossover_region_band_hz(
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
         return None
     return (lo, hi)
+
+
+def _no_crossover_topology(post_analysis: "ProgramAnalysis | None") -> str | None:
+    """:data:`ABSOLUTE_NO_CROSSOVER_TOPOLOGY` when this speaker HAS no region.
+
+    Read off the same VERIFY absolute claim :func:`_crossover_region_band_hz`
+    reads, and only that one arm of it: every other ``not_evaluated`` reason
+    describes a region a round could not establish, which is a different fact
+    with a different next action from a 1-way main having none (#3480).
+    """
+
+    absolute = getattr(post_analysis, "verify_absolute", None)
+    if not isinstance(absolute, Mapping):
+        return None
+    if absolute.get("not_evaluated") != ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
+        return None
+    return ABSOLUTE_NO_CROSSOVER_TOPOLOGY
 
 
 def build_round_receipt(

@@ -33,6 +33,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import round_evidence
+from jasper.active_speaker.crossover_v2.blend_correction import BLEND_NO_INCUMBENT
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
@@ -61,10 +62,15 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
 from jasper.active_speaker.crossover_v2.verification import (
     BENEFIT_BASELINE_UNAVAILABLE,
     BENEFIT_GRID_MISMATCH,
+    BENEFIT_NO_REGION_BAND,
     BENEFIT_POST_UNAVAILABLE,
     BENEFIT_PROGRAM_MISMATCH,
     evaluate_benefit,
     pooled_residual,
+)
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    ABSOLUTE_NO_TRUSTED_BAND,
 )
 
 _MARK = "design_axis_mark"
@@ -1158,3 +1164,40 @@ def test_the_margin_is_positive_and_the_evaluator_accepts_it():
     assert verdict.status is BenefitStatus.INDETERMINATE
     assert verdict.evidence["improvement_db"] == pytest.approx(0.0)
     assert verdict.evidence["margin_db"] == pytest.approx(MEASURED_BENEFIT_MARGIN_DB)
+
+
+@pytest.mark.parametrize(
+    ("absolute", "blend_reason", "benefit_reason"),
+    [
+        (
+            {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY},
+            ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+            ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+        ),
+        (
+            {"not_evaluated": ABSOLUTE_NO_TRUSTED_BAND},
+            BLEND_NO_INCUMBENT,
+            BENEFIT_NO_REGION_BAND,
+        ),
+    ],
+    ids=["no_crossover_at_all", "region_not_established"],
+)
+def test_the_two_bandless_rounds_are_told_apart_by_both_region_blocks(
+    absolute, blend_reason, benefit_reason,
+):
+    """A 1-way main HAS no crossover; a 2-way round can fail to establish one.
+
+    Both leave the band absent and both blocks then report absent, and #3480's
+    rule is that one slug may not cover them: one remedy is to re-measure, the
+    other is that nothing is wrong and nothing ever will be. The second row is
+    here so a change that widened the new reason over it fails.
+    """
+    post = _post()
+    post.verify_absolute = absolute
+
+    evaluation = _round(post, _baseline_from(_post()))
+
+    assert evaluation.blend.reason == blend_reason
+    assert evaluation.blend.band_hz is None
+    assert evaluation.region_benefit.reason == benefit_reason
+    assert evaluation.region_benefit.status is BenefitStatus.INDETERMINATE

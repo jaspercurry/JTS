@@ -95,7 +95,7 @@ INCIDENT_RESIDUAL_OFFSET_DB = 3.2198
 FC_HZ = 1500.0
 FREQS_HZ = np.linspace(200.0, 20000.0, 2048)
 TRUSTED_BAND_HZ = (400.0, 16000.0)
-ROLES = {"woofer_role": "woofer", "tweeter_role": "tweeter"}
+ROLES = {"roles": ("woofer", "tweeter")}
 
 #: The correction filters the applied candidate emitted. Shape, not identity:
 #: the incident's own filter list was not retained in a form this test can read,

@@ -97,11 +97,9 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import chain_response
-from jasper.audio_measurement.program_analysis import (
-    predicted_branch_sum,
-    summed_model_residual_delay_us,
-)
+from jasper.audio_measurement.program_analysis import summed_model_residual_delay_us
+
+from .intervention import SummationFrame, compose_linearized_prediction
 
 __all__ = [
     "GraphSummation",
@@ -148,15 +146,20 @@ class GraphSummation:
 def profile_graph_summation(
     profile: Mapping[str, Any] | None,
     *,
-    woofer_role: str,
-    tweeter_role: str,
+    roles: Sequence[str],
     draft_inverted_by_role: Mapping[str, bool],
 ) -> GraphSummation | None:
     """Read one applied profile as a :class:`GraphSummation`, or ``None``.
 
+    ``roles`` is this speaker's branches LOWEST FIRST — one on a 1-way main,
+    two otherwise. Both of the frame conversions below are stated between
+    ``roles[0]`` and ``roles[-1]``, which on a lone branch are the same
+    declaration: it is delayed against nothing and inverted relative to
+    nothing, so the delay is zero and the sign is ``+1`` without a second arm.
+
     ``None`` — "this profile does not say what the speaker is playing" — for an
     absent profile, for one whose authoritative ``corrections`` mapping does not
-    carry BOTH roles, and for one that names a role without naming its
+    carry EVERY role, and for one that names a role without naming its
     ``gain_db``. It is never a graph that trims nothing: a fabricated unity
     graph would make the commanded axis claim the apply commands the whole of
     the previous profile's trim, which is the same class of wrong answer this
@@ -189,26 +192,26 @@ def profile_graph_summation(
     )
 
     corrections = profile_driver_corrections(profile)
-    woofer = corrections.get(woofer_role)
-    tweeter = corrections.get(tweeter_role)
-    if not isinstance(woofer, Mapping) or not isinstance(tweeter, Mapping):
+    entries: list[Mapping[str, Any]] = [
+        entry for role in roles
+        if isinstance(entry := corrections.get(role), Mapping)
+    ]
+    if not entries or len(entries) != len(roles):
         return None
-    woofer_gain, tweeter_gain = woofer.get("gain_db"), tweeter.get("gain_db")
-    if woofer_gain is None or tweeter_gain is None:
+    gains: list[Any] = [entry.get("gain_db") for entry in entries]
+    if any(gain is None for gain in gains):
         return None
+    lower, upper = entries[0], entries[-1]
     try:
-        trim_db = {
-            woofer_role: float(woofer_gain),
-            tweeter_role: float(tweeter_gain),
-        }
+        trim_db = {role: float(gain) for role, gain in zip(roles, gains)}
         # The profile records a non-negative magnitude on the delayed role
         # (``measured_crossover_candidate.driver_corrections``), so the sign is
-        # recovered from WHICH role carries it: a delayed tweeter is the
-        # positive direction of the analysis frame, a delayed woofer the
-        # negative one. Both are read rather than assuming only one is set.
+        # recovered from WHICH role carries it: a delayed upper branch is the
+        # positive direction of the analysis frame, a delayed lower one the
+        # negative. Both are read rather than assuming only one is set.
         delay_us = 1000.0 * (
-            float(tweeter.get("delay_ms") or 0.0)
-            - float(woofer.get("delay_ms") or 0.0)
+            float(upper.get("delay_ms") or 0.0)
+            - float(lower.get("delay_ms") or 0.0)
         )
     except (TypeError, ValueError):
         return None
@@ -218,10 +221,10 @@ def profile_graph_summation(
     # The frame conversion, in one place. The profile's flags are absolute and
     # the draft's are absolute; the model wants the difference between the two
     # relative polarities, because the branches already carry the draft's.
-    profile_flip = bool(woofer.get("inverted")) != bool(tweeter.get("inverted"))
+    profile_flip = bool(lower.get("inverted")) != bool(upper.get("inverted"))
     draft_flip = (
-        bool(draft_inverted_by_role.get(woofer_role))
-        != bool(draft_inverted_by_role.get(tweeter_role))
+        bool(draft_inverted_by_role.get(roles[0]))
+        != bool(draft_inverted_by_role.get(roles[-1]))
     )
     return GraphSummation(
         trim_db=trim_db,
@@ -232,7 +235,7 @@ def profile_graph_summation(
                 entry for entry in (linearization.get(role) or ())
                 if isinstance(entry, Mapping)
             )
-            for role in (woofer_role, tweeter_role)
+            for role in roles
         },
     )
 
@@ -300,26 +303,22 @@ def graph_predicted_sum(
     branch_tf: Mapping[str, Any],
     graph: GraphSummation,
     *,
-    woofer_role: str,
-    tweeter_role: str,
+    roles: Sequence[str],
     anchor_delay_us: float | None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """``(freqs_hz, magnitude_db)`` this graph would produce on these branches.
 
-    The same three owners the applied side is built from, in the same order and
-    with the same arguments, so the two curves differ by the GRAPH and by
-    nothing else:
+    THE SAME composition the applied side is built from —
+    :func:`~.intervention.compose_linearized_prediction`, which owns the
+    correction chain, the trimmed signed delayed sum, and the 1-way arm where
+    a lone branch is its own sum — so the two curves differ by the GRAPH and by
+    nothing else. Only the residual is this function's own, through
+    :func:`~jasper.audio_measurement.program_analysis.
+    summed_model_residual_delay_us`, which is the ONLY correct way to enter a
+    delay here (its docstring carries the double-counting hazard).
 
-    * :func:`~jasper.active_speaker.branch_chain.chain_response` for the
-      correction biquads — the repo's one biquad evaluator, and the same one
-      ``complex_correction_response`` bottoms out in, so a correction read back
-      off a profile is evaluated exactly as the fit's own was;
-    * :func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum`
-      for the trimmed, signed, delayed two-branch sum;
-    * :func:`~jasper.audio_measurement.program_analysis.
-      summed_model_residual_delay_us` for the residual, which is the ONLY
-      correct way to enter a delay here (its docstring carries the
-      double-counting hazard).
+    ``roles`` is this speaker's branches lowest first, on
+    :func:`profile_graph_summation`'s terms.
 
     **The anchor is this capture's, and it does NOT cancel** — that is why it
     has to be this capture's. It sets where the blend null sits, and a null is
@@ -336,22 +335,23 @@ def graph_predicted_sum(
     """
     try:
         freqs = np.asarray(freqs_hz, dtype=float)
-        woofer = np.asarray(branch_tf[woofer_role], dtype=np.complex128)
-        tweeter = np.asarray(branch_tf[tweeter_role], dtype=np.complex128)
-        summed = predicted_branch_sum(
-            woofer * chain_response(graph.linearization.get(woofer_role, ()), freqs),
-            tweeter * chain_response(graph.linearization.get(tweeter_role, ()), freqs),
-            float(graph.trim_db.get(woofer_role, 0.0)),
-            float(graph.trim_db.get(tweeter_role, 0.0)),
-            int(graph.polarity_sign),
-            freqs_hz=freqs,
-            residual_delay_us=summed_model_residual_delay_us(
-                anchor_delay_us, graph.delay_us,
+        return compose_linearized_prediction(
+            SummationFrame(
+                freqs_hz=freqs,
+                branch_tf={
+                    role: np.asarray(branch_tf[role], dtype=np.complex128)
+                    for role in roles
+                },
+                polarity_sign=int(graph.polarity_sign),
+                residual_delay_us=summed_model_residual_delay_us(
+                    anchor_delay_us, graph.delay_us,
+                ),
             ),
+            filters_by_role=graph.linearization,
+            role_attenuations_db=graph.trim_db,
         )
     except (KeyError, ValueError, TypeError, IndexError, AttributeError):
         return None
-    return freqs, 20.0 * np.log10(np.maximum(np.abs(summed), 1e-12))
 
 
 def commanded_delta(

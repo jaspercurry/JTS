@@ -57,6 +57,105 @@ from jasper.active_speaker.repeat_floor import (
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
+
+def rebank_round_as_no_crossover(session: Path) -> Path:
+    """Re-bank one bundle's round as the round a 1-way main actually banks.
+
+    The blend record is written by the SOLVER that writes it in production, at
+    the arm a speaker with no crossover region reaches, so this fixture cannot
+    state a shape no round produces. Public because the prescriber-status suite
+    reads the same round through the CLI.
+    """
+    from jasper.active_speaker.crossover_v2.blend_correction import (
+        solve_blend_correction,
+    )
+    from jasper.audio_measurement.program_analysis import (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    )
+
+    round_dir, _reason = round_artifact_dir(session)
+    assert round_dir is not None
+    path = round_dir / "round_receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt["round_measurements"]["blend"] = solve_blend_correction(
+        graded=None, band_hz=None, incumbent=(),
+        no_crossover_reason=ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    ).to_dict()
+    path.write_text(json.dumps(receipt))
+    return session
+
+
+def _way1_bundle(tmp_path: Path) -> Path:
+    session, _ = _bundle(tmp_path)
+    return rebank_round_as_no_crossover(session)
+
+
+def test_a_way1_packet_says_the_speaker_has_no_region_not_that_none_was_read(
+    tmp_path,
+):
+    """``field_null`` and "there is no crossover" are different next actions.
+
+    The first sends an operator back to the measurement; the second says the
+    band will never exist. #3480's rule is that one slug may not carry both, so
+    the round's own reason is what the region block publishes.
+    """
+    from jasper.audio_measurement.program_analysis import (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    )
+
+    packet = build_crossover_evidence_packet(_way1_bundle(tmp_path))
+
+    assert packet["crossover_region"]["available"] is False
+    assert packet["crossover_region"]["status"] == "not_evaluated"
+    assert packet["crossover_region"]["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+
+
+def test_a_way1_packet_shuts_the_two_request_time_doors_by_name(tmp_path):
+    """Alignment and topology both describe a handoff between two branches.
+
+    The session boundary already refuses them for this shape, so publishing
+    their contracts would document doors this speaker cannot open. Each is
+    absent WITH the refusal the boundary would give, never a bare omission.
+    """
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        ALIGNMENT_NO_CROSSOVER_REGION,
+    )
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        TOPOLOGY_NO_CROSSOVER_REGION,
+    )
+
+    from jasper.audio_measurement.program_analysis import (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    )
+
+    packet = build_crossover_evidence_packet(_way1_bundle(tmp_path))
+    doors = packet["request_time_prescriptions"]
+
+    assert doors["alignment"]["available"] is False
+    assert doors["alignment"]["reason"] == ALIGNMENT_NO_CROSSOVER_REGION
+    assert doors["topology"]["available"] is False
+    assert doors["topology"]["reason"] == TOPOLOGY_NO_CROSSOVER_REGION
+    # …and all three shut doors reach the list a reader scans for what this
+    # packet could not answer, so the two blocks cannot disagree with it.
+    unanswered = {
+        entry["field"]: entry["reason"] for entry in packet["not_evaluated"]
+    }
+    assert unanswered["request_time_prescriptions.alignment"].startswith(
+        ALIGNMENT_NO_CROSSOVER_REGION
+    )
+    assert unanswered["request_time_prescriptions.topology"].startswith(
+        TOPOLOGY_NO_CROSSOVER_REGION
+    )
+    assert unanswered["crossover_region.band_hz"].startswith(
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+    )
+    # …and a 2-way round still gets both contracts.
+    session, _ = _bundle(tmp_path / "two-way")
+    two_way = build_crossover_evidence_packet(session)["request_time_prescriptions"]
+    assert two_way["alignment"]["fields"]
+    assert two_way["topology"]["fields"]
+
+
 # --------------------------------------------------------------------------- #
 # accuracy_budget (ticket 6.5)
 # --------------------------------------------------------------------------- #
