@@ -5160,13 +5160,17 @@ class CrossoverV2Session:
             prompt=prompt.text,
             role=prompt.role,
             offset_cm=float(prompt.offset_cm),
-            at_mark=float(prompt.offset_cm) == 0.0,
+            at_mark=(
+                float(prompt.offset_cm) == 0.0
+                and float(prompt.vertical_offset_cm) == 0.0
+            ),
             curves=tuple(curves),
         )
         log_event(
             logger, "correction.crossover_v2_lateral_pose",
             session_id=self.session_id, pose_id=pose.pose_id, index=index,
             attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
+            vertical_deg=position_elevation_deg(prompt),
             at_mark=pose.at_mark, curves=len(pose.curves),
         )
         # Outside the lock below, unlike the cloud's in-lock retention: that
@@ -5182,8 +5186,6 @@ class CrossoverV2Session:
                 [p for p in self._lateral_poses if p.index != index] + [pose],
                 key=lambda p: p.index,
             )
-            # ``pose_id``, never ``position_id``: this value IS a pose id, and
-            # the two words key different questions — see :class:`LateralPose`.
             payload: dict[str, Any] = {"pose_id": pose.pose_id}
             if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
                 payload.update(self._close_lateral_walk())

@@ -272,10 +272,6 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
             {
                 "angle_deg": stop.angle_deg,
                 "regime": stop.regime,
-                # Written unconditionally and read back with a default, on the
-                # polarity pair's own terms: a document spooled before the
-                # elevation axis existed reads as a walk at mark height and the
-                # schema version does not move.
                 "elevation_deg": stop.elevation_deg,
             }
             for stop in request.stops
@@ -520,9 +516,8 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
             AngleStop(
                 entry.get("angle_deg"),  # type: ignore[arg-type]
                 str(entry.get("regime")),
-                # Defaulted on ABSENCE only: a document that states the key
-                # hands whatever it states to the one validator, uncoerced, for
-                # the reason the angle above is handed over uncoerced.
+                # A document staged before this key existed is a walk at
+                # mark height, so the schema version does not move.
                 entry.get("elevation_deg", 0),  # type: ignore[arg-type]
             )
         )

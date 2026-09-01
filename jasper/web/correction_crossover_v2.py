@@ -2169,8 +2169,6 @@ def _take_staged_angle_walk(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
         angles=",".join(f"{position_angle_deg(p):+d}" for p in prompts),
-        # The orthogonal half of the same receipt: a two-axis walk whose journal
-        # named only its bearings would read as one taken at mark height.
         elevations=",".join(f"{position_elevation_deg(p):+d}" for p in prompts),
         mover=request.mover,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),

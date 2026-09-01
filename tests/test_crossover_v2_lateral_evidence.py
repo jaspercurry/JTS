@@ -1184,11 +1184,17 @@ def test_a_raised_pose_banks_the_elevation_the_operator_was_SENT_to():
     and a raised pose recorded at mark height would place the microphone
     somewhere it never was. The axis word stays ``horizontal`` because the pose
     still commands a bearing — it is COMPOUND, not vertical.
+
+    ``at_mark`` answers the same question on both axes at once: a pose raised
+    over the mark with no bearing at all is not AT the mark, and one that says
+    it is brackets the walk's drift with a pose the operator was standing up
+    for.
     """
     prompts = ac.session_lateral_walk(
         ac.AngleCaptureRequest(
             stops=(
                 ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0),
+                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 10),
                 ac.AngleStop(22, ac.REGIME_PER_DRIVER, 20),
                 ac.AngleStop(-22, ac.REGIME_PER_DRIVER, -20),
             ),
@@ -1211,8 +1217,9 @@ def test_a_raised_pose_banks_the_elevation_the_operator_was_SENT_to():
     _evidence_walk(c, prompts)
 
     banked = [meta for _r, meta in retained]
-    assert [m["vertical_deg"] for m in banked] == [0, 20, -20]
-    assert [m["position_deg"] for m in banked] == [0, 22, -22]
+    assert [m["vertical_deg"] for m in banked] == [0, 10, 20, -20]
+    assert [m["position_deg"] for m in banked] == [0, 0, 22, -22]
+    assert [m["at_mark"] for m in banked] == [True, False, False, False]
     assert {m["position_axis"] for m in banked} == {
         spatial.POSITION_AXIS_HORIZONTAL
     }

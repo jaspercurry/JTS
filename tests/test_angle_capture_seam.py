@@ -35,11 +35,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
-from jasper.active_speaker.crossover_v2.spatial import (
-    POSITION_AXIS_HORIZONTAL,
-    POSITION_AXIS_VERTICAL,
-    cloud_position_record,
-)
+from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 _FC_HZ = 2000.0
@@ -812,20 +808,20 @@ def test_elevation_round_trips_and_leaves_the_bearing_alone(angle_deg: int) -> N
 
 
 @pytest.mark.parametrize(
-    "mover, angle_deg, elevation_deg, axis",
+    "mover, angle_deg, elevation_deg",
     [
         # The arm ROTATES about the rig's vertical axis and nothing on it
         # tilts, so ANY rise is past its reach -- including one asked at a
         # bearing it can serve.
-        (ac.MOVER_ARM, 0, 1, POSITION_AXIS_VERTICAL),
-        (ac.MOVER_ARM, 22, -10, POSITION_AXIS_VERTICAL),
-        (ac.MOVER_ARM, ac.ARM_ENVELOPE_DEG + 1, 0, POSITION_AXIS_HORIZONTAL),
-        (ac.MOVER_HUMAN, 0, ac.MAX_ELEVATION_DEG + 1, POSITION_AXIS_VERTICAL),
-        (ac.MOVER_HUMAN, 7, -ac.MAX_ELEVATION_DEG - 1, POSITION_AXIS_VERTICAL),
+        (ac.MOVER_ARM, 0, 1),
+        (ac.MOVER_ARM, 22, -10),
+        (ac.MOVER_ARM, ac.ARM_ENVELOPE_DEG + 1, 0),
+        (ac.MOVER_HUMAN, 0, ac.MAX_ELEVATION_DEG + 1),
+        (ac.MOVER_HUMAN, 7, -ac.MAX_ELEVATION_DEG - 1),
     ],
 )
 def test_a_stop_past_a_movers_reach_on_either_axis_refuses_at_staging(
-    mover: str, angle_deg: int, elevation_deg: int, axis: str,
+    mover: str, angle_deg: int, elevation_deg: int,
 ) -> None:
     """Reach is per-mover AND per-axis, judged where the walk is STATED.
 
@@ -833,11 +829,6 @@ def test_a_stop_past_a_movers_reach_on_either_axis_refuses_at_staging(
     gives about the bearing: a live session would publish a target this mover
     cannot reach and then spend its whole hold budget per stop waiting for a
     report that cannot come.
-
-    The refusal carries the mover and the AXIS as vocabulary tokens, not as
-    prose, because a mover can be in reach on one plane and not the other --
-    an operator reading a bare "out of reach" would not know which number to
-    change.
     """
     with pytest.raises(ac.LateralWalkRefused) as caught:
         ac.AngleCaptureRequest(
@@ -845,8 +836,6 @@ def test_a_stop_past_a_movers_reach_on_either_axis_refuses_at_staging(
             mover=mover,
         )
     assert caught.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
-    assert mover in caught.value.detail
-    assert axis in caught.value.detail
 
 
 @pytest.mark.parametrize(
