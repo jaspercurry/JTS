@@ -1078,7 +1078,7 @@ def test_no_lateral_poses_reads_as_not_run(peak_artifact):
 
 def _bank_lateral_pose(
     bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
-    relay: str = "wired-TEST",
+    vertical_deg: int = 0, relay: str = "wired-TEST",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` -- the exact
     fields :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -1096,6 +1096,7 @@ def _bank_lateral_pose(
             "kind": POSITION_EVIDENCE_KIND,
             "phase": fx.PHASE_LATERAL,
             "position_deg": position_deg,
+            "vertical_deg": vertical_deg,
             "curves": curves,
         })
     )
@@ -1110,6 +1111,9 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     swept the feature, then the retake. Latest attempt wins: exactly one
     persistence entry, the retake's, resolved. An include-all regression
     would read two poses; an oldest-wins regression would read unresolved.
+
+    The stop is a RAISED seat, so the entry's pose key carries both halves
+    of the pose -- bearing and elevation -- off the banked file.
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     superseded = _pose_curve(
@@ -1123,6 +1127,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
             bundle,
             take_id=take_id,
             position_deg=-20,
+            vertical_deg=10,
             curves=[{
                 "role": "woofer",
                 "band_hz": list(banked_curve.band_hz),
@@ -1141,6 +1146,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     assert len(persistence) == 1
     assert persistence[0]["pose_id"] == "lateral_00_a02"
     assert persistence[0]["position_deg"] == -20
+    assert persistence[0]["vertical_deg"] == 10
     assert persistence[0]["resolved"] is True
 
 

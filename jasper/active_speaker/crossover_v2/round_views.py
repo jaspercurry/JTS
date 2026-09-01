@@ -1433,7 +1433,15 @@ def pooled_window_horizontal(
     grid = np.asarray(grid_hz, dtype=float)
     by_bearing: dict[float, list[np.ndarray]] = {}
     for curve in load_round_pose_curves(Path(bundle_dir)):
-        if curve.role != _SUMMED_CURVE_ROLE or curve.position_deg is None:
+        # A raised pose is SKIPPED rather than given its own bucket: this
+        # pool is the lateral walk's horizontal window, and an elevated seat
+        # sharing a bearing with a mark-height one is a different measurement,
+        # not a repeat visit to the same stop.
+        if (
+            curve.role != _SUMMED_CURVE_ROLE
+            or curve.position_deg is None
+            or curve.vertical_deg
+        ):
             continue
         resampled_db = np.interp(grid, curve.freqs_hz, curve.magnitude_db)
         in_band = (grid >= curve.band_hz[0]) & (grid <= curve.band_hz[1])

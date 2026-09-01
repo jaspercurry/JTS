@@ -1419,7 +1419,8 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 
 def _bank_lateral_pose(
     session_dir: Path, *, take_id: str, position_deg: int,
-    curves: list[dict[str, Any]], relay: str = "wired-TEST",
+    curves: list[dict[str, Any]], vertical_deg: int = 0,
+    relay: str = "wired-TEST",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` lateral-pose
     take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -1436,6 +1437,7 @@ def _bank_lateral_pose(
         "kind": POSITION_EVIDENCE_KIND,
         "phase": PHASE_LATERAL,
         "position_deg": position_deg,
+        "vertical_deg": vertical_deg,
         "curves": curves,
     }))
 
@@ -1455,6 +1457,11 @@ def test_pooled_window_horizontal_power_averages_a_hand_computed_two_curve_case(
 
     A (0 deg): 0 dB -> power 1.0.  B (+7 deg): 10*log10(3) dB -> power 3.0.
     Power mean = 2.0 -> pooled dB = 10*log10(2) ~= 3.0103 dB, at every bin.
+
+    A third stop shares A's bearing but sits 10 deg above mark height, at a
+    wild power (100.0): this pool is the HORIZONTAL window, so a raised seat
+    is skipped rather than bucketed under the bearing it shares -- it moves
+    neither the curve count, the bearing set, nor the arithmetic.
     """
     session_dir = tmp_path / "bundle" / "sess1"
     grid = np.array([1000.0, 2000.0])
@@ -1466,6 +1473,10 @@ def test_pooled_window_horizontal_power_averages_a_hand_computed_two_curve_case(
     _bank_lateral_pose(
         session_dir, take_id="lateral_02_a01", position_deg=7,
         curves=[_summed_curve(grid, np.full_like(grid, b_db))],
+    )
+    _bank_lateral_pose(
+        session_dir, take_id="lateral_04_a01", position_deg=0, vertical_deg=10,
+        curves=[_summed_curve(grid, np.full_like(grid, 20.0))],
     )
 
     result = pooled_window_horizontal(session_dir, grid_hz=grid)

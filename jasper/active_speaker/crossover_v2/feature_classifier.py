@@ -753,6 +753,10 @@ class RoundPoseCurve:
     freqs_hz: np.ndarray
     magnitude_db: np.ndarray
     band_hz: tuple[float, float]
+    #: Signed whole-degree elevation above mark height. Carried beside
+    #: ``position_deg`` because the two together are the pose key: a pooling
+    #: read has to tell a raised seat from the bearing it shares.
+    vertical_deg: int = 0
 
 
 def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
@@ -811,6 +815,7 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
                 RoundPoseCurve(
                     pose_id=pose_id,
                     position_deg=row.position_deg,
+                    vertical_deg=row.vertical_deg,
                     role=role,
                     freqs_hz=freqs_arr,
                     magnitude_db=mag_arr,
@@ -1876,6 +1881,7 @@ def _pose_reading(
     base: dict[str, Any] = {
         "pose_id": curve.pose_id,
         "position_deg": curve.position_deg,
+        "vertical_deg": curve.vertical_deg,
         "role": curve.role,
         "resolved": False,
         "pooled_db": None,

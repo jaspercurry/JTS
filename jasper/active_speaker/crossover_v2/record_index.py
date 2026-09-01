@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Selecting banked takes: seven columns, rescanned from the files each read.
+"""Selecting banked takes: eight columns, rescanned from the files each read.
 
 A campaign is dozens of takes across positions and candidates, and without this
 the only way to find one is to glob a directory and parse every hit by hand.
@@ -47,6 +47,7 @@ class Measurement:
     kind: str
     phase: str
     position_deg: int | None
+    vertical_deg: int
     candidate_id: str
     captured_at: str | None
 
@@ -92,7 +93,7 @@ def _captured_at(value: Any) -> str | None:
 
 
 def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
-    """The seven columns off one banked file, or ``None`` if it is not a take.
+    """The eight columns off one banked file, or ``None`` if it is not a take.
 
     Read off the file's own shape — the enveloped payload, not the record
     handed to ``bank`` — so a selection reads the bytes that were banked.
@@ -105,6 +106,9 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         _text(document.get(MEASURE_KIND_KEY)),
         _text(document.get("phase")),
         _position_deg(document.get("position_deg")),
+        # A pose is always at SOME height: absent or malformed elevation
+        # reads as the mark, never ``None``.
+        _position_deg(document.get("vertical_deg")) or 0,
         _text(document.get("candidate_id")),
         _captured_at(document.get("captured_at")),
     )
@@ -145,6 +149,7 @@ def bundle_measurements(
     kind: str | None = None,
     phase: str | None = None,
     position_deg: int | None = None,
+    vertical_deg: int | None = None,
     candidate_id: str | None = None,
 ) -> tuple[Measurement, ...]:
     """One bundle's takes, matching every filter — the offline reader's door.
@@ -154,7 +159,7 @@ def bundle_measurements(
     reconcile. It costs nothing these callers were not already paying: each
     of them opens every selected take anyway.
 
-    Four filter axes and not seven: these are the ones the banked corpus is
+    Five filter axes and not eight: these are the ones the banked corpus is
     actually asked for — ``position_cycle``'s ``takes_by_position`` and its
     kind listing, the phase every take reader selects on
     (:func:`~.position_cycle.read_lateral_take` and its entry-baseline
@@ -168,6 +173,12 @@ def bundle_measurements(
     ``phase`` is what a take IS — the walk pose, the entry baseline, a CHECK —
     where ``kind`` is what it MEASURES (baseline / candidate / verify). Two
     questions, two columns, exactly as ``contracts.MEASURE_KIND_KEY`` says.
+
+    ``position_deg`` and ``vertical_deg`` are ONE key, not two axes that happen
+    to sit beside each other: a pose is a bearing AND a height, so a selector
+    naming only the bearing would hand a raised seat to a caller asking for the
+    design axis. Both stay ``None``-means-no-filter here like every other
+    axis; it is the pose readers above this that pin the height they mean.
 
     Ordered by ``path`` and not by ``captured_at``: the timestamp is the
     record's own and can be absent, where the path is the take's key —
@@ -184,5 +195,6 @@ def bundle_measurements(
         if (kind is None or row.kind == kind)
         and (phase is None or row.phase == phase)
         and (position_deg is None or row.position_deg == position_deg)
+        and (vertical_deg is None or row.vertical_deg == vertical_deg)
         and (candidate_id is None or row.candidate_id == candidate_id)
     )
