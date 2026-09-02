@@ -158,6 +158,53 @@ def test_level_meter_drain_reraises_a_reader_failure():
     raise AssertionError("a dead mic must surface as a loud drain failure")
 
 
+def test_level_meter_start_survives_reader_death_after_first_chunk():
+    """#2797: a scheduling gap between the reader delivering its first good
+    chunk and start() checking reader-error state could convert a healthy
+    mic into "the microphone is gone". Deterministically injects the exact
+    ordering — first chunk delivered, then a reader failure, THEN start()
+    observes — by making start()'s post-wait check block until the second
+    read has already failed, and asserts start() still succeeds; the later
+    death must surface on drain() instead."""
+    reached_second_read = threading.Event()
+
+    class OneGoodThenDeadPcm:
+        def __init__(self):
+            self._reads = 0
+
+        def read(self):
+            self._reads += 1
+            if self._reads == 1:
+                return 16, _frames_bytes([(1000, 0)] * 16)
+            reached_second_read.set()
+            raise OSError("mic hiccup right after the first chunk")
+
+        def close(self):
+            pass
+
+    meter = WiredLevelMeter(
+        "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS,
+        pcm_factory=OneGoodThenDeadPcm,
+    )
+    real_wait = meter._first_chunk.wait
+
+    def wait_then_let_reader_race_ahead(timeout=None):
+        ok = real_wait(timeout)
+        assert reached_second_read.wait(timeout=2.0), (
+            "reader never reached its second read"
+        )
+        return ok
+
+    meter._first_chunk.wait = wait_then_let_reader_race_ahead
+    try:
+        meter.start(ready_timeout_s=5.0)
+    finally:
+        meter.stop()
+
+    with pytest.raises(WiredCaptureError, match="mic hiccup"):
+        meter.drain()
+
+
 def test_level_meter_stop_is_idempotent_and_closes_the_pcm():
     pcm = FakePcm([(16, [(1000, 0)] * 16)])
     meter = WiredLevelMeter(
