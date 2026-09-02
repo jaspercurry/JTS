@@ -1385,7 +1385,12 @@ def _session_primed_for_confirmed_revert(tmp_path):
     """
     from jasper.audio_measurement import sweep
 
-    from .correction_session_fixtures import make_measurement_session
+    from .correction_session_fixtures import (
+        default_bass_profile_summary,
+        make_measurement_session,
+        seed_prior_sound_config,
+        stateful_camilla_stub,
+    )
     from .test_correction_session import (
         _measure_one_position,
         _run_verify,
@@ -1393,16 +1398,24 @@ def _session_primed_for_confirmed_revert(tmp_path):
     )
 
     sess = make_measurement_session(tmp_path)
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
 
     async def _prime():
         async def fake_play(path, **kw):
             pass
 
         async def fake_camilla(path: str) -> bool:
+            note_loaded(path)
             return True
 
         await _measure_one_position(sess, room_gain_db=0.5)
-        await sess.apply(fake_camilla)
+        await sess.apply(
+            fake_camilla,
+            camilla_get_config=camilla_get_config,
+            prepare_guard=default_bass_profile_summary,
+        )
         await _run_verify(sess, verify_room_gain_db=20.0)
         assert sess.acceptance["verdict"] == "revert_pending_confirm"
         # Arm the confirmatory verify; the handler does the upload.
