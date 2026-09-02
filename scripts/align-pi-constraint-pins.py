@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Align deploy/constraints-pi.txt's cross-ecosystem pins to uv.lock.
+"""Align deploy/constraints-pi.txt's pins to uv.lock.
 
 ``deploy/constraints-pi.txt`` is Pi-generated (``generate-pi-constraints.sh``)
 and ``uv.lock`` is laptop/CI-resolved, so Dependabot can only ever move one
@@ -15,9 +15,10 @@ drift class. That is the guard working — a fresh deploy really would hit
 lockfiles and editing pins one at a time (see the 2026-08-08 note in the
 constraints header). This makes that step one command.
 
-It rewrites ONLY the packages in ``CROSS_ECOSYSTEM_PIN_CHAIN``, which is the
-same table the guard asserts on; every other line is left byte-identical.
-A full refresh still comes from a real Pi via ``generate-pi-constraints.sh``.
+It rewrites every package present in BOTH files (``walked_packages`` below)
+to uv.lock's version, except the documented ``EXCEPTIONS``; every other line
+is left byte-identical. A full refresh still comes from a real Pi via
+``generate-pi-constraints.sh``.
 
 Usage:
   python3 scripts/align-pi-constraint-pins.py            # rewrite in place
@@ -38,30 +39,13 @@ UV_LOCK = ROOT / "uv.lock"
 
 _PIN_RE = re.compile(r"^([A-Za-z0-9._-]+)==([^\s;]+)$")
 
-# Packages whose constraints-pi.txt pin must track the co-resolved uv.lock.
-# Reasons are load-bearing — verified against live PyPI metadata on
-# 2026-07-11 (#1275). Names are PEP 503 canonical. This is the single owner
-# of the table; tests/test_constraints_pi_resolvable.py imports it.
-CROSS_ECOSYSTEM_PIN_CHAIN: dict[str, str] = {
-    # pydantic hard-pins pydantic-core to an EXACT ==version
-    # (pydantic 2.13.4 -> pydantic-core==2.46.4). Bumping pydantic-core
-    # alone (dependabot #745) is ResolutionImpossible.
-    "pydantic": "drives the pydantic-core exact pin",
-    "pydantic-core": "pydantic pins this with ==; must track pydantic (#745)",
-    # Protobuf is an explicit [full] pin shared by the MTA parser, ONNX
-    # Runtime, and the Google API proto stack. Keep every member aligned
-    # across uv and the Pi overlay so Dependabot cannot move one side alone.
-    "protobuf": "explicit shared runtime pin",
-    "gtfs-realtime-bindings": "subway fallback wire-schema binding",
-    "google-api-core": "2.31.0+ admits protobuf 7 (<8)",
-    "googleapis-common-protos": "1.74.0+ floor protobuf>=4.25.8",
-    "proto-plus": "1.28.0+ floor protobuf>=4.25.8",
-    "onnxruntime": "1.27.0+ floor protobuf>=4.25.8",
-    # CamillaController deliberately uses websocket-client's private _ws
-    # handle plus abort()/default-timeout semantics to stop and drain pinned
-    # pycamilladsp workers. CI and the Pi must exercise the same version.
-    "websocket-client": "private CamillaDSP abort/timeout transport contract",
-}
+# Packages that legitimately pin a different version in constraints-pi.txt
+# than uv.lock, keyed by PEP 503 canonical name, with a one-line reason.
+# Empty today (#2256) — everything present in both files is expected to
+# agree. This is the single owner of the exception set;
+# tests/test_constraints_pi_resolvable.py imports it, so the guard and the
+# tool that repairs its findings can never disagree about scope.
+EXCEPTIONS: dict[str, str] = {}
 
 
 def canon(name: str) -> str:
@@ -87,11 +71,21 @@ def constraint_versions(text: str) -> dict[str, str]:
     return pins
 
 
+def walked_packages(constraints_text: str, lock: dict[str, str]) -> set[str]:
+    """Canonical names present in both files, minus documented EXCEPTIONS.
+
+    This is the scope of pin agreement: every package the overlay and the
+    lock both pin, except the ones EXCEPTIONS says may legitimately differ.
+    """
+    return (set(constraint_versions(constraints_text)) & set(lock)) - set(EXCEPTIONS)
+
+
 def align(constraints_text: str, lock: dict[str, str]) -> tuple[str, list[str]]:
     """Return the rewritten constraints text and one line per changed pin.
 
     The original name spelling is preserved; only the version moves.
     """
+    in_scope = walked_packages(constraints_text, lock)
     changes: list[str] = []
     lines = constraints_text.splitlines(keepends=True)
     for index, line in enumerate(lines):
@@ -100,10 +94,10 @@ def align(constraints_text: str, lock: dict[str, str]) -> tuple[str, list[str]]:
             continue
         name, current = match.group(1), match.group(2)
         key = canon(name)
-        if key not in CROSS_ECOSYSTEM_PIN_CHAIN:
+        if key not in in_scope:
             continue
-        wanted = lock.get(key)
-        if wanted is None or wanted == current:
+        wanted = lock[key]
+        if wanted == current:
             continue
         newline = "\n" if line.endswith("\n") else ""
         lines[index] = f"{name}=={wanted}{newline}"
@@ -122,27 +116,11 @@ def main(argv: list[str] | None = None) -> int:
 
     original = CONSTRAINTS.read_text(encoding="utf-8")
     lock = uv_lock_versions(UV_LOCK.read_text(encoding="utf-8"))
-    required = set(CROSS_ECOSYSTEM_PIN_CHAIN)
-    missing_lock = sorted(required - set(lock))
-    missing_constraints = sorted(required - set(constraint_versions(original)))
-    if missing_lock:
-        print(
-            f"pin-chain packages missing from uv.lock: {missing_lock}",
-            file=sys.stderr,
-        )
-    if missing_constraints:
-        print(
-            "pin-chain packages missing from deploy/constraints-pi.txt: "
-            f"{missing_constraints}",
-            file=sys.stderr,
-        )
-    if missing_lock or missing_constraints:
-        return 2
 
     updated, changes = align(original, lock)
 
     if not changes:
-        print("deploy/constraints-pi.txt: pin chain already matches uv.lock")
+        print("deploy/constraints-pi.txt: already matches uv.lock")
         return 0
 
     for change in changes:
