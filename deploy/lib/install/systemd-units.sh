@@ -263,7 +263,7 @@ install_hid_accessory_unit_files() {
 # `systemctl start` on a unit whose file was never installed exits 1. The full
 # profile calls this from inside its rollback transaction below, so `install`
 # here resolves to the transactional wrapper.
-# See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+# See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
 install_voice_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
@@ -1097,7 +1097,7 @@ park_streambox_brain_units() {
     # The marker's only writer (jasper-aec-reconcile) is parked above, so a
     # stale one would condition-fail every jasper-voice start the accessory
     # reconciler issues for a paired mic remote.
-    # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     rm -f "${STATE_DIR}/voice-input-absent"
 }
 

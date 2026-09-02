@@ -124,7 +124,7 @@ PROFILE_CAPABILITIES: Mapping[str, frozenset[Capability]] = {
     # into a conversational endpoint — but not WAKE_DETECTION: the Zero 2 W
     # lacks the headroom for always-on wake inference (see the Capability
     # docstring above). See
-    # docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
+    # docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
     STREAMBOX_INSTALL_PROFILE: frozenset({Capability.ASSISTANT}),
 }
 

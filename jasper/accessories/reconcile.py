@@ -471,7 +471,7 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
       on such a unit *succeeds*, so never start one: its
       ``clear_voice_input_absent`` runs ``systemctl enable
       jasper-voice.service``, and a box whose voice follows the accessory mic
-      owns that unit with start/stop only (ADR-0216).
+      owns that unit with start/stop only (ADR-0217).
 
     Reads ``LoadState``/``UnitFileState`` rather than branching on an exit code,
     matching ``jasper/source_intent.py``. Any unexpected failure answers
@@ -561,7 +561,7 @@ def voice_follows_accessory_mic() -> bool:
     detection. Nothing installs ``jasper-aec-reconcile`` there, so no gate
     owner exists to hand the decision back to and the paired remote is the only
     microphone: this reconciler owns ``jasper-voice.service`` outright. See
-    docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
 
     An unreadable install role answers False, which keeps the gate-owner
     handoff — the conservative direction, since that path never starts a

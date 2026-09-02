@@ -568,7 +568,7 @@
 
         <!-- wake_detection, not voice_brain: the Pause button posts
              /mic/mute, which is off a streambox's control route table
-             (jasper/control/server.py). See ADR-0216. -->
+             (jasper/control/server.py). See ADR-0217. -->
         <section class="control-section" data-requires="wake_detection" hidden>
           <div class="control-head">
             <h2 class="eyebrow">Voice assistant</h2>
@@ -678,7 +678,7 @@
            served only on the full profile (nginx-jasper-streambox.conf has
            no location for them, and enable_streambox_web_sockets enables no
            socket). Keying them on ASSISTANT is the follow-up that also makes
-           a streambox serve them. Same for Integrations below. ADR-0216. -->
+           a streambox serve them. Same for Integrations below. ADR-0217. -->
       <section class="settings-section" aria-labelledby="assistant-heading" data-requires="wake_detection" hidden>
         <h2 class="eyebrow group-title" id="assistant-heading">Assistant</h2>
         <div class="settings-list">

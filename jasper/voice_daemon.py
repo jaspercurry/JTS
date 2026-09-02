@@ -905,7 +905,7 @@ def _configured_wake_legs(
       reads the marker and passes ``wake_detection_supported``; ``Config``
       stays env-only.
     * ``jasper-aec-reconcile`` published "no local mic" while an accessory
-      offers a manual source. See ADR-0216.
+      offers a manual source. See ADR-0217.
 
     Either way the empty plan and "no primary mic" agree by construction
     rather than by two derivations that can disagree — building the
@@ -1137,7 +1137,7 @@ class WakeLoop:
         # None on a push-to-talk-only daemon: every reader below is already
         # off on a button turn (barge-in refused, server VAD refused, the
         # endpointer bypassed), and `SpeechVAD()` is what pulls openwakeword
-        # + onnxruntime into resident memory. See ADR-0216.
+        # + onnxruntime into resident memory. See ADR-0217.
         self._vad: SpeechVAD | None = vad
         if self._vad is None and not self._push_to_talk_only:
             self._vad = SpeechVAD()

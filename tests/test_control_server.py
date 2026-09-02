@@ -382,7 +382,7 @@ def test_streambox_assistant_routes_follow_the_assistant_grant(
     """A streambox granted Capability.ASSISTANT serves the assistant's own
     surface — the two push-to-talk turn boundaries its paired remote's
     bridge posts, cue playback, and restarting the unit. Without the grant
-    they stay off the route table. See ADR-0216."""
+    they stay off the route table. See ADR-0217."""
     from jasper.install_profile import Capability
 
     _grant_streambox(monkeypatch, *([Capability.ASSISTANT] if assistant else []))

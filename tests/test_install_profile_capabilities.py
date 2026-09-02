@@ -318,7 +318,7 @@ def test_wake_detection_key_tracks_the_capability():
 def test_streambox_grants_assistant_without_wake_detection():
     """The Bluetooth-remote split.
 
-    See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
+    See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
     """
     assert PROFILE_CAPABILITIES["full"] == frozenset(
         {Capability.ASSISTANT, Capability.WAKE_DETECTION},
