@@ -68,8 +68,12 @@ sudo -n /opt/jasper/.venv/bin/jasper-declare-geometry set \
   --speaker-height-in 33 --mic-height-in 33 --distance-in 39
 ```
 
-(`/var/lib/jasper` is the daemon's `StateDirectory`, so the login user cannot
-write it without `sudo`.)
+(`/var/lib/jasper` is the daemon's `StateDirectory`, so the login user can
+neither write nor read it without `sudo`.) Read it back with
+`sudo -n /opt/jasper/.venv/bin/jasper-declare-geometry show`. Both its derived
+lines are labelled *at declared distance; captures use their own* — the rule
+in the next paragraph — and it exits 2 both for "nothing declared" and for
+"could not read it", so the sentence on stderr is what separates them.
 
 From then on every gate disclosure and every spec report carries
 `entanglement_floor_source = declared_geometry` beside the floor itself, and the
@@ -569,9 +573,8 @@ no reflection was measured and no geometry was declared — the finder's
 thresholds are unreachable at the geometric first bounce on this rig class, so
 `search_span_bound` is structural rather than incidental (#3502) — and
 **unknown is not clean**. It says nothing was proven, which is the opposite of
-saying nothing is there. Below the entanglement floor the honest instruments
-are physical, not analytical: the close-reference capture (#3501) and
-elevation poses.
+saying nothing is there. What to do about a feature caught between the two
+floors is §6a: the instruments there are physical, not a longer window.
 
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
 (`classify_delta_probe`) grades realized against commanded — `matched`,
@@ -611,6 +614,56 @@ flat.** On-axis-flat above beaming realizes hot and sounds bright; accept a
 gently falling on-axis top octave. A top-octave lift that is a declared-class
 continuation rather than a measured claim discloses as
 `envelope_beyond_measurement_confidence` — treat it as the reservation it is.
+
+### 6a. Room or speaker — the ladder for a feature between the two floors
+
+A feature above the trusted floor and below the entanglement floor is resolved
+and room-entangled at once, and no window length separates it there. Climb the
+rungs in order, stop at the first one that answers, and hold the frame rule the
+whole way: **each instrument states its dB in its own frame**, so what carries
+across two of them is a ratio, never a level. A sweep's dB is not a spec-table
+dB and the two must never be subtracted.
+
+**Rung 1 — the two floors, off the spec report.** Read
+`entanglement_floor_source` BEFORE `entanglement_floor_hz`: `unknown` means
+nothing was proven, and the climb then starts at §0's declaration rather than
+here. Then `trusted_floor_hz`, and the failing band's own
+`room_entangled_below_hz` for how far up the reservation reaches. A feature
+above the entanglement floor needs no ladder — measured window-invariance and
+directivity already carry it.
+
+**Rung 2 — `jasper-gate-sweep`: is this feature the room or the speaker?**
+Run it on a banked verify or cloud round (across-pose σ needs two poses):
+`jasper-gate-sweep <round_dir> --at-hz <max_deviation_hz> --out <path>`.
+Always pass `--at-hz` the failing band's own `max_deviation_hz` — a band's
+automatic `worst_bin_hz` is its DEEPEST bin, which is not in general its most
+window-divergent one. Read `features[].sensitivity.sigma_growth_ratio`,
+`corrected_delta_db`, `n_valid_rungs` and `bands[].band_mean_sigma_db_by_rung`:
+**σ that GROWS with window length is the room; σ that is large but
+window-invariant is directivity.** It licenses no filter — it is evidence for an
+attribution argument, never a verdict, and never an EQ instruction.
+
+**Rung 3 — `jasper-close-reference`: how much of the far read was the room?**
+Only once rung 2 says room and the feature is worth one more capture. Ask
+`jasper-close-reference distance --driver-diameter-in D --fc-hz FC` where to
+stand the mic; the human takes that capture (the close-reference program row is
+#3498's amendment item 1 and is not built, so today you declare the distance
+yourself); then `jasper-close-reference compare --far-round A --close-round B
+--close-m M`. Read `alignment.trusted` before any band, then each
+`windows[].bands[].verdict`: `agreement` says the far read was already
+speaker-dominated there, `room_dominated` prices the room's share, `unresolved`
+names which input was missing. It still prescribes nothing.
+
+**Rung 4 — elevation poses.** An azimuth-only cloud gives every seat the same
+floor-and-ceiling bounce geometry, so it cannot separate the sub-500 Hz
+arrivals it flags; height is the deciding axis (#3503). `baseline/full` already
+carries ±10/±20 elevation poses and `baseline/express` a ±10 pair, and staging
+walks them. Until a round banks a pose with a non-zero `vertical_deg` the
+deciding experiment is owed: report the axis as unsampled, never as flat
+(§3d's rule, for §3d's reason).
+
+Field-by-field reading for rungs 2 and 3 is the runbook's — "Reading a gate
+sweep" and "Reading a close-reference comparison".
 
 ## 7. SUMMED VERIFY
 
@@ -692,6 +745,8 @@ the analysis window, not the speaker.
   `gate_moved_rms_db` says "clean capture" beside a measured reflection and
   "nothing was proven" beside a search-span bound. The runbook owns that
   reading.
+- A feature ABOVE the validity floor and below the room's is not this section's
+  — it was resolved, and §6a's ladder is what decides whose it is.
 
 ## 10. ITERATE
 

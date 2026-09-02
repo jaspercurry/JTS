@@ -973,9 +973,199 @@ is `null_registry.ladder_arrival_gap`). An absent block refuses by name — no
 fitted ladder means `tau_ladder_us` is the 0.0 sentinel, and 0.0 metres would say
 the reflector is at the microphone. Do not read the absence as a near reflector.
 
+### Reading a gate sweep
+
+`jasper-gate-sweep <round_dir>` deconvolves every summed capture in a banked
+round, gates each one at a ladder of window lengths (`--rungs-ms`, default
+`3 4 5 7 9 12 20`), and publishes what moved with the window. It plays nothing
+and writes only its report — `<round_dir>/gate_sweep.json` unless `--out` says
+otherwise, so give `--out` a path of your own and a banked round stays
+untouched. Exit codes are the contract: `0` swept, `1` refused, `2` the round
+could not be read. When to reach for it at all, and what its numbers license,
+are [`tuning-methodology.md`](tuning-methodology.md) §6a's.
+
+**Read `frame` before any number.** One capture and one feature read a
+materially different depth under each defensible frame, so the report states
+its own: window shape and taper, the rungs, the smoothing and detrend
+fractions, the analysis grid
+(200–20000 Hz, 1/48 octave), the FFT length, the resolution bars in cycles, and
+the `reference` policy. That reference is **one constant per capture** taken
+from 2500–8000 Hz at the 7 ms rung and applied to every rung, and it is
+deliberately not the feature classifier's 400–8000 Hz per-rung median: a
+reference must not drift with the thing it is referencing. **A dB in this report
+is stated against that constant, so it is not a spec-table dB and never a
+`gate_rungs` dB.** What travels between instruments is a ratio.
+
+| Block | What it holds |
+|---|---|
+| `poses[]` | one row per capture: `pose_key` (the full declared azimuth/elevation/distance triple, **never** a seat index — #3503), `capture_id`, `phase`, `program_sha256_12`, `direct_peak_ms`, `reference_const_db`, `radiated_band_hz` |
+| `bands[]` | one row per `SPEC_BANDS` band, read at that band's own worst bin |
+| `features[]` | one row per `--at-hz`, read the same way |
+| `sigma_map` | `grid_hz` plus `sigma_db_by_rung` — the whole across-pose σ surface, so any bin at any rung pair is a subtraction away without re-running |
+
+**Capture-to-program binding is by content hash**, which is what
+`program_sha256_12` records. The sidecar's declared stimulus phase is never
+consulted: it is mislabelled on five of six captures of the round this
+instrument was built from (#3504), and a sweep bound by it would be reading the
+wrong stimulus.
+
+A band row and a feature row carry the same reading fields:
+
+| Field | Meaning |
+|---|---|
+| `bin_hz` | the analysis-grid bin every number below was read at. On a band row it is published as `worst_bin_hz` — the band's **deepest** median-detrended bin at the longest rung, which is not in general its most window-divergent one |
+| `requested_hz` | features only: what you asked for, before snapping to `bin_hz` |
+| `band_hz` | features only: the spec band the snapped bin falls in, `null` outside the table |
+| `cycles_by_rung` | cycles of this bin inside the window, `bin_hz × rung_ms / 1000` — the currency the resolution bars are set in |
+| `resolution_by_rung` | `invalid` (< 2.5 cycles, the gate's own trusted floor read as cycles), `grey` (< 5), `ok`. Flags on the table; only `invalid` bounds the headline |
+| `sigma_db_by_rung` | across-pose σ at this bin, per rung — the discriminator's raw material |
+| `valid_rungs_ms` / `n_valid_rungs` | the rungs the headline may span. Under two, there is no headline |
+| `poses[]` | that bin's `value_db_by_rung` and `detrended_db_by_rung` per pose, so the σ is reproducible in place |
+| `band_mean_sigma_db_by_rung` | bands only: mean σ over every graded bin at each rung, including bins below their own resolution floor at the short rungs. **No ratio is published for it** — a ratio over hundreds of bins is set by its smallest denominator, not by the room |
+
+`sensitivity` is the headline, `null` with a named `sensitivity_null_reason`
+whenever it cannot be formed:
+
+| Field | Meaning |
+|---|---|
+| `shortest_valid_rung_ms` / `longest_valid_rung_ms` | the span the headline is over — **resolution-valid rungs only**, so it is often not 3→20 ms |
+| `sigma_growth_ratio` | σ at the longest valid rung over σ at the shortest. Growth is the room; ≈ 1 with large σ is directivity |
+| `raw_delta_db` | median detrended level at the long rung minus at the short one |
+| `bias_delta_db` | what the WINDOW alone does to a feature of this shape, from a notch fitted across poses, synthesized, injected into this round's own capture IR and re-read through the same two rungs |
+| `corrected_delta_db` | `raw_delta_db − bias_delta_db`. **This is the delta to read**; the raw one conflates the window with the room, and the window's bias is not small and never vanishes |
+| `bias_delta_synthetic_host_db` | the same bias through a bare-impulse host. It corrects nothing — it discloses whether the real host was still additive at this depth |
+| `null_model` | the fit behind the correction: `centre_hz`, `depth_db`, `q` and their per-pose values, `host_capture_id`, and what the model read at each of the two rungs (`read_db_by_rung`, `synthetic_host_read_db_by_rung`) |
+
+| `sensitivity_null_reason` | What was missing |
+|---|---|
+| `insufficient_valid_rungs` | fewer than two rungs resolve this bin |
+| `short_rung_sigma_is_zero` | the ratio's denominator is 0.0 |
+| `band_outside_radiated_band` | bands only: the spec row and the radiated band do not intersect |
+| `graded_band_narrower_than_grid` | bands only: the graded span holds no grid bin, so nothing can be worst |
+
+Refusals print as JSON on stdout and one sentence on stderr, each naming the
+input that was missing: `gate_sweep_no_captures` and `gate_sweep_no_programs`
+(discovery found no `**/summed/summed_*.json` or no `**/*program*.wav` under the
+round), `gate_sweep_program_hash_unmatched` (a capture's declared stimulus hash
+matches no banked program), `gate_sweep_radiated_band_missing`,
+`gate_sweep_capture_unreadable`, `gate_sweep_reference_band_empty` (the
+2500–8000 Hz reference and this capture's radiated band do not overlap — there
+is no honest normalisation, so nothing is published rather than a curve
+referenced to something else), and `gate_sweep_single_pose` (across-pose σ needs
+at least two poses, so a one-pose round is refused rather than reported as
+window-invariant).
+
+**The across-pose σ here is a fourth spread and pools with none of the three
+below.** It is computed by this tool, on its own normalisation, its own grid and
+its own gate ladder; the packet's `per_bin_sigma_db` is computed elsewhere from
+the packet's own member curves. Compare the two as ratios across rungs or not at
+all.
+
+**Worked example, banked.** `jasper-gate-sweep` reproduces P1's hand analysis of
+the r9 and day-1 seat clouds to within the two grids' bin centres, and the
+banked run records where its headline ratio differs from P1's quoted 3→20 ms
+figure and why — including the 358 Hz row, whose valid rungs start where σ has
+already saturated. Read it at
+`captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md` rather
+than re-deriving it.
+
+### Reading a close-reference comparison
+
+`jasper-close-reference` corrects a capture taken close to the woofer back to
+the far distance and asks, band by band, how much of the far read was the room.
+Two verbs, both offline: `distance` sizes the capture, `compare` reads the pair.
+Neither opens a device. Exit codes: `0` done, `1` refused, `2` the round could
+not be read. When it is worth a capture, and what a verdict licenses, are
+[`tuning-methodology.md`](tuning-methodology.md) §6a's.
+
+**`distance` answers "where do I stand the mic".** It takes the driver diameter
+(`--driver-diameter-in` or `--driver-diameter-mm` — **mm wins if both are
+given**) and `--fc-hz` (argparse-required; the diameter is not, and its absence
+refuses `close_reference_no_driver_diameter` instead).
+`distance_m` / `distance_in` is the recommendation:
+the piston far-field term `2a²/λ` at `band_top_hz` (= `fc_hz/2`) plus
+`k_margin` = 2 driver diameters, and **the margin term dominates** — the
+recommendation is set by the driver's size far more than by the corner.
+`placement_tolerance_db` prices `placement_tolerance_m` (±0.5 in) through the
+1/r correction and `aim_tolerance_deg` is 5°, so the human prompt can say the
+placement is loose. `far_field_ceiling_hz` is where a mic that close goes
+near-field — a **ceiling**, because closing in costs you the top, not the
+bottom.
+
+**`compare` needs both rounds and the close distance you declared.**
+`--far-round` / `--close-round` take a banked round directory (the one holding
+`bundle/`) or the bundle itself; `--far-capture` / `--close-capture` name a take
+id or WAV stem, defaulting to the on-axis summed take. `--close-m` is
+**required and declared**: the sidecar's own `mark_distance_m` is published
+beside it and deliberately not used, because no pose carries a real close
+distance until #3498's close-reference program row exists. `--far-m` defaults to
+1.0. `--fc-hz` and a diameter cap the band; `--geometry` (default
+`/var/lib/jasper/measurement_geometry.json`) supplies the derived windows and is
+**not** a refusal when absent; `--far-gate-ms` / `--close-gate-ms` override
+them; `--out` also writes the report.
+
+**Read the validity band first — it is where the answer can exist at all.**
+
+| `validity` field | Meaning |
+|---|---|
+| `trusted_floor_far_hz` / `trusted_floor_close_hz` | each window's own `2.5/T`. The close window is longer, so its floor is lower — that is the whole point of the capture |
+| `far_field_ceiling_hz` | `c·d / 2a²` for mic distance `d` = `close_m` and radius `a`, `null` without a declared diameter |
+| `band_top_hz` | `fc_hz/2`, `null` without `--fc-hz` |
+| `comparison_band_hz` | what actually gets compared: bottom `max(300 Hz, trusted_floor_far_hz)`, top `min(16000 Hz, far_field_ceiling_hz, band_top_hz)` |
+
+Each `windows[]` entry (`far_window`, `close_window`) republishes its own
+`trusted_floor_hz` and `comparison_band_hz` beside `gate_ms` and `gate_source`
+(`caller`, `declared_geometry`, or `default`), so a band graded in one window
+and not the other is readable as such rather than as a disagreement.
+
+**Then read the alignment, before any verdict.** The subtraction is only as good
+as the time alignment under it.
+
+| `alignment` field | Meaning |
+|---|---|
+| `alignment_gate_ms` | the window BOTH segments were cut at — `min(far_gate_ms, close_gate_ms)` |
+| `measured_shift_us` / `geometric_delay_us` / `measured_minus_geometric_us` | what GCC-PHAT found, what the declared distances predicted, and the gap. A large gap is a declared distance that is wrong, not a discovery |
+| `residual_lag_us` / `residual_lag_floor_us` | leftover lag after the refine, and the floor the refine cannot resolve below. **A residual reading 0.0 means "under the floor", never "exact"** |
+| `confidence`, `at_search_edge`, `trusted` | `trusted` is `confidence ≥ 0.25 and not at_search_edge`, computed once and applied to every band |
+| `cancellation_budget_db` | the deepest cancellation the subtraction can reach at each edge of the comparison band, `20·log10(2·\|sin(π·f·Δt)\|)`, priced at `max(\|residual\|, floor)`. No residual in this report can go below it |
+
+**The verdict is three values, and the reasons are four.** One row per
+`SPEC_BANDS` band per window, carrying `nominal_band_hz`, `graded_band_hz`,
+`tolerance_db`, `points`, `worst_far_bin_hz` / `worst_far_deviation_db` (where
+the FAR read deviates most, and by how much), `delta_at_worst_db` (close minus
+far at that bin), `rms_delta_db` (RMS of close-minus-far over the band), and the
+two residuals — `residual_rel_direct_db` against the corrected close read and
+`residual_rel_far_db` against the far one.
+
+| `verdict` | Condition | What it licenses |
+|---|---|---|
+| `agreement` | `rms_delta_db ≤ tolerance_db` **and** `residual_rel_direct_db < −12 dB` | the far read was speaker-dominated in this band — the reservation the entanglement floor put on it lifts here. It is still a curve to judge under §6, not a filter |
+| `room_dominated` | `rms_delta_db > tolerance_db` **and** `residual_rel_direct_db ≥ −12 dB` | the difference estimates the room's share at the far position. It is an attribution, **not** a target: no filter follows from it |
+| `unresolved` | anything else | nothing. Read `unresolved_reason` for which input was missing |
+
+| `unresolved_reason` | What it says |
+|---|---|
+| `band_outside_validity` | fewer than 16 grid points survived the validity band here |
+| `alignment_confidence_below_floor` | `alignment.trusted` is false, so every band of this report is unresolved |
+| `agreement_without_cancellation` | the shapes agree but the subtraction never cancelled. The detrended delta is level-blind, so this is the signature of a **wrongly declared distance** — a finding about `--close-m`, not about the speaker |
+| `disagreement_without_residual` | over tolerance, yet the subtraction did cancel — the two readings do not compose, so the band is unanswered |
+
+Refusals name their missing input: `close_reference_no_capture` (a named take id
+or WAV stem matched nothing, or no capture declares azimuth 0 / elevation 0),
+`close_reference_rate_mismatch`, `close_reference_unreadable_round` (exit 2 —
+also how `0 < close_m < far_m` arrives), and the shared round-loader family
+`round_no_captures`, `round_no_programs`, `round_program_hash_unmatched`,
+`round_radiated_band_missing`, `round_capture_unreadable`. Two reading hazards
+worth holding: the report can carry bare `NaN` / `-Infinity` in ungraded rows,
+so a strict JSON parser will reject `--out`; and `geometry.sidecar_disagrees`
+tells you the declared `--close-m` and the sidecar's `mark_distance_m` are
+different numbers, which is expected today and is the thing
+`agreement_without_cancellation` fires on when the declared one is wrong.
+
 ### Reading σ honestly
 
-Three different spreads, three different meanings, and they must never pool:
+Three different spreads here, three different meanings, and they must never
+pool — nor with the gate sweep's own across-pose σ above:
 
 | Statistic | What it measures | Where |
 |---|---|---|
