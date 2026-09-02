@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.atomic_io import read_regular_bytes_nofollow
+from jasper.audio_measurement.ramp import capped_gap_step_db
 from jasper.mics import xvf3800
 
 if TYPE_CHECKING:
@@ -65,16 +66,37 @@ QUEUE_MAX_MEDIAN_DRIFT = math.ceil(
 WINDOW_CENTER = 20.5
 MAX_CENTER_ERROR = 2.0
 MIN_EDGE_MARGIN = 8
-TIMING_TRIALS = 3
+# One trial per mic: the measured per-mic spread is <= 1 sample, and the final
+# re-measure phase is the outlier check — it re-times at the chosen SYS_DELAY
+# and `_final_timing` refuses an off-centre result.
+TIMING_TRIALS = 1
+MIC_COUNT = 4
+# A candidate arrival is a correlation peak at least this much of the global
+# maximum.  The sweep's cross-correlation oscillates at the band centre
+# (~1950 Hz, ~8 samples at 16 kHz) and its side-lobes reach ~0.5 of their peak.
+MIN_ARRIVAL_FRACTION = 0.65
+# Past the chip's causal window a candidate is a distinct earlier arrival
+# rather than a side-lobe of the strongest peak; inside it, the strongest peak
+# is already a legal answer — see `_arrival_index`.
+DISTINCT_ARRIVAL_MIN_SAMPLES = xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MAX
 MIN_PEAK_RATIO = 1.10
 MIN_TIMING_PEAK = 0.20
 MIN_RAW_EXCESS_SNR_DB = 10.0
 MIN_BEAM_ACQUISITION_DB = 8.0
 MIN_BEAM_SUPPRESSION_DB = 10.0
+# What the level probe aims the raw mics at: the stricter of the two level
+# gates, plus a margin, so clearing it clears both.
+LEVEL_TARGET_MARGIN_DB = 5.0
+TARGET_RAW_EXCESS_SNR_DB = (
+    max(MIN_RAW_EXCESS_SNR_DB, MIN_BEAM_ACQUISITION_DB) + LEVEL_TARGET_MARGIN_DB
+)
 MAX_RAW_LEVEL_DELTA_DB = 1.0
 RATE = 16_000
+PLAYBACK_RATE = 48_000
 CAPTURE_CHANNELS = 6
 GUARD = 5_600
+# The same quiet guard expressed at the playback rate.
+GUARD_48K = GUARD * PLAYBACK_RATE // RATE
 ACTIVE = 4_800
 CLIP = 32_767
 
@@ -436,18 +458,16 @@ class MicTiming:
     trials: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        if self.mic not in range(4) or len(self.trials) != TIMING_TRIALS:
-            raise ValueError("timing requires three trials for one physical mic")
+        if self.mic not in range(MIC_COUNT) or len(self.trials) != TIMING_TRIALS:
+            raise ValueError(
+                f"timing requires {TIMING_TRIALS} trials for one physical mic"
+            )
         if any(type(value) is not int for value in self.trials):
             raise ValueError("timing trials must be integers")
 
     @property
     def lag(self) -> int:
         return median_samples(self.trials)
-
-    @property
-    def uncertainty(self) -> int:
-        return max(abs(value - self.lag) for value in self.trials)
 
     def projected(self, delay: int) -> int:
         return self.lag - (delay - self.current_delay)
@@ -463,7 +483,9 @@ class DelayChoice:
 def choose_delay(evidence: Sequence[MicTiming]) -> DelayChoice:
     """Choose the global delay nearest the 20.5-sample causal bull's-eye."""
 
-    if len(evidence) != 4 or {item.mic for item in evidence} != set(range(4)):
+    if len(evidence) != MIC_COUNT or {
+        item.mic for item in evidence
+    } != set(range(MIC_COUNT)):
         raise ValueError("timing must cover physical microphones 0..3")
     if len({item.current_delay for item in evidence}) != 1:
         raise ValueError("timing trials must share one current SYS_DELAY")
@@ -477,10 +499,10 @@ def choose_delay(evidence: Sequence[MicTiming]) -> DelayChoice:
         lags = tuple(item.projected(candidate) for item in evidence)
         margins = tuple(
             min(
-                lag - item.uncertainty - xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MIN,
-                xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MAX - lag - item.uncertainty,
+                lag - xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MIN,
+                xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MAX - lag,
             )
-            for item, lag in zip(evidence, lags, strict=True)
+            for lag in lags
         )
         margin = min(margins)
         if margin >= MIN_EDGE_MARGIN:
@@ -497,18 +519,28 @@ def choose_delay(evidence: Sequence[MicTiming]) -> DelayChoice:
 
 @dataclass(frozen=True)
 class TimingResult:
+    """One timing capture's arrival, the peaks it was chosen over, and levels.
+
+    ``competitor_*`` is the strongest peak AFTER the arrival — the reflection
+    the chip's own tail models, recorded so the journal shows what was skipped.
+    ``earlier_*`` is what ``peak_ratio`` gates on: only correlation BEFORE the
+    arrival can disprove it.
+    """
+
     lag: int
     peak: float
     peak_height: float
     competitor_lag: int
     competitor_height: float
+    earlier_lag: int
+    earlier_height: float
     mic_rms_dbfs: float
     reference_rms_dbfs: float
     clipped_samples: int
 
     @property
     def peak_ratio(self) -> float:
-        return self.peak_height / max(self.competitor_height, math.ulp(1.0))
+        return self.peak_height / max(self.earlier_height, math.ulp(1.0))
 
     @property
     def competitor_offset_ms(self) -> float:
@@ -526,6 +558,8 @@ class TimingResult:
             "competitor_lag": self.competitor_lag,
             "competitor_offset_ms": round(self.competitor_offset_ms, 2),
             "competitor_height": round(self.competitor_height, 4),
+            "earlier_lag": self.earlier_lag,
+            "earlier_height": round(self.earlier_height, 4),
             "mic_rms_dbfs": round(self.mic_rms_dbfs, 2),
             "reference_rms_dbfs": round(self.reference_rms_dbfs, 2),
             "clipped_samples": self.clipped_samples,
@@ -557,11 +591,31 @@ def _bandpass(values: np.ndarray) -> np.ndarray:
     return scipy_signal.sosfiltfilt(sos, values.astype(np.float64))
 
 
-def dbfs_rms(values: np.ndarray) -> float:
-    import numpy as np
+def _dbfs_power(power: float) -> float:
+    return 10 * math.log10(power / 32_768**2) if power > 0 else -300.0
 
-    rms = float(np.sqrt(np.mean(np.square(values, dtype=np.float64))))
-    return 20 * math.log10(rms / 32_768) if rms > 0 else -300.0
+
+def dbfs_rms(values: np.ndarray) -> float:
+    return _dbfs_power(_power(values))
+
+
+def _arrival_index(corr: np.ndarray) -> int:
+    """Index of the first arrival: the strongest peak, unless a candidate is
+    more than DISTINCT_ARRIVAL_MIN_SAMPLES earlier, when the earliest wins.
+
+    The XVF3800 needs its reference causal against the FIRST arrival only (User
+    Guide v3.2.1 s4.2.4), so a louder later reflection must not take the lag.
+    """
+
+    import numpy as np
+    from scipy import signal as scipy_signal
+
+    strongest = int(np.argmax(corr))
+    peaks, _ = scipy_signal.find_peaks(
+        corr, height=float(corr[strongest]) * MIN_ARRIVAL_FRACTION
+    )
+    distinct = peaks[peaks < strongest - DISTINCT_ARRIVAL_MIN_SAMPLES]
+    return int(distinct[0]) if distinct.size else strongest
 
 
 def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResult:
@@ -569,7 +623,11 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
 
     import numpy as np
 
-    from jasper.audio_measurement.alignment import cross_correlation_alignment
+    from jasper.audio_measurement.alignment import (
+        alignment_at,
+        correlation,
+        cross_correlation_alignment,
+    )
 
     if channels.ndim != 2 or channels.shape[1] != CAPTURE_CHANNELS:
         raise ValueError("timing capture must be six-channel")
@@ -583,9 +641,8 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
     search_f, reference_f = _bandpass(search), _bandpass(reference)
     search_f -= search_f.mean()
     reference_f -= reference_f.mean()
-    alignment = cross_correlation_alignment(
-        search_f, reference_f, sample_rate=RATE, exclude_radius=8
-    )
+    corr = correlation(search_f, reference_f, sample_rate=RATE)
+    alignment = alignment_at(corr, _arrival_index(corr), exclude_radius=8)
     lag = alignment.lag_samples - 512
     paired = search[alignment.lag_samples : alignment.lag_samples + ACTIVE]
     paired_f, reference_f = _bandpass(paired), _bandpass(reference)
@@ -596,8 +653,10 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
         lag,
         peak,
         alignment.peak,
-        alignment.secondary_lag_samples - 512,
-        alignment.secondary,
+        alignment.later_lag_samples - 512,
+        alignment.later,
+        alignment.earlier_lag_samples - 512,
+        alignment.earlier,
         dbfs_rms(paired),
         dbfs_rms(reference),
         clips,
@@ -640,7 +699,17 @@ def _power(values: np.ndarray) -> float:
     return float(np.mean(np.square(values.astype(np.float64))))
 
 
-def _capture_windows(channels: np.ndarray, active: np.ndarray) -> tuple[int, list[float], list[float], int]:
+def _capture_windows(
+    channels: np.ndarray, active: np.ndarray, *, quiet_from_pre_guard: bool = False
+) -> tuple[int, list[float], list[float], int, tuple[float, float]]:
+    """Per-raw-mic excitation and excess SNR, plus the worst mic's two guards.
+
+    The post-guard begins at the sweep's last sample, so it holds the reverb
+    tail, which rises with the fader; only the pre-guard is a level-independent
+    noise floor.  ``quiet_from_pre_guard`` is for a caller sizing a fader move.
+    The gate keeps the ``max`` of both: it judges a capture, not a fader.
+    """
+
     import numpy as np
 
     from jasper.audio_measurement.alignment import cross_correlation_alignment
@@ -654,21 +723,22 @@ def _capture_windows(channels: np.ndarray, active: np.ndarray) -> tuple[int, lis
         raise ValueError("product capture lacks quiet guards")
     echoes: list[float] = []
     snrs: list[float] = []
+    guards: list[tuple[float, float]] = []
     clips = 0
     for index in range(2, 6):
-        quiet = max(
-            _power(channels[start - GUARD : start, index]),
-            _power(channels[start + ACTIVE : start + ACTIVE + GUARD, index]),
-        )
+        pre = _power(channels[start - GUARD : start, index])
+        post = _power(channels[start + ACTIVE : start + ACTIVE + GUARD, index])
+        quiet = pre if quiet_from_pre_guard else max(pre, post)
         signal = _power(channels[start : start + ACTIVE, index]) - quiet
         if signal <= 0 or quiet <= 0:
             raise ValueError("raw excitation is not above room noise")
         echoes.append(signal)
         snrs.append(10 * math.log10(signal / quiet))
+        guards.append((pre, post))
         clips += int(np.count_nonzero(
             np.abs(channels[start : start + ACTIVE, index].astype(np.int32)) >= CLIP
         ))
-    return start, echoes, snrs, clips
+    return start, echoes, snrs, clips, guards[snrs.index(min(snrs))]
 
 
 def analyze_product(
@@ -680,8 +750,10 @@ def analyze_product(
 
     import numpy as np
 
-    on_start, on_raw, on_snr, on_clips = _capture_windows(aec_on, active_stimulus)
-    off_start, off_raw, off_snr, off_clips = _capture_windows(aec_off, active_stimulus)
+    on_start, on_raw, on_snr, on_clips, _ = _capture_windows(aec_on, active_stimulus)
+    off_start, off_raw, off_snr, off_clips, _ = _capture_windows(
+        aec_off, active_stimulus
+    )
     raw_ratio = float(np.median(np.asarray(on_raw) / np.asarray(off_raw)))
     raw_delta = 10 * math.log10(raw_ratio)
     suppression: list[float] = []
@@ -721,6 +793,58 @@ def analyze_product(
     return result
 
 
+@dataclass(frozen=True)
+class LevelProbe:
+    raw_excess_snr_db: float
+    clipped_samples: int
+    pre_guard_dbfs: float
+    post_guard_dbfs: float
+
+    def offset_db(self, step_cap_db: float) -> float:
+        """One step toward `TARGET_RAW_EXCESS_SNR_DB`, saturated upward.
+
+        ASSUMES the fader moves raw excess SNR dB for dB — valid while the
+        pre-guard is noise-dominated.  A clipped capture understates its own
+        excitation, so it caps at zero and `analyze_product` refuses it.
+        """
+
+        return capped_gap_step_db(
+            measured_db=self.raw_excess_snr_db,
+            target_db=TARGET_RAW_EXCESS_SNR_DB,
+            cap_db=0.0 if self.clipped_samples else step_cap_db,
+        )
+
+    def reaches_target(self, step_cap_db: float) -> bool:
+        """Whether ONE capped step lands on the target.
+
+        A clipped capture is never asked to: its step caps at zero, so it can
+        only fail this, and `analyze_product`'s clip gate is the right refusal.
+        """
+
+        return bool(self.clipped_samples) or (
+            self.raw_excess_snr_db + self.offset_db(step_cap_db)
+            >= TARGET_RAW_EXCESS_SNR_DB
+        )
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "warmup_raw_excess_snr_db": round(self.raw_excess_snr_db, 2),
+            "target_raw_excess_snr_db": TARGET_RAW_EXCESS_SNR_DB,
+            "warmup_clipped_samples": self.clipped_samples,
+            "pre_guard_dbfs": round(self.pre_guard_dbfs, 2),
+            "post_guard_dbfs": round(self.post_guard_dbfs, 2),
+        }
+
+
+def analyze_level(capture: np.ndarray, active_stimulus: np.ndarray) -> LevelProbe:
+    """`analyze_product`'s own raw excess SNR, against the pre-guard alone."""
+
+    _, _, snrs, clips, guards = _capture_windows(
+        capture, active_stimulus, quiet_from_pre_guard=True
+    )
+    return LevelProbe(min(snrs), clips, *(_dbfs_power(power) for power in guards))
+
+
 def commissioning_stimulus() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return fixed -14 dBFS 48 kHz stereo, exact writer reference, active 16 kHz."""
 
@@ -729,10 +853,10 @@ def commissioning_stimulus() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     from jasper.audio_measurement.sweep import synchronized_swept_sine
 
     sweep, _ = synchronized_swept_sine(
-        f1=300, f2=3_600, duration_approx_s=0.30, sample_rate=48_000,
+        f1=300, f2=3_600, duration_approx_s=0.30, sample_rate=PLAYBACK_RATE,
         amplitude_dbfs=-14,
     )
-    mono = np.pad(sweep, (16_800, 16_800))
+    mono = np.pad(sweep, (GUARD_48K, GUARD_48K))
     pcm = (np.clip(mono, -1, 1) * 32_767).astype("<i2")
     stereo = np.column_stack((pcm, pcm))
     blocks = stereo.astype(np.int64).reshape(-1, 3, 2)

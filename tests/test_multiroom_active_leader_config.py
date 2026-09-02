@@ -28,7 +28,6 @@ import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
-from jasper.fanin_coupling import COUPLING_SHM_RING
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
@@ -100,16 +99,6 @@ class _FakeCamilla:
         return True
 
 
-def _persist_coupling(monkeypatch, coupling: str) -> None:
-    """The token the precheck's route gate reads, bound where it reads it.
-
-    ``active_leader_config`` imports ``read_persisted_coupling`` at module level,
-    so the binding to patch is its own. Nothing else in the precheck consults a
-    coupling token any more.
-    """
-    monkeypatch.setattr(alc, "read_persisted_coupling", lambda *a, **k: coupling)
-
-
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
     # The re-proof uses the STRICT loader (fail-closed); patch that.
     monkeypatch.setattr(
@@ -144,11 +133,9 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     # Snapcast precondition: pretend the binaries are installed (a dev machine has
     # no snapserver/snapclient, which would otherwise fail-close the precheck).
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # The BAKE no longer reads a coupling token (ADR-0100 left one transport, so
-    # `coupling_capture_kwargs_from_env` answers the ring unconditionally). The
-    # precheck's route GATE still reads one, so pin it to what every box carries
-    # rather than letting the host's fanin.env decide.
-    _persist_coupling(monkeypatch, COUPLING_SHM_RING)
+    # Nothing in the precheck reads a coupling token any more: ADR-0100 left one
+    # transport, so `coupling_capture_kwargs_from_env` answers the ring
+    # unconditionally.
 
 
 def _fake_apply_dsp_config():
@@ -253,7 +240,6 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    _persist_coupling(monkeypatch, "shm_ring")
 
     asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
 
@@ -270,37 +256,9 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
     assert bake["devices"]["enable_rate_adjust"] is False
 
 
-def test_precheck_admits_shm_ring_for_an_active_leader(monkeypatch, tmp_path) -> None:
-    """The gate half of B1. An ACTIVE-speaker leader is an active ENDPOINT, so
-    `outputd_grouping_env` clears its dac_content lane and the narrowed support
-    matrix admits the bond. Before this the precheck refused here, which is why
-    the coupling-blind bake above was unreachable — and why both land together.
-    """
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    _persist_coupling(monkeypatch, "shm_ring")
-
-    asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
-
-    assert Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
-    assert Path(alc.CROSSOVER_CONFIG_PATH).exists()
-
-
-def test_precheck_reports_topology_before_coupling(monkeypatch, tmp_path) -> None:
-    """C-9: D5's coupling check moved BELOW the strict topology load, because the
-    narrowed predicate needs that topology to know whether this box is an active
-    endpoint. In the cell where a box is BOTH ring-armed AND has an unreadable
-    topology.json — reachable; the 2026-05-23 filesystem-loss class corrupts
-    topology.json too — the operator-visible reason is now `topology_unreadable`.
-
-    Both outcomes are fail-closed, so there is no safety change; the precedence
-    is pinned because `topology_unreadable` is the more specific and more
-    actionable blocker, and because a reordering back would silently restore a
-    reason that sends the operator to fix the wrong thing first.
-    """
+def test_precheck_fails_closed_on_a_corrupt_topology(monkeypatch, tmp_path) -> None:
+    """An unreadable topology.json (the 2026-05-23 filesystem-loss class) refuses
+    the bond under its own reason and emits neither config."""
     from jasper.output_topology import OutputTopologyError
 
     topology = _dual_apple_topology()
@@ -308,7 +266,6 @@ def test_precheck_reports_topology_before_coupling(monkeypatch, tmp_path) -> Non
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    _persist_coupling(monkeypatch, "shm_ring")
 
     import jasper.output_topology as ot
 

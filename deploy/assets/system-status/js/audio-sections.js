@@ -114,6 +114,14 @@ function sourceFor(health, sourceId) {
   return (health.sources || []).find((item) => item && item.id === sourceId) || null;
 }
 
+// "off" is emitted only for household intent Off with nothing left running;
+// "unavailable" (running while Off) is a live drift incident and must stay
+// visible. See jasper/control/audio_health.py::_source_service_summary.
+export function usbSourceOff(health) {
+  const card = health ? sourceFor(health, "usbsink") : null;
+  return !!card && card.state === "off";
+}
+
 function sourceName(health, sourceId) {
   const source = sourceFor(health, sourceId);
   return source && text(source.label) ? text(source.label) : text(sourceId);

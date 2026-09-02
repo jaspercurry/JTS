@@ -11,6 +11,7 @@ Wants=jasper-fanin.service
 # short burst while the box is still reclaiming memory.
 StartLimitIntervalSec=600
 StartLimitBurst=20
+ConditionPathExists=/run/jasper-source-intent/allowed/shared
 
 [Service]
 Type=simple
@@ -29,7 +30,6 @@ EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # UDS out of /run/jasper-fanin/control.sock.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
-ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=always
 RestartSec=5

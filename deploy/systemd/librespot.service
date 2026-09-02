@@ -4,11 +4,12 @@ Documentation=https://github.com/librespot-org/librespot
 After=network-online.target sound.target jasper-fanin.service jasper-camilla.service
 Wants=network-online.target jasper-fanin.service
 # While Spotify is household-On and role-authorized, keep its endpoint
-# advertised across crashes and clean exits. The ExecCondition below is the
+# advertised across crashes and clean exits. The marker gate below is the
 # final start boundary, so Restart=always cannot resurrect household-Off or a
 # follower-parked renderer.
 StartLimitIntervalSec=600
 StartLimitBurst=20
+ConditionPathExists=/run/jasper-source-intent/allowed/spotify
 
 [Service]
 # Stage 2 audio-protection: pages never swap to zram.
@@ -91,7 +92,6 @@ CacheDirectoryMode=0700
 # over an SHM slot ring instead — same private-lane property, same mux
 # policy, different transport. Nothing else about this unit changes.
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
-ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source spotify
 ExecStart=/usr/bin/librespot \
     --name=${JASPER_SPEAKER_NAME} \
     --device-type speaker \

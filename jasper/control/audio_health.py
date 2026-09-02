@@ -41,6 +41,7 @@ from .airplay_health import (
 )
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .transport_park import (
+    PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_GROUPED_DAC_CONTENT_LANE,
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
@@ -106,6 +107,11 @@ _PARK_MESSAGES: dict[str, str] = {
     PARK_GROUPED_DAC_CONTENT_LANE: (
         "This speaker is grouped with another one, and a grouped speaker cannot "
         "use the new audio setup. Ungrouping it brings sound back."
+    ),
+    PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE: (
+        "This speaker is grouped, but its audio settings disagree with each "
+        "other, so it cannot start playing. Run diagnostics for the one step "
+        "that repairs it."
     ),
 }
 
@@ -444,10 +450,8 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     from ..audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
-        DEFAULT_OUTPUTD_ENV_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from ..env_load import read_env_file_state
     from ..fanin_coupling import COUPLING_ENV_VAR
     from ..output_topology import load_output_topology
 
@@ -462,9 +466,9 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         # it must not read as ready just because the graph declines to name an
         # outputd lane.
         return _parked_graph_transport() or _empty_transport()
-    # outputd.env is read here because the plan carries decisions, not the
-    # generated env it was built from.
-    outputd_env = dict(read_env_file_state(DEFAULT_OUTPUTD_ENV_PATH).values)
+    # The plan's own merged outputd env (both EnvironmentFile= layers), not a
+    # second read of the same two files: this sampler runs every 60 s.
+    outputd_env = dict(plan.outputd_env)
     return _transport_state(
         # The plan's resolved COUPLING TOKEN, never `plan.transport_topology`'s
         # shape NAME. `transport_coherence_report` re-derives the shape itself

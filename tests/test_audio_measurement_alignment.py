@@ -84,7 +84,7 @@ def test_uses_fft_not_naive_correlate():
     # O(N·M) np.correlate, so a 10 s sweep aligns in ms not tens of seconds.
     import inspect
 
-    src = inspect.getsource(alignment.cross_correlation_alignment)
+    src = inspect.getsource(alignment.correlation)
     assert 'method="fft"' in src
     assert "np.correlate(" not in src
 

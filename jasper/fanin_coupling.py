@@ -302,6 +302,11 @@ def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
             return False
     else:
         raw = env.get(OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR)
+    return _outputd_env_bool(raw)
+
+
+def _outputd_env_bool(raw: "str | None") -> bool:
+    """Read one BARE outputd marker the way outputd's ``env_bool`` reads it."""
     return (raw or "").strip().lower() in OUTPUTD_ENV_BOOL_TRUE
 
 
@@ -689,6 +694,74 @@ def outputd_bridge_is_ring(raw: str | None) -> bool:
     """
     declared = (raw or "").strip().lower()
     return not declared or declared in _OUTPUTD_RING_BRIDGE_SPELLINGS
+
+
+def dac_content_lane_marker_armed(env: "Mapping[str, str]") -> bool:
+    """Is this box armed onto the bonded dac-content RETURN ring?
+
+    Reads :data:`~jasper.multiroom.dac_content_ring.DAC_CONTENT_LANE_ENV`, whose
+    single writer is ``jasper.multiroom.reconcile.outputd_grouping_env``. A BARE
+    marker, so the accept-set is outputd's own ``env_bool`` vocabulary
+    (:data:`OUTPUTD_ENV_BOOL_TRUE`) and ``=0`` is not armed — a reader that
+    tested mere PRESENCE would call a cleared bond armed, because that writer
+    clears by writing the key EMPTY.
+
+    The lazy import is deliberate: ``jasper.multiroom.dac_content_ring`` reaches
+    this module through ``jasper.ring_assets``, so naming it at module level
+    would close that into a cycle.
+    """
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+
+    return _outputd_env_bool(env.get(DAC_CONTENT_LANE_ENV))
+
+
+def dac_content_ring_served(env: "Mapping[str, str]") -> bool:
+    """Will outputd SERVE this box off the bonded dac-content return ring?
+
+    outputd's acceptance, mirrored key for key: the marker armed AND no bridge
+    DECLARED beside it. Blank counts as undeclared because outputd reads that
+    key with ``env_optional`` (``rust/jasper-outputd/src/config.rs``), which is
+    exactly how the grouping writer clears the ``shm_ring`` that
+    ``jasper-fanin-coupling-auto`` leaves in the first env layer.
+
+    Marker WITHOUT that clearing is :func:`dac_content_marker_contradicted` —
+    the pair outputd refuses at EX_CONFIG — so the two split the armed boxes
+    between them and no reader has to guess which side it is on.
+    """
+    return dac_content_lane_marker_armed(env) and not _outputd_bridge_declared(env)
+
+
+def dac_content_marker_contradicted(env: "Mapping[str, str]") -> bool:
+    """Marker armed AND a bridge declared beside it — the pair outputd REFUSES.
+
+    ``rust/jasper-outputd/src/config.rs`` bails EX_CONFIG on this shape, and the
+    unit's ``RestartPreventExitStatus=78`` turns that into a parked daemon: the
+    box is silent while every writer thinks it is bonded. Named here so the
+    surfaces that report a box can report THIS rather than a healthy-looking
+    ring shape.
+    """
+    return dac_content_lane_marker_armed(env) and _outputd_bridge_declared(env)
+
+
+def _outputd_bridge_declared(env: "Mapping[str, str]") -> bool:
+    """Does this env DECLARE a content bridge, as outputd's ``env_optional`` reads it?"""
+    return bool((env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip())
+
+
+def outputd_content_is_central_ring(env: "Mapping[str, str]") -> bool:
+    """Does outputd take the CENTRAL post-DSP ring as its content source here?
+
+    TWO KEYS, ONE QUESTION: an armed dac-content marker selects the bonded
+    RETURN ring and leaves ``shm_ring`` unattached, while declaring no bridge —
+    which :func:`outputd_bridge_is_ring` alone reads as the central ring.
+
+    Takes the MERGED env (:func:`jasper.env_load.outputd_reconciled_env`),
+    because the marker lives in outputd's second ``EnvironmentFile=`` layer. An
+    empty mapping reads as the ring, the same as an unwritten box.
+    """
+    return not dac_content_lane_marker_armed(env) and outputd_bridge_is_ring(
+        env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+    )
 
 
 def resolve_outputd_ring_path(raw_path: str | None) -> str:

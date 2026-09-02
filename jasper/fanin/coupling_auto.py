@@ -153,7 +153,7 @@ def usbsink_effectively_enabled() -> bool:
     also stays disarmed rather than opening capture for an unadvertised UAC2
     function. A malformed or unreadable intent raises visibly.
     """
-    from jasper.local_sources.guard import local_sources_allowed
+    from jasper.local_sources.markers import local_sources_allowed
     from jasper.music_sources import Source
     from jasper.source_intent import source_intent_enabled
 
