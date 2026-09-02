@@ -253,9 +253,7 @@ def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
     candidate may VARY is the seam's
     (:func:`~jasper.active_speaker.angle_capture.candidate_measure_axes`),
     asked here so a walk no session could play is refused at staging instead of
-    at the open. The speaker's own corner is not compared here -- only the
-    adopting session holds that preset, exactly as the wired-source refusals
-    are the session's.
+    at the open.
     """
     fingerprints = tuple(
         field.strip()

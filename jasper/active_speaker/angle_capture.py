@@ -75,7 +75,7 @@ from __future__ import annotations
 
 import math
 import numbers
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
@@ -152,7 +152,6 @@ __all__ = [
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_LEVEL_MATCH_NEEDS_WIRED",
     "WALK_CANDIDATE_NOT_MEASURABLE",
-    "WALK_CANDIDATE_CORNER_MISMATCH",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -938,13 +937,6 @@ WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 #: loosened check here.
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 
-#: A stop names a banked candidate minted against a different crossover corner
-#: than the one this speaker carries. The walk plays the candidate's ALIGNMENT
-#: over the speaker's own corner, so measuring one against the other would
-#: bank a take under a fingerprint whose corner never played. The detail names
-#: the axis that differs.
-WALK_CANDIDATE_CORNER_MISMATCH = "walk_candidate_corner_mismatch"
-
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -958,7 +950,6 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_LEVEL_MATCH_NEEDS_WIRED,
     WALK_CANDIDATE_NOT_MEASURABLE,
-    WALK_CANDIDATE_CORNER_MISMATCH,
 })
 
 
@@ -983,7 +974,7 @@ class LateralWalkRefused(CrossoverV2FlowError):
         self.detail = detail
 
 
-def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, Any]:
+def candidate_measure_axes(candidate: Any) -> dict[str, Any]:
     """The :class:`MeasureSpec` axes a banked candidate implies, or a refusal.
 
     A stop plays the per-driver MEASURE graph, which omits crossover,
@@ -1000,14 +991,7 @@ def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, A
     zero delay stated with no branch.
 
     Raises :data:`WALK_CANDIDATE_NOT_MEASURABLE` for a candidate whose
-    linearization EQ this graph cannot play, and
-    :data:`WALK_CANDIDATE_CORNER_MISMATCH` for one minted against another
-    corner.
-
-    ``preset`` is the SPEAKER's own capture preset, which only the adopting
-    session holds; ``None`` asks the candidate-only half, the same split
-    :data:`WALK_POLARITY_NEEDS_WIRED` already uses for the session facts this
-    module cannot read.
+    linearization EQ this graph cannot play.
     """
     from .crossover_alignment import POLARITY_INVERT
     from .crossover_declaration import preset_crossover_geometry
@@ -1022,37 +1006,11 @@ def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, A
     minted = preset_crossover_geometry(getattr(candidate, "source_preset", None))
     if minted is None:
         raise LateralWalkRefused(
-            WALK_CANDIDATE_CORNER_MISMATCH,
+            WALK_CANDIDATE_NOT_MEASURABLE,
             f"banked candidate {fingerprint} declares no single readable "
-            "crossover to measure it against",
+            "crossover, so the branch its alignment flips cannot be named",
         )
-    roles, geometry = minted
-    if preset is not None:
-        carried = preset_crossover_geometry(preset)
-        if carried is None:
-            raise LateralWalkRefused(
-                WALK_CANDIDATE_CORNER_MISMATCH,
-                "this speaker declares no single readable crossover to "
-                f"compare banked candidate {fingerprint} against",
-            )
-        carried_roles, carried_geometry = carried
-        # Every axis judged through ``matches`` and never through a second
-        # tolerance: one axis at a time is swapped for the speaker's own value,
-        # so an axis that differs is exactly one the comparator itself rejects.
-        differing = tuple(
-            axis
-            for axis in ("fc_hz", "filter_type", "slope_db_per_octave")
-            if not geometry.matches(
-                replace(geometry, **{axis: getattr(carried_geometry, axis)})
-            )
-        )
-        if carried_roles != roles or differing:
-            named = ", ".join(differing) or "between_roles"
-            raise LateralWalkRefused(
-                WALK_CANDIDATE_CORNER_MISMATCH,
-                f"banked candidate {fingerprint} was minted against another "
-                f"crossover; {named} differs from this speaker's",
-            )
+    roles, _geometry = minted
     alignment = getattr(candidate, "alignment", None)
     inverted = getattr(alignment, "polarity", None) == POLARITY_INVERT
     # The candidate's convention is the region's UPPER driver relative to its

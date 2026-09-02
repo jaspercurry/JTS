@@ -2196,7 +2196,7 @@ def _take_staged_angle_walk(
     try:
         axes_by_candidate = {
             candidate_id: candidate_measure_axes(
-                find_banked_candidate(candidate_id).candidate, preset=preset,
+                find_banked_candidate(candidate_id).candidate
             )
             for candidate_id in sorted(set(candidate_ids) - {""})
         }

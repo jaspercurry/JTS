@@ -1020,14 +1020,12 @@ def test_the_declared_geometry_is_opt_in_and_passed_through_untouched() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _fake_preset(
-    *, fc_hz: float = 2000.0, order: int = 4, upper: str = "tweeter",
-) -> object:
+def _fake_preset(*, upper: str = "tweeter") -> object:
     """A preset shaped only as ``preset_crossover_geometry`` reads one."""
     return SimpleNamespace(crossover_regions=(SimpleNamespace(
-        fc_hz=fc_hz,
+        fc_hz=2000.0,
         target_type="LinkwitzRiley",
-        order=order,
+        order=4,
         lower_driver="woofer",
         upper_driver=upper,
     ),))
@@ -1091,8 +1089,7 @@ def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> Non
     banked candidate may change about a stop -- and the flipped branch is the
     region's upper driver, the convention the candidate was minted under."""
     axes = ac.candidate_measure_axes(
-        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=250.0),
-        preset=_fake_preset(),
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=250.0)
     )
 
     assert axes == {
@@ -1110,12 +1107,10 @@ def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> Non
 def test_a_branch_no_measurement_graph_carries_refuses_by_name() -> None:
     """The flipped branch is read off the candidate's own crossover, so a
     region whose upper driver is not a branch the graph carries would reach
-    ``MeasureSpec`` as a pair it refuses. Same corner on both sides, so the
-    ONLY thing this can be refusing is the branch."""
-    odd = _fake_preset(upper="horn")
+    ``MeasureSpec`` as a pair it refuses."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.candidate_measure_axes(
-            _fake_candidate(polarity="invert", preset=odd), preset=odd,
+            _fake_candidate(polarity="invert", preset=_fake_preset(upper="horn"))
         )
 
     assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
@@ -1127,8 +1122,7 @@ def test_a_polarity_only_candidate_states_no_half_delay() -> None:
     -- otherwise a walk stages and then dies at the open with its document
     already consumed."""
     axes = ac.candidate_measure_axes(
-        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0),
-        preset=_fake_preset(),
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0)
     )
 
     assert (axes["delayed_role"], axes["delay_us"]) == ("", 0.0)
@@ -1149,20 +1143,11 @@ def test_a_polarity_only_candidate_states_no_half_delay() -> None:
             ac.WALK_CANDIDATE_NOT_MEASURABLE,
         ),
         (
-            _fake_candidate(preset=_fake_preset(fc_hz=1600.0)),
-            ac.WALK_CANDIDATE_CORNER_MISMATCH,
-        ),
-        (
-            _fake_candidate(preset=_fake_preset(order=2)),
-            ac.WALK_CANDIDATE_CORNER_MISMATCH,
-        ),
-        (
             _fake_candidate(preset=SimpleNamespace(crossover_regions=())),
-            ac.WALK_CANDIDATE_CORNER_MISMATCH,
+            ac.WALK_CANDIDATE_NOT_MEASURABLE,
         ),
     ],
-    ids=["linearization", "unknown-delayed-branch", "another-corner",
-         "another-slope", "unreadable"],
+    ids=["linearization", "unknown-delayed-branch", "unreadable"],
 )
 def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
     candidate: object, reason: str,
@@ -1170,7 +1155,7 @@ def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
     """Both refusals are walk refusals, so an adopting session and the staging
     door report them under one vocabulary."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.candidate_measure_axes(candidate, preset=_fake_preset())
+        ac.candidate_measure_axes(candidate)
 
     assert excinfo.value.reason == reason
     assert reason in ac.WALK_REFUSAL_REASONS
