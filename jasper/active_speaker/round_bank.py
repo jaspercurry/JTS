@@ -18,6 +18,7 @@ reads::
       state.json                 crossover-v2 flow state (optional)
       design-draft.json          active-speaker design draft (optional)
       applied-profile.json       applied baseline profile SSOT (optional)
+      repeat-floor.json          measured repeat floor SSOT (optional)
       provenance.json            when it was banked, off which build
 
 ``provenance.json``'s key set is owned here, and the two banking paths agree
@@ -31,10 +32,10 @@ budget, size disclosed by ``jasper-doctor``'s active-speaker storage check — s
 the tuning plan's retention rule (eviction never crosses an active round's
 boundary, docs/tuning-master-plan.md) holds trivially.
 
-The flow-state SSOT constant and the round-artifact reader are imported inside
-the two functions that need them: ``jasper.cli.doctor`` imports this module for
-:data:`DEFAULT_CAMPAIGN_ROOT` alone, and a directory-size disclosure must not
-pay the wizard stack's (or numpy's) import cost.
+The banked names and their SSOT paths are the reader's own
+(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`), imported inside the
+function that needs them along with the round-artifact reader, so importing
+this module for :data:`DEFAULT_CAMPAIGN_ROOT` alone stays cheap.
 """
 
 from __future__ import annotations
@@ -47,13 +48,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 
-from .baseline_profile import DEFAULT_STATE_PATH as _APPLIED_PROFILE_PATH
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 # Reused rather than a third package-local identifier regex (commissioning_run
 # and commissioning_evidence each have one already); its first-char class
 # excludes ".", so it already rejects ".", ".." and any "/"-carrying token.
 from .commissioning_run import _IDENTIFIER_RE as _ROUND_ID_RE
-from .design_draft import DEFAULT_DESIGN_DRAFT_PATH
 
 __all__ = [
     "DEFAULT_CAMPAIGN_ROOT",
@@ -96,20 +95,31 @@ def _ssot_documents(
     state_path: Path | None,
     design_draft_path: Path | None,
     applied_profile_path: Path | None,
+    repeat_floor_path: Path | None,
 ) -> tuple[tuple[str, Path], ...]:
-    """``(banked filename, source path)`` for the three documents beside the
+    """``(banked filename, source path)`` for the four documents beside the
     bundle, defaulting to each document's own on-box SSOT constant.
 
-    The filenames are the ones ``load_banked_round`` opens;
-    ``tests/test_round_bank.py`` round-trips an assembled tree through that
-    reader, so writer and reader cannot drift apart silently.
+    Both halves are taken from ``round_inputs``, the reader that opens them, so
+    writer and reader cannot drift apart silently;
+    ``tests/test_round_bank.py`` round-trips an assembled tree through it.
     """
-    from jasper.web.correction_crossover_v2 import DEFAULT_V2_STATE_PATH
+    from .crossover_v2 import round_inputs as reader
 
     return (
-        ("state.json", state_path or DEFAULT_V2_STATE_PATH),
-        ("design-draft.json", design_draft_path or DEFAULT_DESIGN_DRAFT_PATH),
-        ("applied-profile.json", applied_profile_path or _APPLIED_PROFILE_PATH),
+        (reader.STATE_FILENAME, state_path or reader.STATE_DEFAULT_PATH),
+        (
+            reader.DESIGN_DRAFT_FILENAME,
+            design_draft_path or reader.DRIVERS_DEFAULT_PATH,
+        ),
+        (
+            reader.APPLIED_PROFILE_FILENAME,
+            applied_profile_path or reader.APPLIED_PROFILE_DEFAULT_PATH,
+        ),
+        (
+            reader.REPEAT_FLOOR_FILENAME,
+            repeat_floor_path or reader.REPEAT_FLOOR_DEFAULT_PATH,
+        ),
     )
 
 
@@ -168,6 +178,7 @@ def bank_round(
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
+    repeat_floor_path: Path | None = None,
 ) -> BankedRound:
     """Bank one live session bundle and its SSOT documents into the campaign home.
 
@@ -218,7 +229,9 @@ def bank_round(
     if target.exists():
         raise RoundBankError(REASON_ALREADY_BANKED, f"{target} is already banked")
 
-    documents = _ssot_documents(state_path, design_draft_path, applied_profile_path)
+    documents = _ssot_documents(
+        state_path, design_draft_path, applied_profile_path, repeat_floor_path
+    )
     target.mkdir(parents=True)
     try:
         shutil.copytree(
