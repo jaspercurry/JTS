@@ -345,6 +345,9 @@ def _plan_for(coupling: str, outputd_env: dict[str, str] | None = None):
         transport_topology=transport_topology_for_coupling(
             coupling, outputd_env=dict(outputd_env or {})
         ),
+        # The merged outputd env the real plan carries, so the sampler reads the
+        # plan's copy instead of re-merging the two env files itself.
+        outputd_env=dict(outputd_env or {}),
         setting=setting,
     )
 
@@ -396,8 +399,10 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
         "".join(f"{key}={value}\n" for key, value in outputd_env.items()),
         encoding="utf-8",
     )
+    # The FIRST layer of the merge every surface now reads (`outputd.env`, then
+    # `grouping-outputd.env`); the grouping layer is absent on this box.
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(env_file)
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(env_file)
     )
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",

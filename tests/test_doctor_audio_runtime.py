@@ -1320,6 +1320,26 @@ def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
     assert "camilla_emitted=256/1536" in r.detail
 
 
+def test_audio_runtime_plan_doctor_passes_a_ring_armed_bonded_box(monkeypatch):
+    """A bonded box on the one transport is not an unsupported route.
+
+    Nothing refuses a grouping route mode any more: the only rule that did
+    needed the legacy FIFO round-trip spelling, which no writer emits.
+    """
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
+        route_mode="active_leader",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    assert doctor.check_audio_runtime_plan().status == "ok"
+    assert plan.errors == ()
+
 
 def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     monkeypatch,
@@ -3688,15 +3708,45 @@ def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
     }
 
 
-def _buffer_health(data, *, period=128):
+def _buffer_health(data, *, period=128, content_hop=None):
+    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING
+
     return audio_runtime._outputd_buffer_health(
         data,
         data["content"],
-        ring_mode=True,
+        content_hop=content_hop or TRANSPORT_SHM_RING,
         content_buffer=data["content"]["buffer_frames"],
         dac_buffer=period * 4,
         period_frames=period,
     )
+
+
+@pytest.mark.parametrize(
+    "shape,expect_fail",
+    [
+        ("off_ring", True),
+        ("dac_content_ring", False),
+    ],
+)
+def test_the_alsa_jitter_floor_applies_to_exactly_the_alsa_class(shape, expect_fail):
+    """The content hop's CLASS decides the floor, not a second marker read.
+
+    outputd seeds `content.buffer_frames` to the period and negotiates no
+    content PCM, so a period-sized buffer is the honest value for every SHM hop
+    — including a bonded member's return ring. Only the ALSA class owes the
+    ">= 2x period" jitter margin.
+    """
+    from jasper.cli.doctor._shared import CheckResult
+
+    result = audio_runtime._outputd_buffer_health(
+        {},
+        {"source": "alsa"},
+        content_hop=shape,
+        content_buffer=128,
+        dac_buffer=512,
+        period_frames=128,
+    )
+    assert isinstance(result, CheckResult) is expect_fail, result
 
 
 def test_buffer_health_passes_when_the_attached_wire_matches():
@@ -4586,6 +4636,7 @@ def _arrange(
     crossover_playback_device: str | None = None,
     primary_config_missing: bool = False,
     grouped_park: bool = False,
+    marker_armed: bool = False,
 ) -> None:
     """Put the box in one (content-bridge, loaded-graph-playback) combination.
 
@@ -4605,6 +4656,17 @@ def _arrange(
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    # The SECOND env layer, exactly where a bonded member's marker really lives
+    # — never in the first file. Writing it here is what proves the doctor reads
+    # the merge and not just `outputd.env`.
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text(
+        "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n" if marker_armed else "",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
     monkeypatch.setattr(
         audio_runtime, "_grouped_dac_content_lane_parked", lambda: grouped_park
@@ -4691,6 +4753,62 @@ def test_a_bonded_follower_on_the_stereo_ring_is_not_a_split(
     )
 
     assert audio_runtime.check_ring_split_transport().status == "ok"
+
+
+def test_a_marker_armed_member_on_the_stereo_ring_is_not_a_split(
+    monkeypatch, tmp_path
+) -> None:
+    """THE FALSE FAIL the cutover would otherwise create.
+
+    A dumb bonded member declares NO bridge — outputd refuses the marker beside
+    one — while its own CamillaDSP still loads the stereo ring nothing reads.
+    That pair is `graph_on_ring=True, outputd_on_ring=False`, which the
+    generalized predicate calls a split and reports as "this speaker is SILENT"
+    about a speaker audibly playing the bond. The marker carves it out, and it
+    is read out of the SECOND env layer, which is the only place it ever
+    appears.
+    """
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge="",
+        playback_device=RING_PLAYBACK_DEVICE,
+        marker_armed=True,
+    )
+
+    result = audio_runtime.check_ring_split_transport()
+    assert result.status == "ok", result
+
+    # CONTROL: the identical pair with the marker cleared is still the split it
+    # has always been, so what is carved out is the marker and not the shape.
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge=DIRECT_BRIDGE,
+        playback_device=RING_PLAYBACK_DEVICE,
+    )
+    assert audio_runtime.check_ring_split_transport().status == "fail"
+
+
+def test_the_marker_stand_down_needs_a_cleared_bridge(monkeypatch, tmp_path) -> None:
+    """The stand-down is for a SERVED member, not a merely armed one.
+
+    A marker declared beside a bridge is the pair outputd refuses at startup, so
+    this check must neither report the graph-vs-bridge pair coherent nor call it
+    a split: `check_ring_transport_park` owns that shape by name (ADR-0220), and
+    this check hands it over rather than describing a daemon that cannot run.
+    """
+    for playback in ("outputd_content_playback", RING_PLAYBACK_DEVICE):
+        _arrange(
+            monkeypatch,
+            tmp_path,
+            bridge=RING_BRIDGE,
+            playback_device=playback,
+            marker_armed=True,
+        )
+        result = audio_runtime.check_ring_split_transport()
+        assert result.status == "ok", (playback, result)
+        assert "transport-park" in result.detail, (playback, result)
 
 
 # --- Per-conjunct pins. A two-term conjunction passes a single-conjunct test
@@ -5036,3 +5154,117 @@ def test_outputd_xrun_warning_reports_worst_lane():
     reason = doctor.audio_runtime._outputd_xrun_rate_warning(content, dac)
     assert reason is not None
     assert reason.startswith("dac ")
+
+
+# --- the dac-content marker reaches the doctor's content-source expectation --
+
+
+def _transport_health(env: dict[str, str], *, content_source: str):
+    """Run the doctor's transport-health helper over one env + STATUS pairing.
+
+    Returns the helper's own value: a ``CheckResult`` when it refused, or its
+    4-tuple when it got through. Nothing here reads a message string — the
+    discrimination is the RETURN SHAPE, which is what the caller branches on.
+    """
+    payload = json.loads(_outputd_status_payload(content_source=content_source))
+    return doctor.audio_runtime._outputd_transport_health(
+        payload,
+        payload["content"],
+        payload["dac"],
+        outputd_env=env,
+        sink_mode=payload["sink_mode"],
+        active_channels=None,
+        expected_dac_pcm=payload["dac"]["pcm"],
+    )
+
+
+_LANE_ARMED = {"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"}
+
+
+def test_a_marker_armed_member_expects_the_source_outputd_publishes():
+    """THE doctor half of the cutover: a bonded member must not FAIL.
+
+    Its bridge key is absent, which alone reads as the central ring and derives
+    `content.source == "shm_ring"`. But outputd resolved the dac-content return
+    ring, left `shm_ring` unattached, and therefore publishes `alsa` — so the
+    expectation has to be derived with the marker in hand, or every healthy
+    bonded speaker fails this check.
+    """
+    from jasper.cli.doctor._shared import CheckResult
+
+    assert not isinstance(
+        _transport_health(_LANE_ARMED, content_source="alsa"), CheckResult
+    )
+
+
+def test_a_marker_armed_member_still_refuses_a_central_ring_source():
+    """The narrowing is not a blanket pass: the marker names ONE expectation.
+
+    A daemon reporting `shm_ring` under an armed marker is running an env older
+    than the file it was given — the exact staleness this check exists to
+    catch — so it must still refuse.
+    """
+    from jasper.cli.doctor._shared import CheckResult
+
+    result = _transport_health(_LANE_ARMED, content_source="shm_ring")
+    assert isinstance(result, CheckResult)
+    assert result.status == "fail"
+
+
+def test_an_unbonded_box_keeps_expecting_the_central_ring():
+    """The shipped verdict where no marker is armed, both ways round."""
+    from jasper.cli.doctor._shared import CheckResult
+
+    assert not isinstance(
+        _transport_health({}, content_source="shm_ring"), CheckResult
+    )
+    stale = _transport_health({}, content_source="alsa")
+    assert isinstance(stale, CheckResult)
+    assert stale.status == "fail"
+
+
+def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
+    """END TO END: a healthy bonded member must come out `ok`, not `fail`.
+
+    Three of this check's steps read the content hop, and all three had to learn
+    the marker together or the box fails on one of them: the content.source
+    expectation (`alsa`, not `shm_ring`), the transport coherence report (the
+    dac-content shape, not an off-ring one), and the buffer geometry — outputd
+    seeds `content.buffer_frames` to the period and negotiates no content PCM,
+    so the ALSA ">= 2x period" jitter floor would fail every such box.
+    """
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+    )
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        # What outputd publishes with no CENTRAL ring attached: `alsa`, and a
+        # period-sized content buffer with no content.ring sub-block.
+        _outputd_status_payload(
+            content_source="alsa", content_buffer_frames=1024, period_frames=1024
+        ),
+    )
+    # RING A IS STILL LIVE on a bonded member — fan-in serves it here like
+    # anywhere else — so the graph captures it. (The status-socket helper's own
+    # default pairs an `alsa` content source with the snd-aloop tap, which is
+    # the genuinely off-ring box, not this one.)
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices={
+                "playback_device": RING_PLAYBACK_DEVICE,
+                "capture_device": RING_CAPTURE_DEVICE,
+            }
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "ok", r.detail
+    assert "content_source=alsa" in r.detail

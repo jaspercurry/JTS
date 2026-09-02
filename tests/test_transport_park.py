@@ -376,19 +376,16 @@ def test_converged_active_endpoint_does_not_park():
     "env",
     [
         pytest.param({_FIFO_ENV: "/run/x.fifo"}, id="fifo_only"),
-        pytest.param({_LANE_ENV: "1"}, id="marker_only"),
-        pytest.param({_LANE_ENV: "on"}, id="marker_word"),
-        pytest.param({_FIFO_ENV: "/run/x.fifo", _LANE_ENV: "1"}, id="both"),
+        pytest.param({_FIFO_ENV: "/run/x.fifo", _LANE_ENV: "1"}, id="fifo_and_marker"),
     ],
 )
-def test_either_transport_arms_the_one_grouped_park(env):
-    """ONE lane, two spellings, ONE class — and one issue to follow.
+def test_the_legacy_fifo_spelling_arms_the_grouped_park(env):
+    """THE FIFO SPELLING ALONE keeps this class, and its issue.
 
-    outputd requires ``CONTENT_BRIDGE=direct`` for the ring marker and the
-    FIFO alike, so a marker-armed box parks for exactly the reason a
-    FIFO-armed one does. A trigger reading the FIFO key alone would leave it
-    refused at outputd with no class naming it here, which is the unnamed
-    park ADR-0178 exists to prevent.
+    The FIFO half still needs ``CONTENT_BRIDGE=direct``, which no writer emits
+    and which outputd refuses beside the marker, so it has no producer and the
+    box is silent. A box carrying BOTH still parks: the FIFO is the half that
+    cannot run.
     """
     parks = transport_park.classify(_full_range_stereo(), env)
     assert _classes(parks) == {PARK_GROUPED_DAC_CONTENT_LANE}
@@ -398,21 +395,56 @@ def test_either_transport_arms_the_one_grouped_park(env):
 @pytest.mark.parametrize(
     "env",
     [
+        pytest.param({_LANE_ENV: "1"}, id="marker_only"),
+        pytest.param({_LANE_ENV: "on"}, id="marker_word"),
+        pytest.param({_LANE_ENV: "1", _FIFO_ENV: ""}, id="marker_with_cleared_fifo"),
+    ],
+)
+def test_a_marker_armed_member_is_served_and_does_not_park(env):
+    """THE CUTOVER, from the park's side: a marker-armed member PLAYS.
+
+    The grouping reconciler arms the marker on every dumb member it can serve,
+    and outputd serves it — it selects the dac-content return ring as the box's
+    sole content source. Parking that box would report a speaker that is audibly
+    working, and hand its household "ungrouping it brings sound back".
+    """
+    assert transport_park.classify(_full_range_stereo(), env) == ()
+
+
+def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
+    """OUTPUTD REFUSES THIS PAIR, so the box is silent with every unit green.
+
+    Reachable rather than theoretical: `jasper-fanin-coupling-auto` writes the
+    bridge into the FIRST env layer on every pass, so a member whose grouping
+    layer failed to clear it lands here (ADR-0220).
+    """
+    parks = transport_park.classify(
+        _full_range_stereo(),
+        {"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring", _LANE_ENV: "1"},
+    )
+    assert _classes(parks) == {transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE}
+    park = _by_class(parks, transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE)
+    assert park.issue == "#3118"
+    assert park.remedy == transport_park.BRIDGE_BESIDE_MARKER_REMEDY
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
         pytest.param({}, id="neither_key"),
         pytest.param({_FIFO_ENV: ""}, id="fifo_cleared"),
         pytest.param({_FIFO_ENV: "", _LANE_ENV: ""}, id="ungrouped_clears_both"),
+        pytest.param({_FIFO_ENV: "   "}, id="fifo_whitespace_only"),
         pytest.param({_LANE_ENV: "0"}, id="marker_off"),
-        pytest.param({_LANE_ENV: "false"}, id="marker_false"),
     ],
 )
 def test_an_unarmed_lane_parks_under_neither_spelling(env):
-    """THE kill test for this class, across both spellings.
+    """THE kill test for this class.
 
-    Each key is read the way outputd reads it: the FIFO as a non-empty PATH,
-    because the grouping reconciler writes it as an EMPTY string when this
-    speaker is not an active member; the marker through ``env_bool``, because
-    one tested for PRESENCE would call ``=0`` armed and park a speaker that is
-    playing.
+    The FIFO is read as a non-empty PATH, because the grouping reconciler writes
+    it as an EMPTY string on every branch — and stripped, because a
+    whitespace-only value is not a path and
+    ``transport_park._assess`` — now the only reader of that key — strips it too.
     """
     assert transport_park.classify(_full_range_stereo(), env) == ()
 

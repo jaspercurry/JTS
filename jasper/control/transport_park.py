@@ -47,7 +47,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ..env_load import merged_env_files
+from ..env_load import outputd_reconciled_env
 
 if TYPE_CHECKING:
     from ..output_topology import OutputTopology
@@ -59,6 +59,7 @@ PARK_PASSIVE_STEREO_COMPOSITE = "passive_stereo_composite"
 PARK_MONO_FULL_RANGE = "mono_full_range"
 PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED = "roleful_active_endpoint_unconverged"
 PARK_GROUPED_DAC_CONTENT_LANE = "grouped_dac_content_lane"
+PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE = "dac_content_marker_beside_bridge"
 
 #: The tracked rebuild issue each shape waits on, in the tree's ``#NNNN``
 #: spelling. ``roleful_active_endpoint_unconverged`` has none on purpose: it
@@ -66,6 +67,12 @@ PARK_GROUPED_DAC_CONTENT_LANE = "grouped_dac_content_lane"
 ISSUE_COMPOSITE_ON_RING = "#2982"
 ISSUE_MONO_ON_RING = "#3117"
 ISSUE_GROUPED_ON_RING = "#3118"
+
+#: The recorded remedy for a marker/bridge contradiction: the grouping writer
+#: clears the bridge on its own next pass, so the operator runs one command.
+BRIDGE_BESIDE_MARKER_REMEDY = (
+    "sudo systemctl start jasper-grouping-reconcile.service"
+)
 
 #: The recorded remedy for an unconverged ACTIVE endpoint. Owner ruling
 #: 2026-08-26: a recorded command, not a new reconciler rung.
@@ -84,24 +91,6 @@ ACTIVE_ENDPOINT_REMEDY = (
     "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
     "--endpoint ring && sudo systemctl start jasper-audio-hardware-reconcile"
 )
-
-
-def _outputd_env() -> dict[str, str]:
-    """outputd's persistent env, read fresh through its own layering.
-
-    The two paths and the lane keys are taken from the modules that own them
-    rather than respelled here: ``OUTPUTD_ENV_PATH`` is the same constant
-    :func:`~jasper.fanin_coupling.ring_active_endpoint_armed` reads when it is
-    given no mapping, so the endpoint marker this reads and the marker that
-    predicate reads cannot come from different files. Layer order is the
-    unit's own ``EnvironmentFile=`` order
-    (``deploy/systemd/jasper-outputd.service``), so the grouping file's pins
-    win here exactly as they win for outputd itself.
-    """
-    from ..fanin.coupling_reconcile import OUTPUTD_ENV_PATH
-    from ..multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
-
-    return merged_env_files((OUTPUTD_ENV_PATH, OUTPUTD_GROUPING_ENV_FILE))
 
 
 @dataclass(frozen=True)
@@ -204,8 +193,10 @@ def _assess(
         ring_channels_for_topology,
         topology_sink_is_composite,
     )
-    from ..fanin_coupling import OUTPUTD_ENV_BOOL_TRUE, ring_active_endpoint_armed
-    from ..multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from ..fanin_coupling import (
+        dac_content_marker_contradicted,
+        ring_active_endpoint_armed,
+    )
     from ..multiroom.reconcile import OUTPUTD_DAC_CONTENT_FIFO_ENV
     from ..output_topology import load_output_topology_strict
 
@@ -218,7 +209,7 @@ def _assess(
         # still an empty draft — a fresh box must not park on never-configured.
         topology = load_output_topology_strict()
     if env is None:
-        env = _outputd_env()
+        env = outputd_reconciled_env()
 
     contract = classify_output_contract(topology)
     stereo_ring = ring_channels_for_topology(topology)
@@ -283,36 +274,47 @@ def _assess(
             )
         )
 
-    # EITHER spelling arms the ONE round-trip lane, so both are this class —
-    # but no longer for one reason (``rust/jasper-outputd/src/config.rs``). The
-    # FIFO half needs ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``, which its own
-    # grouping writer no longer emits. The MARKER half now parses instead: it
-    # SELECTS the return ring as the sole content source, and is armed ahead of
-    # the reconciler that writes its producer. Reading the FIFO key alone would
-    # leave a marker-armed box with no class naming it here.
+    # OUTPUTD'S OWN REFUSAL, MIRRORED. The marker beside a DECLARED bridge is
+    # the pair `Config::from_env` bails EX_CONFIG on, which the unit's
+    # `RestartPreventExitStatus=78` turns into a parked daemon — silent, while
+    # every writer reports the bond formed. Reachable because
+    # `jasper-fanin-coupling-auto` writes the bridge into the FIRST env layer on
+    # every pass, so a member whose grouping layer failed to clear it lands
+    # here (ADR-0220).
+    if dac_content_marker_contradicted(env):
+        parks.append(
+            TransportPark(
+                park_class=PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
+                issue=ISSUE_GROUPED_ON_RING,
+                remedy=BRIDGE_BESIDE_MARKER_REMEDY,
+                detail=(
+                    "this bonded member carries both the dac-content lane marker "
+                    "and a declared content bridge; outputd refuses that pair at "
+                    "startup, so the speaker is silent with every unit green"
+                ),
+            )
+        )
+
+    # THE LEGACY FIFO SPELLING ONLY: it needs
+    # ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``, which no writer emits, so nothing
+    # produces its audio. The ring MARKER is SERVED and does not park (ADR-0220
+    # supersedes that row of ADR-0178). Read as a PATH, non-empty rather than
+    # present, because the grouping reconciler writes this key as an EMPTY
+    # string on every branch.
     #
-    # Each key is read with the semantics outputd reads it with: the FIFO is a
-    # PATH, non-empty rather than present, because the grouping reconciler
-    # writes it as an EMPTY string off-bond and a cleared bond leaves the key
-    # behind; the marker is a BARE flag, so ``=0`` is not armed.
-    #
-    # EXPIRY: the FIFO half of this test dies with the FIFO arm itself, in the
-    # deletion PR that follows a bonded pair playing through the ring on metal.
+    # EXPIRY: dies with outputd's own FIFO reader, after a bonded pair plays
+    # through the ring on metal (ADR-0220, #3118).
     fifo_armed = bool((env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV) or "").strip())
-    ring_armed = (
-        env.get(DAC_CONTENT_LANE_ENV) or ""
-    ).strip().lower() in OUTPUTD_ENV_BOOL_TRUE
-    if fifo_armed or ring_armed:
+    if fifo_armed:
         parks.append(
             TransportPark(
                 park_class=PARK_GROUPED_DAC_CONTENT_LANE,
                 issue=ISSUE_GROUPED_ON_RING,
                 remedy=None,
                 detail=(
-                    "this box is a bonded grouping member whose round-trip "
-                    "dac_content lane has no producer: the FIFO half needs a "
-                    "content bridge its writer no longer emits, and the marker "
-                    "half is armed ahead of the reconciler that serves its ring"
+                    "this box is a bonded grouping member pinned to the legacy "
+                    "raw-PCM FIFO round-trip lane, which needs a content bridge "
+                    "its writer no longer emits, so nothing produces its audio"
                 ),
             )
         )

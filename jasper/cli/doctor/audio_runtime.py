@@ -18,7 +18,6 @@ from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import read_camilla_device_field
-from ...env_load import merged_env_files
 from ...fanin_coupling import RING_SLOT_FRAMES, read_declared_ring_wire_format
 from ._registry import doctor_check
 from ...output_hardware import active_dac_profile_id
@@ -181,20 +180,12 @@ def _read_status_socket(socket_path: str) -> dict[str, object]:
 def _outputd_reconciled_env() -> dict[str, str]:
     """outputd's env as its own unit layers it, read fresh.
 
-    BOTH FILES, in ``jasper-outputd.service``'s own ``EnvironmentFile=`` order:
-    ``outputd.env`` then ``grouping-outputd.env``, so a bonded box's grouping
-    pins win here exactly as they win for the daemon.
+    :func:`jasper.env_load.outputd_reconciled_env` plus the
+    ``JASPER_OUTPUTD_ENV_FILE`` operator seam; nothing else.
     """
-    from ...control.transport_park import _outputd_env
+    from ...env_load import outputd_reconciled_env
 
-    override = os.environ.get("JASPER_OUTPUTD_ENV_FILE")
-    if override:
-        # Overrides the FIRST layer only: the grouping layer keeps its own path
-        # so an override cannot hide a bonded pin.
-        from ...multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
-
-        return merged_env_files((override, OUTPUTD_GROUPING_ENV_FILE))
-    return _outputd_env()
+    return outputd_reconciled_env(os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None)
 
 
 def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
@@ -1419,6 +1410,10 @@ def check_ring_split_transport() -> CheckResult:
     grouped park, which runs ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` by design
     while its graph still loads the stereo ring.
 
+    A bonded member in either round-trip spelling is stood down on below: the
+    marker-armed one plays the bond off the return ring, the legacy FIFO one is
+    :func:`check_ring_transport_park`'s named park.
+
     KNOWN TRANSIENT: the arm ladder moves the graph first and the bridge later,
     so a doctor run taken inside an active ladder can FAIL here for the seconds
     between those rungs. The arm's own terminal doctor pass is authoritative.
@@ -1431,23 +1426,49 @@ def check_ring_split_transport() -> CheckResult:
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
+        dac_content_marker_contradicted,
+        dac_content_ring_served,
         outputd_bridge_is_ring,
     )
 
     label = "ring split transport"
+    outputd_env = _outputd_reconciled_env()
+    if dac_content_ring_served(outputd_env):
+        # Its content comes off the return ring, so the graph-vs-bridge pair
+        # below has no subject and would FAIL "this speaker is SILENT" on a
+        # speaker making sound.
+        return CheckResult(
+            label,
+            "ok",
+            "bonded member on the dac-content return ring; its content source "
+            "is the bond, not this box's post-DSP ring",
+        )
+    if dac_content_marker_contradicted(outputd_env):
+        # The marker beside a declared bridge: outputd refuses that pair at
+        # startup, so the graph-vs-bridge comparison below would report a
+        # daemon that cannot run as a coherent pair.
+        # `check_ring_transport_park` owns it by name.
+        return CheckResult(
+            label,
+            "ok",
+            "dac-content marker declared beside a content bridge; see the "
+            "transport-park check",
+        )
     if _grouped_dac_content_lane_parked():
-        # A bonded box's grouping env pins the DIRECT bridge while its graph
-        # feeds the dac_content lane, which reads as a split on a box that is
-        # playing. `check_ring_transport_park` owns that shape.
+        # The LEGACY FIFO shape reads as a split too, and it has an owner:
+        # `check_ring_transport_park` names it with its tracked issue.
         return CheckResult(
             label, "ok", "grouped dac_content lane; see the transport-park check"
         )
-    outputd_env = _outputd_reconciled_env()
-    # An undeclared bridge IS the ring (config.rs), hence the spelt-out default.
+    # `(unset, = the ring)` rather than a bare `(unset)`: an undeclared bridge IS
+    # the ring (config.rs), so a reader who saw only "unset" beside a ring graph
+    # would think the pair disagreed when it agrees.
     bridge = (
         str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
         or "(unset, = the ring)"
     )
+    # The bridge key alone: the marker stand-down above already returned, so the
+    # two questions have the same answer from here down.
     outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
@@ -1525,25 +1546,29 @@ def check_active_ring_path_projection() -> CheckResult:
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
-        outputd_bridge_is_ring,
+        outputd_content_is_central_ring,
         resolve_outputd_ring_path,
     )
     from jasper.env_file import read_value
 
     label = "active ring path projection"
-    # THE BRIDGE, not the persisted coupling: outputd's ring-path allowlist runs
-    # iff outputd is on the ring bridge. Read LAYERED, because a bonded box's
-    # grouping env pins this key and the unit reads that file last.
-    declared = str(
-        _outputd_reconciled_env().get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or ""
-    ).strip()
-    if not outputd_bridge_is_ring(declared):
-        # No ring read means nothing to project. Such a box parks, and the park
-        # is the transport-park check's subject.
+    # WHAT OUTPUTD ATTACHES, not the persisted coupling: outputd's ring-path
+    # allowlist runs iff the CENTRAL ring is its content source, so that is what
+    # makes this check live or inert. Both ways off it are somebody else's
+    # subject — a retired-route box parks (the transport-park check), and a
+    # marker-armed bonded member reads the return ring instead (which attaches
+    # no ring path at all).
+    #
+    # LAYERED, because a bonded box's grouping env carries the marker and the
+    # unit reads that file last — the gate has to see what outputd sees.
+    layered = _outputd_reconciled_env()
+    declared = str(layered.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
+    if not outputd_content_is_central_ring(layered):
         return CheckResult(
             label,
             "ok",
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={declared}; no ring path to read",
+            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}="
+            f"{declared or '(unset)'}; no central ring path to read",
         )
     # The SUBJECT stays outputd.env's own text: the marker and the ring path are
     # single-writer keys of that file, and `_outputd_ring_path_for` is contracted
@@ -2418,21 +2443,27 @@ def _outputd_buffer_health(
     data: dict[str, object],
     content: dict[str, object],
     *,
-    ring_mode: bool,
+    content_hop: str,
     content_buffer: object,
     dac_buffer: object,
     period_frames: int,
-    outputd_env: dict[str, str] | None = None,
 ) -> str | CheckResult:
-    """Validate ALSA or SHM-ring buffer geometry and return ring detail.
+    """Validate the content hop's buffer geometry and return ring detail.
 
-    ``outputd_env`` is the reconciled ``outputd.env`` the caller already read; it
-    decides via the endpoint marker WHICH ring's width the observed channels are
-    compared against, Ring B's or the ACTIVE ring's. ``None`` falls back to a
-    file-fresh read.
+    ``content_hop`` is the resolved transport shape's name
+    (:data:`jasper.audio_runtime_plan.TRANSPORT_SHAPES`), which is what decides
+    both branches below AND which ring's width the observed channels are held
+    to — the ACTIVE shape reads the post-crossover per-driver ring. Taking the
+    resolved shape rather than re-reading markers keeps one env read per check.
     """
+    from jasper.audio_runtime_plan import (
+        TRANSPORT_DAC_CONTENT_RING,
+        TRANSPORT_SHM_RING,
+        TRANSPORT_SHM_RING_ACTIVE,
+    )
+
     ring_detail = ""
-    if ring_mode:
+    if content_hop in (TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE):
         # Under shm_ring neither outputd sink opens a content PCM, so
         # content.buffer_frames is a synthetic period-sized stand-in and the
         # generic ">= 2x period" ALSA jitter-margin floor does not apply (every
@@ -2498,10 +2529,7 @@ def _outputd_buffer_health(
         # exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
             from jasper.fanin.ring_health import load_topology_for_wire
-            from jasper.fanin_coupling import (
-                resolve_ring_wire,
-                ring_active_endpoint_armed,
-            )
+            from jasper.fanin_coupling import resolve_ring_wire
 
             # TOPOLOGY-THREADED, like every reconciler gate that compares this
             # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready``): the
@@ -2514,7 +2542,7 @@ def _outputd_buffer_health(
             # whose width is ``ring_active_channels``. An armed endpoint whose
             # active width does not resolve (``None``) has no honest expectation,
             # so the channels axis is skipped rather than compared to a fallback.
-            active_endpoint = ring_active_endpoint_armed(outputd_env)
+            active_endpoint = content_hop == TRANSPORT_SHM_RING_ACTIVE
             expected_channels = (
                 wire.ring_active_channels if active_endpoint else wire.ring_b_channels
             )
@@ -2554,7 +2582,15 @@ def _outputd_buffer_health(
             f"{shm_ring_block.get('format') if isinstance(shm_ring_block, dict) else None}"
             f"/{shm_ring_block.get('channels') if isinstance(shm_ring_block, dict) else None}ch"
         )
-    elif not isinstance(content_buffer, int) or content_buffer < period_frames * 2:
+    elif content_hop != TRANSPORT_DAC_CONTENT_RING and (
+        not isinstance(content_buffer, int) or content_buffer < period_frames * 2
+    ):
+        # The ALSA jitter floor applies to exactly the ALSA class. A bonded
+        # member's content hop is the dac-content RETURN ring, whose
+        # `content.buffer_frames` is the same period-sized synthetic every SHM
+        # hop publishes (`rust/jasper-outputd/src/state.rs`), and outputd
+        # publishes no `content.ring` block for it — that sub-block is the
+        # CENTRAL ring's capacity contract.
         return CheckResult(
             "jasper-outputd",
             "fail",
@@ -2621,7 +2657,7 @@ def _outputd_transport_health(
     sink_mode: object,
     active_channels: int | None,
     expected_dac_pcm: str,
-) -> tuple[str, str, str, bool] | CheckResult:
+) -> tuple[str, str, str, str] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
 
     OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``
@@ -2631,10 +2667,7 @@ def _outputd_transport_health(
     Whether that env is the RIGHT one for this box is
     :func:`check_ring_split_transport`'s.
     """
-    from jasper.fanin_coupling import (
-        OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        outputd_bridge_is_ring,
-    )
+    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
@@ -2647,11 +2680,10 @@ def _outputd_transport_health(
         str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
         or "(unset, = the ring)"
     )
-    outputd_on_ring = outputd_bridge_is_ring(
-        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
-    )
-    # No coupling handed in: the planner reads outputd's own bridge out of the
-    # env, which is the half this check is about.
+    # NO COUPLING HANDED IN: the planner reads outputd's own env, which is the
+    # half this check is about. Its resolved SHAPE is the content hop's class —
+    # the ALSA lane, the central ring, or a bonded member's return ring — and
+    # everything below branches on that rather than on a second marker read.
     topology = transport_topology_for_coupling(outputd_env=outputd_env)
     expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
@@ -2736,7 +2768,7 @@ def _outputd_transport_health(
         transport_evidence_warning,
         local_pipe_detail,
         reference_detail,
-        outputd_on_ring,
+        topology.name,
     )
 
 
@@ -2800,7 +2832,7 @@ def check_outputd_service() -> CheckResult:
         transport_evidence_warning,
         local_pipe_detail,
         reference_detail,
-        ring_mode,
+        content_hop,
     ) = transport_health
     dual_health = _outputd_dual_apple_health(
         data,
@@ -2830,11 +2862,10 @@ def check_outputd_service() -> CheckResult:
     buffer_health = _outputd_buffer_health(
         data,
         content,
-        ring_mode=ring_mode,
+        content_hop=content_hop,
         content_buffer=content_buffer,
         dac_buffer=dac_buffer,
         period_frames=period_frames,
-        outputd_env=outputd_env,
     )
     if isinstance(buffer_health, CheckResult):
         return buffer_health

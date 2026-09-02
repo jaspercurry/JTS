@@ -817,7 +817,7 @@ class CamillaController:
         ``duck=False`` keeps the writer-lock serialization and drops the fader
         bracket: a parameter write into running filters is what a live drag
         already does unbracketed (a moved trim lands as a level step,
-        ADR-0219), and the measurement session graph, through
+        ADR-0220), and the measurement session graph, through
         :meth:`set_active_config_raw`, installs into a session that already
         holds the fader, so nothing is playing for a step to be loud against.
         """
@@ -908,7 +908,7 @@ class CamillaController:
         only for a graph CamillaDSP will update in place, which the caller
         proves by comparing the running graph against the wanted one
         (:func:`jasper.sound.live_edit.plan_live_edit`); a moved trim lands as
-        a level step there, accepted by ADR-0219 -- and for the
+        a level step there, accepted by ADR-0220 -- and for the
         measurement session graph, installed ONCE into a session that has
         already claimed the fader and paused voice, so there is no household
         programme for a step to be loud against. Every other caller ducks.
