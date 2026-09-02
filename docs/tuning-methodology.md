@@ -199,7 +199,14 @@ one, `jasper-angle-capture stage --program baseline --size express` (or
 `--size full`) banks a named pose table for the next session and prints the
 price and a handoff URL; hand that URL to the household, then poll
 `jasper-crossover-prescriber status` until the walk's takes appear under
-`banked`. Depth is PULLED afterwards through the analysis verbs — the receipt
+`banked`. Ask the household ONCE, in metres, for the driver acoustic-centre
+height, the mic height and the mic-to-speaker distance (ceiling optional) and
+pass them at `stage` (`--speaker-height-m` / `--mic-height-m` /
+`--distance-m` / `--ceiling-height-m`), or declare them once on the box with
+`jasper-declare-geometry set` and let `stage` pick them up — the room's
+entanglement floor is derived from that answer and nothing on the rig can
+measure it.
+Depth is PULLED afterwards through the analysis verbs — the receipt
 is a stage-and-price statement, not a report.
 
 ## 3. THE CROSSOVER CORNER — three criteria, ranked

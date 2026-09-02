@@ -1953,9 +1953,9 @@ def _take_staged_angle_walk(
     capture_source: str,
     preset: Any,
     topology: Any,
-) -> tuple[tuple[Any, ...], str, Any, dict[str, float]] | None:
-    """This session's staged angle walk as ``(poses, consumer, spec, trims)``,
-    or ``None``.
+) -> tuple[tuple[Any, ...], str, Any, dict[str, float], Any] | None:
+    """This session's staged angle walk as
+    ``(poses, consumer, spec, trims, geometry)``, or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
     ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
@@ -2176,6 +2176,7 @@ def _take_staged_angle_walk(
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
         level_matched=request.level_matched,
+        declared_geometry=request.declared_geometry is not None,
         # WHICH evidence answered, so a take's receipts name the source of the
         # gains its graph carries instead of leaving a reader to guess between
         # the banked trim and the guided captures. Empty on an unmatched walk.
@@ -2185,7 +2186,13 @@ def _take_staged_angle_walk(
         ),
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
     )
-    return prompts, LATERAL_CONSUMER_FORWARD_MODEL, measure_spec, level_trims
+    return (
+        prompts,
+        LATERAL_CONSUMER_FORWARD_MODEL,
+        measure_spec,
+        level_trims,
+        request.declared_geometry,
+    )
 
 
 def _resolve_measurement_level_trims(
@@ -2888,6 +2895,72 @@ def bind_evidence_publishers(
         )
 
     return publish_check, publish_candidate, refs
+
+
+def publish_declared_geometry(
+    store: Any, relay_session_id: str, geometry: Any
+) -> None:
+    """Bank what the household measured, once, when they were asked.
+
+    ``None`` publishes nothing: most sessions carry no declaration, and an
+    empty artifact would read as a room somebody measured to zero.
+
+    The values are CARRIED, never computed from: the entanglement floor
+    (``2.5 / t_first_bounce``) is an offline toolbox step over the banked
+    packet, and the reflection finder this rig class ships is structurally
+    blind to the bounce it would need, so the human answer is the only source.
+    """
+    if geometry is None:
+        return
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        DECLARED_GEOMETRY_ARTIFACT,
+        DECLARED_GEOMETRY_KIND,
+    )
+
+    store.publish_json_artifact(
+        f"crossover_v2/{relay_session_id}/{DECLARED_GEOMETRY_ARTIFACT}",
+        {"schema_version": 1, "kind": DECLARED_GEOMETRY_KIND, **geometry.to_dict()},
+    )
+
+
+#: Where the declaration rides from the stage that took the walk to the stage
+#: that grades it, inside the durable ``evidence`` block the findings
+#: projection and the cloud fingerprints already cross on.
+DECLARED_GEOMETRY_STATE_KEY = "declared_geometry"
+
+
+def declared_geometry_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """Stage 1's tape measure, as :func:`publish_declared_geometry` takes it.
+
+    The read side of :data:`DECLARED_GEOMETRY_STATE_KEY`. Stage 2 stages no
+    walk and opens its OWN bundle, so without this the post-apply packet would
+    report a room nobody ever declared — the reading defect that block's
+    absence reason exists to prevent, arriving by a different door.
+
+    ``None`` is every session nobody was asked about, and also a record too
+    damaged to read back: an unreadable declaration is not a room, and a
+    grading stage must not be refused its open over one.
+    """
+    from jasper.audio_measurement.measurement_geometry import (
+        DeclaredGeometry,
+        GeometryFieldError,
+    )
+
+    evidence = (state or {}).get("evidence")
+    record = (
+        evidence.get(DECLARED_GEOMETRY_STATE_KEY)
+        if isinstance(evidence, Mapping) else None
+    )
+    if not isinstance(record, Mapping):
+        return None
+    try:
+        return DeclaredGeometry.from_dict(record)
+    except GeometryFieldError:
+        log_event(
+            logger, "correction.crossover_v2_declared_geometry_unreadable",
+            declared=",".join(sorted(str(key) for key in record)),
+        )
+        return None
 
 
 def bind_round_receipt(
@@ -6379,6 +6452,11 @@ def prepare_v2_session(
     # adoption beside it. Empty on every session that stages no level-matched
     # walk, which is every ordinary one.
     engine_level_trims: dict[str, float] = {}
+    # The household's tape measure, if the operator was asked for it. Bound
+    # beside the two above for the same reason: ``_open`` reads it on both
+    # stages. Stage 2 stages no walk, so it rehydrates the room from durable
+    # state below rather than taking one.
+    declared_geometry: Any = None
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
         # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
@@ -6421,6 +6499,7 @@ def prepare_v2_session(
                 lateral_consumer,
                 engine_measure_spec,
                 engine_level_trims,
+                declared_geometry,
             ) = staged_walk
             include_lateral = True
             stage1_index_phase = build_v2_cloud_index_phase_map(
@@ -6520,6 +6599,10 @@ def prepare_v2_session(
         # ``CrossoverV2Session.__init__`` so the "values plus a date, or
         # nothing" rule has one owner.
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
+        # #3498's tape measure, rehydrated so the bundle this stage banks
+        # carries the same room stage 1 was told. Without it the post-apply
+        # packet reports a household that was never asked.
+        declared_geometry = declared_geometry_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
         attempt_store = _attempt_loop_store_snapshot()
@@ -6660,6 +6743,17 @@ def prepare_v2_session(
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
+        # Here rather than at the bundle open: the artifact is filed under the
+        # MINTED provider session id, which does not exist until the line above.
+        publish_declared_geometry(
+            evidence_store, relay_session_id, declared_geometry
+        )
+        if declared_geometry is not None:
+            # …and into durable ``evidence``, which is how the room reaches the
+            # stage that GRADES it: stage 2 stages no walk and banks its own
+            # bundle, so this is the only channel it has. Written on both
+            # stages so a re-armed verify keeps re-banking the same room.
+            refs[DECLARED_GEOMETRY_STATE_KEY] = declared_geometry.to_dict()
         # One signal per RELAY session, shared by the play seam (which fires
         # it) and the relay runner (which installs the armed capture's phone
         # progress ladder on it). A wired session has no page to pace, so it

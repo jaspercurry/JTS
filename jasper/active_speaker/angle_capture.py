@@ -79,6 +79,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
@@ -358,6 +359,14 @@ class AngleCaptureRequest:
     adopts this walk. An operator who could state numbers here could measure
     one speaker through another's level match.
 
+    ``declared_geometry`` is the household's own tape measure -- the toolbox's
+    own :class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`,
+    which is also what ``jasper-declare-geometry`` stores and what derives the
+    room's ``entanglement_floor_hz``. Carried and never judged here: the
+    operator states it once at ``stage`` and it rides onto the session's banked
+    evidence. ``None`` is every walk nobody was asked about, which is most of
+    them.
+
     ``program`` is PROVENANCE, not geometry: the name of the
     :class:`~.measurement_programs.MeasurementProgram` these stops came from
     (``"baseline/express"``, ``"spot"``), or ``""`` for a free-form walk
@@ -386,6 +395,7 @@ class AngleCaptureRequest:
     delay_us: float = 0.0
     level_matched: bool = False
     program: str = ""
+    declared_geometry: DeclaredGeometry | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -435,6 +445,16 @@ class AngleCaptureRequest:
         not that one.
         """
         return self.mover == MOVER_ARM
+
+    def declared_geometry_record(self) -> dict[str, float] | None:
+        """The tape measure as every writer banks it, or ``None`` for none.
+
+        One owner for the "or nothing": the spool document and the CLI's plan
+        JSON both carry this field, and two spellings of one conditional are
+        two places for the null to drift.
+        """
+        geometry = self.declared_geometry
+        return geometry.to_dict() if geometry is not None else None
 
 
 # --------------------------------------------------------------------------- #
@@ -580,6 +600,7 @@ def request_for_program(
     delayed_role: str = "",
     delay_us: float = 0.0,
     level_matched: bool = False,
+    declared_geometry: DeclaredGeometry | None = None,
 ) -> AngleCaptureRequest:
     """The walk one named program asks for, in the table's own order.
 
@@ -589,9 +610,10 @@ def request_for_program(
     "more captures here": the microphone moves once per DISTINCT pose, so
     repeats cost captures and no travel.
 
-    The graph flags are passed through untouched -- a program states geometry
-    and nothing else, so the reverse-null, the confirmation delay and the level
-    match stay the caller's to state (and the spec's to judge).
+    The graph flags are passed through untouched -- a program states POSE
+    geometry and nothing else, so the reverse-null, the confirmation delay, the
+    level match and the household's declared room geometry stay the caller's to
+    state (and the spec's to judge).
 
     Reach is not re-checked here: :class:`AngleCaptureRequest` already refuses a
     pose beyond the stated mover's envelope, in the vocabulary this module
@@ -616,6 +638,7 @@ def request_for_program(
         delayed_role=delayed_role,
         delay_us=delay_us,
         level_matched=level_matched,
+        declared_geometry=declared_geometry,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
         program=(

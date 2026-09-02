@@ -162,6 +162,40 @@ def test_a_ceiling_not_above_both_heights_is_refused(ceiling_height_m):
     assert exc.value.field == "ceiling_height_m"
 
 
+_ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05}
+
+
+@pytest.mark.parametrize(
+    "override, refused_field",
+    [
+        pytest.param({}, "", id="no_ceiling"),
+        pytest.param({"ceiling_height_m": 2.4}, "", id="with_ceiling"),
+        pytest.param({"speaker_height_m": None}, "speaker_height_m", id="missing"),
+        pytest.param({"distance_m": "tall"}, "distance_m", id="not_a_number"),
+        pytest.param({"distance_m": float("nan")}, "distance_m", id="nan"),
+        pytest.param({"ceiling_height_m": float("inf")}, "ceiling_height_m", id="inf"),
+    ],
+)
+def test_the_dict_round_trip_is_exact_and_refuses_what_is_not_a_length(
+    override, refused_field,
+):
+    """``to_dict``/``from_dict`` are the ONE banked shape (#3498).
+
+    ``save``, the angle-capture spool and the session's declared-geometry
+    artifact all carry this pair, so an undeclared ceiling is ABSENT rather
+    than null, and a field that is not a usable number of metres -- missing,
+    a string, NaN, infinite -- is refused BY NAME wherever it arrives.
+    """
+    room = {**_ROOM, **override}
+    if refused_field:
+        with pytest.raises(GeometryFieldError) as exc:
+            DeclaredGeometry.from_dict(room)
+        assert exc.value.field == refused_field
+        return
+
+    assert DeclaredGeometry.from_dict(room).to_dict() == room
+
+
 def test_save_load_round_trip_including_provenance(tmp_path):
     path = tmp_path / "measurement_geometry.json"
     geometry = DeclaredGeometry(
