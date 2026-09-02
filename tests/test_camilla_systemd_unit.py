@@ -168,7 +168,11 @@ def test_recovery_unit_points_at_installed_helper():
     assert _assignments_for(body, "ExecStart") == (
         "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
-    assert _value_for(body, "TimeoutStartSec") == "45"
+    # Both deadlines are load-bearing: the body must be able to finish its
+    # own restore ladder, and the EXIT trap that reruns it on a kill needs
+    # the ladder's share as its own budget.
+    assert _value_for(body, "TimeoutStartSec") == "600"
+    assert _value_for(body, "TimeoutStopSec") == "400"
 
 
 def test_recovery_helper_is_bounded_and_forensic():

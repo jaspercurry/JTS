@@ -165,7 +165,7 @@ def test_dying_after_fork_takes_the_park_leg_instead_of_recovered(tmp_path: Path
     call_text = calls.read_text(encoding="utf-8")
     assert "show -p NRestarts --value jasper-camilla.service" in call_text
     # Camilla is already known-dead; restarting outputd behind it would be
-    # pointless busywork inside the handler's tight 45s TimeoutStartSec.
+    # pointless busywork inside the handler's TimeoutStartSec.
     assert "restart jasper-outputd.service" not in call_text
 
     record = tmp_path / "run" / "jasper-camilla-recover.state"
@@ -368,7 +368,8 @@ def test_a_hung_capture_cannot_spend_the_restore_budget(tmp_path: Path):
     """Evidence is bounded so it can never cost the graph its restore.
 
     On the 2026-09-02 jts4 OOM incident one capture ran 19s of the handler's
-    45s TimeoutStartSec and the kill landed before any unit was restarted.
+    then-45s TimeoutStartSec and the kill landed before any unit was
+    restarted.
     """
     env, calls = _fake_env(tmp_path)
     _write_exe(tmp_path / "bin" / "lsof", "#!/usr/bin/env bash\nsleep 30\n")

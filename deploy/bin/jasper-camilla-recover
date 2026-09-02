@@ -32,7 +32,7 @@ COOLDOWN_SEC="${JASPER_CAMILLA_RECOVER_COOLDOWN_SEC:-300}"
 # How long to wait after `start jasper-camilla.service` before trusting it
 # (#3096). jasper-camilla.service is Restart=always/RestartSec=2, so a doomed
 # instance has replaced itself within ~2.5s of dying; 3s gives that one full
-# cycle a margin without eating much of this handler's 45s TimeoutStartSec.
+# cycle a margin without eating much of this handler's TimeoutStartSec.
 LIVENESS_WAIT_SEC="${JASPER_CAMILLA_RECOVER_LIVENESS_WAIT_SEC:-3}"
 STATE_FILE="${STATE_DIR}/camilla_recover_last_attempt"
 LOCK_DIR="${RUN_DIR}/jasper-camilla-recover.lock"
@@ -121,7 +121,7 @@ emit() {
 
 # Seconds one evidence capture may run. Evidence must never be able to spend
 # the restore's budget: on the 2026-09-02 jts4 OOM incident a single
-# `systemctl status` capture ran 19s of this handler's 45s TimeoutStartSec and
+# `systemctl status` capture ran 19s of this handler's then-45s TimeoutStartSec and
 # the SIGTERM landed before the core graph was restored. Bash-native rather
 # than coreutils `timeout`, which deploy/lib/jasper-camilla-guard-common.sh
 # already treats as optional on this host.
@@ -315,7 +315,7 @@ park_core_graph() {
     # --no-block, matching park_content_lane: the stop job lands in PID 1 and
     # this handler moves straight on to the record. A blocking stop of a daemon
     # wedged on a busy ALSA device can run to TimeoutStopSec (90s default, none
-    # declared on the unit) inside a handler whose own TimeoutStartSec is 45 —
+    # declared on the unit) inside a handler that is itself deadlined —
     # and a SIGTERM before the record write would stop CamillaDSP with nothing
     # recording why.
     "$SYSTEMCTL" --no-block stop jasper-camilla.service >/dev/null 2>&1
@@ -394,8 +394,18 @@ restore_core_graph() {
             for unit in nqptp.service shairport-sync.service librespot.service bt-agent.service jasper-mux.service bluealsa-aplay.service; do
                 start_if_enabled "$unit"
             done
-            unit_action start jasper-aec-reconcile.service
-            unit_action start jasper-grouping-reconcile.service
+            # --no-block, matching park_core_graph: both are Type=oneshot
+            # with TimeoutStartSec=120 and 6346, and they run after the core
+            # graph is already back, so a blocking start would put this
+            # handler's whole budget behind them.
+            local reconcile
+            local reconcile_status
+            for reconcile in jasper-aec-reconcile.service jasper-grouping-reconcile.service; do
+                "$SYSTEMCTL" --no-block start "$reconcile" >/dev/null 2>&1
+                reconcile_status=$?
+                emit unit_action action "start" unit "$reconcile" \
+                    status "$reconcile_status" mode "no_block"
+            done
             emit recovered action "core_graph_restarted"
         fi
     fi
