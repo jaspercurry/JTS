@@ -17,7 +17,7 @@ streambox = [
     # Streambox = local renderers, CamillaDSP, and the assistant reached only
     # through a paired remote's mic (push-to-talk, no wake word). Exactly
     # [full] minus the wake/mic/AEC/XVF runtimes that path never loads.
-    # See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     "google-genai==2.9.0",
     "openai>=2.36.0",
     "audioop-lts>=0.2; python_version >= '3.13'",

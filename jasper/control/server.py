@@ -313,7 +313,7 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
 # (which proxies to the voice daemon so levels stay right), and restarting
 # the unit that serves them. The local-mic/wake/AEC routes are deliberately
 # absent — they need Capability.WAKE_DETECTION, which a streambox is not
-# granted. See ADR-0214.
+# granted. See ADR-0216.
 _ASSISTANT_POST_ROUTES = frozenset({
     "/session/start",
     "/session/end",

@@ -1091,7 +1091,7 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     the shipped `"Array"` default and `local_mic_present` is None, so both
     of the older no-leg terms are silent. Opening `"Array"` there raises
     `InputDeviceUnavailable` and the daemon exits before it ever sees the
-    remote. See ADR-0214.
+    remote. See ADR-0216.
     """
     from jasper.voice_daemon import (
         WakeLoop,
@@ -1121,7 +1121,7 @@ def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
     `SpeechVADSetupError` are special-cased there, so anything else would
     exit 1 and climb `Restart=on-failure` to `StartLimitAction=reboot`.
     Fail OPEN: keep today's behaviour, planning wake legs as if the profile
-    always granted WAKE_DETECTION. See ADR-0214.
+    always granted WAKE_DETECTION. See ADR-0216.
     """
     from jasper.voice import daemon_main
     from jasper.voice_daemon import _configured_wake_legs

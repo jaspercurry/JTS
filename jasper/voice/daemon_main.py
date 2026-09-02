@@ -217,7 +217,7 @@ def _wake_detection_supported() -> bool:
     marker token. ``main()`` special-cases only ``InputDeviceUnavailable``,
     ``VoiceProviderNotConfigured`` and ``SpeechVADSetupError`` — anything
     else would traceback out, exit 1, and climb ``Restart=on-failure`` to
-    ``StartLimitAction=reboot``. Fail OPEN (today's pre-ADR-0214 behaviour:
+    ``StartLimitAction=reboot``. Fail OPEN (today's pre-ADR-0216 behaviour:
     wake detection supported, legs planned as always) rather than reboot a
     speaker over a corrupt marker file. Mirrors
     ``jasper.control.server._control_install_profile``, which fails the
@@ -988,7 +988,7 @@ async def run() -> None:
     # the AsyncExitStack below opens its mics from this same list.
     #
     # The install marker is static for the process, so it is read once here
-    # and passed down rather than re-read per decision. See ADR-0214.
+    # and passed down rather than re-read per decision. See ADR-0216.
     planned_wake_legs = _configured_wake_legs(
         cfg,
         wake_detection_supported=_wake_detection_supported(),

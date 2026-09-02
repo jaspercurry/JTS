@@ -1,4 +1,4 @@
-# ADR-0214: A streambox runs the assistant only while a mic-bearing remote is paired
+# ADR-0216: A streambox runs the assistant only while a mic-bearing remote is paired
 
 - **Date:** 2026-09-02
 - **Status:** Accepted
@@ -62,15 +62,24 @@ while the reconciler publishes a mic source** in `accessory-mics.env`.
 - Unpair, re-pair, reboot and adapter failure all converge through one owner
   on the existing reconcile tick. There is no second writer to disagree with,
   and no state to persist between them.
-- The memory claim is measured, not assumed. Measured on jts4:
-  `<to be filled by the verification step>`.
-- `[streambox]` does not yet list the provider SDKs decision 4 assigns it; a
-  box that pairs a remote today installs them via `[full]` or not at all. That
-  split is the remaining implementation of this decision, not a second one.
+- The memory fit on a 415 MB box is UNMEASURED. The jts4 run for this decision
+  did not complete: the on-device Rust build was OOM-killed and the box rebooted
+  onto its previous install, so nothing was observed running. Hardware
+  verification is owed on the next successful deploy; until then decision 1's
+  headroom claim rests on the wake-inference measurement above, not on a
+  measured resident set for the push-to-talk daemon.
 - A full speaker converted to a streambox keeps a disabled
   `jasper-aec-reconcile` on disk. Starting it would run
   `systemctl enable jasper-voice.service` and permanently re-arm the brain, so
   the accessory reconciler never starts a parked gate owner.
+- Grouping's voice env (`grouping-voice.env`: the TTS-socket flip and the park
+  flag) is kicked into effect by `jasper/multiroom/reconcile.py` restarting
+  `jasper-aec-reconcile`, which a streambox does not run. That kick was already
+  a no-op on this tier; what changes is that it now matters, so a bonded or
+  unbonded streambox keeps the assistant's previous TTS endpoint until
+  something else restarts `jasper-voice`. Routing that kick to the accessory
+  reconciler needs it to accept a restart it was not asked for by a mic change
+  — a follow-up, not this decision.
 - A BlueZ discovery timeout in `reconcile_once` raises before the voice unit
   is converged, deliberately: the same tick leaves `accessory-mics.env`
   unwritten, so a timed-out probe changes neither.

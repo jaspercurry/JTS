@@ -124,7 +124,7 @@ PROFILE_CAPABILITIES: Mapping[str, frozenset[Capability]] = {
     # into a conversational endpoint — but not WAKE_DETECTION: the Zero 2 W
     # lacks the headroom for always-on wake inference (see the Capability
     # docstring above). See
-    # docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
+    # docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
     STREAMBOX_INSTALL_PROFILE: frozenset({Capability.ASSISTANT}),
 }
 
@@ -300,9 +300,9 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
         # having the headroom to listen for a wake word all day. The
-        # landing page has no data-requires="wake_detection" gate yet —
-        # the key exists so a surface CAN gate on the right question
-        # instead of overloading voice_brain. See
+        # landing page's Voice-assistant, Assistant and Integrations blocks
+        # gate on THIS key, not voice_brain — the wizards behind them are
+        # served on the full profile only. See
         # install_profile_supports_wake_detection's docstring for its
         # consumers.
         "wake_detection": wake_detection,

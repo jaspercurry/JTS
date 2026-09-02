@@ -283,8 +283,9 @@ _EXPECTED_CAPABILITIES = {
     },
 }
 
-# The ONLY key the capability axis was allowed to add.
-_ADDED_KEYS = {"wake_detection"}
+# Held out of the golden map because test_wake_detection_key_tracks_the
+# _capability pins it directly against the grant, one altitude down.
+_PINNED_ELSEWHERE = {"wake_detection"}
 
 
 @pytest.mark.parametrize("profile", sorted(_EXPECTED_CAPABILITIES))
@@ -299,7 +300,7 @@ def test_capability_map_matches_the_grant_table(profile):
     golden = _EXPECTED_CAPABILITIES[profile]
     live = system_capabilities_for_profile(profile)
 
-    assert set(live) - set(golden) == _ADDED_KEYS
+    assert set(live) - set(golden) == _PINNED_ELSEWHERE
     assert not set(golden) - set(live), "a capability key disappeared"
     for key, value in golden.items():
         assert live[key] == value, key
@@ -317,7 +318,7 @@ def test_wake_detection_key_tracks_the_capability():
 def test_streambox_grants_assistant_without_wake_detection():
     """The Bluetooth-remote split.
 
-    See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
+    See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
     """
     assert PROFILE_CAPABILITIES["full"] == frozenset(
         {Capability.ASSISTANT, Capability.WAKE_DETECTION},
