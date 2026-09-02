@@ -4107,12 +4107,8 @@ class WakeLoop:
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             await self._telemetry_outcome("session_failed", str(e)[:200])
-            # Reaching this catch-all means the connection looked healthy
-            # and something ELSE broke during turn-open — almost always
-            # local (a failed state write, a disk error). Claiming a
-            # connection problem here is a false alarm (the 2026-06-19
-            # incident), so speak one only when the connection actually
-            # dropped into paused/failed mid-acquire.
+            # A connection cue here is a false alarm unless the connection
+            # actually dropped mid-acquire; see the internal_error CueDef.
             try:
                 if self._turn_output_episode is not None:
                     await self._cleanup_after_failed_begin()

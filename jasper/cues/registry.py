@@ -37,6 +37,9 @@ class CueDef:
     slug: str
     template: str
     description: str
+    # Played instead while this cue has no baked WAV: cues are
+    # synthesised through the provider whose outage they announce.
+    fallback: str | None = None
 
 
 CUES: tuple[CueDef, ...] = (
@@ -96,6 +99,7 @@ CUES: tuple[CueDef, ...] = (
             "cant_connect, which promises a retry that cannot help). "
             "ADR-0215."
         ),
+        fallback="cant_connect",
     ),
     CueDef(
         slug="provider_needs_attention",
@@ -109,6 +113,7 @@ CUES: tuple[CueDef, ...] = (
             "provider_out_of_credit: proactive on the outage's first "
             "terminal failure, and on wake while it lasts. ADR-0215."
         ),
+        fallback="cant_connect",
     ),
     CueDef(
         slug="research_failed",

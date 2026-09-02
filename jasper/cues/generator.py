@@ -32,10 +32,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import wave
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Collection, Protocol
 
 from .registry import CueDef
 
@@ -515,6 +516,28 @@ def write_dynamic_text(
     _write_wav_atomic(path, result.pcm_24k)
     logger.info("cue: wrote %s (%d bytes pcm @ 24kHz)", path, len(result.pcm_24k))
     return path
+
+
+_CUE_FILE = re.compile(r"^([a-z0-9_]+)-[0-9a-f]{8}\.wav$")
+
+
+def prune_retired(sounds_dir: str, known_slugs: Collection[str]) -> int:
+    """Remove `<slug>-<hash>.wav` files whose slug left the registry.
+    `dynamic-*` is `speak_text`'s cache, not a cue. Returns the count."""
+    if not os.path.isdir(sounds_dir):
+        return 0
+    removed = 0
+    for entry in os.listdir(sounds_dir):
+        match = _CUE_FILE.match(entry)
+        if match is None or match.group(1) in known_slugs or match.group(1) == "dynamic":
+            continue
+        try:
+            os.unlink(os.path.join(sounds_dir, entry))
+            removed += 1
+            logger.info("cue: pruned retired %s", entry)
+        except OSError as e:
+            logger.warning("cue: could not prune %s: %s", entry, e)
+    return removed
 
 
 def prune_stale(sounds_dir: str, cue: CueDef, keep_hash: str) -> int:
