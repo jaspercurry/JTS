@@ -111,8 +111,6 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # moment it crosses this module boundary (#1978). It is clean today; listing
     # it is what keeps the consent screen's own words inside the guard.
     "jasper/active_speaker/capture_geometry.py",
-    "capture-page/js/main.js",
-    "capture-page/js/constraints.js",
 )
 
 
@@ -163,9 +161,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # --- Operator-facing configuration text naming the subsystem by its name.
     "phone-mic relay capture is not configured": "operator remediation, names the "
     "subsystem",
-    # --- DOM identity. Renaming it would break the page's own querySelector and
-    # is invisible to the household.
-    "phone-mic-select": "element id on the capture page",
     # --- The TWO deliberate household-facing exceptions, both argued where they
     # live. Each names a real phone-shaped affordance, not the instrument.
     "Scan with your phone's camera": "a QR code's only affordance is a camera — a "
