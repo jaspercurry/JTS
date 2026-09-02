@@ -70,6 +70,11 @@ from jasper.audio_measurement.program import (
     mesm_gap_samples,
     render_program_pcm,
 )
+from jasper.audio_measurement.comparison_bands import (
+    branch_snr_band_hz,
+    crossover_region_band_hz,
+    overlap_band_hz,
+)
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -135,14 +140,11 @@ from jasper.audio_measurement.program_analysis import (
     ABSOLUTE_NO_TRUSTED_BAND,
     analysis_diagnostic_summary,
     analyze_program_capture,
-    crossover_region_band_hz,
     DRIVER_SNR_ALIGNMENT_KEY,
     driver_alignment_snr_verdict,
     driver_snr_verdict,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     branch_level_bands_hz,
-    branch_snr_band_hz,
-    overlap_band_hz,
     predicted_branch_sum,
     realized_branch_level_match,
     solve_branch_trims,

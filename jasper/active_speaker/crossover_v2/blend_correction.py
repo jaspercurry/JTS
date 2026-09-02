@@ -561,7 +561,7 @@ def solve_blend_correction(
         merged mask because it is the only structural protection against
         cutting an interference null (module docstring).
       band_hz: the crossover region, ``(lo, hi)``. This is
-        ``program_analysis.crossover_region_band_hz``'s output, reached through
+        ``comparison_bands.crossover_region_band_hz``'s output, reached through
         its existing production consumer (the VERIFY absolute claim), so the
         band corrected over is byte-identically the band the household is shown.
         Anything unreadable — including every ``not_evaluated`` arm of that

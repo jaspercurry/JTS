@@ -102,6 +102,7 @@ from typing import Any
 
 import numpy as np
 
+from ..profile import DRIVER_ROLES_BY_WAY
 from .evidence_packet import (
     HARMONICS_ARTIFACT,
     RING_SIDECAR_GLOB,
@@ -373,8 +374,6 @@ def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
     One reader, because "what did this round sweep" answered twice — here and
     at the CLI door that resolves the bands — is how the two come to disagree.
     """
-    from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
-
     gains = state.get("gain_plan_db")
     banked = set(gains) if isinstance(gains, Mapping) else set()
     roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())

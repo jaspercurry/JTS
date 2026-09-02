@@ -55,7 +55,7 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     packet_feature_classifications,
 )
-from jasper.active_speaker.crossover_v2.intervention import (
+from jasper.active_speaker.crossover_v2.plan_assembly import (
     compose_linearized_prediction,
 )
 from jasper.active_speaker.linearization_fit import (

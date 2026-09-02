@@ -93,18 +93,25 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.program_analysis import summed_model_residual_delay_us
+from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_OK,
+    summed_model_residual_delay_us,
+)
 
-from .intervention import SummationFrame, compose_linearized_prediction
+from .plan_assembly import SummationFrame, compose_linearized_prediction
 
 __all__ = [
+    "CornerDisagreement",
     "GraphSummation",
+    "PreviousGraph",
     "commanded_delta",
+    "corner_disagreement",
     "graph_predicted_sum",
+    "previous_graph_prediction",
     "profile_crossover_fc_hz",
     "profile_graph_summation",
 ]
@@ -316,7 +323,7 @@ def graph_predicted_sum(
     """``(freqs_hz, magnitude_db)`` this graph would produce on these branches.
 
     THE SAME composition the applied side is built from —
-    :func:`~.intervention.compose_linearized_prediction`, which owns the
+    :func:`~.plan_assembly.compose_linearized_prediction`, which owns the
     correction chain, the trimmed signed delayed sum, and the 1-way arm where
     a lone branch is its own sum — so the two curves differ by the GRAPH and by
     nothing else. Only the residual is this function's own, through
@@ -398,3 +405,96 @@ def commanded_delta(
     except (ValueError, TypeError, IndexError, AttributeError):
         return None
     return grid, delta
+
+
+class CornerDisagreement(NamedTuple):
+    """Why an applied profile's corner and a capture's disagree."""
+
+    reason: str
+    fields: dict[str, Any]
+
+
+def corner_disagreement(
+    profile: Mapping[str, Any] | None, capture_fc_hz: float | None,
+) -> CornerDisagreement | None:
+    """Why the applied profile's corner and this capture's disagree, or ``None``.
+
+    Asked BEFORE the model is built: a previous graph modelled on branches
+    composed through a crossover it never ran is wrong by up to 5.88 dB against
+    the delta probe's 1.5 dB tolerance (adversarial panel, PR #2614), and the
+    two doors that reach it — a ``/sound`` corner edit between rounds, and an
+    operator's TOPOLOGY PIN, which opens the session at the pinned corner while
+    the applied profile still holds the incumbent — are both live. It compares
+    corners rather than counting doors, so it covers whichever ones exist.
+
+    Both arms of the one disagreement: a profile naming a DIFFERENT corner from
+    this capture's, and a profile naming one at all when the capture ran none.
+    A relative tolerance, not equality: both numbers have been through a JSON
+    round trip, and the case this refuses is 1500 vs 1800, never 1500 vs
+    1500.0000001.
+    """
+    applied_fc_hz = profile_crossover_fc_hz(profile)
+    if applied_fc_hz is None:
+        if capture_fc_hz is None:
+            return None
+        return CornerDisagreement("applied_profile_names_no_corner", {})
+    if capture_fc_hz is not None and math.isclose(
+        applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6
+    ):
+        return None
+    return CornerDisagreement("crossover_corner_moved", {
+        "applied_fc_hz": round(applied_fc_hz, 3),
+        "capture_fc_hz": (
+            None if capture_fc_hz is None else round(float(capture_fc_hz), 3)
+        ),
+    })
+
+
+class PreviousGraph(NamedTuple):
+    """One applied profile's graph, and what it predicts on this capture."""
+
+    graph: GraphSummation
+    predicted: tuple[np.ndarray, np.ndarray]
+
+
+def previous_graph_prediction(
+    profile: Mapping[str, Any] | None,
+    *,
+    roles: Sequence[str],
+    draft_inverted_by_role: Mapping[str, bool],
+    responses: Mapping[str, Any],
+    alignment: Any,
+) -> PreviousGraph | str:
+    """The previous graph on these branches, or the code refusing it.
+
+    A refusal is the code alone, which the caller journals. The graph comes
+    back beside its prediction because the caller discloses what the model
+    turned on.
+    """
+    graph = profile_graph_summation(
+        profile, roles=roles, draft_inverted_by_role=draft_inverted_by_role,
+    )
+    if graph is None:
+        return "applied_profile_names_no_graph"
+    if any(role not in responses for role in roles):
+        return "capture_missing_a_declared_branch"
+    predicted = graph_predicted_sum(
+        # The LOWEST branch's grid, which is the grid ``plan_linearization``
+        # builds the applied side on, so both sides of the subtraction land on
+        # one grid without an interpolation nobody asked for.
+        responses[roles[0]].freqs_hz,
+        {role: response.complex_tf for role, response in responses.items()},
+        graph,
+        # The SAME gate the applied side's residual is derived through
+        # (``program_analysis._build_candidate``): an anchor the aligner refused
+        # is no anchor, and both sides then model the frame the
+        # independently-aligned branch pair is already in.
+        anchor_delay_us=(
+            alignment.anchor_delay_us
+            if alignment is not None and alignment.status == ALIGNMENT_OK
+            else None
+        ),
+    )
+    if predicted is None:
+        return "previous_graph_model_failed"
+    return PreviousGraph(graph, predicted)

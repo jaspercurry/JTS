@@ -12,6 +12,7 @@ wizard code should consume these dataclasses instead of accepting freeform YAML.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,6 +89,21 @@ def required_driver_roles(way_count: int) -> tuple[str, ...]:
         return DRIVER_ROLES_BY_WAY[int(way_count)]
     except (KeyError, TypeError, ValueError) as e:
         raise ActiveSpeakerConfigError("way_count must be 1, 2, or 3") from e
+
+
+def snapshot_declares_single_branch(snapshot: Any) -> bool:
+    """Does this profile snapshot's own preset declare exactly one branch?
+
+    ``False`` for anything unreadable: a snapshot whose preset will not parse
+    is not evidence that a speaker is way-1, so the caller's ordinary arms
+    still apply to it.
+    """
+    raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
+    try:
+        preset = ActiveSpeakerPreset.from_mapping(dict(raw or {}))
+        return len(required_driver_roles(preset.way_count)) < 2
+    except (ActiveSpeakerConfigError, TypeError, ValueError):
+        return False
 
 
 def lowest_driver_role(way_count: int) -> str:

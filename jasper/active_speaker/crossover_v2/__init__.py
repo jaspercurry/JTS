@@ -12,6 +12,9 @@ order — so this list is what exists, not a plan:
   intervention proposal, plan refusal, verification result, adoption decision,
   round receipt) with their construction-time invariants and fingerprints.
 * :mod:`.intervention` — the side-effect-free prescription planner.
+* :mod:`.plan_assembly` — the composed prediction of a linearized branch sum,
+  and the frozen plan it lands in: the headroom charge, the journal line, the
+  level-definition disclosure and the committed trim.
 * :mod:`.proposal` — the :class:`~.contracts.InterventionProposal` a round
   receipt identifies, assembled.
 * :mod:`.verification` — realization / benefit / spec grading and the adoption
@@ -72,6 +75,9 @@ order — so this list is what exists, not a plan:
   replaces, which is the delta probe's commanded axis.
 * :mod:`.evidence_packet` — one round's banked evidence, gathered into one
   document a reader can answer from.
+* :mod:`.handoff_doors` — the one table of request-time doors that describe a
+  handoff between two branches, and how each refuses on a speaker that has no
+  crossover region.
 * :mod:`.harmonic_evidence` — H2/H3 read out of one round's banked MEASURE
   captures, and filed.
 * :mod:`.ring_projection` — a banked round re-projected into the capture-ring

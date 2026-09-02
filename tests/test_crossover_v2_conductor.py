@@ -178,6 +178,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
@@ -195,7 +196,6 @@ from jasper.audio_measurement.program_analysis import (
     IntegrityCheck,
     ProgramAnalysis,
     SegmentLocation,
-    overlap_band_hz,
     predicted_branch_sum,
     realized_branch_level_match,
     solve_branch_trims,

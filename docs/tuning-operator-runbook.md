@@ -811,7 +811,7 @@ the operator's:
   it does not gate.
 
 The region is **not** re-derived: it is read off the VERIFY absolute claim's
-`band_hz`, which is `program_analysis.crossover_region_band_hz`'s output —
+`band_hz`, which is `comparison_bands.crossover_region_band_hz`'s output —
 deliberately not `overlap_band_hz`; see its docstring. Receipts bank the region's
 commanded-vs-realized pair under `round_measurements.blend`, with the reason code
 beside the numbers, so a round that prescribed nothing says which arm fired.

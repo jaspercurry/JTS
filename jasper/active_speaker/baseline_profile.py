@@ -41,11 +41,7 @@ from jasper.dsp_apply import (
     validate_camilla_config,
 )
 from jasper.log_event import log_event
-from jasper.output_topology import (
-    OutputTopology,
-    subwoofer_speaker_groups,
-    topology_is_passive_mains,
-)
+from jasper.output_topology import OutputTopology
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (
@@ -95,12 +91,11 @@ from .playback_route import (
     resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
+from .profile import snapshot_declares_single_branch
+from . import passive_profile as _passive
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .startup_hold import release_staged_startup_hold
-from .staging import (
-    build_passive_mains_preset,
-    compile_preset_from_crossover_preview,
-)
+from .staging import build_passive_mains_preset, compile_preset_from_crossover_preview
 
 if TYPE_CHECKING:
     from .measured_candidate import MeasuredElectricalCandidate
@@ -1300,49 +1295,6 @@ def _load_saved_state(path: Path) -> dict[str, Any] | None:
     return raw
 
 
-def _measured_candidate_fingerprint(source: Any) -> str:
-    """The candidate fingerprint a profile's ``source`` block names, or ``""``.
-
-    ONE reader for this field's absence, which is an ordinary state rather than
-    a fault: a profile levelled by the guided captures instead of by a measured
-    candidate names none. :func:`_source_payload` is the single writer.
-    """
-    if not isinstance(source, Mapping):
-        return ""
-    value = source.get("measured_candidate_fingerprint")
-    return value if isinstance(value, str) else ""
-
-
-def _subless_passive_is_roleful(
-    measured_candidate: Any, applied_anchor: Mapping[str, Any] | None,
-) -> bool:
-    """Has a measured round given this subless passive box a Layer-A graph?
-
-    A subless passive main has no bass-management split and no inter-driver
-    crossover, so by default it takes the flat ``emit_sound_config`` lane and
-    compiles no roleful preset at all. Exactly ONE thing gives it one: a
-    recommissioning round that measured its single full-range branch and fitted
-    a linearization for it.
-
-    That fact reaches this compiler two ways, and BOTH are it — a rule that
-    read only the first would compile the profile and then grade the read-back
-    of that same applied profile as blocked:
-
-    * the candidate being compiled, on the apply itself; and
-    * the fingerprint the ALREADY-APPLIED profile's own source records, on
-      every later read-back, where nothing hands the compiler a candidate.
-
-    Read off the applied anchor rather than the mutable saved candidate: what
-    the question asks is what the speaker is PLAYING, and a superseded or
-    half-written candidate state is not that.
-    """
-    if measured_candidate is not None:
-        return True
-    if not isinstance(applied_anchor, Mapping):
-        return False
-    return bool(_measured_candidate_fingerprint(applied_anchor.get("source")))
-
-
 def _applied_profile_anchor(
     saved: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -2399,30 +2351,12 @@ def build_baseline_profile_candidate(
         if candidate_evidence["summed"]
         else ("measurements" if summed_validation_complete else "missing")
     )
-    # PASSIVE MAINS have NO inter-driver crossover, so they never produce an
-    # active crossover preview and have no per-driver / summed active-crossover
-    # measurements to complete. They still ride the SAME multi-output emitter as
-    # the active path — but via a degenerate 1-way preset built directly from the
-    # topology, skipping the preview-readiness and active-measurement gates that
-    # only apply to a real active crossover.
-    #
-    # BOTH passive shapes take this arm, on two different grounds. With a local
-    # subwoofer the box is roleful UNCONDITIONALLY, because bass management
-    # splits the program. SUBLESS it is roleful only where a recommissioning
-    # round has measured its one full-range branch and fitted a linearization
-    # for it — that is a Layer-A graph and has to be emitted as one — so this
-    # arm asks :func:`_subless_passive_is_roleful` rather than reading the
-    # topology alone. Where nothing has, a subless passive box keeps the flat
-    # ``emit_sound_config`` lane.
-    #
-    # The preset comes from the same ``build_passive_mains_preset`` that
-    # ``commission_wiring.resolve_capture_preset`` answers a passive box with,
-    # so the graph compiled here and the plant the round measured are ONE preset
-    # rather than two that agree by inspection — which the
-    # ``measured_candidate_preset_mismatch`` check below then proves.
-    passive_mains = topology_is_passive_mains(topology) and (
-        bool(subwoofer_speaker_groups(topology))
-        or _subless_passive_is_roleful(measured_candidate, applied_anchor)
+    # Passive mains ride the SAME multi-output emitter as the active path, via a
+    # degenerate 1-way preset built from the topology, skipping the gates only a
+    # real active crossover has. It is the preset ``commission_wiring`` answers a
+    # passive capture with, so the compiled graph and the measured plant are ONE.
+    passive_mains = _passive.passive_mains_compiles_roleful(
+        topology, measured_candidate, applied_anchor
     )
 
     preset: ActiveSpeakerPreset | None = None
@@ -2437,9 +2371,7 @@ def build_baseline_profile_candidate(
         for issue in route_capability.issues:
             if issue.get("code") == "active_playback_route_too_narrow":
                 issues.append(issue)
-        preset, preset_issues, preset_gates = build_passive_mains_preset(
-            topology
-        )
+        preset, preset_issues, preset_gates = build_passive_mains_preset(topology)
         issues.extend(preset_issues)
     else:
         preview_ready = _crossover_preview_ready(crossover_preview)
@@ -3406,21 +3338,6 @@ async def _record_apply_outcome_into_bundle(
     )
 
 
-def _single_branch_snapshot(snapshot: Any) -> bool:
-    """Does this applied profile's own preset declare exactly one branch?
-
-    ``False`` for anything unreadable: a snapshot whose preset will not parse
-    is not evidence that a speaker is way-1, so the caller's ordinary arms
-    still apply to it.
-    """
-    raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
-    try:
-        preset = ActiveSpeakerPreset.from_mapping(dict(raw or {}))
-        return len(required_driver_roles(preset.way_count)) < 2
-    except (ActiveSpeakerConfigError, TypeError, ValueError):
-        return False
-
-
 def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     """Bank (or clear) the base trim the applied profile is actually playing.
 
@@ -3502,23 +3419,9 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     if isinstance(snapshot, Mapping) and snapshot.get("domain") == "driver":
         return
 
-    # STRUCTURAL, ahead of every evidence arm below: a base trim is a FRAME —
-    # one role's level relative to the others — and a one-branch preset has no
-    # roles to be relative to, so the writer refuses by name
-    # (``driver_base_trim.REFUSE_NO_FRAME``).
-    #
-    # Keyed on the SNAPSHOT'S OWN PRESET, not the trim map: a 2-way profile
-    # carrying only one correction is BROKEN, not way-1, and must keep the
-    # refuse-and-clear path below. A standing record is left alone because
-    # every reader keys on the declaration fingerprint
-    # (``driver_base_trim.banked_base_trims``), so a mismatched record is
-    # already refused there.
-    if _single_branch_snapshot(snapshot):
-        left_standing(
-            REFUSE_NO_FRAME,
-            "this speaker declares one driver, so it has no roles to level "
-            "against each other",
-        )
+    # A base trim is a FRAME — one role's level relative to the others.
+    if snapshot_declares_single_branch(snapshot):
+        left_standing(REFUSE_NO_FRAME, "one driver declared, so no roles to level")
         return
 
     corrections = candidate.get("corrections")
@@ -3632,7 +3535,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             # exists at fit time and no later reader can reconstruct it. A
             # profile levelled by the guided captures names none, which banks
             # as "frame unknown" rather than as the bare frame.
-            chain_fingerprint=_measured_candidate_fingerprint(source) or None,
+            chain_fingerprint=_passive.measured_candidate_fingerprint(source) or None,
             measured_at=evidence_at,
         )
     except (OSError, DriverBaseTrimError) as exc:

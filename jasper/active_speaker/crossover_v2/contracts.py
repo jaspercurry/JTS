@@ -526,8 +526,8 @@ class TrimStrategy(str, Enum):
     It had a second, drift-qualified sibling until #2392 — the issue #2291
     Phase 5c-iii left the question to — and that member is deleted rather than
     restored, because the drift case turned out not to need one:
-    :attr:`~.intervention.TrimDecision.outcome` is ``"trim_rejected"`` if and
-    only if :attr:`~.intervention.TrimDecision.beyond_sanity_margin`, and
+    :attr:`~.plan_assembly.TrimDecision.outcome` is ``"trim_rejected"`` if and
+    only if :attr:`~.plan_assembly.TrimDecision.beyond_sanity_margin`, and
     :func:`~.intervention.decide_trim` commits the anchor on exactly that
     branch, so the string determines
     :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely.  An "unrecorded"
@@ -583,7 +583,7 @@ class TrimStrategy(str, Enum):
     """
 
 
-#: :attr:`~.intervention.LinearizationPlan.outcome` for a round whose speaker
+#: :attr:`~.plan_assembly.LinearizationPlan.outcome` for a round whose speaker
 #: has ONE branch — the fit ran and its filters ship, and there was no pair to
 #: trim.
 #:
@@ -1591,3 +1591,36 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 #: `spatial._DESIGN_AXIS_GEOMETRY` declares. `None` is a different fact — "no
 #: side was declared" — and must never be minted here as a synonym for this.
 DESIGN_AXIS_DEG = 0
+
+#: The three states a plan §7 claim can be in. ``not_evaluated`` is first-class
+#: and never collapses into the other two — R18's entire point is that a claim
+#: nobody could grade must not read as one that passed.
+CLAIM_PASS = "pass"
+CLAIM_FAIL = "fail"
+CLAIM_NOT_EVALUATED = "not_evaluated"
+
+
+def measure_pair_claim(reason: str) -> dict[str, Any]:
+    """The MEASURE verdict's pair claim when there was no pair to evaluate.
+
+    The INTER-DRIVER axes — corner, delay, polarity, inter-branch trim — are
+    statements about two branches, so a solo round names their absence rather
+    than publishing a single-branch lookalike of a two-branch answer.
+    """
+    return {"pair": {"status": CLAIM_NOT_EVALUATED, "reason": reason}}
+
+
+def realized_branch_level(
+    verdict: Mapping[str, Any] | None, *, pair_reason: str | None,
+) -> Mapping[str, Any] | None:
+    """The committed pair's realized level, or the named absence of a pair.
+
+    THREE states, not two: a graded verdict; ``None`` when a pair existed and
+    nothing graded it (an ineligible mic tier, an under-repeated branch, a
+    failed fit); and, when ``pair_reason`` names why there was no pair at all,
+    that absence in the same ``not_evaluated`` vocabulary the MEASURE verdict
+    publishes it under.
+    """
+    if verdict is not None or pair_reason is None:
+        return verdict
+    return {"status": CLAIM_NOT_EVALUATED, "reason": pair_reason}

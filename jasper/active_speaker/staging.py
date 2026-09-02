@@ -33,7 +33,6 @@ from jasper.output_topology import (
     SpeakerGroup,
     main_speaker_groups,
     subwoofer_speaker_groups,
-    topology_is_passive_mains,
 )
 
 from ._common import gate as _gate, issue as _issue
@@ -1041,24 +1040,6 @@ def compile_preset_from_crossover_preview(
 # nothing to feed it. Their 1-way preset is built directly from the saved
 # topology below, NOT from a preview.
 _PASSIVE_MAIN_ROLE = "full_range"
-
-
-def topology_is_passive_mains_with_sub(topology: OutputTopology) -> bool:
-    """True iff the saved topology is full-range passive mains PLUS a sub group.
-
-    This is the predicate the BASELINE build path uses to route a passive+sub
-    topology through the active multi-output emitter (bass management: the sub
-    gets an LR4 low-pass, each main its complementary high-pass) instead of the
-    flat ``emit_sound_config`` lane. A SUBLESS passive speaker returns False and
-    keeps that flat applied lane — ``output_topology.topology_is_subless_passive_mains``
-    is that sibling shape, and it is what the recommissioning session measures
-    its protected-neutral plant through. Both compose
-    ``topology_is_passive_mains``, which owns the kind/mode vocabulary so the two
-    cannot drift.
-    """
-    return topology_is_passive_mains(topology) and bool(
-        subwoofer_speaker_groups(topology)
-    )
 
 
 def build_passive_mains_preset(

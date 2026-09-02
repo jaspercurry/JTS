@@ -40,10 +40,10 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
 from ..camilla_yaml import role_polarity
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     AppliedAlignment,
     MeasurementPriors,
-    overlap_band_hz,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only

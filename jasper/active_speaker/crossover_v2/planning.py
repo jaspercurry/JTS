@@ -86,11 +86,10 @@ from .driver_prescription import (
 )
 from .intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
-    LinearizationPlan,
-    compose_linearized_prediction,
     driver_response_by_role,
     request_from_analysis,
 )
+from .plan_assembly import LinearizationPlan, compose_linearized_prediction
 from .journey import PHASE_CLOUD_MEASURE, PHASE_MEASURE
 
 #: This module's own logger, reached for in exactly one place — see the
@@ -167,7 +166,7 @@ class FailureRecord:
     """One log line this module would have emitted from inside an ``except``.
 
     The third disclosure record type, beside
-    :class:`~jasper.active_speaker.crossover_v2.intervention.JournalRecord`
+    :class:`~jasper.active_speaker.crossover_v2.plan_assembly.JournalRecord`
     (the planner's, whose payload becomes JSON) and
     :class:`~jasper.active_speaker.crossover_v2.accountability.GateRecord`
     (the gate's, whose logfmt bytes are the contract).  All three expose

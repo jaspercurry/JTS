@@ -91,7 +91,7 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     """Map the persisted ``linearization_outcome`` onto an honest strategy.
 
     **Why the strategy is derived from the artifact string rather than read off
-    the live :class:`~.intervention.TrimDecision`.** The proposal is assembled
+    the live :class:`~.plan_assembly.TrimDecision`.** The proposal is assembled
     at the ONE commit seam, and the walk that reaches it holds a
     :class:`~.candidates.LinearizationState` — which retains the realized level
     match but **not** the trim decision.  The decision is a by-product of the
@@ -108,8 +108,8 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     never held the decision either.
 
     **``"trim_rejected"`` is precise, and provably so.**
-    :attr:`~.intervention.TrimDecision.outcome` returns ``"trim_rejected"`` if
-    and only if :attr:`~.intervention.TrimDecision.beyond_sanity_margin`, and
+    :attr:`~.plan_assembly.TrimDecision.outcome` returns ``"trim_rejected"`` if
+    and only if :attr:`~.plan_assembly.TrimDecision.beyond_sanity_margin`, and
     :func:`~.intervention.decide_trim` commits the anchor — strategy
     :attr:`TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` — on exactly
     that branch.  The two are the same bit read twice, not an inference, and

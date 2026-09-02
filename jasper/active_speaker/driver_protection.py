@@ -27,16 +27,13 @@ DRIVER_PROTECTION_POLICY_VERSION = "driver_protection_auto_level_v1"
 LOW_FREQUENCY_ROLES = frozenset({"woofer", "mid", "subwoofer"})
 HIGH_FREQUENCY_ROLES = frozenset({"tweeter"})
 #: The one role a ``full_range_passive`` (way-1) speaker declares: a single amp
-#: channel covering the whole band with no active crossover at either end. Its
-#: own class rather than a member of :data:`LOW_FREQUENCY_ROLES`, because a
-#: woofer's figures are wrong for it in both directions -- a woofer is admitted
-#: at full scale and floor-tested at a fixed 120 Hz, and a small full-range cone
-#: is a different excursion regime whose floor only its own declaration knows.
+#: channel covering the whole band. Its own class rather than a member of
+#: :data:`LOW_FREQUENCY_ROLES`, whose figures are wrong for it in both
+#: directions -- full scale, and a fixed 120 Hz floor test.
 FULL_RANGE_ROLES = frozenset({"full_range"})
 
-# The per-class floor-test and auto-level figures, named because the
-# ``full_range`` class is DERIVED from them (the stricter of each pair) rather
-# than restating a fourth set of numbers. Units: ms, dBFS.
+# Named because the ``full_range`` class is DERIVED from them (the stricter of
+# each pair) rather than restating a fourth set. Units: ms, dBFS.
 _LOW_FREQUENCY_FLOOR_TEST_MS = 300
 _HIGH_FREQUENCY_FLOOR_TEST_MS = 100
 _HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS = -65.0
@@ -78,10 +75,9 @@ class DriverProtectionProfile:
     role_class: str
     driver_style: str | None
     min_highpass_hz: float | None
-    # ``None`` only for a ``full_range`` driver that declares no low edge at
-    # all: this class has no code figure to stand in, and inventing one would
-    # play a tone below a driver nobody has described. The payload below turns
-    # that into a named blocker rather than a guess.
+    # ``None`` only for a ``full_range`` driver that declares no low edge: this
+    # class has no code figure to stand in, and the payload below refuses by
+    # name rather than guessing one.
     floor_test_frequency_hz: float | None
     floor_test_duration_ms: int
     max_auto_level_dbfs: float
@@ -138,8 +134,7 @@ def driver_protection_profile(
 
     ``declared_floor_hz`` is this driver's own declared low edge, from
     :func:`driver_excitation_floor_hz`. Read ONLY by the ``full_range`` class,
-    which has no code figure of its own; every other class ignores it, so a
-    stored ``code_owned_policy`` for a woofer or a tweeter is unchanged by it.
+    which has no code figure of its own; every other class ignores it.
     """
 
     role_id = normalise_driver_role(role)
@@ -152,13 +147,11 @@ def driver_protection_profile(
             driver_style=style,
             min_highpass_hz=None,
             floor_test_frequency_hz=floor if floor is not None and floor > 0 else None,
-            # The stricter figure of the two existing classes on each axis: a
-            # full-range driver carries a tweeter's exposure limits at a
-            # woofer's frequencies, and nothing on this path derives a louder
-            # ceiling for it the way the proven-HP sensitivity derivation does
-            # for a tweeter. A declaration still overrides the level outright
-            # (``excitation_safety_plan.declared_level_ceiling_dbfs``); this is
-            # only the seed when the manufacturer publishes no level limit.
+            # The stricter figure of the two existing classes on each axis:
+            # nothing on this path derives a louder ceiling for a full-range
+            # driver the way the proven-HP sensitivity derivation does for a
+            # tweeter. A declaration still overrides the level outright
+            # (``excitation_safety_plan.declared_level_ceiling_dbfs``).
             floor_test_duration_ms=min(
                 _LOW_FREQUENCY_FLOOR_TEST_MS, _HIGH_FREQUENCY_FLOOR_TEST_MS
             ),
@@ -865,14 +858,12 @@ def driver_excitation_floor_hz(driver: Any) -> float | None:
     :func:`resolve_driver_low_limit`'s first two arms — the declared owner, then
     a stored protective high-pass — followed by the declared
     ``measurement_band_hz`` low edge. The style-default arm is deliberately NOT
-    reached: this answer bounds a SWEEP, and the class table is an anchor for
-    plausibility and a tone-gate fallback, not a frequency a driver may be
-    driven to.
+    reached: this answer bounds a SWEEP, and the class table is a tone-gate
+    fallback, not a frequency a driver may be driven to.
 
-    ``None`` means the declaration names no low edge at all — never a guessed
-    default, on :func:`declared_protection_highpass_floor_hz`'s never-nanny
-    rule. A ``full_range`` driver is the one class with no code figure behind
-    that ``None``, so :func:`driver_protection_payload` refuses it by name.
+    ``None`` means the declaration names no low edge at all, never a guessed
+    default; :func:`driver_protection_payload` refuses a ``full_range`` driver
+    by name on it.
     """
 
     if not isinstance(driver, Mapping):
@@ -987,8 +978,7 @@ def driver_protection_payload(
     ``declared_low_limit_hz`` is this driver's own declared low limit when the
     caller knows it; see :func:`tone_gate_low_limit` for what absent means.
     ``declared_floor_hz`` is the wider answer :func:`driver_excitation_floor_hz`
-    gives, which the ``full_range`` class needs because it has no class figure
-    of its own; every other class ignores it.
+    gives, which only the ``full_range`` class reads.
     """
 
     profile = driver_protection_profile(
@@ -1009,10 +999,7 @@ def driver_protection_payload(
             "driver_role_not_supported",
             "this driver role is not enabled for active-speaker audible tests",
         ))
-    if (
-        profile.role_class == "full_range"
-        and profile.floor_test_frequency_hz is None
-    ):
+    if profile.role_class == "full_range" and profile.floor_test_frequency_hz is None:
         issues.append(_issue(
             "blocker",
             "full_range_low_edge_undeclared",

@@ -812,16 +812,6 @@ def test_local_subwoofer_falls_back_to_default_corner() -> None:
     assert sub.crossover_fc_hz == DEFAULT_SUB_CROSSOVER_HZ == 80.0
 
 
-def test_topology_is_passive_mains_with_sub_predicate() -> None:
-    from jasper.active_speaker.staging import topology_is_passive_mains_with_sub
-
-    assert topology_is_passive_mains_with_sub(_passive_1way_sub_topology_fc(120.0)) is True
-    # A SUBLESS passive speaker is NOT routed through the active emitter.
-    assert topology_is_passive_mains_with_sub(_subless_passive_topology()) is False
-    # An active 2-way + sub is the preview-driven path, not this one.
-    assert topology_is_passive_mains_with_sub(_active_2way_sub_topology()) is False
-
-
 def test_passive_mains_sub_builds_and_reproves_at_topology_fc(tmp_path) -> None:
     # The headline of this slice: a full_range_passive + sub topology now COMPILES
     # end-to-end through the active multi-output emitter (the degenerate 1-way bass-

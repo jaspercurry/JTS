@@ -85,8 +85,8 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
 )
+from jasper.active_speaker.crossover_v2.handoff_doors import HANDOFF_DOORS
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    HANDOFF_DOORS,
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,

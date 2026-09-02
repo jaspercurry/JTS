@@ -783,7 +783,7 @@ def evaluate_round(
         spec = evaluate_spec(spec_report)
         post_residual = None if after is None else pooled_residual(after)
         # The band is the VERIFY absolute claim's own — which is
-        # ``program_analysis.crossover_region_band_hz``'s output, reached
+        # ``comparison_bands.crossover_region_band_hz``'s output, reached
         # through that function's existing production consumer rather than
         # re-derived here. Two things follow and both are the point: the region
         # corrected over is byte-identically the one the household is shown on
@@ -867,7 +867,7 @@ def _crossover_region(
     """``(band_hz, no_crossover_reason)``, both read off the VERIFY absolute claim.
 
     **The band's owner is
-    :func:`~jasper.audio_measurement.program_analysis.crossover_region_band_hz`,
+    :func:`~jasper.audio_measurement.comparison_bands.crossover_region_band_hz`,
     and this reads its output rather than calling it a second time.** That
     function is deliberately NOT ``overlap_band_hz``: the latter clamps the
     lower edge UP to the tweeter's own sweep floor because its consumers read a

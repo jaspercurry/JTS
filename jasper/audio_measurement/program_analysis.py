@@ -60,6 +60,13 @@ from jasper.audio_measurement.alignment import (
     gcc_phat,
     parabolic_peak,
 )
+from jasper.audio_measurement.comparison_bands import (
+    OVERLAP_OCTAVE_RATIO,
+    branch_snr_band_hz,
+    crossover_region_band_hz,
+    overlap_band_hz,
+    verify_tracking_band_hz,
+)
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -297,9 +304,6 @@ GCC_SNAP_RADIUS_PERIODS = 1.0 / 6.0
 # Alignment estimator status vocabulary.
 ALIGNMENT_OK = "ok"
 ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
-
-# Overlap band for trims / alignment / ripple: Fc ± 1 octave.
-OVERLAP_OCTAVE_RATIO = 2.0
 
 # --------------------------------------------------------------------------- #
 # Joint (polarity, delay) alignment selection
@@ -1554,11 +1558,9 @@ class ProgramAnalysis:
     # predicts stays invisible. Always a dict on a VERIFY analysis — the
     # numbers, or ``{"not_evaluated": <reason>}``; ``None`` elsewhere.
     verify_absolute: dict[str, Any] | None = None
-    # Why a MEASURE analysis carries no ``alignment`` and no ``candidate``.
-    # Both are statements about TWO driver branches, and a 1-way program has
-    # one. ``None`` on every analysis that HAS them — absence spelled the
-    # way its two siblings above spell it — so "nobody evaluated this" can never
-    # be read as "this passed", the rule ``verify_absolute`` follows.
+    # Why a MEASURE analysis carries no ``alignment`` and no ``candidate``;
+    # ``None`` on every analysis that has them. Absence carries a reason so
+    # "nobody evaluated this" cannot read as "this passed".
     measure_pair_not_evaluated: str | None = None
     # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the tracking
     # scalars above were reduced from. A separate field rather than a key inside
@@ -1575,9 +1577,8 @@ class ProgramAnalysis:
     verify_tracking_curve: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)``: the
     # measured branches at the candidate's COMMITTED trim AND committed delay
-    # (``_build_candidate``'s ``predicted_applied``), or — on a 1-way main,
-    # which has no second branch to commit either against — the single branch
-    # itself. The v2 session hands this
+    # (``_build_candidate``'s ``predicted_applied``), or the single branch
+    # itself on a 1-way main. The v2 session hands this
     # to the VERIFY analysis as ``MeasurementPriors.predicted_sum`` so VERIFY's
     # PASS is |measured − predicted| ≤ ±1.5 dB (design §5.2), not merely the
     # summed ripple.
@@ -2893,16 +2894,16 @@ def _driver_snr_block(
     not the window, that buys this.
 
     ``radiated_band_hz`` scopes the verdict to the band this branch's stimulus
-    actually drove — see :func:`branch_snr_band_hz`, which owns that policy and
-    is the whole window on a branch with no corner to narrow it further.
+    actually drove — see :func:`~..comparison_bands.branch_snr_band_hz`, which
+    owns that policy.
     BOTH decision classes below take the same window, because "a row the sweep
     never entered is not evidence" is a statement about the MEASUREMENT, not
     about which law reads it.
 
-    Fails closed: a raw report with no captured segment to pair it against,
-    or a branch that declares neither a corner nor a radiated band to scope the
-    verdict by, produces no verdict at all rather than an unscoped one. A
-    segment that is PRESENT but degenerate (a capture truncated before this sweep, so
+    Fails closed: a raw report with no captured segment to pair it against, or
+    a branch declaring neither a corner nor a radiated band to scope the verdict
+    by, produces no verdict at all rather than an unscoped one. A segment that
+    is PRESENT but degenerate (a capture truncated before this sweep, so
     :func:`_raw_sweep_segment` clamps to fewer than 8 samples) instead makes
     ``band_levels_dbfs`` return no bands, so the block carries ``verdict:
     "unknown"`` and an empty band list. The two spellings are distinguishable
@@ -3066,134 +3067,6 @@ def _aligned_branch_tf(
     gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     return freqs, H, fragment
-
-
-def overlap_band_hz(
-    fc_hz: float,
-    *,
-    tweeter_sweep_lo_hz: float | None = None,
-    woofer_sweep_hi_hz: float | None = None,
-) -> tuple[float, float]:
-    """SSOT overlap band for the GCC alignment, trim solve, ripple, and
-    VERIFY-tracking comparisons: the nominal ``Fc ± 1 octave`` band, clamped to
-    the TRUE driver-sweep overlap.
-
-    The nominal ``[Fc/OVERLAP_OCTAVE_RATIO, Fc*OVERLAP_OCTAVE_RATIO]`` band
-    silently assumes both drivers were excited across the whole span, but each
-    driver's MEASURE sweep only covers its own declared band (design §5.4) — a
-    tweeter sweep starting AT Fc makes ``[Fc/2, Fc)`` pure deconvolution noise
-    for that branch. That noise corrupts the GCC delay/confidence, the trim
-    solve, the predicted ripple, and, via the MEASURE-predicted sum, VERIFY's
-    tracking comparison; a hardware run failed to clear the alignment
-    confidence floor because of it. Clamping ``lo`` UP to the tweeter's actual
-    sweep floor and ``hi`` DOWN to the woofer's actual sweep ceiling keeps
-    every consumer inside frequencies BOTH branches have real excited energy
-    at. ``None`` bounds leave that side at the nominal Fc/octave edge.
-    """
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
-    if tweeter_sweep_lo_hz is not None:
-        lo = max(lo, float(tweeter_sweep_lo_hz))
-    if woofer_sweep_hi_hz is not None:
-        hi = min(hi, float(woofer_sweep_hi_hz))
-    return lo, hi
-
-
-def branch_snr_band_hz(
-    fc_hz: float | None,
-    radiated_band_hz: tuple[float, float] | None,
-) -> tuple[float, float] | None:
-    """The band ONE branch's capture-SNR verdict may be judged over.
-
-    ``[Fc/ρ, Fc·ρ]`` intersected with the band this branch's stimulus actually
-    radiated, so a row the sweep never entered cannot vote. Whichever edge
-    binds, binds: a tweeter swept from above ``Fc/ρ`` raises ``lo``, a woofer
-    swept to below ``Fc·ρ`` lowers ``hi``. ``radiated_band_hz`` of ``None``
-    leaves the nominal band untouched.
-
-    The corner only ever BOUNDS this window, so a branch that has none — a
-    1-way main's lone full-range driver — is judged over what it radiated, and
-    only a branch with neither fact leaves the verdict unbuilt (``None``).
-
-    Erring CONSERVATIVE on row width: a row the window keeps can still be WIDER
-    than the sweep's coverage of it, and under a flat noise floor that
-    understates SNR by ``10*log10(row_width / covered_width)`` — always toward
-    REFUSING. The dilution is set by how deep inside a wide row the sweep's
-    edge lands, so it has no natural ceiling: 0.97 dB for a tweeter swept from
-    1600 Hz, 4.77 dB for a woofer swept only to 2000 Hz, 14.77 dB for one whose
-    ceiling sits just above the ``mid`` row's 1000 Hz floor.
-
-    An empty intersection (``lo >= hi``) is returned as-is, not widened. It
-    still admits rows overlapping the radiated band —
-    :func:`~jasper.audio_measurement.snr_policy.worst_band_verdict`'s
-    ``_band_overlaps`` tests ``row_hi > lo`` and ``row_lo < hi``
-    INDEPENDENTLY, so a row spanning the whole inverted interval satisfies both
-    — which makes "empty" a narrower franchise, not "no verdict". The guarantee
-    that holds either way: whatever a window admits still overlaps the radiated
-    band, since admission needs ``row_hi > lo >= radiated_lo`` and ``row_lo <
-    hi <= radiated_hi``.
-    """
-    if fc_hz is None:
-        return radiated_band_hz
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
-    if radiated_band_hz is None:
-        return lo, hi
-    return max(lo, float(radiated_band_hz[0])), min(hi, float(radiated_band_hz[1]))
-
-
-def crossover_region_band_hz(
-    fc_hz: float,
-    *,
-    validity_floor_hz: float | None,
-    radiated_band_hz: tuple[float, float] | None,
-) -> tuple[float, float] | None:
-    """The crossover region a SUMMED capture can be judged over, or ``None``.
-
-    ``[Fc/ρ, Fc·ρ]`` intersected with
-    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` over
-    this capture's own gate VALIDITY floor (``1/T``,
-    :func:`~jasper.audio_measurement.gating.f_valid_floor_hz`) and the band its
-    stimulus actually radiated, so the floor is always the evidence's own and
-    never a literal. Not the trusted floor (``2.5/T``): that one is disclosed
-    beside a verdict and never bounds this one
-    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
-    ``None`` when that intersection is empty: no band this capture supports, so
-    no number is invented for one.
-
-    Deliberately NOT :func:`overlap_band_hz`. That one clamps ``lo`` UP to the
-    tweeter's MEASURE sweep floor because its consumers read the TWEETER BRANCH
-    ALONE, which below that floor is deconvolution noise from a driver that was
-    never excited. A VERIFY summed capture has no such problem — one mono sweep
-    through the applied graph spanning ``[min(150, Fc/2), 20 kHz]`` — so the
-    composite is real below the tweeter's sweep floor, which is exactly where a
-    null lands when the tweeter is swept from Fc. Widening the MODEL-tracking
-    band there WOULD be dishonest; this band is for the absolute claim, which
-    needs no per-branch model. A JTS3 checkpoint graded ``[2000, 4000] Hz`` and
-    passed at 0.919 dB against 1.5 dB while its post-apply cloud measured
-    −4.80 dB at 1656 Hz, 344 Hz below the graded floor.
-
-    That figure is signal-derived and stated at 1/3-octave smoothing, the spec
-    gauge's convention. This function's consumer smooths at
-    :data:`VERIFY_TRACKING_SMOOTHING_FRACTION` (1/6 octave), which resolves a
-    narrow dip more sharply, so the two numbers are not expected to match.
-
-    Its one caller is ``_verify_absolute_result``, and that claim's ``band_hz``
-    is ALSO the region the blend correction is solved and graded over
-    (``crossover_v2.round_evidence._crossover_region`` reads it back).
-    The correction consumes this function's output through that consumer rather
-    than calling it again, so the band a household is shown and the band a
-    filter is cut over are the same number by construction — and this stays a
-    one-caller function.
-    """
-    if not math.isfinite(fc_hz) or fc_hz <= 0.0:
-        return None
-    band = gate_disclosure.evaluation_band_hz(validity_floor_hz, radiated_band_hz)
-    if band is None:
-        return None
-    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, band[0])
-    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, band[1])
-    return (lo, hi) if lo < hi else None
 
 
 def _estimate_alignment(
@@ -5408,9 +5281,8 @@ def _repeat_driver_responses(
     return tuple(out)
 
 
-#: :attr:`ProgramAnalysis.measure_pair_not_evaluated`'s only value today: the
-#: program carried one driver, so there was no pair to align or to build a
-#: candidate across.
+#: :attr:`ProgramAnalysis.measure_pair_not_evaluated`'s only value today: one
+#: driver, so no pair to align or to build a candidate across.
 MEASURE_PAIR_SINGLE_DRIVER = "single_driver_no_pair"
 
 
@@ -5419,19 +5291,15 @@ def _analyze_measure(
     calibration, geometry, priors,
 ) -> ProgramAnalysis:
     # ``None`` is legal for exactly one shape: a speaker with no crossover (a
-    # 1-way passive main), whose readers below treat it as "no overlap band to
-    # scope by". On a TWO-branch program it is still a missing prior and still
-    # raises — the pair's whole vocabulary (overlap band, blend, candidate) is
-    # derived from the corner, and declining to build one because a caller
-    # forgot it would be a wrong answer wearing an honest name. The
-    # discrimination happens where ``seg_t`` is known, below.
+    # 1-way passive main). On a TWO-branch program it is still a missing prior
+    # and still raises below, where ``seg_t`` is known — the pair's whole
+    # vocabulary is derived from the corner.
     fc_hz = None if priors.crossover_fc_hz is None else float(priors.crossover_fc_hz)
     drift = _estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
     # The structural fact this analysis branches on: did the program carry a
-    # SECOND driver's sweep. A 1-way MEASURE is one routed solo, so there is no
-    # pair to align, no overlap band, and no candidate to build across one.
+    # SECOND driver's sweep.
     seg_t = next(
         (seg for seg in program.segments if seg.segment_id == "sweep_t"), None
     )
@@ -5496,15 +5364,14 @@ def _analyze_measure(
         )
     )
 
-    # ONE branch: nothing to align across and nothing to blend. Both come back
-    # absent WITH A REASON rather than as a bare ``None`` a reader could mistake
-    # for "measured, and fine" — the rule ``verify_absolute`` already follows.
+    # ONE branch: nothing to align across and nothing to blend, so both come
+    # back absent WITH A REASON rather than as a bare ``None``.
     alignment: AlignmentEstimate | None = None
     candidate: CrossoverCandidate | None = None
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     pair_not_evaluated: str | None = MEASURE_PAIR_SINGLE_DRIVER
-    # ``fc_hz is not None`` is guaranteed by the raise above whenever ``seg_t``
-    # is; it is restated so the narrowing is local to the block that uses it.
+    # ``fc_hz is not None`` is guaranteed by the raise above; restated so the
+    # narrowing is local.
     if seg_t is not None and tweeter_full_ir is not None and fc_hz is not None:
         pair_not_evaluated = None
         alignment = _estimate_alignment(
@@ -5566,8 +5433,6 @@ def _analyze_measure(
     else:
         # One branch radiates the whole band, so the model of what this capture
         # sums to IS that branch, at the fixed zero trim such a round ships.
-        # Without it the delta probe's STATE axis has no reference and a way-1
-        # round grades nothing.
         predicted_sum = (responses[0].freqs_hz, responses[0].magnitude_db)
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a pre-pilot ambient window + a leading pilot pair; a
@@ -6048,9 +5913,8 @@ ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
 ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
 #: The speaker HAS no crossover region — a 1-way main, whose preset declares
 #: none. Its own slug rather than a fourth reader of the three above, which all
-#: say a round could not establish the region its speaker does have: those send
-#: an operator to re-measure, this one to nothing at all (#3480's rule).
-#: Every downstream absence that reads this claim's band carries it forward.
+#: say a round could not establish a region its speaker does have: those send an
+#: operator to re-measure, this one to nothing at all (#3480's rule).
 ABSOLUTE_NO_CROSSOVER_TOPOLOGY = "no_crossover_topology"
 
 
@@ -6081,11 +5945,10 @@ def _verify_absolute_result(
     """
     transfers = priors.configured_crossover_response_by_role
     if transfers is not None and not transfers:
-        # An EMPTY map, never a missing one: the preset was read and declares no
-        # region. Asked BEFORE the corner because a 2-way whose caller passed no
-        # ``fc_hz`` also arrives with ``fc_hz is None``, and "this speaker has no
-        # crossover" and "nobody said where this speaker's crossover is" are two
-        # facts with two remedies.
+        # An EMPTY map, never a missing one: the preset was read and declares
+        # no region. Asked BEFORE the corner, because "this speaker has no
+        # crossover" and "nobody said where its crossover is" are two facts
+        # with two remedies and both arrive with ``fc_hz is None``.
         return {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY}
     if fc_hz is None:
         return {"not_evaluated": ABSOLUTE_NO_FC}
@@ -6164,29 +6027,11 @@ def _analyze_verify(
     tracking = None
     tracking_curve = None
     measured_db = None
-    # A 1-way main declares no corner, so there is no overlap band to scope the
-    # comparison by. What scopes it instead is THIS sweep's radiated span
-    # intersected with the band MEASURE actually excited the lone branch over
-    # (``priors.measure_excited_band_hz``, read off the composed MEASURE
-    # program): the verify sweep deliberately reaches below MEASURE's floor, and
-    # ``predicted_sum`` down there is deconvolution noise from a branch nothing
-    # drove. A segment declaring no bounds, an absent excited band, or an empty
-    # intersection leaves the comparison absent rather than graded over a band
-    # nobody stated.
-    excited_band_hz = priors.measure_excited_band_hz
-    band: tuple[float, float] | None
-    if fc_hz is not None:
-        sweep_lo_hz, sweep_hi_hz = excited_band_hz or (None, None)
-        band = overlap_band_hz(
-            fc_hz,
-            tweeter_sweep_lo_hz=sweep_lo_hz,
-            woofer_sweep_hi_hz=sweep_hi_hz,
-        )
-    else:
-        band = _radiated_band_hz(seg)
-        if band is not None and excited_band_hz is not None:
-            lo, hi = max(band[0], excited_band_hz[0]), min(band[1], excited_band_hz[1])
-            band = (lo, hi) if lo < hi else None
+    band = verify_tracking_band_hz(
+        fc_hz,
+        radiated_band_hz=_radiated_band_hz(seg),
+        measure_excited_band_hz=priors.measure_excited_band_hz,
+    )
     # The ripple and the reverse null are statements about a handoff, so they
     # stay behind the corner rather than behind the band.
     if fc_hz is not None and band is not None:

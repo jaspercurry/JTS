@@ -57,6 +57,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import radiating_band_hz
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2 import plan_assembly as pa
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateAcousticContext,
     TrimStrategy,
@@ -167,13 +168,13 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
     )
 
 
-def _pure(sections: dict[str, Any]) -> iv.LinearizationPlan:
+def _pure(sections: dict[str, Any]) -> pa.LinearizationPlan:
     """:func:`~...intervention.plan_linearization` over the same inputs."""
 
     return iv.plan_linearization(_planner_request(sections))
 
 
-def _giveback_record(plan: iv.LinearizationPlan) -> dict[str, Any]:
+def _giveback_record(plan: pa.LinearizationPlan) -> dict[str, Any]:
     """The anchor's own journal line, as fields."""
     for record in plan.journal:
         if record.event == "correction.crossover_v2_linearization_giveback":

@@ -138,9 +138,6 @@ from jasper.audio_measurement.evidence_identity import (
 # constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-from jasper.audio_measurement.program_analysis import (
-    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-)
 from jasper.json_fields import finite_float
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
@@ -155,15 +152,8 @@ from .record_index import Measurement, bundle_measurements
 # that patched this module's own binding, because the binding was all the test
 # could see.
 from . import position_cycle
-from .alignment_prescription import (
-    ALIGNMENT_NO_CROSSOVER_REGION,
-    alignment_prescription_response_format,
-)
 from .blend_prescription import prescription_response_format
-from .topology_prescription import (
-    TOPOLOGY_NO_CROSSOVER_REGION,
-    topology_prescription_response_format,
-)
+from . import handoff_doors as doors
 from .driver_prescription import (
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
@@ -185,7 +175,6 @@ __all__ = [
     "CLASSIFICATION_ARTIFACT",
     "DECLARED_GEOMETRY_ARTIFACT",
     "DECLARED_GEOMETRY_KIND",
-    "HANDOFF_DOORS",
     "HARMONICS_ARTIFACT",
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
@@ -2641,27 +2630,16 @@ def _region_block(receipt: dict[str, Any], reason: str) -> tuple[dict[str, Any],
 
     ``round_measurements.blend.band_hz`` and nothing else. That field is the
     VERIFY absolute claim's own band, which decision 10 also makes the region
-    the blend correction is solved and graded over — so a prescription checked
-    against it is checked against byte-identically the band the deterministic
-    solver was bounded by, rather than against a second derivation of "the
-    crossover region" that could drift from it.
-
-    The pair's second half is "this speaker HAS no region", which the blocks
-    that shut a handoff door read from here rather than re-matching this one's
-    published reason string.
+    the blend correction is solved and graded over — so a prescription is
+    checked against byte-identically the band the deterministic solver was
+    bounded by, rather than a second derivation that could drift from it.
     """
     blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
-    band = blend.get("band_hz")
-    no_crossover = band is None and blend.get("reason") == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
-    if no_crossover:
-        # The round named the SHAPE: this speaker has no crossover, rather than
-        # a region this round failed to establish. ``field_null`` reads as the
-        # second and sends an operator to re-measure for a band that will never
-        # exist, so the round's own reason is the packet's here.
-        reason = str(blend["reason"])
-    absent = _absence(reason, band is not None, "round_measurements.blend.band_hz")
+    band, shape = blend.get("band_hz"), doors.no_crossover_reason(blend)
+    band_field = "round_measurements.blend.band_hz"
+    absent = _absence(reason if shape is None else shape, band is not None, band_field)
     if absent:
-        return {"available": False, **absent}, no_crossover
+        return {"available": False, **absent}, shape is not None
     return {
         "available": True,
         "band_hz": band,
@@ -2670,46 +2648,7 @@ def _region_block(receipt: dict[str, Any], reason: str) -> tuple[dict[str, Any],
             "the VERIFY absolute claim's band, which is also the region the "
             "deterministic blend correction is solved and graded over"
         ),
-    }, no_crossover
-
-
-#: The two request-time doors that describe a HANDOFF, and the code each
-#: refuses a speaker with no crossover region by. One table, because the doors
-#: block below, :func:`_not_evaluated` and the prescriber CLI's next actions all
-#: read it: a reader must never be shown a door shut under one name and listed
-#: as unanswered under another.
-HANDOFF_DOORS: tuple[tuple[str, str], ...] = (
-    ("alignment", ALIGNMENT_NO_CROSSOVER_REGION),
-    ("topology", TOPOLOGY_NO_CROSSOVER_REGION),
-)
-
-
-def _handoff_door_field(door: str) -> str:
-    """Where one shut handoff door's absence sits: the door's OWN path, so a
-    reader following ``field`` lands on the block that refused."""
-    return f"request_time_prescriptions.{door}"
-
-
-def _request_time_prescriptions(no_crossover: bool) -> dict[str, Any]:
-    """The two doors that open at session request time, or why they do not.
-
-    Both are statements about a handoff between two branches, so a speaker with
-    no crossover region can open neither: the boundary already refuses them by
-    name, and publishing their contracts anyway would document a door this
-    speaker cannot open.
-    """
-    if not no_crossover:
-        return {
-            "alignment": alignment_prescription_response_format(),
-            "topology": topology_prescription_response_format(),
-        }
-    return {
-        door: {
-            "available": False,
-            **_absence(refusal, False, _handoff_door_field(door)),
-        }
-        for door, refusal in HANDOFF_DOORS
-    }
+    }, shape is not None
 
 
 def _incumbent_block(
@@ -3286,27 +3225,7 @@ def _not_evaluated(
                 "unknown rather than zero"
             ),
         })
-    if no_crossover:
-        # The three shut doors, listed where a reader looks for what a packet
-        # could not answer. Their blocks already say ``available: false``, but a
-        # reader who scans only this list would otherwise take the region as
-        # merely unmeasured and the two contracts as offers.
-        entries.append({
-            "field": "crossover_region.band_hz",
-            "reason": (
-                f"{ABSOLUTE_NO_CROSSOVER_TOPOLOGY}: this speaker declares no "
-                "crossover region, so there is no band for a blend prescription "
-                "to sit inside and none will be measured by any later round"
-            ),
-        })
-        entries.extend({
-            "field": _handoff_door_field(door),
-            "reason": (
-                f"{refusal}: this door prescribes across a handoff between two "
-                "branches, which this speaker does not have, so the session "
-                "boundary refuses it by name rather than staging it"
-            ),
-        } for door, refusal in HANDOFF_DOORS)
+    entries.extend(doors.no_crossover_not_evaluated_entries(no_crossover))
     if isinstance(findings.get("findings"), list) and not findings["findings"]:
         entries.append({
             "field": "findings",
@@ -3431,9 +3350,6 @@ def build_crossover_evidence_packet(
     cross_seat_sigma = _mapping(positions.get("cross_seat_sigma"))
     verify = _verify_block(state, state_reason)
     reflections = _reflections_block(cloud, cloud_reason)
-    # The region block decides whether this speaker HAS a region; the doors
-    # block and the not-evaluated list read that answer rather than re-deriving
-    # it from the block's reason string.
     crossover_region, no_crossover = _region_block(receipt, receipt_reason)
 
     packet: dict[str, Any] = {
@@ -3619,7 +3535,7 @@ def build_crossover_evidence_packet(
         # listed beside them precisely because they are not stageable: a
         # document of this class handed to ``stage`` is refused by the class
         # gate, and the block says where it belongs instead.
-        "request_time_prescriptions": _request_time_prescriptions(no_crossover),
+        "request_time_prescriptions": doors.request_time_prescriptions(no_crossover, _absence),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet

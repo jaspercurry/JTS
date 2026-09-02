@@ -39,7 +39,7 @@ from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
 )
-from jasper.audio_measurement.program_analysis import (
+from jasper.audio_measurement.comparison_bands import (
     crossover_region_band_hz,
     overlap_band_hz,
 )

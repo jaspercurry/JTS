@@ -25,7 +25,7 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection, radiating_band_hz, sections_by_role,
 )
 from jasper.active_speaker.crossover_v2 import priors
-from jasper.audio_measurement.program_analysis import overlap_band_hz
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 
 from tests.crossover_v2_fixtures import FC_HZ, _preset
 

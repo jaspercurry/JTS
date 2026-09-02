@@ -190,9 +190,8 @@ def _sub_group(index: int) -> dict:
 def test_passive_shape_predicates_separate_subless_from_with_sub() -> None:
     """The ONE owner of "these mains carry no inter-driver crossover".
 
-    ``active_speaker.staging.topology_is_passive_mains_with_sub`` and
-    ``topology_is_subless_passive_mains`` are the two shapes built on it; the
-    setup ladder terminates for the subless one only.
+    ``topology_is_subless_passive_mains`` and the with-sub shape are built on
+    it; the setup ladder terminates for the subless one only.
     """
 
     mono = _topology(groups=[_passive_main("mono", "mono", 0)])
