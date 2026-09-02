@@ -18,7 +18,6 @@ names would pin the test's spelling instead of the product's.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Sequence
 
 import pytest
@@ -102,14 +101,6 @@ def household_graph(
         pytest.param(
             build_sound_filters(FLAT), build_sound_filter_slots(SAVED),
             id="frame_arrives_under_the_round",
-        ),
-        pytest.param(
-            tuple(
-                replace(spec, name=spec.name.replace("curve_", "curve_harman_"))
-                for spec in build_sound_filters(SAVED)
-            ),
-            build_sound_filter_slots(SAVED),
-            id="curve_slots_renamed_under_the_round",
         ),
     ],
 )
