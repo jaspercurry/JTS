@@ -1,4 +1,4 @@
-# ADR-0220: The relay is deleted; the wired microphone on jts.local is the only capture path
+# ADR-0222: The relay is deleted; the wired microphone on jts.local is the only capture path
 
 - **Date:** 2026-09-02
 - **Status:** Accepted. Supersedes ADR-0188 sections 2 and 3.
