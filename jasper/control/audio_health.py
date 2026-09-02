@@ -159,6 +159,7 @@ SIGNAL_PATH_CODES = frozenset({
     "input_stalled",
     "output_absent",
     "output_backend_inactive",
+    "output_deaf",
     "output_stalled",
     "path_stalled",
     "path_unreported",
@@ -909,6 +910,22 @@ def _signal_path(
             "detail": (
                 "Sound stopped moving out to the speaker a few seconds ago. "
                 f"{RESTART_REMEDY}"
+            ),
+        }
+
+    # outputd is writing periods, but what it is writing is silence it did not
+    # intend — every input above stays healthy through a fully deaf chain, so
+    # this is the only one that can see it (#3458). The verdict is outputd's
+    # own: it owns the DAC geometry its threshold is derived from.
+    if _mapping(outputd_map.get("content")).get("deaf") is True:
+        return {
+            "code": "output_deaf",
+            "status": "issue",
+            "headline": "The speaker is playing silence",
+            "detail": (
+                "Sound is reaching the speaker's last step, but nothing is "
+                f"arriving for it to play. {RESTART_REMEDY} "
+                f"{DIAGNOSTICS_REMEDY}"
             ),
         }
 

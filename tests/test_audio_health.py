@@ -128,11 +128,12 @@ def _outputd(
     tts_budget_frames: int = 96000,
     delay_age_ms: int = 10,
     clipped_samples: int = 0,
+    content_deaf: bool = False,
 ) -> dict:
     return {
         "backend": backend,
         "mix": {"clipped_samples": clipped_samples},
-        "content": {"xrun_count": content_xruns},
+        "content": {"xrun_count": content_xruns, "deaf": content_deaf},
         "dac": {
             "xrun_count": dac_xruns,
             "sample_rate": 48000,
@@ -758,6 +759,19 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
     )
 
     assert health["signal_path"]["code"] == "output_stalled"
+
+
+def test_a_deaf_content_source_is_an_issue_a_healthy_one_is_not() -> None:
+    """#3458: outputd emitting silence it did not intend read `clean` here.
+
+    Every other input to the signal path — the backend, both watchdogs, the
+    xrun counts — stays healthy through it, so the verdict outputd publishes
+    is the only thing that can move this off green.
+    """
+    deaf = _compose(outputd=_outputd(content_deaf=True))
+    assert deaf["signal_path"]["code"] == "output_deaf"
+    assert deaf["signal_path"]["status"] == "issue"
+    assert _compose(outputd=_outputd())["signal_path"]["code"] == "clean"
 
 
 def _output_hardware(
@@ -3947,6 +3961,9 @@ def _household_shapes() -> dict[str, dict]:
         ),
         "output_stalled": _compose_with(
             _airplay(**playing), outputd=_outputd(progress_age_ms=30_000)
+        ),
+        "output_deaf": _compose_with(
+            _airplay(**playing), outputd=_outputd(content_deaf=True)
         ),
         "path_stalled": _compose_with(_mutated(
             lambda ap: _fanin(ap)["watchdog"].update(last_progress_age_ms=60_000),
