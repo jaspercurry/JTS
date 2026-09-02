@@ -258,6 +258,19 @@ install_hid_accessory_unit_files() {
 }
 
 
+# Staged on streambox but never boot-enabled: jasper-accessory-reconcile starts
+# and stops jasper-voice as a mic-bearing remote pairs and unpairs, and
+# `systemctl start` on a unit whose file was never installed exits 1. The full
+# profile calls this from inside its rollback transaction below, so `install`
+# here resolves to the transactional wrapper.
+# See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+install_voice_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
+        "${SYSTEMD_DIR}/jasper-voice.service"
+}
+
+
 install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web-streambox.service" \
@@ -283,12 +296,29 @@ install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.socket" \
         "${SYSTEMD_DIR}/jasper-system-web.socket"
+    # /chat/ is an ASSISTANT surface, so it ships wherever the assistant
+    # wizards do. Same unit as the full tier: socket-activated, stdlib +
+    # SQLite in the shared venv, idle-exits after 30 min.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.service" \
+        "${SYSTEMD_DIR}/jasper-chat-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.socket" \
+        "${SYSTEMD_DIR}/jasper-chat-web.socket"
 }
 
+# Renderer/DSP + assistant wizard ports; the assistant ones are bound
+# whether or not the tier currently holds Capability.ASSISTANT, because a
+# static socket cannot follow the grant table. Forbidden = the WAKE_DETECTION
+# wizards, which a Zero-2-W-class board never runs. Kept in step with
+# deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
+# tests/test_web_main_imports.py.
 validate_streambox_web_socket() {
     local socket="${SYSTEMD_DIR}/jasper-web.socket"
-    local -a expected_ports=(8765 8771 8773 8775 8783 8784 8785)
-    local -a forbidden_ports=(8767 8768 8774 8776 8777 8778 8779 8782)
+    local -a expected_ports=(
+        8765 8767 8768 8771 8773 8775 8777 8778 8779 8783 8784 8785 8786
+    )
+    local -a forbidden_ports=(8774 8782)
     local port
     for port in "${expected_ports[@]}"; do
         if ! grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
@@ -298,7 +328,7 @@ validate_streambox_web_socket() {
     done
     for port in "${forbidden_ports[@]}"; do
         if grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
-            echo "  ERROR: streambox jasper-web.socket still binds full-brain port ${port}" >&2
+            echo "  ERROR: streambox jasper-web.socket still binds wake-side port ${port}" >&2
             return 1
         fi
     done
@@ -328,6 +358,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-correction-web.socket"
             "${SYSTEMD_DIR}/jasper-system-web.service"
             "${SYSTEMD_DIR}/jasper-system-web.socket"
+            "${SYSTEMD_DIR}/jasper-chat-web.service"
+            "${SYSTEMD_DIR}/jasper-chat-web.socket"
             "${SYSTEMD_DIR}/librespot.service"
             "${SYSTEMD_DIR}/shairport-sync.service"
             "${SYSTEMD_DIR}/nqptp.service"
@@ -349,6 +381,11 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
+            "${SYSTEMD_DIR}/jasper-voice.service"
+            "${SYSTEMD_DIR}/jasper-input.service"
+            "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
+            "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
         )
         if [[ -x /usr/bin/snapserver ]]; then
             verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
@@ -962,7 +999,7 @@ _unpark_one_low_memory_unit() {
     #
     # `is-enabled` reports static/indirect/generated for units that legitimately
     # carry no [Install] directives; none of those are off states and all are
-    # restored. That is what the four socket-activated wizard .service units
+    # restored. That is what the socket-activated wizard .service units
     # report — their [Install] sections are comment-only, so the `disable` in
     # enable_streambox_web_sockets cannot move them to `disabled` and this
     # branch never sees them.
@@ -1076,11 +1113,17 @@ park_streambox_brain_units() {
     done
     systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
         >/dev/null 2>&1 || true
+    # The marker's only writer (jasper-aec-reconcile) is parked above, so a
+    # stale one would condition-fail every jasper-voice start the accessory
+    # reconciler issues for a paired mic remote.
+    # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    rm -f "${STATE_DIR}/voice-input-absent"
 }
 
 enable_streambox_web_sockets() {
     local unit
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
+                jasper-system-web jasper-chat-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
             systemctl disable "${unit}.service" 2>/dev/null || true
@@ -1177,7 +1220,8 @@ start_streambox_runtime_units() {
         shairport-sync.service librespot.service bt-agent.service \
         2>/dev/null || true
     reapply_source_intent
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
+                jasper-system-web jasper-chat-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state
@@ -1213,6 +1257,7 @@ install_streambox_systemd_units() {
     install_renderer_source_unit_files
     install_streambox_audio_slices
     install_hid_accessory_unit_files
+    install_voice_unit_files
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
 
@@ -1247,9 +1292,7 @@ install_systemd_units() {
     # its containing directory outside group-writable StateDirectory=jasper so
     # a non-root service in the shared `jasper` group cannot replace the proof.
     install -d -m 0755 -o root -g root /var/lib/jasper-enhanced-aec
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
-        "${SYSTEMD_DIR}/jasper-voice.service"
+    install_voice_unit_files
     # The wizard daemons are SOCKET-ACTIVATED (each .service is paired
     # with a .socket unit that holds the port and re-spawns the daemon
     # on demand). systemd binds the listener; the daemon adopts the fd

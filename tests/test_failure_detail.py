@@ -12,11 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.voice._supervisor import (
-    FAILURE_DETAIL_LIMIT,
-    FailureFingerprint,
-    failure_detail,
-)
+from jasper.voice._supervisor import FAILURE_DETAIL_LIMIT, failure_detail
 
 
 class _Response:
@@ -97,15 +93,3 @@ def test_redaction_precedes_truncation() -> None:
     secret = "xai-" + "a" * 40
     body = b'{"error":"' + b"padding " * 40 + b'","api_key":"' + secret.encode() + b'"}'
     assert secret not in failure_detail(_Rejected(401, body))
-
-
-def test_fingerprint_ignores_the_handshake_body() -> None:
-    """Identity must not absorb the body.
-
-    Two outages of the same shape whose bodies differ (a request id, a
-    changing balance) must still compare equal, or tight-retry-loop
-    detection stops firing.
-    """
-    a = FailureFingerprint.from_exception(_Rejected(403, b'{"req":"aaa"}'))
-    b = FailureFingerprint.from_exception(_Rejected(403, b'{"req":"zzz"}'))
-    assert a == b

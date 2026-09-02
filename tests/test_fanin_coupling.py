@@ -205,26 +205,6 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
     }
 
 
-def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
-    from jasper.fanin_coupling import member_kwargs_are_pipe_sink
-
-    assert member_kwargs_are_pipe_sink(None) is False
-    assert member_kwargs_are_pipe_sink({}) is False
-    assert (
-        member_kwargs_are_pipe_sink(
-            {"enable_rate_adjust": True, "playback_pipe_path": None}
-        )
-        is False
-    )
-    assert (
-        member_kwargs_are_pipe_sink(
-            {"enable_rate_adjust": False, "playback_pipe_path": "/run/snapfifo"}
-        )
-        is True
-    )
-    assert member_kwargs_are_pipe_sink({"enable_rate_adjust": False}) is True
-
-
 # --- Ring B (outputd content bridge) vocabulary + coherence (P2) -------------
 
 

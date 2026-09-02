@@ -1,7 +1,8 @@
 # ADR-0215: A broken cloud connection is announced once, and only when a human must act
 
 - **Date:** 2026-09-02
-- **Status:** Accepted
+- **Status:** Accepted. Supersedes the proactive half of ADR-0154 (the
+  hourly rate limit); its reactive rule stands.
 
 ## Context
 

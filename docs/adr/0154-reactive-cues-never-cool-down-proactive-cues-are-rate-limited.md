@@ -1,8 +1,10 @@
 # ADR-0154: Reactive cues never cool down; proactive cues are rate-limited
 
 - **Date:** 2026-08-26
-- **Status:** Accepted (recorded when HANDOFF-audible-feedback.md was trimmed
-  to its operational spine; sits under non-negotiable #6, "no silent deafness")
+- **Status:** Accepted for reactive cues. The proactive half — the hourly
+  rate limit — is superseded by ADR-0215: proactive cues are edge-triggered,
+  once per outage, never on a timer. (Recorded when
+  HANDOFF-audible-feedback.md was trimmed to its operational spine; sits under non-negotiable #6, "no silent deafness")
 
 ## Context
 

@@ -277,7 +277,7 @@ def test_legacy_endpoint_token_uses_streambox_route_policy():
         "endpoint", method="GET", path="/mic",
     )
     assert not _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/system/restart/voice",
+        "endpoint", method="POST", path="/aec/toggle",
     )
 
 
@@ -328,16 +328,7 @@ def test_streambox_profile_control_route_policy():
         "streambox", method="POST", path="/usb-forensics",
     )
     assert not _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/cue/play",
-    )
-    assert not _control_route_allowed_for_install_profile(
         "streambox", method="POST", path="/mic/mute",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/session/start",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/system/restart/voice",
     )
 
 
@@ -366,29 +357,79 @@ def test_legacy_endpoint_token_uses_streambox_routes_at_http_layer(
     assert status != 404
 
 
-def test_streambox_profile_blocks_voice_brain_control_routes(
+def _grant_streambox(monkeypatch, *capabilities):
+    """Rewrite the streambox row of the pure-data grant table.
+
+    The route gate must follow the GRANT, so the pin drives the grant
+    directly instead of restating whatever the shipped table happens to
+    say — that table is pinned by tests/test_install_profile_capabilities.py.
+    """
+    from jasper import install_profile as ip
+
+    monkeypatch.setattr(ip, "PROFILE_CAPABILITIES", {
+        **ip.PROFILE_CAPABILITIES,
+        ip.STREAMBOX_INSTALL_PROFILE: frozenset(capabilities),
+    })
+
+
+@pytest.mark.parametrize("assistant", [True, False])
+@pytest.mark.parametrize("path", [
+    "/session/start", "/session/end", "/cue/play", "/system/restart/voice",
+])
+def test_streambox_assistant_routes_follow_the_assistant_grant(
+    monkeypatch, assistant, path,
+):
+    """A streambox granted Capability.ASSISTANT serves the assistant's own
+    surface — the two push-to-talk turn boundaries its paired remote's
+    bridge posts, cue playback, and restarting the unit. Without the grant
+    they stay off the route table. See ADR-0217."""
+    from jasper.install_profile import Capability
+
+    _grant_streambox(monkeypatch, *([Capability.ASSISTANT] if assistant else []))
+
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path=path,
+    ) is assistant
+
+
+@pytest.mark.parametrize("method, path", [
+    ("GET", "/mic"),
+    ("GET", "/aec"),
+    ("POST", "/mic/mute"),
+    ("POST", "/aec/toggle"),
+    ("POST", "/aec/commission"),
+])
+def test_streambox_wake_stack_routes_stay_blocked_under_the_assistant_grant(
+    monkeypatch, method, path,
+):
+    """ASSISTANT does not carry the local-mic/wake/AEC stack with it: those
+    routes need Capability.WAKE_DETECTION, which no Zero-class board gets."""
+    from jasper.install_profile import Capability
+
+    _grant_streambox(monkeypatch, Capability.ASSISTANT)
+
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method=method, path=path,
+    )
+
+
+def test_streambox_serves_a_session_start_over_http(
     monkeypatch,
     server_with_coordinator,
 ):
+    """End to end through the same guard chain the accessory bridge's
+    localhost POST takes: the route gate no longer 404s it."""
     import jasper.control.server as srv_mod
+    from jasper.install_profile import Capability
 
     monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "streambox")
+    _grant_streambox(monkeypatch, Capability.ASSISTANT)
 
     base, _ = server_with_coordinator
-    status, body = _get(f"{base}/healthz")
-    assert status == 200
-    assert body == {"ok": True}
+    status, _body = _post(f"{base}/session/start", {"source": "wiim_remote_2"})
+    assert status != 404
 
     status, _body = _get(f"{base}/mic")
-    assert status == 404
-
-    status, _body = _get(f"{base}/aec")
-    assert status == 404
-
-    status, _body = _post(f"{base}/cue/play", {"slug": "cant_connect"})
-    assert status == 404
-
-    status, _body = _post(f"{base}/system/restart/voice", {})
     assert status == 404
 
 

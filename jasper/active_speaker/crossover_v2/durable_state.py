@@ -66,15 +66,26 @@ import, and nothing from ``jasper.active_speaker.crossover_v2_flow``.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from jasper.active_speaker.attempts_loop import (
+    PROVENANCE_REALIZED,
+    AttemptBudget,
+    AttemptIntegrity,
+    AttemptRecord,
+)
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 
+from .contracts import ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
 from .topology_prescription import candidate_topology
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +99,10 @@ __all__ = [
     "FINDING_HOUSEHOLD_REFS_KEY",
     "MAX_PERSISTED_SUM_POINTS",
     "ConductorState",
+    "V2ConductorSnapshot",
     "alignment_prescription_prior_from_state",
+    "attempt_history_from_state",
+    "attempt_record_from_verify",
     "blend_prescription_prior_from_state",
     "blend_prescription_sha256_from_state",
     "build_conductor_state",
@@ -120,6 +134,95 @@ class ConductorState:
     state: dict[str, Any]
     durable: bool
 
+
+@dataclass(frozen=True)
+class V2ConductorSnapshot:
+    """Durable phase state, bound to the relay session (§5.6).
+
+    Persisted under the session's commissioning run; :meth:`CrossoverV2Session.hydrate`
+    keeps the accepted phases only when the current session matches — a new
+    session invalidates CHECK/MEASURE evidence (mic position is unverifiable
+    across sessions).
+    """
+
+    session_id: str
+    accepted_phases: tuple[str, ...] = ()
+    applied: bool = False
+    gain_plan_db: Mapping[str, float] | None = None
+    # #2923: MEASURE's ACTUAL per-role sweep duration, read off the composed
+    # program (``_priors.measure_sweep_durations_s``) — possibly shortened by
+    # #2921's duration fit, a continuous float no offline search grid can
+    # reach. Banked beside ``gain_plan_db`` so
+    # ``harmonic_evidence.rebuild_measure_program`` can REPLAY a fitted
+    # round's sweep instead of re-deriving it. Purely derived, never restored
+    # by :meth:`CrossoverV2Session.hydrate` — the live conductor recomposes
+    # ``_measure_program`` fresh from ``gain_plan_db`` on every construction,
+    # which already reproduces the identical fit, so there is no second
+    # writer to keep in sync. ``None`` before MEASURE is composed, and for
+    # every round banked before this field existed.
+    measure_sweep_durations_s: Mapping[str, float] | None = None
+    candidate_fingerprint: str | None = None
+    # The ordered phases THIS session actually runs — the subset of
+    # ``CAPTURE_PHASES`` its ``index_phase_map`` addresses. Persisted so a
+    # host reading only the durable state can tell "verify is the last phase
+    # of a re-arm session" from "verify is followed by a post-apply cloud",
+    # which the module-global tuple cannot express. Empty on state written
+    # before PR-3b; readers fall back to ``CAPTURE_PHASES`` then.
+    session_phases: tuple[str, ...] = ()
+    # WHICH INSTRUMENT produced this session (:data:`TIER_FULL` /
+    # :data:`TIER_EXPRESS`). Empty string means UNKNOWN — state written before
+    # tiers existed, or a session constructed without one — and readers must
+    # render it as unknown rather than assuming full, the same
+    # unknown-vs-default discipline ``echo_band_provenance`` carries (issue
+    # #1763): the two tiers make materially different claims (§1.3), so
+    # guessing one would attach a post-apply cross-position claim to a result
+    # that never measured across positions.
+    tier: str = ""
+    # WHERE the pre-apply cloud's close has got to, for the surfaces that have
+    # to say something true while it is in flight (two-stage work order D1).
+    # One of :data:`CLOUD_CLOSE_NONE` / :data:`CLOUD_CLOSE_AWAITING_CONFIRM` /
+    # :data:`CLOUD_CLOSE_RUNNING`. Persisted because the wizard renders from
+    # durable state alone: without it, "every stage-1 phase is accepted and
+    # there is no candidate" reads identically at three very different moments
+    # — the household holding a phone at the confirm screen, the fit running,
+    # and a session that ended having produced nothing.
+    cloud_close: str = ""
+    # S3 attempt history is journey-scoped, not relay-session-scoped. A second
+    # apply→VERIFY necessarily runs under a fresh relay session, so these
+    # records survive :meth:`CrossoverV2Session.hydrate`'s session rebind while
+    # CHECK/MEASURE evidence above correctly does not.
+    #
+    # SURVIVING is not the same as being COMPARABLE, and #2081 is the gap
+    # between the two: these records also survive ``reset_v2_journey_state``,
+    # which preserves them deliberately so a second tune has a predecessor to
+    # grade against — but the mic was re-placed in between, and the claim floor
+    # was measured with it bolted down. So each record now carries the sitting
+    # that produced it, and the kernel refuses the pair rather than reporting
+    # an improvement no study licenses. The history still rides across; what
+    # changed is that the loop can now tell it did.
+    attempt_history: tuple[AttemptRecord, ...] = ()
+    last_attempt_decision: Mapping[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "accepted_phases": list(self.accepted_phases),
+            "applied": self.applied,
+            "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
+            "measure_sweep_durations_s": (
+                dict(self.measure_sweep_durations_s)
+                if self.measure_sweep_durations_s else None
+            ),
+            "candidate_fingerprint": self.candidate_fingerprint,
+            "session_phases": list(self.session_phases),
+            "tier": self.tier,
+            "cloud_close": self.cloud_close,
+            "attempt_history": [item.to_dict() for item in self.attempt_history],
+            "last_attempt_decision": (
+                dict(self.last_attempt_decision)
+                if self.last_attempt_decision is not None else None
+            ),
+        }
 
 
 # Where the household-readable projection of a banked finding set rides inside
@@ -393,6 +496,154 @@ def verify_measured_curve_from_state(
         np.asarray(freqs, dtype=float),
         np.asarray(measured, dtype=float),
         np.asarray(predicted, dtype=float),
+    )
+
+
+def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
+    """Restore the session-owned attempt history from durable journey state.
+
+    Invalid rows are dropped as unavailable history, never partially trusted.
+    The floor is intentionally absent from this shape: it has one owner in
+    :mod:`jasper.active_speaker.model_error_store` and is read afresh by the
+    host when it constructs the session.
+    """
+
+    loop = raw.get("attempts_loop") if isinstance(raw, Mapping) else None
+    rows = loop.get("history") if isinstance(loop, Mapping) else None
+    if not isinstance(rows, list):
+        return ()
+    restored: list[AttemptRecord] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        integrity = row.get("integrity")
+        if not isinstance(integrity, Mapping):
+            continue
+        try:
+            record = AttemptRecord(
+                attempt_id=str(row.get("attempt_id") or ""),
+                metric=str(row.get("metric") or ""),
+                provenance=str(row.get("provenance") or ""),
+                # #2081. Absent on every row written before it, and ``""`` is
+                # exactly what the kernel refuses on — so an upgraded speaker
+                # stops claiming improvement against its pre-upgrade attempt
+                # instead of claiming one whose sitting nothing recorded.
+                sitting_id=str(row.get("sitting_id") or ""),
+                integrity=AttemptIntegrity(
+                    comparable=integrity.get("comparable") is True,
+                    reasons=tuple(
+                        str(reason) for reason in integrity.get("reasons", ())
+                        if isinstance(reason, str) and reason
+                    ),
+                ),
+                repeats_used=(
+                    int(row["repeats_used"])
+                    if isinstance(row.get("repeats_used"), int)
+                    and not isinstance(row.get("repeats_used"), bool)
+                    else 1
+                ),
+                grade_db=_attempt_optional_float(row.get("grade_db")),
+                deviation_from_predecessor_db=_attempt_optional_float(
+                    row.get("deviation_from_predecessor_db")
+                ),
+                n_graded_bins=(
+                    _attempt_optional_positive_int(row.get("n_graded_bins"))
+                ),
+                predicted_remaining_improvement_db=_attempt_optional_float(
+                    row.get("predicted_remaining_improvement_db")
+                ),
+                in_spec=(
+                    row.get("in_spec")
+                    if isinstance(row.get("in_spec"), bool) else None
+                ),
+                curve_refs=tuple(
+                    str(ref) for ref in row.get("curve_refs", ())
+                    if isinstance(ref, str) and ref
+                ),
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        restored.append(record)
+    # The kernel's hard cap is the only live attempt budget. Older rows carry
+    # no additional decision value and retaining them would grow Pi state for
+    # no payoff.
+    return tuple(restored[-AttemptBudget().hard_cap_attempts:])
+
+
+def _attempt_optional_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _attempt_optional_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def attempt_record_from_verify(
+    analysis: ProgramAnalysis, *, attempt_id: str, sitting_id: str,
+) -> AttemptRecord:
+    """Map one VERIFY analysis into the pure kernel's realized record (#2033).
+
+    VERIFY necessarily leaves repeat-only checks ``not_evaluated`` because it
+    contains one summed sweep. Their names still ride as reasons, but they do
+    not make an otherwise clean capture incomparable. Any evaluated failure
+    does, and carries both the failed and not-evaluated check names so the
+    kernel's STOP_EVIDENCE record never loses what the analyzer knew.
+
+    ``sitting_id`` is the relay session that captured this sweep, and it is a
+    **required** argument rather than a defaulted one because the default that
+    would be available here — ``""`` — is the value the kernel reads as
+    "unrecorded" and refuses on (#2081). A caller that forgets is then a caller
+    whose speaker silently stops claiming improvement, which is the failure
+    this signature makes impossible to reach by omission.
+
+    Why the relay session is the right proxy for one continuous microphone
+    sitting: the household holds the phone for the whole of a session's
+    captures, and a new session means it was put down and picked up. That is
+    already the reason :meth:`CrossoverV2Session.hydrate` invalidates CHECK and
+    MEASURE evidence across a rebind — "mic position is unverifiable across
+    sessions" — so this reuses that established boundary rather than inventing
+    a second one.
+    """
+
+    # Function-local for the module's standing reason: ``verification`` pulls
+    # numpy at module scope and this module is on the socket-activated web
+    # host's import path.
+    from .verification import CAPTURE_INTEGRITY_UNAVAILABLE
+
+    integrity = analysis.capture_integrity
+    if integrity is None:
+        attempt_integrity = AttemptIntegrity(
+            comparable=False,
+            reasons=(CAPTURE_INTEGRITY_UNAVAILABLE,),
+        )
+    else:
+        reasons = tuple(dict.fromkeys((*integrity.failed, *integrity.not_evaluated)))
+        attempt_integrity = AttemptIntegrity(
+            comparable=not integrity.failed,
+            reasons=reasons,
+        )
+    tracking = analysis.verify_tracking or {}
+    frame = tracking.get("frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    return AttemptRecord(
+        attempt_id=str(attempt_id),
+        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        provenance=PROVENANCE_REALIZED,
+        sitting_id=str(sitting_id),
+        integrity=attempt_integrity,
+        grade_db=_attempt_optional_float(
+            tracking.get(ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED)
+        ),
+        # ``frame.n_bins`` is produced from the exact validity-clamped,
+        # notch-excluded mask VERIFY graded. Carrying it activates the
+        # kernel's denominator-shrink refusal instead of letting a narrower
+        # frequency set look like an acoustic improvement.
+        n_graded_bins=_attempt_optional_positive_int(frame.get("n_bins")),
     )
 
 

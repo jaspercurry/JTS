@@ -32,6 +32,7 @@ from jasper.camilla_config_contract import (
     PeqFilter,
     ensure_volume_limit_db,
     resolve_camilla_latency_for_devices,
+    resolve_enable_rate_adjust,
 )
 from jasper.camilla_emit import (
     MONO_SUM_GAIN_DB,
@@ -356,7 +357,7 @@ def emit_sound_config(
     out_path: str | Path | None = None,
     profile_id: str | None = None,
     output_trim_db: float = 0.0,
-    enable_rate_adjust: bool = True,
+    enable_rate_adjust: bool | None = None,
     playback_pipe_path: str | None = None,
     muted_outputs: Iterable[int] | None = None,
     mono_fold_output: int | None = None,
@@ -402,9 +403,14 @@ def emit_sound_config(
     a pure presence check, never a value comparison against a mutable
     default (a caller who omits the argument entirely never trips it, no
     matter what ``DEFAULT_PLAYBACK_FORMAT`` currently resolves to); and a pipe
-    sink REQUIRES ``enable_rate_adjust=False`` (a ``File`` backend has no
-    output clock for rate_adjust to steer — Snapcast's sample-stuffing is
-    the one rate-tracker on the synced chain, §2 invariant 5).
+    sink refuses an explicit ``enable_rate_adjust=True`` — as does any sink
+    the resolver below answers ``False`` for.
+
+    ``enable_rate_adjust`` defaults to
+    :func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`'s answer
+    for the sink this call emits — see it for why the sink decides. It stays a
+    parameter only as the lab/explicit seam, so a lab emit can set it; no live
+    caller passes one.
 
     ``muted_outputs`` hard-mutes the named playback channels: each gets the
     repo's one mute idiom (a ``Gain`` at ``-120 dB`` with ``mute: true``)
@@ -451,13 +457,15 @@ def emit_sound_config(
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
     width = _normalize_width(width)
+    # The sink this call actually emits: `None` is the clockless File sink, the
+    # vocabulary both resolvers below read. `is not None`, the same predicate
+    # the File-sink branch below decides on.
+    sink_device = None if playback_pipe_path is not None else playback_device
     # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
     # emitted devices decide the fallback.
     chunksize, target_level = resolve_camilla_latency_for_devices(
         capture_device=capture_device,
-        # `is not None`, the same predicate the File-sink branch below decides
-        # on, so the sink this resolves against is the sink that gets emitted.
-        playback_device=None if playback_pipe_path is not None else playback_device,
+        playback_device=sink_device,
         chunksize=chunksize,
         target_level=target_level,
     )
@@ -477,12 +485,7 @@ def emit_sound_config(
                 "speaker channels have distinct room chains"
             )
 
-    # Bonded-leader pipe-sink guards (fail LOUD at the API boundary,
-    # at the playback-pipe API boundary). A File sink has no output clock, so
-    # rate_adjust has nothing to steer — and the synced chain's one
-    # rate-tracker must be snapclient's sample-stuffing (§2 invariant
-    # 5); silently emitting `enable_rate_adjust: true` on a pipe config
-    # would hide a wiring bug in the caller.
+    # Bonded-leader pipe-sink guards (fail LOUD at the API boundary).
     if playback_pipe_path is not None:
         # D4 (wide-output-path program): the pipe sink's format is pinned to
         # DEFAULT_PIPE_SINK_FORMAT below, independently of playback_format —
@@ -505,12 +508,6 @@ def emit_sound_config(
                 "playback_pipe_path is a caller bug, not a wire-format "
                 "request; they are different axes"
             )
-        if enable_rate_adjust:
-            raise ValueError(
-                "playback_pipe_path (bonded-leader pipe sink) requires "
-                "enable_rate_adjust=False — snapclient is the sole "
-                "rate-tracker on the synced chain"
-            )
         if width != FLAT_PROGRAM_WIDTH:
             # `sampleformat=48000:16:2` (jasper.multiroom.reconcile.
             # snapserver_argv): a wider pipe is not a wider sink, it is a
@@ -526,6 +523,14 @@ def emit_sound_config(
     # though a pipe sink never reads this resolved value.
     if playback_format is None:
         playback_format = DEFAULT_PLAYBACK_FORMAT
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(sink_device)
+    elif enable_rate_adjust and not resolve_enable_rate_adjust(sink_device):
+        raise ValueError(
+            "enable_rate_adjust=True on a sink CamillaDSP cannot rate-adjust "
+            f"({'a File sink' if sink_device is None else sink_device}); pass "
+            "enable_rate_adjust=False or omit it"
+        )
     muted_channels = _normalize_muted_outputs(muted_outputs, width=width)
     mono_fold_output = _normalize_mono_fold_output(
         mono_fold_output, muted_channels, width=width
@@ -619,8 +624,6 @@ def emit_sound_config(
         pipeline_yaml = _program_pipeline_yaml(
             chain_names, chain_names_right, program_dests=program_dests
         )
-    # inv-5: an active bond member runs rate_adjust off (snapclient is the sole
-    # rate-tracker); default True keeps the solo path unchanged.
     rate_adjust_literal = "true" if enable_rate_adjust else "false"
     header_id = f" (id={profile_id})" if profile_id else ""
     # Playback sink: ALSA loopback (solo — the default, byte-identical)

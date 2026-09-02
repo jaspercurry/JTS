@@ -22,13 +22,9 @@ grouping ring all shipped ahead of theirs, so a geometry that fails on metal
 costs one file rather than a transport already flipped onto it.
 
 **A sibling of** :mod:`jasper.multiroom.grouping_ring`, **not a reuse of it.**
-The two rings carry the same wire between the same two processes' languages,
-which is exactly why sharing one would be wrong: a ring's slot is its READER's
-period, and these have different readers. The grouping ring's reader is
-CamillaDSP, which sips 128 frames; this ring's reader is outputd, which gulps a
-whole 1024-frame DAC period. One ring cannot be both without one end reading
-partial slots. They are also opposite directions of the same bond — ingress vs
-return — and a box can hold both at once.
+The two carry the same wire at the same geometry, but they are opposite
+directions of the same bond — ingress vs return — and a box can hold both at
+once, so one ring cannot be both.
 
 **Deliberately NOT a member of the ring platform's registries**, for the reason
 :mod:`jasper.multiroom.grouping_ring` states at length:
@@ -42,6 +38,7 @@ joins neither registry.
 
 from __future__ import annotations
 
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.ring_assets import ring_writer_lock_path
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf``
@@ -82,19 +79,20 @@ DAC_CONTENT_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
 DAC_CONTENT_RING_FORMAT = "S16_LE"
 DAC_CONTENT_RING_CHANNELS = 2
 
-#: Slot geometry. The slot is the READER's period: outputd's
-#: ``DEFAULT_PERIOD_FRAMES`` (``rust/jasper-outputd/src/config.rs``), so one
-#: slot is one DAC period and the reader never holds a partial slot. 1024
-#: frames x 2 ch x 2 B = 4096 B per slot, inside the ioplug's
-#: ``JTS_RING_MAX_SLOT_BYTES`` (65536).
-DAC_CONTENT_RING_PERIOD_FRAMES = 1024
+#: Slot geometry. The slot is the READER's period, and every DAC profile that
+#: declares a latency floor runs outputd at
+#: :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`
+#: (:mod:`jasper.audio_hardware.dac`), so one slot is one DAC period and the
+#: reader never holds a partial slot (#3656). The floorless HiFiBerry DAC8x
+#: Studio runs outputd's packaged 1024 and is the one profile that cannot arm
+#: the lane; outputd's config guard names that at startup. 128 frames x 2 ch
+#: x 2 B = 512 B per slot, inside the ioplug's ``JTS_RING_MAX_SLOT_BYTES``
+#: (65536).
+DAC_CONTENT_RING_PERIOD_FRAMES = RING_SLOT_FRAMES
 
 #: Depth at the ioplug's slot CEILING (``JTS_RING_MAX_SLOTS``), the same
 #: constraint the grouping ring took knowingly: depth is not tunable upward from
-#: a conf.d edit. 16 x 1024 frames = 16384 frames = 341 ms at 48 kHz, against
-#: the grouping ring's 43 ms — the depth follows the slot, and the slot follows
-#: the reader. outputd gulps a whole period per DAC period where CamillaDSP sips
-#: 128 frames, so the same 16 slots buy 8x the wall-clock cushion here.
+#: a conf.d edit. 16 x 128 frames = 2048 frames = 43 ms at 48 kHz.
 DAC_CONTENT_RING_SLOTS = 16
 
 #: The exclusive ``flock`` a C ioplug WRITER holds for the life of its mapping,

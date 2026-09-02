@@ -881,7 +881,7 @@ def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
 
 
 def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
-    base = {"enable_rate_adjust": True, "playback_pipe_path": None}
+    base = {"playback_pipe_path": None}
     coupling = coupling_capture_kwargs_from_env()
 
     merged = apply_capture_precedence(
@@ -892,10 +892,10 @@ def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
 
     assert merged["capture_device"] == "jts_ring_capture"
     assert merged["playback_device"] == "jts_ring_playback"
-    # The coupling carries the DEVICE axis only, so the caller's own
-    # rate-adjust choice survives the merge untouched.
-    assert merged["enable_rate_adjust"] is True
-    assert base == {"enable_rate_adjust": True, "playback_pipe_path": None}
+    # The coupling carries the DEVICE axis only, so it adds exactly its four
+    # keys and touches nothing the caller brought.
+    assert merged == {**base, **coupling}
+    assert base == {"playback_pipe_path": None}
 
 
 def test_capture_precedence_grouped_sink_keeps_the_capture_half_only():
@@ -914,9 +914,8 @@ def test_capture_precedence_grouped_sink_keeps_the_capture_half_only():
         "capture_format": "S32LE",
         "playback_device": "jts_ring_playback",
         "playback_format": "S32LE",
-        "enable_rate_adjust": False,
     }
-    grouped = {"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False}
+    grouped = {"playback_pipe_path": "/run/snapfifo"}
 
     grouped_result = apply_capture_precedence(
         grouped,

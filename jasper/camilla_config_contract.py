@@ -405,6 +405,23 @@ def resolve_camilla_latency_for_devices(
     return chunksize, target_level
 
 
+def resolve_enable_rate_adjust(playback_device: str | None) -> bool:
+    """Whether CamillaDSP's rate adjuster can steer THIS graph's sink.
+
+    A property of the SINK, never of the graph's role. False for ``None``, the
+    clockless ``File`` sink :func:`resolve_camilla_latency_for_devices` reads
+    the same way, because it has no output clock to follow. False for a ring
+    PCM (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`) because it is an
+    ioplug: alsa-lib reports card -1 for every ioplug, so CamillaDSP builds no
+    HCtl and has no mixer element to actuate, and a requested ``true`` would
+    only echo back on ``capture_status.rate_adjust`` while nothing moved. True
+    for an ordinary ALSA sink, whose own clock the adjuster can track. See
+    ADR-0216.
+    """
+
+    return playback_device is not None and playback_device not in RING_PCM_DEVICES
+
+
 # CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
 # JTS treats 0 dB as the hard software ceiling; source/headroom logic
 # should attenuate below this, never boost above full scale.

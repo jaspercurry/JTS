@@ -881,7 +881,11 @@ _LEG_DEVICE_ATTR: dict[str, str] = {
 _UNSET = object()
 
 
-def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
+def _configured_wake_legs(
+    cfg: Config,
+    *,
+    wake_detection_supported: bool = True,
+) -> list[tuple[LegSpec, str]]:
     """Decide which wake legs to build and each one's device string.
 
     Pure (no I/O) so it is unit-testable on its own — the run() wiring
@@ -892,25 +896,24 @@ def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
     "off"/"dtln" legs are built only when their device var is non-empty,
     so voice never opens a UDP listener nobody feeds.
 
-    **The one exception is a speaker with no microphone of its own.** Such
-    a box paired with a mic-bearing remote has real voice input — every
-    turn is opened by the button — but no always-listening stream to run
-    wake detection on. Building the primary leg there opens a card that is
-    not present, `run()` re-raises `InputDeviceUnavailable`, and the daemon
-    parks before it ever reaches the accessory sources (issue #2205). So it
-    plans NO legs at all: an empty plan and "no primary mic" then agree by
-    construction rather than by two derivations that can disagree.
+    **Two things produce an empty plan**, and a box that hits either has
+    real voice input — the button on a paired remote — but no
+    always-listening stream to run wake detection on:
 
-    The configuration this serves TODAY is a **full-profile** speaker with
-    no local mic — one unplugged, or never fitted. Not a Zero-class
-    streambox: that profile parks the voice brain outright
-    (`park_streambox_brain_units` runs `systemctl disable --now` on
-    jasper-voice, and a fresh streambox install never installs the AEC
-    reconciler that publishes the verdict below), so this code cannot run
-    there at all. A streambox serving a remote is later work — #2205's
-    smart-remote sequence on top of #2232's capability axis.
+    * the install profile does not grant ``Capability.WAKE_DETECTION``
+      (a board with no headroom for always-on inference). The caller
+      reads the marker and passes ``wake_detection_supported``; ``Config``
+      stays env-only.
+    * ``jasper-aec-reconcile`` published "no local mic" while an accessory
+      offers a manual source. See ADR-0217.
 
-    Both facts in that decision are READ, never guessed:
+    Either way the empty plan and "no primary mic" agree by construction
+    rather than by two derivations that can disagree — building the
+    primary leg would open a card that is not present, ``run()`` would
+    re-raise ``InputDeviceUnavailable``, and the daemon would park before
+    it ever reached the accessory sources (issue #2205).
+
+    Both facts in the second case are READ, never guessed:
 
     * ``local_mic_present`` is published by ``jasper-aec-reconcile``, the
       owner of the voice-input gate (``JASPER_LOCAL_MIC_PRESENT``).
@@ -928,6 +931,8 @@ def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
     second still raises and parks loudly instead of quietly downgrading a
     mic-bearing speaker to push-to-talk.
     """
+    if not wake_detection_supported:
+        return []
     if cfg.local_mic_present is False and cfg.manual_mic_sources:
         return []
     legs: list[tuple[LegSpec, str]] = []
@@ -1128,7 +1133,14 @@ class WakeLoop:
         # model is producing TTS, mic frames are forwarded to Gemini
         # ONLY if the local VAD detects user speech — TTS bleed-through
         # is filtered out, real interrupts pass through.
-        self._vad = vad if vad is not None else SpeechVAD()
+        #
+        # None on a push-to-talk-only daemon: every reader below is already
+        # off on a button turn (barge-in refused, server VAD refused, the
+        # endpointer bypassed), and `SpeechVAD()` is what pulls openwakeword
+        # + onnxruntime into resident memory. See ADR-0217.
+        self._vad: SpeechVAD | None = vad
+        if self._vad is None and not self._push_to_talk_only:
+            self._vad = SpeechVAD()
         # Session-state shadow VAD for the chip-direct ("off") leg, when
         # configured. Created in run() and carried on that leg's
         # _LegRuntime; aliased here for _shadow_vad_score_raw / _begin_turn.
@@ -1369,7 +1381,9 @@ class WakeLoop:
         self._peering_current_epoch: str = ""
 
     @classmethod
-    def for_tests(cls, *, legs=_UNSET, manual_mics=None, tts=None, **overrides):
+    def for_tests(
+        cls, *, legs=_UNSET, manual_mics=None, tts=None, vad=_UNSET, **overrides,
+    ):
         """Build a fully-shaped WakeLoop without opening hardware.
 
         This is the supported seam for unit tests that exercise individual
@@ -1378,12 +1392,13 @@ class WakeLoop:
 
         ``**overrides`` are applied by ``setattr`` AFTER construction, so
         they cannot reach a decision ``__init__`` makes from its arguments.
-        ``legs``, ``manual_mics`` and ``tts`` are constructor-time knobs,
-        added so a test can build the shape a push-to-talk-only speaker
-        actually has — no wake legs plus a manual mic source — and exercise
-        the real derivation (and the real emission-admission wiring) rather
-        than a value poked in afterwards. Pass ``legs=[]`` to mean "none";
-        omitting it keeps the default primary leg.
+        ``legs``, ``manual_mics``, ``tts`` and ``vad`` are constructor-time
+        knobs, added so a test can build the shape a push-to-talk-only
+        speaker actually has — no wake legs plus a manual mic source — and
+        exercise the real derivation (and the real emission-admission
+        wiring) rather than a value poked in afterwards. Pass ``legs=[]``
+        to mean "none"; omitting it keeps the default primary leg. Pass
+        ``vad=None`` to let ``__init__`` make its own VAD decision.
         """
 
         class _TestMic:
@@ -1533,7 +1548,7 @@ class WakeLoop:
                 ),
             ] if legs is _UNSET else legs,
             manual_mics=manual_mics,
-            vad=_TestVad(),
+            vad=_TestVad() if vad is _UNSET else vad,
             initial_mic_muted=False,
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
@@ -5149,9 +5164,10 @@ class WakeLoop:
         # frames are the session audio" are one fact, not two.
         self._manual_endpoint_this_turn = self._active_manual_source is not None
         # Reset Silero VAD's internal LSTM state at turn start so
-        # state from a previous turn doesn't leak into this one.
-        # Unconditional: `self._vad` is always constructed (see __init__).
-        self._vad.reset()
+        # state from a previous turn doesn't leak into this one. A
+        # push-to-talk-only daemon has no VAD to reset (see __init__).
+        if self._vad is not None:
+            self._vad.reset()
         # Reset end-of-utterance tracking. _input_ended must be False
         # so we resume forwarding mic frames; _user_speech_seen,
         # _silence_started_at, and _speech_run_started_at must be
