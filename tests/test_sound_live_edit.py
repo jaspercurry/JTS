@@ -9,10 +9,13 @@ A pipeline replace ducks the fader for ~0.85 s; a parameter write does not.
 the two graphs, so what these pin is that a value — and even a biquad's own
 ``type`` string, which lives under ``parameters`` — may move freely, and
 anything structural (sections, devices, pipeline, the filter set, or a
-filter's OUTER kind) falls back to the ducked swap.
+filter's OUTER kind) falls back to the ducked swap. One value is not free: a
+``Gain``'s, because moving it steps the whole programme's level at once.
 """
 
 from __future__ import annotations
+
+import pathlib
 
 import pytest
 
@@ -22,7 +25,12 @@ RUNNING = """
 devices:
   samplerate: 48000
   chunksize: 1024
+  volume_limit: 0.0
 filters:
+  sound_preamp:
+    type: Gain
+    description: null
+    parameters: {gain: 0.0, inverted: false, mute: false}
   sound_advanced_1:
     type: Biquad
     description: null
@@ -34,7 +42,7 @@ filters:
 pipeline:
   - type: Filter
     channels: [0, 1]
-    names: [sound_advanced_1, sound_advanced_2]
+    names: [sound_preamp, sound_advanced_1, sound_advanced_2]
 """
 
 
@@ -102,8 +110,10 @@ def test_the_filters_outer_kind_changing_is_a_ducked_swap():
     "wanted, reason",
     [
         pytest.param(
-            RUNNING.replace("names: [sound_advanced_1, sound_advanced_2]",
-                            "names: [sound_advanced_1]"),
+            RUNNING.replace(
+                "names: [sound_preamp, sound_advanced_1, sound_advanced_2]",
+                "names: [sound_preamp, sound_advanced_1]",
+            ),
             "pipeline_differs",
             id="band_dropped_from_the_chain",
         ),
@@ -156,3 +166,232 @@ def test_only_a_swap_ducks(method, expected_duck):
     from jasper.sound.live_edit import LiveEditPlan
 
     assert LiveEditPlan(method).duck is expected_duck
+
+
+# --------------------------------------------------------------------------
+# The DURABLE save takes the same decision, so an A/B does not fade.
+# --------------------------------------------------------------------------
+
+
+class _RecordingCamilla:
+    """Answers the raw-config API and records which write vehicle was used.
+
+    ``confirm_path`` is what it reports once a write has landed. Handing back
+    a path other than the candidate is how ``apply_dsp_config``'s confirm step
+    is made to fail, which is the honest way to reach its rollback.
+    """
+
+    def __init__(self, current_path: str, running: str, confirm_path=None) -> None:
+        self.current_path = current_path
+        self._running = running
+        self._confirm_path = confirm_path
+        self.written = False
+        self.raw_writes: list[bool] = []
+        self.path_loads: list[str] = []
+
+    async def get_config_file_path(self, *, best_effort: bool = False) -> str:
+        if self.written and self._confirm_path is not None:
+            return self._confirm_path
+        return self.current_path
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
+        return self._running
+
+    async def normalize_config_raw(
+        self, config: str, *, best_effort: bool = False,
+    ) -> str:
+        return config
+
+    async def set_active_config_raw(
+        self, config: str, *, best_effort: bool = False, duck: bool = True,
+    ) -> bool:
+        self.raw_writes.append(duck)
+        self.written = True
+        return True
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False,
+    ) -> bool:
+        self.path_loads.append(path)
+        # A real controller reports the file it was told to load, and the
+        # confirm step reads that back.
+        self.current_path = path
+        self.written = True
+        return True
+
+
+def _carrier_emitting(wanted: str):
+    from jasper.sound.graph_carrier import ReemitResult
+
+    class _Carrier:
+        kind = "base_flat"
+        can_host_eq = True
+
+        def reemit(self, profile, *, out_path=None, **kwargs):
+            if out_path is not None:
+                pathlib.Path(out_path).write_text(wanted, encoding="utf-8")
+            return ReemitResult(yaml=wanted, room_peq_count=0)
+
+    return _Carrier()
+
+
+def _running_at(tmp_path, running: str = RUNNING) -> pathlib.Path:
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir(exist_ok=True)
+    current = config_dir / "sound_current.yml"
+    current.write_text(running, encoding="utf-8")
+    return current
+
+
+async def _save(tmp_path, monkeypatch, cam, wanted: str, **kwargs):
+    """Drive the durable save the Saved and Off tabs reach through ``/apply``."""
+    from jasper.sound.profile import SoundProfile
+    from jasper.sound.runtime import load_profile_config
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json"),
+    )
+    monkeypatch.setattr(
+        "jasper.sound.graph_carrier.carrier_for_loaded_config",
+        lambda *a, **k: _carrier_emitting(wanted),
+    )
+    return await load_profile_config(
+        SoundProfile(),
+        profile_path=tmp_path / "sound_profile.json",
+        config_dir=(tmp_path / "configs"),
+        camilla_factory=lambda: cam,
+        source="sound_apply",
+        persist_profile=False,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "wanted, quiet",
+    [
+        pytest.param(RUNNING, True, id="unchanged"),
+        pytest.param(
+            RUNNING.replace("gain: 2.0", "gain: 5.5"), True, id="a_number_moved",
+        ),
+        pytest.param(
+            RUNNING.replace("type: Peaking", "type: Highshelf", 1),
+            True,
+            id="a_band_retyped",
+        ),
+        pytest.param(
+            RUNNING.replace("channels: [0, 1]", "channels: [0]"),
+            False,
+            id="the_pipeline_changed",
+        ),
+    ],
+)
+async def test_a_durable_save_ducks_only_when_the_live_rule_says_swap(
+    tmp_path, monkeypatch, wanted, quiet,
+):
+    """Save and Off are an A/B control, so they duck on the same rule as a drag.
+
+    The Saved tab rewrites the file CamillaDSP already runs; when that graph
+    updates in place there is no gain step to hide, and ducking it fades an
+    audition the listener is making on purpose. Asserted on the WRITE VEHICLE,
+    which is what carries the bracket: the quiet route is
+    ``set_active_config_raw(duck=False)`` -- the write ADR-0211 verified takes
+    CamillaDSP's in-place parameter path -- and the ducked route stays the file
+    loader, whose bracket is unconditional.
+    """
+    current = _running_at(tmp_path)
+    cam = _RecordingCamilla(str(current), RUNNING)
+
+    await _save(tmp_path, monkeypatch, cam, wanted)
+
+    assert cam.raw_writes == ([False] if quiet else [])
+    assert cam.path_loads == ([] if quiet else [str(current)])
+
+
+@pytest.mark.parametrize(
+    "trim", ["sound_preamp", "room_headroom", "active_baseline_headroom"],
+)
+async def test_a_save_that_moves_a_broadband_trim_keeps_its_duck(
+    tmp_path, monkeypatch, trim,
+):
+    """A headroom drag or a match-loudness toggle is realised HERE, and steps.
+
+    CamillaDSP would write these Gains in place, and that is the problem: the
+    whole programme lands on a new level in one sample, by up to tens of dB.
+    The live-draft path never meets one because it freezes the trim; the
+    durable save is where a changed trim arrives, so it keeps the file loader.
+    """
+    running = RUNNING.replace("sound_preamp", trim)
+    current = _running_at(tmp_path, running)
+    cam = _RecordingCamilla(str(current), running)
+
+    await _save(
+        tmp_path, monkeypatch, cam, running.replace("gain: 0.0", "gain: -12.0"),
+    )
+
+    assert cam.raw_writes == []
+    assert cam.path_loads == [str(current)]
+
+
+async def test_a_save_onto_a_different_file_keeps_its_duck(tmp_path, monkeypatch):
+    """Only a rewrite of the RUNNING file can be quiet.
+
+    Loading a different file is a real swap however similar its contents, so
+    the audition preview -- a second path -- keeps its bracket.
+    """
+    current = _running_at(tmp_path)
+    cam = _RecordingCamilla(str(current), RUNNING)
+
+    await _save(tmp_path, monkeypatch, cam, RUNNING, audition=True)
+
+    assert cam.raw_writes == []
+    assert len(cam.path_loads) == 1
+
+
+async def test_a_controller_without_the_raw_api_keeps_its_duck(tmp_path, monkeypatch):
+    """The statefile transport cannot be asked the question, so it is not.
+
+    With CamillaDSP down the reconcile runs on a controller that reports no
+    running graph to compare against. It must fall back to the file loader
+    rather than raise.
+    """
+
+    class _FileOnlyCamilla(_RecordingCamilla):
+        def __getattribute__(self, name):
+            if name == "get_active_config_raw":
+                raise AttributeError(name)
+            return super().__getattribute__(name)
+
+    current = _running_at(tmp_path)
+    cam = _FileOnlyCamilla(str(current), RUNNING)
+
+    await _save(tmp_path, monkeypatch, cam, RUNNING)
+
+    assert cam.raw_writes == []
+    assert cam.path_loads == [str(current)]
+
+
+async def test_a_rollback_never_reuses_the_quiet_write(tmp_path, monkeypatch):
+    """``apply_dsp_config`` reuses ``load_config`` to roll back; that loads a file.
+
+    An in-place rollback puts the candidate's pre-``prepare`` bytes back on
+    disk and then reloads that path (#3511). Handing it the quiet vehicle a
+    second time would re-send the graph that just failed and undo exactly the
+    restore that ran. Driven through a real confirm failure rather than by
+    calling the loader twice by hand, so the pin survives a change to how
+    rollback is reached.
+    """
+    from jasper.dsp_apply import DspApplyError
+
+    current = _running_at(tmp_path)
+    cam = _RecordingCamilla(
+        str(current), RUNNING, confirm_path=str(tmp_path / "elsewhere.yml"),
+    )
+
+    with pytest.raises(DspApplyError):
+        await _save(
+            tmp_path, monkeypatch, cam, RUNNING.replace("gain: 2.0", "gain: 9.0"),
+        )
+
+    # One quiet candidate load, then the rollback down the file loader.
+    assert cam.raw_writes == [False]
+    assert cam.path_loads == [str(current)]

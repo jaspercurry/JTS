@@ -28,7 +28,6 @@ from ._voice_runtime_text import voice_runtime_text
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-outputd.service"
 VOICE_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-voice.service"
-ROLLBACK_SCRIPT_PATH = REPO / "scripts" / "disable-outputd-cutover.sh"
 
 
 def _read_unit() -> str:
@@ -221,15 +220,6 @@ def test_voice_daemon_maps_vad_setup_failure_to_ex_config():
     # at runtime); the source carries the bare event name.
     assert '"voice.vad_setup_failed"' in source
     assert "sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)" in source
-
-
-def test_cutover_rollback_helper_disables_persistent_outputd_unit():
-    script = ROLLBACK_SCRIPT_PATH.read_text()
-    assert "systemctl disable --now jasper-outputd.service" in script
-    assert "systemctl reset-failed jasper-outputd.service" in script
-    assert "JASPER_TTS_TRANSPORT=outputd" in script
-    assert "pre-outputd" in script
-    assert "Deploy main next" not in script
 
 
 def test_voice_unit_has_stage2_memory_high_throttle():

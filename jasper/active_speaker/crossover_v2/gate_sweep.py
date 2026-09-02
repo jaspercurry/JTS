@@ -65,6 +65,7 @@ import numpy as np
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.gating import (
+    SEARCH_T_MAX_MS,
     TAPER_FRACTION,
     TRUSTED_FLOOR_MULTIPLIER,
     build_gate_window,
@@ -110,7 +111,13 @@ RESOLUTION_GREY_CYCLES = 5.0
 #: and a reference must not drift with the thing it is referencing (P1). Not
 #: :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`: that one grades.
 REFERENCE_BAND_HZ = (2500.0, 8000.0)
-REFERENCE_RUNG_MS = 7.0
+#: The rung the reference is read at IS the shipped window: every cloud
+#: sidecar P1 worked from carried ``gate_window_ms: 7.0`` with
+#: ``gate_floor_source: search_span_bound``, so the reference sits where
+#: the pipeline's own gate sits rather than at a rung of its own
+#: (``captures/recommission-day2-2026-09-01/p1-position-window/
+#: P1-REPORT.md`` sec 4).
+REFERENCE_RUNG_MS = SEARCH_T_MAX_MS
 
 #: Analysis grid. Deliberately NOT :func:`.feature_classifier.classification_grid`,
 #: whose floor is 300 Hz: the lowest spec band starts at 250 Hz and the
@@ -182,9 +189,9 @@ SIGMA_GROWTH_MIN_SIGMA_DB = 0.2
 GATE_DELTA_SLACK_DB = 0.5
 
 #: Centre movement between the shortest and longest valid rung, in octaves,
-#: past which the feature has moved. A quarter of the 1/6-octave centre search,
-#: so a shift this size is a real walk rather than the search span's own edge.
-CENTRE_SHIFT_OCT = 1.0 / 24.0
+#: past which the feature has moved. A quarter of the centre search span, so a
+#: shift this size is a real walk rather than the span's own edge.
+CENTRE_SHIFT_OCT = CENTRE_SEARCH_OCT / 4.0
 
 #: The three words a feature's ladder can say. ``unresolved`` is the test not
 #: answering; it is never ``stable``, which is a finding.

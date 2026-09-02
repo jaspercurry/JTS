@@ -282,7 +282,7 @@ def test_streambox_plan_includes_audio_graph_not_voice_brain():
         "AirPlay, Spotify Connect, Bluetooth, and USB Audio Input",
         "wake-word, local microphone, or AEC",  # listed as out-of-scope
         # The assistant IS in scope, owned by the accessory reconciler.
-        # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+        # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
         "jasper-accessory-reconcile starts and stops jasper-voice",
     ]:
         assert expected in result.stdout, expected
@@ -326,7 +326,7 @@ def test_pyproject_base_install_stays_minimal():
     # A push-to-talk-only streambox runs the assistant, so it carries the
     # provider/tool SDKs; it never builds a wake detector, opens the local
     # mic, or talks to the XVF3800, so those four runtimes stay full-only.
-    # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     assert set(streambox) < set(full)
     assert {_distribution_name(dep) for dep in set(full) - set(streambox)} == {
         "onnxruntime",
@@ -648,7 +648,7 @@ def test_streambox_resolves_coupling_after_grouping_during_install():
     )
 
 
-# ---------- assistant unit on the streambox profile (ADR-0216) -----------
+# ---------- assistant unit on the streambox profile (ADR-0217) -----------
 
 
 def test_voice_unit_file_actually_installs(tmp_path: Path):
@@ -695,7 +695,7 @@ def test_streambox_stages_the_voice_unit_without_boot_enabling_it():
     so neither can run unprivileged.
 
     Boot-enabling would leave a remote-less streambox running an assistant
-    it has no microphone for, which is the state ADR-0216 exists to prevent.
+    it has no microphone for, which is the state ADR-0217 exists to prevent.
     """
     install_path = _installer_function_body("install_streambox_systemd_units")
     assert "install_voice_unit_files" in install_path

@@ -671,20 +671,39 @@ was mistaken for.
 
 ## Exit codes
 
-Every CLI carries a named exit-code vocabulary you can branch on. Each owns its
-own numbering, so resolve a code against the tool that produced it.
+Every CLI carries a named exit-code vocabulary you can branch on. The
+read-only measurement tools share ONE — `EXIT_OK` / `EXIT_REFUSED` /
+`EXIT_UNREADABLE` / `EXIT_WRITE_FAILED` in `jasper/cli/_refusal.py`, where the
+failing code names the STAGE that failed: the instrument declined, the input
+could not be read, or the result could not be filed. Everything else below
+owns its own numbering, so resolve those against the tool that produced them.
 
 | Tool | Codes | Vocabulary lives in |
 |---|---|---|
 | `scripts/run-crossover-round.py` | `0`, `3`–`12` | `EXIT_NAMES` in that file |
 | `jasper-arm-walk` | `0`, `3`–`15`, plus `129` / `130` / `143` (parked by SIGHUP / SIGINT / SIGTERM) | `EXIT_NAMES` in `jasper/active_speaker/arm_walk.py` |
-| `jasper-crossover-prescriber` | `0`–`3` | `EXIT_OK` / `EXIT_EVIDENCE_UNREADABLE` / `EXIT_REFUSED` / `EXIT_STAGE_FAILED` |
+| `jasper-crossover-prescriber` | `0`–`3` (**`1`/`2` inverted vs. the shared rule**) | `EXIT_OK` / `EXIT_EVIDENCE_UNREADABLE` / `EXIT_REFUSED` / `EXIT_STAGE_FAILED`, its own |
 | `scripts/bank-crossover-round.sh` | `0`, `3`, `4` | its own header block |
-| `jasper-gate-sweep` | `0`–`2` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_INPUT` in `jasper/cli/gate_sweep.py` |
-| `jasper-close-reference` | `0`–`2` | same three names in `jasper/cli/close_reference.py` |
-| `jasper-declare-geometry` | `0`–`3` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_NOT_FOUND` / `EXIT_WRITE_FAILED` in `jasper/cli/declare_geometry.py` |
-| `jasper-classify-features` | `0`–`3` (`1`/`2` inverted vs. the other tools here) | `EXIT_OK` / `EXIT_ROUND_UNREADABLE` / `EXIT_REFUSED` / `EXIT_WRITE_FAILED` in `jasper/cli/classify_features.py` |
-| `jasper-round-views` | `0`, `1` | `EXIT_OK` / `EXIT_ERROR` in `jasper/cli/round_views.py` |
+| `jasper-gate-sweep` | `0`–`3` | the shared rule |
+| `jasper-close-reference` | `0`–`3` | the shared rule |
+| `jasper-classify-features` | `0`–`3` | the shared rule |
+| `jasper-round-views` | `0`–`3` | the shared rule |
+| `jasper-read-distortion` | `0`–`3` | the shared rule |
+| `jasper-project-ring` | `0`–`3` | the shared rule |
+| `jasper-declare-geometry` | `0`–`3` | the shared rule, except `2` = `EXIT_NOT_FOUND` (`show` before anything was declared) — a human-only `set`/`show` door, so it prints no JSON |
+
+**The failure record, stated once.** Every tool on the shared rule prints, on
+stdout, `{"status": "refused" | "unreadable" | "unwritable", "reason":
+"<tool_named_slug>", "detail": "<text>"}`, and one `<status> (<reason>):
+<detail>` sentence on stderr. `status` and the exit code always agree —
+`refused` is `1`, `unreadable` is `2`, `unwritable` is `3` — so a caller can
+branch on either. Two exceptions, both deliberate: `jasper-declare-geometry`
+is a human-only `set`/`show` door and prints stderr text only; and
+`jasper-read-distortion` / `jasper-project-ring` / `jasper-classify-features`
+print their own older `{"ok": false, ...}` shape, and only when the caller
+passes `--json` — carrying `reason` + `detail` on a refusal and `error` on the
+other two, so it does not line up field-for-field with the record above.
+Converging that second shape is a follow-on.
 
 Three traps worth knowing before you branch on a number:
 
@@ -694,10 +713,11 @@ Three traps worth knowing before you branch on a number:
   its own name survive **only in the trail** (`angle_capture_exit`,
   `arm_walk_exit` / `arm_walk_exit_name`, `bank_exit`). Read the trail, not `$?`,
   when you need to know *why* a phase failed.
-- **Prescriber `2` is ambiguous.** It means "the gate refused your prescription"
-  (with `refused (<reason>): <detail>` on stderr, and structured JSON on stdout
-  under `--json`) *or* argparse's own malformed-invocation exit. Only the stderr
-  text separates them.
+- **`2` is also argparse's usage exit, for every Python tool here.** A
+  malformed invocation exits `2` before any tool code runs, so on the shared
+  rule it collides with "the input could not be read", and on the prescriber
+  with "the prescription was refused". Only stderr separates them: argparse
+  prints a `usage:` line and no `status` record.
 - **`bank-crossover-round.sh` `1` is no longer overloaded.** It used to mean
   either bash's own missing-`<dest-dir>` usage refusal or `capture_integrity`'s
   `EXIT_UNREADABLE` forwarded after a full pull. The capture-dump ring it

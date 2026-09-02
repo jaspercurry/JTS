@@ -833,7 +833,6 @@ code = [
   "scripts/*audit*",
   "scripts/*probe*",
   "scripts/*score*",
-  "scripts/*soak*",
 ]
 docs = [
   "docs/testing-tooling.md",

@@ -1,4 +1,4 @@
-# ADR-0216: A streambox runs the assistant only while a mic-bearing remote is paired
+# ADR-0217: A streambox runs the assistant only while a mic-bearing remote is paired
 
 - **Date:** 2026-09-02
 - **Status:** Accepted

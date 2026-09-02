@@ -404,7 +404,7 @@ def test_landing_page_data_requires_match_capability_map() -> None:
 
 def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
     # A capability grant is what unhides a section, so widening one (streambox
-    # gained ASSISTANT — ADR-0216) can reveal rows linking to wizards that
+    # gained ASSISTANT — ADR-0217) can reveal rows linking to wizards that
     # profile's nginx conf never routes: the household taps "Voice" and gets
     # the catch-all. Pin the seam between the two files rather than the three
     # sections that happened to break, so the next widened grant is caught.

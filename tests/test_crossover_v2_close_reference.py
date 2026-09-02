@@ -25,7 +25,6 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     GATE_SOURCE_CALLER,
     GATE_SOURCE_DEFAULT,
     MIN_BAND_POINTS,
-    REFUSE_UNREADABLE_ROUND,
     RESIDUAL_FLOOR_DB,
     VERDICT_AGREEMENT,
     VERDICT_ROOM_DOMINATED,
@@ -36,9 +35,12 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     cancellation_depth_db,
     compare_impulse_responses,
     declared_clean_window_ms,
+)
+from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND,
+    RoundCapturesRefused,
     select_capture,
 )
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 
@@ -377,7 +379,7 @@ def test_perfect_cancellation_reaches_agreement_not_no_data():
 def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path):
     with pytest.raises(RoundCapturesRefused) as excinfo:
         select_capture(tmp_path / "absent")
-    assert excinfo.value.reason == REFUSE_UNREADABLE_ROUND
+    assert excinfo.value.reason == REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND
 
 
 def test_a_misdeclared_distance_does_not_read_as_agreement():
