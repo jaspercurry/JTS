@@ -569,6 +569,15 @@ class ReassemblyResult:
     period_bytes: int | None = None
     excised: int = 0
 
+    @property
+    def clean_timeline(self) -> bool:
+        """True when `payloads` concatenate to a faithful period timeline.
+
+        Either defect breaks the sample-count-to-wall-clock math `latency`
+        does: unmerged duplicates double the span, an excised record takes a
+        period out of it."""
+        return self.pairing_ok and not self.excised
+
 
 def reassemble_records(raw: bytes) -> ReassemblyResult:
     """Collapse the loopback double-capture (an AF_PACKET tap on "lo" sees
@@ -863,7 +872,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         result = fetch_and_reassemble(host, user, remote_capture_path(session))
     finally:
         cleanup_session(host, user, session)
-    if not result.pairing_ok or result.excised:
+    if not result.clean_timeline:
         print(f"WARNING: {result.detail}", file=sys.stderr)
     raw_out = b"".join(result.payloads)
     args.out.write_bytes(raw_out)
@@ -1077,7 +1086,7 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
         return None
 
     result = fetch_and_reassemble(host, user, remote_capture_path(session))
-    if not result.pairing_ok or result.excised:
+    if not result.clean_timeline:
         print(f"repeat {index + 1}: WARNING: {result.detail}", file=sys.stderr)
     raw = b"".join(result.payloads)
     ch0, ch1 = deinterleave_s16le_stereo(raw)
@@ -1104,7 +1113,7 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
             file=sys.stderr,
         )
         return None
-    if not result.pairing_ok or result.excised:
+    if not result.clean_timeline:
         # Un-collapsed duplicate records double the apparent sample count for
         # the same wall-clock span, so the sample-rate-based arrival math
         # below would read ~2x too late; an excised record takes a period OUT

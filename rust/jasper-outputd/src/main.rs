@@ -625,11 +625,10 @@ fn run_alsa(
             }
         }
         match content_fill.observe(period_served) {
-            Some(ContentFillEdge::Deaf { empty_periods }) => eprintln!(
-                "event=outputd.content.deaf source={} consecutive_empty_periods={} \
-                 threshold_periods={} action=emit_silence",
+            Some(ContentFillEdge::Deaf) => eprintln!(
+                "event=outputd.content.deaf source={} threshold_periods={} \
+                 action=emit_silence",
                 content_fill.source(),
-                empty_periods,
                 content_fill.deaf_threshold_periods(),
             ),
             Some(ContentFillEdge::Recovered { empty_periods }) => eprintln!(

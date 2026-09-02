@@ -6,31 +6,27 @@
 //!
 //! Every content source outputd can run answers a period it cannot fill with
 //! ZERO-FILL, not an error (D4 for the round-trip lane, `try_consume_slot` for
-//! the ring). That is the right audio behaviour and the reason a fully deaf
-//! chain reads green everywhere: the DAC keeps writing periods, the watchdog
-//! keeps progressing, and the cumulative starvation counters are the only trace
-//! — one per source, in three vocabularies, with no threshold on any of them.
+//! the ring). That is the right audio behaviour, and the reason a fully deaf
+//! chain reads green everywhere else: the DAC keeps writing periods, the
+//! watchdog keeps progressing, and each source's starvation counter is
+//! cumulative, so none of them can answer "right now".
 //!
-//! This tracker is the one place that says a RUN of them means the speaker is
-//! deaf: it counts consecutive unfilled periods on whichever source is live and
-//! reports the two edges. Detection only — no recovery, no fallback source
-//! (#3458).
+//! Detection only — no recovery, no fallback source (#3458).
 
 /// Wall-clock silence that means "deaf" rather than "slipped a period".
 ///
 /// A single unfilled period is an ordinary producer slip; 2 s of unbroken
-/// zero-fill is not something a healthy chain does, and it is short enough that
-/// an operator watching the journal sees the edge while the fault is live.
+/// zero-fill is not, and it is short enough that an operator watching the
+/// journal sees the edge while the fault is still live.
 const DEAF_SECONDS: u64 = 2;
 
-/// Which edge one period crossed, if any, and how long the unbroken zero-fill
-/// run was there. The caller logs it — keeping the `eprintln!` out of here is
-/// what makes the run counting testable.
+/// Which edge one period crossed, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentFillEdge {
-    /// This period completed [`ContentFill::deaf_threshold_periods`] unbroken
-    /// unfilled periods. Emitted ONCE per outage, on the crossing period.
-    Deaf { empty_periods: u64 },
+    /// The unbroken unfilled run reached
+    /// [`ContentFill::deaf_threshold_periods`]. Fires ONCE per outage, on the
+    /// crossing period.
+    Deaf,
     /// A deaf run of this many periods ended: content is flowing again.
     Recovered { empty_periods: u64 },
 }
@@ -48,21 +44,17 @@ impl ContentFill {
     /// `source` names the live content source for the event line; the DAC's
     /// NEGOTIATED geometry sets the threshold.
     ///
-    /// The threshold is periods, but the fact it stands for is seconds, so it
-    /// is derived rather than pinned: `rate / period_frames` periods per second
-    /// (48000/1024 ≈ 46.9 on today's boxes), rounded UP so a box with a longer
-    /// period waits at least `DEAF_SECONDS`, never less. A hardcoded count
-    /// would mean a different wall-clock on every period size.
+    /// The threshold is in periods but the fact it stands for is in seconds,
+    /// so it is derived: `rate / period_frames` periods per second, rounded UP
+    /// so a box with a longer period waits at least `DEAF_SECONDS`, never less.
     pub fn new(source: &'static str, dac: crate::alsa_backend::NegotiatedPcm) -> Self {
-        // `.max(1)` on the divisor, not a check: `div_ceil` PANICS on zero,
-        // and this runs on the daemon that owns the speaker.
+        // `div_ceil` PANICS on a zero divisor, and this runs on the daemon
+        // that owns the speaker.
         let periods_per_second =
             u64::from(dac.sample_rate).div_ceil(u64::from(dac.period_frames).max(1));
         Self {
             source,
-            // At least one period: a geometry that would round to zero must
-            // still take an edge rather than declare every period deaf.
-            threshold_periods: (periods_per_second * DEAF_SECONDS).max(1),
+            threshold_periods: periods_per_second * DEAF_SECONDS,
             consecutive: 0,
             deaf: false,
         }
@@ -97,9 +89,7 @@ impl ContentFill {
         self.consecutive = self.consecutive.saturating_add(1);
         if !self.deaf && self.consecutive >= self.threshold_periods {
             self.deaf = true;
-            return Some(ContentFillEdge::Deaf {
-                empty_periods: self.consecutive,
-            });
+            return Some(ContentFillEdge::Deaf);
         }
         None
     }
@@ -144,12 +134,7 @@ mod tests {
             assert_eq!(fill.observe(false), None);
             assert!(!fill.deaf());
         }
-        assert_eq!(
-            fill.observe(false),
-            Some(ContentFillEdge::Deaf {
-                empty_periods: threshold
-            })
-        );
+        assert_eq!(fill.observe(false), Some(ContentFillEdge::Deaf));
         assert!(fill.deaf());
         assert_eq!(fill.consecutive_empty_periods(), threshold);
         // A chronically dry producer cannot re-fire the edge.
