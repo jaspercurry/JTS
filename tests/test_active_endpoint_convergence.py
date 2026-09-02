@@ -204,8 +204,10 @@ def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
     """
     from jasper.fanin.ring_health import (
         LoadedCamillaGraph,
+        _OUTPUTD_CONTENT_FORMAT_ENV_VAR,
         ring_edge_width_ready,
     )
+    from jasper.fanin_coupling import content_lane_format_for_coupling
 
     unmoved = LoadedCamillaGraph(
         path="/x.yml",
@@ -215,7 +217,17 @@ def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
         },
     )
 
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="", graph=unmoved)
+    # outputd declares the ring's own resolved hop width, so the GRAPH is the
+    # only end this gate cannot inspect — which is what the test is about. An
+    # empty outputd.env is not neutral: it resolves the daemon's S16_LE default,
+    # a real disagreement the gate is right to refuse on an undeclared (and so
+    # ring-fed, ADR-0100) box.
+    outputd_text = (
+        f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR}={content_lane_format_for_coupling()}\n"
+    )
+    ok, detail = ring_edge_width_ready(
+        fanin_text="", outputd_text=outputd_text, graph=unmoved
+    )
 
     assert ok is True, detail
     assert "names no ring PCM" in detail

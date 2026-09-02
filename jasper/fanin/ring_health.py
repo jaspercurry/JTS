@@ -32,7 +32,6 @@ from jasper.audio_runtime_plan import (
 from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_SHM_RING,
     coupling_value_removed,
     resolve_coupling,
 )
@@ -380,9 +379,15 @@ def ring_wire_declarations(
     simply whatever the LAST hardware-reconcile pass rendered, not proven
     current for THIS arm. Comparing it against the ring wire at preflight time
     would still refuse every arm on a box mid-convergence — the exact shape of
-    the PR-1 defect this gate's history records. So before the arm that end is
-    reported as not-yet-declared; once armed it is compared, which is where a
-    degraded deploy's half-moved format actually shows up.
+    the PR-1 defect this gate's history records. So on a box whose coupling is
+    off the ring that end is reported as not-yet-declared; when the coupling
+    feeds the ring it is compared, which is where a degraded deploy's half-moved
+    format actually shows up.
+
+    ``armed`` is :func:`persisted_coupling_feeds_ring`'s verdict, not the
+    presence of the ``shm_ring`` token: ADR-0100 left one transport, so an
+    undeclared box IS fed (#3655), and only a value ``jasper-fanin`` refuses
+    excuses the format axis.
 
     ``graph`` adds the loaded CamillaDSP graph's own ring lanes
     (:func:`graph_wire_declarations`) — the end that made this list four rather
@@ -635,9 +640,7 @@ def ring_edge_width_ready(
     wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
     if wire is None:
         return False, wire_problem
-    armed = resolve_coupling(read_value(fanin_text, COUPLING_ENV_VAR)) == (
-        COUPLING_SHM_RING
-    )
+    armed = persisted_coupling_feeds_ring(text=fanin_text)
     declarations = ring_wire_declarations(
         fanin_text=fanin_text,
         outputd_text=outputd_text,
@@ -1487,11 +1490,13 @@ def read_persisted_coupling(
 
 def persisted_coupling_feeds_ring(
     env_path: str | os.PathLike = FANIN_ENV_PATH,
+    *,
+    text: str | None = None,
 ) -> bool:
     """Does ``fanin.env`` leave fan-in filling Ring A?
 
     ADR-0100 left one transport, so ``jasper-fanin`` serves an absent key, an
-    empty value and :data:`COUPLING_SHM_RING` alike — and no file at all, loaded
+    empty value and the ``shm_ring`` token alike — and no file at all, loaded
     as ``EnvironmentFile=-`` — while refusing anything else as a config-class
     fault (exit 78, the unit parks). Naming nothing is therefore a fan-in ON the
     ring; only a value this repo no longer recognizes says the ring is unfed.
@@ -1499,9 +1504,16 @@ def persisted_coupling_feeds_ring(
     A file that EXISTS but cannot be read or decoded is corruption rather than a
     declaration and raises, leaving the caller to pick a direction;
     :func:`read_persisted_coupling` folds that into ``None`` instead.
+
+    ``text`` answers for a snapshot the caller has ALREADY read — the same rule
+    over the same key, so a caller that holds ``fanin.env``'s text for another
+    reason does not read the file twice and cannot spell the rule a second way.
+    An empty string is the no-file case: it declares nothing, so it feeds the
+    ring.
     """
-    try:
-        text = Path(env_path).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return True
+    if text is None:
+        try:
+            text = Path(env_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return True
     return not coupling_value_removed(read_value(text, COUPLING_ENV_VAR))

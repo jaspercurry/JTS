@@ -349,12 +349,15 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..fanin.ring_health import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
+        from ..fanin.ring_health import (
+            FANIN_ENV_PATH,
+            OUTPUTD_ENV_PATH,
+            persisted_coupling_feeds_ring,
+        )
         from ..fanin_coupling import (
             COUPLING_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-            coupling_value_removed,
             outputd_bridge_is_ring,
         )
         from ..env_file import read_value
@@ -398,7 +401,7 @@ def _coupling_state(
             # ring on both — the pair this used to call incoherent on every box
             # the reconciler had not written.
             "intent_coherent": (
-                not coupling_value_removed(coupling)
+                persisted_coupling_feeds_ring(text=fanin_text)
                 and content_bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
             ),
             "live_transport": live_transport,

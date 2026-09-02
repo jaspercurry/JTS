@@ -270,6 +270,7 @@ def _assistant_width_token(env_path: str | Path) -> str:
     would make the predicate only accidentally coherent.
     """
     from jasper.fanin_coupling import (
+        COUPLING_ENV_VAR,
         RING_WIRE_FORMAT,
         RING_WIRE_FORMAT_ENV_VAR,
         RING_WIRE_FORMAT_WIDE,
@@ -279,13 +280,11 @@ def _assistant_width_token(env_path: str | Path) -> str:
     )
 
     try:
-        raw_format: str | None = None
         try:
-            raw_format = read_value(
-                Path(env_path).read_text(encoding="utf-8"), RING_WIRE_FORMAT_ENV_VAR
-            )
+            text = Path(env_path).read_text(encoding="utf-8")
         except OSError:
-            raw_format = None
+            text = ""
+        raw_format = read_value(text, RING_WIRE_FORMAT_ENV_VAR)
         wire_format = (
             resolve_ring_wire_format(raw_format)
             if raw_format is not None
@@ -293,11 +292,13 @@ def _assistant_width_token(env_path: str | Path) -> str:
         )
         wide = assistant_wire_is_wide(
             wire_format=wire_format,
-            # `or ""` keeps this half AUTHORITATIVE: `assistant_wire_is_wide`
-            # reads `None` as "not supplied" and would fall back to the default
-            # fanin.env, discarding the caller's env_path. A file naming no
-            # transport resolves narrow either way.
-            coupling=read_persisted_coupling(env_path) or "",
+            # The RAW token, not `read_persisted_coupling`'s resolved answer:
+            # the transport half turns on the REFUSED value, which "the ring or
+            # nothing" cannot spell. `or ""` keeps this half AUTHORITATIVE —
+            # `assistant_wire_is_wide` reads `None` as "not supplied" and would
+            # fall back to the default fanin.env, discarding the caller's
+            # env_path. A file naming no transport is the ring (ADR-0100).
+            coupling=read_value(text, COUPLING_ENV_VAR) or "",
         )
     except (OSError, ValueError):
         # An unreadable/typo'd declaration is fan-in's fault to report (it parks
@@ -776,8 +777,8 @@ def reconcile_coupling(
     when this pass moves the env, and the two units are unordered — so a pass
     that moved the coupling kicks the grouping re-bake.
 
-    THE ASSISTANT WIRE. The box's assistant IPC width is ``wire_format == S32_LE
-    AND coupling == shm_ring``
+    THE ASSISTANT WIRE. The box's assistant IPC width is ``wire_format ==
+    S32_LE`` AND a coupling fan-in does not refuse
     (:func:`jasper.fanin_coupling.assistant_wire_is_wide`), and ``jasper-voice``
     resolves it ONCE at start — it is not restarted by the ordered audio-graph
     bounce. So a pass that moves the coupling can leave voice speaking the old

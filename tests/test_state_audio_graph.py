@@ -216,6 +216,41 @@ def test_coupling_state_ring_armed_reports_coherent_pair(
     assert block["live_transport"] == "shm_ring"
 
 
+@pytest.mark.parametrize(
+    "fanin_text,persisted,coherent",
+    [
+        ("", None, True),
+        ("JASPER_FANIN_CAMILLA_COUPLING=\n", None, True),
+        ("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", "shm_ring", True),
+        ("JASPER_FANIN_CAMILLA_COUPLING=loopback\n", "loopback", False),
+    ],
+    ids=["absent_key", "empty", "declared", "retired_token"],
+)
+def test_coupling_state_intent_coherence_follows_the_shared_predicate(
+    monkeypatch, tmp_path, fanin_text, persisted, coherent
+):
+    """Both halves ask their own daemon's accept set, so UNDECLARED is the ring.
+
+    ``persisted`` still publishes the token AS WRITTEN — that is what names a
+    migrating box — but the VERDICT is `persisted_coupling_feeds_ring`'s, the
+    same rule `jasper-fanin` applies. Keying it on the token would call every
+    box the reconciler has not written an incoherent pair while both daemons ran
+    the ring (#3655).
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("")
+    _pin_fanin_env(monkeypatch, tmp_path, fanin_text)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+
+    block = state_aggregate._coupling_state(fanin_status=None)
+
+    assert block["persisted"] == persisted
+    assert block["content_bridge"] == "shm_ring"
+    assert block["intent_coherent"] is coherent
+
+
 # The two producers spell the SAME field differently, and `_observed_ring_wire`
 # is the one place that reconciles them. These fixtures mirror the live emitters
 # rather than an idealized shape:
