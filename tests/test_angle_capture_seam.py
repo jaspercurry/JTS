@@ -14,7 +14,8 @@ review: this feature is NOT a route around the retired lateral-walk statistic.
    be a route back to the retired statistic;
 4. mover parity, and the record/receipt shape the shipped consumers read;
 5. the ELEVATION axis -- the same construction one plane over, its per-mover
-   reach, and the one clause it adds to what a household reads.
+   reach, and the one clause it adds to what a household reads;
+6. the PROGRAM door -- a named table becomes a walk, in the table's order.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
@@ -923,3 +925,83 @@ def test_a_rise_on_the_design_axis_does_not_say_LEAVE_the_microphone(
         "Keep the microphone on the design axis (0°), and "
         f"{abs(elevation_deg)}° {word} mark height."
     )
+
+
+# --------------------------------------------------------------------------- #
+# 6. the program door: a named table becomes a walk, and nothing else does
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        mp.program("baseline", "express"),
+        mp.program("baseline", "full"),
+        mp.spot_program(22, 10),
+    ],
+    ids=["baseline/express", "baseline/full", "spot"],
+)
+def test_a_program_becomes_its_own_walk_in_table_order(
+    program: mp.MeasurementProgram,
+) -> None:
+    """The table IS the walk: order, repeats, regime and provenance.
+
+    Asserted against the program's own derived counts rather than against
+    transcribed numbers, so the table stays the single owner of the geometry
+    and this test cannot drift from it.
+    """
+    request = ac.request_for_program(program)
+
+    assert len(request.stops) == program.capture_count
+    assert {(s.angle_deg, s.elevation_deg) for s in request.stops} == {
+        (p.azimuth_deg, p.elevation_deg) for p in program.poses
+    }
+    assert len({(s.angle_deg, s.elevation_deg) for s in request.stops}) == (
+        program.mic_move_count
+    )
+    assert all(stop.regime == ac.REGIME_PER_DRIVER for stop in request.stops)
+    # Table order, with each pose's repeats ADJACENT: the microphone moves once
+    # per distinct pose, so a repeat that drifted apart would be a second trip.
+    assert [(s.angle_deg, s.elevation_deg) for s in request.stops] == [
+        (pose.azimuth_deg, pose.elevation_deg)
+        for pose in program.poses
+        for _ in range(pose.repeats)
+    ]
+    assert request.program == (
+        "spot" if program.program_id == "spot"
+        else f"{program.program_id}/{program.size}"
+    )
+
+
+def test_a_program_measured_at_another_distance_is_refused() -> None:
+    """The walk derives every pose at one distance, so it refuses the others."""
+    elsewhere = dataclasses.replace(
+        mp.program("baseline", "express"), mark_distance_m=0.3,
+    )
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.request_for_program(elsewhere)
+
+    assert excinfo.value.reason == ac.WALK_DISTANCE_UNSUPPORTED
+    assert ac.WALK_DISTANCE_UNSUPPORTED in ac.WALK_REFUSAL_REASONS
+
+
+def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
+    """A program says WHERE to measure; the mover says what it can reach."""
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.request_for_program(
+            mp.program("baseline", "express"), mover=ac.MOVER_ARM,
+        )
+
+    assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
+
+
+def test_mutation_the_distance_guard_cannot_be_dropped() -> None:
+    """A guard that passed everything would pass this too."""
+    assert ac.request_for_program(mp.program("baseline", "express")).stops
+    with pytest.raises(ac.LateralWalkRefused):
+        ac.request_for_program(
+            dataclasses.replace(
+                mp.program("baseline", "express"),
+                mark_distance_m=ac.MARK_DISTANCE_M * 2,
+            )
+        )

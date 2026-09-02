@@ -484,14 +484,21 @@ surfaces every tuning tool sits beside:
 | `jasper-doctor` | health and config drift, including correction / audio-runtime / active-speaker checks | advisory | `--json` for a parseable report; no per-check selector |
 | `GET :8780/state` | cross-daemon snapshot: voice, volume, sources, `audio_graph`, `active_speaker_setup`, `sound_profile.last_dsp_apply` | advisory | per-section fail-soft; **no round section** — round evidence is file-based |
 
-**The program menu is two live pieces, not a named menu.** The **walk**
+**The program menu is three live pieces.** The **walk**
 (`jasper-angle-capture plan | stage | withdraw` declares one angle walk and banks
 it for the next session; `plan` resolves and prints without writing, `stage`
-writes, `withdraw` clears) and the **poses**
+writes, `withdraw` clears), the **poses**
 (`scripts/run-crossover-round.py --per-position N` takes N captures at one pose,
 so one mic movement answers more questions than one capture can;
 which pose each take was measured at is derived from the bank into
-`position_cycle.json`). Multiple DSP *configs* per position has a door but no
+`position_cycle.json`), and the **programs** — `jasper-angle-capture
+stage --program baseline --size express|full` (or `--program spot --azimuth N
+[--elevation M]`) walks a named pose table from
+[`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py)
+rather than geometry you invented; `--angles` remains the operator escape hatch.
+The price is `price.mic_moves` — distinct poses, i.e. how many times somebody
+moves the microphone — printed beside the capture count and the session
+ceiling. Multiple DSP *configs* per position has a door but no
 wiring: republish-then-apply reaches a named prior config between takes, and
 the open part is sequencing — holding a pose's next capture until the apply has
 landed. That is a design to write, not a refusal to remove, and the

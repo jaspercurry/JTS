@@ -177,8 +177,8 @@ ratified rulings. Constants land in code as the named program definitions;
   port, when vented). Repeats follow the ratified position-major structure:
   ×4 at the 0° anchor pose, ×1 at every other pose (the research count
   applied to Program v2's ratified center-plus-pairs shape), ×8–16 for the
-  nearfield captures. Vertical poses activate when elevation capture ships;
-  until then the program is the horizontal set + on-axis + nearfield.
+  nearfield captures. The vertical poses are live, and
+  `jasper-angle-capture stage --program baseline` stages them.
 - **Drive level is anchor-relative, never an absolute program constant.**
   The baseline level is the ratified measurement anchor — 75–80 dB SPL at
   the microphone (Program v2, ratified 2026-08-18), seeded from the

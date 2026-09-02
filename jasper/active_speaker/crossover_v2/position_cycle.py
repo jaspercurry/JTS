@@ -561,10 +561,17 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     return dict(raw)
 
 
-def takes_by_position(document: Mapping[str, Any]) -> dict[int, tuple[str, ...]]:
-    """``{position_deg: (take_id, …)}`` — the takes that share one pose.
+def takes_by_position(
+    document: Mapping[str, Any],
+) -> dict[tuple[int, int], tuple[str, ...]]:
+    """``{(position_deg, vertical_deg): (take_id, …)}`` — one pose's takes.
 
-    The split a comparison reads: every take measured at one bearing, in walk
+    The key is the POSE PAIR, not the bearing alone: a walk that raises the
+    microphone measures a different pose at the same bearing, and folding the
+    two together would put curves from two poses in one comparison.
+    ``vertical_deg`` reads 0 when the take predates it.
+
+    The split a comparison reads: every take measured at one pose, in walk
     order, so per-take curves at that pose can be put beside each other. What
     DISTINGUISHES those takes — a different applied graph, or nothing at all —
     is the take's own banked ``graph_fingerprint`` — WHICH CANDIDATE WAS
@@ -573,7 +580,8 @@ def takes_by_position(document: Mapping[str, Any]) -> dict[int, tuple[str, ...]]
     transient routing graph, whose running hash is identical before and after
     an apply.
     """
-    grouped: dict[int, list[str]] = {}
+    grouped: dict[tuple[int, int], list[str]] = {}
     for take in document["takes"]:
-        grouped.setdefault(int(take["position_deg"]), []).append(str(take["take_id"]))
-    return {degrees: tuple(ids) for degrees, ids in sorted(grouped.items())}
+        pose = (int(take["position_deg"]), int(take.get("vertical_deg") or 0))
+        grouped.setdefault(pose, []).append(str(take["take_id"]))
+    return {pose: tuple(ids) for pose, ids in sorted(grouped.items())}

@@ -159,6 +159,14 @@ refuses boosts and routes them to the driver door), and **per-driver
 linearization is blind across the blend region**, which has its own owner and
 its own bounded tool. Bank the plant before you touch a filter.
 
+**Positioning.** With an arm on the rig, `jasper-arm-walk` moves it. Without
+one, `jasper-angle-capture stage --program baseline --size express` (or
+`--size full`) banks a named pose table for the next session and prints the
+price and a handoff URL; hand that URL to the household, then poll
+`jasper-crossover-prescriber status` until the walk's takes appear under
+`banked`. Depth is PULLED afterwards through the analysis verbs — the receipt
+is a stage-and-price statement, not a report.
+
 ## 3. THE CROSSOVER CORNER — three criteria, ranked
 
 A corner is **declared and executed, never measured-searched**. You choose it

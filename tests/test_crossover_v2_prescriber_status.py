@@ -401,6 +401,63 @@ def test_the_status_reads_the_builder_the_doors_read(tmp_path, capsys, monkeypat
     assert payload["banked"]["round_id"] == "from-the-builder"
 
 
+def test_a_banked_walk_is_visible_before_any_round_receipt_is():
+    """The done-signal for a measurement-only walk.
+
+    ``banked.available`` needs a ``round_receipt.json``, which is written only
+    once a graded post-apply VERIFY completes — so a session that walked poses
+    and applied nothing has no receipt and would otherwise report as empty. The
+    packet's ``lateral_poses`` block is filled by accepted takes instead, and
+    that is what an operator (or the driver polling this verb) is waiting for.
+    """
+    payload = cli.status_document(
+        {"lateral_poses": {"available": True, "n_takes": 8,
+                           "angles_deg": [-20, 0, 20]}},
+        "",
+        state_supplied=False,
+    )
+
+    assert payload["banked"]["available"] is False
+    assert payload["banked"]["walk"] == {
+        "available": True,
+        "n_takes": 8,
+        "angles_deg": [-20, 0, 20],
+        "elevations_deg": [],
+        "reason": None,
+    }
+
+
+def test_a_raised_walk_publishes_its_elevations():
+    """A walk off mark height carries its raises through; a flat one carries
+    the one elevation it took."""
+    raised = cli.status_document(
+        {"lateral_poses": {"available": True, "n_takes": 2,
+                           "angles_deg": [0], "elevations_deg": [0, 10]}},
+        "",
+        state_supplied=False,
+    )["banked"]["walk"]
+    flat = cli.status_document(
+        {"lateral_poses": {"available": True, "n_takes": 2,
+                           "angles_deg": [0], "elevations_deg": [0]}},
+        "",
+        state_supplied=False,
+    )["banked"]["walk"]
+
+    assert (raised["angles_deg"], raised["elevations_deg"], raised["n_takes"]) == (
+        [0], [0, 10], 2,
+    )
+    assert (flat["angles_deg"], flat["elevations_deg"], flat["n_takes"]) == (
+        [0], [0], 2,
+    )
+
+
+def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():
+    payload = cli.status_document(None, "no bundle here", state_supplied=False)
+
+    assert payload["banked"]["walk"]["available"] is False
+    assert payload["banked"]["walk"]["reason"] == payload["packet_error"]
+
+
 @pytest.mark.parametrize(
     "reader, replacement, section, expected",
     [

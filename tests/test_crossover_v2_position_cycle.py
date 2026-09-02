@@ -678,8 +678,8 @@ def test_the_takes_that_share_one_pose_are_grouped_in_walk_order(tmp_path):
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
     ) == {
-        0: ("lateral_01_a01", "lateral_02_a01", "lateral_03_a01"),
-        7: ("lateral_04_a01", "lateral_05_a01", "lateral_06_a01"),
+        (0, 0): ("lateral_01_a01", "lateral_02_a01", "lateral_03_a01"),
+        (7, 0): ("lateral_04_a01", "lateral_05_a01", "lateral_06_a01"),
     }
 
 
@@ -688,7 +688,7 @@ def test_an_uncycled_walk_groups_to_one_take_per_pose(tmp_path):
 
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {0: ("lateral_01_a01",), 7: ("lateral_02_a01",)}
+    ) == {(0, 0): ("lateral_01_a01",), (7, 0): ("lateral_02_a01",)}
 
 
 def test_a_pose_revisited_later_in_the_walk_keeps_both_visits(tmp_path):
@@ -698,7 +698,17 @@ def test_a_pose_revisited_later_in_the_walk_keeps_both_visits(tmp_path):
 
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {0: ("lateral_01_a01", "lateral_03_a01"), 7: ("lateral_02_a01",)}
+    ) == {(0, 0): ("lateral_01_a01", "lateral_03_a01"), (7, 0): ("lateral_02_a01",)}
+
+
+def test_a_raised_pose_is_its_own_group_at_the_same_bearing(tmp_path):
+    """0/0 and 0/+10 are two poses, not one bearing measured twice."""
+    _bank(tmp_path, [_record(1, 0), _record(2, 0, vertical_deg=10)])
+
+    assert takes_by_position(
+        position_cycle_document(tmp_path, derived_at=STAMP)
+    ) == {(0, 0): ("lateral_01_a01",), (0, 10): ("lateral_02_a01",)}
+
 
 
 # --------------------------------------------------------------------------- #

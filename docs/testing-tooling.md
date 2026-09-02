@@ -2379,10 +2379,14 @@ what it resolves to before anything plays. It is the door onto the #2732 seam
 way for anybody to state a request.
 
 ```sh
-# the read side: resolve a walk and print it. Writes nothing, plays nothing.
-jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
+# THE DOOR: a named program owns the geometry. Prints the price, the handoff
+# URL, and how to tell the walk landed.
+jasper-angle-capture stage --program baseline --size express
+jasper-angle-capture plan  --program baseline --size full     # dry run
+jasper-angle-capture stage --program spot --azimuth 22 --elevation 10
 
-# the door: same resolution, and the request is left for the next session
+# THE OPERATOR ESCAPE HATCH: a free-form angle list no program names.
+jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
 jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 
 # R-1's reverse-null: the same walk, with this session's design-axis MEASURE
@@ -2392,6 +2396,14 @@ jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweete
 # withdraw the staged walk
 jasper-angle-capture withdraw
 ```
+
+`--program` and `--angles` are mutually exclusive and one is required.
+`--program` names a row of
+[`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py),
+which is the only owner of the poses; `--regime` belongs to `--angles` alone,
+because a program plays `per_driver` at every pose. Both forms print the same
+receipt: `program` (empty for a free-form walk), `price`
+(`mic_moves` / `captures` / `ceiling_min`) and `handoff_url`.
 
 `plan` is the **dry run of** `stage` — the same constructors, the same
 refusals, the same resolved walk — exactly as `propose` is the dry run of the
@@ -2478,6 +2490,7 @@ happened; do not assume it.
 | slug | why |
 |---|---|
 | `walk_regime_unsupported` | per-driver stops only: a lateral group plays MEASURE's program at every pose |
+| `walk_distance_unsupported` | a program row names a mark distance other than the 1 m every pose is derived at; refused at `plan`/`stage` rather than silently measured at 1 m |
 | `walk_mover_mismatch` | the walk's mover must match the session's tier, or the session stalls |
 | `walk_over_mover_envelope` | a stop is outside the stated mover's own reach (arm ±45°, person ±80°). Normally refused far earlier — see below — so reaching the take means a document was banked before that bound existed, or edited by hand |
 | `walk_over_relay_capacity` | the plan this session would emit needs more relay blob indexes than exist — reachable with a pre-apply cloud, and never for a legally staged walk on the shipped 3-capture shape |

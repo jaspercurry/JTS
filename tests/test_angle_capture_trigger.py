@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import pathlib
 import subprocess
@@ -27,6 +28,7 @@ import time
 import pytest
 
 from jasper.active_speaker import angle_capture_spool as spool
+from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.angle_capture import (
     MOVER_ARM,
     MOVER_HUMAN,
@@ -39,6 +41,7 @@ from jasper.active_speaker.angle_capture import (
     both_at,
     per_driver_at,
     position_angle_deg,
+    request_for_program,
     resolve_request,
     summed_at,
 )
@@ -58,7 +61,12 @@ from jasper.active_speaker.session_volume_plan import (
     SCHEMA_VERSION,
     STATE_KIND,
 )
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CAPTURE_PLAN_TARGET,
+    wall_clock_ceiling_s,
+)
 from jasper.cli import angle_capture as cli
+from jasper.identity import CROSSOVER_PAGE_PATH
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 
@@ -818,6 +826,123 @@ def test_withdraw_is_quiet_and_zero_when_nothing_is_staged(slot, capsys):
     args = cli.build_parser().parse_args(["withdraw", "--json"])
     assert cli._cmd_withdraw(args) == cli.EXIT_OK
     assert json.loads(capsys.readouterr().out) == {"ok": True, "withdrawn": False}
+
+
+# --------------------------------------------------------------------------- #
+# 4b. the program door and its receipt
+# --------------------------------------------------------------------------- #
+
+
+def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
+    """The door a driver reads: one name in, a walk plus a price out.
+
+    The two counts are asserted against the program row's own derived counts,
+    not transcribed, so the table stays their one owner. ``ceiling_min`` is a
+    literal because it prices the SESSION that takes this walk -- the base
+    entries plus these stops -- which is not a number the row carries.
+    """
+    express = mp.program("baseline", "express")
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", "baseline", "--size", "express", "--json"]
+    )
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+
+    assert body["program"] == "baseline/express"
+    assert len(body["stops"]) == express.capture_count == 8
+    assert body["price"] == {
+        "mic_moves": express.mic_move_count,
+        "captures": express.capture_count,
+        "ceiling_min": 46,
+    }
+    assert body["handoff_url"].startswith("http://")
+    assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
+
+    taken = spool.take_staged_angle_request()
+    assert taken == request_for_program(express)
+    assert taken.program == "baseline/express"
+
+
+def test_a_spot_stages_one_raised_pose(slot, capsys):
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", "spot", "--azimuth", "22", "--elevation", "10",
+         "--json"]
+    )
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+
+    assert body["program"] == "spot"
+    assert [(s["angle_deg"], s["elevation_deg"]) for s in body["stops"]] == [(22, 10)]
+    assert spool.take_staged_angle_request().stops == (
+        AngleStop(22, REGIME_PER_DRIVER, 10),
+    )
+
+
+def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
+    """One receipt shape, whichever door the walk came through."""
+    args = cli.build_parser().parse_args(["stage", "--angles", "0,7", "--json"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+
+    assert body["program"] == ""
+    assert body["price"] == {
+        "mic_moves": 2,
+        "captures": 2,
+        "ceiling_min": math.ceil(wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + 2) / 60),
+    }
+    assert spool.take_staged_angle_request().program == ""
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--program", "baseline", "--angles", "0"],
+        ["--program", "baseline", "--azimuth", "5"],
+        ["--program", "baseline", "--regime", "summed"],
+        ["--program", "spot"],
+        [],
+    ],
+    ids=["both-doors", "geometry-beside-a-row", "regime-beside-a-program",
+         "spot-without-a-bearing", "neither-door"],
+)
+def test_a_malformed_invocation_is_a_usage_error(argv):
+    """Exit 2, from argparse, before anything is built or banked.
+
+    ``--program`` and ``--angles`` are exclusive and one is required, and the
+    geometry flags belong to exactly one of them; a walk assembled from a
+    contradictory invocation would be a walk nobody stated.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        # Parsed AND built, because the two doors are separated by argparse
+        # itself while the geometry rules need the parsed values to judge.
+        cli._build_request(cli.build_parser().parse_args(["plan", *argv]))
+
+    assert excinfo.value.code == cli.EXIT_REFUSED
+
+
+def test_mutation_the_two_doors_cannot_both_be_open(slot):
+    """The guard above only means something if the valid forms still parse."""
+    parser = cli.build_parser()
+    assert parser.parse_args(["plan", "--program", "baseline"]).angles is None
+    assert parser.parse_args(["plan", "--angles", "0"]).program is None
+
+
+def test_an_unknown_program_refuses_rather_than_walking_a_size_nobody_offers(
+    slot, capsys
+):
+    """``--size`` carries no argparse ``choices``, so the registry refuses it.
+
+    Which pairs the refusal names is the registry's own contract
+    (``UnknownProgramError.choices``, pinned in
+    ``tests/test_measurement_programs.py``); this door only has to reach it.
+    """
+    args = cli.build_parser().parse_args(
+        ["plan", "--program", "baseline", "--size", "huge", "--json"]
+    )
+    assert cli._cmd_plan(args) == cli.EXIT_REFUSED
+    body = json.loads(capsys.readouterr().out)
+
+    assert (body["ok"], body["reason"]) == (False, cli.UNKNOWN_PROGRAM)
 
 
 # --------------------------------------------------------------------------- #

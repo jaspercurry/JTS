@@ -37,14 +37,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from .crossover_v2.capture_plan import MARK_DISTANCE_M, wall_clock_ceiling_s
+from .crossover_v2.capture_plan import MARK_DISTANCE_M
 
 # Repeats at the on-axis anchor, per the plan's ratified position-major
 # structure: x4 at the 0 deg anchor pose, x1 at every other pose.
 ANCHOR_REPEATS = 4
 
-# Per-hold budget, replacing ``jasper.web.correction_crossover_v2``'s
-# ``REMOTE_POSITION_HOLD_BUDGET_S`` for a walk that names a program.
+# Seconds a single hold may wait: ten minutes covers the slower mover — a
+# person walking a tape to the next bearing and posting the release.
 HOLD_BUDGET_S = 600
 
 
@@ -59,13 +59,11 @@ class ProgramPose:
 
 @dataclass(frozen=True)
 class MeasurementProgram:
-    """One named menu item: an ordered pose list plus its own clocks."""
+    """One named menu item: an ordered pose list, at one mark distance."""
 
     program_id: str
     size: str
     poses: tuple[ProgramPose, ...]
-    hold_budget_s: int
-    session_ceiling_s: int
     mark_distance_m: float = MARK_DISTANCE_M
 
     @property
@@ -97,18 +95,6 @@ class UnknownProgramError(ValueError):
         )
 
 
-def _program(
-    program_id: str, size: str, poses: tuple[ProgramPose, ...]
-) -> MeasurementProgram:
-    return MeasurementProgram(
-        program_id=program_id,
-        size=size,
-        poses=poses,
-        hold_budget_s=HOLD_BUDGET_S,
-        session_ceiling_s=int(wall_clock_ceiling_s(sum(p.repeats for p in poses))),
-    )
-
-
 _BASELINE_FULL_POSES: tuple[ProgramPose, ...] = (
     ProgramPose(0, 0, ANCHOR_REPEATS),
     ProgramPose(-10, 0),
@@ -138,8 +124,8 @@ _BASELINE_EXPRESS_POSES: tuple[ProgramPose, ...] = (
 _PROGRAMS: Mapping[tuple[str, str], MeasurementProgram] = {
     (p.program_id, p.size): p
     for p in (
-        _program("baseline", "full", _BASELINE_FULL_POSES),
-        _program("baseline", "express", _BASELINE_EXPRESS_POSES),
+        MeasurementProgram("baseline", "full", _BASELINE_FULL_POSES),
+        MeasurementProgram("baseline", "express", _BASELINE_EXPRESS_POSES),
     )
 }
 
@@ -170,4 +156,6 @@ def spot_program(azimuth_deg: int, elevation_deg: int) -> MeasurementProgram:
     owns what the mover can reach.
     """
 
-    return _program("spot", "express", (ProgramPose(azimuth_deg, elevation_deg),))
+    return MeasurementProgram(
+        "spot", "express", (ProgramPose(azimuth_deg, elevation_deg),)
+    )
