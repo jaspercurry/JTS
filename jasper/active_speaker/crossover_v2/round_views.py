@@ -129,6 +129,11 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    RoundInputs,
+    RoundViewsError,
+    round_inputs,
+)
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.olive_metrics import nbd_and_sm
 
@@ -146,6 +151,7 @@ __all__ = [
     "PooledWindowResult",
     "RepeatabilityMetric",
     "RepeatabilityResult",
+    "RoundInputs",
     "RoundViewsError",
     "SeatCurve",
     "VerifyPoseResult",
@@ -181,36 +187,16 @@ VERIFY_POSITION_ID = "verify"
 AGREEMENT_TESTIFY_MIN = 3
 AGREEMENT_DISSENT_MAX = 1
 
-#: The flow state file ``bank-crossover-round.sh`` drops beside the bundle.
-#: Spelled ONCE because two readers here now need it — :func:`load_banked_round`
-#: hands it to the packet builder, :func:`verify_pose_curve` reads its banked
-#: VERIFY curve — and this module has already paid, once (#2796), for a
-#: location fact it spelled in two places and then changed in one.
-_STATE_FILENAME = "state.json"
-
-#: The applied-baseline-profile SSOT the same script drops beside the bundle.
-#: It answers "what was the speaker playing when this round was banked", which
-#: the flow state cannot (see ``evidence_packet._incumbent_block``).
-_APPLIED_PROFILE_FILENAME = "applied-profile.json"
-
-#: The banked repeat floor the same script drops beside the bundle, so the
-#: packet's ``in_capture_repeat_floor`` reads a measured number on a rig that
-#: ran the repeats (:mod:`jasper.active_speaker.repeat_floor`).
-_REPEAT_FLOOR_FILENAME = "repeat-floor.json"
-
-
-class RoundViewsError(ValueError):
-    """A banked round directory could not be read into a comparable view."""
-
-
 # --------------------------------------------------------------------------- #
-# Loading one banked round
+# Loading one round
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
 class BankedRound:
-    """One banked round, read once, ready for every view below.
+    """One round — banked or still live on the box — read once, ready for
+    every view below. :attr:`inputs` says which of the two it was and where
+    its three non-bundle inputs came from.
 
     ``report`` carries the round's own grading frame (trusted floor,
     published exclusion intervals, and the full per-band evaluation, needed
@@ -229,11 +215,16 @@ class BankedRound:
     """
 
     round_dir: Path
-    session_dir: Path
+    inputs: RoundInputs
     positions: tuple[PositionCurve, ...]
     curve_grid_hz: np.ndarray
     report: FlatSpecReport | None
     packet: Mapping[str, Any] = field(repr=False)
+
+    @property
+    def session_dir(self) -> Path:
+        """The commissioning bundle this round's evidence was read from."""
+        return self.inputs.session_dir
 
     @property
     def graded_report(self) -> FlatSpecReport:
@@ -269,18 +260,6 @@ class BankedRound:
         )
 
 
-def _bundle_session_dir(round_dir: Path) -> Path:
-    bundle_dir = round_dir / "bundle"
-    if not bundle_dir.is_dir():
-        raise RoundViewsError(f"{round_dir}: no bundle/ directory (did bank-crossover-round.sh run?)")
-    children = sorted(p for p in bundle_dir.iterdir() if p.is_dir())
-    if len(children) != 1:
-        raise RoundViewsError(
-            f"{bundle_dir}: expected exactly one session directory, found {len(children)}"
-        )
-    return children[0]
-
-
 def _row_degrees(row: Mapping[str, Any]) -> float | None:
     """One packet position row's banked bearing, or ``None`` for "not recorded".
 
@@ -300,12 +279,18 @@ def _row_degrees(row: Mapping[str, Any]) -> float | None:
 
 
 def load_banked_round(round_dir: Path) -> BankedRound:
-    """Read one ``bank-crossover-round.sh`` output directory into a
+    """Read one round — banked tree or LIVE session bundle — into a
     :class:`BankedRound`.
 
-    Raises :class:`RoundViewsError` when the directory is not a banked round
-    at all — no bundle, more than one session in it, or no readable evidence
-    packet.
+    Which of the two it is, and therefore where the flow state, design draft
+    and applied profile come from, is :func:`~.round_inputs.round_inputs`'
+    answer; it rides on :attr:`BankedRound.inputs` so the views that reach for
+    the flow state read the same file this packet was built from rather than
+    re-deriving a location from :attr:`BankedRound.round_dir`.
+
+    Raises :class:`RoundViewsError` when the directory is neither shape, when
+    a banked tree holds more than one session, or when the bundle carries no
+    readable evidence packet.
 
     **It does NOT judge what the round banked** — a loader-level "positions
     and a graded spec, or nothing" refusal blocked the two views that need
@@ -314,20 +299,14 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     :attr:`BankedRound.graded_positions`.
     """
     round_dir = Path(round_dir)
-    session_dir = _bundle_session_dir(round_dir)
-    state_path = round_dir / _STATE_FILENAME
-    draft_path = round_dir / "design-draft.json"
-    applied_path = round_dir / _APPLIED_PROFILE_FILENAME
-    repeat_floor_path = round_dir / _REPEAT_FLOOR_FILENAME
+    inputs = round_inputs(round_dir)
     try:
         packet = build_crossover_evidence_packet(
-            session_dir,
-            state_path=state_path if state_path.is_file() else None,
-            driver_draft_path=draft_path if draft_path.is_file() else None,
-            applied_profile_path=applied_path if applied_path.is_file() else None,
-            repeat_floor_path=(
-                repeat_floor_path if repeat_floor_path.is_file() else None
-            ),
+            inputs.session_dir,
+            state_path=inputs.state_path,
+            driver_draft_path=inputs.design_draft_path,
+            applied_profile_path=inputs.applied_profile_path,
+            repeat_floor_path=inputs.repeat_floor_path,
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
@@ -361,7 +340,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     report = FlatSpecReport.from_dict(spec_block) if spec_block.get("bands") else None
     return BankedRound(
         round_dir=round_dir,
-        session_dir=session_dir,
+        inputs=inputs,
         positions=positions,
         curve_grid_hz=grid,
         report=report,
@@ -481,10 +460,10 @@ class EntryStateGrade:
         }
 
 
-def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
-    """``(round_ordinal, round_ordinal_epoch)`` off the banked flow state.
+def _banked_series_position(state_path: Path | None) -> tuple[int | None, int | None]:
+    """``(round_ordinal, round_ordinal_epoch)`` off the round's flow state.
 
-    ``(None, None)`` for a directory with no readable ``state.json``, and
+    ``(None, None)`` when the round names no readable flow state, and
     ``None`` for either field the record does not carry — "not recorded",
     never zero, on :attr:`PositionCurve.degrees`' rule. Read here rather than
     off the evidence packet because the packet's ``round_receipt`` block
@@ -499,8 +478,7 @@ def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
             return None
         return value
 
-    state_path = round_dir / _STATE_FILENAME
-    if not state_path.is_file():
+    if state_path is None or not state_path.is_file():
         return None, None
     try:
         state = json.loads(state_path.read_text())
@@ -567,7 +545,7 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
 
     from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
-    ordinal, epoch = _banked_series_position(banked.round_dir)
+    ordinal, epoch = _banked_series_position(banked.inputs.state_path)
     block = banked.packet["entry_baseline"]
     if not block.get("available"):
         return EntryStateGrade.unavailable(
@@ -743,9 +721,9 @@ class VerifyPoseResult:
 
 
 def _banked_verify_curve(
-    round_dir: Path,
+    inputs: RoundInputs,
 ) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
-    """``((freqs_hz, measured_db), "")`` off the round's banked flow state, or
+    """``((freqs_hz, measured_db), "")`` off the round's flow state, or
     ``(None, reason)``.
 
     The ONE reader of ``verify_priors.verify_measured`` on this side of the
@@ -758,15 +736,20 @@ def _banked_verify_curve(
     parse itself is :func:`~.durable_state.verify_measured_curve_from_state`,
     the product's own reader for the key.
     """
-    state_path = round_dir / _STATE_FILENAME
-    if not state_path.is_file():
-        return None, f"no {_STATE_FILENAME} banked beside the bundle"
+    state_path = inputs.state_path
+    if state_path is None or not state_path.is_file():
+        # The resolver's code when it HAS one: "the speaker's state belongs to
+        # another session" is a different answer from "no state was banked",
+        # and only it names a round the operator could point at instead.
+        return None, (
+            inputs.state_reason or "the round names no readable flow state file"
+        )
     try:
         state = json.loads(state_path.read_text())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}"
+        return None, f"{state_path.name} is unreadable: {type(exc).__name__}"
     if not isinstance(state, Mapping):
-        return None, f"{_STATE_FILENAME} is not a JSON object"
+        return None, f"{state_path.name} is not a JSON object"
     triple = verify_measured_curve_from_state(state)
     if triple is None:
         return None, "the round's state banked no verify_priors.verify_measured curve"
@@ -804,7 +787,7 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     :func:`forward_model_verify_delta` therefore reads the same source
     verbatim rather than coming through here.
     """
-    banked_curve, reason = _banked_verify_curve(banked.round_dir)
+    banked_curve, reason = _banked_verify_curve(banked.inputs)
     if banked_curve is None:
         return VerifyPoseResult(None, reason)
     freqs_hz, measured_db = banked_curve
@@ -904,7 +887,7 @@ def forward_model_verify_delta(
         "basis_round_dir": str(basis.round_dir),
         "measured_round_dir": str(measured.round_dir),
     }
-    verify_curve, reason = _banked_verify_curve(measured.round_dir)
+    verify_curve, reason = _banked_verify_curve(measured.inputs)
     if verify_curve is None:
         return ForwardModelDeltaResult(None, reason, **dirs)
     measured_freqs_hz, measured_db = verify_curve

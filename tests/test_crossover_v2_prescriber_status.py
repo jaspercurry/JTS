@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
+from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
@@ -45,6 +46,12 @@ from tests.test_crossover_v2_driver_prescription import (
 )
 
 
+#: Every test here builds a packet from a live session bundle with no
+#: --state/--drivers/--applied-profile, so none may read whatever sits at the
+#: on-Pi SSOT paths of the box running pytest.
+pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_spool(tmp_path: Path):
     """No test may see, or leave, a document in the real speaker's slot."""
@@ -58,28 +65,6 @@ def _isolated_spool(tmp_path: Path):
 def _known_hostname(monkeypatch):
     """Every test names the speaker, so none of them reads the laptop's env."""
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
-
-
-@pytest.fixture(autouse=True)
-def _no_real_pi_paths(tmp_path: Path, monkeypatch):
-    """No test may depend on whether THIS machine has ``/var/lib/jasper/*``.
-
-    ``--drivers``/``--applied-profile`` now default to real on-speaker paths;
-    a test that omits either flag must stay hermetic rather than reading
-    whatever happens to sit at those absolute paths on the box running pytest.
-    The seat-level reference reads the same way -- no flag, a real on-speaker
-    default path -- so it gets the same treatment: unset unless a test banks
-    one itself at an explicit path.
-    """
-    monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", tmp_path / "unset-drivers-default.json")
-    monkeypatch.setattr(
-        cli, "_APPLIED_PROFILE_DEFAULT_PATH",
-        tmp_path / "unset-applied-profile-default.json",
-    )
-    monkeypatch.setenv(
-        _SEAT_LEVEL_STATE_PATH_ENV,
-        str(tmp_path / "unset-seat-level-reference.json"),
-    )
 
 
 def _speaker_dirs(
@@ -167,6 +152,41 @@ def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
     }
     assert payload["applied"]["from_applied_profile"] == {
         "available": True, "n_filters": 1
+    }
+
+
+def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
+    tmp_path, capsys, monkeypatch
+):
+    """Where the two declared inputs live is the shared resolver's answer.
+
+    This CLI used to carry its own copy of the on-Pi paths, which is the
+    duplication ``jasper-round-views`` could not consume: pointed at a live
+    session directory with no overrides, the packet must be built from exactly
+    what ``round_inputs`` resolved.
+
+    The FLOW STATE is deliberately not among them: the host rewrites it as a
+    round runs, so a defaulted state would move a rebuilt packet's fingerprint
+    away from the one ``packet`` emitted and ``propose``/``stage`` judge
+    against.
+    """
+    session, _ = _speaker_dirs(tmp_path)
+    seen: dict[str, Any] = {}
+    build = cli.build_crossover_evidence_packet
+
+    def _spy(session_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs, session_dir=session_dir)
+        return build(session_dir, **kwargs)
+
+    monkeypatch.setattr(cli, "build_crossover_evidence_packet", _spy)
+    _status([str(session)], capsys)  # no --state/--drivers/--applied-profile
+
+    assert seen == {
+        "session_dir": session,
+        "state_path": None,
+        "driver_draft_path": round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
+        "repeat_floor_path": round_inputs_mod.REPEAT_FLOOR_DEFAULT_PATH,
     }
 
 
@@ -752,8 +772,8 @@ def test_drivers_and_applied_profile_are_true_defaults_not_documentation(
     draft_path.write_text(json.dumps(_draft()))
     applied_path = tmp_path / "applied-profile.json"
     applied_path.write_text(json.dumps(applied_profile(blend=[{"freq": 1000.0}])))
-    monkeypatch.setattr(cli, "_DRIVERS_DEFAULT_PATH", draft_path)
-    monkeypatch.setattr(cli, "_APPLIED_PROFILE_DEFAULT_PATH", applied_path)
+    monkeypatch.setattr(round_inputs_mod, "DRIVERS_DEFAULT_PATH", draft_path)
+    monkeypatch.setattr(round_inputs_mod, "APPLIED_PROFILE_DEFAULT_PATH", applied_path)
 
     session, _ = _speaker_dirs(tmp_path, classification=_classification())
     _, payload = _status([str(session)], capsys)  # neither flag passed
