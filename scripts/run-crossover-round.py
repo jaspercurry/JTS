@@ -130,12 +130,10 @@ Usage::
         --campaign captures/my-night --label r1-verify --stage verify \\
         --attest-rig-clear --expect-angles 0,7,-7,22,-22
 
-``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
-wins over the box's own recorded identity — the resolution is
-``scripts/_lib.sh``'s own (issue #2689), and the resolved host is named in the
-run trail. The same
-values are exported into the bank script, so both halves of a round can never
-target different speakers.
+``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local`` — the
+resolution is ``scripts/_lib.sh``'s own (issue #2689), and the resolved host is
+named in the run trail. The same values are exported into the bank script, so
+both halves of a round can never target different speakers.
 """
 
 from __future__ import annotations
@@ -354,7 +352,6 @@ class Target:
 _LIB_TARGET_SOURCES: Mapping[str, str] = {
     "caller": "your export",
     "file": ".env.local",
-    "identity": "this box's identity.env",
 }
 
 

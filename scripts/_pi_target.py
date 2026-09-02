@@ -41,12 +41,12 @@ def resolve_lib_target(
     *, host_override: str | None = None, timeout: float = 30,
 ) -> tuple[str, str, str, str]:
     """``(host, user, hostname, source)`` as ``scripts/_lib.sh`` itself
-    resolves them: caller env, then ``.env.local``, then this box's own
-    recorded identity, with ``source`` its own ``JTS_TARGET_FROM`` name for
-    which of those answered. ``host_override`` is handed over as ``PI_HOST``
-    so it takes that same caller branch -- the override then wins for the
-    host inside ``_lib.sh``, where the file's ``PI_USER`` still applies, and
-    an explicitly named target is never subject to its refusals.
+    resolves them: caller env, then ``.env.local``, with ``source`` its own
+    ``JTS_TARGET_FROM`` name for which of the two answered.
+    ``host_override`` is handed over as ``PI_HOST`` so it takes that same
+    caller branch -- the override then wins for the host inside ``_lib.sh``,
+    where the file's ``PI_USER`` still applies, and an explicitly named
+    target is never subject to its refusals.
 
     Raises :class:`LibTargetError` on any failure to run it, a nonzero exit
     (including its refusal to guess a target), or an empty
