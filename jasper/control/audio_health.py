@@ -4,19 +4,18 @@
 
 """One bounded, normalized audio-health snapshot for management surfaces.
 
-The existing AirPlay collector already owns the expensive monitoring cadence
-(fan-in STATUS, shairport/Camilla journals, MPRIS, and Camilla status).  This
-module composes it with cheap local outputd and mux STATUS reads plus a slow
-route-claim read.  Mux owns the canonical per-source ``playing`` predicates;
-the dashboard does not duplicate them.  Production starts only
-:class:`AudioHealthSampler`'s thread; the AirPlay collector is sampled inline,
-so the broader dashboard adds no daemon or second resident loop.
+Composes the AirPlay collector -- which owns the expensive monitoring cadence
+(fan-in STATUS, shairport/Camilla journals, MPRIS, Camilla status) -- with
+cheap local outputd and mux STATUS reads plus a slow route-claim read.  Mux
+owns the canonical per-source ``playing`` predicates; the dashboard does not
+duplicate them.  Only :class:`AudioHealthSampler`'s thread is resident; the
+AirPlay collector is sampled inline.
 
-The contract deliberately separates continuity from timing.  A USB host-clock
-``l2_fallback`` keeps audio playing safely, so it degrades the latency axis but
-does not claim the signal path failed.  Likewise ``l0_locked`` is live clocking
-state, not an end-to-end latency number; ``current_stream.latency`` is where
-the summed queues are reported.
+Continuity and timing are separate axes.  A USB host-clock ``l2_fallback``
+keeps audio playing safely, so it degrades the latency axis but does not
+claim the signal path failed.  ``l0_locked`` is live clocking state, not an
+end-to-end latency number; ``current_stream.latency`` is where the summed
+queues are reported.
 """
 from __future__ import annotations
 
@@ -58,27 +57,24 @@ LOCAL_STATUS_TIMEOUT_SEC = 1.0
 FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
 
-# Every household-facing sentence this module writes is household register:
-# what is wrong with the household's sound and what they can do about it, never
-# a daemon name, a unit, a systemd state, or a command (#2472). The operator
-# half of each state already has a home — `jasper-doctor` carries the unit
-# names and `journalctl` lines, and `/state.audio_health.technical` carries the
-# raw counters — so nothing is lost by keeping them off the front page. The two
-# remedies named below are the buttons that sit on the same /system/ page as
-# this card.
+# Household register for every sentence this module writes: what is wrong with
+# the household's sound and what they can do about it, never a daemon name, a
+# unit, a systemd state, or a command (#2472) — that half lives in
+# `jasper-doctor` and `/state.audio_health.technical`. Both remedies below name
+# buttons on the same /system/ page as this card.
 RESTART_REMEDY = "Try Restart audio."
 DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 
 # The one household-facing sentence for a box whose post-DSP transport is
 # broken: CamillaDSP and outputd are on different loopback lanes, so nothing
-# reaches the drivers however healthy each daemon looks. Doctor phrases its own
-# operator remedy; this is the only writer of the /state wording.
+# reaches the drivers however healthy each daemon looks. Sole writer of the
+# /state wording; doctor phrases its own operator remedy.
 #
 # TWO detectors carry it, for the same household fact through different
 # evidence: :func:`_parked_signal` (a live transport contradiction) and
-# :func:`_transport_park_signal` (one of ADR-0178's four shapes the ring
-# cannot serve). One sentence, so a household cannot be told two things about
-# a speaker that is silent either way.
+# :func:`_transport_park_signal` (one of ADR-0178's shapes the ring cannot
+# serve). One sentence, so a household cannot be told two things about a
+# speaker that is silent either way.
 PARKED_HEADLINE = "Sound cannot come out of the speaker"
 
 # ...and the sentence under it, for a park whose cause the household cannot be
@@ -89,14 +85,11 @@ PARKED_DETAIL = (
     f"Check the speaker layout at /sound/setup/. {DIAGNOSTICS_REMEDY}"
 )
 
-# One household sentence per ADR-0178 park class. The classifier's own `detail`
-# is written for operators and reads like it ("Ring B", the endpoint marker,
-# the dac_content lane), so it is never spliced in here; this table says the
-# same fact in the register this card owns (#2472), and the class token is
-# imported rather than retyped so a rename cannot silently orphan a row.
-#
-# A class with no row here — a fifth the classifier grows before this table
-# does — degrades to PARKED_DETAIL, which is what every class said before.
+# One household sentence per ADR-0178 park class, in the register this card
+# owns (#2472); the classifier's own `detail` is operator copy and is never
+# spliced in here. The class token is imported rather than retyped so a rename
+# cannot silently orphan a row. A class with no row here contributes no
+# sentence; a park set with no rows at all degrades whole to PARKED_DETAIL.
 _PARK_MESSAGES: dict[str, str] = {
     PARK_PASSIVE_STEREO_COMPOSITE: (
         "This speaker sends sound to two sound cards at once, and JTS can no "
@@ -116,16 +109,14 @@ _PARK_MESSAGES: dict[str, str] = {
     ),
 }
 
-# What a park's household sentence adds after the class message: the tracked
-# issue to wait on, or — where the class carries a recorded command instead —
-# where the household finds it. The command itself stays in doctor and
-# `/state.resilience.transport_park`; a `sudo` line is the register #2472 took
-# off this card.
+# What a park's household sentence adds when the class carries a recorded
+# command rather than a tracked issue: where the household finds it. The
+# command itself stays in doctor and `/state.resilience.transport_park` (#2472).
 _PARK_REPAIRABLE = "Run diagnostics for the one step that repairs it."
 
-# The one household-facing sentence for a stopped CamillaDSP (#2163). Written
-# once and read by both surfaces it has to agree on: the `path.camilla_stopped`
-# incident title and the signal-path headline that carries it into `overall`.
+# The one household-facing sentence for a stopped CamillaDSP (#2163), read by
+# both surfaces it has to agree on: the `path.camilla_stopped` incident title
+# and the signal-path headline that carries it into `overall`.
 STOPPED_DSP_HEADLINE = "Sound processing has stopped"
 
 # `_signal_path`'s generic "outputd never started" and "fan-in is not
@@ -144,11 +135,10 @@ PATH_UNREPORTED_DETAIL = (
 )
 
 # The closed vocabulary of signal-path shape codes — every `code` any
-# signal-path producer emits (`_signal_path` and the three overrides
-# `compose_audio_health` layers on it). A new shape registers itself HERE,
-# beside the branch that emits it, and that is what makes
-# `test_the_household_shapes_cover_every_signal_path_code` fail until the new
-# shape is added to the household-register sweep as well.
+# signal-path producer emits (`_signal_path` and the overrides
+# `compose_audio_health` layers on it). A new shape registers itself HERE, which
+# is what makes `test_the_household_shapes_cover_every_signal_path_code` fail
+# until it is added to the household-register sweep as well.
 SIGNAL_PATH_CODES = frozenset({
     "activity_unknown",
     "camilla_not_installed",
@@ -170,23 +160,20 @@ SIGNAL_PATH_CODES = frozenset({
     "undeclared_hardware",
 })
 
-# Signal-path codes that name a CONSEQUENCE rather than a cause. `output_deaf`
-# is what a stopped DSP, a live coherence contradiction and a parked transport
-# ALL look like from the DAC end: the lane is armed, nothing produces for it,
-# so outputd zero-fills (`grouped_dac_content_lane` says "has no producer" in
-# so many words). Each of those detectors names something the household can
-# act on; "the speaker is playing silence" plus a restart prompt is neither
-# true to the cause nor a remedy that clears it.
+# Signal-path codes that name a CONSEQUENCE rather than a cause, so a
+# cause-naming detector may displace them (:func:`_yields_to_a_named_cause`).
+# `output_deaf` is what a stopped DSP, a live coherence contradiction and a
+# parked transport ALL look like from the DAC end: the lane is armed, nothing
+# produces for it, so outputd zero-fills.
 _SYMPTOM_ONLY_CODES = frozenset({"output_deaf"})
 
 # The two `_signal_path` codes that mean "outputd is not delivering audio, for
 # a reason `_signal_path` cannot see": outputd never started at all (its
 # missing-declaration `ExecCondition` kept the unit down, so its control socket
-# never answers) or it is up but self-reports a non-ALSA backend (the
-# dual-Apple `action=park_until_active_graph` path keeps sockets alive on a
-# `fake` backend without opening ALSA). `_undeclared_hardware_signal` refines
-# only these two; every other concrete `_signal_path` issue — fan-in down, a
-# stale watchdog, a broken active input — is left untouched.
+# never answers) or it is up but self-reports a non-ALSA backend
+# (`action=park_until_active_graph` keeps sockets alive on a `fake` backend
+# without opening ALSA). `_undeclared_hardware_signal` refines only these two;
+# every other concrete `_signal_path` issue is left untouched.
 _UNDECLARED_OUTPUT_CODES = frozenset({"output_absent", "output_backend_inactive"})
 
 # Expected failures at optional/cached observability boundaries. Programming
@@ -301,14 +288,10 @@ def _read_output_hardware() -> Any:
 
     Same reader ``/state.audio.output_hardware``
     (:mod:`jasper.control.state_aggregate`) and the ``/sound/setup/``
-    hardware-adoption precondition use — a small ``/run`` JSON read that
-    ``jasper.output_hardware.load_state`` already returns ``None`` for on any
-    missing/corrupt file. The extra guard here matches every other probe in
-    this module: an unexpected attribute, type, or OS-level surprise
-    (``_MONITOR_ERRORS``) degrades to "no record" rather than taking a health
-    tick down. A broken import is not one of those — it would fail identically
-    on every call from process start, so it is a startup-time bug to fix, not
-    a per-tick condition to swallow.
+    hardware-adoption precondition use. ``_MONITOR_ERRORS`` degrades to "no
+    record" rather than taking a health tick down; a broken import is
+    deliberately NOT in that set — it would fail identically on every call from
+    process start, so it is a startup bug, not a per-tick condition.
     """
     try:
         from ..output_hardware import load_state
@@ -323,19 +306,13 @@ def _read_output_topology() -> Any:
     """Read the DECLARED output topology's SNAPSHOT (topology + revision),
     fail-soft.
 
-    Reads ``load_output_topology_snapshot`` -- the same reader
-    ``/sound/setup/`` uses (``jasper.web.sound_setup._output_topology_payload``)
-    -- rather than the bare ``load_output_topology``. This matters (#2812
-    B2): on a missing file, both readers fall back to ``new_topology_draft``,
-    which auto-seeds ``hardware`` FROM the observed record whenever it has
-    outputs. A caller that only sees the resulting ``OutputTopology`` cannot
-    tell "genuinely never declared" from "declared and already matches" --
-    the auto-seed makes them look identical whenever the observed hardware is
-    ready, which is exactly the state this module's setup hint needs to
-    recognize as UNdeclared. ``snapshot.revision == "missing"`` is the fact
-    that survives the auto-seed: it says a topology was never actually
-    persisted, independent of what the ephemeral draft's ``hardware`` field
-    happens to contain.
+    The SNAPSHOT, not the bare ``load_output_topology`` (#2812 B2): on a
+    missing file both readers fall back to ``new_topology_draft``, which
+    auto-seeds ``hardware`` FROM the observed record whenever it has outputs,
+    so an ``OutputTopology`` alone cannot distinguish "never declared" from
+    "declared and already matches". ``snapshot.revision == "missing"`` survives
+    that auto-seed and says nothing was ever persisted. Same reader
+    ``/sound/setup/`` uses (``jasper.web.sound_setup._output_topology_payload``).
     """
     try:
         from ..output_topology import load_output_topology_snapshot
@@ -351,8 +328,8 @@ def _empty_transport() -> dict[str, Any]:
 
     Built per call, never copied from a module constant: ``dict(constant)`` is
     shallow, so every caller would share one ``coherence_errors`` list and a
-    single append anywhere would report the box as parked on every later
-    degraded read for the lifetime of the process.
+    single append anywhere would report the box as parked for the lifetime of
+    the process.
     """
     return {"coherence_errors": [], "coherence_notes": [], "capability_gap": None}
 
@@ -371,11 +348,10 @@ def _transport_state(
     means.  The capability gap says *why* it cannot self-heal when the saved
     layout needs hardware the DAC does not have.
 
-    ``coherence_notes`` carries the report's non-error half verbatim: coherent
-    but not steady, so it is published for whoever curls ``/state`` and is
-    deliberately NOT fed to :func:`_parked_signal` — the household card would
-    say "parked" about a rung of an operator-only ladder the household cannot
-    act on.  ``jasper-doctor`` is the loud surface for that state.
+    ``coherence_notes`` carries the report's non-error half (coherent but not
+    steady) verbatim for whoever curls ``/state``, and is deliberately NOT fed
+    to :func:`_parked_signal`: that is a rung of an operator-only ladder the
+    household cannot act on, and ``jasper-doctor`` is its loud surface.
 
     ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
     loosely because this module imports the topology layer lazily.
@@ -405,10 +381,10 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     """Transport state for the intentional PARKED graph, or None when absent.
 
     Feeds :func:`_parked_signal` through the same ``coherence_errors`` channel
-    the transport detector uses, so the parked wording keeps exactly one writer.
-    The capability gap is resolved the same way :func:`_transport_state` does, so
-    a no-active-lane DAC still gets its "and it can never work here" clause after
-    this reason rather than instead of it.
+    the transport detector uses, so the parked wording keeps one writer. The
+    capability gap is resolved as :func:`_transport_state` resolves it, so a
+    no-active-lane DAC still gets that clause after this reason, not instead
+    of it.
     """
     from ..active_speaker.environment import read_camilla_statefile_config_path
     from ..active_speaker.playback_route import (
@@ -430,8 +406,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     except OutputTopologyError:
         # A malformed saved layout must not be reclassified as an empty draft:
         # that would tell a household to choose a new layout while hiding a
-        # fault the doctor correctly fails. The parked graph remains safe, but
-        # this is not intentional setup silence.
+        # fault doctor correctly fails on.
         return {
             "coherence_errors": [
                 "Saved speaker layout is unavailable or invalid; run jasper-doctor"
@@ -458,12 +433,11 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     of the loopback pair (the loaded CamillaDSP graph, and outputd's LIVE
     capture PCM with its env as the fallback), and both statefiles.
 
-    Deliberately silent when the loaded graph does not target a registered
-    output endpoint: that is "coherence unknown", and doctor skips the same
-    detector on the same evidence rather than reporting a contradiction it
-    cannot see both halves of.
+    Silent when the loaded graph does not target a registered output endpoint:
+    that is "coherence unknown", and doctor skips the same detector on the same
+    evidence rather than reporting a contradiction it cannot see both halves of.
 
-    ``plan.route_policy_errors`` is not read instead: that tuple deliberately
+    ``plan.route_policy_errors`` is deliberately NOT read instead: that tuple
     mixes these contradictions with USB low-latency route-policy errors, and a
     policy error is not a reason to tell a household its speaker is parked.
     """
@@ -484,24 +458,20 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     if evidence.devices is None or not evidence.endpoint_recognized:
         # One unrecognized endpoint is NOT "coherence unknown": the PARKED graph
         # (#2135) writes to a File sink on purpose, because the saved roleful
-        # layout has no staged startup graph yet. That is precisely the parked
-        # state, so it must not read as ready just because the graph declines
-        # to name an outputd lane.
+        # layout has no staged startup graph yet. That IS the parked state, so
+        # it must not read as ready just because the graph declines to name an
+        # outputd lane.
         return _parked_graph_transport() or _empty_transport()
     # outputd.env is read here because the plan carries decisions, not the
     # generated env it was built from.
     outputd_env = dict(read_env_file_state(DEFAULT_OUTPUTD_ENV_PATH).values)
     return _transport_state(
-        # The plan's own resolved COUPLING, never its transport topology NAME.
-        # `transport_coherence_report` takes a coupling TOKEN and re-derives the
-        # shape itself (from that token plus outputd's bridge and endpoint
-        # marker), so a shape NAME handed in here would be read as a token that
-        # names no transport. On an armed roleful box the shape is
-        # `shm_ring_active`, which is not a coupling, and the substitution told a
-        # demonstrably-playing speaker it was parked (#2376) while `/state`'s own
-        # coupling surface reported the ring armed and live. This reads the fact
-        # doctor reads — the persisted coupling — resolved once, by the same plan
-        # that produced `plan.transport_topology`.
+        # The plan's resolved COUPLING TOKEN, never `plan.transport_topology`'s
+        # shape NAME. `transport_coherence_report` re-derives the shape itself
+        # from that token plus outputd's bridge and endpoint marker, so a shape
+        # name here reads as a token naming no transport — on an armed roleful
+        # box the shape is `shm_ring_active`, which is not a coupling, and the
+        # substitution reported a playing speaker as parked (#2376).
         coupling=str(plan.setting(COUPLING_ENV_VAR).value),
         outputd_env=outputd_env,
         camilla_devices=evidence.devices,
@@ -512,8 +482,8 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
 def read_route_claim() -> dict[str, Any]:
     """Read the declared route and its transport coherence.
 
-    This is config/statefile work plus one bounded outputd STATUS read rather
-    than a live audio probe, and therefore runs on the slow cadence.
+    Config/statefile work plus one bounded outputd STATUS read rather than a
+    live audio probe, so it runs on the slow cadence.
     """
     try:
         from ..audio_runtime_plan import build_audio_runtime_plan_from_system
@@ -642,14 +612,11 @@ def _activity_unavailable_signal() -> dict[str, str]:
 def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     """Return the parked signal-path state, or None when the transport is sane.
 
-    The sole writer of the parked wording.  When the cause is a DAC that cannot
-    host the saved layout at all, the detail names the DAC and where the
-    household fixes it — because no reconcile or restart can clear that one.
-    Otherwise it says only what the household can act on: the contradiction
-    itself is operator evidence and stays where operators read it — doctor's
-    transport-coherence check, which fails on the same fact and prints every
-    error with its remedy.
-
+    When the cause is a DAC that cannot host the saved layout at all, the
+    detail names the DAC and where the household fixes it — no reconcile or
+    restart clears that one. Otherwise it says only what the household can act
+    on: the contradiction itself is operator evidence and stays in doctor's
+    transport-coherence check, which fails on the same fact.
     """
     transport = _mapping(route.get("transport"))
     errors = [
@@ -681,11 +648,8 @@ def _park_detail(parks: Any) -> str:
     """The household sentence for one or more live transport parks.
 
     Composed from :data:`_PARK_MESSAGES` plus the park record's OWN ``issue``
-    and ``remedy`` — the classifier already carries both, and discarding them
-    for one canned sentence was what made four different silences read the
-    same. Falls back whole to :data:`PARKED_DETAIL` when no park in ``parks``
-    has a message, so an unknown class says what every class used to say
-    rather than saying nothing.
+    and ``remedy``. Falls back whole to :data:`PARKED_DETAIL` when no park in
+    ``parks`` has a message, so an unknown class still says something.
 
     Joins every park's sentence rather than picking one: a box can be in two
     classes at once (a bonded mono speaker waits on both), and ADR-0178 keeps
@@ -711,10 +675,10 @@ def _transport_park_signal(
 ) -> dict[str, Any] | None:
     """Return the signal path for a LIVE transport park, or ``None``.
 
-    Only ``status="parked"`` reaches the household: that is the state where
-    no transport serves this box and it emits nothing.
+    Only ``status="parked"`` reaches the household: that is the state where no
+    transport serves this box and it emits nothing.
 
-    Presentation only, exactly like :func:`_parked_signal`: the incident rows
+    Presentation only, like :func:`_parked_signal`: the incident rows
     :func:`_state_issues` writes from the same snapshot keep one row per park
     class, named by its key.
     """
@@ -732,10 +696,10 @@ def _transport_park_signal(
 def _yields_to_a_named_cause(signal_path: Mapping[str, Any]) -> bool:
     """True when a cause-naming detector may replace this signal path.
 
-    The three "the box cannot emit at all" detectors in
-    :func:`compose_audio_health` share this guard: they claim the ground where
-    the path looks clean, plus :data:`_SYMPTOM_ONLY_CODES`. A concrete live
-    fan-in / outputd failure still wins.
+    Shared by the three "the box cannot emit at all" detectors in
+    :func:`compose_audio_health`: they claim only the ground where the path
+    looks clean, plus :data:`_SYMPTOM_ONLY_CODES`. A concrete live fan-in /
+    outputd failure still wins.
     """
     return (
         signal_path.get("status") != "issue"
@@ -750,20 +714,16 @@ def _stopped_dsp_signal(
     """Return the stopped-CamillaDSP signal path, or None when it is running.
 
     :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
-    and outputd, and both are built to keep looping when the stage between
-    them disappears: fan-in's `shm_ring` coupling
-    free-run-drops on an absent reader rather than blocking, outputd reads its
-    content lane nonblocking and zero-fills ("absent content becomes silence.
-    This keeps the final output loop alive"), and BOTH `last_progress_age_ms`
-    counters time the work loop's iteration, not audio actually moving.  So a
-    dead CamillaDSP leaves every input to `_signal_path` healthy while the
-    speaker emits nothing — `overall` would otherwise report a clean path and
-    a playing source next to its own :data:`STOPPED_DSP_HEADLINE` incident.
+    and outputd, and both keep looping when the stage between them disappears:
+    fan-in's `shm_ring` coupling free-run-drops on an absent reader rather than
+    blocking, outputd reads its content lane nonblocking and zero-fills, and
+    BOTH `last_progress_age_ms` counters time the work loop's iteration, not
+    audio actually moving.  A dead CamillaDSP therefore leaves every input to
+    `_signal_path` healthy while the speaker emits nothing.
 
-    Presentation only, exactly like :func:`_parked_signal`:
+    Presentation only, like :func:`_parked_signal`:
     :class:`AudioHealthSampler` feeds :func:`_state_issues` the raw signal
-    path, so `path.camilla_stopped` keeps its own incident row rather than
-    being swallowed by the headline it produces here.
+    path, so `path.camilla_stopped` keeps its own incident row.
 
     Shares the boot-warmup gate with that issue, so a deploy's coordinated
     restart does not flicker the card.
@@ -784,15 +744,10 @@ def _stopped_dsp_signal(
 
 # The one household-facing sentence for output hardware the reconciler has
 # positively identified and is ready to use, when the DECLARED topology does
-# not already claim it too (or nothing has ever been declared) -- being ready
-# alone is not enough to show this: an already-declared, already-armed box
-# hitting an ordinary outputd hiccup is also "positively identified and
-# ready" and must not see this sentence (#2812 B1/B2). A composite DAC can
-# sit in the genuine gap for minutes after a hotplug -- admitted, but held
-# back pending the active-graph handshake -- and until this detector existed
-# the household saw only the generic "outputd is not reporting" line, which
-# reads as a broken speaker rather than as a two-minute setup step. Written
-# once; the only writer of this wording.
+# not already claim it too (or nothing has ever been declared). Being ready
+# alone is NOT enough: an already-declared, already-armed box hitting an
+# ordinary outputd hiccup is also "positively identified and ready" and must
+# not see this sentence (#2812 B1/B2). Sole writer of this wording.
 UNDECLARED_HARDWARE_HEADLINE = "Detected hardware is ready — finish setup"
 
 
@@ -804,46 +759,30 @@ def _undeclared_hardware_signal(
 
     ``output_hardware`` is the reconciler-published
     :class:`~jasper.output_hardware.OutputHardwareState` (or ``None`` when
-    unreadable) — the same record ``/state.audio.output_hardware`` publishes
-    and ``/sound/setup/``'s "Use detected hardware" button already gates on.
-    ``output_topology_snapshot`` is a
+    unreadable); ``output_topology_snapshot`` is a
     :class:`~jasper.output_topology.OutputTopologySnapshot` (or ``None``
-    before the sampler's first read) — the topology alone is not enough; see
+    before the sampler's first read) — the bare topology is not enough, see
     below.
 
     Two conjuncts, mirroring the wizard's own "Use detected hardware"
-    affordance exactly (#2812 B1):
+    affordance (#2812 B1); neither is re-derived here, both call the owners
+    the browser's mismatch card and adoption button read.
+    :func:`~jasper.output_hardware.detected_hardware_adoption_precondition`
+    (INNER) says the detected hardware is usable at all — known profile, no
+    blocking issue, at least one output — and says nothing about whether the
+    household already declared it.
+    :func:`~jasper.output_topology.declared_hardware_mismatch` (OUTER) says
+    the DECLARED topology does not already match what is attached; skipping it
+    told an already-armed box hitting an ordinary outputd hiccup to "finish
+    setup" for a setup that already happened.
 
-    * :func:`jasper.output_hardware.detected_hardware_adoption_precondition`
-      — the INNER conjunct — says the detected hardware is usable at all
-      (a known profile, no blocking issue, at least one output). This alone
-      is NOT enough: it says nothing about whether the household already
-      declared and armed this exact hardware.
-    * :func:`jasper.output_topology.declared_hardware_mismatch` — the OUTER
-      conjunct — says the DECLARED topology does not already match what's
-      attached. Skipping this let an already-armed box hitting an ordinary
-      outputd hiccup (a deploy's audio-graph bounce, a crash) be told to
-      "finish setup" for a setup that already happened — proven live on a
-      declared, serial-bound speaker with an unrelated `outputd` fault
-      (#2812 B1).
-
-    A never-declared box does NOT reach that second conjunct at all (#2812
-    B2). ``load_output_topology``'s (and thus a bare
-    ``OutputTopologySnapshot.topology``'s) missing-file fallback
-    (``new_topology_draft``) auto-seeds ``hardware`` FROM the observed
-    record whenever it has outputs — which the inner conjunct just proved is
-    true here. Calling ``declared_hardware_mismatch`` on that ephemeral,
-    never-persisted draft would always find a match, making the two
-    conjuncts mutually exclusive on a fresh box and hiding the exact speaker
-    #2812 exists for. ``snapshot.revision == "missing"`` is read directly
-    instead: it says nothing was ever persisted, independent of what the
-    auto-seeded draft's ``hardware`` field contains, and satisfies the outer
-    conjunct on its own without ever calling ``declared_hardware_mismatch``.
-
-    Neither conjunct is re-derived here: the gate mandate is
-    single-source-of-truth, so this function calls the same two owners the
-    browser's own mismatch card and adoption button read, rather than
-    forking either rule into a third Python-only copy.
+    A never-declared box does NOT reach that second conjunct (#2812 B2).
+    ``load_output_topology``'s missing-file fallback (``new_topology_draft``)
+    auto-seeds ``hardware`` FROM the observed record whenever it has outputs —
+    which the inner conjunct just proved. ``declared_hardware_mismatch`` on
+    that ephemeral draft would always find a match, making the two conjuncts
+    mutually exclusive on a fresh box. ``snapshot.revision == "missing"`` is
+    read directly instead and satisfies the outer conjunct on its own.
     """
     if output_hardware is None or output_topology_snapshot is None:
         return None
@@ -948,21 +887,19 @@ def _signal_path(
             ),
         }
 
-    # outputd is writing periods, but what it is writing is silence it did not
-    # intend — every check that could see a CAUSE has already run, and none of
-    # them can see this: a deaf chain leaves both watchdogs progressing and
-    # every xrun count flat (#3458). The verdict is outputd's own: it owns the
-    # DAC geometry its threshold is derived from.
+    # outputd is writing periods, but what it writes is silence it did not
+    # intend: a deaf chain leaves both watchdogs progressing and every xrun
+    # count flat (#3458). The verdict is outputd's own — it owns the DAC
+    # geometry its threshold is derived from.
     #
-    # Below the fan-in watchdog deliberately. A stalled fan-in starves
+    # BELOW the fan-in watchdog deliberately: a stalled fan-in starves
     # CamillaDSP, which empties the ring, so outputd latches deaf at 2 s while
     # FANIN_STALE_MS only trips at 5 — the cause outranks its own symptom, the
     # same way `camilla_stopped` outranks this in `compose_audio_health`.
     #
-    # Not during warmup: outputd primes and starts reading an empty ring
-    # before CamillaDSP is producing, so a deploy's coordinated restart would
-    # otherwise flicker the card (the gate `_stopped_dsp_signal` carries for
-    # the same reason).
+    # Not during warmup: outputd primes and starts reading an empty ring before
+    # CamillaDSP is producing (the gate `_stopped_dsp_signal` carries for the
+    # same reason).
     if not warmup and _mapping(outputd_map.get("content")).get("deaf") is True:
         return {
             "code": "output_deaf",
@@ -1250,21 +1187,17 @@ def _state_issues(
             title=str(coherence_park.get("headline")),
             detail=str(coherence_park.get("detail")),
         ))
-    # ADR-0178's named transport parks, one row per class so the household
-    # card and the operator both see EVERY tracked issue this box waits on
-    # rather than a first-match verdict. Ahead of the live-daemon rows and
-    # outside the warmup gate: a park is structural, it is true at boot, and
-    # a restart never clears it. Only a LIVE park (ring-only) is a household
-    # incident — see :func:`_transport_park_signal`.
+    # ADR-0178's named transport parks, one row per class so both surfaces see
+    # EVERY tracked issue this box waits on rather than a first-match verdict.
+    # Ahead of the live-daemon rows and OUTSIDE the warmup gate: a park is
+    # structural, true at boot, and never cleared by a restart.
     if park_state.get("status") == "parked":
         for park in park_state.get("parks") or []:
             if not isinstance(park, Mapping):
                 continue
-            # The park CLASS rides the key, where an identifier belongs, and
-            # the row's detail is THIS class's household sentence — one row,
-            # one shape, one tracked issue. The operator's raw detail and the
-            # remedy command stay in doctor and
-            # `/state.resilience.transport_park`, which read the same verdict.
+            # The park CLASS rides the key; the row's detail is THIS class's
+            # household sentence. The operator's raw detail and the remedy
+            # command stay in doctor and `/state.resilience.transport_park`.
             park_class = str(park.get("park_class"))
             issues.append(_issue(
                 f"path.transport_park.{park_class}",
@@ -1309,13 +1242,11 @@ def _state_issues(
                 detail=camilla_stopped[1],
             ))
     if not warmup and outputd is None:
-        # S3 (#2812 gate round 1): when the setup hint fires for this exact
-        # condition, the incident row must say the same thing the headline
-        # does — otherwise the household sees a friendly "finish setup" card
-        # right next to a danger badge for the identical fact. Both are
-        # computed from the same `undeclared_hardware` value the sampler
-        # passes in, so they cannot drift out of alignment with each other,
-        # only together.
+        # When the setup hint fires for this exact condition the incident row
+        # must say what the headline says, or the household sees a friendly
+        # "finish setup" card next to a danger badge for the identical fact
+        # (#2812). Both read the one `undeclared_hardware` value the sampler
+        # passes in, so they cannot drift apart.
         if undeclared_hardware is not None:
             title = str(undeclared_hardware.get("headline"))
             detail = str(undeclared_hardware.get("detail"))
@@ -1494,36 +1425,30 @@ def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
     systemd state and the `journalctl` line stay in doctor's
     `check_camilla_service`, which fails on the same fact.
 
-    Deliberately wider than :func:`_service_failed`, which only fires on
-    `failed`/`error`/`not-found`. A CLEANLY stopped CamillaDSP — `inactive`
-    with `result=success` — was the state no surface could see (#2163), and it
-    is reachable: `jasper-camilla-recover` parks the unit stopped after an
+    Deliberately WIDER than :func:`_service_failed`, which only fires on
+    `failed`/`error`/`not-found`. A cleanly stopped CamillaDSP — `inactive`
+    with `result=success` — is reachable and was invisible to every surface
+    (#2163): `jasper-camilla-recover` parks the unit stopped after an
     exhausted start-limit burst, and a kill between the coupling reconciler's
     camilla-stop and camilla-start leaves it stopped without ever going
-    `failed` (which is why `OnFailure=jasper-camilla-recover` does not catch
-    it).
+    `failed` (so `OnFailure=jasper-camilla-recover` does not catch it).
 
-    Nor does a stopped unit necessarily carry a restart count that some OTHER
-    surface could have caught: the recover script's `camilla_start_failed`
-    exit runs `systemctl reset-failed jasper-camilla.service` immediately
-    before the start it then fails, so it parks the unit with the counter
-    already cleared. This detector reads neither `result` nor `n_restarts`
-    for exactly that reason — not running is the fact.
+    Reads neither `result` nor `n_restarts`: `jasper-camilla-recover`'s
+    `park_core_graph` runs `systemctl reset-failed jasper-camilla.service`
+    immediately before stopping the unit, so it parks it with the counter
+    already cleared. Not running is the fact.
 
-    Scoped to CamillaDSP rather than generalised over the core units, because
-    the two neighbours have a legitimate parked state and it would be a false
-    alarm to treat them the same way: `jasper-outputd` parks itself `inactive`
-    through a missing-DAC `ExecCondition`, and `jasper-voice` through the
-    `voice-input-absent` marker. CamillaDSP has no such gate — no `Condition*`,
-    no `ExecCondition` — and its unit file says it must never stay stopped.
+    Scoped to CamillaDSP rather than generalised over the core units: the two
+    neighbours have a legitimate parked state — `jasper-outputd` parks itself
+    `inactive` through a missing-DAC `ExecCondition`, `jasper-voice` through
+    the `voice-input-absent` marker — while CamillaDSP has no `Condition*` or
+    `ExecCondition` at all and runs `Restart=always`.
 
     Silent when systemd truth is unavailable (no `systemctl`, or before the
     first service-state probe): unknown is not stopped.
 
     A NEVER-INSTALLED unit keeps its own code and its own remedy: reinstalling
-    is the fix, and no restart can clear it. Whole point of #2163 is one fact
-    reading the same way on every surface, so the two must not disagree about
-    the same box.
+    is the fix, and no restart can clear it.
     """
     state = _mapping(raw_state)
     active_state = str(state.get("active_state") or "")
@@ -1543,8 +1468,7 @@ def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
 
 
 # The one household-facing sentence for a source whose renderer has failed.
-# Which unit failed and how is doctor's per-renderer checks; the household is
-# told what it can do instead.
+# Which unit failed and how belongs to doctor's per-renderer checks.
 SOURCE_UNAVAILABLE_DETAIL = (
     f"JTS could not start this source. {RESTART_REMEDY} {DIAGNOSTICS_REMEDY}"
 )
@@ -2096,15 +2020,14 @@ def compose_audio_health(
     ``output_topology_snapshot`` is a
     :class:`~jasper.output_topology.OutputTopologySnapshot` or ``None``
     (before the sampler's first slow-cadence read) — deliberately the
-    snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`
-    for why. Both typed loosely because this module imports those layers
-    lazily (same convention as ``topology`` in :func:`_transport_state`).
+    snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`.
+    Both typed loosely because this module imports those layers lazily (same
+    convention as ``topology`` in :func:`_transport_state`).
 
     ``transport_park`` is ``jasper.control.transport_park.snapshot()`` (or
-    ``None`` before the sampler's first slow-cadence read), passed in rather
-    than read here for the same reason ``undeclared_hardware`` is computed by
-    the caller: the incident rows and this headline must be the same tick's
-    verdict, and the read is a file read that belongs on the slow cadence.
+    ``None`` before the first slow-cadence read), passed in rather than read
+    here: the incident rows and this headline must be the SAME tick's verdict,
+    and it is a file read that belongs on the slow cadence.
     """
     ap = _mapping(airplay)
     route_state = _mapping(route)
@@ -2116,27 +2039,22 @@ def compose_audio_health(
         signal_path = _activity_unavailable_signal()
     stopped_dsp = _stopped_dsp_signal(ap, service_states)
     if stopped_dsp is not None and _yields_to_a_named_cause(signal_path):
-        # Ahead of `parked` on the same principle parked states below: a
-        # daemon that is not running is happening NOW and is fixed by starting
-        # it, while parked is persistent and fixed by changing the layout.
-        # A concrete live fan-in / outputd failure still wins — this only
-        # claims the ground where the path looks clean, plus the symptom codes.
+        # Ahead of both parked states: a daemon that is not running is
+        # happening NOW and is fixed by starting it, while parked is persistent
+        # and fixed by changing the layout.
         signal_path = stopped_dsp
     parked = _parked_signal(route_state)
     if parked is not None and _yields_to_a_named_cause(signal_path):
         # A verified structural fault outranks ok / warn / idle / unknown: the
         # box cannot emit audio at all, and absence of evidence should not hide
-        # that.  It does NOT outrank a concrete live failure — parked is
-        # persistent and fixed by changing the layout, while a stalled daemon
-        # is happening now and has its own remedy.
+        # that.
         signal_path = parked
     transport_parked = _transport_park_signal(transport_park)
     if transport_parked is not None and _yields_to_a_named_cause(signal_path):
-        # Last of the three "the box cannot emit at all" detectors, and the
-        # most structural: a live coherence contradiction or a stopped daemon
-        # names something an operator can act on THIS boot, while a transport
-        # park is cleared only by rebuilding the topology on the ring. Same
-        # guard, so neither of those is displaced.
+        # Last and most structural of the three: a live coherence contradiction
+        # or a stopped daemon names something an operator can act on THIS boot,
+        # while a transport park is cleared only by rebuilding the topology on
+        # the ring.
         signal_path = transport_parked
     undeclared_hardware = _undeclared_hardware_signal(
         output_hardware, output_topology_snapshot
@@ -2145,14 +2063,11 @@ def compose_audio_health(
         undeclared_hardware is not None
         and signal_path.get("code") in _UNDECLARED_OUTPUT_CODES
     ):
-        # Checked by code, not the `!= "issue"` guard `stopped_dsp`/
-        # `parked` use above: `_signal_path`'s own outputd-absent/non-ALSA
-        # branch is already "issue" status, so this refines its generic
-        # wording rather than outranking a different concrete issue. Because
-        # it runs last, it only claims the ground when neither `stopped_dsp`
-        # nor `parked` already replaced signal_path with a more relevant,
-        # differently-worded diagnosis (camilla down, transport
-        # disconnected) — both of those keep priority.
+        # Checked by CODE, not the `_yields_to_a_named_cause` guard above:
+        # `_signal_path`'s outputd-absent/non-ALSA branch is already "issue"
+        # status, so this refines its generic wording rather than outranking a
+        # different concrete issue. Runs last, so `stopped_dsp` and `parked`
+        # keep priority.
         signal_path = undeclared_hardware
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
@@ -2369,13 +2284,10 @@ class AudioHealthSampler:
         )
         self._outputd: dict[str, Any] | None = None
         self._route: dict[str, Any] | None = None
-        # Declared topology changes only when a household explicitly saves a
-        # new layout -- a rare event -- so it is refreshed on the same slow
-        # `_route_interval` cadence as the route/transport check below, not
-        # every fast tick, matching this module's "slow evidence stays on the
-        # slow cadence" discipline (see the module docstring). A SNAPSHOT
-        # (topology + revision), not a bare topology -- see
-        # `_undeclared_hardware_signal`'s docstring for why revision matters.
+        # Refreshed on the slow `_route_interval` cadence, not every fast tick:
+        # declared topology changes only when a household saves a new layout. A
+        # SNAPSHOT (topology + revision), not a bare topology -- see
+        # `_undeclared_hardware_signal` for why revision matters.
         self._output_topology_snapshot: Any = None
         self._transport_park: dict[str, Any] | None = None
         self._service_states: dict[str, dict[str, Any]] = {}
@@ -2533,15 +2445,13 @@ class AudioHealthSampler:
                 self._output_topology_snapshot = self._output_topology_probe()
             except _MONITOR_ERRORS:
                 logger.debug("audio health output-topology probe failed", exc_info=True)
-                # Keep the previously cached snapshot: a transient read
-                # failure on a box that already had a good read a moment ago
-                # should not blank the declared side of the B1/B2 comparison.
+                # Keep the previously cached snapshot: a transient read failure
+                # must not blank the declared side of the B1/B2 comparison.
             # ADR-0178's transport parks ride the SLOW cadence with the
-            # topology read they classify: both change only when a reconciler
-            # or a bond rewrites a file, and its own snapshot() is fail-soft,
+            # topology read they classify; their own snapshot() is fail-soft,
             # so a bad read lands as status="unavailable" rather than raising.
-            # Imported here, not at module scope, so the name cannot shadow
-            # the `transport_park` PARAMETER the composers below take.
+            # Imported here, not at module scope, so the name cannot shadow the
+            # `transport_park` PARAMETER the composers below take.
             from . import transport_park as transport_park_reader
 
             self._transport_park = transport_park_reader.snapshot()
@@ -2583,14 +2493,10 @@ class AudioHealthSampler:
             )
         else:
             latency = _not_applicable_timing()
-        # Computed once here and passed to both _state_issues (below) and
-        # compose_audio_health (which recomputes it from the same
-        # output_hardware/output_topology_snapshot inputs, mirroring how
-        # signal_path itself is deliberately computed raw here and
-        # independently inside compose_audio_health): the two surfaces read
-        # the same value, so they cannot present a different verdict for the
-        # same tick (#2812 S3 — the raw path.outputd_unavailable incident
-        # must not contradict the overall headline when the setup hint wins).
+        # Computed once here and passed to _state_issues below, so the incident
+        # rows and the overall headline cannot present a different verdict for
+        # the same tick: the raw path.outputd_unavailable row must not
+        # contradict the headline when the setup hint wins (#2812).
         undeclared_hardware = _undeclared_hardware_signal(
             output_hardware, self._output_topology_snapshot
         )
@@ -2680,14 +2586,12 @@ class AudioHealthSampler:
         """The transport-park verdict THIS sampler last computed.
 
         ``/state`` reads it from here rather than calling
-        ``transport_park.snapshot()`` again: the household incident rows and
-        the signal-path headline in the same payload were built from this
-        cached value on the sampler's slow cadence, and a second, fresher read
-        would let one response disagree with itself in time — the box parked
-        in ``resilience`` and playing in ``audio_health``.
+        ``transport_park.snapshot()`` again: the incident rows and the
+        signal-path headline in the same payload were built from this cached
+        value, and a fresher read would let one response disagree with itself —
+        the box parked in ``resilience`` and playing in ``audio_health``.
 
-        Falls back to a fresh read only before the first slow tick, when there
-        is no cached verdict to be consistent with yet.
+        Falls back to a fresh read only before the first slow tick.
         """
         from . import transport_park as transport_park_reader
 
@@ -2807,10 +2711,9 @@ class AudioHealthSampler:
                         severity="issue",
                         title="Sound recovered after a brief pause",
                         # No number in the sentence: `skipped_delta` counts
-                        # watchdog ticks missed, i.e. how LONG one stall
-                        # lasted, not how many stalls there were. It rides the
-                        # structured `count` field below, where it is read as
-                        # what it is.
+                        # watchdog ticks missed — how LONG one stall lasted,
+                        # not how many stalls there were. It rides the
+                        # structured `count` field below instead.
                         detail=(
                             "Sound stopped moving through the speaker briefly "
                             "and resumed."
