@@ -1177,6 +1177,8 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
         "desired=peripheral active=peripheral gadget_available=true "
         "management_transport_available=true reason=available"
     ) in result.stderr
+    _assert_publications_agree(tmp_path)
+
 
 
 def _dual_apple_active_topology(tmp_path: Path) -> Path:
@@ -1374,6 +1376,8 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
         "output_dac_id=unknown output_dac_card=A recognized=0 "
         "observed_blockers=saved_composite_partially_present"
     ) in result.stderr
+    _assert_publications_agree(tmp_path)
+
 
 
 def test_reconcile_unparks_when_the_missing_composite_child_returns(
@@ -4030,6 +4034,17 @@ def test_the_coupling_kick_never_blocks(tmp_path: Path):
     assert all("--no-block" in line for line in start_lines), start_lines
 
 
+def _assert_publications_agree(tmp_path: Path) -> None:
+    """After one reconcile pass, JASPER_AUDIO_DAC_ID names what the record's
+    ``active_profile_id`` names — the one contract between the two."""
+    from jasper.env_load import parse_env_file
+    from jasper.output_hardware import active_dac_profile_id, published_dac_id
+
+    env = parse_env_file(str(tmp_path / "jasper.env"))
+    recorded = active_dac_profile_id(tmp_path / "output_hardware.json")
+    assert published_dac_id(env) == (recorded or "unknown")
+
+
 @pytest.mark.parametrize(
     "listing",
     [APPLE_LISTING, DUAL_APPLE_LISTING, INNOMAKER_LISTING, DAC8X_STUDIO_LISTING, ""],
@@ -4041,15 +4056,7 @@ def test_env_publication_names_the_dac_the_record_names(tmp_path: Path, listing:
     reader that took it instead of the record could only answer differently
     if the two publications could differ — so they may not, recognized or not.
     """
-    from jasper.output_hardware import active_dac_profile_id, published_dac_id
-
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    env = {}
-    for line in (tmp_path / "jasper.env").read_text(encoding="utf-8").splitlines():
-        if "=" in line and not line.startswith("#"):
-            key, value = line.split("=", 1)
-            env[key] = value.strip("'\"")
-    recorded = active_dac_profile_id(tmp_path / "output_hardware.json")
-    assert published_dac_id(env) == (recorded or "unknown")
+    _assert_publications_agree(tmp_path)

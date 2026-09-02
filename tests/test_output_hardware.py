@@ -1207,6 +1207,24 @@ def test_active_dac_profile_id_reads_only_the_reconciler_record(
         path,
     )
     assert active_dac_profile_id(path) == APPLE_USB_C_DONGLE_DEVICE_ID
+    # The reconciler's rule: a single DAC counts only while ready; the
+    # dual-Apple composite counts as soon as it is named, parked or not.
+    write_state(
+        OutputHardwareState(
+            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, profile_label="Apple",
+            status="partial", physical_output_count=2,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) is None
+    write_state(
+        OutputHardwareState(
+            profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID, profile_label="Dual",
+            status="partial", physical_output_count=4,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 
     assert published_dac_id({}) == "unknown"
     assert (

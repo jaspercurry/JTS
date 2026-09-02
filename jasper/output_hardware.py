@@ -219,8 +219,19 @@ class OutputHardwareState:
 
     @property
     def active_profile_id(self) -> str | None:
-        """The registered DacProfile this record names, or None for ``unknown``."""
-        return self.profile_id if self.profile_id not in ("", "unknown") else None
+        """The profile the reconciler acts on, or None.
+
+        The rule it publishes as ``JASPER_AUDIO_DAC_ID``: a single DAC counts
+        only while this record is ``ready``; the dual-Apple composite counts as
+        soon as it is named, parked or not, because its helper services are
+        driven either way. Pinned against the reconciler by
+        ``test_env_publication_names_the_dac_the_record_names``.
+        """
+        if self.profile_id in ("", "unknown"):
+            return None
+        if self.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+            return self.profile_id
+        return self.profile_id if self.status == "ready" else None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "OutputHardwareState":
@@ -749,13 +760,14 @@ def active_dac_profile_id(path: str | Path | None = None) -> str | None:
     """The output DAC the audio-hardware reconciler last resolved, or None.
 
     The ONE answer to "which DAC is active" for a live decision (config
-    emission, doctor, the topology draft): the record the reconciler writes.
-    ``JASPER_AUDIO_DAC_ID`` in ``jasper.env`` is the same observation
-    republished by the same pass for consumers that can only read env
-    (jasper-outputd's ExecCondition, the bash AEC reconciler); it persists
-    across a reboot while this ``/run`` record does not, so it can name a DAC
-    that is no longer fitted — read it through :func:`published_dac_id` only
-    when the question is what that publication says.
+    emission, the doctor): the record the reconciler writes, read through
+    :attr:`OutputHardwareState.active_profile_id`. ``JASPER_AUDIO_DAC_ID`` in
+    ``jasper.env`` is the same decision republished by the same pass for
+    consumers that can only read env (jasper-outputd's ExecCondition, the bash
+    AEC reconciler); it persists across a reboot while this ``/run`` record
+    does not, so it can name a DAC that is no longer fitted — read it through
+    :func:`published_dac_id` only when the question is what that publication
+    says.
     """
 
     state = load_state(path)
@@ -771,7 +783,7 @@ def published_dac_id(env: Mapping[str, str]) -> str:
     from this key and records the gate beside it in the same file.
     """
 
-    return env.get("JASPER_AUDIO_DAC_ID") or "unknown"
+    return normalize_output_device_id(env.get("JASPER_AUDIO_DAC_ID"))
 
 
 def current_usb_data_role(

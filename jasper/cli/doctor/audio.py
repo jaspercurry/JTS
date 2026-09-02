@@ -846,35 +846,56 @@ def check_dac_usb_sync_mode() -> CheckResult:
 @doctor_check(order=21, group="audio")
 def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its
-    USB Audio class interfaces when something is plugged into the
-    analog 3.5mm jack. With no analog load, lsusb sees the chip but
-    aplay -l shows no card "A" — and CamillaDSP fails to open the
-    DAC with "Cannot get card index for A".
+    USB Audio class interface when something is plugged into the analog
+    3.5mm jack. With no analog load lsusb sees the chip but no audio card
+    enumerates, so the reconciler's record names no DAC at all.
 
-    This check distinguishes three states so the operator gets a
-    clear signal instead of a generic ALSA error:
+    States, so the operator gets a clear signal instead of a generic
+    ALSA error:
 
-      - dongle absent: USB device not detected → fail
-      - dongle USB-only: idVendor=05ac, idProduct=110a present but
-        no `aplay -l` card with USB Audio class → warn with the
-        actionable message (plug in speakers/headphones)
-      - dongle audio active: card visible → ok
+      - the record names an Apple profile but lsusb shows fewer adapters
+        than that profile needs → fail
+      - the record names an Apple profile and every card it needs → ok
+      - the record names an Apple profile short of a card (a parked
+        dual-Apple pair) → warn
+      - the record names no DAC and the chip is on USB → warn (plug in
+        speakers/headphones)
+      - the record names no DAC and no chip is on USB, or names another
+        DAC → ok, skipped
     """
     state = _output_hardware_state_or_none()
     dac_id = _effective_output_dac_id(state)
-    if not _apple_output_profile_active(dac_id):
+    if dac_id != "unknown" and not _apple_output_profile_active(dac_id):
         return CheckResult(
             "Apple dongle", "ok",
             f"skipped — active output DAC is {dac_id}",
         )
 
-    p = _run(["lsusb"])
-    profile = _dac_profile_for(dac_id)
+    # With nothing in its 3.5mm jack the dongle enumerates no audio card, so a
+    # record naming no DAC cannot see it; the USB bus can.
+    profile = _dac_profile_for(
+        APPLE_USB_C_DONGLE_DEVICE_ID if dac_id == "unknown" else dac_id
+    )
     usb_ids = profile.usb_ids if profile is not None else ()
+    p = _run(["lsusb"])
     usb_count = sum(
         len(re.findall(re.escape(usb_id), p.stdout, re.IGNORECASE))
         for usb_id in usb_ids
     )
+    if dac_id == "unknown":
+        if usb_count == 0:
+            return CheckResult(
+                "Apple dongle", "ok",
+                "skipped — no active output DAC and no Apple dongle on USB",
+            )
+        return CheckResult(
+            "Apple dongle", "warn",
+            f"{usb_count} Apple USB-C adapter(s) on USB but the output-hardware "
+            "record names no audio card for them. Plug speakers/headphones into "
+            "the dongle's 3.5mm jack — the chip stays in low-power mode without "
+            "an analog load — then run "
+            "`sudo systemctl start jasper-audio-hardware-reconcile`.",
+        )
     expected_count = 2 if dac_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID else 1
     if usb_count < expected_count:
         return CheckResult(
@@ -932,12 +953,6 @@ def check_dongle_headphone_at_max() -> CheckResult:
 
     target_pct = int(control.target_percent or 100)
     cards = _apple_dongle_cards_from_state(state)
-    if not cards:
-        return CheckResult(
-            "Dongle headphone gain", "warn",
-            "the output-hardware record names no Apple dongle card — run "
-            "`sudo systemctl start jasper-audio-hardware-reconcile`",
-        )
     low_cards: list[str] = []
     for card_id in cards:
         p = _run(["amixer", "-c", card_id, "sget", control.name])

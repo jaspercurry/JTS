@@ -902,7 +902,6 @@ def unknown_output_hardware() -> OutputHardware:
         device_label="Unknown output device",
         physical_output_count=0,
         clock_domain_id=default_clock_domain_id("unknown", None),
-        clock_domain_label=default_clock_domain_label("unknown"),
     )
 
 

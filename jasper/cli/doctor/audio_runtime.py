@@ -2463,7 +2463,8 @@ def check_ring_conf_floor_render() -> CheckResult:
     (``latency_floor_for``), the period from the conf.d file itself.
 
     Statuses:
-      ok    — no declared floor (the shipped default stands, by rule); a
+      ok    — no active DAC in the reconciler's record (nothing to render);
+              no declared floor (the shipped default stands, by rule); a
               declared floor that is not ``RING_SLOT_FRAMES`` (a documented
               product boundary, not drift — see below); or the conf.d already
               declares the floor's period.
@@ -2540,10 +2541,9 @@ def check_ring_conf_floor_render() -> CheckResult:
     dac_id = active_dac_profile_id()
     if dac_id is None:
         return CheckResult(
-            label, "warn",
-            "the output-hardware record names no active DAC, so the floor this "
-            "conf.d should carry is unknown — run "
-            "`sudo systemctl start jasper-audio-hardware-reconcile`",
+            label, "ok",
+            "skipped — the output-hardware record names no active DAC, so there "
+            "is no declared floor to render",
         )
     floor = latency_floor_for(dac_id)
     # The eligibility half this check cannot read off the conf.d. Appended to

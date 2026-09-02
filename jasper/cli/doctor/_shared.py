@@ -22,7 +22,7 @@ from. It holds, **verbatim from the original**
   domain (``_sha256_file``, ``_meminfo_kb``,
   ``_systemctl_show_property``, ``_pid_of_unit``,
   ``_service_runtime_states`` + ``_RUNTIME_STATE_UNITS``,
-  ``_active_audio_dac_id``, ``_loopback_playback_active``).
+  ``_loopback_playback_active``).
 
 No logic changed in the split. Names that tests patch (e.g.
 ``_run``) stay importable here and are re-imported into each

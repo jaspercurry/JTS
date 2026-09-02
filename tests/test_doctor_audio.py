@@ -31,46 +31,52 @@ from jasper.output_hardware import (
 
 from .doctor_test_support import (
     _fresh_cfg,
+    record_active_dac,
 )
 
 
-def _stage_active_dac(profile_id: str, *, card_id: str | None = None) -> None:
-    """Write the reconciler's record naming ``profile_id`` where the doctor reads it."""
-    children = (
-        (OutputCardFact(card_id=card_id, device_id=profile_id),) if card_id else ()
-    )
-    write_output_hardware_state(
-        OutputHardwareState(
-            profile_id=profile_id,
-            profile_label=profile_id,
-            status="ready",
-            physical_output_count=2,
-            child_devices=children,
-        ),
-        os.environ["JASPER_OUTPUT_HARDWARE_STATE_PATH"],
-    )
+def _lsusb_only(stdout: str):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd == ["lsusb"]:
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        raise AssertionError(cmd)
+    return fake_run
 
 
 def test_apple_dongle_check_never_assumes_apple_without_a_record(monkeypatch):
-    """No reconciler record means no active DAC — not the Apple default the
-    doctor used to fall back to, which ran Apple probes on a DAC8x box."""
-    def fail_probe(*_args, **_kwargs):
-        raise AssertionError("Apple USB probe should not run")
-
+    """No record and no Apple chip on USB is not an Apple box — whatever the
+    env publication says (the doctor used to default to the Apple dongle)."""
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
-    monkeypatch.setattr(doctor.audio, "_run", fail_probe)
+    monkeypatch.setattr(
+        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
+    )
 
     result = doctor.check_apple_dongle_audio()
 
     assert result.status == "ok"
-    assert "active output DAC is unknown" in result.detail
+    assert "no Apple dongle on USB" in result.detail
+
+
+def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated(
+    monkeypatch,
+):
+    """A dongle with nothing in its jack is a USB device and no audio card, so
+    the record names no DAC; the bus is the only place the dongle shows."""
+    monkeypatch.setattr(
+        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+    )
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "warn"
+    assert "3.5mm" in result.detail
 
 
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple USB probe should not run")
 
-    _stage_active_dac("hifiberry_dac8x")
+    record_active_dac("hifiberry_dac8x")
     monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
     result = doctor.check_apple_dongle_audio()
@@ -82,7 +88,7 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
 def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
     calls = []
 
-    _stage_active_dac("apple_usb_c_dongle", card_id="Apple")
+    record_active_dac("apple_usb_c_dongle", card_id="Apple")
 
     def fake_run(cmd, *args, **kwargs):
         calls.append(cmd)
@@ -104,7 +110,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
 
 
 def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
-    _stage_active_dac("apple_usb_c_dongle", card_id="Apple")
+    record_active_dac("apple_usb_c_dongle", card_id="Apple")
     monkeypatch.setattr(
         doctor.audio,
         "_dac_profile_for",
@@ -131,7 +137,7 @@ def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch)
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple mixer probe should not run")
 
-    _stage_active_dac("hifiberry_dac8x")
+    record_active_dac("hifiberry_dac8x")
     monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
     result = doctor.check_dongle_headphone_at_max()
@@ -143,7 +149,7 @@ def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch)
 def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
     calls = []
 
-    _stage_active_dac("apple_usb_c_dongle", card_id="Apple2")
+    record_active_dac("apple_usb_c_dongle", card_id="Apple2")
 
     def fake_run(cmd, *args, **kwargs):
         calls.append(cmd)

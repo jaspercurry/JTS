@@ -269,6 +269,39 @@ def test_unknown_output_hardware_declares_no_outputs() -> None:
     assert unknown.outputs == ()
 
 
+@pytest.mark.parametrize(
+    "hardware,clock_domain_id",
+    [
+        (
+            {
+                "device_id": "hifiberry_dac8x",
+                "device_label": "HiFiBerry DAC8x",
+                "physical_output_count": 8,
+                "card_id": "sndrpihifiberry",
+            },
+            "alsa:sndrpihifiberry",
+        ),
+        (
+            {
+                "device_id": "dual_apple_usb_c_dac_4ch",
+                "device_label": "Dual Apple USB-C DAC 4-channel pair",
+                "physical_output_count": 4,
+            },
+            "profile:dual-apple-usb-c-dac-4ch",
+        ),
+    ],
+)
+def test_loaded_hardware_derives_clock_domain_and_output_labels(
+    hardware, clock_domain_id,
+) -> None:
+    loaded = OutputHardware.from_mapping(hardware)
+
+    assert loaded.clock_domain_id == clock_domain_id
+    assert [output.human_label for output in loaded.outputs] == [
+        f"DAC output {index + 1}" for index in range(hardware["physical_output_count"])
+    ]
+
+
 def test_topology_draft_reads_the_reconciler_record_never_the_env(monkeypatch) -> None:
     """With no usable record the draft is unknown hardware, whatever the env
     publication says — the env copy can outlive the DAC it names."""

@@ -743,6 +743,8 @@ def _dac_details(
             or os.environ.get("JASPER_AUDIO_DAC_CARD")
             or ""
         )
+    # The id is the reconciler's publication and nothing else — no process-env
+    # fallback on purpose, unlike outputd's pcm/card/backend facts above.
     dac_id = published_dac_id(system_env)
     return {
         "id": dac_id,
