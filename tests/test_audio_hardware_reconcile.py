@@ -1166,6 +1166,7 @@ def test_reconcile_dac8x_width_two_graph_arms_the_active_ring(
     tmp_path: Path, graph_kind: str
 ):
     """Both graph layouts drive two outputs, over the same active ring."""
+    args: tuple[str, ...]
     if graph_kind == "active-leader":
         args = ("--reason", "outputd-failure", "--no-restart")
         graph_env = _active_leader_graph_env(tmp_path, channels=2)
