@@ -30,6 +30,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
 )
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from tests.test_crossover_v2_record_store import (
@@ -104,6 +105,37 @@ async def test_the_candidate_axis_separates_two_variants_of_one_pose(store):
 
     assert [row.path for row in found] == [wanted]
     assert [row.candidate_id for row in found] == ["null_a1"]
+
+
+async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
+    store,
+):
+    """The cycle's label reaches the reader through the WALK's own builder.
+
+    Two poses at one bearing, one candidate apart: a per-pose cycle is only
+    worth banking if a reader can afterwards ask for one variant's takes, and
+    the pose record is where that label has to survive.
+    """
+    def _pose_record(index: int, candidate_id: str) -> dict[str, Any]:
+        pose = spatial.LateralPose(
+            pose_id=f"lateral_{index:02d}", index=index, attempt=1,
+            prompt="+0 deg", role="onax", offset_cm=0.0, at_mark=True,
+            curves=(),
+        )
+        return spatial.lateral_pose_record(
+            pose, position_deg=0, lateral_consumer="forward_model",
+            session_id="sess-1", graph_fingerprint="fp-applied",
+            captured_at="2026-08-28T11:22:33Z", wav_sha256=f"sha-{index}",
+            claim=spatial.TakeClaim(candidate_id=candidate_id),
+        )
+
+    wanted = await store.bank(_pose_record(1, "fp-a"))
+    await store.bank(_pose_record(2, "fp-b"))
+
+    found = _found(store, phase=PHASE_LATERAL, candidate_id="fp-a")
+
+    assert [row.path for row in found] == [wanted]
+    assert [row.candidate_id for row in found] == ["fp-a"]
 
 
 @pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_ENTRY_BASELINE])

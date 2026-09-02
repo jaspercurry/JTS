@@ -285,6 +285,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
                 "angle_deg": stop.angle_deg,
                 "regime": stop.regime,
                 "elevation_deg": stop.elevation_deg,
+                "candidate_id": stop.candidate_id,
             }
             for stop in request.stops
         ],
@@ -594,9 +595,11 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
             AngleStop(
                 entry.get("angle_deg"),  # type: ignore[arg-type]
                 str(entry.get("regime")),
-                # A document staged before this key existed is a walk at
-                # mark height, so the schema version does not move.
+                # A document staged before either key existed is a walk at
+                # mark height measuring the speaker as it stands, so the schema
+                # version does not move for them.
                 entry.get("elevation_deg", 0),  # type: ignore[arg-type]
+                str(entry.get("candidate_id") or ""),
             )
         )
     return AngleCaptureRequest(

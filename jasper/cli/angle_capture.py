@@ -82,10 +82,15 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest,
     AngleStop,
     announced_indexes,
+    candidate_measure_axes,
     position_angle_deg,
     request_for_program,
     resolve_request,
     walk_price,
+)
+from jasper.active_speaker.candidate_bank import (
+    CandidateBankRefusal,
+    find_banked_candidate,
 )
 from jasper.active_speaker.angle_capture_spool import (
     AngleRequestRefused,
@@ -240,6 +245,28 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
+    """The banked candidates this walk cycles, judged before it is staged.
+
+    Each fingerprint goes through the bank's own door, so one that names
+    nothing refuses in the bank's vocabulary rather than a second one; what a
+    candidate may VARY is the seam's
+    (:func:`~jasper.active_speaker.angle_capture.candidate_measure_axes`),
+    asked here so a walk no session could play is refused at staging instead of
+    at the open. The speaker's own corner is not compared here -- only the
+    adopting session holds that preset, exactly as the wired-source refusals
+    are the session's.
+    """
+    fingerprints = tuple(
+        field.strip()
+        for field in (args.candidates or "").split(",")
+        if field.strip()
+    )
+    for fingerprint in fingerprints:
+        candidate_measure_axes(find_banked_candidate(fingerprint).candidate)
+    return fingerprints
+
+
 def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
     """The program row ``--program`` names, after the usage rules argparse cannot.
 
@@ -288,7 +315,17 @@ def _build_request(args: argparse.Namespace) -> _Stated:
     """
     if args.program:
         program = _chosen_program(args)
-        return _Stated(request_for_program(program, **_graph_flags(args)), program)
+        return _Stated(
+            request_for_program(
+                program, candidates=_resolved_candidates(args), **_graph_flags(args)
+            ),
+            program,
+        )
+    if args.candidates:
+        args.parser.error(
+            "--candidates goes with --program; a free-form angle list states "
+            "no candidate cycle"
+        )
     regimes = _REGIME_STOPS[args.regime or REGIME_PER_DRIVER]
     return _Stated(
         AngleCaptureRequest(
@@ -359,6 +396,7 @@ def _walk_payload(
     stops = resolve_request(request)
     return {
         "program": request.program,
+        "candidates": sorted({stop.candidate_id for stop in request.stops} - {""}),
         "price": walk_price(request),
         "level": _level_block(level),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
@@ -475,6 +513,11 @@ def _print_walk(payload: dict[str, Any]) -> None:
             else "none (this walk announces nothing on its own)"
         )
     )
+    candidates = payload["candidates"]
+    if candidates:
+        # Only when stated: an ordinary walk measures the speaker as it stands
+        # and has no cycle to name.
+        print(f"  candidates: {', '.join(candidates)}")
     price = payload["price"]
     print(
         f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
@@ -532,6 +575,8 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         stated = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
+    except CandidateBankRefusal as exc:
+        return _refuse(exc, as_json=args.json, reason=exc.code)
     except (CrossoverV2FlowError, GeometryFieldError) as exc:
         return _refuse(exc, as_json=args.json)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
@@ -549,6 +594,8 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         stated = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
+    except CandidateBankRefusal as exc:
+        return _refuse(exc, as_json=args.json, reason=exc.code)
     except (CrossoverV2FlowError, GeometryFieldError) as exc:
         return _refuse(exc, as_json=args.json)
     # The methodology levels the seat before anything measures, so a level this
@@ -610,8 +657,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         choices=PROGRAM_IDS,
         help=(
             "the named measurement program to walk: baseline (the standard "
-            "pose table, sized by --size) or spot (one pose, at --azimuth and "
-            "--elevation). The program owns the geometry"
+            "pose table), tournament (the candidate cycle's few poses, "
+            "multiplied by --candidates), both sized by --size, or spot (one "
+            "pose, at --azimuth and --elevation). The program owns the geometry"
         ),
     )
     source.add_argument(
@@ -629,8 +677,8 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         # No argparse ``choices``: the registry owns the valid set, so an
         # unknown size refuses in its own words and names the real pairs.
         help=(
-            f"which tier of --program baseline, one of {_size_phrase()}. "
-            "Ignored by --program spot, which is one pose either way"
+            f"which tier of a named program, one of {_size_phrase()} for "
+            "baseline. Ignored by --program spot, which is one pose either way"
         ),
     )
     parser.add_argument(
@@ -647,6 +695,17 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "--program spot only: the signed whole-degree bearing above mark "
             "height, negative BELOW. Defaults to mark height"
+        ),
+    )
+    parser.add_argument(
+        "--candidates",
+        help=(
+            "--program only: comma-separated banked candidate fingerprints to "
+            "cycle at every pose, adjacent so the microphone moves once per "
+            "pose. Each is played as the ALIGNMENT it was minted with; a "
+            "candidate carrying linearization EQ, or minted against another "
+            "crossover corner, is refused. Omit to measure the speaker as it "
+            "stands"
         ),
     )
     parser.add_argument(

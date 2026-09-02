@@ -2397,6 +2397,12 @@ jasper-angle-capture stage --program baseline --size express
 jasper-angle-capture plan  --program baseline --size full     # dry run
 jasper-angle-capture stage --program spot --azimuth 22 --elevation 10
 
+# THE CANDIDATE CYCLE: the same poses, once per banked candidate, adjacent so
+# the microphone moves once per pose. Each plays the ALIGNMENT it was minted
+# with; a candidate carrying linearization EQ, or another crossover corner, is
+# refused rather than measured as something it is not.
+jasper-angle-capture stage --program tournament --size full --candidates fp1,fp2
+
 # THE OPERATOR ESCAPE HATCH: a free-form angle list no program names.
 jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
 jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
