@@ -19,6 +19,7 @@ import pathlib
 import pytest
 
 from jasper.sound.live_edit import plan_live_edit
+from tests.test_sound_setup import FakeCamilla
 
 RUNNING = """
 devices:
@@ -172,8 +173,8 @@ def test_only_a_swap_ducks(method, expected_duck):
 # --------------------------------------------------------------------------
 
 
-class _RecordingCamilla:
-    """Answers the raw-config API and records which write vehicle was used.
+class _RecordingCamilla(FakeCamilla):
+    """A ``FakeCamilla`` already running ``running`` before the first write.
 
     ``confirm_path`` is what it reports once a write has landed. Handing back
     a path other than the candidate is how ``apply_dsp_config``'s confirm step
@@ -181,42 +182,14 @@ class _RecordingCamilla:
     """
 
     def __init__(self, current_path: str, running: str, confirm_path=None) -> None:
-        self.current_path = current_path
-        self._running = running
+        super().__init__(current_path)
+        self.running = running
         self._confirm_path = confirm_path
-        self.written = False
-        self.raw_writes: list[bool] = []
-        self.path_loads: list[str] = []
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-        if self.written and self._confirm_path is not None:
+        if self._confirm_path is not None and (self.loaded_path or self.ducks):
             return self._confirm_path
-        return self.current_path
-
-    async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
-        return self._running
-
-    async def normalize_config_raw(
-        self, config: str, *, best_effort: bool = False,
-    ) -> str:
-        return config
-
-    async def set_active_config_raw(
-        self, config: str, *, best_effort: bool = False, duck: bool = True,
-    ) -> bool:
-        self.raw_writes.append(duck)
-        self.written = True
-        return True
-
-    async def set_config_file_path(
-        self, path: str, *, best_effort: bool = False,
-    ) -> bool:
-        self.path_loads.append(path)
-        # A real controller reports the file it was told to load, and the
-        # confirm step reads that back.
-        self.current_path = path
-        self.written = True
-        return True
+        return await super().get_config_file_path(best_effort=best_effort)
 
 
 def _carrier_emitting(wanted: str):
@@ -302,8 +275,8 @@ async def test_a_durable_save_ducks_only_when_the_live_rule_says_swap(
 
     await _save(tmp_path, monkeypatch, cam, wanted)
 
-    assert cam.raw_writes == ([False] if quiet else [])
-    assert cam.path_loads == ([] if quiet else [str(current)])
+    assert cam.ducks == ([False] if quiet else [])
+    assert cam.set_calls == ([] if quiet else [str(current)])
 
 
 @pytest.mark.parametrize(
@@ -326,8 +299,8 @@ async def test_a_save_that_moves_a_broadband_trim_is_written_in_place(
         tmp_path, monkeypatch, cam, running.replace("gain: 0.0", "gain: -12.0"),
     )
 
-    assert cam.raw_writes == [False]
-    assert cam.path_loads == []
+    assert cam.ducks == [False]
+    assert cam.set_calls == []
 
 
 async def test_a_save_onto_a_different_file_keeps_its_duck(tmp_path, monkeypatch):
@@ -341,8 +314,8 @@ async def test_a_save_onto_a_different_file_keeps_its_duck(tmp_path, monkeypatch
 
     await _save(tmp_path, monkeypatch, cam, RUNNING, audition=True)
 
-    assert cam.raw_writes == []
-    assert len(cam.path_loads) == 1
+    assert cam.ducks == []
+    assert len(cam.set_calls) == 1
 
 
 async def test_a_controller_without_the_raw_api_keeps_its_duck(tmp_path, monkeypatch):
@@ -364,8 +337,8 @@ async def test_a_controller_without_the_raw_api_keeps_its_duck(tmp_path, monkeyp
 
     await _save(tmp_path, monkeypatch, cam, RUNNING)
 
-    assert cam.raw_writes == []
-    assert cam.path_loads == [str(current)]
+    assert cam.ducks == []
+    assert cam.set_calls == [str(current)]
 
 
 async def test_a_rollback_never_reuses_the_quiet_write(tmp_path, monkeypatch):
@@ -391,5 +364,5 @@ async def test_a_rollback_never_reuses_the_quiet_write(tmp_path, monkeypatch):
         )
 
     # One quiet candidate load, then the rollback down the file loader.
-    assert cam.raw_writes == [False]
-    assert cam.path_loads == [str(current)]
+    assert cam.ducks == [False]
+    assert cam.set_calls == [str(current)]
