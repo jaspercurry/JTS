@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
@@ -162,15 +162,24 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
     )
 
 
-def _read_resilience_state() -> dict[str, Any] | None:
+def _read_control_payload(
+    fetch: Callable[..., dict[str, Any]], *keys: str
+) -> dict[str, Any] | None:
+    """Fetch a jasper-control HTTP payload and drill into nested dict
+    ``keys``, fail-soft to None on any transport error or shape mismatch."""
     try:
-        from ...control import client as control
-
-        state = control.get_state(timeout=2.0)
+        payload: Any = fetch(timeout=2.0)
     except (OSError, RuntimeError, ValueError):
         return None
-    resilience = state.get("resilience") if isinstance(state, dict) else None
-    return resilience if isinstance(resilience, dict) else None
+    for key in keys:
+        payload = payload.get(key) if isinstance(payload, dict) else None
+    return payload if isinstance(payload, dict) else None
+
+
+def _read_resilience_state() -> dict[str, Any] | None:
+    from ...control import client as control
+
+    return _read_control_payload(control.get_state, "resilience")
 
 
 @doctor_check(order=40.5, group="resilience")
@@ -184,6 +193,60 @@ def check_supervisor_runtime_snapshots() -> CheckResult:
             "skipped — jasper-control /state unavailable",
         )
     return _classify_supervisor_snapshots(resilience)
+
+
+# vcgencmd get_throttled bit layout (Pi firmware, not ours to rename): raw
+# bit 0 = under-voltage detected now, raw bit 16 = under-voltage has occurred
+# since boot. jasper.control.system_metrics._read_throttled() already splits
+# the raw value into (throttled_now=raw & 0xF, throttled_history=(raw >> 16)
+# & 0xF) before publishing it in /system/snapshot's metrics.current, so the
+# published throttled_history is pre-shifted — its own bit 0 is raw bit 16.
+# Doctor reads that published pair instead of shelling out to vcgencmd itself.
+_UNDER_VOLTAGE_NOW_BIT = 0x1
+_UNDER_VOLTAGE_HISTORY_BIT = 0x1
+
+
+def _read_system_metrics_current() -> dict[str, Any] | None:
+    from ...control import client as control
+
+    return _read_control_payload(control.get_system_snapshot, "metrics", "current")
+
+
+@doctor_check(order=40.6, group="resilience")
+def check_supply_voltage() -> CheckResult:
+    """Surface the Pi firmware's under-voltage flags. jasper-control's
+    system-metrics sampler already polls ``vcgencmd get_throttled`` on a
+    timer; doctor is a one-shot CLI and must not add a second poller."""
+    name = "Supply voltage"
+    current = _read_system_metrics_current()
+    if current is None:
+        return CheckResult(name, "ok", "n/a — jasper-control /system/snapshot unavailable")
+    now_bits = current.get("throttled_now")
+    history_bits = current.get("throttled_history")
+    if not isinstance(now_bits, int) or not isinstance(history_bits, int):
+        return CheckResult(name, "ok", "n/a — throttled bits not reported")
+    if now_bits & _UNDER_VOLTAGE_NOW_BIT:
+        return CheckResult(
+            name, "fail",
+            f"under-voltage NOW — throttled={hex(now_bits)}, bit 0 set. "
+            "Bit 0 is the Pi firmware's under-voltage-detected flag "
+            "(`vcgencmd get_throttled`). Check the power supply and cable.",
+        )
+    if history_bits & _UNDER_VOLTAGE_HISTORY_BIT:
+        return CheckResult(
+            name, "warn",
+            f"under-voltage occurred since boot — throttled_history="
+            f"{hex(history_bits)}, bit 0 set (raw vcgencmd bit 16 — "
+            "jasper-control publishes throttled_history pre-shifted). This "
+            "is the Pi firmware's under-voltage-has-occurred flag "
+            "(`vcgencmd get_throttled`); not active now, but the supply was "
+            "marginal at some point since the last boot.",
+        )
+    return CheckResult(
+        name, "ok",
+        f"no under-voltage flags (throttled_now={hex(now_bits)}, "
+        f"throttled_history={hex(history_bits)})",
+    )
 
 
 # Wall-clock skew tolerance before a future-dated last-reboot timestamp

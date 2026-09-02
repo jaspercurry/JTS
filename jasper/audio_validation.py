@@ -1136,22 +1136,19 @@ def _bridge_stats_check(stats: Mapping[str, Any] | None, now: datetime) -> dict[
     return _check("pass", summary="AEC bridge counters are clean.", observed=observed)
 
 
-def _measured_drift_delay_check(journal_text: str | None) -> dict[str, JsonValue]:
-    drift_warnings = None
-    if journal_text is not None:
-        drift_warnings = len(
-            re.findall(r"stale ref frames.*drift|drift.*stale ref frames", journal_text),
-        )
+def _measured_drift_delay_check() -> dict[str, JsonValue]:
+    """Always not_run: this readiness snapshot never plays calibration
+    audio or opens capture streams, so no run has produced a drift or
+    delay measurement to report. The bridge stopped emitting a drift
+    log signature in PR #157 (2026-05-19), so there is nothing left to
+    count even if a run did happen to read the journal."""
     return _check(
         "not_run",
         summary=(
             "Drift and fixed delay were not measured. This readiness snapshot "
             "does not play calibration audio or open capture streams."
         ),
-        observed=(
-            {"recent_bridge_drift_warnings": drift_warnings}
-            if drift_warnings is not None else None
-        ),
+        observed=None,
         expected={"hardware_validation": "operator-controlled playback/capture run"},
     )
 
@@ -1695,8 +1692,10 @@ def build_chip_aec_readiness_artifact(
         bridge_stats = _read_bridge_stats()
     if voice_wake_legs is None:
         voice_wake_legs = _read_voice_wake_legs()
-    if bridge_journal_text is None:
-        bridge_journal_text = _recent_bridge_journal()
+    # bridge_journal_text is accepted for API stability (callers up the chain
+    # still thread it through) but unused: _measured_drift_delay_check no
+    # longer reads a journal, so filling a None default with a real
+    # `journalctl` fetch here would be pure waste.
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
@@ -1737,7 +1736,7 @@ def build_chip_aec_readiness_artifact(
         "dac_reference": _dac_reference_check(outputd_status),
         "wake_legs": _wake_legs_check(runtime, voice_wake_legs),
         "bridge_counters": _bridge_stats_check(bridge_stats, now),
-        "measured_drift_delay": _measured_drift_delay_check(bridge_journal_text),
+        "measured_drift_delay": _measured_drift_delay_check(),
     }
     status = _rollup_status(checks)
     return make_artifact(

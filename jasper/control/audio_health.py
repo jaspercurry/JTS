@@ -370,7 +370,10 @@ def _transport_state(
     ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
     loosely because this module imports the topology layer lazily.
     """
-    from ..active_speaker.playback_route import active_lane_capability_gap
+    from ..active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
     from ..audio_runtime_plan import transport_coherence_report
 
     report = transport_coherence_report(
@@ -382,7 +385,9 @@ def _transport_state(
     return {
         "coherence_errors": list(report.errors),
         "coherence_notes": list(report.notes),
-        "capability_gap": gap.to_dict() if gap is not None else None,
+        # An unrecognized DAC profile carries no capability_gap: it is not
+        # proof of a gap, only the absence of a profile to check.
+        "capability_gap": gap.to_dict() if isinstance(gap, ActiveLaneCapabilityGap) else None,
     }
 
 
@@ -396,7 +401,10 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     this reason rather than instead of it.
     """
     from ..active_speaker.environment import read_camilla_statefile_config_path
-    from ..active_speaker.playback_route import active_lane_capability_gap
+    from ..active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
     from ..active_speaker.runtime_contract import (
         active_graph_is_parked,
         parked_muted_exits,
@@ -428,7 +436,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
             f"({parked_muted_exits(topology)})"
         ],
         "coherence_notes": [],
-        "capability_gap": gap.to_dict() if gap is not None else None,
+        "capability_gap": gap.to_dict() if isinstance(gap, ActiveLaneCapabilityGap) else None,
     }
 
 

@@ -29,6 +29,7 @@ SERVER_SRC = (ROOT / "jasper" / "control" / "server.py").read_text()
 # exists in the server.
 CLIENT_PATHS = [
     "/state",
+    "/system/snapshot",
     "/healthz",
     "/volume/adjust",
     "/volume/set",

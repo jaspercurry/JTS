@@ -3004,18 +3004,35 @@ def _transport_route_remedy() -> str:
     lane, so recommending it sends an operator into a loop. Naming the
     reconciler stays right for the reconcilable case: an active-capable DAC
     whose generated env has drifted.
+
+    A third branch — the layout needs a roleful graph but the DAC's
+    ``device_id`` has no registered profile at all — gets its own sentence
+    rather than falling into either bucket: the reconciler is not proven
+    futile there (no profile says it *can't* work), but it is not proven to
+    help either, so naming it alone would be a guess dressed as a remedy.
     """
-    from jasper.active_speaker.playback_route import active_lane_capability_gap
+    from jasper.active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        UnrecognizedDacProfile,
+        active_lane_capability_gap,
+    )
     from jasper.output_topology import load_output_topology
 
     gap = active_lane_capability_gap(load_output_topology())
-    if gap is not None:
+    if isinstance(gap, ActiveLaneCapabilityGap):
         return (
             f". {gap.device_label} does not support the active speaker lane, so "
             "this cannot be reconciled: choose a passive speaker layout on this "
             "speaker's /sound/setup/ page (passive sends full-range audio to "
             "every output — only safe when the speaker has its own built-in "
             "passive crossover), or attach an active-capable DAC."
+        )
+    if isinstance(gap, UnrecognizedDacProfile):
+        return (
+            f". DAC profile {gap.device_id!r} is not recognized, so whether it "
+            "supports the active speaker lane is unknown: "
+            "jasper-audio-hardware-reconcile may not help here until a profile "
+            "for this DAC exists."
         )
     return (
         ". Run jasper-audio-hardware-reconcile to restore the paired "
