@@ -28,9 +28,8 @@ module, and outputd's Rust config), in three languages that cannot import each
 other. Nothing but this test ties them together, and a disagreement is silent
 in the worst direction: the ioplug reports a geometry mismatch as a hard
 ``-EINVAL`` at attach against an existing header, and reports nothing at all
-before the ring exists. The load-bearing one is SLOT == READER PERIOD, which is
-the whole reason this ring is a sibling of the grouping ring rather than a
-second user of it.
+before the ring exists. The load-bearing one is SLOT == READER PERIOD, which on
+every DAC-floored box is the ring slot the whole box already uses (#3656).
 
 **T-3 — the installer places it, and the deploy DOES unlink its ring file.**
 The second half is the asymmetry with the grouping ring and is deliberate; the
@@ -44,6 +43,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_CHANNELS,
     DAC_CONTENT_RING_CONF_D,
@@ -200,9 +200,8 @@ def test_the_dac_content_ring_geometry_is_inside_the_plugins_bounds():
     conf.d edit. If JTS_RING_MAX_SLOTS ever moves, this line should be
     re-decided deliberately rather than drifting along with it.
 
-    The byte check is the one the 8x-larger slot actually needs: a 1024-frame
-    slot is 8x the grouping ring's, so ``JTS_RING_MAX_SLOT_BYTES`` stops being
-    obviously satisfied and becomes a real bound (4096 of 65536 today).
+    The byte check rides along because the slot is a geometry a conf.d edit can
+    move: ``JTS_RING_MAX_SLOT_BYTES`` is a real bound (512 of 65536 today).
     """
     header = _read(_IOPLUG_H)
     min_slots = _c_define("JTS_RING_MIN_SLOTS", header)
@@ -294,29 +293,30 @@ def test_the_confd_block_and_the_python_constants_agree(key, constant):
     )
 
 
-def test_the_dac_content_ring_slot_is_one_outputd_dac_period():
-    """SLOT == READER PERIOD. The invariant that makes this a separate ring.
+def test_the_dac_content_ring_slot_is_the_boxs_ring_slot():
+    """SLOT == READER PERIOD, and that period is the box's ring slot (#3656).
 
     outputd consumes exactly one slot per DAC period, so a slot that is not the
-    reader's period leaves it holding a partial slot every period — which is
-    also the reason this ring exists at all rather than reusing
-    ``jts_ring_grouping``, whose CamillaDSP reader sips 128 frames. Read off the
-    Rust constant that owns the number, so a period change in outputd fails HERE
-    rather than as a geometry mismatch on metal.
+    reader's period leaves it holding a partial slot every period. Every DAC
+    profile that declares a latency floor runs outputd at
+    :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`, so this ring takes the same
+    slot every other ring on the box uses rather than a number of its own — a
+    profile that runs any other period cannot arm the lane, which is what
+    outputd's own config guard says.
     """
-    m = re.search(
-        r"^pub const DEFAULT_PERIOD_FRAMES:\s*u32\s*=\s*(\d+)\s*;",
-        _read(_OUTPUTD_CONFIG_RS),
-        re.MULTILINE,
-    )
-    assert m is not None, (
-        "could not find DEFAULT_PERIOD_FRAMES in "
-        f"{_OUTPUTD_CONFIG_RS.name} — this derivation needs re-deriving"
-    )
-    assert DAC_CONTENT_RING_PERIOD_FRAMES == int(m.group(1)), (
-        f"the DAC-content ring's slot ({DAC_CONTENT_RING_PERIOD_FRAMES}) and "
-        f"outputd's DAC period ({m.group(1)}) have to be one number; changing "
-        "either alone makes the reader hold a partial slot every period"
+    assert DAC_CONTENT_RING_PERIOD_FRAMES == RING_SLOT_FRAMES
+
+    from jasper.audio_hardware.dac import all_profiles
+
+    floors = {
+        p.latency_floor.outputd_period_frames
+        for p in all_profiles()
+        if p.latency_floor is not None
+    }
+    assert floors == {RING_SLOT_FRAMES}, (
+        f"a DAC profile declares an outputd period outside {RING_SLOT_FRAMES}: "
+        f"{sorted(floors)}. The return ring's slot is that period — re-decide "
+        "this ring's geometry in the same commit."
     )
 
 
@@ -325,6 +325,11 @@ def test_the_dac_content_ring_slot_is_one_outputd_dac_period():
     [
         ("DEFAULT_DAC_CONTENT_RING_PATH", "&str", DAC_CONTENT_RING_FILE),
         ("DAC_CONTENT_RING_SLOTS", "u32", DAC_CONTENT_RING_SLOTS),
+        (
+            "DAC_CONTENT_RING_PERIOD_FRAMES",
+            "u32",
+            DAC_CONTENT_RING_PERIOD_FRAMES,
+        ),
     ],
 )
 def test_the_reader_side_rust_constants_agree_with_the_python_ones(
@@ -394,8 +399,7 @@ def test_the_ring_readers_rate_is_the_one_rate_this_box_runs():
     for it; the ioplug inherits it and this literal is where it enters the
     ring's geometry. It is VALIDATED rather than negotiated: the geometry goes
     field-by-field against the live header at attach, so a changed rate here
-    presents as a refused attach, not a resample. The depth claim this module
-    documents is computed from the same number.
+    presents as a refused attach, not a resample.
     """
     rates = re.findall(
         r"^\s*rate:\s*([\d_]+)\s*,",
@@ -408,33 +412,8 @@ def test_the_ring_readers_rate_is_the_one_rate_this_box_runs():
         "another rate would leave this checking only the first."
     )
     assert int(rates[0].replace("_", "")) == _RING_RATE_HZ, (
-        f"the ring reader pins {rates[0]} Hz where this tree's depth and "
-        f"timing claims are computed at {_RING_RATE_HZ} Hz"
-    )
-
-
-def test_the_dac_content_ring_is_deeper_in_time_than_the_grouping_ring():
-    """The depth claim the module's comment makes, checked rather than asserted.
-
-    Both rings sit at the plugin's 16-slot ceiling, so the ONLY thing that
-    separates 341 ms of cushion from 43 ms is the slot — which is the reader's
-    period. This pins the consequence, so a future edit that "unifies" the two
-    geometries has to explain where the leader's cushion went.
-    """
-    from jasper.multiroom.grouping_ring import (
-        GROUPING_RING_PERIOD_FRAMES,
-        GROUPING_RING_SLOTS,
-    )
-
-    assert DAC_CONTENT_RING_PERIOD_FRAMES > GROUPING_RING_PERIOD_FRAMES
-    dac_frames = DAC_CONTENT_RING_PERIOD_FRAMES * DAC_CONTENT_RING_SLOTS
-    grouping_frames = GROUPING_RING_PERIOD_FRAMES * GROUPING_RING_SLOTS
-    assert dac_frames > grouping_frames
-    # The rate this depth is computed at is the one the reader pins, checked
-    # against the Rust literal by the rate test above.
-    assert round(dac_frames / _RING_RATE_HZ * 1000) == 341, (
-        f"the module documents 341 ms of depth; the geometry now buys "
-        f"{dac_frames / _RING_RATE_HZ * 1000:.0f} ms"
+        f"the ring reader pins {rates[0]} Hz where this tree's timing claims "
+        f"are computed at {_RING_RATE_HZ} Hz"
     )
 
 
@@ -521,10 +500,9 @@ def test_the_deploy_unlinks_the_dac_content_ring_file():
       ``StartLimitBurst=5`` + ``StartLimitAction=reboot`` — the same escalation
       as ``jasper-fanin``. A stale-geometry ring is a fatal attach, and five of
       those reboot the box mid-install.
-    * Its geometry is DERIVED from outputd's own ``DEFAULT_PERIOD_FRAMES``, so
-      the deploy that changes that number is exactly the deploy that leaves a
-      stale header behind. The grouping ring's geometry has no such coupling to
-      a value a deploy can move.
+    * Its geometry is DERIVED from the box's ring slot (``RING_SLOT_FRAMES``),
+      so the deploy that changes that number is exactly the deploy that leaves a
+      stale header behind.
 
     ``jasper-snapclient.service`` — the WRITER, and the reason ``grouping.ring``
     stays out — carries ``StartLimitBurst=6`` and no ``StartLimitAction``. That
