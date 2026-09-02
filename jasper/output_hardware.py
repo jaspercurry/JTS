@@ -217,6 +217,43 @@ class OutputHardwareState:
     observed_at: str | None = None
     usb_data_role: UsbPortRoleState | None = None
 
+    @property
+    def observed_profile_id(self) -> str | None:
+        """The profile this record NAMES, or None if it named none.
+
+        Answers "what hardware did the reconciler see", whatever ``status``
+        says about its usability — the right question for diagnostics
+        (jasper-doctor's hardware checks) and the topology wizard, both of
+        which must describe attached hardware even when it is only partly
+        usable. See :attr:`active_profile_id` for "what does the box drive".
+        """
+        return None if self.profile_id in ("", "unknown") else self.profile_id
+
+    @property
+    def active_profile_id(self) -> str | None:
+        """The profile the reconciler DRIVES, or None.
+
+        Answers "what does the box play through" — the right question for
+        config emission (the conf.d floor render), never for diagnostics,
+        which want :attr:`observed_profile_id` instead. Mirrors
+        ``apply_observed_single_policy`` /
+        ``apply_observed_composite_policy`` in
+        ``deploy/bin/jasper-audio-hardware-reconcile`` bit for bit: a single
+        DAC counts only while this record is ``ready`` AND names the card it
+        selected; the dual-Apple composite counts as soon as it is named,
+        parked or not, because its helper services are driven either way.
+        Pinned against the reconciler by
+        ``test_env_publication_names_the_dac_the_record_names``.
+        """
+        observed = self.observed_profile_id
+        if observed is None:
+            return None
+        if observed == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+            return observed
+        if self.status == "ready" and self.selected_card_id:
+            return observed
+        return None
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "OutputHardwareState":
         children = tuple(
@@ -738,6 +775,40 @@ def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
     if raw.get("kind") != OUTPUT_HARDWARE_STATE_KIND:
         return None
     return OutputHardwareState.from_mapping(raw)
+
+
+def active_dac_profile_id(path: str | Path | None = None) -> str | None:
+    """The output DAC the audio-hardware reconciler DRIVES, or None.
+
+    The ONE answer to "what does the box play through" for a live decision
+    (config emission, the conf.d floor render): the record the reconciler
+    writes, read through :attr:`OutputHardwareState.active_profile_id`. For
+    "what hardware did the reconciler see" (doctor's hardware diagnostics,
+    the topology wizard) read
+    :attr:`OutputHardwareState.observed_profile_id` instead — see that
+    property for the difference. ``JASPER_AUDIO_DAC_ID`` in ``jasper.env`` is
+    the same driven decision republished by the same pass for consumers that
+    can only read env (jasper-outputd's ExecCondition, the bash AEC
+    reconciler); it persists across a reboot while this ``/run`` record does
+    not, so it can name a DAC that is no longer fitted — read it through
+    :func:`published_dac_id` only when the question is what that publication
+    says.
+    """
+
+    state = load_state(path)
+    return None if state is None else state.active_profile_id
+
+
+def published_dac_id(env: Mapping[str, str]) -> str:
+    """The DAC identity the reconciler published to ``env`` (``unknown`` if none).
+
+    Reads an env SNAPSHOT — a parsed ``jasper.env`` — never the live record;
+    see :func:`active_dac_profile_id` for the difference. For the AEC gate
+    family this is the right question: the bash AEC reconciler derives the gate
+    from this key and records the gate beside it in the same file.
+    """
+
+    return normalize_output_device_id(env.get("JASPER_AUDIO_DAC_ID"))
 
 
 def current_usb_data_role(

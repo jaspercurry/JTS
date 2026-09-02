@@ -610,6 +610,7 @@ def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
             profile_label="InnoMaker HiFi AMP Pro",
             status="ready",
             physical_output_count=2,
+            selected_card_id="innomaker_hifi_amp_pro",
         ),
         state_path,
     )

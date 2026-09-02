@@ -3323,6 +3323,24 @@ def test_active_speaker_stage_config_route_requires_current_preview(
     }
 
 
+def _record_dac8x() -> None:
+    """The reconciler's record for a ready DAC8x, at the path conftest isolates."""
+    write_output_hardware_state(
+        OutputHardwareState(
+            profile_id="hifiberry_dac8x",
+            profile_label="HiFiBerry DAC8x",
+            status="ready",
+            physical_output_count=8,
+            selected_card_id="sndrpihifiberry",
+            selected_pcm="hw:CARD=sndrpihifiberry,DEV=0",
+            child_devices=(
+                OutputCardFact(card_id="sndrpihifiberry", device_id="hifiberry_dac8x"),
+            ),
+        ),
+        os.environ["JASPER_OUTPUT_HARDWARE_STATE_PATH"],
+    )
+
+
 def test_sound_output_topology_payload_is_no_audio_draft(
     monkeypatch,
     tmp_path: Path,
@@ -3331,8 +3349,7 @@ def test_sound_output_topology_payload_is_no_audio_draft(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
-    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
-    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+    _record_dac8x()
 
     envelope = sound_setup._output_topology_payload()
     payload = envelope["output_topology"]
@@ -5156,8 +5173,7 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
-    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
-    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+    _record_dac8x()
     try:
         server, base = _start_sound_server(tmp_path)
     except PermissionError:

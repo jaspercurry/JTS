@@ -31,19 +31,52 @@ from jasper.output_hardware import (
 
 from .doctor_test_support import (
     _fresh_cfg,
+    record_active_dac,
 )
+
+
+def _lsusb_only(stdout: str):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd == ["lsusb"]:
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        raise AssertionError(cmd)
+    return fake_run
+
+
+def test_apple_dongle_check_never_assumes_apple_without_a_record(monkeypatch):
+    """No record and no Apple chip on USB is not an Apple box — whatever the
+    env publication says (the doctor used to default to the Apple dongle)."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
+    monkeypatch.setattr(
+        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
+    )
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "ok"
+    assert "no Apple dongle on USB" in result.detail
+
+
+def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated(
+    monkeypatch,
+):
+    """A dongle with nothing in its jack is a USB device and no audio card, so
+    the record names no DAC; the bus is the only place the dongle shows."""
+    monkeypatch.setattr(
+        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+    )
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "warn"
+    assert "3.5mm" in result.detail
 
 
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple USB probe should not run")
 
-    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
-    monkeypatch.setattr(
-        doctor._shared,
-        "_shared_parse_env_file",
-        lambda _path: {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
-    )
+    record_active_dac("hifiberry_dac8x")
     monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
     result = doctor.check_apple_dongle_audio()
@@ -55,12 +88,7 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
 def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
     calls = []
 
-    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
-    monkeypatch.setattr(
-        doctor._shared,
-        "_shared_parse_env_file",
-        lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
-    )
+    record_active_dac("apple_usb_c_dongle", card_id="Apple")
 
     def fake_run(cmd, *args, **kwargs):
         calls.append(cmd)
@@ -70,12 +98,6 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
                 stdout="Bus 001 Device 002: ID 05AC:110A Apple\n",
                 stderr="",
             )
-        if cmd == ["aplay", "-l"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="card 2: Apple [Apple USB-C to 3.5mm Headphone Jack]\n",
-                stderr="",
-            )
         raise AssertionError(cmd)
 
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
@@ -83,16 +105,12 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
     result = doctor.check_apple_dongle_audio()
 
     assert result.status == "ok"
-    assert calls == [["lsusb"], ["aplay", "-l"]]
+    # The audio card comes from the reconciler's record, never a second probe.
+    assert calls == [["lsusb"]]
 
 
 def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
-    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
-    monkeypatch.setattr(
-        doctor._shared,
-        "_shared_parse_env_file",
-        lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
-    )
+    record_active_dac("apple_usb_c_dongle", card_id="Apple")
     monkeypatch.setattr(
         doctor.audio,
         "_dac_profile_for",
@@ -106,12 +124,6 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
                 stdout="Bus 001 Device 002: ID 1234:ABCD Test adapter\n",
                 stderr="",
             )
-        if cmd == ["aplay", "-l"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="card 2: Apple [Apple USB-C to 3.5mm Headphone Jack]\n",
-                stderr="",
-            )
         raise AssertionError(cmd)
 
     monkeypatch.setattr(doctor.audio, "_run", fake_run)
@@ -121,16 +133,26 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
     assert result.status == "ok"
 
 
+def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch):
+    """This check reads observed hardware, not whether the reconciler drives
+    it: a partial record still names the card it saw, so a parked single
+    dongle with an analog load reports ok, not the 'no audio card' warn."""
+    record_active_dac("apple_usb_c_dongle", card_id="A", status="partial")
+    monkeypatch.setattr(
+        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+    )
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "ok"
+    assert "A" in result.detail
+
+
 def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple mixer probe should not run")
 
-    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
-    monkeypatch.setattr(
-        doctor._shared,
-        "_shared_parse_env_file",
-        lambda _path: {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
-    )
+    record_active_dac("hifiberry_dac8x")
     monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
     result = doctor.check_dongle_headphone_at_max()
@@ -142,16 +164,7 @@ def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch)
 def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
     calls = []
 
-    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
-    monkeypatch.delenv("JASPER_AUDIO_DAC_CARD", raising=False)
-    monkeypatch.setattr(
-        doctor._shared,
-        "_shared_parse_env_file",
-        lambda _path: {
-            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
-            "JASPER_AUDIO_DAC_CARD": "Apple2",
-        },
-    )
+    record_active_dac("apple_usb_c_dongle", card_id="Apple2")
 
     def fake_run(cmd, *args, **kwargs):
         calls.append(cmd)
@@ -735,6 +748,24 @@ _I2S_STATE = OutputHardwareState(
     ),
 )
 
+# A partial record — e.g. a saved topology mismatch (apply_saved_topology_policy)
+# — still NAMES this I2S DAC; the check asks what hardware was observed, not
+# whether the reconciler is driving it.
+_I2S_STATE_PARTIAL = OutputHardwareState(
+    profile_id="hifiberry_dac8x",
+    profile_label="HiFiBerry DAC8x",
+    status="partial",
+    physical_output_count=8,
+    child_devices=(
+        OutputCardFact(
+            card_id="DAC8x",
+            device_id="hifiberry_dac8x",
+            endpoint_sync=None,
+            has_playback=True,
+        ),
+    ),
+)
+
 
 def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
     """Chip-AEC is moot without the mic, so the output probe must not run."""
@@ -756,9 +787,12 @@ def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
         (_sync_mode_state("ASYNC"), "warn", "async USB playback endpoint"),
         # A HiFiBerry/I2S HAT is a known profile with no USB endpoint sync tag.
         (_I2S_STATE, "ok", "I2S clock slave"),
+        # A partial record still names the I2S DAC it observed, so this stays
+        # the ok/I2S branch rather than falling through to "profile is unknown".
+        (_I2S_STATE_PARTIAL, "ok", "I2S clock slave"),
         (None, "warn", "output hardware state unavailable"),
     ],
-    ids=["sync", "adaptive", "async", "i2s", "state-unavailable"],
+    ids=["sync", "adaptive", "async", "i2s", "i2s-partial", "state-unavailable"],
 )
 def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, must_name):
     monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
