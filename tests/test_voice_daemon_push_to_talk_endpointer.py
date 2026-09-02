@@ -25,6 +25,8 @@ import logging
 import numpy as np
 import pytest
 
+from tests._log_events import event_fields, event_records
+
 
 class _SpyTurn:
     """LiveTurn stand-in exposing the forward + end-of-input surface."""
@@ -296,14 +298,13 @@ def test_hold_cap_warns_when_a_low_idle_timeout_squeezes_the_model(caplog):
     assert (
         wl._cfg.idle_timeout_sec - cap < PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
     )
-    warns = [
-        r for r in caplog.records
-        if "manual_mic.idle_timeout_too_low" in r.getMessage()
-    ]
-    assert len(warns) == 1
-    assert "needs_sec=11.0" in warns[0].getMessage()
+    # Exactly one record is the one-shot latch; the fields are the verdict.
+    fields = event_fields(caplog, "manual_mic.idle_timeout_too_low")
+    assert float(fields["needs_sec"]) == 11.0
+    assert float(fields["cap_sec"]) == float(PTT_MIN_INPUT_CAP_SEC)
+    assert float(fields["idle_timeout_sec"]) == float(wl._cfg.idle_timeout_sec)
     # ...and NOT the louder band's event: here the cap does still fire.
-    assert "manual_mic.hold_cap_unreachable" not in caplog.text
+    assert event_records(caplog, "manual_mic.hold_cap_unreachable") == []
 
 
 @pytest.mark.parametrize(
@@ -343,7 +344,7 @@ def test_hold_cap_degraded_bands_are_reported_distinctly(
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         wl._ptt_input_cap_sec()
 
-    fired = {name for name in both if name in caplog.text}
+    fired = {name for name in both if event_records(caplog, name)}
     assert fired == ({expected_event} if expected_event else set()), (
         f"idle_timeout_sec={idle_timeout} should report "
         f"{expected_event or 'nothing'}, got {fired or 'nothing'}"
@@ -372,14 +373,13 @@ def test_a_very_low_idle_timeout_makes_the_cap_unreachable_and_says_so(caplog):
 
     assert cap == PTT_MIN_INPUT_CAP_SEC
     assert cap >= wl._cfg.idle_timeout_sec  # the watchdog gets there first
-    warns = [
-        r for r in caplog.records
-        if "manual_mic.hold_cap_unreachable" in r.getMessage()
-    ]
-    assert len(warns) == 1
+    # Exactly one record is the shared one-shot latch holding.
+    fields = event_fields(caplog, "manual_mic.hold_cap_unreachable")
+    assert float(fields["cap_sec"]) == float(PTT_MIN_INPUT_CAP_SEC)
+    assert float(fields["idle_timeout_sec"]) == float(wl._cfg.idle_timeout_sec)
     # The two bands are distinct verdicts and must not be conflated: the
-    # softer message would understate a cap that cannot fire at all.
-    assert "manual_mic.idle_timeout_too_low" not in caplog.text
+    # softer one would understate a cap that cannot fire at all.
+    assert event_records(caplog, "manual_mic.idle_timeout_too_low") == []
 
 
 def test_hold_cap_is_silent_when_the_allowance_is_actually_preserved(caplog):
@@ -394,8 +394,8 @@ def test_hold_cap_is_silent_when_the_allowance_is_actually_preserved(caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         wl._ptt_input_cap_sec()
 
-    assert "manual_mic.idle_timeout_too_low" not in caplog.text
-    assert "manual_mic.hold_cap_unreachable" not in caplog.text
+    assert event_records(caplog, "manual_mic.idle_timeout_too_low") == []
+    assert event_records(caplog, "manual_mic.hold_cap_unreachable") == []
 
 
 async def test_hold_cap_closes_input_on_a_button_turn(caplog):
@@ -413,8 +413,9 @@ async def test_hold_cap_closes_input_on_a_button_turn(caplog):
     # Audio for this frame is NOT forwarded — same shape as the Silero
     # path's cap, which returns after end_input.
     assert wl._turn.send_audio_calls == 0
-    assert "event=manual_mic.hold_cap" in caplog.text
-    assert "source=wiim_remote_2" in caplog.text
+    fields = event_fields(caplog, "manual_mic.hold_cap")
+    assert fields["source"] == "wiim_remote_2"
+    assert float(fields["cap_sec"]) == float(cap)
 
 
 async def test_hold_cap_does_not_fire_early_on_a_button_turn():
@@ -538,7 +539,10 @@ async def test_server_vad_is_not_negotiated_on_a_button_turn(caplog):
     assert wl._manual_endpoint_this_turn is True
     assert wl._server_vad_this_turn is False
     assert negotiated == []
-    assert "event=server_vad.disabled_push_to_talk" in caplog.text
+    assert (
+        event_fields(caplog, "server_vad.disabled_push_to_talk")["source"]
+        == "wiim_remote_2"
+    )
     # The flag alone is not the harm. `_server_vad_response_trigger` is
     # the task that would ask the model to answer on the server's
     # end-of-utterance — while the button is still held. It must not exist.
@@ -577,10 +581,10 @@ async def test_server_vad_refusal_warns_once_per_daemon(caplog):
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await _drive_begin_turn(wl)
-        first = caplog.text.count("event=server_vad.disabled_push_to_talk")
+        first = len(event_records(caplog, "server_vad.disabled_push_to_talk"))
         # A second button turn on the same daemon.
         await _drive_begin_turn(wl)
-        second = caplog.text.count("event=server_vad.disabled_push_to_talk")
+        second = len(event_records(caplog, "server_vad.disabled_push_to_talk"))
 
     # Positive control: the first turn really did warn, so "still 1" below
     # is a latch holding rather than a refusal that never fired at all.
@@ -612,8 +616,8 @@ async def test_server_vad_refusal_does_not_consume_the_barge_in_warning(
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await _drive_begin_turn(wl)
 
-    assert "event=barge.disabled_push_to_talk" in caplog.text
-    assert "event=server_vad.disabled_push_to_talk" in caplog.text
+    assert len(event_records(caplog, "barge.disabled_push_to_talk")) == 1
+    assert len(event_records(caplog, "server_vad.disabled_push_to_talk")) == 1
 
 
 @pytest.mark.parametrize(
@@ -645,7 +649,7 @@ async def test_server_vad_refusal_is_not_claimed_when_it_was_never_armed(
     assert wl._manual_endpoint_this_turn is True
     assert wl._server_vad_this_turn is False
     assert negotiated == []
-    assert "server_vad.disabled_push_to_talk" not in caplog.text
+    assert event_records(caplog, "server_vad.disabled_push_to_talk") == []
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +717,8 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     wl._active_manual_source = "wiim_remote_2" if manual else None
     wl._manual_endpoint_this_turn = not manual  # stale value from before
 
+    # `match=` stands: the stub raises a bare AssertionError, which carries
+    # no code or structured attribute naming which stub it came from.
     with pytest.raises(AssertionError, match="acquire_turn stub"):
         await wl._begin_turn()
 
@@ -879,6 +885,8 @@ async def test_no_answer_on_a_held_button_is_diagnosed_as_a_hold_timeout(
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await _torn_down_mid_hold(manual=True, chunks=0)
 
+    # Both branches are plain operator-facing prose, not `event=` records:
+    # the text an operator reads is itself what this pins.
     assert "HOLD TIMEOUT" in caplog.text
     assert "JASPER_IDLE_TIMEOUT_SEC" in caplog.text
     # Mutation half: the wake-turn text must NOT be what a button turn gets.
@@ -892,6 +900,8 @@ async def test_no_answer_on_a_wake_turn_still_says_recording_timeout(caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await _torn_down_mid_hold(manual=False, chunks=0)
 
+    # Prose again by design: this branch is a plain `logger.warning`, and the
+    # operator-facing text is the behaviour under test.
     assert "RECORDING TIMEOUT" in caplog.text
     assert "HOLD TIMEOUT" not in caplog.text
 
@@ -907,16 +917,13 @@ async def test_silent_response_warns_once_per_daemon_not_once_per_turn(caplog):
         await _torn_down_mid_hold(manual=False, chunks=0, input_ended=True, wl=wl)
         await _torn_down_mid_hold(manual=False, chunks=0, input_ended=True, wl=wl)
 
-    fired = [
-        record.message for record in caplog.records
-        if "event=turn.silent_response" in record.message
-    ]
-    assert len(fired) == 1
+    # Exactly one record across two turns is the latch holding.
+    fields = event_fields(caplog, "turn.silent_response")
     # Only what the site can observe. It cannot tell a provider fault from
     # an idle-watchdog reap, so it carries fields, not a diagnosis.
-    assert "provider=test" in fired[0]
-    assert "endpointer=silero_aec" in fired[0]
-    assert "bytes_sent=4096" in fired[0]
+    assert fields["provider"] == "test"
+    assert fields["endpointer"] == "silero_aec"
+    assert int(fields["bytes_sent"]) == 4096
 
 
 async def test_teardown_still_calls_end_input_on_a_button_turn():
@@ -997,21 +1004,17 @@ def test_barge_in_refused_on_a_button_turn_and_says_why(
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         wl._resolve_barge_in_for_turn()
-        first = [
-            r for r in caplog.records
-            if "barge.disabled_push_to_talk" in r.getMessage()
-        ]
+        first = event_records(caplog, "barge.disabled_push_to_talk")
         wl._resolve_barge_in_for_turn()
-        second = [
-            r for r in caplog.records
-            if "barge.disabled_push_to_talk" in r.getMessage()
-        ]
+        second = event_records(caplog, "barge.disabled_push_to_talk")
 
     assert wl._barge_in_active is False
     # One-shot per daemon, like the no-reference WARN it sits beside.
     assert len(first) == 1
     assert len(second) == 1
-    assert "source=wiim_remote_2" in caplog.text
+    fields = event_fields(caplog, "barge.disabled_push_to_talk")
+    assert fields["source"] == "wiim_remote_2"
+    assert fields["provider"] == "gemini"
 
 
 def test_barge_in_still_enabled_on_a_wake_turn(monkeypatch, tmp_path):
@@ -1056,8 +1059,10 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
         wl._manual_endpoint_this_turn = False
         wl._resolve_barge_in_for_turn()
 
-    assert "event=barge.disabled_push_to_talk" in caplog.text
-    assert "event=barge.disabled_no_reference" in caplog.text
+    assert len(event_records(caplog, "barge.disabled_push_to_talk")) == 1
+    assert event_fields(caplog, "barge.disabled_no_reference")["mic_device"] == (
+        "Array"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1126,8 +1131,10 @@ def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
     from jasper.voice import daemon_main
     from jasper.voice_daemon import _configured_wake_legs
 
+    reason = "invalid install profile 'bogus'"
+
     def _raise():
-        raise ValueError("invalid install profile 'bogus'")
+        raise ValueError(reason)
 
     monkeypatch.setattr(daemon_main, "read_install_profile", _raise)
 
@@ -1135,7 +1142,11 @@ def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
         supported = daemon_main._wake_detection_supported()
 
     assert supported is True
-    assert "event=voice.install_profile_unreadable" in caplog.text
+    # The unreadable marker's own reason travels into the event: a pass-through
+    # of `str(e)`, not a pin on wording this test chose.
+    assert event_fields(caplog, "voice.install_profile_unreadable")["detail"] == (
+        reason
+    )
 
     plan = _configured_wake_legs(_wake_leg_cfg(), wake_detection_supported=supported)
     assert [spec.token for spec, _device in plan] == ["on"]
