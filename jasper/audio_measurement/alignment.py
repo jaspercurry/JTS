@@ -20,7 +20,7 @@ observation-only today and deliberately does not use this uncalibrated 0.40
 default as a fleet-wide rejection threshold.
 
 Confidence is the normalized margin between the dominant correlation peak and the
-next-strongest peak OUTSIDE the main lobe: `(primary - secondary) / primary`. A
+next-strongest peak OUTSIDE the main lobe: `(primary - competitor) / primary`. A
 clean capture has one dominant lag (confidence → 1); noise/absent stimulus has
 comparable peaks everywhere (confidence → 0).
 
@@ -33,7 +33,7 @@ refinement, mirroring the correction confidence model's staging):
     time-domain `np.correlate` here was O(N·M) ≈ tens of seconds per position on
     the Pi for a 10 s sweep.
   - The metric is a peak-to-second-peak **margin**, not an SNR or peak-to-RMS
-    ratio. The `secondary` is sampled outside a physically-motivated ~5 ms
+    ratio. The competitor is sampled outside a physically-motivated ~5 ms
     exclusion (the main correlation lobe), so a near-direct reflection counts as
     a competing peak. KNOWN false-pass class: a loud-but-wrong capture that is
     still sharply self-peaked (e.g. clipped) can clear the threshold; the gate
@@ -102,10 +102,22 @@ class AlignmentError(RuntimeError):
 @dataclass(frozen=True)
 class AlignmentResult:
     lag_samples: int
-    confidence: float  # 0..1 margin of the dominant peak over the next-strongest
-    peak: float  # normalized correlation at the dominant lag (0..1 similarity)
-    secondary: float  # strongest competing peak (normalized)
-    secondary_lag_samples: int = 0  # where it sits; only meaningful when secondary > 0
+    confidence: float  # 0..1 margin of the reported lag over the next-strongest
+    peak: float  # normalized correlation at the reported lag (0..1 similarity)
+    # The competition on each side of the reported lag, outside the exclusion.
+    # A lag is only meaningful when its height is above zero.
+    earlier: float = 0.0
+    earlier_lag_samples: int = 0
+    later: float = 0.0
+    later_lag_samples: int = 0
+
+
+def _strongest(values: np.ndarray, offset: int) -> tuple[int, float]:
+    """Index (in the parent array) and height of the tallest of ``values``."""
+    if not values.size:
+        return offset, 0.0
+    idx = int(np.argmax(values))
+    return idx + offset, float(values[idx])
 
 
 def _normalize(signal: np.ndarray) -> np.ndarray:
@@ -117,27 +129,21 @@ def _normalize(signal: np.ndarray) -> np.ndarray:
     return x / norm if norm > 0 else x
 
 
-def cross_correlation_alignment(
+def correlation(
     captured: np.ndarray,
     stimulus: np.ndarray,
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    exclude_radius: int | None = None,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
-) -> AlignmentResult:
-    """Locate `stimulus` inside `captured` and score the confidence of that lag.
-
-    Both are mean-removed and unit-normalized so `peak` is a 0..1 similarity. The
-    correlation is FFT-accelerated. The `secondary` peak is the strongest
-    correlation outside a ~5 ms exclusion around the primary (the main lobe), and
-    `confidence` is the normalized margin between them. `exclude_radius` defaults
-    to `DEFAULT_EXCLUDE_RADIUS_S * sample_rate`; pass an override only for tests.
-    """
+) -> np.ndarray:
+    """Normalized |cross-correlation|: index `i` is the 0..1 similarity of
+    `stimulus` placed at lag `i` in `captured`. Empty when the capture cannot
+    contain the stimulus. A caller wanting a lag other than the strongest peak
+    picks it off this array and scores it with `alignment_at`."""
     cap_input = np.asarray(captured)
     stim_input = np.asarray(stimulus)
     if cap_input.size == 0 or stim_input.size == 0:
-        # A capture shorter than the stimulus cannot contain it — no alignment.
-        return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0, secondary=0.0)
+        return np.empty(0)
 
     # Apply the cost/memory backstop before normalization.  Normalization
     # promotes to float64, so truncating afterwards would still allocate a
@@ -153,35 +159,58 @@ def cross_correlation_alignment(
     cap = _normalize(cap_input)
     stim = _normalize(stim_input)
     if cap.size < stim.size:
-        # A capture shorter than the stimulus cannot contain it — no alignment.
-        return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0, secondary=0.0)
+        return np.empty(0)
+    return np.abs(scipy_signal.correlate(cap, stim, mode="valid", method="fft"))
 
-    corr = np.abs(scipy_signal.correlate(cap, stim, mode="valid", method="fft"))
-    if corr.size == 0:
-        return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0, secondary=0.0)
 
-    primary_idx = int(np.argmax(corr))
-    primary = float(corr[primary_idx])
+def alignment_at(
+    corr: np.ndarray, lag_samples: int, *, exclude_radius: int
+) -> AlignmentResult:
+    """Score `lag_samples` against the competition around it in `corr`."""
+    primary = float(corr[lag_samples])
     if not np.isfinite(primary) or primary <= 0.0:
-        return AlignmentResult(lag_samples=primary_idx, confidence=0.0, peak=0.0, secondary=0.0)
+        return AlignmentResult(lag_samples=lag_samples, confidence=0.0, peak=0.0)
+    masked = corr.copy()
+    lo = max(0, lag_samples - exclude_radius)
+    hi = min(corr.size, lag_samples + exclude_radius + 1)
+    masked[lo:hi] = 0.0
+    earlier_lag, earlier = _strongest(masked[:lo], 0)
+    later_lag, later = _strongest(masked[hi:], hi)
+    return AlignmentResult(
+        lag_samples=lag_samples,
+        confidence=max(0.0, (primary - max(earlier, later)) / primary),
+        peak=primary,
+        earlier=earlier,
+        earlier_lag_samples=earlier_lag,
+        later=later,
+        later_lag_samples=later_lag,
+    )
 
+
+def cross_correlation_alignment(
+    captured: np.ndarray,
+    stimulus: np.ndarray,
+    *,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    exclude_radius: int | None = None,
+    max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
+) -> AlignmentResult:
+    """Locate `stimulus` inside `captured` and score the confidence of that lag.
+
+    The lag is the strongest correlation peak, and `confidence` its normalized
+    margin over the strongest peak outside a ~5 ms exclusion around it (the
+    main lobe). `exclude_radius` defaults to `DEFAULT_EXCLUDE_RADIUS_S *
+    sample_rate`; pass an override only for tests.
+    """
+    corr = correlation(
+        captured, stimulus, sample_rate=sample_rate, max_capture_s=max_capture_s
+    )
+    if corr.size == 0:
+        # A capture shorter than the stimulus cannot contain it — no alignment.
+        return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0)
     if exclude_radius is None:
         exclude_radius = max(1, int(DEFAULT_EXCLUDE_RADIUS_S * sample_rate))
-    masked = corr.copy()
-    lo = max(0, primary_idx - exclude_radius)
-    hi = min(corr.size, primary_idx + exclude_radius + 1)
-    masked[lo:hi] = 0.0
-    secondary_idx = int(np.argmax(masked))
-    secondary = float(masked[secondary_idx])
-
-    confidence = max(0.0, (primary - secondary) / primary)
-    return AlignmentResult(
-        lag_samples=primary_idx,
-        confidence=confidence,
-        peak=primary,
-        secondary=secondary,
-        secondary_lag_samples=secondary_idx,
-    )
+    return alignment_at(corr, int(np.argmax(corr)), exclude_radius=exclude_radius)
 
 
 def assert_alignment_confident(

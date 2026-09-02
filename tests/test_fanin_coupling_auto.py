@@ -76,7 +76,7 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
 
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
     from jasper import source_intent
-    from jasper.local_sources import guard
+    from jasper.local_sources import markers
     from jasper.music_sources import Source
 
     seen = []
@@ -85,7 +85,7 @@ def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatc
         "source_intent_enabled",
         lambda source: seen.append(source) or True,
     )
-    monkeypatch.setattr(guard, "local_sources_allowed", lambda: (True, None))
+    monkeypatch.setattr(markers, "local_sources_allowed", lambda: (True, None))
     monkeypatch.setattr(ca, "_usbsink_lifecycle_ready", lambda: True)
 
     assert ca.usbsink_effectively_enabled() is True
@@ -96,11 +96,11 @@ def test_usbsink_desired_on_but_follower_parked_disarms_effective_gate(
     monkeypatch,
 ):
     from jasper import source_intent
-    from jasper.local_sources import guard
+    from jasper.local_sources import markers as markers
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
-        guard,
+        markers,
         "local_sources_allowed",
         lambda: (False, "bonded follower"),
     )
@@ -117,10 +117,10 @@ def test_usbsink_desired_on_but_derived_lifecycle_not_ready_disarms(
     monkeypatch,
 ):
     from jasper import source_intent
-    from jasper.local_sources import guard
+    from jasper.local_sources import markers as markers
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(guard, "local_sources_allowed", lambda: (True, None))
+    monkeypatch.setattr(markers, "local_sources_allowed", lambda: (True, None))
     monkeypatch.setattr(ca, "_usbsink_lifecycle_ready", lambda: False)
 
     assert ca.usbsink_effectively_enabled() is False

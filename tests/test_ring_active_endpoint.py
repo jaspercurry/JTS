@@ -789,12 +789,21 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
         transport_topology_for_coupling,
     )
 
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+
     produced = {
         transport_topology_for_coupling("loopback").name,
         transport_topology_for_coupling("shm_ring", outputd_env={}).name,
         transport_topology_for_coupling(
             "shm_ring",
             outputd_env={OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1"},
+        ).name,
+        # A DUMB bonded member: the dac-content marker, and no bridge — the only
+        # shape a marker-armed box may carry, because outputd refuses the marker
+        # beside a declared bridge of any value.
+        transport_topology_for_coupling(
+            "shm_ring",
+            outputd_env={DAC_CONTENT_LANE_ENV: "1"},
         ).name,
     }
     assert produced == set(TRANSPORT_SHAPES)

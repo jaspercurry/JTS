@@ -13,12 +13,12 @@ Description=Jasper composite USB gadget (management network + optional audio)
 # process-free readiness marker that orders After= this unit and does not own the
 # gadget.
 #
-# There is intentionally NO jasper-local-source-allowed ExecCondition on this
-# unit: the network function must survive multiroom follower parking. The
+# There is intentionally NO /run/jasper-source-intent/allowed marker gate on
+# this unit: the network function must survive multiroom follower parking. The
 # AUDIO-function gate lives inside jasper-usbgadget-up: it reads canonical USB
 # source intent plus role permission directly and composes uac2 only when both
 # allow it. jasper-usbsink enablement remains a derived lifecycle mirror, and
-# the service keeps the same source-aware ExecCondition at its start boundary.
+# the service keeps the same source-aware marker gate at its start boundary.
 #
 # NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` (the doctor's
 # low-latency contract reads that exact path). Accepted debt.

@@ -263,6 +263,82 @@ def test_outputd_bridge_is_ring_truth_table_matches_the_daemon():
         assert outputd_bridge_is_ring(off) is False, off
 
 
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        pytest.param({}, True, id="undeclared_is_the_ring"),
+        pytest.param(
+            {"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"}, True, id="declared"
+        ),
+        pytest.param({"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}, False, id="retired"),
+        pytest.param({"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"}, False, id="marker"),
+        pytest.param(
+            {"JASPER_OUTPUTD_DAC_CONTENT_LANE": "on"}, False, id="marker_word"
+        ),
+        pytest.param({"JASPER_OUTPUTD_DAC_CONTENT_LANE": "0"}, True, id="marker_off"),
+        pytest.param(
+            {"JASPER_OUTPUTD_DAC_CONTENT_LANE": ""}, True, id="marker_cleared"
+        ),
+    ],
+)
+def test_the_central_ring_predicate_reads_both_keys(env, expected):
+    """The bridge key alone stopped answering this once the marker SELECTED.
+
+    An armed dac-content marker resolves `ContentBridgeMode::DacContentRing`, so
+    outputd attaches the bonded return ring and leaves `shm_ring` unattached —
+    with the bridge key ABSENT, which the bridge predicate alone reads as the
+    ring. The marker is read through outputd's `env_bool` accept-set, so a
+    CLEARED key (the grouping reconciler's own disable spelling) is not armed.
+    """
+    from jasper.fanin_coupling import outputd_content_is_central_ring
+
+    assert outputd_content_is_central_ring(env) is expected
+
+
+@pytest.mark.parametrize(
+    "bridge,served",
+    [
+        pytest.param(None, True, id="absent"),
+        pytest.param("", True, id="blank_clears_layer_one"),
+        pytest.param("   ", True, id="whitespace_is_blank"),
+        pytest.param("shm_ring", False, id="what_coupling_auto_writes"),
+        pytest.param("direct", False, id="any_declared_value"),
+    ],
+)
+def test_served_and_contradicted_split_every_marker_armed_box(bridge, served):
+    """OUTPUTD'S ACCEPTANCE, MIRRORED KEY FOR KEY.
+
+    outputd reads the bridge with `env_optional` (blank == undeclared) and bails
+    EX_CONFIG on the marker beside a DECLARED one. The two predicates partition
+    the armed boxes so no surface has to guess which side it is on.
+    """
+    from jasper.fanin_coupling import (
+        dac_content_marker_contradicted,
+        dac_content_ring_served,
+    )
+
+    env = {"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"}
+    if bridge is not None:
+        env["JASPER_OUTPUTD_CONTENT_BRIDGE"] = bridge
+
+    assert dac_content_ring_served(env) is served
+    assert dac_content_marker_contradicted(env) is (not served)
+    # Neither answers True without the marker at all.
+    unarmed = {k: v for k, v in env.items() if k != "JASPER_OUTPUTD_DAC_CONTENT_LANE"}
+    assert dac_content_ring_served(unarmed) is False
+    assert dac_content_marker_contradicted(unarmed) is False
+
+
+def test_the_marker_predicate_reads_the_key_the_ring_module_owns():
+    """One key, one owner: the reader and the writer's constant must agree."""
+    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+
+    assert DAC_CONTENT_LANE_ENV == "JASPER_OUTPUTD_DAC_CONTENT_LANE"
+    assert dac_content_lane_marker_armed({DAC_CONTENT_LANE_ENV: "1"}) is True
+    assert dac_content_lane_marker_armed({DAC_CONTENT_LANE_ENV: "0"}) is False
+
+
 def test_outputd_bridge_ring_aliases_match_the_rust_accept_set():
     """Drift pin: a Rust arm this predicate does not know reads as NOT the ring.
 

@@ -44,10 +44,10 @@ def _directive_index(unit_text: str, prefix: str, needle: str) -> int:
     raise AssertionError(f"no {prefix!r} directive containing {needle!r}")
 
 
-def test_readiness_marker_keeps_both_guards_before_bounded_card_wait():
+def test_readiness_marker_keeps_the_function_guard_before_bounded_card_wait():
+    # The source-intent gate on this unit is pinned once, registry-derived, in
+    # tests/test_local_source_systemd_markers.py.
     body = UNIT_PATH.read_text()
-    assert "ExecCondition=" in body
-    assert "jasper-local-source-allowed --source usbsink" in body
     assert (
         "ExecCondition=/bin/test -d "
         "/sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0"

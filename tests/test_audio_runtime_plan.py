@@ -40,7 +40,6 @@ from jasper.audio_runtime_plan import (
     OUTPUTD_PERIOD_KEY,
     PACKAGED_OUTPUTD_DEFAULT_SOURCE,
     build_audio_runtime_plan,
-    coupling_supported_for_route,
     correction_latency_eligibility,
     correction_latency_eligibility_for_config,
     outputd_dac_buffer_pair_error,
@@ -679,6 +678,60 @@ def test_system_plan_warns_and_uses_process_route_when_base_env_unreadable(
     )
 
 
+def test_the_system_plan_reads_both_of_outputds_env_layers(monkeypatch, tmp_path):
+    """The planner sees a bonded member's marker, which lives in the SECOND file.
+
+    Reading `outputd.env` alone left every consumer downstream of
+    `plan.transport_topology` — the route policy, the coherence report,
+    `/state`'s audio graph — resolving a central-ring shape for a box that has
+    none. The merged env is CARRIED on the plan so those consumers read it once
+    rather than merging the two files again.
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("", encoding="utf-8")
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text(
+        "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+    )
+
+    plan = audio_plan.build_audio_runtime_plan_from_system(
+        base_env_path=str(tmp_path / "base.env"),
+        outputd_env_path=str(outputd_env),
+        fanin_env_path=str(tmp_path / "fanin.env"),
+        grouping_env_path=str(tmp_path / "grouping.env"),
+        overrides_path=str(tmp_path / "overrides.json"),
+        output_hardware_state_path=str(tmp_path / "output_hardware.json"),
+    )
+
+    assert plan.transport_topology.name == audio_plan.TRANSPORT_DAC_CONTENT_RING
+    assert plan.outputd_env["JASPER_OUTPUTD_DAC_CONTENT_LANE"] == "1"
+
+
+def test_a_setting_is_never_attributed_to_the_grouping_env_layer(tmp_path):
+    """PROVENANCE. The settings resolve from `outputd.env` alone, so a value the
+    grouping layer happened to carry can never be reported as coming from the
+    file an operator would go and edit."""
+    def period(**kw):
+        return audio_plan.build_audio_runtime_plan(
+            profile_id="hifiberry_dac8x",
+            outputd_env={"JASPER_OUTPUTD_PERIOD_FRAMES": "128"},
+            outputd_env_label="/var/lib/jasper/outputd.env",
+            **kw,
+        ).setting(audio_plan.OUTPUTD_PERIOD_KEY)
+
+    alone = period()
+    with_grouping = period(
+        grouping_outputd_env={"JASPER_OUTPUTD_PERIOD_FRAMES": "999"}
+    )
+
+    assert alone == with_grouping
+    assert with_grouping.value == 128
+    assert "999" not in str(with_grouping)
+
+
 def test_invalid_audio_route_profile_falls_back_with_warning():
     profile = resolve_audio_route_profile({AUDIO_ROUTE_PROFILE_KEY: "fastish"})
 
@@ -990,15 +1043,11 @@ def test_plan_recognizes_shm_ring_coupling_without_false_warning():
 
 
 # --------------------------------------------------------------------------
-# T-5 — the narrowed shm_ring gate, DERIVED rather than parametrized.
-#
-# The gate's second condition is `dac_content_lane_armed`, and this block never
-# invents that boolean: every cell computes it from a real `GroupingConfig`
-# through `jasper.multiroom.reconcile.dac_content_lane_armed`, which is itself
-# read out of the function that WRITES the lane. Parametrizing it as a free
-# boolean would pin combinations the real derivation cannot produce (the
-# `invalid_grouping x armed=True` cell most of all) and would assert nothing
-# about what the derivation actually answers.
+# The dumb-member lane rule, DERIVED rather than parametrized. Every cell is a
+# real `GroupingConfig` put through `member_lane_decision`, so the table cannot
+# pin a combination the system cannot be in — the failure a free-boolean matrix
+# has. `test_t5_cells_are_reachable` re-derives the two constraints that bound
+# the table rather than trusting the comment on it.
 # --------------------------------------------------------------------------
 
 
@@ -1026,7 +1075,7 @@ _INVALID = _grouping_cfg(
     error="JASPER_GROUPING_BOND_ID is empty",
 )
 
-#: (label, cfg, active_endpoint, flat_output_allowed, expected_armed).
+#: (label, cfg, active_endpoint, flat_output_allowed, expected_marker_armed).
 #:
 #: REACHABLE CELLS ONLY. Two constraints bound the input space, and
 #: `test_t5_cells_are_reachable` re-derives both rather than trusting this
@@ -1056,33 +1105,16 @@ _T5_CELLS = [
 ]
 
 
-def _t5_armed(cfg, active_endpoint: bool, flat_output_allowed: bool) -> bool:
-    from jasper.multiroom.reconcile import dac_content_lane_armed
+def _t5_decision(cfg, active_endpoint: bool, flat_output_allowed: bool):
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
+    from jasper.multiroom.reconcile import member_lane_decision
 
-    return dac_content_lane_armed(
+    return member_lane_decision(
         cfg,
         active_endpoint=active_endpoint,
         flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=DAC_CONTENT_RING_PERIOD_FRAMES,
     )
-
-
-def test_t5_predicate_is_read_out_of_the_writer_not_restated():
-    """The whole design rests on gate and writer being ONE rule. Pin it as an
-    identity against `outputd_grouping_env` itself, so a future fourth input
-    (the third arrived post-seal with the output runtime contract) cannot make
-    the predicate answer for a rule the writer no longer applies."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
-        outputd_grouping_env,
-    )
-
-    for label, cfg, endpoint, flat, _expected in _T5_CELLS:
-        written = outputd_grouping_env(
-            cfg, active_endpoint=endpoint, flat_output_allowed=flat
-        )
-        assert _t5_armed(cfg, endpoint, flat) is bool(
-            written[OUTPUTD_DAC_CONTENT_FIFO_ENV]
-        ), label
 
 
 def test_t5_cells_are_reachable():
@@ -1129,82 +1161,59 @@ def test_t5_cells_are_reachable():
     assert "CONTRACT_UNCONFIGURED" not in permitted
 
 
-def test_t5_shm_ring_gate_verdict_per_cell():
-    """The narrowed rule, cell by cell: `shm_ring` is blocked exactly where the
-    dac_content lane is armed.
+def test_the_lane_arms_on_exactly_the_dumb_member_cells():
+    """Exactly the two DUMB-member rows arm; the other eight clear.
 
-    Two flips from the pre-narrowing gate are load-bearing and named here:
-
-    - an ACTIVE endpoint (leader or follower) is now ALLOWED. That is what the
-      hazard PR exists for — a bonded ring-armed active leader — and it is safe
-      because the same writer clears that box's lane.
-    - `invalid_grouping` is now ALLOWED. It falls past both writer branches into
-      the off-path return, and `active = enabled and error is None` means no
-      bond forms at all, so the box is definitively solo. It is DETERMINATE,
-      unlike `unknown` (a transient read failure), which is why relaxing it is
-      not a relaxation on an indeterminate state.
+    The WRITER is held to the same answer in the same loop: `outputd_grouping_env`
+    must emit the marker on exactly the cells the rule admits, or the two have
+    drifted apart.
     """
-    from jasper.audio_runtime_plan import route_mode_from_grouping_config
+    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
+    from jasper.multiroom.reconcile import outputd_grouping_env
 
     for label, cfg, endpoint, flat, expected_armed in _T5_CELLS:
-        armed = _t5_armed(cfg, endpoint, flat)
-        assert armed is expected_armed, label
-
-        route_mode = route_mode_from_grouping_config(cfg)
-        support = coupling_supported_for_route(
-            COUPLING_SHM_RING, route_mode, dac_content_lane_armed=armed
+        assert _t5_decision(cfg, endpoint, flat).armed is expected_armed, label
+        written = outputd_grouping_env(
+            cfg,
+            active_endpoint=endpoint,
+            flat_output_allowed=flat,
+            outputd_period_frames=DAC_CONTENT_RING_PERIOD_FRAMES,
         )
-        assert support.supported is (not expected_armed), label
-        assert support.coupling == COUPLING_SHM_RING, label
-        if expected_armed:
-            assert support.reason == "fanin_shm_ring_unsupported_with_dac_content_lane"
-            assert "dac_content" in support.detail
-            # The old detail promised a ring-v2 date; the block is now about a
-            # lane, and the operator action is disarm-or-ungroup.
-            assert "ring v2" not in support.detail
-
-    # A box that names no transport is never blocked, whatever the lane says:
-    # only the ring conflicts with an armed dac_content lane.
-    for label, cfg, endpoint, flat, _expected in _T5_CELLS:
-        support = coupling_supported_for_route(
-            None,
-            route_mode_from_grouping_config(cfg),
-            dac_content_lane_armed=_t5_armed(cfg, endpoint, flat),
-        )
-        assert support.supported is True, label
+        assert dac_content_lane_marker_armed(written) is expected_armed, label
 
 
-def test_t5_d1_asks_the_matrix_instead_of_hand_rolling_the_rule():
-    """D1 (multiroom's "ring-armed box cannot bond") and D2 (this matrix) encoded
-    DIFFERENT rules and coincided only because D1 was stricter: D1 compared
-    `read_persisted_coupling()` to `COUPLING_SHM_RING` and stopped there, so a
-    narrowing here could not reach it. Pin that the hand-rolled comparison is
-    gone and the matrix is what D1 consults — the structural half of the claim;
-    the behavioural half is `tests/test_multiroom_reconcile.py`'s bond gate.
-    """
-    import inspect
-
-    from jasper.multiroom import reconcile as mr
-
-    source = inspect.getsource(mr.main)
-    assert "coupling_supported_for_route(" in source
-    assert "read_persisted_coupling() == COUPLING_SHM_RING" not in source
-    assert "COUPLING_SHM_RING" not in source, (
-        "D1 must not name a coupling token directly any more — the support "
-        "matrix owns which couplings are blocked for which shape"
+def test_each_unarmed_member_cell_names_which_condition_refused_it():
+    """The reason token is what the reconciler's bond refusal and the doctor
+    branch on, so each unarmed MEMBER cell must carry the right one — and a
+    non-member (solo, invalid) carries none, because it was never refused."""
+    from jasper.multiroom.reconcile import (
+        LANE_REFUSED_ACTIVE_ENDPOINT,
+        LANE_REFUSED_FLAT_OUTPUT_DENIED,
+        LANE_REFUSED_PERIOD,
+        member_lane_decision,
     )
 
+    for label, cfg, endpoint, flat, expected_armed in _T5_CELLS:
+        decision = _t5_decision(cfg, endpoint, flat)
+        if expected_armed:
+            assert decision.reason == "", label
+        elif not (cfg.enabled and cfg.error is None):
+            assert decision.reason == "", label
+        elif endpoint:
+            assert decision.reason == LANE_REFUSED_ACTIVE_ENDPOINT, label
+        else:
+            assert decision.reason == LANE_REFUSED_FLAT_OUTPUT_DENIED, label
 
-def test_shm_ring_route_policy_allows_solo_and_unknown():
-    # solo = grouping off; unknown = a transient indeterminate grouping-config read
-    # that must NOT refuse a legitimate solo arm (fail-safe direction). Neither
-    # consults the lane, so an armed lane cannot block them either.
-    for mode in ("solo", "unknown"):
-        for armed in (True, False):
-            support = coupling_supported_for_route(
-                COUPLING_SHM_RING, mode, dac_content_lane_armed=armed
-            )
-            assert support.supported is True, (mode, armed)
+    # The fourth condition, on a cell that would otherwise arm.
+    refused = member_lane_decision(
+        _VALID_FOLLOWER,
+        active_endpoint=False,
+        flat_output_allowed=True,
+        outputd_period_frames=1024,
+    )
+    assert refused.armed is False
+    assert refused.reason == LANE_REFUSED_PERIOD
 
 
 @pytest.mark.parametrize(
@@ -1925,6 +1934,131 @@ def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
             "shm_ring", outputd_env=outputd_env
         ).name
         == TRANSPORT_OFF_RING
+    )
+
+
+_MARKER_ARMED_ENV = {"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"}
+
+
+def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
+    """A DUMB bonded member is a shape of its own, not the off-ring one.
+
+    Its post-DSP slot is the bonded RETURN ring, which its snapclient writes and
+    outputd reads; CamillaDSP is not in that path, so no camilla playback device
+    is published — a consumer that compared one would be comparing against a
+    lane camilla does not drive. `content.source` is what outputd actually
+    publishes for such a box: `alsa`, because `shm_ring` is only published while
+    the CENTRAL ring is attached.
+    """
+    from jasper.multiroom.dac_content_ring import (
+        DAC_CONTENT_RING_FILE,
+        DAC_CONTENT_RING_PCM,
+    )
+
+    topology = audio_plan.transport_topology_for_coupling(
+        "shm_ring", outputd_env=_MARKER_ARMED_ENV
+    )
+
+    assert topology.name == audio_plan.TRANSPORT_DAC_CONTENT_RING
+    assert topology.outputd_content_source == "alsa"
+    assert "camilla_playback_device" not in topology.camilla_to_outputd
+    assert topology.camilla_to_outputd["path"] == DAC_CONTENT_RING_FILE
+    assert topology.camilla_to_outputd["outputd_capture_pcm"] == DAC_CONTENT_RING_PCM
+    # Ring A is UNCHANGED on this box: fan-in serves it here like anywhere else.
+    assert (
+        topology.fanin_to_camilla["camilla_capture_device"]
+        == audio_plan.transport_topology_for_coupling(
+            "shm_ring", outputd_env={}
+        ).fanin_to_camilla["camilla_capture_device"]
+    )
+
+
+def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
+    """The coherence report's branch for the bonded shape.
+
+    An unhandled shape fell through to an unconditionally empty report, which
+    silently stopped Ring A being checked for every bonded member — a graph
+    still sourcing the snd-aloop tap reads a device nobody writes, which is
+    digital silence with every daemon reading clean. So Ring A's comparison must
+    still fire here, while the bridge and post-DSP ones must NOT: a marker-armed
+    box declares no bridge by construction.
+    """
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE
+
+    healthy = audio_plan.transport_coherence_report(
+        coupling="shm_ring",
+        outputd_env=_MARKER_ARMED_ENV,
+        camilla_devices={
+            "capture_device": RING_CAPTURE_DEVICE,
+            "playback_device": "jts_ring_playback",
+        },
+    )
+    assert healthy.errors == (), healthy
+    assert healthy.notes == (), healthy
+
+    # The SAME call with only the capture device changed: the one error is
+    # produced by that difference and nothing else.
+    stranded = audio_plan.transport_coherence_report(
+        coupling="shm_ring",
+        outputd_env=_MARKER_ARMED_ENV,
+        camilla_devices={
+            "capture_device": "jasper_content_capture",
+            "playback_device": "jts_ring_playback",
+        },
+    )
+    assert len(stranded.errors) == 1, stranded
+    assert stranded.notes == ()
+
+
+_CONTRADICTED_ENV = {
+    "JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring",
+    "JASPER_OUTPUTD_DAC_CONTENT_LANE": "1",
+}
+
+
+def test_the_marker_beside_a_declared_bridge_is_a_coherence_error():
+    """The pair outputd bails EX_CONFIG on must reach a caller that refuses.
+
+    It also must NOT resolve the served shape: a topology saying "bonded member,
+    all well" would send every consumer past a daemon that cannot start.
+    """
+    report = audio_plan.transport_coherence_report(
+        coupling="shm_ring", outputd_env=_CONTRADICTED_ENV
+    )
+
+    assert len(report.errors) == 1, report
+    assert report.notes == ()
+    # THE EXACT SHAPE, not "anything but the served one": resolving the central
+    # ring here would let /state and the doctor describe a daemon that cannot
+    # start as the healthy Ring A + Ring B pair.
+    assert (
+        audio_plan.transport_topology_for_coupling(
+            "shm_ring", outputd_env=_CONTRADICTED_ENV
+        ).name
+        == audio_plan.TRANSPORT_OFF_RING
+    )
+
+
+def test_the_low_latency_route_names_the_bond_not_a_bridge_to_set():
+    """A bonded member has no CENTRAL ring, so the measured pair is unavailable.
+
+    The refusal must not tell the operator to set a bridge key: writing one
+    beside the marker is exactly what parks the daemon.
+    """
+    plan = audio_plan.build_audio_runtime_plan(
+        base_env={audio_plan.AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        grouping_outputd_env={"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"},
+    )
+
+    assert plan.route_policy_reason_codes == (
+        audio_plan.ROUTE_POLICY_BONDED_MEMBER,
+    ), plan.route_policy_errors
+    # NOT the bridge refusal: that one would tell the operator to set a key
+    # whose presence beside the marker is what parks the daemon.
+    assert (
+        audio_plan.ROUTE_POLICY_OUTPUTD_OFF_RING
+        not in plan.route_policy_reason_codes
     )
 
 

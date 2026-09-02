@@ -38,7 +38,7 @@ const api = await buildFunction(modulePath, {
   returns: [
     "currentStreamBody", "recentIncidents", "issuesBody",
     "otherSources", "sourcesBody", "refreshRelativeTimes",
-    "outputAlert", "outputAlertBody",
+    "outputAlert", "outputAlertBody", "usbSourceOff",
   ],
 })(h, badge, defList, fmtEpochAgo);
 
@@ -215,5 +215,18 @@ const timeNodes = [
 api.refreshRelativeTimes({ querySelectorAll: () => timeNodes });
 assert.equal(timeNodes[0].textContent, "Started 5s ago");
 assert.equal(timeNodes[1].textContent, "unchanged");
+
+// --- the USB cards follow the household intent ------------------------------
+for (const [expected, probe] of [
+  [true, { sources: [{ id: "usbsink", state: "off" }] }],
+  [false, undefined],
+  [false, {}],
+  [false, { sources: [{ id: "usbsink", state: "unavailable" }] }],
+  [false, { sources: [{ id: "usbsink", state: "ready" }] }],
+  [false, { sources: [{ id: "airplay", state: "off" }] }],
+]) {
+  assert.equal(api.usbSourceOff(probe), expected,
+    `usbSourceOff(${JSON.stringify(probe)})`);
+}
 
 process.stdout.write(JSON.stringify({ ok: true }));

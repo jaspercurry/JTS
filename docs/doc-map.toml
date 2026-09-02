@@ -565,7 +565,7 @@ code = [
   "jasper/source_intent.py",
   "jasper/bluetooth/availability.py",
   "jasper/local_sources/registry.py",
-  "jasper/local_sources/guard.py",
+  "jasper/local_sources/markers.py",
   "jasper/mux.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/restart_broker.py",

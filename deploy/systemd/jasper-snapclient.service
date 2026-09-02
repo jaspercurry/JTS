@@ -66,13 +66,14 @@ UMask=0007
 # above (`jasper.multiroom.reconcile._assemble_args`, branching on
 # `active_endpoint`); ExecStart itself is indifferent.
 #
-#   DUMB member (active_endpoint false) — `--player file:filename=`
-#   into the member round-trip FIFO (Increment 5). NOT an ALSA sink
-#   here: an ALSA sink on this path would fight outputd for the DAC
-#   (the observed `Device or resource busy` failure of the
-#   pre-Increment-5 bond). outputd reads the FIFO through its
-#   dac_content lane (Increment 3) and picks this member's channel
-#   there. The reconciler mkfifos the path before starting this unit.
+#   DUMB member (active_endpoint false) — `--player alsa --soundcard
+#   jts_ring_dac_content` (`jasper.multiroom.dac_content_ring.
+#   DAC_CONTENT_RING_PCM`), the dac-content RETURN ring. An SHM ring,
+#   never the raw DAC: an ALSA sink on the card would fight outputd for
+#   it (the observed `Device or resource busy` failure of the first
+#   bond). outputd reads that ring as its sole content source through
+#   its dac_content lane and picks this member's channel there. The
+#   ioplug creates the ring file at open; nothing pre-creates it.
 #
 #   ACTIVE-speaker endpoint (active_endpoint true — an active follower
 #   or an active-speaker leader, distributed-active Slice 3) — `--player
@@ -81,7 +82,7 @@ UMask=0007
 #   sink, and it does not contend for the DAC: it writes the grouping
 #   ring, this box's CamillaDSP captures THE SAME PCM (one ring device,
 #   opened in both directions) and runs the crossover inside the bonded
-#   path, and outputd still owns the DAC. The dac_content FIFO lane is
+#   path, and outputd still owns the DAC. The dac_content lane is
 #   unused on this path.
 ExecStart=/usr/bin/snapclient $JASPER_SNAPCLIENT_ARGS
 Restart=on-failure

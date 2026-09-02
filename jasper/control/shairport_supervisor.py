@@ -404,7 +404,7 @@ class ShairportSupervisor:
         A fully dead desired-On receiver must be started, so active-only
         ``try-restart`` is insufficient. A concurrent source Off/role park still
         wins at the final systemd start boundary because both AirPlay units carry
-        the canonical source-intent/effective-role ExecCondition.
+        the canonical source-intent/effective-role marker gate.
         """
         reset = await asyncio.create_subprocess_exec(
             "systemctl", "reset-failed",

@@ -28,6 +28,9 @@ from pathlib import Path
 
 import pytest
 
+from jasper.local_sources.markers import marker_path
+from jasper.music_sources import Source
+
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
@@ -860,16 +863,13 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
     names are asserted absent, so re-adding either gate fails here.
     """
 
-    expected_allowed = (
-        "AUDIO_ALLOWED_CMD=\"${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-"
-        "/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}\""
-    )
+    audio_marker_path = marker_path(Source.USBSINK.value)
     direct_armed_probe = (
         "/opt/jasper/.venv/bin/python -m jasper.fanin.status "
         "--usbsink-direct-armed"
     )
     compose = COMPOSE.read_text()
-    assert expected_allowed in compose
+    assert audio_marker_path in compose
     assert "JASPER_USBGADGET_AUDIO_INTENT_CMD" not in compose
     assert "JASPER_USBGADGET_AUDIO_GATE_CMD" not in compose
     assert "JASPER_USBGADGET_AUDIO_READY_CMD" not in compose
@@ -880,7 +880,7 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
     for script in (UP, WANTED, CONVERGE):
         text = script.read_text()
         assert source_line in text, script.name
-        assert expected_allowed not in text, script.name
+        assert audio_marker_path not in text, script.name
 
     # Negative proof for the deleted #3198 machinery: the installer no longer
     # carries its own copy of the direct-lane probe, nor the recompose gate and

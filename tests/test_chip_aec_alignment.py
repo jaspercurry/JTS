@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -379,7 +380,7 @@ def test_identity_divergence_reports_every_moved_field(changes, expected) -> Non
 
 def test_global_delay_centers_all_four_mics_with_strong_edge_margin() -> None:
     evidence = tuple(
-        MicTiming(mic, -38, (lag, lag, lag))
+        MicTiming(mic, -38, (lag,) * alignment.TIMING_TRIALS)
         for mic, lag in enumerate((21, 18, 20, 22))
     )
 
@@ -390,72 +391,88 @@ def test_global_delay_centers_all_four_mics_with_strong_edge_margin() -> None:
     assert selected.worst_edge_margin == 17
 
 
-def test_timing_analyzer_reports_unambiguous_causal_lag() -> None:
+def _timing_capture(
+    arrivals: Sequence[tuple[int, float]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """A six-channel timing capture carrying ``(lag, gain)`` copies of the sweep."""
+
     _stereo, reference, active = commissioning_stimulus()
     capture = np.zeros((32_000, 6), dtype="<i2")
     marker_start = 4_000
     capture[marker_start : marker_start + len(reference), 1] = reference
-    active_start = marker_start + 5_600
-    capture[active_start + 20 : active_start + 20 + len(active), 0] = active
+    active_start = marker_start + alignment.GUARD
+    mixed = np.zeros(32_000, dtype=np.float64)
+    for lag, gain in arrivals:
+        mixed[active_start + lag : active_start + lag + len(active)] += gain * active
+    capture[:, 0] = np.clip(mixed, -32_768, 32_767).astype("<i2")
+    return capture, reference
+
+
+@pytest.mark.parametrize(
+    ("arrivals", "expected_lag"),
+    [
+        (((20, 1.0),), 20),
+        # A reflection 101 samples behind the arrival, however loud.
+        (((20, 1.0), (121, 0.9)), 20),
+        (((20, 1.0), (121, 1.0)), 20),
+        (((20, 1.0), (121, 1.05)), 20),
+        (((20, 1.0), (121, 1.2)), 20),
+        # A side-lobe-shaped bump 9 samples early: inside
+        # DISTINCT_ARRIVAL_MIN_SAMPLES no gain can turn it into the answer.
+        (((11, 0.5), (20, 1.0)), 20),
+        (((11, 0.7), (20, 1.0)), 20),
+        (((11, 0.8), (20, 1.0)), 20),
+        # A distinct earlier arrival, weaker than the peak behind it, wins.
+        (((30, 0.7), (95, 1.0)), 30),
+    ],
+)
+def test_the_arrival_is_the_first_distinct_candidate(arrivals, expected_lag) -> None:
+    capture, reference = _timing_capture(arrivals)
 
     result = analyze_timing(capture, reference)
 
-    assert result.lag == 20
-    assert result.peak > 0.99
-    assert result.peak_ratio >= 1.10
+    assert result.lag == expected_lag
+    assert result.peak > (0.99 if len(arrivals) == 1 else alignment.MIN_TIMING_PEAK)
     assert result.clipped_samples == 0
+    # What was skipped travels with the verdict, and is always behind it.
+    assert result.competitor_offset_ms > 0
+    for later in (lag for lag, _gain in arrivals if lag > expected_lag):
+        assert (result.competitor_lag, result.competitor_height > 0) == (later, True)
 
 
-def test_a_rejected_timing_capture_carries_both_arrivals_and_the_ratio() -> None:
-    # The rejection IS the evidence: jts.local refuses on ratio ~1.02 and the
-    # captures used to unwind with the run (#3271), so a competitor this close
-    # to the direct arrival has to report where it sits.  101 samples at 16 kHz
-    # is 6.31 ms — the extra path length of a ~2.2 m reflection.
-    _stereo, reference, active = commissioning_stimulus()
-    capture = np.zeros((32_000, 6), dtype="<i2")
-    marker_start = 4_000
-    capture[marker_start : marker_start + len(reference), 1] = reference
-    active_start = marker_start + 5_600
-    arrivals = np.zeros(32_000, dtype=np.float64)
-    arrivals[active_start + 20 : active_start + 20 + len(active)] += active
-    arrivals[active_start + 121 : active_start + 121 + len(active)] += 0.98 * active
-    capture[:, 0] = np.clip(arrivals, -32_768, 32_767).astype("<i2")
+def test_an_earlier_peak_too_close_to_separate_is_refused() -> None:
+    # A near-equal earlier peak inside the window is not evidence of an earlier
+    # arrival, but it is evidence the capture cannot say which came first.
+    capture, reference = _timing_capture(((5, 0.95), (20, 1.0)))
 
     with pytest.raises(TimingRejected) as rejected:
         analyze_timing(capture, reference)
 
     result = rejected.value.result
-    assert (result.lag, result.competitor_lag) == (20, 121)
+    assert (result.lag, result.earlier_lag) == (20, 5)
     assert result.peak_ratio < alignment.MIN_PEAK_RATIO
-    assert result.competitor_height > 0
-    assert rejected.value.fields["competitor_offset_ms"] == 6.31
+    assert result.peak > alignment.MIN_TIMING_PEAK
     assert rejected.value.fields["at_edge"] is False
 
 
 def test_timing_correlation_removes_filtered_window_mean(monkeypatch) -> None:
-    _stereo, reference, active = commissioning_stimulus()
-    capture = np.zeros((32_000, 6), dtype="<i2")
-    marker_start = 4_000
-    capture[marker_start : marker_start + len(reference), 1] = reference
-    active_start = marker_start + 5_600
-    capture[active_start + 20 : active_start + 20 + len(active), 0] = active
+    capture, reference = _timing_capture(((20, 1.0),))
     real_bandpass = alignment._bandpass
     monkeypatch.setattr(
         alignment, "_bandpass", lambda values: real_bandpass(values) + 50_000
     )
     observed_means: list[tuple[float, float]] = []
-    real_correlate = kernel_alignment.cross_correlation_alignment
+    real_correlation = kernel_alignment.correlation
 
     def observe_means(captured, stimulus, **kwargs):
-        if kwargs.get("exclude_radius") == 8:
-            observed_means.append((float(captured.mean()), float(stimulus.mean())))
-        return real_correlate(captured, stimulus, **kwargs)
+        observed_means.append((float(captured.mean()), float(stimulus.mean())))
+        return real_correlation(captured, stimulus, **kwargs)
 
-    monkeypatch.setattr(kernel_alignment, "cross_correlation_alignment", observe_means)
+    monkeypatch.setattr(kernel_alignment, "correlation", observe_means)
 
     assert analyze_timing(capture, reference).lag == 20
-    assert len(observed_means) == 1
-    assert all(abs(value) < 1e-8 for value in observed_means[0])
+    # The marker locate correlates first; the mic-vs-reference pair is last.
+    assert all(abs(value) < 1e-8 for value in observed_means[-1])
 
 
 def _product_captures(*, clipped: bool = False) -> tuple[np.ndarray, ...]:

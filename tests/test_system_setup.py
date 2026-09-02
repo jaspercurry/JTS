@@ -788,7 +788,11 @@ def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
     views = (_MODULE_DIR / "views.js").read_text()
     audio_sections = (_MODULE_DIR / "audio-sections.js").read_text()
 
-    assert 'import { outputAlert, outputAlertBody } from "./audio-sections.js";' in views
+    assert re.search(
+        r'import \{[^}]*\boutputAlert, outputAlertBody\b[^}]*\} '
+        r'from "\./audio-sections\.js";',
+        views,
+    )
     assert 'const audioAlert = titledCard("Audio");' in views
     assert "audioAlert.section.hidden = true;" in views
     # First card in the panel: after the live pill, ahead of the vitals grid.
