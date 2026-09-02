@@ -933,19 +933,17 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
-#: How long the probe lets `aplay` run before SIGTERMing it.
-#:
-#: **MUST exceed TWICE `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, in
-#: `c/jts-ring-ioplug/jts_ring_shm.h`): a fully contended open spends BOTH
-#: waits — `ring_mapping_open`'s and the writer lock's, which ADD rather than
-#: overlap — inside `snd_pcm_prepare` before EBUSY is returned, and the rest
-#: is sudo/exec, the alsa config parse and the ioplug dlopen on a 1 GB Pi. A
-#: probe killed FIRST exits 124 carrying no busy marker, which
-#: `_classify_probe` then reads as OPENED with nothing proven.
-#:
-#: A HEALTHY lane runs the full duration too (124 is its success path), so the
-#: check costs `probed renderers × this`. `test_renderer_ring_lanes.py` pins
-#: it against the C header's value.
+#: The probe is bounded by its OWN work, not by outlasting a timer: `aplay -s`
+#: writes `_PROBE_FRAMES` frames (100 ms at 48 kHz, per channel) then exits 0
+#: after open → prepare → write → drain — ~0.13 s (ring) / ~0.16 s (aloop) on a
+#: Pi. `_PROBE_TIMEOUT_SEC` is a backstop only: a kill (124) is a FAILURE, since
+#: a probe that never finished proved nothing. It **MUST exceed TWICE
+#: `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, `jts_ring_shm.h`) — both of a
+#: contended open's lock waits ADD inside `snd_pcm_prepare`, and an open that
+#: wins at the end of them must not be killed into a false failure (jts3: a
+#: singly contended open returns EBUSY at 0.55 s). Pinned, with the full
+#: rationale, by `test_renderer_ring_lanes.py`.
+_PROBE_FRAMES = "4800"
 _PROBE_TIMEOUT_SEC = "2.0"
 
 
@@ -960,20 +958,17 @@ class ProbeOutcome(Enum):
 
 
 #: The ring ioplug's own refusal, out of `jts_ring_prepare`
-#: (`c/jts-ring-ioplug/pcm_jts_ring.c`). BOTH halves must sit on ONE line: a
-#: bare `-16` also appears on slave-open failures further down the chain, and
-#: alone it would read a resolution failure as a busy lane.
+#: (`c/jts-ring-ioplug/pcm_jts_ring.c`); BOTH halves must sit on ONE line, as a
+#: bare `-16` also appears on slave-open failures further down the chain.
+#: `_ALOOP_BUSY_MARKER` is aplay's refusal for an snd-aloop substream that
+#: already has a writer, anchored on its prefix likewise. Both captured on jts3.
 _RING_BUSY_MARKERS = ("jts_ring: writer_open(", "rc=-16")
-#: aplay's own refusal for an snd-aloop substream that already has a writer,
-#: captured verbatim. Anchored on aplay's prefix for the same reason.
 _ALOOP_BUSY_MARKER = "audio open error: Device or resource busy"
 
 
 def _busy_marker_line(stderr: str) -> Optional[str]:
     """The stderr line proving the PCM opened and hit a single-writer lock.
-    Every line is scanned (#3515): the ioplug refuses from `prepare`, which
-    alsa-lib runs inside `snd_pcm_hw_params`, so aplay prints `Unable to
-    install hw params:` and ~15 dump lines AFTER this one."""
+    EVERY line is scanned — `_classify_probe` owns why a slice cannot (#3515)."""
     for line in stderr.splitlines():
         if all(m in line for m in _RING_BUSY_MARKERS) or _ALOOP_BUSY_MARKER in line:
             return line.strip()
@@ -983,36 +978,43 @@ def _busy_marker_line(stderr: str) -> Optional[str]:
 def _classify_probe(returncode: int, stderr: str) -> tuple[ProbeOutcome, str]:
     """The ONE place a probe's (returncode, stderr) becomes a verdict.
 
-    A busy marker decides BEFORE the return code, in both directions: the
-    SNDERR fires the instant the lock wait expires, and the outer `timeout`
-    can land anywhere in the dump that follows — so a contended probe can
-    carry the marker AND exit 124. Failing that, 124 = the timeout fired =
-    aplay wrote silence for the whole `_PROBE_TIMEOUT_SEC`, and 0 is the same
-    outcome reached by consuming /dev/zero, which this duration never does.
+    A busy marker decides BEFORE the return code, and every line is searched:
+    the SNDERR fires the instant the lock wait expires, aplay then dumps ~15
+    hw_params lines, and the outer `timeout` can land anywhere in them — so a
+    contended probe can carry the marker AND be killed at 124 (#3515). It
+    cannot carry one and exit 0, both markers being fatal where they print.
+
+    Otherwise ONLY a clean exit is success: aplay bounds itself at
+    `_PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
+    completed. Everything else failed, 124 included: a killed probe finished
+    nothing and proves nothing.
     """
     marker = _busy_marker_line(stderr)
     detail = (marker or stderr.strip())[:200]
     if marker:
         return ProbeOutcome.BUSY, detail
-    if returncode in (0, 124):
+    if returncode == 0:
         return ProbeOutcome.OPENED, detail
+    if returncode == 124:
+        detail = f"killed at {_PROBE_TIMEOUT_SEC}s with the burst unfinished"
     return ProbeOutcome.FAILED, detail or f"exit={returncode}"
 
 
 def _probe_open_as_user(
     device: str, user: Optional[str],
 ) -> tuple[ProbeOutcome, str]:
-    """Open `device` for a short silence playback AS `user`, and classify it.
+    """Open `device` for a short silence burst AS `user`, and classify it.
 
     Why aplay + /dev/zero: it exercises the same code path the renderer uses
     (alsalib's snd_pcm_open through the user-space plugin chain) while writing
-    only silence — additive into any mix, so safe while music is playing.
-
-    The duration is `_PROBE_TIMEOUT_SEC`; read its note before shortening it.
+    only silence — additive into any mix, so safe while music is playing. The
+    burst is `_PROBE_FRAMES`, the kill guard `_PROBE_TIMEOUT_SEC`; read both
+    notes before changing either.
     """
     cmd = [
         "timeout", _PROBE_TIMEOUT_SEC,
         "aplay", "-q",
+        "-s", _PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
@@ -1020,7 +1022,6 @@ def _probe_open_as_user(
     if user:
         cmd = ["sudo", "-n", "-u", user, *cmd]
     try:
-        # Outer guard derived from the inner one, so the two cannot cross.
         r = _run(cmd, timeout=float(_PROBE_TIMEOUT_SEC) + 2.0)
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return ProbeOutcome.FAILED, f"probe subprocess failed: {e}"
@@ -1138,15 +1139,14 @@ def check_renderer_device_resolvable() -> CheckResult:
     other reason stays a failure however healthy the lane looks.
 
     Method: for each known renderer, look up its systemd User=, parse its
-    config for the configured ALSA device, and open that device as that user
-    for `_PROBE_TIMEOUT_SEC`. Safe to run anytime — it writes only silence.
+    config for the ALSA device, and write a short silence burst to it as that
+    user. Safe to run anytime.
 
     Returns:
       ok    — all configured renderers can open their device as their user
       fail  — any renderer can't open its device (this is the bug class)
-      warn  — partial info: some renderer's device or user wasn't
-              discoverable (likely the renderer isn't installed; treat
-              as informational)
+      warn  — a renderer's device or user wasn't discoverable (likely not
+              installed; informational)
     """
     label = "renderer ALSA device resolvable"
     renderers = [

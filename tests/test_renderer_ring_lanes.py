@@ -1472,14 +1472,15 @@ def test_the_arm_refuses_a_period_128_box_by_default(tmp_path):
 
 
 def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
-    """The probe's timeout MUST exceed BOTH of the ring's lock waits.
+    """The probe's kill guard MUST exceed BOTH of the ring's lock waits.
 
-    `_classify_probe` reads a timeout-kill (exit 124) with no busy marker as
-    OPENED. Probing an ARMED lane whose renderer is PLAYING spends both waits
-    inside `snd_pcm_prepare` before EBUSY is returned — so a probe killed
-    first exits 124 carrying nothing, and `_ring_lane_busy_owner_matches` (the
-    pid→cgroup ownership proof) is unreachable in exactly the contended case
-    it exists for. The probe would report a healthy lane it never opened.
+    A contended open spends both waits inside `snd_pcm_prepare` before it
+    either wins the lock or is refused. Killing it first exits 124, which
+    `_classify_probe` reads as FAILED — correctly, since nothing finished, but
+    the box is healthy: an open that wins the race at the end of those waits
+    would be reported as a broken device, and one that is refused would never
+    reach `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) in
+    exactly the contended case that proof exists for.
 
     Pinned cross-language for the same reason `OFF_WRITER_PID` is: the two
     values live in different languages and either could be changed alone.
@@ -1499,10 +1500,10 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     assert probe_sec > 2 * lock_wait_sec, (
         f"the doctor probe runs for {probe_sec}s but a fully contended open "
         f"spends BOTH lock waits ({lock_wait_sec}s each; they add rather than "
-        f"overlap) inside snd_pcm_prepare before EBUSY is returned. A probe "
-        f"killed first exits 124, which `_classify_probe` reads as OPENED — "
-        f"so the ownership check never runs on a busy lane. Raise the probe "
-        f"timeout, or lower the lock wait; do not leave them crossed"
+        f"overlap) inside snd_pcm_prepare before it wins the lock or is "
+        f"refused. A probe killed first exits 124 = FAILED, so a healthy box "
+        f"reports a broken device. Raise the probe timeout, or lower the lock "
+        f"wait; do not leave them crossed"
     )
     # And the dependency is named at BOTH ends, so neither reads as arbitrary.
     assert "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS" in src, (

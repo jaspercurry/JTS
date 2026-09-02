@@ -413,12 +413,11 @@ _UNKNOWN_PCM_STDERR = (
     "aplay: main:850: audio open error: No such file or directory\n"
 )
 
-# Same box, same command, nothing holding the lane: the probe ran its full
-# duration and `timeout` killed it.
+# Same box, same command, nothing holding the lane: the burst completed and
+# aplay exited 0 on its own. 19 slots x 256 frames covers the 4800 written.
 _IDLE_RING_LANE_STDERR = (
-    "aplay: pcm_write:2178: write error: Interrupted system call\n"
     "ALSA lib pcm_jts_ring.c:644:(jts_ring_close) jts_ring: closing "
-    "published_slots=166 drop_no_reader=0 full_waits=0\n"
+    "published_slots=19 drop_no_reader=0 full_waits=0\n"
 )
 
 _OWNED_CGROUP = "0::/system.slice/librespot.service\n"
@@ -534,11 +533,18 @@ _PROBE_ROWS = [
         ),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
-    # `timeout` fired and nothing was contending: aplay wrote silence for the
-    # whole probe.
+    # Nothing was contending: the burst completed and aplay exited 0 itself.
+    # This is the ONLY success shape.
     (
-        "idle-timeout-kill", _RING, (124, _IDLE_RING_LANE_STDERR),
+        "idle-burst-completed", _RING, (0, _IDLE_RING_LANE_STDERR),
         _OWNED_CGROUP, _OUTCOME.OPENED, "ok",
+    ),
+    # Killed with the burst unfinished. Nothing completed, so nothing is
+    # proven — a kill is a failure, not a success reached by outlasting a
+    # timer.
+    (
+        "timeout-kill-no-marker", _RING, (124, ""),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
     # The marker outranks the exit code: the ioplug's SNDERR fires the instant
     # the lock wait expires, and the outer `timeout` can land anywhere in the
@@ -554,8 +560,6 @@ _PROBE_ROWS = [
     ),
     ("exit-127", _RING, (127, "aplay: command not found\n"),
      _OWNED_CGROUP, _OUTCOME.FAILED, "fail"),
-    # aplay consumed its input and exited cleanly.
-    ("exit-0", _RING, (0, ""), _OWNED_CGROUP, _OUTCOME.OPENED, "ok"),
     # The probe binary is missing, or the outer guard fired: nothing ran, so
     # nothing is proven, however healthy the lane looks.
     (
@@ -625,6 +629,7 @@ def test_probe_verdict_and_check_status(
         "sudo", "-n", "-u", "pi",
         "timeout", doctor.renderers._PROBE_TIMEOUT_SEC,
         "aplay", "-q",
+        "-s", doctor.renderers._PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
