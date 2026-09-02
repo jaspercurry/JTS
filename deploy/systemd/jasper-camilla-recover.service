@@ -8,5 +8,14 @@ ExecStart=/usr/local/sbin/jasper-camilla-recover --reason start-limit
 # This is a recovery path, so fail open and keep boot/control reachable even
 # if evidence capture or the bounded restart attempt itself has a bug.
 TimeoutStartSec=45
+# The SIGTERM at TimeoutStartSec is where the handler's EXIT trap restores the
+# core graph, so this deadline — not the manager's DefaultTimeoutStopSec — is
+# the restore's budget. Under KillMode=control-group (the default) the trap's
+# freshly spawned `systemctl` children survive that SIGTERM wave and run until
+# the SIGKILL wave here. The ladder's longest step is a blocking
+# `start jasper-camilla.service`, which pulls
+# jasper-audio-hardware-reconcile.service (TimeoutStartSec=50s), plus a 3s
+# liveness wait and ~12 short unit actions.
+TimeoutStopSec=120
 StandardOutput=journal
 StandardError=journal

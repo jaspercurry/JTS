@@ -802,11 +802,15 @@ async def _get_state(
     voice_socket_path: str,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
     transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
+    service_states_snapshot: (
+        Callable[[], dict[str, dict[str, Any]]] | None
+    ) = None,
 ) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     if transport_park_snapshot is not None:
         extra["transport_park_snapshot"] = transport_park_snapshot
     return await _state_aggregate._get_state(
+        service_states_snapshot=service_states_snapshot,
         camilla_host=camilla_host,
         camilla_port=camilla_port,
         voice_socket_path=voice_socket_path,

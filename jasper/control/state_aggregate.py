@@ -202,10 +202,38 @@ def _build_usbsink_renderer_state(
     }
 
 
+def _camilla_unit_state(
+    service_states: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """systemd's verdict on the DSP graph owner, for ``/state.audio_graph``.
+
+    fan-in and outputd publish their own STATUS into this block; CamillaDSP
+    has no such endpoint, and a STOPPED CamillaDSP is invisible to every other
+    field here — fan-in free-run-drops on an absent ring reader and outputd
+    zero-fills an absent writer, so both keep reporting healthy while the
+    speaker emits nothing. Same cached snapshot jasper-control already samples
+    for /system and for audio-health's ``path.camilla_stopped``, so this adds
+    no probe; ``None`` means "not observed", never "running".
+    """
+    from .airplay_health import CAMILLA_UNIT_FULL
+
+    state = (service_states or {}).get(CAMILLA_UNIT_FULL)
+    if not isinstance(state, dict):
+        return None
+    return {
+        "unit": CAMILLA_UNIT_FULL,
+        "load_state": state.get("load_state"),
+        "active_state": state.get("active_state"),
+        "sub_state": state.get("sub_state"),
+        "result": state.get("result"),
+    }
+
+
 def _audio_graph_state(
     *,
     fanin_status: dict[str, Any] | None,
     outputd_status: dict[str, Any] | None,
+    service_states: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     try:
         from ..audio_runtime_plan import build_audio_runtime_plan_from_system
@@ -265,6 +293,7 @@ def _audio_graph_state(
                 else None
             ),
         },
+        "camilla": _camilla_unit_state(service_states),
         "outputd": {
             "dac_delay_ms": (
                 outputd_dac.get("snd_pcm_delay_ms")
@@ -825,6 +854,9 @@ async def _get_state(
     read_transit_state_func: Callable[[], dict] = read_transit_state,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
     transport_park_snapshot: Callable[[], dict[str, Any]] = transport_park.snapshot,
+    service_states_snapshot: (
+        Callable[[], dict[str, dict[str, Any]]] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Aggregate state across daemons for GET /state. Each section
     fails soft — voice unreachable or Camilla restarting reports null
@@ -1230,9 +1262,18 @@ async def _get_state(
         logger.exception("output hardware state read failed")
         output_hardware_state = None
 
+    try:
+        service_states = (
+            service_states_snapshot() if service_states_snapshot else None
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("service state snapshot read failed")
+        service_states = None
+
     audio_graph_state = _audio_graph_state(
         fanin_status=fanin_st,
         outputd_status=outputd_st,
+        service_states=service_states,
     )
 
     # Tool catalog summary. Fresh read of /run/jasper/tools.json (written by
