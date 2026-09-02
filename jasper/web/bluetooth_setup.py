@@ -55,6 +55,7 @@ from ._common import (
     JsonBodyError,
     begin_request,
     bonded_follower_active,
+    bonded_follower_park_reason,
     canonical_header,
     canonical_page,
     guard_mutating_request,
@@ -253,7 +254,8 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             "discovering": False,
         }, HTTPStatus.BAD_GATEWAY)
 
-    parked = bonded_follower_active()
+    park_reason = bonded_follower_park_reason()
+    parked = bool(park_reason)
     unit_snapshot = probe_unit_snapshot(_STATE_UNITS)
     availability = probe_bluetooth_availability(unit_snapshot.available)
     try:
@@ -285,6 +287,8 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             payload["degradedReason"] = degraded_reason
         if not availability.available:
             payload["unavailableReason"] = bluetooth_unavailable_reason(availability)
+        if parked:
+            payload["parkReason"] = park_reason
         return payload, HTTPStatus.OK
 
     state = dict(raw)
@@ -308,6 +312,10 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
         state["degradedReason"] = degraded_reason
     else:
         state.pop("degradedReason", None)
+    if parked:
+        state["parkReason"] = park_reason
+    else:
+        state.pop("parkReason", None)
     _annotate_pairing_readiness(state, unit_snapshot)
     return state, HTTPStatus.OK
 

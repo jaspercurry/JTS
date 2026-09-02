@@ -1880,7 +1880,10 @@ def test_get_state_preserves_desired_intent_when_adapter_read_fails(
     assert fake.run_calls == 1
 
 
-def test_state_reports_parked_without_rewriting_desired(monkeypatch):
+@pytest.mark.parametrize(
+    "park_reason", ("bonded_follower", "role_transition_in_progress"),
+)
+def test_state_reports_parked_without_rewriting_desired(monkeypatch, park_reason):
     fake = _FakeDispatcher()
 
     async def read_adapter_state():
@@ -1896,7 +1899,9 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        bluetooth_setup, "bonded_follower_park_reason", lambda: park_reason,
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "_unit_active",
@@ -1911,6 +1916,7 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch):
     assert payload["desired"] is True
     assert payload["effective"] == "parked"
     assert payload["parked"] is True
+    assert payload["parkReason"] == park_reason
 
 
 @pytest.mark.parametrize("desired", (False, True))
@@ -1962,7 +1968,9 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        bluetooth_setup, "bonded_follower_park_reason", lambda: "bonded_follower",
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "probe_bluetooth_availability",
@@ -1974,6 +1982,7 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     assert status == int(http.HTTPStatus.OK)
     assert state["effective"] == "parked"
     assert state["available"] is False
+    assert state["parkReason"] == "bonded_follower"
 
 
 @pytest.mark.parametrize("path", ("/power", "/scan"))
