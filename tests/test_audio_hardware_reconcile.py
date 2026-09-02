@@ -4060,3 +4060,31 @@ def test_env_publication_names_the_dac_the_record_names(tmp_path: Path, listing:
 
     assert result.returncode == 0, result.stderr
     _assert_publications_agree(tmp_path)
+
+
+def test_env_publication_agrees_on_a_classify_time_partial_dual_apple_record(
+    tmp_path: Path,
+):
+    """The composite counts as ACTIVE as soon as it is named, parked or not —
+    unlike a single DAC. Pin that for a pair the classifier itself marks
+    ``partial`` (here: one child's USB endpoint is not synchronous), not just
+    the ready/parked-for-missing-active-graph shape the other dual tests
+    cover, since that is a different park (bash's active-graph gate, not
+    ``OutputHardwareState.status``).
+    """
+    extra_env = _dual_apple_cards(tmp_path)
+    (tmp_path / "proc" / "asound" / "card2" / "stream0").write_text(
+        "Playback:\n  Endpoint: 0x01 (ASYNC)\n", encoding="utf-8",
+    )
+
+    result = _run_reconcile(
+        tmp_path, DUAL_APPLE_LISTING, "--reason", "test", extra_env=extra_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    record = _output_hardware_record(tmp_path)
+    assert record["status"] == "partial"
+    assert [
+        issue["code"] for issue in record["issues"] if issue["severity"] == "blocker"
+    ] == ["dual_apple_endpoint_not_synchronous"]
+    _assert_publications_agree(tmp_path)

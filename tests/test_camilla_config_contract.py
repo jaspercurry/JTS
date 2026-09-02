@@ -260,6 +260,7 @@ def _stage_output_profile(monkeypatch, tmp_path, profile_id: str) -> None:
             profile_label=profile_id,
             status="ready",
             physical_output_count=2,
+            selected_card_id=profile_id,
         ),
         state_path,
     )

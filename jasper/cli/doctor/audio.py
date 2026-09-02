@@ -671,9 +671,12 @@ def _output_hardware_state_or_none() -> OutputHardwareState | None:
         return None
 
 
-def _effective_output_dac_id(state: OutputHardwareState | None) -> str:
-    """The reconciler's active DAC, or ``unknown`` — never an env or Apple default."""
-    return (state.active_profile_id if state is not None else None) or "unknown"
+def _observed_output_dac_id(state: OutputHardwareState | None) -> str:
+    """The DAC the reconciler last SAW, or ``unknown`` — never an env or Apple
+    default. Hardware diagnostics ask this, not whether the box drives it
+    (:attr:`OutputHardwareState.active_profile_id`) — a record the reconciler
+    parked still names the hardware it observed."""
+    return (state.observed_profile_id if state is not None else None) or "unknown"
 
 
 def _apple_output_profile_active(profile_id: str) -> bool:
@@ -784,7 +787,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
         )
 
     state = _output_hardware_state_or_none()
-    dac_id = _effective_output_dac_id(state)
+    dac_id = _observed_output_dac_id(state)
     if state is None:
         return CheckResult(
             "DAC USB sync mode", "warn",
@@ -855,7 +858,9 @@ def check_apple_dongle_audio() -> CheckResult:
 
       - the record names an Apple profile but lsusb shows fewer adapters
         than that profile needs → fail
-      - the record names an Apple profile and every card it needs → ok
+      - the record names an Apple profile and every card it needs → ok,
+        whatever the record's status (this reads observed hardware, not
+        whether the reconciler is driving it)
       - the record names an Apple profile short of a card (a parked
         dual-Apple pair) → warn
       - the record names no DAC and the chip is on USB → warn (plug in
@@ -864,7 +869,7 @@ def check_apple_dongle_audio() -> CheckResult:
         DAC → ok, skipped
     """
     state = _output_hardware_state_or_none()
-    dac_id = _effective_output_dac_id(state)
+    dac_id = _observed_output_dac_id(state)
     if dac_id != "unknown" and not _apple_output_profile_active(dac_id):
         return CheckResult(
             "Apple dongle", "ok",
@@ -930,7 +935,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
     setting and is what triggered the audible-loudness gap that led to
     this check existing."""
     state = _output_hardware_state_or_none()
-    dac_id = _effective_output_dac_id(state)
+    dac_id = _observed_output_dac_id(state)
     control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
     if not _apple_output_profile_active(dac_id) or not control_groups:
         return CheckResult(

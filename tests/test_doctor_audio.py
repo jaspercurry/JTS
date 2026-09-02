@@ -133,6 +133,21 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
     assert result.status == "ok"
 
 
+def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch):
+    """This check reads observed hardware, not whether the reconciler drives
+    it: a partial record still names the card it saw, so a parked single
+    dongle with an analog load reports ok, not the 'no audio card' warn."""
+    record_active_dac("apple_usb_c_dongle", card_id="A", status="partial")
+    monkeypatch.setattr(
+        doctor.audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+    )
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "ok"
+    assert "A" in result.detail
+
+
 def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple mixer probe should not run")
@@ -733,6 +748,24 @@ _I2S_STATE = OutputHardwareState(
     ),
 )
 
+# A partial record — e.g. a saved topology mismatch (apply_saved_topology_policy)
+# — still NAMES this I2S DAC; the check asks what hardware was observed, not
+# whether the reconciler is driving it.
+_I2S_STATE_PARTIAL = OutputHardwareState(
+    profile_id="hifiberry_dac8x",
+    profile_label="HiFiBerry DAC8x",
+    status="partial",
+    physical_output_count=8,
+    child_devices=(
+        OutputCardFact(
+            card_id="DAC8x",
+            device_id="hifiberry_dac8x",
+            endpoint_sync=None,
+            has_playback=True,
+        ),
+    ),
+)
+
 
 def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
     """Chip-AEC is moot without the mic, so the output probe must not run."""
@@ -754,9 +787,12 @@ def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
         (_sync_mode_state("ASYNC"), "warn", "async USB playback endpoint"),
         # A HiFiBerry/I2S HAT is a known profile with no USB endpoint sync tag.
         (_I2S_STATE, "ok", "I2S clock slave"),
+        # A partial record still names the I2S DAC it observed, so this stays
+        # the ok/I2S branch rather than falling through to "profile is unknown".
+        (_I2S_STATE_PARTIAL, "ok", "I2S clock slave"),
         (None, "warn", "output hardware state unavailable"),
     ],
-    ids=["sync", "adaptive", "async", "i2s", "state-unavailable"],
+    ids=["sync", "adaptive", "async", "i2s", "i2s-partial", "state-unavailable"],
 )
 def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, must_name):
     monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)

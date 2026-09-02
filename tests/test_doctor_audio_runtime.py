@@ -3114,14 +3114,14 @@ assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
 )
 
 
-def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None):
+def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None, status="ready"):
     conf = tmp_path / "60-jts-ring.conf"
     if conf_text is None:
         conf.write_bytes(SHIPPED_RING_CONF.read_bytes())
     else:
         conf.write_text(conf_text, encoding="utf-8")
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
-    record_active_dac(dac_id)
+    record_active_dac(dac_id, status=status)
     return conf
 
 
@@ -3130,6 +3130,23 @@ def test_skips_when_no_active_dac_is_recorded(monkeypatch, tmp_path):
     no declared floor to render (the missing record is another check's warn)."""
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "60-jts-ring.conf"))
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "names no active DAC" in result.detail
+
+
+def test_skips_when_the_recorded_dac_is_only_partially_present(
+    monkeypatch, tmp_path
+):
+    """A partial single-DAC record is not ACTIVE (the reconciler does not
+    drive it), so this renders the same ok/skipped branch as no record at
+    all — the conf.d floor is never read for a DAC the reconciler only
+    observed, even though the conf.d file itself exists on disk."""
+    _stage_floor_conf(
+        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", status="partial"
+    )
 
     result = audio_runtime.check_ring_conf_floor_render()
 
