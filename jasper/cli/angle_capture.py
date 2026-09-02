@@ -4,62 +4,31 @@
 
 """State one angle walk, see exactly what it will run, and leave it for a session.
 
-The operator's door onto
-:mod:`jasper.active_speaker.angle_capture` (#2732) -- the seam that resolves
-``{per-driver | summed} x {angles} x {arm | human-guided}`` onto the shipped
-program, pose and gate machinery, and that shipped with no way for anybody to
-state a request.
+The operator's door onto :mod:`jasper.active_speaker.angle_capture` (#2732).
+``plan`` prints the walk a request resolves to and writes nothing; ``stage``
+runs the SAME resolution and banks the request where the next measurement
+session takes it, once
+(:mod:`jasper.active_speaker.angle_capture_spool`). Neither runs a capture,
+opens a session, plays anything, or moves a microphone.
 
-Two verbs, and deliberately nothing between them:
+``--program`` names a row of :mod:`jasper.active_speaker.measurement_programs`,
+which owns the geometry; ``--angles`` is the escape hatch for a bearing no
+program names.
 
-* ``plan`` reads a request and prints the walk it resolves to -- every stop's
-  index, angle, pose, program, advance policy and banking shape. It writes
-  nothing and touches no state, so it is the safe thing to run first and the
-  thing to paste into a session log.
-* ``stage`` runs the SAME resolution and then banks the request where the next
-  measurement session will take it
-  (:mod:`jasper.active_speaker.angle_capture_spool`).
+**Angles are parsed, never coerced.** A field is handed to
+:class:`~jasper.active_speaker.angle_capture.AngleStop` as an ``int`` only when
+written as a whole number; anything else passes through unchanged so the seam
+refuses it. ``int("0.4")`` raises but ``int(0.4)`` is ``0``, and an angle
+truncated to zero is an ON-AXIS capture nobody asked for. There is no second
+validator here.
 
-``plan`` is the dry run of ``stage`` rather than a different question -- the
-same constructors, the same refusals, the same resolved walk -- which is the
-shape ``jasper-crossover-prescriber``'s ``propose``/``stage`` pair already
-establishes for this operator, and for the same reason: a staging verb with a
-laxer check would be the second, weaker reader these designs exist to avoid.
+**Exit codes are part of the contract**: ``0`` accepted, ``2`` the request was
+refused (fix the request), ``3`` an accepted request could not be banked (fix
+the speaker's filesystem). A refusal prints its machine-readable reason on
+stdout as JSON when asked, and the human sentence on stderr either way.
 
-**Two doors onto one seam, and they are not equals.** ``--program baseline
---size express`` names a row of
-:mod:`jasper.active_speaker.measurement_programs`, which owns the geometry; that
-is the door a driver uses, and the receipt it prints is the price, the handoff
-URL and how to tell the walk landed. ``--angles`` is the operator escape hatch
-for a bearing no program names.
-
-**Angles are parsed, never coerced.** ``--angles 0,7,-7,22,-22`` is split and
-each field handed to :class:`~jasper.active_speaker.angle_capture.AngleStop`
-as an ``int`` **only when it is written as a whole number**; anything else
-(``7.5``, ``0.4``, ``+7 deg``) is passed through unchanged so the seam's own
-``_validated_angle`` refuses it in its own words. That matters more than it
-looks: ``int("0.4")`` raises, but ``int(0.4)`` is ``0``, and an angle silently
-truncated to zero is an ON-AXIS capture the operator never asked for. There is
-no second validator here -- bounds, whole-degree-ness, the regime vocabulary and
-the mover vocabulary are all the seam's.
-
-**Exit codes are part of the contract**, because the caller of this tool is
-often a script: ``0`` accepted, ``2`` the request was refused (a bad angle, an
-unknown regime or mover, or a measurement session already holding the speaker),
-``3`` an accepted request could not be banked. A refusal is not a crash -- it is
-the door working -- so it prints the machine-readable reason on stdout as JSON
-when asked, and the human sentence on stderr either way. ``3`` is its own code
-rather than folded into ``2`` because the two send an operator to different
-places: ``2`` means fix the request, ``3`` means fix the speaker's filesystem.
-
-**What this tool does NOT do, stated plainly rather than implied.** It does not
-run a capture, open a session, play anything, or move a microphone. ``stage``
-places a request; the next measurement session takes it, once. ``plan`` is the
-dry run -- the only way to see what a stated walk resolves to, in the units the
-session will use -- and ``stage`` gives the request a durable, single-use home
-instead of a shell variable. What a taken walk then does, and what it
-deliberately does not publish, is ``docs/testing-tooling.md``
-("Angle-walk door").
+What a taken walk then does, and what it deliberately does not publish, is
+``docs/testing-tooling.md`` ("Angle-walk door").
 """
 
 from __future__ import annotations

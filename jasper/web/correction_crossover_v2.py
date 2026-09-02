@@ -1958,91 +1958,53 @@ def _take_staged_angle_walk(
     """This session's staged angle walk as
     ``(poses, consumer, specs, trims, geometry, claims)``, or ``None``.
 
-    :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
-    ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
+    :func:`_take_staged_prescription`'s twin: ONE take, at ONE place. ``None``
+    means NOTHING WAS STAGED — an ordinary session — and nothing else.
 
-    **A staged walk this session cannot honour REFUSES THE OPEN**
-    (:class:`CrossoverV2Refused`), with the producing module's own slug in the
-    sentence. The four refusal classes it CATCHES are the spool's ``AngleRequestRefused``,
-    the seam's ``LateralWalkRefused``, the bare ``CrossoverV2FlowError`` the
-    spool re-raises for a banked stop that no longer satisfies the seam's
-    contract (a hand-edited angle), which that module deliberately does not
-    re-wrap, and the bare ``ValueError`` ``MeasureSpec`` raises for a polarity
-    pair it will not accept (``spec``, below).
+    A staged walk this session cannot honour REFUSES THE OPEN
+    (:class:`CrossoverV2Refused`) with the producing module's own slug, rather
+    than opening in the ordinary 3-capture shape and silently answering a
+    different question. This runs before any state is opened, so the loud
+    direction is also the cheap one; the document is single-use either way, so
+    the operator restages after fixing what was named.
 
-    It used to journal every one of them and return ``None``, and the session
-    then opened in its ordinary 3-capture shape: an operator who staged a walk
-    got a measurement that silently answered a different question, with the only
-    evidence a WARNING line on a box they were not reading. A refusal costs
-    nothing here — this runs before any state is opened — so the loud direction
-    is also the cheap one. The document is single-use either way, so the
-    operator restages after fixing what was named.
+    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, BUILT
+    here rather than checked: the same objects the engine leg plays, so no
+    second construction can disagree with the validated one. The design-axis
+    MEASURE index always carries the walk-level spec; a STOP is in the map only
+    when it names a candidate, which only the engine leg can install.
+    ``claims`` is what each stop's graph CARRIED, for the pose records the flow
+    banks.
 
-    The consumer is always ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here
-    rather than read from the document, because it decides which pose table the
-    walk runs and may have exactly one writer.
-
-    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, built
-    HERE because adoption is where the document's ``(polarity, inverted_role)``
-    pair first meets the gate that judges it. Built rather than checked: the
-    same objects the engine leg plays, so no second construction can disagree
-    with the one that was validated. A pair ``MeasureSpec.__post_init__``
-    refuses therefore refuses the open here, in the spec's own sentence, rather
-    than reaching a capture callback as a 500.
-
-    The design-axis MEASURE index is always in the map, carrying the walk-level
-    spec. A STOP is in it only when it names a candidate: a candidate is played
-    as the alignment it was minted with, which only the engine leg can install,
-    where a walk naming none is the shipped one and stays on the leg it already
-    ran on. ``claims`` is what each stop's graph CARRIED — the candidate, the
-    polarity it rode, the level match it played through — for the pose records
-    the flow banks, so a reader selecting by candidate sees the graph the take
-    was measured under rather than the default one.
-
-    ``trims`` is the per-role attenuation a ``--level-matched`` walk's graph
-    will carry, RESOLVED HERE and empty for every walk that asked for none.
-    Adoption is the one place that can both ask the evidence question and still
-    refuse, so it is asked exactly once: the answer travels to the session that
-    installs the graph and to the record that states what played, and no later
-    hop re-derives it. A ``level_matched`` walk faces TWO refusals here, both
-    the same S12 lie caught at different seams. FIRST, the source: the trims
-    ride the engine MEASURE leg exactly as a sign-flip does, so a non-wired
-    source refuses with
+    ``trims`` is the per-role attenuation a ``--level-matched`` walk carries,
+    resolved HERE and empty for a walk that asked for none. Adoption is the one
+    place that can both ask the evidence question and still refuse, so it is
+    asked exactly once. Such a walk faces two refusals, the same lie caught at
+    different seams: a non-wired ``capture_source`` refuses with
     :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NEEDS_WIRED`
-    before any statefile is read. THEN, on a wired source, the evidence: it has
-    ONE owner
-    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`,
-    which decides between the banked base trim and the guided captures), and a
-    box neither of those
-    answers for refuses with
-    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`
-    rather than measuring unmatched branches under a record that says matched.
+    before any statefile is read, and a wired box with no measured evidence
+    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`)
+    refuses with
+    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`.
     A datasheet estimate is deliberately not a fallback: it is physics about
     the driver model, not a measurement of this cabinet.
 
-    ``capture_source`` is read for TWO questions, both the same one asked of a
-    different capability: only a wired session binds the engine MEASURE leg
-    (:func:`_bind_engine_measure_leg` returns ``None`` with no local capture
-    half), and every other source runs MEASURE on the flow leg, which has no
-    ``spec``, installs the ordinary graph, and knows nothing about a sign-flip
-    or a level match. So a walk asking for a sign-flipped branch OR a level
-    match on a non-wired source is one this session cannot honour — it refuses,
-    rather than banking an ordinary capture under a record, and a journal line,
-    that say otherwise.
+    ``capture_source`` gates the same capability twice: only a wired session
+    binds the engine MEASURE leg, and every other source runs MEASURE on the
+    flow leg, which has no ``spec`` and knows nothing about a sign-flip or a
+    level match.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
-    permissions mistake refuses every session until it is fixed rather than
-    silently destroying the evidence of itself.
+    permissions mistake refuses every session rather than silently destroying
+    the evidence of itself.
 
     ``lateral_group_present`` and ``plans_cloud_group`` are the session's own
-    facts, passed in rather than read, because the composing seam may not read
-    session flags.
+    facts, passed in because the composing seam may not read session flags.
 
-    A walk does not survive its session. The consumer is not persisted and the
+    A walk does not survive its session: the consumer is not persisted and the
     document is single-use, so a session that lapses mid-walk re-opens in its
-    ordinary shape and the operator stages again — which is the safe direction:
-    a resumed half-walk would bank poses under a consumer nothing re-declared.
+    ordinary shape and the operator stages again.
     """
     from jasper.active_speaker.angle_capture import (
         WALK_CANDIDATE_NOT_MEASURABLE,
