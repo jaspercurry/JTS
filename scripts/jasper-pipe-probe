@@ -33,34 +33,30 @@ capture SECONDS OUT.raw
     scp's the result back. The sniffer reads "lo" at the packet level,
     which delivers each loopback datagram TWICE (both directions of the
     same local hop) -- it writes each as a length-prefixed record (4-byte
-    LE length + payload).
+    LE length + payload). It records only real UDP datagrams to the port
+    (ref9891_pcap.parse_udp_payload's rule, mirrored): an ICMP error
+    quoting a loopback header otherwise parses as a plausible one. What
+    that laxer read would have admitted is counted by
+    protocol/fragment/length rather than stored.
 
-    Laptop-side reassembly EXCISES BEFORE IT PAIRS. Being addressed to
-    :9891 does not make a datagram the tap's: other traffic on lo
-    occasionally lands there (issue #3509), and because it arrives twice
-    like everything else it pairs perfectly. So each record is first
-    checked against the tap's own geometry -- outputd publishes exactly
-    one S16 stereo period per datagram, `period_frames * 4` bytes, whose
-    frame count is per-box config and so is LEARNED from the capture (see
-    learn_period_bytes()), never hard-coded. Records of any other length
-    are excised and counted by length; no payload signature is matched, so
-    this rejects any wrong-length intruder, not just the observed one.
-    What survives is STRICTLY paired (record[2i] must byte-match
-    record[2i+1]) and the even one kept; a pairing violation -- an odd
-    record count, or a pair that does not match -- is never silently
-    guessed at: it prints a loud warning with counts and keeps every
-    record unmerged.
+    Laptop-side reassembly EXCISES BEFORE IT PAIRS. The period comes from
+    outputd's own STATUS (`dac.period_frames`), so a record of any other
+    length is not tap audio; such records are counted by length and
+    dropped, no payload signature matched. What survives is STRICTLY
+    paired (record[2i] must byte-match record[2i+1]) and the even one
+    kept; a pairing violation -- an odd record count, or a pair that does
+    not match -- keeps every record unmerged under a loud warning.
 
-    OUT.raw is the reassembled pure-PCM stream either way, so `analyze`'s
-    input format is unchanged. A sidecar OUT.raw.json carries the
-    capture's manifest: the excised-datagram counts by length, the learned
-    geometry, whether the accepted PCM is all-zero, and START_MONOTONIC_NS
-    -- CLOCK_MONOTONIC read on the box the instant the sniffer bound,
-    which is the clock `journalctl -o short-monotonic` prints, so a
-    capture aligns with fan-in `source_select` events instead of being
-    guessed into place. An all-zero capture fails the command; not one
-    valid datagram surviving fails it differently (exit 2), because an
-    instrument that saw nothing is not a tap that was silent.
+    OUT.raw stays headerless PCM, so `analyze`'s input format is
+    unchanged; the sidecar OUT.raw.json carries the manifest (see
+    ref9891_pcap.build_capture_manifest), which `analyze` reads back so a
+    saved capture keeps its provenance. START_MONOTONIC_NS is
+    CLOCK_MONOTONIC read on the box as the sniffer bound -- the clock
+    `journalctl -o short-monotonic` prints -- so a capture aligns with
+    fan-in `source_select` events instead of being guessed into place.
+    Exits 3 when the instrument was blind. An all-zero capture is
+    REPORTED, not failed: this instrument cannot know whether anything was
+    supposed to be playing, and an idle box is validly silent.
 
 analyze IN.raw [--json]
     Per-second table of dominant frequency (4x zero-padded, Hann-windowed
@@ -178,19 +174,21 @@ from jasper.route_latency.click_track import SAMPLE_RATE_HZ as CLICK_TRACK_RATE_
 from jasper.route_latency.click_track import click_samples
 from jasper.route_latency.ref9891_pcap import BYTES_PER_FRAME as TAP_BYTES_PER_FRAME
 from jasper.route_latency.ref9891_pcap import RATE as TAP_RATE_HZ
+from jasper.route_latency.ref9891_pcap import REFUSAL_ALL_ZERO
+from jasper.route_latency.ref9891_pcap import REFUSAL_NO_GEOMETRY, REFUSAL_NO_PACKETS
+from jasper.route_latency.ref9891_pcap import build_capture_manifest, capture_manifest_path
+from jasper.route_latency.ref9891_pcap import capture_provenance, is_tap_period
+from jasper.route_latency.ref9891_pcap import read_capture_manifest
 
 # Same tap jasper.route_latency.ref9891_pcap reads from a pcap; its own
 # _REF_UDP_PORT is private, so the number is declared once here and
 # interpolated into the embedded sniffer below rather than typed twice.
 TAP_UDP_PORT = 9891
 
-# A tap FRAME is fixed by contract (S16 stereo: outputd's spine is i32 but
-# both reference taps are narrowed to i16 -- rust/jasper-outputd/src/main.rs,
-# ReferenceSideOutputs::publish), so it is imported above rather than typed
-# again. The frames PER DATAGRAM are not fixed: they are outputd's
-# period_frames, which is per-box config (jts3 runs 128 -> 512 B; the
-# packaged unit ships JASPER_OUTPUTD_PERIOD_FRAMES=1024 -> 4096 B). That is
-# why the datagram length is learned per capture -- see learn_period_bytes().
+# The frames PER DATAGRAM are not fixed: they are outputd's period_frames,
+# which is per-box config (jts3 runs 128 -> 512 B; the packaged unit ships
+# JASPER_OUTPUTD_PERIOD_FRAMES=1024 -> 4096 B). That is why the sniffer asks
+# outputd rather than assuming a length.
 
 # ControlPath lives under /tmp itself, NOT tempfile.gettempdir(): macOS's
 # default TMPDIR is a deep per-user path, and AF_UNIX sun_path caps at
@@ -294,29 +292,98 @@ GLITCH_NOT_MEANINGFUL_REASON = (
 LATENCY_CAPTURE_SECONDS = 4.0
 READY_TIMEOUT_S = 10.0
 
-# `capture` exit code for "the run completed but not one valid tap datagram
-# survived validation" -- distinct from the exit-1 SystemExits above it so a
-# runbook can tell an instrument that saw nothing from ssh/scp failing.
-CAPTURE_NO_VALID_RECORDS_EXIT = 2
+# `capture` exit code for "the instrument was blind" -- no valid tap datagram,
+# or outputd could not say what a valid one looks like. Not 1 (the SystemExits
+# above it) and not 2, which argparse itself returns on a usage error, so a
+# wrapper can attribute this one unambiguously.
+CAPTURE_INSTRUMENT_BLIND_EXIT = 3
+
+OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 
 
 # The sniffer is pushed to the box and run there under `sudo python3` with
-# no venv and no jasper import available -- it must stay stdlib-only.
+# no venv and no jasper import available -- it must stay stdlib-only, so its
+# packet parse MIRRORS jasper.route_latency.ref9891_pcap.parse_udp_payload
+# rather than importing it. test_sniffer_source_rejects_what_the_shared_
+# parser_rejects execs this string and pins the two against one input set.
 # Pairing/dedup is deliberately NOT done here: it happens laptop-side in
 # reassemble_records(), once, on the length-prefixed record stream this
 # writes (see the module docstring's `capture` entry).
 SNIFFER_SOURCE = f'''\
+import json
 import socket
 import struct
 import sys
 import time
 
 TAP_PORT = {TAP_UDP_PORT}
+BYTES_PER_FRAME = {TAP_BYTES_PER_FRAME}
+CONTROL_SOCKET = "{OUTPUTD_CONTROL_SOCKET}"
+
+
+def period_bytes():
+    """outputd's own dac.period_frames, over its control socket. The tap
+    geometry is a fact the box holds; nothing here infers it."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(2.0)
+        sock.connect(CONTROL_SOCKET)
+        sock.sendall(b"STATUS\\n")
+        chunks = []
+        while True:
+            data = sock.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+    finally:
+        sock.close()
+    status = json.loads(b"".join(chunks).decode("utf-8"))
+    return int(status["dac"]["period_frames"]) * BYTES_PER_FRAME
+
+
+def udp_payload(packet, port):
+    """The UDP payload this frame carries to `port`, or None."""
+    if len(packet) < 42:
+        return None
+    if struct.unpack(">H", packet[12:14])[0] != 0x0800:
+        return None
+    if packet[23] != 17:
+        return None
+    if struct.unpack(">H", packet[20:22])[0] & 0x3FFF:
+        return None
+    off = 14 + (packet[14] & 0x0F) * 4
+    if len(packet) < off + 8:
+        return None
+    if struct.unpack(">H", packet[off + 2:off + 4])[0] != port:
+        return None
+    length = struct.unpack(">H", packet[off + 4:off + 6])[0]
+    if length < 8 or len(packet) < off + length:
+        return None
+    return packet[off + 8:off + length]
+
+
+def naive_port(packet):
+    """The destination port the PRE-#3509 parse read: no protocol and no
+    fragment check, so an ICMP error quoting a :9891 header matches. Kept
+    only to count what such a read admits -- the evidence for what else on
+    lo reaches the port."""
+    if len(packet) < 42:
+        return None
+    if struct.unpack(">H", packet[12:14])[0] != 0x0800:
+        return None
+    off = 14 + (packet[14] & 0x0F) * 4
+    if len(packet) < off + 8:
+        return None
+    return struct.unpack(">H", packet[off + 2:off + 4])[0]
 
 
 def main():
     seconds = float(sys.argv[1])
     out_path = sys.argv[2]
+    try:
+        sys.stderr.write("PERIOD_BYTES=%d\\n" % period_bytes())
+    except Exception as exc:
+        sys.stderr.write("PERIOD_BYTES_ERROR=%s\\n" % exc)
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
     sock.bind(("lo", 0))
     print("READY", flush=True)
@@ -325,6 +392,7 @@ def main():
     sys.stderr.write("START_REALTIME_NS=%d\\n" % time.time_ns())
     sys.stderr.flush()
     deadline = start + seconds
+    rejected = {{}}
     with open(out_path, "wb") as out:
         while True:
             remaining = deadline - time.monotonic()
@@ -335,20 +403,20 @@ def main():
                 packet = sock.recv(65535)
             except socket.timeout:
                 break
-            if len(packet) < 34:
+            payload = udp_payload(packet, TAP_PORT)
+            if payload is not None:
+                out.write(struct.pack("<I", len(payload)))
+                out.write(payload)
                 continue
-            if struct.unpack(">H", packet[12:14])[0] != 0x0800:
-                continue
-            ihl = (packet[14] & 0x0F) * 4
-            udp_off = 14 + ihl
-            if len(packet) < udp_off + 8:
-                continue
-            dport = struct.unpack(">H", packet[udp_off + 2:udp_off + 4])[0]
-            if dport != TAP_PORT:
-                continue
-            payload = packet[udp_off + 8:]
-            out.write(struct.pack("<I", len(payload)))
-            out.write(payload)
+            if naive_port(packet) == TAP_PORT:
+                key = "proto=%d,frag=%d,wire_len=%d" % (
+                    packet[23],
+                    1 if struct.unpack(">H", packet[20:22])[0] & 0x3FFF else 0,
+                    len(packet),
+                )
+                rejected[key] = rejected.get(key, 0) + 1
+    sys.stderr.write("REJECTED_BY_HEADER=%s\\n" % json.dumps(rejected, sort_keys=True))
+    sys.stderr.flush()
 
 
 if __name__ == "__main__":
@@ -592,128 +660,82 @@ def parse_records(raw: bytes) -> list[bytes]:
     return records
 
 
-def learn_period_bytes(records: list[bytes]) -> int | None:
-    """The tap's negotiated datagram geometry, learned from the capture.
-
-    outputd's wire contract (`the_reference_datagram_is_exactly_one_s16_
-    stereo_period` in rust/jasper-outputd/src/main.rs) is one S16 stereo
-    period per datagram -- `period_frames * 2 channels * 2 bytes`.
-    `period_frames` is per-box config and never changes for a process
-    lifetime, so within one capture the true tap length is a single value
-    that dominates the record stream. Returns it, or None when the most
-    common length is not a whole number of S16 stereo frames or does not
-    hold a strict majority: there is then no geometry to validate against,
-    and a mode learned from mostly-foreign traffic would bless the
-    foreigners as the tap."""
-    if not records:
-        return None
-    length, hits = Counter(len(r) for r in records).most_common(1)[0]
-    if length <= 0 or length % TAP_BYTES_PER_FRAME:
-        return None
-    if hits * 2 <= len(records):
-        return None
-    return length
-
-
 @dataclass(frozen=True)
 class ReassemblyResult:
     payloads: list[bytes]
     pairing_ok: bool
     detail: str
-    period_bytes: int | None
+    period_bytes: int
     records_seen: int
-    excised_by_length: dict[int, int]
+    # Keyed by payload length -- ref9891_pcap's vocabulary, so both readers
+    # of :9891 report what else reached the port under one name.
+    unexpected_by_length: dict[int, int]
 
     @property
     def excised(self) -> int:
-        return sum(self.excised_by_length.values())
-
-    @property
-    def clean_timeline(self) -> bool:
-        """True when `payloads` concatenate to a faithful period timeline.
-
-        Either defect breaks the sample-count-to-wall-clock math `latency`
-        does: unmerged duplicates double the span, an excised record takes a
-        period out of it."""
-        return self.pairing_ok and not self.excised
+        return sum(self.unexpected_by_length.values())
 
 
-def reassemble_records(raw: bytes) -> ReassemblyResult:
+def reassemble_records(raw: bytes, period_bytes: int) -> ReassemblyResult:
     """Excise every datagram that is not one tap period, then collapse the
     loopback double-capture.
 
-    EXCISION FIRST (issue #3509): a datagram addressed to :9891 is not
-    necessarily FROM the tap. Something else on lo occasionally sends
-    there -- observed in the field as another packet's IPv4+UDP head
-    arriving as a ~548 B record. The tap emits one DAC period per
-    datagram, so a record of any other length is not tap audio, and
-    concatenating it would splice a partial period into the stream and, at
-    an odd byte count, swap the channels of everything after it -- a
-    defect the analyzer reads as real audio. Such records are excised and
-    counted BY LENGTH; no payload signature is matched, so this rejects
-    any wrong-length intruder rather than the one that was observed. The
-    period is learned from the capture (learn_period_bytes()), never
-    declared, so the probe follows whatever period the box is running.
+    EXCISION FIRST: `period_bytes` comes from outputd's own STATUS, so a
+    record of any other length is not tap audio whatever it looks like, and
+    concatenating one would splice a partial period into the stream -- at an
+    odd byte count swapping the channels of everything after it.
 
-    THEN STRICT PAIRING on what survives: an AF_PACKET tap on "lo" sees
-    each datagram twice (both directions of the same local hop), so
-    record[2i] must byte-match record[2i+1], and the even one is kept. On
-    ANY pairing violation -- an odd record count, or a pair that does not
-    match -- this refuses to guess: it reports the violation and returns
-    every surviving record UNMERGED. Excising ahead of pairing is what
-    keeps pairing meaningful: an intruder landing an ODD number of times
-    shifts the parity of every later record, which pairing then reads as a
-    mismatch and condemns the whole capture for."""
+    THEN STRICT PAIRING on what survives: an AF_PACKET tap on "lo" sees each
+    datagram twice (both directions of the same local hop), so record[2i]
+    must byte-match record[2i+1], and the even one is kept. Any violation
+    returns every surviving record UNMERGED rather than guessing. Excising
+    first is what keeps pairing meaningful: a record landing an odd number
+    of times shifts the parity of every later one."""
     records = parse_records(raw)
-    period_bytes = learn_period_bytes(records)
-    if period_bytes is None:
-        return ReassemblyResult(
-            [], False,
-            f"no tap geometry could be learned from {len(records)} record(s): "
-            "no single payload length that is a whole number of S16 stereo "
-            "frames held a majority",
-            None, len(records), dict(Counter(len(r) for r in records)),
-        )
-    valid = [r for r in records if len(r) == period_bytes]
-    excised = dict(Counter(len(r) for r in records if len(r) != period_bytes))
-    excise_note = (
-        f"; {sum(excised.values())} record(s) excised -- length != the "
-        f"{period_bytes} B tap period, and splicing a partial period shifts "
-        f"everything after it (lengths {sorted(excised)})" if excised else ""
+    counts = Counter(map(len, records))
+    unexpected = {
+        n: c for n, c in sorted(counts.items()) if not is_tap_period(n, period_bytes)
+    }
+    valid = [r for r in records if is_tap_period(len(r), period_bytes)]
+    note = (
+        f"; {sum(unexpected.values())} record(s) excised at lengths "
+        f"{sorted(unexpected)} -- not the {period_bytes} B tap period"
+        if unexpected else ""
     )
-    if len(valid) % 2 != 0:
+
+    def result(payloads: list[bytes], pairing_ok: bool, detail: str) -> ReassemblyResult:
         return ReassemblyResult(
+            payloads, pairing_ok, detail + note, period_bytes, len(records), unexpected
+        )
+
+    if len(valid) % 2 != 0:
+        return result(
             valid, False,
-            f"odd record count ({len(valid)}) -- expected byte-identical "
-            f"pairs from the loopback double-capture; keeping all records "
-            f"unmerged{excise_note}",
-            period_bytes, len(records), excised,
+            f"odd record count ({len(valid)}) -- expected byte-identical pairs "
+            f"from the loopback double-capture; keeping all records unmerged",
         )
     mismatches = [i // 2 for i in range(0, len(valid), 2) if valid[i] != valid[i + 1]]
     if mismatches:
-        return ReassemblyResult(
+        return result(
             valid, False,
             f"{len(mismatches)} of {len(valid) // 2} record pairs did not "
-            f"byte-match (first at pair {mismatches[0]}) -- keeping all "
-            f"records unmerged rather than guessing which half to "
-            f"drop{excise_note}",
-            period_bytes, len(records), excised,
+            f"byte-match (first at pair {mismatches[0]}) -- keeping all records "
+            f"unmerged rather than guessing which half to drop",
         )
     kept = valid[0::2]
-    return ReassemblyResult(
-        kept, True,
-        f"{len(kept)} pairs verified and collapsed at {period_bytes} B/record"
-        f"{excise_note}",
-        period_bytes, len(records), excised,
+    return result(
+        kept, True, f"{len(kept)} pairs verified and collapsed at {period_bytes} B/record"
     )
 
 
-def fetch_and_reassemble(host: str, user: str, remote_path: str) -> ReassemblyResult:
+def fetch_and_reassemble(
+    host: str, user: str, remote_path: str, period_bytes: int
+) -> ReassemblyResult:
     with tempfile.TemporaryDirectory() as tmp:
         local_raw = Path(tmp) / "capture.raw"
         scp_pull(host, user, remote_path, local_raw)
         raw = local_raw.read_bytes()
-    return reassemble_records(raw)
+    return reassemble_records(raw, period_bytes)
 
 
 def is_all_zero(raw: bytes) -> bool:
@@ -725,64 +747,38 @@ def is_all_zero(raw: bytes) -> bool:
     return not np.any(np.frombuffer(raw, dtype=np.uint8))
 
 
-def capture_header_path(out: Path) -> Path:
-    return out.with_name(out.name + ".json")
-
-
-def build_capture_header(
+def capture_manifest(
     *,
-    result: ReassemblyResult,
+    result: ReassemblyResult | None,
     pcm: bytes,
     host: str,
     requested_seconds: float,
     start_monotonic_ns: int | None,
     start_realtime_ns: int | None,
+    rejected_by_header: dict[str, int],
 ) -> dict:
-    """The sidecar manifest written beside OUT.raw. OUT.raw itself stays
-    headerless PCM so `analyze`'s input format is unchanged.
+    """This capture's sidecar, in ref9891_pcap's shared schema. `result` is
+    None when outputd never said what a tap datagram looks like."""
+    return build_capture_manifest(
+        host=host,
+        requested_seconds=requested_seconds,
+        period_bytes=None if result is None else result.period_bytes,
+        records_seen=0 if result is None else result.records_seen,
+        stored_payloads=0 if result is None else len(result.payloads),
+        unexpected_by_length={} if result is None else result.unexpected_by_length,
+        rejected_by_header=rejected_by_header,
+        pairing_ok=result is not None and result.pairing_ok,
+        detail="" if result is None else result.detail,
+        pcm_bytes=len(pcm),
+        all_zero=is_all_zero(pcm),
+        start_monotonic_ns=start_monotonic_ns,
+        start_realtime_ns=start_realtime_ns,
+    )
 
-    `start_monotonic_ns` anchors sample 0: it is CLOCK_MONOTONIC read on
-    the BOX right after the sniffer binds, which is the same clock
-    `journalctl -o short-monotonic` prints, so a fan-in `source_select`
-    line can be placed in the capture without guesswork. Its
-    CLOCK_REALTIME partner is carried alongside for wall-clock runbooks.
-
-    `records.kept` vs `pcm.all_zero` is the distinction the manifest exists
-    for: an instrument that saw nothing valid is not a tap that was validly
-    silent."""
-    frames = len(pcm) // TAP_BYTES_PER_FRAME
-    return {
-        "tool": "jasper-pipe-probe",
-        "host": host,
-        "requested_seconds": requested_seconds,
-        "start_monotonic_ns": start_monotonic_ns,
-        "start_realtime_ns": start_realtime_ns,
-        "tap": {
-            "udp_port": TAP_UDP_PORT,
-            "rate_hz": TAP_RATE_HZ,
-            "bytes_per_frame": TAP_BYTES_PER_FRAME,
-            "period_bytes": result.period_bytes,
-        },
-        "records": {
-            "seen": result.records_seen,
-            "kept": result.records_seen - result.excised,
-            "excised": result.excised,
-            "excised_by_length": result.excised_by_length,
-        },
-        "pairing_ok": result.pairing_ok,
-        "clean_timeline": result.clean_timeline,
-        "detail": result.detail,
-        "pcm": {
-            "bytes": len(pcm),
-            "frames": frames,
-            "duration_s": frames / TAP_RATE_HZ,
-            "all_zero": is_all_zero(pcm),
-        },
-    }
 
 
 def deinterleave_s16le_stereo(raw: bytes) -> tuple[np.ndarray, np.ndarray]:
-    usable = len(raw) - (len(raw) % 4)
+    usable = len(raw) - (len(raw) % TAP_BYTES_PER_FRAME)
     frames = np.frombuffer(raw[:usable], dtype="<i2").reshape(-1, 2)
     return frames[:, 0].copy(), frames[:, 1].copy()
 
@@ -1007,45 +1003,66 @@ def cmd_capture(args: argparse.Namespace) -> int:
         proc = ssh_run(host, user, remote_capture_cmd(args.seconds, session), timeout=args.seconds + 30)
         if proc.returncode != 0:
             raise SystemExit(f"remote capture failed (exit {proc.returncode}): {proc.stderr.strip()[-400:]}")
-        result = fetch_and_reassemble(host, user, remote_capture_path(session))
+        period_bytes = parse_tagged_int(proc.stderr, "PERIOD_BYTES")
+        result = (
+            None if period_bytes is None
+            else fetch_and_reassemble(host, user, remote_capture_path(session), period_bytes)
+        )
     finally:
         cleanup_session(host, user, session)
-    raw_out = b"".join(result.payloads)
-    header = build_capture_header(
+    raw_out = b"" if result is None else b"".join(result.payloads)
+    start_monotonic_ns = parse_tagged_int(proc.stderr, "START_MONOTONIC_NS")
+    header = capture_manifest(
         result=result, pcm=raw_out, host=host, requested_seconds=args.seconds,
-        start_monotonic_ns=parse_tagged_ns(proc.stderr, "START_MONOTONIC_NS"),
-        start_realtime_ns=parse_tagged_ns(proc.stderr, "START_REALTIME_NS"),
+        start_monotonic_ns=start_monotonic_ns,
+        start_realtime_ns=parse_tagged_int(proc.stderr, "START_REALTIME_NS"),
+        rejected_by_header=parse_tagged_json(proc.stderr, "REJECTED_BY_HEADER"),
     )
     args.out.write_bytes(raw_out)
-    # Written before either failure exit below: a capture that leaves no
-    # record of what its instrument saw is the trap being fixed here.
-    header_path = capture_header_path(args.out)
+    # Written before the failure exit below: a capture that leaves no record
+    # of what its instrument saw is the trap being fixed here.
+    header_path = capture_manifest_path(args.out)
     header_path.write_text(json.dumps(header, indent=2, sort_keys=True) + "\n")
-    if not result.clean_timeline:
+    if start_monotonic_ns is None:
+        print(
+            "WARNING: no START_MONOTONIC_NS from the sniffer -- this capture "
+            "cannot be aligned against the box's journal",
+            file=sys.stderr,
+        )
+    if result is not None and (not result.pairing_ok or result.excised):
         print(f"WARNING: {result.detail} -- see {header_path}", file=sys.stderr)
+    if header["wire"]["rejected_by_header"]:
+        print(
+            f"WARNING: {header['wire']['rejected_by_header']} on lo reached "
+            f":{TAP_UDP_PORT} without being a UDP datagram to it -- see {header_path}",
+            file=sys.stderr,
+        )
     print(
-        f"{args.out}: {len(raw_out)} bytes ({len(result.payloads)} payload records"
-        f"{'' if result.pairing_ok else ', UNPAIRED -- see warning above'}) from {host}; "
+        f"{args.out}: {len(raw_out)} bytes ({header['records']['stored']} payload records"
+        f"{'' if header['pairing_ok'] else ', UNPAIRED -- see warning above'}) from {host}; "
         f"header {header_path}"
     )
-    # Two different failures, told apart because a null result must say WHICH
-    # it was (#3509). Nothing valid arriving is the instrument being blind; a
-    # tap that published only zeros is the chain being deaf (#3555).
-    if not result.payloads:
+    refusal = header["refusal"]
+    if refusal in (REFUSAL_NO_GEOMETRY, REFUSAL_NO_PACKETS):
         print(
-            f"FAILED: no valid tap datagram survived excision "
-            f"({result.records_seen} record(s) seen, {result.excised} excised) -- "
-            f"this capture is instrument silence, NOT evidence of a silent tap",
+            f"FAILED ({refusal}): the instrument saw no tap datagram it could "
+            f"identify ({header['records']['seen']} record(s) seen) -- this capture "
+            f"is instrument silence, NOT evidence of a silent tap. "
+            f"{proc.stderr.strip()[-200:]}",
             file=sys.stderr,
         )
-        return CAPTURE_NO_VALID_RECORDS_EXIT
-    if header["pcm"]["all_zero"]:
+        return CAPTURE_INSTRUMENT_BLIND_EXIT
+    # Reported, never a failure: the instrument cannot know whether anything
+    # was SUPPOSED to be playing, and a noise-floor capture of an idle box is
+    # validly all zeros. The #3509 evidence for a deaf chain came from a
+    # second instrument (a ring poller with real lane audio over the same
+    # window), which is where that verdict has to be reached.
+    if refusal == REFUSAL_ALL_ZERO:
         print(
-            f"ERROR: capture is all zeros ({len(raw_out)} bytes) -- the tap "
-            "carried no audio at all; do not analyze it",
+            f"WARNING ({refusal}): every one of {len(raw_out)} captured bytes is "
+            f"zero -- valid datagrams arrived carrying digital silence",
             file=sys.stderr,
         )
-        return 1
     return 0
 
 
@@ -1076,6 +1093,7 @@ def _print_channel_table(channel_name: str, readings: list[SecondReading]) -> No
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     raw = args.path.read_bytes()
+    provenance = capture_provenance(read_capture_manifest(args.path))
     ch0, ch1 = deinterleave_s16le_stereo(raw)
     channels = {
         "ch0_woofer": analyze_channel(ch0, TAP_RATE_HZ),
@@ -1091,6 +1109,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     if args.json:
         payload = {
             "alignment_warning": alignment_warning,
+            "capture": provenance,
             "channels": {
                 name: {
                     "readings": [_reading_json(r) for r in rows],
@@ -1103,6 +1122,14 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         return 0
     if alignment_warning:
         print(f"WARNING: {alignment_warning}")
+    if provenance is None:
+        print(f"capture: no manifest beside {args.path} -- provenance unknown")
+    else:
+        print(
+            f"capture: period {provenance['period_bytes']} B, excised "
+            f"{provenance['unexpected_by_length']}, non-datagram on the port "
+            f"{provenance['rejected_by_header']}, all_zero={provenance['all_zero']}"
+        )
     for name, rows in channels.items():
         _print_channel_table(name, rows)
     return 0  # a meter, not a gate -- see module docstring
@@ -1183,12 +1210,29 @@ def locate_click_sample(
     return ClickLocation(None, peak_val, background_rms)
 
 
-def parse_tagged_ns(stderr_text: str, tag: str) -> int | None:
+def _tagged_value(stderr_text: str, tag: str) -> str | None:
+    """The sniffer and the click launcher report facts as `TAG=value` lines
+    on stderr; ssh forwards them verbatim."""
     prefix = f"{tag}="
     for line in stderr_text.splitlines():
         if line.startswith(prefix):
-            return int(line[len(prefix):])
+            return line[len(prefix):]
     return None
+
+
+def parse_tagged_int(stderr_text: str, tag: str) -> int | None:
+    raw = _tagged_value(stderr_text, tag)
+    return None if raw is None else int(raw)
+
+
+def parse_tagged_json(stderr_text: str, tag: str) -> dict:
+    raw = _tagged_value(stderr_text, tag)
+    if raw is None:
+        return {}
+    try:
+        return dict(json.loads(raw))
+    except (ValueError, TypeError):
+        return {}
 
 
 def _wait_for_ready(proc: subprocess.Popen[str], *, timeout: float = READY_TIMEOUT_S) -> None:
@@ -1224,13 +1268,13 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
         return None
 
     launch_proc = ssh_run(host, user, _click_launch_command(lane_pcm, session), timeout=15)
-    launch_ns = parse_tagged_ns(launch_proc.stderr, "LAUNCH_MONOTONIC_NS")
+    launch_ns = parse_tagged_int(launch_proc.stderr, "LAUNCH_MONOTONIC_NS")
     try:
         _cap_out, cap_err = capture_proc.communicate(timeout=LATENCY_CAPTURE_SECONDS + 15)
     except subprocess.TimeoutExpired:
         capture_proc.kill()
         _cap_out, cap_err = capture_proc.communicate()
-    start_ns = parse_tagged_ns(cap_err, "START_MONOTONIC_NS")
+    start_ns = parse_tagged_int(cap_err, "START_MONOTONIC_NS")
     if launch_ns is None or start_ns is None or capture_proc.returncode != 0:
         print(
             f"repeat {index + 1}: FAILED (launch_ns={launch_ns} start_ns={start_ns} "
@@ -1241,8 +1285,16 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
         )
         return None
 
-    result = fetch_and_reassemble(host, user, remote_capture_path(session))
-    if not result.clean_timeline:
+    period_bytes = parse_tagged_int(cap_err, "PERIOD_BYTES")
+    if period_bytes is None:
+        print(
+            f"repeat {index + 1}: FAILED ({REFUSAL_NO_GEOMETRY}) -- outputd could not "
+            f"say what a tap datagram looks like",
+            file=sys.stderr,
+        )
+        return None
+    result = fetch_and_reassemble(host, user, remote_capture_path(session), period_bytes)
+    if not result.pairing_ok or result.excised:
         print(f"repeat {index + 1}: WARNING: {result.detail}", file=sys.stderr)
     raw = b"".join(result.payloads)
     ch0, ch1 = deinterleave_s16le_stereo(raw)
@@ -1269,12 +1321,14 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
             file=sys.stderr,
         )
         return None
-    if not result.clean_timeline:
-        # Un-collapsed duplicate records double the apparent sample count for
-        # the same wall-clock span, so the sample-rate-based arrival math
-        # below would read ~2x too late; an excised record takes a period OUT
-        # of the timeline, which makes the same math read early. Refuse rather
-        # than report a silently-wrong number.
+    if not result.pairing_ok:
+        # Un-collapsed duplicates double the apparent sample count for the
+        # same wall-clock span, so the arrival math below would read ~2x too
+        # late. Excision is NOT such a defect: outputd publishes one period
+        # every period regardless, so a foreign record was never in the
+        # timeline. Neither check reaches the real limit -- the wire carries
+        # no sequence number, so a datagram lost in the kernel is
+        # indistinguishable from one never sent.
         print(
             f"repeat {index + 1}: skipping latency math -- capture not a clean "
             "period timeline (see warning above)",

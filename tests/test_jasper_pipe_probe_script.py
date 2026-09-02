@@ -26,6 +26,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.route_latency import ref9891_pcap
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "jasper-pipe-probe"
@@ -198,162 +200,251 @@ def _lo_pair(payload: bytes) -> bytes:
     return _record(payload) + _record(payload)
 
 
-# jts3's tap geometry (outputd period_frames=128, S16 stereo). The probe
-# learns this from the capture; the test only needs A consistent geometry.
+# jts3's tap geometry (outputd period_frames=128, S16 stereo). The probe reads
+# this from outputd's STATUS; the test supplies it directly.
 _PERIOD = 512
-# The intruder observed on :9891 in the field (issue #3509): another packet's
-# IPv4+UDP head, which is not a whole tap period.
+# The 548 B pseudo-datagram of #3509 and a torn 511 B record: neither is one
+# tap period, and neither is matched by shape -- only by length.
 _FOREIGN = b"\x45\x00" + bytes(546)
+_TORN = bytes(511)
 _TONE = bytes(range(256)) * 2
+_OTHER = bytes(reversed(_TONE))
 _SILENT = bytes(_PERIOD)
 
 
 @pytest.mark.parametrize(
-    "stream, payloads, pairing_ok, period_bytes, excised_by_length",
+    "stream, payloads, pairing_ok, unexpected_by_length",
     [
-        # Well-formed: every record is one tap period, byte-identical pairs.
-        pytest.param(
-            _lo_pair(_TONE) * 100, 100, True, _PERIOD, {}, id="well_formed",
-        ),
-        # The field defect: a foreign-LENGTH datagram arrives (twice, like
-        # everything on lo) mid-capture. It used to pair perfectly and land in
-        # the capture as a full-scale-looking impulse; it is now counted out.
+        # Every record is one tap period, byte-identical pairs.
+        pytest.param(_lo_pair(_TONE) * 100, 100, True, {}, id="well_formed"),
+        # A foreign-LENGTH datagram arrives twice, like everything on lo, so it
+        # pairs perfectly -- length is what rejects it.
         pytest.param(
             _lo_pair(_TONE) * 50 + _lo_pair(_FOREIGN) + _lo_pair(_TONE) * 50,
-            100, True, _PERIOD, {len(_FOREIGN): 2}, id="foreign_length_paired",
+            100, True, {len(_FOREIGN): 2}, id="foreign_length_paired",
         ),
-        # The same intruder seen only ONCE. Validating before pairing restores
-        # the parity it would otherwise have flipped for every later record --
-        # which used to condemn the whole capture as unmerged.
+        # The same record seen ONCE. Excising before pairing restores the
+        # parity it would otherwise flip for every later record.
         pytest.param(
             _lo_pair(_TONE) * 50 + _record(_FOREIGN) + _lo_pair(_TONE) * 50,
-            100, True, _PERIOD, {len(_FOREIGN): 1}, id="foreign_length_odd",
+            100, True, {len(_FOREIGN): 1}, id="foreign_length_odd",
         ),
-        # HONEST LIMIT: foreign content at exactly one period's length is not
-        # structurally distinguishable from tap audio, and is accepted. No
-        # payload signature is matched -- a blacklist of the one observed
-        # intruder would be the anti-pattern this validation replaces.
+        # A torn record is off-period too, and goes the same way.
         pytest.param(
-            _lo_pair(_TONE) * 100 + _lo_pair(bytes(reversed(_TONE))),
-            101, True, _PERIOD, {}, id="foreign_content_period_length",
+            _lo_pair(_TONE) * 3 + _lo_pair(_TORN) + _lo_pair(_TONE),
+            4, True, {len(_TORN): 2}, id="torn_record",
         ),
-        # Valid but silent: accepted, so a silent tap stays reportable as
-        # silence rather than as instrument failure.
+        # Content at exactly one period's length is accepted: the tap's own
+        # bytes are not distinguishable from anything else that size.
         pytest.param(
-            _lo_pair(_SILENT) * 100, 100, True, _PERIOD, {}, id="all_zero_valid",
+            _lo_pair(_TONE) * 100 + _lo_pair(_OTHER),
+            101, True, {}, id="period_length_content_accepted",
         ),
-        # A pair that does not byte-match is still never guessed at.
+        # Valid but silent: kept, so a silent tap stays reportable as silence.
+        pytest.param(_lo_pair(_SILENT) * 100, 100, True, {}, id="all_zero_valid"),
+        # A pair that does not byte-match is never guessed at.
         pytest.param(
             _lo_pair(_TONE) * 50 + _record(_TONE) + _record(_SILENT),
-            102, False, _PERIOD, {}, id="pair_mismatch",
+            102, False, {}, id="pair_mismatch",
         ),
-        # Nothing at all, and no length holding a majority: no geometry can be
-        # learned, so nothing is blessed as the tap.
-        pytest.param(b"", 0, False, None, {}, id="empty"),
+        # An ODD number of VALID records cannot be collapsed -- reporting it as
+        # paired would hand `latency` an un-collapsed stream that reads ~2x late.
         pytest.param(
-            _lo_pair(_TONE) + _lo_pair(_FOREIGN),
-            0, False, None, {_PERIOD: 2, len(_FOREIGN): 2}, id="no_majority_geometry",
+            _lo_pair(_TONE) * 2 + _record(_TONE), 5, False, {}, id="odd_valid_records",
         ),
+        # Excision AND a pairing violation together: the surviving records are
+        # returned unmerged, but the foreign one is still not among them.
+        pytest.param(
+            _lo_pair(_TONE) * 2 + _lo_pair(_FOREIGN) + _record(_TONE) + _record(_SILENT),
+            6, False, {len(_FOREIGN): 2}, id="excision_with_pair_mismatch",
+        ),
+        pytest.param(b"", 0, True, {}, id="empty"),
     ],
 )
-def test_capture_records_are_validated_against_the_tap_geometry(
+def test_capture_records_are_excised_against_the_tap_geometry(
     stream: bytes,
     payloads: int,
     pairing_ok: bool,
-    period_bytes: int | None,
-    excised_by_length: dict[int, int],
+    unexpected_by_length: dict[int, int],
 ) -> None:
-    result = jasper_pipe_probe.reassemble_records(stream)
+    result = jasper_pipe_probe.reassemble_records(stream, _PERIOD)
     assert len(result.payloads) == payloads
+    # Only pairing can break the timeline: outputd publishes one period every
+    # period, so an excised foreign record was never in it -- an intruded but
+    # correctly-paired capture is still usable.
     assert result.pairing_ok is pairing_ok
-    assert result.period_bytes == period_bytes
-    assert result.excised_by_length == excised_by_length
-    assert result.excised == sum(excised_by_length.values())
-    assert all(len(p) == period_bytes for p in result.payloads)
+    assert result.period_bytes == _PERIOD
+    assert result.unexpected_by_length == unexpected_by_length
+    assert result.excised == sum(unexpected_by_length.values())
+    # Nothing off-period ever reaches OUT.raw, however the pairing went.
+    assert all(len(p) == _PERIOD for p in result.payloads)
     assert result.detail
 
 
-def test_capture_tells_a_blind_instrument_from_a_deaf_tap_from_a_good_run(
+def _frame(
+    payload: bytes,
+    *,
+    proto: int = 17,
+    dport: int = 9891,
+    frag: int = 0,
+    udp_len: int | None = None,
+    trailer: bytes = b"",
+) -> bytes:
+    """A loopback Ethernet frame carrying `payload` to `dport`."""
+    udp_len = len(payload) + 8 if udp_len is None else udp_len
+    ip = (
+        bytes([0x45, 0x00])
+        + struct.pack(">H", 20 + 8 + len(payload))
+        + b"\x00\x00"
+        + struct.pack(">H", frag)
+        + bytes([64, proto])
+        + b"\x00\x00"
+        + bytes([127, 0, 0, 1]) * 2
+    )
+    udp = struct.pack(">HHH", 40000, dport, udp_len) + b"\x00\x00"
+    return bytes(12) + b"\x08\x00" + ip + udp + payload + trailer
+
+
+def test_the_shipped_sniffer_parses_exactly_what_the_shared_parser_does() -> None:
+    """The sniffer runs on the box with no jasper import, so its packet
+    parse is a copy. Pin the copy against the original over the cases that
+    make an ICMP error look like a tap datagram (#3509)."""
+    sniffer: dict = {}
+    exec(compile(jasper_pipe_probe.SNIFFER_SOURCE, "sniffer", "exec"), sniffer)
+    good = bytes(_PERIOD)
+    cases = {
+        "udp_to_the_port": _frame(good),
+        # An ICMP error quoting a loopback header: bytes at the UDP offsets
+        # read as port 9891, but the protocol byte says it is not a datagram.
+        "icmp_quoting_the_port": _frame(bytes(540), proto=1),
+        "fragment": _frame(good, frag=0x0100),
+        "other_port": _frame(good, dport=9888),
+        "trailer_beyond_udp_length": _frame(good, trailer=b"\xff" * 16),
+        "udp_length_past_the_frame": _frame(good, udp_len=9000),
+        "too_short": bytes(20),
+    }
+    for name, frame in cases.items():
+        mine = sniffer["udp_payload"](frame, 9891)
+        theirs = ref9891_pcap.parse_udp_payload(frame, 9891)
+        assert mine == theirs, name
+    # And the shared parser actually accepts a real one / rejects the quote.
+    assert ref9891_pcap.parse_udp_payload(cases["udp_to_the_port"], 9891) == good
+    assert ref9891_pcap.parse_udp_payload(cases["icmp_quoting_the_port"], 9891) is None
+    # The old parse is what admitted the quote -- that is the defect's shape.
+    assert sniffer["naive_port"](cases["icmp_quoting_the_port"]) == 9891
+
+
+def test_capture_reports_what_it_saw_and_fails_only_when_it_saw_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`capture`'s observable contract: a sidecar manifest carrying the
-    box-side monotonic anchor and the excised-datagram counts, and three
-    distinct exit codes so a null result says WHICH null it was."""
-    stderr = "START_MONOTONIC_NS=123456789\nSTART_REALTIME_NS=1756000000000000000\n"
+    """`capture`'s observable contract through the real CLI entry point: the
+    manifest carries the box anchor, the geometry and both reject tallies;
+    a blind instrument exits nonzero; an all-zero tap does not."""
     monkeypatch.setattr(jasper_pipe_probe, "resolve_target", lambda host: ("box", "pi"))
     monkeypatch.setattr(jasper_pipe_probe, "push_sniffer", lambda *a, **k: None)
     monkeypatch.setattr(jasper_pipe_probe, "cleanup_session", lambda *a, **k: None)
-    monkeypatch.setattr(
-        jasper_pipe_probe, "ssh_run",
-        lambda *a, **k: subprocess.CompletedProcess([], 0, "", stderr),
-    )
 
-    def run(stream: bytes) -> tuple[int, dict]:
+    def run(stream: bytes, *, stderr: str) -> tuple[int, dict]:
         out = tmp_path / "cap.raw"
         monkeypatch.setattr(
+            jasper_pipe_probe, "ssh_run",
+            lambda *a, **k: subprocess.CompletedProcess([], 0, "", stderr),
+        )
+        monkeypatch.setattr(
             jasper_pipe_probe, "fetch_and_reassemble",
-            lambda *a, **k: jasper_pipe_probe.reassemble_records(stream),
+            lambda h, u, p, period: jasper_pipe_probe.reassemble_records(stream, period),
         )
         code = jasper_pipe_probe.main(["capture", "1", str(out)])
-        return code, json.loads(jasper_pipe_probe.capture_header_path(out).read_text())
+        manifest_path = jasper_pipe_probe.capture_manifest_path(out)
+        return code, json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
 
-    # Nothing valid ever arrived: the instrument was blind.
-    blind_code, blind = run(b"")
-    assert blind_code == jasper_pipe_probe.CAPTURE_NO_VALID_RECORDS_EXIT
-    assert blind["records"]["kept"] == 0
-    assert blind["tap"]["period_bytes"] is None
+    reported = (
+        f"PERIOD_BYTES={_PERIOD}\nSTART_MONOTONIC_NS=123456789\n"
+        "START_REALTIME_NS=1756000000000000000\n"
+        'REJECTED_BY_HEADER={"proto=1,frag=0,wire_len=576": 2}\n'
+    )
 
-    # Valid datagrams arrived carrying only zeros: the chain was deaf.
-    deaf_code, deaf = run(_lo_pair(_SILENT) * 10 + _lo_pair(_FOREIGN))
-    assert deaf_code == 1
-    assert deaf["records"] == {
-        "seen": 22, "kept": 20, "excised": 2,
-        "excised_by_length": {str(len(_FOREIGN)): 2},
-    }
-    assert deaf["pcm"]["all_zero"] is True
-    assert deaf["pcm"]["frames"] == 10 * _PERIOD // 4
-    assert deaf["tap"]["period_bytes"] == _PERIOD
-    # The anchor that lets the capture be lined up against the box's journal.
-    assert deaf["start_monotonic_ns"] == 123456789
-    assert deaf["start_realtime_ns"] == 1756000000000000000
-
-    # Real audio, one intruder excised: succeeds, and still reports the excision.
-    good_code, good = run(_lo_pair(_TONE) * 10 + _lo_pair(_FOREIGN))
+    # Valid audio, one intruder excised, one non-datagram counted: succeeds,
+    # and the manifest says all of it.
+    good_code, good = run(_lo_pair(_TONE) * 10 + _lo_pair(_FOREIGN), stderr=reported)
     assert good_code == 0
+    assert good["schema_version"] == 1
+    assert good["kind"] == ref9891_pcap.CAPTURE_MANIFEST_KIND
+    assert good["start_monotonic_ns"] == 123456789
+    assert good["start_realtime_ns"] == 1756000000000000000
+    assert good["tap"]["period_bytes"] == _PERIOD
+    assert good["records"] == {
+        "seen": 22, "stored": 10, "unexpected_by_length": {str(len(_FOREIGN)): 2},
+    }
+    assert good["wire"]["rejected_by_header"] == {"proto=1,frag=0,wire_len=576": 2}
     assert good["pcm"]["all_zero"] is False
-    assert good["records"]["excised"] == 2
-    assert good["clean_timeline"] is False
+    # pcm describes what was WRITTEN: 10 stored records, not the 22 seen.
+    assert good["pcm"]["bytes"] == 10 * _PERIOD
+    assert good["pcm"]["frames"] == 10 * _PERIOD // 4
+    assert good["pcm"]["duration_s"] == (10 * _PERIOD // 4) / 48000
 
-    assert len({blind_code, deaf_code, good_code}) == 3
+    # An all-zero tap is REPORTED, not failed: an idle box is validly silent.
+    deaf_code, deaf = run(_lo_pair(_SILENT) * 10, stderr=reported)
+    assert deaf_code == 0
+    assert deaf["pcm"]["all_zero"] is True
+
+    assert good["refusal"] is None
+    assert deaf["refusal"] == ref9891_pcap.REFUSAL_ALL_ZERO
+
+    # Nothing valid arrived: the instrument was blind.
+    blind_code, blind = run(b"", stderr=reported)
+    assert blind_code == jasper_pipe_probe.CAPTURE_INSTRUMENT_BLIND_EXIT
+    assert blind["records"]["stored"] == 0
+    assert blind["refusal"] == ref9891_pcap.REFUSAL_NO_PACKETS
+
+    # outputd could not say what a tap datagram is. Also blind, but for a
+    # different reason -- and the manifest must name WHICH, or the two are
+    # indistinguishable to anything reading back the capture.
+    no_geom_code, no_geom = run(_lo_pair(_TONE), stderr="PERIOD_BYTES_ERROR=nope\n")
+    assert no_geom_code == jasper_pipe_probe.CAPTURE_INSTRUMENT_BLIND_EXIT
+    assert no_geom["refusal"] == ref9891_pcap.REFUSAL_NO_GEOMETRY
+    assert no_geom["tap"]["period_bytes"] is None
+    # And it judges nothing: records it had no geometry to measure are not
+    # reported as rejects, which would read as evidence about the wire.
+    assert no_geom["records"] == {"seen": 0, "stored": 0, "unexpected_by_length": {}}
+    # argparse owns exit 2, so a wrapper can attribute this code unambiguously.
+    assert no_geom_code not in (0, 1, 2)
 
 
-def test_an_off_period_record_is_excised_and_counted() -> None:
-    """#3509: the tap emits one DAC period per datagram, so a record of any
-    other length cannot be concatenated into the stream -- an odd byte count
-    swaps the channels of everything after it. Excision runs on the WIRE
-    records, ahead of the loopback collapse, so an intruder seen twice on lo
-    counts twice."""
+def test_analyze_reports_capture_provenance_from_the_sidecar(tmp_path: Path) -> None:
+    """A saved capture keeps its honesty signals: without this, re-analyzing
+    a .raw silently loses what was excised and whether it was all zeros."""
+    raw = tmp_path / "cap.raw"
+    _write_stereo_raw(raw, np.zeros(RATE))
+    assert _analyze_json(raw)["capture"] is None
 
-    def pair(payload: bytes) -> bytes:
-        rec = struct.pack("<I", len(payload)) + payload
-        return rec + rec
+    # A sidecar that is not one of OUR manifests is not provenance for this
+    # capture -- reading its fields would attribute another tool's numbers.
+    jasper_pipe_probe.capture_manifest_path(raw).write_text(json.dumps({
+        "kind": "some_other_tool", "tap": {"period_bytes": 4096},
+    }))
+    assert _analyze_json(raw)["capture"] is None
 
-    period = b"\x01\x02" * 256  # 512 B, the modal length below
-    stream = pair(period) * 3 + pair(period[:-1]) + pair(period)
-    result = jasper_pipe_probe.reassemble_records(stream)
-
-    assert result.pairing_ok is True
-    assert result.period_bytes == 512
-    assert result.excised == 2
-    assert result.excised_by_length == {511: 2}
-    assert len(result.payloads) == 4
-    assert all(len(p) == 512 for p in result.payloads)
+    jasper_pipe_probe.capture_manifest_path(raw).write_text(json.dumps({
+        "kind": ref9891_pcap.CAPTURE_MANIFEST_KIND,
+        "start_monotonic_ns": 42,
+        "tap": {"period_bytes": _PERIOD},
+        "records": {"unexpected_by_length": {"548": 2}},
+        "wire": {"rejected_by_header": {"proto=1,frag=0,wire_len=576": 2}},
+        "pcm": {"all_zero": True},
+    }))
+    provenance = _analyze_json(raw)["capture"]
+    assert provenance["period_bytes"] == _PERIOD
+    assert provenance["unexpected_by_length"] == {"548": 2}
+    assert provenance["all_zero"] is True
+    assert provenance["start_monotonic_ns"] == 42
 
 
 def test_an_all_zero_capture_is_distinguishable_from_a_quiet_one() -> None:
     assert jasper_pipe_probe.is_all_zero(b"\x00" * 4096) is True
     assert jasper_pipe_probe.is_all_zero(b"") is True
     assert jasper_pipe_probe.is_all_zero(b"\x00" * 4095 + b"\x01") is False
+
 
 
 def test_locate_click_sample_finds_prominent_click_over_near_silence() -> None:

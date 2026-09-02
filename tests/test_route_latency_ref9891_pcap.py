@@ -29,9 +29,19 @@ def _payload(peak_sample: int, *, frames: int = _FRAMES_PER_PKT) -> bytes:
     return struct.pack(f"<{frames * 2}h", *samples)
 
 
-def _udp_packet(payload: bytes, *, dst_port: int = _DST_PORT) -> bytes:
+def _udp_packet(
+    payload: bytes, *, dst_port: int = _DST_PORT, proto: int = 17, frag: int = 0
+) -> bytes:
     eth = b"\x00" * 12 + b"\x08\x00"  # dst/src MAC (unchecked) + ethertype IPv4
-    ip = bytes([0x45]) + b"\x00" * 19  # version/IHL=5; rest of the IPv4 header is unchecked
+    # version/IHL=5, then total length, id, flags+fragment offset, TTL and the
+    # PROTOCOL byte -- 17 is what makes this a UDP datagram rather than merely
+    # a packet whose bytes sit where UDP's would (#3509).
+    ip = (
+        bytes([0x45, 0x00])
+        + struct.pack(">HHH", 20 + 8 + len(payload), 0, frag)
+        + bytes([64, proto])
+        + b"\x00" * 10  # checksum + src/dst addresses: 20-byte header total
+    )
     udp = struct.pack(">HHHH", 55555, dst_port, 8 + len(payload), 0)
     return eth + ip + udp + payload
 
@@ -154,6 +164,38 @@ def test_a_wider_period_is_read_as_frames_and_a_ragged_one_is_counted(tmp_path):
     assert result.n_detections == 1
     assert result.n_unexpected_size == 1
     assert result.refusal is None
+
+
+def test_a_foreign_datagram_neither_converts_nor_fires_a_detection(tmp_path):
+    """#3509: what reaches :9891 is not automatically the tap.
+
+    An ICMP error quoting a loopback header has a plausible port and payload
+    at the UDP offsets but is not a datagram at all; a 548 B one decodes as
+    137 frames whose peak (0.0078) clears the default 0.006 threshold. Both
+    the protocol check and the period check must hold, or the harness pairs
+    a mic detection against an impulse that was never played.
+    """
+    period = _payload(20000)
+    intruder = bytes([127, 1, 0, 1]) * 137  # 548 B, peak 0.0078 > threshold
+    records = [
+        _record(1, 0, _udp_packet(period)),
+        _record(1, 100_000, _udp_packet(intruder)),
+        _record(1, 200_000, _udp_packet(period, proto=1)),  # ICMP, not a datagram
+        _record(1, 300_000, _udp_packet(period, frag=0x0100)),  # a fragment
+    ]
+    pcap_path = tmp_path / "ref9891.pcap"
+    _write_pcap(pcap_path, records)
+
+    result = ref9891_pcap.convert_pcap_to_detections(
+        pcap_path, tmp_path / "detections.jsonl", period_bytes=len(period)
+    )
+
+    # Only the real datagram converted, and only it could fire.
+    assert result.n_packets == 1
+    assert result.n_detections == 1
+    # The non-datagrams never reached the size check at all; the wrong-length
+    # datagram did, and is reported by length rather than silently dropped.
+    assert result.unexpected_by_length == {len(intruder): 1}
 
 
 def test_an_all_zero_capture_is_refused_with_its_own_code(tmp_path):
