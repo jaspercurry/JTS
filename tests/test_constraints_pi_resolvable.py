@@ -31,10 +31,11 @@ packages currently held back.
 Each PR was green alone; NO CI check pip-resolved the file, so the
 unresolvable combination shipped. These three guards close that gap:
 
-1. ``test_cross_ecosystem_pin_chain_matches_uv_lock`` — DETERMINISTIC +
-   OFFLINE. The packages that sit in a cross-ecosystem pin chain must match
-   the co-resolved ``uv.lock`` (the authoritative resolution CI already
-   validates via ``uv sync --locked``). This is the guard that fails
+1. ``test_pin_matches_uv_lock`` (parametrized) — DETERMINISTIC + OFFLINE.
+   Every package pinned in BOTH ``constraints-pi.txt`` and the co-resolved
+   ``uv.lock`` (the authoritative resolution CI already validates via ``uv
+   sync --locked``) must agree exactly, except the documented ``EXCEPTIONS``
+   in ``scripts/align-pi-constraint-pins.py``. This is the guard that fails
    offline on the broken state — no network, no third-party deps.
 
 2. ``test_pip_dry_run_resolves_constraints`` — FAITHFUL + NETWORK.
@@ -60,7 +61,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import subprocess
 import sys
 import tomllib
@@ -74,40 +74,6 @@ _CONSTRAINTS = _ROOT / "deploy" / "constraints-pi.txt"
 _UV_LOCK = _ROOT / "uv.lock"
 _PYPROJECT = _ROOT / "pyproject.toml"
 
-_PIN_RE = re.compile(r"^([A-Za-z0-9._-]+)==([^\s;]+)$")
-
-
-def _canon(name: str) -> str:
-    """PEP 503 normalization (lowercase, ``_``/``.`` -> ``-``) so
-    constraints-pi.txt's ``pydantic_core`` matches uv.lock's
-    ``pydantic-core``."""
-    return re.sub(r"[-_.]+", "-", name.strip().lower())
-
-
-def _parse_constraints() -> dict[str, str]:
-    pins: dict[str, str] = {}
-    for line in _CONSTRAINTS.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = _PIN_RE.match(line)
-        if m:
-            pins[_canon(m.group(1))] = m.group(2)
-    return pins
-
-
-def _parse_uv_lock() -> dict[str, str]:
-    data = tomllib.loads(_UV_LOCK.read_text(encoding="utf-8"))
-    return {
-        _canon(pkg["name"]): pkg["version"]
-        for pkg in data.get("package", [])
-        if pkg.get("name") and pkg.get("version")
-    }
-
-
-# The pin-chain table lives with the tool that repairs the drift, so the
-# guard and the fix can never disagree about which packages are in scope.
-# Guards 2 and 3 below are what catch anything the table does not enumerate.
 _ALIGN_SCRIPT = _ROOT / "scripts" / "align-pi-constraint-pins.py"
 _spec = importlib.util.spec_from_file_location(
     "align_pi_constraint_pins", _ALIGN_SCRIPT
@@ -115,35 +81,69 @@ _spec = importlib.util.spec_from_file_location(
 assert _spec is not None and _spec.loader is not None
 _align = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_align)
-_CROSS_ECOSYSTEM_PIN_CHAIN: dict[str, str] = _align.CROSS_ECOSYSTEM_PIN_CHAIN
+
+# canon/parsing live once in the align script; this module reuses them so
+# the guard and the tool that repairs its findings can never disagree about
+# scope. Guards 2 and 3 below are what catch anything a parsing bug here
+# would miss.
+_canon = _align.canon
 
 
-def _alignment_fixture(
-    *,
-    drift: str | None = None,
-    missing_constraint: str | None = None,
-    missing_lock: str | None = None,
-) -> tuple[str, str]:
-    constraints = ["# preserved header"]
-    lock_packages: list[str] = []
-    for name in sorted(_CROSS_ECOSYSTEM_PIN_CHAIN):
-        if name != missing_constraint:
-            spelling = "pydantic_core" if name == "pydantic-core" else name
-            constraints.append(f"{spelling}==1")
-        if name != missing_lock:
-            version = "2" if name == drift else "1"
-            lock_packages.append(
-                f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
-            )
-    constraints.append("unrelated==7")
-    return "\n".join(constraints) + "\n", "\n".join(lock_packages)
+def _parse_uv_lock() -> dict[str, str]:
+    return _align.uv_lock_versions(_UV_LOCK.read_text(encoding="utf-8"))
 
 
-def test_alignment_command_rewrites_only_target_pins_and_is_idempotent(
+_CONSTRAINTS_TEXT = _CONSTRAINTS.read_text(encoding="utf-8")
+_CONS_VERSIONS = _align.constraint_versions(_CONSTRAINTS_TEXT)
+_LOCK_VERSIONS = _parse_uv_lock()
+_WALKED_PACKAGES = sorted(_align.walked_packages(_CONSTRAINTS_TEXT, _LOCK_VERSIONS))
+
+
+def test_walked_package_set_is_not_vacuous() -> None:
+    """A parsing regression must not silently empty the walk — pytest would
+    then collect zero parametrized cases below and the guard would pass
+    while checking nothing."""
+    assert len(_WALKED_PACKAGES) > 50
+
+
+@pytest.mark.parametrize("pkg", _WALKED_PACKAGES)
+def test_pin_matches_uv_lock(pkg: str) -> None:
+    """The deterministic offline guard for the #1275 drift class.
+
+    Every package pinned in both constraints-pi.txt and the co-resolved
+    uv.lock (excluding documented EXCEPTIONS) must agree exactly. A
+    mismatch means a pip-side bump landed without co-resolving uv.lock and
+    a fresh ``pip install -c deploy/constraints-pi.txt`` will
+    ResolutionImpossible.
+    """
+    assert _CONS_VERSIONS[pkg] == _LOCK_VERSIONS[pkg], (
+        f"{pkg}: constraints-pi.txt=={_CONS_VERSIONS[pkg]} but "
+        f"uv.lock=={_LOCK_VERSIONS[pkg]} — deploy/constraints-pi.txt has "
+        "drifted from the co-resolved uv.lock (see #1275); a fresh deploy's "
+        "`pip install -c deploy/constraints-pi.txt -e .[full]` will fail "
+        "with ResolutionImpossible.\n"
+        "Fix: `python3 scripts/align-pi-constraint-pins.py` co-resolves it, "
+        "or add a one-line EXCEPTIONS entry in that script if this "
+        "divergence is legitimate."
+    )
+
+
+def test_alignment_command_rewrites_drifted_pins_and_is_idempotent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    constraints_text, lock_text = _alignment_fixture(drift="pydantic-core")
+    constraints_text = (
+        "# preserved header\n"
+        "alpha==1\n"
+        "beta_pkg==1\n"
+        "only-in-constraints==1\n"
+        "unrelated==7\n"
+    )
+    lock_text = (
+        '[[package]]\nname = "alpha"\nversion = "2"\n'
+        '[[package]]\nname = "beta-pkg"\nversion = "1"\n'
+        '[[package]]\nname = "only-in-lock"\nversion = "9"\n'
+    )
     constraints = tmp_path / "constraints-pi.txt"
     lock = tmp_path / "uv.lock"
     constraints.write_text(constraints_text, encoding="utf-8")
@@ -155,65 +155,29 @@ def test_alignment_command_rewrites_only_target_pins_and_is_idempotent(
     assert constraints.read_text(encoding="utf-8") == constraints_text
 
     assert _align.main([]) == 0
-    expected = constraints_text.replace("pydantic_core==1", "pydantic_core==2")
+    expected = constraints_text.replace("alpha==1", "alpha==2")
     assert constraints.read_text(encoding="utf-8") == expected
 
     assert _align.main([]) == 0
     assert constraints.read_text(encoding="utf-8") == expected
 
 
-@pytest.mark.parametrize("missing_from", ["constraints", "lock"])
-def test_alignment_command_refuses_a_missing_required_pin(
-    missing_from: str,
+def test_alignment_command_leaves_documented_exceptions_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    missing = "pydantic-core"
-    constraints_text, lock_text = _alignment_fixture(
-        missing_constraint=missing if missing_from == "constraints" else None,
-        missing_lock=missing if missing_from == "lock" else None,
-    )
     constraints = tmp_path / "constraints-pi.txt"
     lock = tmp_path / "uv.lock"
-    constraints.write_text(constraints_text, encoding="utf-8")
-    lock.write_text(lock_text, encoding="utf-8")
+    constraints.write_text("held-back==1\n", encoding="utf-8")
+    lock.write_text(
+        '[[package]]\nname = "held-back"\nversion = "2"\n', encoding="utf-8"
+    )
     monkeypatch.setattr(_align, "CONSTRAINTS", constraints)
     monkeypatch.setattr(_align, "UV_LOCK", lock)
+    monkeypatch.setattr(_align, "EXCEPTIONS", {"held-back": "test fixture"})
 
-    assert _align.main([]) == 2
-    assert constraints.read_text(encoding="utf-8") == constraints_text
-
-
-def test_cross_ecosystem_pin_chain_matches_uv_lock() -> None:
-    """The deterministic offline guard for the #1275 drift class.
-
-    Every cross-ecosystem pin-chain package must be pinned identically in
-    constraints-pi.txt and the co-resolved uv.lock. A mismatch means a
-    pip-side bump landed without co-resolving uv.lock and a fresh
-    ``pip install -c deploy/constraints-pi.txt`` will ResolutionImpossible.
-    """
-    cons = _parse_constraints()
-    lock = _parse_uv_lock()
-
-    mismatches: list[str] = []
-    for pkg, reason in _CROSS_ECOSYSTEM_PIN_CHAIN.items():
-        assert pkg in cons, f"pin-chain package {pkg!r} missing from constraints-pi.txt"
-        assert pkg in lock, f"pin-chain package {pkg!r} missing from uv.lock"
-        if cons[pkg] != lock[pkg]:
-            mismatches.append(
-                f"{pkg}: constraints-pi.txt=={cons[pkg]} but uv.lock=={lock[pkg]}  [{reason}]"
-            )
-
-    assert not mismatches, (
-        "deploy/constraints-pi.txt has drifted from the co-resolved uv.lock on "
-        "cross-ecosystem pin-chain packages — a fresh deploy's "
-        "`pip install -c deploy/constraints-pi.txt -e .[full]` will fail with "
-        "ResolutionImpossible (see #1275).\n"
-        "Fix: `python3 scripts/align-pi-constraint-pins.py` co-resolves exactly "
-        "these pins, or regenerate the whole overlay from a coherent Pi via "
-        "scripts/generate-pi-constraints.sh:\n  "
-        + "\n  ".join(mismatches)
-    )
+    assert _align.main(["--check"]) == 0
+    assert constraints.read_text(encoding="utf-8") == "held-back==1\n"
 
 
 def _pypi_reachable() -> bool:
