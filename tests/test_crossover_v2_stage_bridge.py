@@ -643,8 +643,9 @@ def test_a_staged_walks_declared_geometry_is_banked_with_the_session(
     from jasper.active_speaker import angle_capture as ac
     from jasper.active_speaker import angle_capture_spool as angle_spool
     from jasper.active_speaker.crossover_v2 import evidence_packet
+    from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 
-    geometry = ac.DeclaredGeometry(0.9, 1.0, 1.05, 2.4) if declared else None
+    geometry = DeclaredGeometry(0.9, 1.0, 1.05, 2.4) if declared else None
     store = _RecordingCheckStore()
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store", lambda topology: (store, store.session_id),
@@ -688,10 +689,10 @@ def test_the_grading_stage_rebanks_the_room_stage_1_was_told(monkeypatch):
     packet saying this household was never asked, which is the one thing the
     packet's absence block exists to keep apart from a room.
     """
-    from jasper.active_speaker import angle_capture as ac
     from jasper.active_speaker.crossover_v2 import evidence_packet
+    from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 
-    room = ac.DeclaredGeometry(0.9, 1.0, 1.05, 2.4).to_dict()
+    room = DeclaredGeometry(0.9, 1.0, 1.05, 2.4).to_dict()
     state = _seed_applied_stage_1_state()
     state["evidence"] = {v2host.DECLARED_GEOMETRY_STATE_KEY: room}
     v2host.save_v2_state(state)

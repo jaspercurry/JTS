@@ -38,7 +38,6 @@ from jasper.active_speaker.angle_capture import (
     REGIMES,
     AngleCaptureRequest,
     AngleStop,
-    DeclaredGeometry,
     both_at,
     per_driver_at,
     position_angle_deg,
@@ -46,6 +45,7 @@ from jasper.active_speaker.angle_capture import (
     resolve_request,
     summed_at,
 )
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     POLARITY_INVERTED,
@@ -142,6 +142,10 @@ def slot(tmp_path, monkeypatch):
         "jasper.active_speaker.session_volume_plan.read_measurement_hold",
         lambda: None,
     )
+    # ...and the box's standing ``jasper-declare-geometry`` declaration, which
+    # a flagless ``stage`` now falls back to: a developer's box that has one
+    # must not make these walks bank a room they never stated.
+    monkeypatch.setattr(cli, "DECLARED_GEOMETRY_PATH", tmp_path / "declared.json")
     try:
         yield path, volume_state
     finally:
@@ -1238,7 +1242,7 @@ def test_mutation_the_busy_guard_cannot_be_removed(slot):
 _GEOMETRY_FLAGS = [
     "--speaker-height-m", "0.9",
     "--mic-height-m", "1.0",
-    "--mic-distance-m", "1.05",
+    "--distance-m", "1.05",
 ]
 _GEOMETRY = DeclaredGeometry(0.9, 1.0, 1.05, 2.4)
 
@@ -1266,6 +1270,26 @@ def test_the_declared_geometry_rides_the_document_and_the_receipt(slot, capsys):
     assert spool.take_staged_angle_request().declared_geometry == _GEOMETRY
 
 
+def test_a_flagless_walk_takes_the_declaration_the_box_already_holds(slot, monkeypatch, tmp_path):
+    """``jasper-declare-geometry set`` is the standing answer (#3498).
+
+    One class, one stored declaration, one banked shape: the flags are the
+    one-off override, and a household that already declared its rig should
+    not have to restate it at every ``stage``.
+    """
+    path, _ = slot
+    stored = tmp_path / "measurement_geometry.json"
+    _GEOMETRY.save(stored)
+    monkeypatch.setattr(cli, "DECLARED_GEOMETRY_PATH", stored)
+
+    args = cli.build_parser().parse_args(["stage", "--angles", "0"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["declared_geometry"] == _GEOMETRY.to_dict()
+    assert spool.take_staged_angle_request().declared_geometry == _GEOMETRY
+
+
 def test_a_walk_nobody_was_asked_about_banks_no_geometry(slot):
     """Opt-in, and ADDITIVE: a document staged before the key reads the same."""
     path, _ = slot
@@ -1287,7 +1311,7 @@ def test_a_walk_nobody_was_asked_about_banks_no_geometry(slot):
     [
         ["--speaker-height-m", "0.9"],
         ["--speaker-height-m", "0.9", "--mic-height-m", "1.0"],
-        ["--mic-distance-m", "1.0", "--ceiling-height-m", "2.4"],
+        ["--distance-m", "1.0", "--ceiling-height-m", "2.4"],
         ["--ceiling-height-m", "2.4"],
     ],
 )
@@ -1304,7 +1328,7 @@ def test_a_partial_geometry_is_a_usage_error_not_a_half_banked_room(slot, flags)
     [
         lambda d: d.update(declared_geometry="1.0"),
         lambda d: d.update(declared_geometry={}),
-        lambda d: d["declared_geometry"].update(mic_distance_m=0.0),
+        lambda d: d["declared_geometry"].update(distance_m=0.0),
     ],
 )
 def test_mutation_a_banked_geometry_that_is_unusable_refuses_by_name(slot, mutate):

@@ -81,7 +81,6 @@ from jasper.active_speaker.angle_capture import (
     REGIMES,
     AngleCaptureRequest,
     AngleStop,
-    DeclaredGeometry,
     announced_indexes,
     position_angle_deg,
     request_for_program,
@@ -106,6 +105,11 @@ from jasper.active_speaker.measurement_level import (
     resolve_program_level,
 )
 from jasper.active_speaker.measurement_programs import MeasurementProgram
+from jasper.audio_measurement.measurement_geometry import (
+    DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
+    DeclaredGeometry,
+    GeometryFieldError,
+)
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
 EXIT_OK = 0
@@ -184,6 +188,20 @@ _REGIME_STOPS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _declared_on_the_box() -> DeclaredGeometry | None:
+    """The box's standing declaration (``jasper-declare-geometry set``), if any.
+
+    The flags below are the one-off override; this is the answer a household
+    already gave once. An unreadable file reads as absent rather than refusing
+    the walk -- ``jasper-declare-geometry show`` is where a damaged
+    declaration is diagnosed.
+    """
+    try:
+        return DeclaredGeometry.load(DECLARED_GEOMETRY_PATH)
+    except (OSError, ValueError):
+        return None
+
+
 def _declared_geometry(args: argparse.Namespace) -> DeclaredGeometry | None:
     """The household's tape measure -- all three distances, or none of them.
 
@@ -192,18 +210,18 @@ def _declared_geometry(args: argparse.Namespace) -> DeclaredGeometry | None:
     use, which is worse than banking none. The ceiling is genuinely optional
     (a floor bounce is bounded without it) but is not a geometry on its own.
     """
-    stated = (args.speaker_height_m, args.mic_height_m, args.mic_distance_m)
+    stated = (args.speaker_height_m, args.mic_height_m, args.distance_m)
     parser: argparse.ArgumentParser = args.parser
     if all(value is None for value in stated):
         if args.ceiling_height_m is not None:
             parser.error(
                 "--ceiling-height-m goes with --speaker-height-m, "
-                "--mic-height-m and --mic-distance-m"
+                "--mic-height-m and --distance-m"
             )
-        return None
+        return _declared_on_the_box()
     if any(value is None for value in stated):
         parser.error(
-            "--speaker-height-m, --mic-height-m and --mic-distance-m are "
+            "--speaker-height-m, --mic-height-m and --distance-m are "
             "stated together or not at all"
         )
     return DeclaredGeometry(*stated, args.ceiling_height_m)
@@ -514,7 +532,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         stated = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
-    except CrossoverV2FlowError as exc:
+    except (CrossoverV2FlowError, GeometryFieldError) as exc:
         return _refuse(exc, as_json=args.json)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
@@ -531,7 +549,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         stated = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
-    except CrossoverV2FlowError as exc:
+    except (CrossoverV2FlowError, GeometryFieldError) as exc:
         return _refuse(exc, as_json=args.json)
     # The methodology levels the seat before anything measures, so a level this
     # door cannot resolve names the step the operator skipped rather than
@@ -711,7 +729,7 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
     for flag, what in (
         ("--speaker-height-m", "the driver acoustic centre off the floor"),
         ("--mic-height-m", "the microphone capsule off the floor"),
-        ("--mic-distance-m", "speaker to microphone, along the design axis"),
+        ("--distance-m", "speaker to microphone, along the design axis"),
     ):
         parser.add_argument(
             flag,
@@ -719,7 +737,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             help=(
                 f"declared room geometry in METRES: {what}. Ask the household "
                 "once with a tape measure and state all three together; the "
-                "banked session carries them for the offline reader"
+                "banked session carries them for the offline reader. Omit all "
+                "three to use whatever `jasper-declare-geometry set` stored "
+                "on this box"
             ),
         )
     parser.add_argument(

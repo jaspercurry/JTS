@@ -77,12 +77,12 @@ import math
 import numbers
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
-from ._common import finite_float
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
@@ -123,7 +123,6 @@ __all__ = [
     "MOVER_MAX_ANGLE_DEG",
     "MOVER_MAX_ELEVATION_DEG",
     "AngleStop",
-    "DeclaredGeometry",
     "AngleCaptureRequest",
     "ResolvedStop",
     "pose_at_angle",
@@ -330,77 +329,6 @@ class AngleStop:
             )
 
 
-def _declared_metres(field: str, value: object) -> float:
-    """One declared distance, coerced and refused by name.
-
-    Every field is a LENGTH, so zero and negative are as meaningless as a NaN:
-    a mic 0 m from the speaker or -1.2 m off the floor is a typo, and the
-    entanglement floor derived from it would be silently absurd rather than
-    obviously wrong.
-    """
-    metres = finite_float(value)
-    if metres is None or metres <= 0.0:
-        raise CrossoverV2FlowError(
-            f"{field} is a positive distance in metres, got {value!r}"
-        )
-    return metres
-
-
-@dataclass(frozen=True)
-class DeclaredGeometry:
-    """What the household measured with a tape, in METRES.
-
-    The rig's own reflection finder is structurally blind here, so the human
-    answer is the only source for the room's entanglement floor
-    (``2.5 / t_first_bounce``). This carries the answer; the computation that
-    consumes it is a later, offline toolbox step and is deliberately not here.
-
-    ``speaker_height_m`` is the driver ACOUSTIC CENTRE off the floor, not the
-    cabinet top. ``mic_distance_m`` is speaker-to-microphone along the design
-    axis. ``ceiling_height_m`` is optional -- a room whose ceiling nobody
-    measured still bounds a floor bounce.
-    """
-
-    speaker_height_m: float
-    mic_height_m: float
-    mic_distance_m: float
-    ceiling_height_m: float | None = None
-
-    def __post_init__(self) -> None:
-        for field in ("speaker_height_m", "mic_height_m", "mic_distance_m"):
-            object.__setattr__(
-                self, field, _declared_metres(field, getattr(self, field))
-            )
-        if self.ceiling_height_m is not None:
-            object.__setattr__(
-                self,
-                "ceiling_height_m",
-                _declared_metres("ceiling_height_m", self.ceiling_height_m),
-            )
-
-    def to_dict(self) -> dict[str, float]:
-        """The banked shape. An unmeasured ceiling is ABSENT, never null."""
-        doc = {
-            "speaker_height_m": self.speaker_height_m,
-            "mic_height_m": self.mic_height_m,
-            "mic_distance_m": self.mic_distance_m,
-        }
-        if self.ceiling_height_m is not None:
-            doc["ceiling_height_m"] = self.ceiling_height_m
-        return doc
-
-    @classmethod
-    def from_dict(cls, doc: Mapping[str, Any]) -> "DeclaredGeometry":
-        """:meth:`to_dict`'s inverse, through the same refusals."""
-        fields: dict[str, Any] = {
-            key: doc.get(key)
-            for key in ("speaker_height_m", "mic_height_m", "mic_distance_m")
-        }
-        if doc.get("ceiling_height_m") is not None:
-            fields["ceiling_height_m"] = doc["ceiling_height_m"]
-        return cls(**fields)
-
-
 @dataclass(frozen=True)
 class AngleCaptureRequest:
     """What a caller is asking for: an ordered walk, and who moves the mic.
@@ -431,10 +359,13 @@ class AngleCaptureRequest:
     adopts this walk. An operator who could state numbers here could measure
     one speaker through another's level match.
 
-    ``declared_geometry`` is the household's own tape measure, carried and
-    never judged: the operator states it once at ``stage`` and it rides onto
-    the session's banked evidence for an offline reader. ``None`` is every
-    walk nobody was asked about, which is most of them.
+    ``declared_geometry`` is the household's own tape measure -- the toolbox's
+    own :class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`,
+    which is also what ``jasper-declare-geometry`` stores and what derives the
+    room's ``entanglement_floor_hz``. Carried and never judged here: the
+    operator states it once at ``stage`` and it rides onto the session's banked
+    evidence. ``None`` is every walk nobody was asked about, which is most of
+    them.
 
     ``program`` is PROVENANCE, not geometry: the name of the
     :class:`~.measurement_programs.MeasurementProgram` these stops came from

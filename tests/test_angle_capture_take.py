@@ -50,6 +50,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
 
@@ -238,7 +239,7 @@ def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
     express = mp.program("baseline", "express")
     request = ac.request_for_program(express)
     spool.stage_angle_request(request)
-    prompts, _consumer, _spec, _trims = _take()
+    prompts, _consumer, _spec, _trims, _geometry = _take()
 
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_hand_shape(),
@@ -265,7 +266,7 @@ def test_the_take_carries_the_households_declared_geometry_out(slot, declared):
     derived offline. ``None`` is every walk nobody was asked about.
     ``tests/test_crossover_v2_stage_bridge.py`` pins where it lands.
     """
-    geometry = ac.DeclaredGeometry(0.9, 1.0, 1.05) if declared else None
+    geometry = DeclaredGeometry(0.9, 1.0, 1.05) if declared else None
     spool.stage_angle_request(
         ac.AngleCaptureRequest(
             stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),

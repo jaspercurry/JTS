@@ -2395,7 +2395,7 @@ jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweete
 
 # THE ROOM the household measured, asked once and banked with the session
 jasper-angle-capture stage --program baseline --size express \
-  --speaker-height-m 0.92 --mic-height-m 1.0 --mic-distance-m 1.0 \
+  --speaker-height-m 0.92 --mic-height-m 1.0 --distance-m 1.0 \
   --ceiling-height-m 2.44
 
 # withdraw the staged walk
@@ -2439,9 +2439,12 @@ is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
 the regime vocabulary and the mover vocabulary are all
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
 
-`--speaker-height-m` / `--mic-height-m` / `--mic-distance-m` are the
+`--speaker-height-m` / `--mic-height-m` / `--distance-m` are the
 household's own tape measure in **metres** (`--ceiling-height-m` optional), and
-are stated together or not at all. The driving LLM asks once, in-session; the
+are stated together or not at all; omit all three and `stage` falls back to
+whatever `jasper-declare-geometry set` stored on the box, which is the same
+[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) the
+flags build. The driving LLM asks once, in-session; the
 walk carries them to the session, which banks them as
 `crossover_v2/<relay_session_id>/declared_geometry.json` and reports them at
 `session.declared_geometry` in the evidence packet — an absence block naming

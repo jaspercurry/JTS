@@ -2943,8 +2943,10 @@ def declared_geometry_prior_from_state(state: Mapping[str, Any] | None) -> Any:
     damaged to read back: an unreadable declaration is not a room, and a
     grading stage must not be refused its open over one.
     """
-    from jasper.active_speaker.angle_capture import DeclaredGeometry
-    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+    from jasper.audio_measurement.measurement_geometry import (
+        DeclaredGeometry,
+        GeometryFieldError,
+    )
 
     evidence = (state or {}).get("evidence")
     record = (
@@ -2955,7 +2957,7 @@ def declared_geometry_prior_from_state(state: Mapping[str, Any] | None) -> Any:
         return None
     try:
         return DeclaredGeometry.from_dict(record)
-    except CrossoverV2FlowError:
+    except GeometryFieldError:
         log_event(
             logger, "correction.crossover_v2_declared_geometry_unreadable",
             declared=",".join(sorted(str(key) for key in record)),

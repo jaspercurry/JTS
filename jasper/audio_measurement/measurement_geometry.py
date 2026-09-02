@@ -15,8 +15,10 @@ DERIVED and disclosed with ``declared_geometry`` provenance, never
 mistaken for a measurement. See issue #3502.
 
 ``jasper-declare-geometry`` (:mod:`jasper.cli.declare_geometry`, the
-single writer) stores :class:`DeclaredGeometry` to
-:data:`DEFAULT_PATH`.
+single writer) stores :class:`DeclaredGeometry` to :data:`DEFAULT_PATH`,
+and ``jasper-angle-capture stage`` reads it back as the standing answer for
+the walk it banks. :meth:`DeclaredGeometry.to_dict` is the one banked shape
+every other writer -- the angle spool, the session artifact -- carries.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 from .gating import ENTANGLEMENT_SOURCE_DECLARED, f_entanglement_floor_hz
 from .null_walk import DEFAULT_SOUND_SPEED_M_S
@@ -46,10 +49,26 @@ class GeometryFieldError(ValueError):
         self.field = field
 
 
-def _require_range(name: str, value: float, lo: float, hi: float) -> None:
-    if not (lo <= value <= hi):
+def _metres(name: str, value: object) -> float:
+    """One declared length as a number of metres, refused BY NAME otherwise.
+
+    ``bool`` is excluded deliberately: it is an ``int``, so a JSON ``true``
+    would otherwise read as a metre.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise GeometryFieldError(
-            name, f"{name} must be within [{lo:g}, {hi:g}] m (got {value:g})"
+            name, f"{name} must be a number of metres (got {value!r})"
+        )
+    return float(value)
+
+
+def _require_range(name: str, value: object, lo: float, hi: float) -> None:
+    # NaN and the infinities fail every comparison, so the range check refuses
+    # them too and no separate finiteness rule is needed.
+    metres = _metres(name, value)
+    if not (lo <= metres <= hi):
+        raise GeometryFieldError(
+            name, f"{name} must be within [{lo:g}, {hi:g}] m (got {metres:g})"
         )
 
 
@@ -153,21 +172,40 @@ class DeclaredGeometry:
         """
         return f_entanglement_floor_hz(self.first_bounce_s(distance_m))
 
+    def to_dict(self) -> dict[str, float]:
+        """The banked shape. An undeclared ceiling is ABSENT, never null."""
+        return {
+            name: value
+            for name, value in asdict(self).items()
+            if value is not None
+        }
+
+    @classmethod
+    def from_dict(cls, doc: Mapping[str, Any]) -> "DeclaredGeometry":
+        """:meth:`to_dict`'s inverse, through the constructor's own refusals.
+
+        A missing distance arrives as ``None`` and is refused by name, so a
+        half-written record cannot read as a room.
+        """
+        fields: dict[str, Any] = {
+            name: doc.get(name)
+            for name in ("speaker_height_m", "mic_height_m", "distance_m")
+        }
+        if doc.get("ceiling_height_m") is not None:
+            fields["ceiling_height_m"] = doc["ceiling_height_m"]
+        return cls(**fields)
+
     def save(self, path: str | Path = DEFAULT_PATH) -> None:
         atomic_write_json(
-            Path(path), {**asdict(self), "source": ENTANGLEMENT_SOURCE_DECLARED}
+            Path(path), {**self.to_dict(), "source": ENTANGLEMENT_SOURCE_DECLARED}
         )
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_PATH) -> "DeclaredGeometry":
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        ceiling = data.get("ceiling_height_m")
-        return cls(
-            speaker_height_m=float(data["speaker_height_m"]),
-            mic_height_m=float(data["mic_height_m"]),
-            distance_m=float(data["distance_m"]),
-            ceiling_height_m=float(ceiling) if ceiling is not None else None,
-        )
+        # A document that is not an object refuses as a geometry missing every
+        # field, rather than as an AttributeError from inside ``from_dict``.
+        return cls.from_dict(data if isinstance(data, Mapping) else {})
 
 
 def load_declared_geometry(path: str | Path = DEFAULT_PATH) -> DeclaredGeometry | None:

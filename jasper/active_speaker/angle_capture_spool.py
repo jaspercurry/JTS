@@ -64,9 +64,13 @@ from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_measurement.measurement_geometry import (
+    DeclaredGeometry,
+    GeometryFieldError,
+)
 from jasper.log_event import log_event
 
-from .angle_capture import AngleCaptureRequest, AngleStop, DeclaredGeometry
+from .angle_capture import AngleCaptureRequest, AngleStop
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2_flow import CrossoverV2FlowError
 
@@ -511,7 +515,7 @@ def _declared_geometry(block: object) -> DeclaredGeometry | None:
         _refuse(SPOOL_MALFORMED, "declared_geometry is not a JSON object")
     try:
         return DeclaredGeometry.from_dict(block)
-    except CrossoverV2FlowError as exc:
+    except GeometryFieldError as exc:
         _refuse(SPOOL_MALFORMED, f"declared_geometry is unusable: {exc}")
 
 

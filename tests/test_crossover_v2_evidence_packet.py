@@ -540,7 +540,7 @@ def test_the_session_block_reads_the_households_declared_geometry(tmp_path):
     session, _ = _bundle(tmp_path)
     room = {
         "speaker_height_m": 0.9, "mic_height_m": 1.0,
-        "mic_distance_m": 1.05, "ceiling_height_m": 2.4,
+        "distance_m": 1.05, "ceiling_height_m": 2.4,
     }
     round_dir, _ = round_artifact_dir(session)
     (round_dir / DECLARED_GEOMETRY_ARTIFACT).write_text(json.dumps({

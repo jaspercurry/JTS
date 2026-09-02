@@ -37,6 +37,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
@@ -1012,50 +1013,19 @@ def test_mutation_the_distance_guard_cannot_be_dropped() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 7. the household's declared geometry -- carried, refused when unusable
+# 7. the household's declared geometry -- carried, never judged here
 # --------------------------------------------------------------------------- #
-
-_ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "mic_distance_m": 1.05}
-
-
-@pytest.mark.parametrize(
-    "override, refused",
-    [
-        ({}, False),
-        ({"ceiling_height_m": 2.4}, False),
-        ({"speaker_height_m": 0.0}, True),
-        ({"mic_height_m": -1.0}, True),
-        ({"mic_distance_m": float("nan")}, True),
-        ({"mic_distance_m": "tall"}, True),
-        ({"ceiling_height_m": float("inf")}, True),
-    ],
-)
-def test_a_declared_distance_is_a_positive_finite_number_of_metres(
-    override, refused,
-) -> None:
-    """Every field is a LENGTH, so zero, negative and non-finite are refusals.
-
-    A geometry the toolbox cannot derive an entanglement floor from must fail
-    where the household stated it, not silently in an offline reader months
-    later; each refused row states the field it is about. The accepted rows
-    also pin the banked shape both ways: an unmeasured ceiling is ABSENT,
-    never null, and :meth:`from_dict` is :meth:`to_dict`'s exact inverse.
-    """
-    room = {**_ROOM, **override}
-    if refused:
-        with pytest.raises(flow.CrossoverV2FlowError):
-            ac.DeclaredGeometry(**room)
-        return
-
-    geometry = ac.DeclaredGeometry(**room)
-    assert geometry.to_dict() == room
-    assert ac.DeclaredGeometry.from_dict(room) == geometry
 
 
 def test_the_declared_geometry_is_opt_in_and_passed_through_untouched() -> None:
-    """A program states POSE geometry; the ROOM stays the caller's to state."""
+    """A program states POSE geometry; the ROOM stays the caller's to state.
+
+    The room itself is
+    :mod:`jasper.audio_measurement.measurement_geometry`'s -- its own tests
+    own the bounds and the banked shape; this seam only carries it.
+    """
     assert ac.per_driver_at([0]).declared_geometry is None
-    room = ac.DeclaredGeometry(**_ROOM)
+    room = DeclaredGeometry(speaker_height_m=0.9, mic_height_m=1.0, distance_m=1.05)
     assert ac.request_for_program(
         mp.program("baseline", "express"), declared_geometry=room,
     ).declared_geometry is room
