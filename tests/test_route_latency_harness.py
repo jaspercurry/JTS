@@ -19,6 +19,7 @@ import pytest
 
 from jasper import wake_legs
 from jasper.cli import route_latency_harness as harness
+from jasper.route_latency import ref9891_pcap
 from jasper.route_latency.click_track import percentile_min_samples
 from jasper.route_latency.mic_readers import (
     RAW0_BYTES_PER_PACKET,
@@ -1045,6 +1046,37 @@ def test_cli_mic_distance_cm_converts_to_compensation_ms(tmp_path):
     )
     # 10cm ~= 0.29ms of compensation subtracted from the raw 30ms latency.
     assert all(v == pytest.approx(30.0 - harness.SOUND_MS_PER_CM * 10, abs=0.01) for v in values)
+
+
+def test_convert_pcap_refuses_without_a_declared_tap_period(tmp_path, capsys):
+    """#3509: the period is the identity check, so convert-pcap will not
+    start without one. It takes a declared value, or reads it from a
+    jasper-pipe-probe manifest beside the pcap -- never from the datagrams,
+    where an intruder arriving first would define it."""
+    pcap = tmp_path / "ref9891.pcap"
+    # A valid pcap carrying no packets: legacy microsecond global header only.
+    pcap.write_bytes(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
+    out = tmp_path / "detections.jsonl"
+
+    assert harness.main(["convert-pcap", str(pcap), str(out)]) == 1
+    assert ref9891_pcap.REFUSAL_NO_GEOMETRY in capsys.readouterr().err
+
+    # A declared period is enough on its own -- no manifest in sight.
+    assert harness.main(
+        ["convert-pcap", str(pcap), str(out), "--period-bytes", "512"]
+    ) == 1  # empty pcap, but past the geometry refusal
+    declared = capsys.readouterr()
+    assert ref9891_pcap.REFUSAL_NO_GEOMETRY not in declared.err
+    assert ref9891_pcap.REFUSAL_NO_PACKETS in declared.out
+
+    # A manifest beside the pcap supplies it, so a probe capture converts
+    # without the operator restating what the box already recorded.
+    ref9891_pcap.capture_manifest_path(pcap).write_text(json.dumps({
+        "kind": ref9891_pcap.CAPTURE_MANIFEST_KIND,
+        "tap": {"period_bytes": 512},
+    }))
+    assert harness.main(["convert-pcap", str(pcap), str(out)]) == 1  # empty pcap
+    assert ref9891_pcap.REFUSAL_NO_PACKETS in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("subcommand", ["generate", "arm", "disarm", "capture", "analyze", "run", "warm-check", "convert-pcap"])
