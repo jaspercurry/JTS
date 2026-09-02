@@ -511,6 +511,11 @@ pub struct TrimControl {
     /// second `TRIM` before the loop consumed the first just re-sets the same
     /// flag (one trim results).
     pub pending: AtomicBool,
+    /// Set by a `DECAY_SNAP` control command; consumed by the work loop the same
+    /// way. The ONLY lever that opens a cushion-refill window on demand — a
+    /// still-locked snap-back otherwise needs a real ladder demotion, so the
+    /// hold this repo ships (ADR-0214) is unprovable on hardware without it.
+    pub decay_snap_pending: AtomicBool,
     /// Cumulative TRIM operations that actually dropped ≥1 frame on this lane.
     pub trims: AtomicU64,
     /// Cumulative frames dropped by TRIM from this lane's resampler ring. Paired
@@ -528,6 +533,7 @@ impl TrimControl {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             pending: AtomicBool::new(false),
+            decay_snap_pending: AtomicBool::new(false),
             trims: AtomicU64::new(0),
             trimmed_frames: AtomicU64::new(0),
             auto_fired: AtomicBool::new(false),
@@ -541,6 +547,7 @@ impl TrimControl {
     pub fn test_fixture(trims: u64, trimmed_frames: u64, pending: bool) -> Self {
         Self {
             pending: AtomicBool::new(pending),
+            decay_snap_pending: AtomicBool::new(false),
             trims: AtomicU64::new(trims),
             trimmed_frames: AtomicU64::new(trimmed_frames),
             auto_fired: AtomicBool::new(false),
@@ -1748,6 +1755,9 @@ impl Mixer {
             // The cushion decay's live demand gauge, published by the decay
             // itself; `build_obs` subtracts it from the ratio above (#3466).
             decay_demand_milli_ppm: Arc::clone(&resampler.decay_demand_milli_ppm),
+            // The decay's declared refill window — `build_obs` clears
+            // `Obs::steady` on it (ADR-0214).
+            decay_refilling: Arc::clone(&resampler.decay_refilling),
             // The static acquisition ceiling — build_obs's anchor for
             // descent-compensating the fill it feeds the ladder (#3466).
             ceiling_fill_frames: resampler.target_fill_frames,
@@ -1963,6 +1973,12 @@ impl Mixer {
             // reconciliation, not of which source is passed to the sum). No-op
             // when no resampler / decay disabled.
             if let Some(r) = input.resampler.as_mut() {
+                // The DECAY_SNAP lever, consumed on the thread that owns the
+                // resampler (the control thread cannot touch it), before the
+                // tick so the window is open by the time the gauges publish.
+                if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
+                    r.force_decay_snap_back();
+                }
                 r.tick_decay(decay_l0, decay_commanded_ppm_abs);
             }
             // Selection AND mute gate. Both are applied at the SUM only — the

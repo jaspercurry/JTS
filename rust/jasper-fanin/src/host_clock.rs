@@ -34,6 +34,8 @@
 //! |-------------------|------------------------------------------------------|
 //! | `host_connected`  | `DirectObservability.present`                        |
 //! | `playing`         | `LaneResampler.locked_state`                         |
+//! | `steady`          | `locked_state` AND NOT the decay's declared refill   |
+//! |                   | window (ADR-0214)                                    |
 //! | `preempted`       | always `false` (fan-in MIX MUTE gates the SUM        |
 //! |                   | downstream, so steering continues                    |
 //! |                   | while deselected, keeping the lane converged)        |
@@ -126,6 +128,9 @@ pub struct HostClockSignals {
     /// its own demand); [`build_obs`] subtracts it from the ratio — see the
     /// decontamination rationale there (#3466).
     pub decay_demand_milli_ppm: Arc<AtomicI64>,
+    /// The decay's DECLARED refill window (`CushionDecay::refilling`, ADR-0214):
+    /// [`build_obs`] clears [`Obs::steady`] on it.
+    pub decay_refilling: Arc<AtomicBool>,
     /// The lane's static acquisition ceiling (`target + full warm-up cushion`)
     /// — the value the held target snaps back to; constant for the lane's
     /// life. Anchor for [`build_obs`]'s descent compensation of `fill_frames`
@@ -189,13 +194,11 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         host_connected: signals.present.load(Ordering::Relaxed),
         // Resampler locked ⇒ real DAC-paced audio is flowing.
         playing: signals.locked.load(Ordering::Relaxed),
-        // Resampler LOCKED is the steady-regime gate for the probe's baseline:
-        // while the resampler is still acquiring, its held target is filling from
-        // empty (warmup ramp) — baselining then would measure that ramp, not the
-        // host's clock drift. Same atomic as `playing` here because for fan-in
-        // the resampler lock IS both "audio flowing" and "warmup done"; the
-        // ladder reads `locked` distinctly so the two roles stay explicit.
-        locked: signals.locked.load(Ordering::Relaxed),
+        // No declared fill ramp: locked (the cold 0→target climb is over) and not
+        // mid cushion-refill (the same climb re-entered mid-session, which the
+        // raw lock bool cannot show). See ADR-0214.
+        steady: signals.locked.load(Ordering::Relaxed)
+            && !signals.decay_refilling.load(Ordering::Relaxed),
         // Cursor-relative fill (frame-granular), DESCENT-COMPENSATED into
         // ceiling terms: `fill + (ceiling − held)`. During a cushion descent
         // the raw fill follows the commanded held-target ramp down; fed raw it
@@ -207,9 +210,8 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         // consumer: the ladder's `published_fill_frames()` mean, so during a
         // descent /state's `host_clock.fill_frames` reads ~ceiling while the
         // lane's `resampler.fill_frames` reads the true descending fill — two
-        // same-named fields that legitimately diverge. The refill after a
-        // locked snap-back still rides through raw — part of the disclosed
-        // refill residual (#3466).
+        // same-named fields that legitimately diverge. One-sided by construction
+        // (0 whenever `held == ceiling`); the raise is carried by `steady`.
         fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64
             + signals.ceiling_fill_frames as f64
             - signals.held_target_frames.load(Ordering::Relaxed) as f64,
@@ -656,6 +658,7 @@ mod tests {
             capture_generation: Arc::new(AtomicU64::new(1)),
             correction_milli_ppm: Arc::new(AtomicU64::new(0)),
             decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
+            decay_refilling: Arc::new(AtomicBool::new(false)),
             ceiling_fill_frames: 2048,
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
@@ -694,7 +697,7 @@ mod tests {
         let obs = build_obs(&s);
         assert!(!obs.host_connected);
         assert!(!obs.playing);
-        assert!(!obs.locked, "resampler unlocked ⇒ Obs.locked false");
+        assert!(!obs.steady, "resampler unlocked ⇒ Obs.steady false");
         assert!(!obs.preempted, "fan-in never sees a preempt on this lane");
 
         s.present.store(true, Ordering::Relaxed);
@@ -702,10 +705,27 @@ mod tests {
         let obs = build_obs(&s);
         assert!(obs.host_connected, "present ⇒ host_connected");
         assert!(obs.playing, "locked ⇒ playing");
+        assert!(obs.steady, "locked with no ramp in flight ⇒ Obs.steady");
+    }
+
+    /// `playing` and `steady` are DIFFERENT facts. A still-locked snap-back
+    /// leaves audio flowing while the inner loop rails back to the target the
+    /// decay just raised — a ramp the ladder must not measure (ADR-0214).
+    #[test]
+    fn a_declared_refill_window_leaves_playing_but_clears_steady() {
+        let s = signals();
+        s.present.store(true, Ordering::Relaxed);
+        s.locked.store(true, Ordering::Relaxed);
+        s.decay_refilling.store(true, Ordering::Relaxed);
+        let obs = build_obs(&s);
+        assert!(obs.playing, "audio still flows through a refill");
         assert!(
-            obs.locked,
-            "resampler locked ⇒ Obs.locked — the probe's steady-regime gate"
+            !obs.steady,
+            "a commanded refill ramp is not the steady regime"
         );
+
+        s.decay_refilling.store(false, Ordering::Relaxed);
+        assert!(build_obs(&s).steady, "arrival restores the steady regime");
     }
 
     #[test]
