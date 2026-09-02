@@ -1701,6 +1701,48 @@ def _flatness_tilt_log_field(flatness: Any) -> str:
     return (
         f"{step_db:.2f}dB:{high_lo:.0f}-{high_hi:.0f}Hz>{low_lo:.0f}-{low_hi:.0f}Hz"
     )
+
+
+def _per_band_flatness_log_field(bands: Any) -> str:
+    """One compact token per graded spec band, its own worst deviation from
+    the SAME reference ``flatness_max_db`` above is stated against (issue
+    #1857) -- so a log reader is never limited to the single band the gauge
+    happened to flag as worst. A uniformly-off band drags the shared
+    reference toward itself and can make an unrelated band's ordinary
+    ripple read as the LARGER deviation; this is what let a #1857 corpus
+    session's worst-band pointer read the woofer while the tweeter sat
+    uniformly ~5 dB dark across its own passband, undetected by the single
+    logged point. Same disclosure, and the same "unevaluable is not a
+    fabricated verdict" skip rule, as
+    ``crossover_envelope_v2._per_band_flatness_lines`` (the household-facing
+    prose reading of the identical numbers) -- shaped for one logfmt token
+    (``lo-hiHz:+dev.ddB:pass|fail``, semicolon-joined, no bracket or space
+    for logfmt to quote) rather than a sentence. Disclosure only: every
+    figure is copied from the SAME :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
+    ``flatness_max_db`` reads, nothing is recomputed, and no verdict moves.
+    ``""`` (never a fabricated reading) when ``bands`` is absent or no band
+    survives to be measured.
+    """
+    if not isinstance(bands, list):
+        return ""
+    parts: list[str] = []
+    for band in bands:
+        if not isinstance(band, Mapping) or not band.get("evaluable"):
+            continue
+        lo, hi = band.get("f_lo_hz"), band.get("f_hi_hz")
+        deviation_db, passed = band.get("max_deviation_db"), band.get("passed")
+        if (
+            not isinstance(lo, (int, float)) or not isinstance(hi, (int, float))
+            or not isinstance(deviation_db, (int, float))
+            or isinstance(deviation_db, bool) or not isinstance(passed, bool)
+        ):
+            continue
+        parts.append(
+            f"{lo:.0f}-{hi:.0f}Hz:{deviation_db:+.2f}dB:{'pass' if passed else 'fail'}"
+        )
+    return ";".join(parts)
+
+
 # The contract-derived echo/null analysis band's LOWER edge must not drift
 # below this floor. A six-band sweep of the JTS3 cdhorn corpus, measuring how
 # far the detector's signal-presence screen clears the band-below-passband
