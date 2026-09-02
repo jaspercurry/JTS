@@ -526,10 +526,47 @@ def choose_delay(evidence: Sequence[MicTiming]) -> DelayChoice:
 class TimingResult:
     lag: int
     peak: float
-    peak_ratio: float
+    peak_height: float
+    competitor_lag: int
+    competitor_height: float
     mic_rms_dbfs: float
     reference_rms_dbfs: float
     clipped_samples: int
+
+    @property
+    def peak_ratio(self) -> float:
+        return self.peak_height / max(self.competitor_height, math.ulp(1.0))
+
+    @property
+    def competitor_offset_ms(self) -> float:
+        """Arrival separation; x 0.343 m/ms is the extra path a reflection ran."""
+        return 1_000 * (self.competitor_lag - self.lag) / RATE
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "lag": self.lag,
+            "peak": round(self.peak, 4),
+            "peak_height": round(self.peak_height, 4),
+            "peak_ratio": round(self.peak_ratio, 4),
+            "competitor_lag": self.competitor_lag,
+            "competitor_offset_ms": round(self.competitor_offset_ms, 2),
+            "competitor_height": round(self.competitor_height, 4),
+            "mic_rms_dbfs": round(self.mic_rms_dbfs, 2),
+            "reference_rms_dbfs": round(self.reference_rms_dbfs, 2),
+            "clipped_samples": self.clipped_samples,
+        }
+
+
+class TimingRejected(ValueError):
+    """A timing capture the objective gate refused, carrying why."""
+
+    def __init__(self, result: TimingResult, *, at_edge: bool) -> None:
+        self.result = result
+        self.fields: dict[str, Any] = {**result.evidence(), "at_edge": at_edge}
+        super().__init__(
+            "timing rejected: "
+            + " ".join(f"{name}={value}" for name, value in self.fields.items())
+        )
 
 
 def _bandpass(values: np.ndarray) -> np.ndarray:
@@ -574,17 +611,20 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
     paired_f, reference_f = _bandpass(paired), _bandpass(reference)
     denominator = float(np.linalg.norm(paired_f) * np.linalg.norm(reference_f))
     peak = abs(float(np.dot(paired_f, reference_f))) / denominator if denominator else 0
-    ratio = alignment.peak / max(alignment.secondary, np.finfo(float).eps)
     clips = int(np.count_nonzero(np.abs(np.column_stack((paired, reference)).astype(np.int32)) >= CLIP))
     result = TimingResult(
-        lag, peak, ratio, _dbfs_rms(paired), _dbfs_rms(reference), clips
+        lag,
+        peak,
+        alignment.peak,
+        alignment.secondary_lag_samples - 512,
+        alignment.secondary,
+        _dbfs_rms(paired),
+        _dbfs_rms(reference),
+        clips,
     )
     at_edge = alignment.lag_samples <= 8 or alignment.lag_samples >= 1_016
     if at_edge or result.peak < MIN_TIMING_PEAK or result.peak_ratio < MIN_PEAK_RATIO or clips:
-        raise ValueError(
-            f"timing rejected: lag={lag} peak={peak:.4f} "
-            f"ratio={ratio:.4f} clips={clips} edge={at_edge}"
-        )
+        raise TimingRejected(result, at_edge=at_edge)
     return result
 
 
