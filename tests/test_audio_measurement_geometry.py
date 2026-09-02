@@ -203,8 +203,6 @@ def test_load_of_a_missing_file_raises_file_not_found(tmp_path):
         pytest.param(0.3, 0.3, id="capture-closer-than-declared"),
         pytest.param(2.0, 2.0, id="capture-further-than-declared"),
         pytest.param(None, 1.2, id="capture-states-none"),
-        pytest.param(0.0, 1.2, id="capture-states-zero"),
-        pytest.param(float("nan"), 1.2, id="capture-states-nan"),
     ],
 )
 def test_the_first_bounce_is_timed_at_the_captures_own_distance(
@@ -213,9 +211,9 @@ def test_the_first_bounce_is_timed_at_the_captures_own_distance(
     """The heights are the rig's and the distance is the capture's.
 
     Derived from the raw mirror-image geometry at ``expected_distance_m``,
-    never by calling the method under test on itself. A capture that states no
-    usable distance falls back to the declared one, which is the ordinary case
-    rather than a refusal.
+    never by calling the method under test on itself. ``None`` -- and only
+    ``None`` -- is a capture that states no distance, and falls back to the
+    declared one.
     """
     geometry = DeclaredGeometry(
         speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2,
@@ -228,6 +226,31 @@ def test_the_first_bounce_is_timed_at_the_captures_own_distance(
     assert geometry.entanglement_floor_hz(distance_m) == pytest.approx(
         TRUSTED_FLOOR_MULTIPLIER / expected_t_s
     )
+
+
+@pytest.mark.parametrize(
+    "distance_m",
+    [
+        pytest.param(0.0, id="zero"),
+        pytest.param(-1.0, id="negative"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="inf"),
+    ],
+)
+def test_a_stated_distance_that_is_not_a_length_is_refused(distance_m):
+    """Only ``None`` means "use the declared distance".
+
+    Substituting the rig's distance for a caller that stated one would report
+    the rig's floor under the capture's name -- a wrong number nothing
+    downstream can tell from a right one.
+    """
+    geometry = DeclaredGeometry(
+        speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2,
+    )
+
+    with pytest.raises(GeometryFieldError) as excinfo:
+        geometry.first_bounce_s(distance_m)
+    assert excinfo.value.field == "distance_m"
 
 
 def test_evaluating_at_a_distance_does_not_mutate_the_declared_record():

@@ -100,17 +100,35 @@ class DeclaredGeometry:
         direct path that shortens faster, so the excess arrival time grows and
         the floor falls -- monotonically, for every pair of heights, which is
         the same physics a near-field capture buys its low-end validity with.
-        ``None`` -- and any non-finite or non-positive
-        override, which is a capture that states no distance rather than a
-        refusal -- falls back to the declared :attr:`distance_m`.
+        ONLY ``None`` means "this capture states no distance" and falls back to
+        the declared :attr:`distance_m`; a non-finite or non-positive override
+        is a caller stating a distance that is not one, and raises
+        :class:`GeometryFieldError` rather than silently reporting the rig's
+        floor under the capture's name.
+
+        **Every production pose declares the same distance TODAY.** The one
+        caller is ``PositionGeometry.mark_distance_m``, and that is
+        ``spatial.MARK_DISTANCE_M`` (1.0 m) on every pose a round walks -- the
+        mark is a reference length, not a surveyed capsule distance -- so every
+        seat of a round currently derives the SAME floor and pooling them
+        cannot yet disagree. The per-capture parameter is what lets a row that
+        carries its own distance (#3498) be evaluated at it without this
+        method or any consumer changing.
+
+        The two heights are the DECLARED ones at every elevation: a pose raised
+        or lowered off the mark (``PositionGeometry.vertical_deg``) is timed
+        against the declared mic height unadjusted, because nothing in a round
+        measures where the capsule actually ended up.
         """
-        distance = (
-            float(distance_m)
-            if distance_m is not None
-            and math.isfinite(distance_m)
-            and distance_m > 0.0
-            else self.distance_m
-        )
+        if distance_m is None:
+            distance = self.distance_m
+        else:
+            distance = float(distance_m)
+            if not math.isfinite(distance) or distance <= 0.0:
+                raise GeometryFieldError(
+                    "distance_m",
+                    f"distance_m must be a positive finite length (got {distance_m!r})",
+                )
         direct_m = math.hypot(distance, self.speaker_height_m - self.mic_height_m)
         bounce_paths_m = [
             math.hypot(distance, self.speaker_height_m + self.mic_height_m),

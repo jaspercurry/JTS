@@ -759,7 +759,7 @@ def _gate_record(
     "entanglement_floor_source": <str>}``. Every one is
     :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivation, taken
     off ONE typed record built here at compose time — the sentence is
-    :func:`~jasper.audio_measurement.gate_disclosure.describe_gate`'s, the
+    :func:`~jasper.audio_measurement.gate_disclosure.render_gate`'s, the
     bool is
     :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`
     (the single owner of "may this record claim reflections were removed"),
@@ -796,9 +796,7 @@ def _gate_record(
         response.gating, declared_first_bounce_s=declared_first_bounce_s
     )
     return {
-        "disclosure": gate_disclosure.describe_gate(
-            response.gating, declared_first_bounce_s=declared_first_bounce_s
-        ),
+        "disclosure": gate_disclosure.render_gate(typed),
         "reflection_measured": typed.gated_anything,
         "moved_rms_db": typed.delta_rms_db,
         "reflection_delay_ms": typed.reflection_delay_ms,

@@ -64,15 +64,21 @@ ceiling height if they know it (optional — a low ceiling can beat the floor to
 the microphone). Then run it once:
 
 ```
-jasper-declare-geometry set --speaker-height-in 33 --mic-height-in 33 --distance-in 39
+sudo -n /opt/jasper/.venv/bin/jasper-declare-geometry set \
+  --speaker-height-in 33 --mic-height-in 33 --distance-in 39
 ```
+
+(`/var/lib/jasper` is the daemon's `StateDirectory`, so the login user cannot
+write it without `sudo`.)
 
 From then on every gate disclosure and every spec report carries
 `entanglement_floor_source = declared_geometry` beside the floor itself, and the
 floor is evaluated at **each capture's own distance** rather than once for the
-rig — a seat further out has a higher floor, because its first bounce arrives
-closer behind the direct sound. Nothing is clamped and no grade moves: the floor
-only marks which bins no window could have separated from the room (§9).
+rig. Every pose a round walks declares the same 1 m mark distance today, so
+every seat currently gets the same floor; the per-capture evaluation is what
+lets a row that carries its own distance be graded at it later. Nothing is
+clamped and no grade moves: the floor only marks which bins no window could have
+separated from the room (§9).
 
 Skipping this is allowed and warns about nothing, but it is not clean. This rig
 class's first bounce arrives while the direct sound is still decaying, so the

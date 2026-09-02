@@ -832,6 +832,36 @@ def test_two_seats_of_one_rig_publish_different_floors_for_their_distances(tmp_p
     )
 
 
+def test_a_hand_edited_geometry_file_reads_as_unknown_instead_of_ending_the_round(
+    tmp_path, monkeypatch
+):
+    """#3502 — a malformed declaration costs a floor, never the round.
+
+    The reader raises on a file that exists and does not parse, deliberately,
+    so ``jasper-declare-geometry show`` can report it. On the capture path the
+    same exception would abort every VERIFY attempt and every seat of the round
+    over a fact that clamps nothing, so the flow reads it as undeclared.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from jasper.audio_measurement import gating
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    path = tmp_path / "measurement_geometry.json"
+    path.write_text('{"speaker_height_m": 0.84}', encoding="utf-8")
+    monkeypatch.setattr(flow, "DECLARED_GEOMETRY_PATH", path)
+
+    block = _gate_block(floor_source=gating.FLOOR_SEARCH_BOUND)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+
+    assert flow._declared_first_bounce_s(1.0) is None
+    record = flow._gate_record(
+        response, declared_first_bounce_s=flow._declared_first_bounce_s(1.0)
+    )
+    assert record is not None
+    assert record["entanglement_floor_hz"] is None
+    assert record["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+
+
 @pytest.mark.parametrize(
     ("floor_source", "verify_kwargs", "accepted", "reflection_measured", "prose"),
     [

@@ -500,13 +500,9 @@ def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
     return ordinal, _count(state.get("round_ordinal_epoch"))
 
 
-def _entry_frame(
-    report: FlatSpecReport | None,
-) -> tuple[int, float | None, float | None, float | None, str]:
-    """``(smoothing_fraction, trusted_floor_hz, trusted_ceiling_hz,
-    entanglement_floor_hz, entanglement_floor_source)`` for an
-    entry baseline — the round's own when it graded one, nothing when it did
-    not.
+def _entry_frame(report: FlatSpecReport | None) -> tuple[int, dict[str, Any]]:
+    """``(smoothing_fraction, frame_kwargs)`` for an entry baseline — the
+    round's own when it graded one, nothing when it did not.
 
     The frame is the ROUND's so a before and an after are stated over one span
     (:class:`EntryStateGrade`). A round that banked no cloud group graded no
@@ -522,14 +518,13 @@ def _entry_frame(
     a floor recomputed here would be a second opinion about one room.
     """
     if report is None:
-        return 0, None, None, None, ENTANGLEMENT_SOURCE_UNKNOWN
-    return (
-        report.smoothing_fraction,
-        report.trusted_floor_hz,
-        report.trusted_ceiling_hz,
-        report.entanglement_floor_hz,
-        report.entanglement_floor_source,
-    )
+        return 0, {
+            "trusted_floor_hz": None,
+            "trusted_ceiling_hz": None,
+            "entanglement_floor_hz": None,
+            "entanglement_floor_source": ENTANGLEMENT_SOURCE_UNKNOWN,
+        }
+    return report.smoothing_fraction, report.frame_kwargs
 
 
 def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
@@ -572,22 +567,13 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
             ENTRY_STATE_UNREADABLE,
             round_ordinal=ordinal, round_ordinal_epoch=epoch,
         )
-    (
-        smoothing_fraction,
-        trusted_floor_hz,
-        trusted_ceiling_hz,
-        entanglement_floor_hz,
-        entanglement_floor_source,
-    ) = _entry_frame(banked.report)
+    smoothing_fraction, frame_kwargs = _entry_frame(banked.report)
     report = evaluate_flat_spec(
         np.asarray(baseline.curve.hz, dtype=float),
         np.asarray(baseline.curve.db, dtype=float),
         np.asarray(baseline.excluded, dtype=bool),
         smoothing_fraction=smoothing_fraction,
-        trusted_floor_hz=trusted_floor_hz,
-        trusted_ceiling_hz=trusted_ceiling_hz,
-        entanglement_floor_hz=entanglement_floor_hz,
-        entanglement_floor_source=entanglement_floor_source,
+        **frame_kwargs,
     )
     return EntryStateGrade(
         available=True,
@@ -616,10 +602,7 @@ def _own_reference_db(position: PositionCurve, report: FlatSpecReport) -> float:
         np.asarray(position.magnitude_db, dtype=float),
         _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
         smoothing_fraction=position.smoothing_fraction,
-        trusted_floor_hz=report.trusted_floor_hz,
-        trusted_ceiling_hz=report.trusted_ceiling_hz,
-        entanglement_floor_hz=report.entanglement_floor_hz,
-        entanglement_floor_source=report.entanglement_floor_source,
+        **report.frame_kwargs,
     )
     return float(graded.reference_db)
 

@@ -1869,10 +1869,10 @@ _REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
         "an unknown source is the ordinary state on a rig whose first bounce "
         "arrives while the direct sound is still decaying — the reflection "
         "finder structurally never fires there — and is resolved by declaring "
-        "the geometry, not by measuring harder. It is per SEAT because it "
-        "depends on the speaker-to-mic distance as well as the two heights: a "
-        "seat further OUT has a HIGHER floor, because the bounce arrives "
-        "closer behind the direct sound there"
+        "the geometry, not by measuring harder. Banked per SEAT because it is "
+        "derived at that seat's own mark distance, though every pose a round "
+        "walks declares the same distance today, so these rows currently carry "
+        "one number (DeclaredGeometry.first_bounce_s)"
     ),
     "verify.gate.entanglement_floor_hz": (
         "the same derivation as positions[].gate_entanglement_floor_hz, for "

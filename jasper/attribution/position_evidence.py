@@ -252,10 +252,10 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "long, separates the speaker from the room, so nothing there is a "
         "speaker measurement — it is the floor no window choice can lower, "
         "and it is stated beside the window's own two rather than instead of "
-        "them. Absent when unknown. It is per SEAT: it depends on the "
-        "speaker-to-mic distance as well as the rig's two heights, so a seat "
-        "further OUT has a HIGHER floor — the bounce arrives closer behind "
-        "the direct sound there."
+        "them. Absent when unknown. Banked per SEAT because it is derived at "
+        "that seat's own mark distance, though every pose a round walks "
+        "declares the same distance today, so these rows currently carry one "
+        "number — see DeclaredGeometry.first_bounce_s."
     ),
     "gate_entanglement_floor_source": (
         "Which of three things produced gate_entanglement_floor_hz: "

@@ -1170,12 +1170,13 @@ def cloud_position_record(
     :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` it came
     from — never one without the other, because the number is unreadable
     without knowing whether a reflection timed it or the operator's tape
-    measure did (#3502).  It is per SEAT rather than per rig: the floor
-    depends on the speaker-to-mic distance as well as the two heights, so a
-    seat further OUT has a higher floor than the same rig closer in — the
-    bounce arrives closer behind the direct sound there — which is why
-    :func:`cloud_entanglement_floor_hz` pools the seats rather than reading
-    one rig fact.  ``unknown`` with a null floor is the ordinary
+    measure did (#3502).  It is banked per SEAT rather than once per rig
+    because it is derived at the seat's own ``mark_distance_m``, which is why
+    :func:`cloud_entanglement_floor_hz` pools the seats rather than reading one
+    rig fact — though every pose a round walks declares the same distance
+    today, so the pooled seats currently agree; see
+    :meth:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry.first_bounce_s`.
+    ``unknown`` with a null floor is the ordinary
     state on a rig whose first bounce lands while the direct sound is still
     decaying — the reflection finder structurally never fires there and no
     geometry was declared.
