@@ -9,13 +9,32 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
-    """Create a successful ``systemctl`` stand-in that records its argv."""
-    log = tmp_path / "systemctl.log"
-    executable = tmp_path / "systemctl"
+def fake_systemctl(
+    tmp_path: Path, *, name: str = "systemctl", witness: str | None = None
+) -> tuple[Path, Path]:
+    """Create a successful ``systemctl`` stand-in that records its argv.
+
+    ``witness`` names an environment variable holding a path. When given, every
+    logged line is prefixed ``present=1``/``present=0`` for whether that path
+    existed at call time, which lets a test read the ORDER of a file write
+    against the unit commands rather than only the end state.
+    """
+    log = tmp_path / f"{name}.log"
+    executable = tmp_path / name
+    probe = (
+        ""
+        if witness is None
+        else f'if [[ -e "${witness}" ]]; then p=1; else p=0; fi\n'
+    )
+    record = (
+        "printf '%s\\n' \"$*\""
+        if witness is None
+        else "printf 'present=%s %s\\n' \"$p\" \"$*\""
+    )
     executable.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
+        f"{probe}"
+        f'{record} >> "$JASPER_SYSTEMCTL_LOG"\n'
         "exit 0\n",
         encoding="utf-8",
     )

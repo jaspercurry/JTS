@@ -1613,8 +1613,14 @@ accessory_mic_present() {
 # Mic-presence gate marker writers. mark = "no usable voice input, voice is
 # parked"; clear = "voice
 # input is available". jasper-voice.service's ConditionPathExists=!<marker>
-# reads the absence. Both best-effort: a marker write failing must never abort a
-# reconcile pass (the daemon's exit-66 backstop still parks a no-mic start).
+# reads the absence. Neither may abort a reconcile pass — but a failed mark
+# still has to park voice, so the two fall back to `disable`/`enable` on the
+# unit, which is the same axis and stays symmetric across the pair.
+#
+# Every caller must mark BEFORE it stops jasper-aec-bridge: in the window
+# between the stop and the mark voice is stoppable but not gated, so anything
+# that starts it there (boot ordering, a Wants= pull, an operator) binds the
+# bridge's dead udp: carrier.
 # Do NOT re-mode the parent dir here — same trap as ensure_mode_file (#827).
 mark_voice_input_absent() {
     local reason="${1:-no usable microphone present}"
@@ -1622,14 +1628,21 @@ mark_voice_input_absent() {
     # which runs earlier in every non-check-only pass; we deliberately do
     # NOT create or re-mode it here (re-moding 0770 root:jasper -> 0755
     # strips the group-write bit the non-root daemons need — the #827
-    # trap). If the dir is somehow absent the write fails soft below and
-    # the daemon's exit-66 backstop still parks voice.
+    # trap).
     if printf 'reason=%s\n' "$reason" > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
         chmod 0644 "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
         log "voice input absent: marked ${VOICE_INPUT_ABSENT_MARKER} (${reason}); jasper-voice gated off until a mic appears"
-    else
-        log "voice input absent: failed to write ${VOICE_INPUT_ABSENT_MARKER} (${reason}); relying on daemon exit-66 park"
+        return
     fi
+    # No marker means no gate, and exit 66 cannot stand in for one: it needs a
+    # capture device that will not OPEN (InputDeviceUnavailable,
+    # jasper/audio_io.py), and a udp: carrier always binds — see
+    # park_managed_xvf. `disable` is weaker than the gate (it closes the
+    # boot/enable-driven start, not an explicit `systemctl restart`), but it is
+    # a stop that actually fires, where the exit-66 backstop this branch used
+    # to name is a stop that cannot. clear_voice_input_absent re-enables.
+    log "event=aec_reconcile.voice_input_marker_write_failed marker=${VOICE_INPUT_ABSENT_MARKER} reason=${reason}"
+    run_systemctl disable jasper-voice.service
 }
 
 clear_voice_input_absent() {
@@ -1637,6 +1650,13 @@ clear_voice_input_absent() {
         rm -f "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
         log "voice input present: cleared ${VOICE_INPUT_ABSENT_MARKER}; jasper-voice gate open"
     fi
+    # The other half of the mark fallback above, and unconditional for the same
+    # reason the mark's `disable` is: this pass cannot know whether an earlier
+    # one disabled the unit instead of writing the marker. Every route that
+    # opens the gate goes through here, including the custom-mic route that
+    # otherwise leaves voice config untouched — a park we imposed is ours to
+    # lift.
+    run_systemctl enable jasper-voice.service
 }
 
 restart_voice() {
@@ -1657,7 +1677,8 @@ restart_voice() {
         return
     fi
     reset_failed_units jasper-voice.service
-    run_systemctl enable jasper-voice.service
+    # No `enable` here: clear_voice_input_absent above owns that half of the
+    # gate, on every route that opens it.
     # Queue the voice restart and let this oneshot exit. jasper-voice is
     # Type=notify and may wait on other reconcilers during boot; a blocking
     # restart from inside this reconciler can leave both jobs waiting on each
@@ -1672,15 +1693,32 @@ park_managed_xvf() {
     # the mic, or no eligible capture device at all — and it leaves
     # JASPER_MIC_DEVICE pointing at the AEC bridge's udp:PORT while
     # stop_disable_aec has just stopped that bridge. Starting voice here would
-    # bind an unfed UDP socket, stall the wake loop, and hit WatchdogSec=30s in
-    # a restart spiral that escalates to StartLimitAction=reboot — see the
-    # jasper-aec-bridge note in jasper-voice.service. That is why
-    # disclose_stale_chip_aec normalises the mic device before it starts voice.
+    # bind an unfed UDP socket and stall the wake loop into jasper-voice's
+    # WatchdogSec=30s. That is an UNBOUNDED ~35 s restart loop (30 s watchdog +
+    # RestartSec=5), not a reboot: 20 cycles at that cadence take ~700 s, so
+    # the unit's StartLimitBurst=20/StartLimitIntervalSec=300 window never
+    # fills and StartLimitAction=reboot never fires. Nothing else stops it —
+    # exit 66 needs a device that will not open, and a udp: socket always
+    # opens. That is why disclose_stale_chip_aec normalises the mic device
+    # before it starts voice.
     local reason="$1"
     mark_voice_input_absent "$reason"
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service
     log "managed XVF parked: ${reason}"
+}
+
+# The one shape every "chip-AEC could not be brought up on a managed XVF" exit
+# shares: record the fault, publish the reference-only leg vector, hand outputd
+# that settled vector once, then park. NOT stop_aec_and_clear_legs — that one
+# publishes the all-zero vector and leaves voice's gate alone, which is the
+# direct-mic/disabled resting state, not a park.
+park_to_reference_leg() {
+    local status_reason="$1" action="$2" park_reason="$3"
+    write_alignment_env "fault" "$status_reason" "$action"
+    write_leg_env "reference" "0" "0" "1" "0" "0"
+    restart_outputd_if_needed
+    park_managed_xvf "$park_reason"
 }
 
 # Every write is stamped with the selection it was written under, the same way
@@ -1771,7 +1809,8 @@ disclose_stale_chip_aec() {
         log "chip-AEC disclosed stale: ${reason}; running software AEC3"
     else
         # Nothing writes that carrier, and jasper-voice bound to an unfed
-        # socket stalls into WatchdogSec=30s and StartLimitAction=reboot.
+        # socket stalls into the watchdog restart loop park_managed_xvf
+        # describes.
         stop_aec_and_clear_legs
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$AEC_MIC_DEVICE"
         log "chip-AEC disclosed stale: ${reason}; AEC bridge is not active, using direct mic ${AEC_MIC_DEVICE}"
@@ -1812,13 +1851,10 @@ activate_managed_chip_aec() {
     # Init must sample outputd's final writer; bridge/voice stay parked.
     write_leg_env "1" "0" "0" "1" "0" "0"
     if ! restart_outputd_if_needed "strict"; then
-        write_alignment_env \
-            "fault" \
+        park_to_reference_leg \
             "final chip-reference producer failed to start" \
-            "Inspect jasper-outputd, then run the reconciler"
-        write_leg_env "reference" "0" "0" "1" "0" "0"
-        restart_outputd_if_needed
-        park_managed_xvf "chip-reference producer failed; inspect jasper-outputd"
+            "Inspect jasper-outputd, then run the reconciler" \
+            "chip-reference producer failed; inspect jasper-outputd"
         return 1
     fi
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
@@ -1834,13 +1870,10 @@ activate_managed_chip_aec() {
             write_alignment_env "ready" "commissioned alignment applied and verified" ""
         fi
         if ! "$SYSTEMCTL" restart jasper-aec-bridge.service; then
-            write_alignment_env \
-                "fault" \
+            park_to_reference_leg \
                 "chip-AEC bridge failed after alignment reapply" \
-                "Inspect jasper-aec-bridge, then run the reconciler"
-            write_leg_env "reference" "0" "0" "1" "0" "0"
-            restart_outputd_if_needed
-            park_managed_xvf "chip-AEC bridge failed; inspect jasper-aec-bridge"
+                "Inspect jasper-aec-bridge, then run the reconciler" \
+                "chip-AEC bridge failed; inspect jasper-aec-bridge"
             return 1
         fi
         restart_voice
@@ -1869,13 +1902,10 @@ activate_managed_chip_aec() {
             "Wait for jasper-outputd to restart, then run the reconciler"
         return 0
     fi
-    write_leg_env "reference" "0" "0" "1" "0" "0"
-    restart_outputd_if_needed
-    write_alignment_env \
-        "fault" \
+    park_to_reference_leg \
         "silent chip-AEC alignment reapply failed" \
-        "Inspect jasper-aec-init and jasper-outputd, then run the reconciler"
-    park_managed_xvf "chip-AEC alignment reapply failed; inspect jasper-aec-init"
+        "Inspect jasper-aec-init and jasper-outputd, then run the reconciler" \
+        "chip-AEC alignment reapply failed; inspect jasper-aec-init"
     return 1
 }
 
@@ -2146,7 +2176,10 @@ if grouping_voice_parked; then
     # when this reconciler runs. restart_voice's un-park path already
     # re-enables. JASPER_MIC_DEVICE is left as-is: parking is role
     # state, not a mic decision, and the next solo/leader reconcile
-    # resumes from an unchanged mic config.
+    # resumes from an unchanged mic config. The voice-input marker is
+    # left alone for the same reason — a follower's mic is usable, so
+    # marking absence would lie to /state.microphone.reason, and
+    # `disable --now` already holds voice down harder than the gate.
     log "bonded follower (grouping-voice.env park flag): parking jasper-voice + AEC stack"
     run_systemctl disable --now jasper-voice.service
     reset_failed_units jasper-voice.service
@@ -2164,8 +2197,11 @@ if managed_xvf_policy_applies; then
                 "unavailable" \
                 "$MANAGED_XVF_PARK_REASON" \
                 "Connect a supported XVF microphone"
-            stop_aec_and_clear_legs
+            # Park first: the marker has to exist before the bridge goes down
+            # (see mark_voice_input_absent). stop_aec_and_clear_legs then
+            # disables the bridge and publishes the resting leg vector.
             park_managed_xvf "$MANAGED_XVF_PARK_REASON"
+            stop_aec_and_clear_legs
             exit 0
         fi
         # ADR-0101: the capability gate is a quality signal, not an admission
