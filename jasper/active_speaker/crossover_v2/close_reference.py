@@ -627,7 +627,8 @@ def select_capture(
         named = [
             capture
             for capture in discover_captures(root, select=wanted)
-            if capture_id in (capture.capture_id, capture.wav.stem)
+            if capture_id
+            in (capture.capture_id, capture.wav.stem if capture.wav else None)
         ]
         if not named:
             raise RoundCapturesRefused(
@@ -665,8 +666,8 @@ def _capture_row(capture: PoseCapture) -> dict[str, Any]:
         "capture_id": capture.capture_id,
         "phase": capture.phase,
         "pose_key": capture.pose_key,
-        "wav": capture.wav.name,
-        "program": capture.program.name,
+        "wav": capture.wav.name if capture.wav else None,
+        "program": capture.program.name if capture.program else None,
         "position_deg": capture.azimuth_deg,
         "vertical_deg": capture.vertical_deg,
         "mark_distance_m": capture.mark_distance_m,
