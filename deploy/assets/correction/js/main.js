@@ -9,8 +9,8 @@
 // whole-page section order and single forward action; this module validates
 // and renders that closed contract while /status continues to drive capture,
 // upload, autolevel, and safety-control mechanics. The getUserMedia,
-// AudioWorklet, local/relay capture, and canvas paths still require a real Pi
-// browser pass (HTTPS secure context + mic + CamillaDSP).
+// AudioWorklet, capture, and canvas paths still require a real Pi browser
+// pass (HTTPS secure context + mic + CamillaDSP).
 import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // This page's local copy was named escapeText; import the shared escapeHtml
@@ -19,7 +19,6 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // its own `|| 'fallback'`, so no falsy non-string reaches it — output is
 // unchanged.
 import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
-import { renderRelayQr } from "/assets/shared/js/qr.js";
 (function () {
   'use strict';
 
@@ -35,15 +34,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   if (!Number.isFinite(autolevelTrustMarginDb) || autolevelTrustMarginDb < 0) {
     autolevelTrustMarginDb = Infinity;
   }
-  var relayConfigured = !!(
-    pageRoot && pageRoot.dataset.captureRelayEnabled === '1'
-  );
-  var relayMode = relayConfigured;
-  var captureHandoffCopy = document.getElementById('capture-handoff-copy');
-  var relayStatus = document.getElementById('relay-status');
-  var relayLinkRow = document.getElementById('relay-link-row');
-  var relayTapLink = document.getElementById('relay-tap-link');
-  var relayQr = document.getElementById('relay-qr');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
   var micModelSelect = document.getElementById('mic-model-select');
@@ -103,7 +93,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   var autolevelStatus = document.getElementById('autolevel-status');
   var autolevelLine = document.getElementById('autolevel-line');
   var autolevelDetail = document.getElementById('autolevel-detail');
-  var autolevelHint = document.getElementById('autolevel-hint');
   var resetBtn = document.getElementById('reset-correction');
   var cancelMeasureBtn = document.getElementById('cancel-measurement');
   var emergencyStopActive = false;
@@ -167,7 +156,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // One-shot per measurement run: whether we've already told the household
   // their selected calibration didn't end up bound (see checkCalibrationHonesty).
   var calibrationMismatchAlerted = false;
-  // True only from THIS tab's own successful /start (local or relay) until a
+  // True only from THIS tab's own successful /start until a
   // later /status poll shows the server describing a DIFFERENT run (a
   // reload, another tab/device's run, or a stale leftover id) — see
   // syncSessionMechanics. runTransportLocked alone says "a run is live",
@@ -238,9 +227,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     '/apply': true,
     '/reset': true,
     '/verify': true,
-    '/relay/level-match': true,
-    '/relay/capture': true,
-    '/relay/verify': true,
   };
   // Closed presentation vocabulary. Codes are duplicated at this wire
   // boundary deliberately: a malformed/partially deployed server must not
@@ -269,7 +255,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   };
   var KNOWN_SECTION_IDS = [
     'current-correction', 'run-defaults', 'readiness-blocker',
-    'capture-handoff', 'placement', 'capture-setup',
+    'placement', 'capture-setup',
     'local-certificate-warning', 'level-check', 'position-capture',
     'measurement-review', 'apply-status', 'verification', 'result-proof',
     'tuning', 'reports',
@@ -334,65 +320,23 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     return path;
   }
 
+  // The same page over HTTPS, where the browser will hand over the
+  // microphone: install.sh provisions the speaker's own certificate for this
+  // host (provision_correction_tls) and nginx serves /correction/ on 443.
+  function secureCorrectionUrl() {
+    return 'https://' + window.location.host + '/correction/';
+  }
+
+  // The speaker's private CA, served over plain HTTP because a browser that
+  // will not accept the certificate cannot fetch it over HTTPS either.
+  function rootCaUrl() {
+    return 'http://' + window.location.host + '/jts-root-ca.crt';
+  }
+
   function hideEl(el, hidden) {
     if (!el) return;
     if (hidden) el.classList.add('hidden');
     else el.classList.remove('hidden');
-  }
-
-  function setRelayStatus(text, level) {
-    if (!relayStatus) return;
-    relayStatus.className = 'relay-status ' + (level || 'idle');
-    relayStatus.textContent = text || '';
-  }
-
-  function renderRelayCapture(relay) {
-    if (!relay) {
-      hideEl(relayLinkRow, true);
-      if (relayTapLink) relayTapLink.href = '#';
-      renderRelayQr(relayQr, null);
-      return;
-    }
-    var tapLink = relay.tap_link || '';
-    if (relay.status === 'awaiting_phone' && tapLink && relayTapLink) {
-      relayTapLink.href = tapLink;
-      hideEl(relayLinkRow, false);
-      renderRelayQr(relayQr, tapLink);
-    } else {
-      hideEl(relayLinkRow, true);
-      if (relayTapLink) relayTapLink.href = '#';
-      renderRelayQr(relayQr, null);
-    }
-    if (relay.status === 'complete') {
-      setRelayStatus('Measurement received. Wait for the next instruction on this page.', 'ok');
-    } else if (relay.status === 'failed') {
-      console.warn('phone capture failed', relay.error || '');
-      setRelayStatus('Capture stopped. Try that step again.', 'bad');
-    } else if (relay.status === 'starting') {
-      setRelayStatus('Creating the measurement link…', 'idle');
-    } else {
-      setRelayStatus('Open the measurement page and keep it awake until the sweep finishes.', 'idle');
-    }
-  }
-
-  function setRelayMode(enabled) {
-    relayMode = !!enabled;
-    if (captureHandoffCopy) {
-      captureHandoffCopy.textContent = relayMode
-        ? 'Continue on the measurement page while the speaker coordinates each capture.'
-        : 'This device will capture the microphone signal locally.';
-    }
-    hideEl(autolevelLockBtn, true);
-    hideEl(autolevelCancelBtn, true);
-    hideEl(autolevelStatus, true);
-    hideEl(autolevelHint, relayMode);
-    if (relayMode) {
-      stopMicStream();
-      setRelayStatus('', 'idle');
-    } else {
-      renderRelayCapture(null);
-      setRelayStatus('', 'idle');
-    }
   }
 
   function setRunTransportLocked(locked) {
@@ -922,7 +866,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     // about means this tab did not start (or no longer owns the identity
     // of) the run now being described — a reload, an observer tab watching
     // a different tab/device's run, or a stale id left over from a prior
-    // run. Only startMeasurement/startRelayMeasurement's own success may
+    // run. Only startMeasurement's own success may
     // set this back to true. Compared BEFORE sessionId is reassigned below.
     if (serverSessionId !== sessionId) {
       thisTabStartedCurrentRun = false;
@@ -932,7 +876,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     var remembered = readLocalCaptureMemory();
     var matchingMemory = remembered && remembered.session_id === serverSessionId
       ? remembered : null;
-    if (liveRun && snapshot.capture_transport !== 'relay') {
+    if (liveRun) {
       // Only the tab that received /start may perform the one-shot local bind.
       // A different stale tab can observe the live session, but must not adopt
       // its identity and attach an arbitrary microphone to it.
@@ -942,9 +886,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     } else {
       localRunOwnedByThisTab = false;
       sessionId = serverSessionId;
-    }
-    if (liveRun) {
-      setRelayMode(snapshot.capture_transport === 'relay');
     }
     setRunTransportLocked(liveRun);
     if (matchingMemory) {
@@ -965,7 +906,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       jtsAlert('The speaker could not confirm the current measurement. Try again.');
       return false;
     }
-    if (!relayMode && !localRunOwnedByThisTab) {
+    if (!localRunOwnedByThisTab) {
       jtsAlert('This measurement was started in another tab. Return to that tab, ' +
         'or cancel the measurement and start again here.');
       return false;
@@ -1016,18 +957,18 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
           'Tap “Refresh microphones”, reselect it, and try again.');
       } else if (!window.isSecureContext) {
         // Browsers withhold getUserMedia outside a secure context, so this is
-        // a scheme dead end, not a denied permission. Issue #3069 removed the
-        // only in-page path that could reach this while relay is configured
-        // (the pre-Start local-capture toggle), so it now fires solely for
-        // relay-disabled installs opened over plain HTTP. JTS pages are
-        // plain HTTP by design (secure-context capture lives at the relay's
-        // publicly trusted origin, never at a local HTTPS hop), so the fix
-        // named here is enabling the capture relay, not switching schemes.
+        // a scheme dead end, not a denied permission. The speaker provisions
+        // its own certificate for exactly this page (install.sh's
+        // provision_correction_tls) and nginx serves /correction/ on 443, so
+        // the fix is switching schemes. The CA download is the second half:
+        // it is the answer when a browser refuses the certificate outright
+        // instead of offering to continue past it.
         console.warn('microphone capture unavailable outside a secure context', e);
         jtsAlert('This page is not a secure context, so the browser will not ' +
-          'give it the microphone. This install has the capture relay ' +
-          'disabled; set JASPER_CAPTURE_RELAY_BASE and deploy the relay + ' +
-          'capture page to turn on microphone capture from this page.');
+          'give it the microphone. Open ' + secureCorrectionUrl() + ' instead ' +
+          'and continue past the certificate warning. If the browser refuses ' +
+          "the certificate outright, install the speaker's certificate from " +
+          rootCaUrl() + ' first, then reopen the secure page.');
       } else {
         console.warn('microphone permission unavailable', e);
         jtsAlert('Microphone access was not available. Check permission and try again.');
@@ -1182,7 +1123,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   }
 
   async function ensureLocalCaptureReady() {
-    if (relayMode) return false;
     if (workletNode && micStream) return true;
     return await startMicCapture();
   }
@@ -1384,7 +1324,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // step. Nudges are homeowner sentences with a severity (info|warn) and
   // NEVER gate: the primary action stays live even under a warn nudge. This
   // is the presentation contract; the /status poll below still owns the
-  // capture/upload/autolevel/relay mechanics the envelope can't express.
+  // capture/upload/autolevel mechanics the envelope can't express.
   // ==========================================================================
 
   // Render the step indicator from envelope.progress
@@ -1485,12 +1425,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     try {
       if (ep === '/start') {
         await startMeasurement();
-      } else if (ep === '/relay/level-match') {
-        await startRelayLevelMatch();
-      } else if (ep === '/relay/capture') {
-        await startRelayCaptureForCurrentPosition();
-      } else if (ep === '/relay/verify') {
-        await startRelayVerify();
       } else if (ep === '/next-position') {
         await continueToNextPosition();
       } else if (ep === '/repeat-position') {
@@ -1593,10 +1527,9 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     // exemption exempted nothing. Deleting it is behaviour-preserving by
     // construction: the clause it removes evaluated to "throw" for every other
     // combination already. It is NOT a claim that a non-failed session carries
-    // no failure — `envelope._level_match_refusal_failure` builds one on relay
-    // sessions whose ramp terminal never advances `state` (pinned at
-    // test_correction_envelope's agc_suspected/timeout cases), and those were
-    // outside the exemption before and are outside it now.
+    // no failure — a session whose ramp terminal never advances `state` still
+    // carries one, and those were outside the exemption before and are
+    // outside it now.
     if (failure && String(env.state) !== 'failed') {
       throw new Error('room-correction failure/screen mismatch');
     }
@@ -1650,7 +1583,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         typeof block.strategy.label !== 'string' || !block.strategy.label.trim() ||
         typeof block.repeat_main_position !== 'boolean' ||
         typeof block.repeat_disclosure !== 'string' ||
-        (block.capture_transport !== 'relay' && block.capture_transport !== 'local') ||
         typeof block.change_allowed !== 'boolean') {
       throw new Error('invalid room-correction run defaults');
     }
@@ -1997,9 +1929,9 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     // Preference is subjective — phrase it as a question and tell the
     // household where to change the target themselves. This is plain text,
     // NOT a link to #target-select: that picker lives inside
-    // #measurement-options, which the router hides in relay (phone-mic)
-    // mode, so an anchor would silently scroll nowhere on the review
-    // screen. The instruction stands on its own.
+    // #measurement-options, which the router hides on the review screen, so
+    // an anchor would silently scroll nowhere. The instruction stands on
+    // its own.
     var q = document.createElement('p');
     q.className = 'tuning-question';
     var dest = p.target_id ? ('a "' + p.target_id + '" target') : ('a warmth of ' + p.warmth);
@@ -2107,10 +2039,8 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     envelopeFetchCount += 1;
     envelopeRequestInFlight = (async function () {
       try {
-        var envelopePath = 'envelope?capture_transport=' +
-          (relayMode ? 'relay' : 'local');
         var env = validateEnvelope(
-          await fetchPresentationJson(envelopePath, 'envelope')
+          await fetchPresentationJson('envelope', 'envelope')
         );
         envelopeRetryArmed = true;   // success re-arms one retry credit
         renderEnvelope(env);
@@ -2816,11 +2746,9 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // Scope: this only catches a mismatch the server converts into a
   // CHANGED or DROPPED calibration_id (the built-in-mic guard nulling it
   // out, a calibration file that went missing, etc). A wrong-mic bind that
-  // keeps the SAME calibration_id — the room-relay device-threading gap,
-  // issue #1660, where a mismatched mic's capture is bound anyway because
-  // nothing ever told the mismatch guard what mic actually recorded — is
-  // invisible to this check: the server echoes back exactly the id we
-  // asked for, so there is nothing here to disagree with.
+  // keeps the SAME calibration_id is invisible to this check: the server
+  // echoes back exactly the id we asked for, so there is nothing here to
+  // disagree with.
   function checkCalibrationHonesty(reportedCalibration) {
     if (calibrationMismatchAlerted || !selectedCalibrationId) return;
     // reportedCalibration is compared as-is: undefined is treated the same
@@ -2858,77 +2786,13 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       total_positions: totalPositions,
       target_choice: targetChoice,
       strategy_choice: strategyChoice,
-      noise_floor_db: relayMode ? null : lastNoiseFloorDb,
+      noise_floor_db: lastNoiseFloorDb,
       calibration_id: selectedCalibrationId,
-      input_device: relayMode ? null : selectedInputDevice,
-      capture_transport: relayMode ? 'relay' : 'local'
+      input_device: selectedInputDevice
     };
   }
 
-  async function startRelayLevelMatch() {
-    setRelayStatus('Creating safe level-check link…', 'idle');
-    renderRelayCapture({status: 'starting'});
-    try {
-      var resp = await postJson('relay/level-match', {});
-      renderRelayCapture(resp.relay);
-      pollState();
-    } catch (e) {
-      setStateBadge('failed', e.message);
-      showHomeownerFailure(e);
-      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
-    }
-  }
-
-  async function startRelayCaptureForCurrentPosition() {
-    setRelayStatus('Creating the measurement link…', 'idle');
-    renderRelayCapture({status: 'starting'});
-    try {
-      var resp = await postJson('relay/capture', {});
-      renderRelayCapture(resp.relay);
-      pollState();
-    } catch (e) {
-      setStateBadge('failed', e.message);
-      showHomeownerFailure(e);
-      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
-    }
-  }
-
-  async function startRelayVerify() {
-    setRelayStatus('Creating verification capture link…', 'idle');
-    renderRelayCapture({status: 'starting'});
-    try {
-      var resp = await postJson('relay/verify', {});
-      renderRelayCapture(resp.relay);
-      pollState();
-    } catch (e) {
-      setStateBadge('failed', e.message);
-      showHomeownerFailure(e);
-      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
-    }
-  }
-
-  async function startRelayMeasurement() {
-    resetMeasurementUiForStart();
-    try {
-      var resp = await postJson('start', measurementStartPayload());
-      sessionId = resp.session_id;
-      thisTabStartedCurrentRun = true;
-      checkCalibrationHonesty(resp.mic_calibration);
-      setRunTransportLocked(true);
-    } catch (e) {
-      setStateBadge('failed', e.message);
-      showHomeownerFailure(e);
-      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
-      return;
-    }
-    await startRelayLevelMatch();
-  }
-
   async function startMeasurement() {
-    if (relayMode) {
-      await startRelayMeasurement();
-      return;
-    }
     var capturedLabel = selectedInputDevice && selectedInputDevice.browser_label;
     var mismatch = calibrationDeviceMismatch(capturedLabel);
     if (mismatch) {
@@ -2958,8 +2822,8 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     // this runs, preventing a second /next-position double-tap.
     positionPrompt.classList.add('hidden');
     setStateBadge('preparing', 'pausing music…');
-    if (!relayMode && !(await ensureLocalCaptureReady())) {
-      throw new Error('local microphone capture is not ready');
+    if (!(await ensureLocalCaptureReady())) {
+      throw new Error('microphone capture is not ready');
     }
     try {
       await postJson('next-position', {});
@@ -2970,18 +2834,14 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       // user can retry from the new state.
       return;
     }
-    if (relayMode) {
-      await startRelayCaptureForCurrentPosition();
-      return;
-    }
     await capturePreSweepNoise();
     pollState();
   }
 
   async function repeatMainSeat() {
     setStateBadge('preparing', 'preparing repeat sweep…');
-    if (!relayMode && !(await ensureLocalCaptureReady())) {
-      throw new Error('local microphone capture is not ready');
+    if (!(await ensureLocalCaptureReady())) {
+      throw new Error('microphone capture is not ready');
     }
     captureMode = 'repeat';
     if (workletNode) workletNode.port.postMessage('startCapture');
@@ -2997,9 +2857,9 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     pollState();
   }
 
-  // Keep the local-browser UMIK path on the same Room-owned acoustic
-  // window as the relay path. The 2026-07-15 JTS3 smoke showed that even
-  // Room's initial 3 dB reserve could let the following ESS clip: its RMS
+  // The Room-owned acoustic window for the browser UMIK path. The
+  // 2026-07-15 JTS3 smoke showed that even Room's initial 3 dB reserve
+  // could let the following ESS clip: its RMS
   // rose 3.24 dB above the locked tone and its peak reached full scale.
   // Noise is measured and reported for the downstream SNR gates, but it
   // must not raise this bounded level target.
@@ -3034,8 +2894,8 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     // tone starts. This gives us a real number for "what counts as
     // quiet in this room right now", which we then use to pick a
     // target readout and downstream capture-quality evidence. The lock
-    // window itself is fixed above so local and relay captures reserve the
-    // same ESS headroom.
+    // window itself is fixed above so every capture reserves the same ESS
+    // headroom.
     autolevelLine.textContent = 'Measuring room noise…';
     autolevelDetail.textContent = '';
     var noiseSamples = [];
@@ -3183,9 +3043,9 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
 
   async function startVerify(triggerBtn) {
     if (triggerBtn) triggerBtn.disabled = true;
-    if (!relayMode && !(await ensureLocalCaptureReady())) {
+    if (!(await ensureLocalCaptureReady())) {
       if (triggerBtn) triggerBtn.disabled = false;
-      throw new Error('local microphone capture is not ready');
+      throw new Error('microphone capture is not ready');
     }
     inVerifyMode = true;
     setStateBadge('verifying', 'pausing music for re-measurement…');
@@ -3246,7 +3106,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       cancelMeasureBtn.classList.remove('hidden');
     }
     // Per-state additions:
-    if (autolevelRamping && !relayMode) {
+    if (autolevelRamping) {
       // Manual Lock + Cancel always available during the ramp so
       // the user can override the auto-detection (iOS Safari AGC
       // makes the mic-based decision unreliable in some setups).
@@ -3269,37 +3129,12 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     syncCurrentCorrectionReset();
   }
 
-  function renderRelayStatusFromSnapshot(snapshot) {
-    if (!relayMode) return;
-    if (snapshot && snapshot.state === 'needs_next_position') {
-      renderRelayCapture(null);
-      setRelayStatus(
-        'Position ' + Number(snapshot.current_position || 0) +
-          ' received. Move the microphone to position ' +
-          (Number(snapshot.current_position || 0) + 1) + ' of ' +
-          Number(snapshot.total_positions || 0) +
-          ', then create the next capture.',
-        'ok'
-      );
-      return;
-    }
-    if (snapshot && snapshot.relay) {
-      renderRelayCapture(snapshot.relay);
-      return;
-    }
-    if (snapshot && snapshot.state === 'failed') {
-      console.warn('room-correction session failed', snapshot.error || '');
-      setRelayStatus(GENERIC_STEP_FAILURE, 'bad');
-    }
-  }
-
   async function pollState(options) {
     options = options || {};
     if (pollTimer) clearTimeout(pollTimer);
     try {
       var s = await fetchStatus();
       syncSessionMechanics(s);
-      renderRelayStatusFromSnapshot(s);
       var detail = s.error || '';
       if (s.total_positions > 1 && s.current_position !== undefined &&
           (s.state === 'preparing' || s.state === 'sweeping' ||
@@ -3321,13 +3156,10 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       // selectedCalibrationId from its own household prefill, never having
       // called /start itself — would compare that unrelated value against
       // whatever a DIFFERENT tab/device's live run actually bound and
-      // false-fire; same for this same tab after a reload, since a relay
-      // run's start is never remembered across a reload the way
-      // rememberLocalCapture does for local mode. thisTabStartedCurrentRun
-      // is set true only by this tab's own successful /start (local or
-      // relay) and cleared the moment syncSessionMechanics sees the server
-      // describing a different run — so it stays true for the entire
-      // lifetime of a run this tab itself started, local or relay.
+      // false-fire. thisTabStartedCurrentRun is set true only by this tab's
+      // own successful /start and cleared the moment syncSessionMechanics
+      // sees the server describing a different run — so it stays true for
+      // the entire lifetime of a run this tab itself started.
       if (runTransportLocked && thisTabStartedCurrentRun) {
         checkCalibrationHonesty(s.mic_calibration);
       }
@@ -3353,16 +3185,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         return;
       }
       if (s.state === 'needs_repeat_capture') {
-        var repeatRelayPending = relayMode && s.relay && (
-          s.relay.status === 'starting' ||
-          s.relay.status === 'awaiting_phone'
-        );
-        if (repeatRelayPending) {
-          pollTimer = setTimeout(pollState, 500);
-        } else if (relayMode && s.relay) {
-          envelopeRetryArmed = true;
-          refreshEnvelope();
-        }
         return;
       }
       if (
@@ -3370,13 +3192,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         s.state === 'awaiting_verify_capture' ||
         s.state === 'awaiting_repeat_capture'
       ) {
-        if (relayMode && (
-          s.state === 'awaiting_capture' ||
-          s.state === 'awaiting_repeat_capture'
-        )) {
-          pollTimer = setTimeout(pollState, 500);
-          return;
-        }
         if (workletNode) workletNode.port.postMessage('stopCapture');
         return;  // upload-capture handler resumes polling
       }
@@ -3607,22 +3422,18 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     }
   });
 
-  // Landing never asks for microphone permission. Local capture requests it
-  // only after /start exposes the server-owned Allow microphone action; the
+  // Landing never asks for microphone permission. Capture requests it only
+  // after /start exposes the server-owned Allow microphone action; the
   // refresh control is likewise inside that post-Start setup section.
-  // No scheme upgrade here. The self-signed HTTPS origin is never entered by
-  // redirect (issue #2632): a native cert interstitial cannot be automated and
-  // is hostile household UX. Relay, once configured, is this page's only
-  // pre-Start transport (issue #3069) — the old toggle back to local browser
-  // capture dead-ended in startMicCapture's catch on plain HTTP. Desktop
-  // capture on the relay path reuses #relay-tap-link exactly like the phone:
-  // open the minted capture link in a new tab instead of a separate fallback.
-  if (relayConfigured) {
-    setRelayMode(true);
-  } else {
-    setRelayMode(false);
-    populateInputDevices();
-  }
+  // No scheme upgrade here. The speaker's own HTTPS origin is never entered
+  // by redirect (issue #2632): a native cert interstitial cannot be
+  // automated and is hostile household UX. A household that opened this page
+  // over plain HTTP is told where to go instead when it asks for the
+  // microphone (see startMicCapture's non-secure-context arm).
+  hideEl(autolevelLockBtn, true);
+  hideEl(autolevelCancelBtn, true);
+  hideEl(autolevelStatus, true);
+  populateInputDevices();
   pollState();
   updateMicCalibrationRows();
   applyHouseholdMicPrefill();

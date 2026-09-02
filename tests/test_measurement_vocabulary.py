@@ -91,15 +91,13 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/web/correction_room_flow.py",
     "jasper/web/balance_flow.py",
     "jasper/web/sync_flow.py",
-    # Cluster 3 — relay hand-off chrome (the speaker-side pages that hand the
-    # household off to the measurement page, and the shared QR affordance).
-    # The landing page is the ENTRY POINT to /correction/room/, so its row label
-    # and that page's subtitle have to agree; they did not until #1959.
+    # Cluster 3 — the measurement pages' own chrome. The landing page is the
+    # ENTRY POINT to /correction/room/, so its row label and that page's
+    # subtitle have to agree; they did not until #1959.
     "deploy/index.html",
     "jasper/web/correction_crossover_flow.py",
     "deploy/assets/correction/js/main.js",
     "deploy/assets/correction/js/crossover/main.js",
-    "deploy/assets/shared/js/qr.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",
     "deploy/assets/sound-profile/js/active-speaker-ui.js",

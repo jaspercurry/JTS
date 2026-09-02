@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
-import { renderRelayQr } from '/assets/shared/js/qr.js';
 import { jtsConfirm } from '/assets/shared/js/dialog.js';
 import { renderCloud, redrawCloudChart } from './cloud.js';
 
@@ -37,8 +36,6 @@ const els = {
   walkDetail: document.getElementById('crossover-walk-detail'),
   walkAction: document.getElementById('crossover-walk-action'),
   relayStatus: document.getElementById('crossover-relay-status'),
-  relayLink: document.getElementById('crossover-relay-link'),
-  relayQr: document.getElementById('crossover-relay-qr'),
   relayStop: document.getElementById('crossover-relay-stop'),
   status: document.getElementById('capture-status'),
 };
@@ -65,12 +62,6 @@ const RELAY_STOPPABLE = new Set(['starting', 'awaiting_phone']);
 // narrates these three instead.
 const RELAY_WINDING_DOWN = new Set(['finishing', 'committing', 'stopping']);
 const RELAY_IN_FLIGHT = new Set([...RELAY_STOPPABLE, ...RELAY_WINDING_DOWN]);
-// Which capture source the live session opened on, as the slot publishes it
-// (`correction_setup._begin_relay_capture`). A WIRED session has no phone and
-// no tap link, so the whole connect affordance below is meaningless for it and
-// the walkthrough takes its place.
-const SOURCE_WIRED = 'wired';
-
 function publicCrossoverUrl(value) {
   const raw = String(value || '');
   const pathname = typeof window !== 'undefined' && window.location
@@ -724,22 +715,14 @@ function renderWalk(relay, {active, yielded}) {
   }
 }
 
-// `suppressConnectAffordance` keeps the relay ACTIVE (so polling continues and
-// Stop stays wired) but hides the "Open phone capture" link + QR — used on the
-// review screen, where the phone is already connected, so a "scan to connect"
-// prompt beside the Apply button would be a misleading second primary (W6.10
-// blocker #2). ("parked in the waiting-for-apply hold" was the 2026-07-20
-// reason; since the two-stage split the phone is winding down a just-ended
-// stage-1 session instead, and the affordance is just as misleading.)
+// `suppressConnectAffordance` keeps the capture ACTIVE (so polling continues
+// and Stop stays wired) but yields the walkthrough to the screen that owns the
+// live control — used on the review screen, where a second live prompt beside
+// the Apply button would be a misleading second primary (W6.10 blocker #2).
 function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   const active = relay && RELAY_IN_FLIGHT.has(relay.status);
   const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
-  const wired = Boolean(relay && relay.source === SOURCE_WIRED);
   els.relay.hidden = !active;
-  els.relayLink.hidden = true;
-  // Cleared by default alongside the link; repopulated below only in the
-  // one branch that has a tap_link to encode.
-  renderRelayQr(els.relayQr, null);
   els.relayStop.hidden = !stoppable;
   els.relayStop.disabled = stopInFlight;
   // Ahead of the status branches below, all of which return early: the walk is
@@ -765,41 +748,19 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
     return;
   }
   if (relay.status === 'finishing') {
-    els.relayStatus.textContent = 'The measurement page is finishing and uploading…';
+    els.relayStatus.textContent = 'Storing the measurement…';
     return;
   }
-  if (suppressConnectAffordance) {
-    // The screen owns the live control — keep the section (Stop stays wired,
-    // polling continues) but do not advertise a connect link/QR beside it.
-    els.relayStatus.textContent = wired
-      ? 'Measuring on the microphone plugged into the speaker.'
-      : 'The measurement page is connected — review and apply below.';
-    return;
-  }
-  if (wired) {
-    // A wired session has no tap_link BY CONSTRUCTION (there is no phone to
-    // hand one to), so it must never fall through to the "creating the link"
-    // arm below — that sentence was the whole in-flight status of a wired
-    // round before #2881, and it never came true. Which of the two sentences
-    // is keyed off the same `hand_released` the panel is: a hold nobody at
-    // this browser releases must not be narrated as if it waited on the
-    // reader.
-    const awaitingReader = Boolean(
-      relay.position_pending && relay.position_pending.hand_released,
-    );
-    els.relayStatus.textContent = awaitingReader
-      ? 'The tone plays as soon as you confirm the microphone is in place.'
-      : 'Measuring on the microphone plugged into the speaker.';
-    return;
-  }
-  if (relay.tap_link) {
-    els.relayLink.href = relay.tap_link;
-    els.relayLink.hidden = false;
-    els.relayStatus.textContent = 'Open the trusted capture page and follow its one next step.';
-    renderRelayQr(els.relayQr, relay.tap_link);
-  } else {
-    els.relayStatus.textContent = 'Creating the measurement link…';
-  }
+  // Which of the two sentences is keyed off the same `hand_released` the
+  // panel is: a hold nobody at this browser releases must not be narrated as
+  // if it waited on the reader.
+  const awaitingReader = Boolean(
+    !suppressConnectAffordance &&
+    relay.position_pending && relay.position_pending.hand_released,
+  );
+  els.relayStatus.textContent = awaitingReader
+    ? 'The tone plays as soon as you confirm the microphone is in place.'
+    : 'Measuring on the microphone plugged into the speaker.';
 }
 
 function relayIsActive(relay) {
