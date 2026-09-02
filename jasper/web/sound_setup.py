@@ -78,6 +78,7 @@ import logging
 import math
 import os
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -5415,6 +5416,74 @@ async def _active_speaker_finish_commissioning_payload(
     return payload
 
 
+#: Read-only GET routes whose entire handler is "send this payload, or
+#: answer 502 under this event name". One dispatch in :func:`_make_handler`
+#: rather than one copy of the same try/except per route; a route that needs
+#: the handler's own state (the two commissioning views close over
+#: ``camilla_factory``) stays spelled out there. The event strings live HERE
+#: now, and the log-event drift pin reads them here. The builder is named,
+#: not captured: this module owns its payload builders, and a table holding
+#: the objects it had at import time would answer with a builder the module
+#: no longer has.
+_GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
+    "/output-topology": ("_output_topology_payload", "sound.output_topology"),
+    "/active-speaker/design-draft": (
+        "_active_speaker_design_draft_payload",
+        "sound.active_speaker_design_draft",
+    ),
+    "/active-speaker/crossover-preview": (
+        "_active_speaker_crossover_preview_payload",
+        "sound.active_speaker_crossover_preview",
+    ),
+    "/active-speaker/measurements": (
+        "_active_speaker_measurements_payload",
+        "sound.active_speaker_measurements",
+    ),
+    "/active-speaker/baseline-profile": (
+        "_active_speaker_baseline_profile_payload",
+        "sound.active_speaker_baseline_profile",
+    ),
+    "/active-speaker/tuning-handoff": (
+        "_active_speaker_tuning_handoff_payload",
+        "sound.active_speaker_tuning_handoff",
+    ),
+    "/active-speaker/environment": (
+        "_active_speaker_environment_payload",
+        "sound.active_speaker_environment",
+    ),
+    "/active-speaker/safe-playback": (
+        "_active_speaker_safe_playback_payload",
+        "sound.active_speaker_safe_playback",
+    ),
+    "/active-speaker/calibration-level": (
+        "_active_speaker_calibration_level_payload",
+        "sound.active_speaker_calibration_level",
+    ),
+    "/active-speaker/bringup-preflight": (
+        "_active_speaker_bringup_preflight_payload",
+        "sound.active_speaker_bringup_preflight",
+    ),
+    "/active-speaker/startup-load": (
+        "_active_speaker_startup_load_payload",
+        "sound.active_speaker_startup_load",
+    ),
+    "/active-speaker/staged-config": (
+        "_active_speaker_staged_config_payload",
+        "sound.active_speaker_staged_config",
+    ),
+    "/active-speaker/channel-identity": (
+        "_active_speaker_channel_identity_payload",
+        "sound.active_speaker_channel_identity",
+    ),
+}
+
+
+def _json_route_payload(builder: str) -> dict[str, Any]:
+    """Call one :data:`_GET_JSON_ROUTES` builder, resolved at call time."""
+    fn: Callable[[], dict[str, Any]] = getattr(sys.modules[__name__], builder)
+    return fn()
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -5479,103 +5548,14 @@ def _make_handler(
                     )
                 )
                 return
-            if path == "/output-topology":
+            json_route = _GET_JSON_ROUTES.get(path)
+            if json_route is not None:
+                builder, event = json_route
                 try:
-                    self._send_json(_output_topology_payload())
+                    self._send_json(_json_route_payload(builder))
                 except Exception as e:  # noqa: BLE001
                     send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.output_topology",
-                    )
-                return
-            if path == "/active-speaker/design-draft":
-                try:
-                    self._send_json(_active_speaker_design_draft_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_design_draft",
-                    )
-                return
-            if path == "/active-speaker/crossover-preview":
-                try:
-                    self._send_json(_active_speaker_crossover_preview_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_crossover_preview",
-                    )
-                return
-            if path == "/active-speaker/measurements":
-                try:
-                    self._send_json(_active_speaker_measurements_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_measurements",
-                    )
-                return
-            if path == "/active-speaker/baseline-profile":
-                try:
-                    self._send_json(_active_speaker_baseline_profile_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_baseline_profile",
-                    )
-                return
-            if path == "/active-speaker/tuning-handoff":
-                try:
-                    self._send_json(_active_speaker_tuning_handoff_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_tuning_handoff",
-                    )
-                return
-            if path == "/active-speaker/environment":
-                try:
-                    self._send_json(_active_speaker_environment_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_environment",
-                    )
-                return
-            if path == "/active-speaker/safe-playback":
-                try:
-                    self._send_json(_active_speaker_safe_playback_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_safe_playback",
-                    )
-                return
-            if path == "/active-speaker/calibration-level":
-                try:
-                    self._send_json(_active_speaker_calibration_level_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_calibration_level",
-                    )
-                return
-            if path == "/active-speaker/bringup-preflight":
-                try:
-                    self._send_json(_active_speaker_bringup_preflight_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_bringup_preflight",
-                    )
-                return
-            if path == "/active-speaker/startup-load":
-                try:
-                    self._send_json(_active_speaker_startup_load_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_startup_load",
+                        self._send_json, e, logger=logger, event=event,
                     )
                 return
             if path == "/active-speaker/commission-state":
@@ -5606,24 +5586,6 @@ def _make_handler(
                     send_route_failure(
                         self._send_json, e, logger=logger,
                         event="sound.active_speaker_commissioning_view",
-                    )
-                return
-            if path == "/active-speaker/staged-config":
-                try:
-                    self._send_json(_active_speaker_staged_config_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_staged_config",
-                    )
-                return
-            if path == "/active-speaker/channel-identity":
-                try:
-                    self._send_json(_active_speaker_channel_identity_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_channel_identity",
                     )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)

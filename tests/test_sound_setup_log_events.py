@@ -54,19 +54,47 @@ def _sound_route_failure_calls() -> list[ast.Call]:
 
 
 def _route_failure_event_name(call: ast.Call) -> str:
-    (name,) = [
+    """The call site's own event name, or ``""`` when a table supplies it."""
+    names = [
         keyword.value.value
         for keyword in call.keywords
         if keyword.arg == "event"
         and isinstance(keyword.value, ast.Constant)
         and isinstance(keyword.value.value, str)
     ]
-    return name
+    return names[0] if names else ""
+
+
+def _dispatch_route_events() -> list[str]:
+    """Event names the shared read-route dispatch owns.
+
+    ``_GET_JSON_ROUTES`` collapsed the identical per-route try/except blocks
+    into one call site, so those names live in a table instead of at a call
+    site. They are read from the table for exactly the reason the call sites
+    were walked: a route dropped from it is a retired event.
+    """
+    return [
+        element.elts[1].value
+        for node in ast.walk(ast.parse(Path(sound_setup.__file__).read_text()))
+        if isinstance(node, ast.Dict)
+        for element in node.values
+        if isinstance(element, ast.Tuple)
+        and len(element.elts) == 2
+        and isinstance(element.elts[1], ast.Constant)
+        and isinstance(element.elts[1].value, str)
+        and element.elts[1].value.startswith("sound.")
+    ]
 
 
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
     route_failures = _sound_route_failure_calls()
+    dispatch_events = _dispatch_route_events()
+    # The identical read routes share ONE route-failure call site, whose event
+    # comes from _GET_JSON_ROUTES; every other site still names its own. Exactly
+    # one table-fed site, so a second dynamic one cannot hide behind this.
+    named_failures = [call for call in route_failures if _route_failure_event_name(call)]
+    assert len(route_failures) - len(named_failures) == 1
 
     # 96 / 41. The topology transaction contributes one INFO completion event
     # under the existing sound.output_topology_reset name, and the same-shape
@@ -91,9 +119,10 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The route-failure half of the vocabulary is emitted by the shared
     # send_route_failure owner rather than rendered here; the totals span both
     # so converging a call site can never quietly retire its event.
-    assert len(calls) + len(route_failures) == 99
+    assert len(calls) + len(named_failures) + len(dispatch_events) == 99
     names = {call.args[1].value for call in calls}
-    names |= {_route_failure_event_name(call) for call in route_failures}
+    names |= {_route_failure_event_name(call) for call in named_failures}
+    names |= set(dispatch_events)
     assert len(names) == 42
 
     # The delegated half of the vocabulary: an event this file no longer emits
@@ -111,7 +140,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     assert "sound.active_speaker_summed_test" in delegated
 
     levels: Counter[str] = Counter()
-    levels["ERROR"] += len(route_failures)
+    levels["ERROR"] += len(named_failures) + len(dispatch_events)
     for call in calls:
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
         level = keywords.get("level")
