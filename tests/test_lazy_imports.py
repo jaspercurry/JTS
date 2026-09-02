@@ -615,42 +615,37 @@ def test_doctor_wake_check_does_not_load_sklearn() -> None:
     )
 
 
-def test_voice_daemon_import_does_not_load_genai() -> None:
-    """Importing jasper.voice_daemon must not eagerly load google.genai.
-    The Gemini adapter is now lazy-imported inside _make_connection so
-    non-Gemini users don't pay the ~49 MB cost."""
+@pytest.mark.parametrize(
+    ("sys_modules_name", "result_key"),
+    [
+        pytest.param(
+            "google.genai", "genai_loaded",
+            id="voice_daemon_import_does_not_load_genai",
+        ),
+        pytest.param(
+            "openai", "openai_loaded",
+            id="voice_daemon_import_does_not_load_openai",
+        ),
+    ],
+)
+def test_voice_daemon_import_does_not_load_adapter_sdk(
+    sys_modules_name: str, result_key: str,
+) -> None:
+    """Importing jasper.voice_daemon must not eagerly load a provider
+    adapter SDK (google.genai, openai). Each adapter's SDK import stays
+    lazy inside _make_connection / _resolve_connect_call so a user on a
+    different provider doesn't pay that import cost."""
     probe = (
         "import sys\n"
         "import jasper.voice_daemon  # noqa: F401\n"
-        "loaded = 'google.genai' in sys.modules\n"
-        "print(f'genai_loaded={str(loaded).lower()}')\n"
+        f"loaded = {sys_modules_name!r} in sys.modules\n"
+        f"print('{result_key}=' + str(loaded).lower())\n"
     )
     result = _run_probe(probe)
-    assert result.get("genai_loaded") is False, (
-        "google.genai was loaded into sys.modules just by importing "
-        "jasper.voice_daemon. The Gemini adapter must stay lazy in "
-        "_make_connection so non-Gemini users avoid the cost."
-    )
-
-
-def test_voice_daemon_import_does_not_load_openai() -> None:
-    """openai SDK should also stay out at module-import time. The
-    openai_session adapter's class definition is module-top, but the
-    SDK import is already inside _resolve_connect_call. Belt-and-
-    suspenders: with voice_daemon's adapter imports now lazy, the
-    openai_session module itself shouldn't load either unless the
-    active provider is openai or grok."""
-    probe = (
-        "import sys\n"
-        "import jasper.voice_daemon  # noqa: F401\n"
-        "loaded = 'openai' in sys.modules\n"
-        "print(f'openai_loaded={str(loaded).lower()}')\n"
-    )
-    result = _run_probe(probe)
-    assert result.get("openai_loaded") is False, (
-        "openai was loaded into sys.modules just by importing "
-        "jasper.voice_daemon. Voice adapter imports should be lazy "
-        "(inside _make_connection branches)."
+    assert result.get(result_key) is False, (
+        f"{sys_modules_name} was loaded into sys.modules just by importing "
+        "jasper.voice_daemon. Adapter SDK imports must stay lazy (inside "
+        "_make_connection branches)."
     )
 
 

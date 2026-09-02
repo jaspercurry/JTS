@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import subprocess
 from collections.abc import Awaitable, Callable
 from typing import AsyncIterator
 
@@ -57,18 +56,20 @@ SCAN_OPERATION_ERRORS = (
     ValueError,
 )
 AccessoryReconciler = Callable[[str], Awaitable[object]]
-ACCESSORY_RECONCILE_ERRORS = (
-    DBusError,
-    OSError,
-    RuntimeError,
-    subprocess.SubprocessError,
-)
+ACCESSORY_RECONCILE_ERRORS = (OSError,)
 
 
 async def _default_accessory_reconcile(reason: str) -> object:
-    from jasper.accessories.reconcile import reconcile_once
+    """Request one accessory pass from its root owner.
 
-    return await reconcile_once(reason=reason)
+    This engine runs inside jasper-web, which holds no systemd privilege: it
+    publishes a request file that jasper-accessory-reconcile.path acts on. One
+    small atomic write, so it stays inline on the request's own task.
+    """
+    from jasper.accessories.reconcile import request_reconcile
+
+    request_reconcile(reason)
+    return None
 
 
 def _stop_discovery_already_idle(err: DBusError) -> bool:
@@ -566,7 +567,7 @@ class BluetoothEngine:
             if evt.get("stage") == "ready" and not reconciled:
                 yield {
                     "stage": "wiring",
-                    "detail": "Refreshing optional accessory profiles.",
+                    "detail": "Requested an accessory profile refresh.",
                     "handler": handler.id,
                 }
                 reconciled = True

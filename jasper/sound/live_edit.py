@@ -11,6 +11,17 @@ written in place and does not. Decided by comparing the RUNNING graph against
 the WANTED one, never by a caller declaring its own change safe (ADR-0177).
 See ADR-0211 for the CamillaDSP behaviour this mirrors.
 
+One parameter write ducks anyway: a moved ``Gain``. A Gain is broadband by
+construction, so writing it in place lands the whole programme on a new level
+in one sample -- exactly the step the fader bracket exists to fade. The
+emitted trims that move this way are ``sound_preamp``
+(:mod:`jasper.camilla_stereo_prefix`), ``room_headroom`` and
+``active_baseline_headroom`` (:mod:`jasper.active_speaker.camilla_yaml`),
+carrying manual headroom, loudness matching and correction-boost headroom;
+matching on the filter KIND rather than on those three names keeps a future
+trim covered without a list to keep in step. Preference-EQ bands are Biquads
+and ride at unity, so an EQ drag never trips this.
+
 Both sides must be CamillaDSP's own normalization of a config
 (:meth:`~jasper.camilla.CamillaController.get_active_config_raw` and
 :meth:`~jasper.camilla.CamillaController.normalize_config_raw`): the running
@@ -22,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 
@@ -33,7 +44,7 @@ try:  # libyaml when the wheel carries it — this parses two full CamillaDSP
 except ImportError:  # pragma: no cover - depends on the installed wheel
     from yaml import SafeLoader as _Loader  # type: ignore[assignment]
 
-__all__ = ["LiveEditPlan", "plan_live_edit"]
+__all__ = ["LiveEditPlan", "plan_live_edit", "plan_live_edit_for"]
 
 
 @dataclass(frozen=True)
@@ -96,6 +107,26 @@ def plan_live_edit(
             return LiveEditPlan.swap("filter_not_a_mapping")
         # The filter's KIND (Biquad, Conv, Gain...), not a biquad's ``type``,
         # which lives under ``parameters`` and moves in place.
-        if before.get("type") != after.get("type"):
+        kind = before.get("type")
+        if kind != after.get("type"):
             return LiveEditPlan.swap("filter_kind_differs")
+        if kind == "Gain" and before.get("parameters") != after.get(
+            "parameters"
+        ):
+            return LiveEditPlan.swap("gain_differs")
     return LiveEditPlan("parameters")
+
+
+async def plan_live_edit_for(cam: Any, wanted_yaml: str) -> LiveEditPlan:
+    """The plan for writing ``wanted_yaml`` onto whatever ``cam`` runs now.
+
+    Both graphs are read back in CamillaDSP's OWN normalization before they are
+    compared -- the running config, and the wanted one through ``ReadConfig``,
+    which parses and default-fills without applying. Comparing the emitter's
+    raw text against the running readback would differ on every edit (the
+    readback is a default-filled superset) and quietly duck every one.
+    """
+
+    running = await cam.get_active_config_raw(best_effort=True)
+    wanted = await cam.normalize_config_raw(wanted_yaml, best_effort=True)
+    return plan_live_edit(running, wanted)

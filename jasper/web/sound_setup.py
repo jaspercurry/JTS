@@ -90,7 +90,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 if TYPE_CHECKING:  # import-time cost paid by nobody; the value crosses at runtime
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
-    from jasper.sound.live_edit import LiveEditPlan
 
 # correction_play_device: the lane's one transport reader (P6c-ii) — the
 # static COMMISSION_TONE_ALSA_DEVICE alias dissolved with the ring-lane flip;
@@ -2001,22 +2000,6 @@ async def audition_profile(
     )
 
 
-async def _live_edit_plan(cam: Any, wanted_yaml: str) -> "LiveEditPlan":
-    """Whether this edit must duck: a swap, a quiet parameter write, or nothing.
-
-    Both graphs are read back in CamillaDSP's OWN normalization before they are
-    compared — the running config, and the wanted one through ``ReadConfig``,
-    which parses and default-fills without applying. Comparing the emitter's
-    raw text against the running readback would differ on every edit (the
-    readback is a default-filled superset) and quietly duck every one.
-    """
-    from jasper.sound.live_edit import plan_live_edit
-
-    running = await cam.get_active_config_raw(best_effort=True)
-    wanted = await cam.normalize_config_raw(wanted_yaml, best_effort=True)
-    return plan_live_edit(running, wanted)
-
-
 async def _live_draft_profile(
     profile: SoundProfile,
     *,
@@ -2104,7 +2087,9 @@ async def _live_draft_profile(
             fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
         )
         yaml = result.yaml
-        plan = await _live_edit_plan(cam, yaml)
+        from jasper.sound.live_edit import plan_live_edit_for
+
+        plan = await plan_live_edit_for(cam, yaml)
         method = plan.method
 
         try:

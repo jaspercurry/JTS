@@ -68,10 +68,10 @@ Subcommands:
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published by
 its owning module and so requires a real path), and prints a
-one-line human summary to stderr either way. Exit ``0`` on success, ``1``
-when a round directory could not be read into a comparable view
-(:class:`~jasper.active_speaker.crossover_v2.round_views.RoundViewsError`) or
-the view could not be written where it was asked for.
+one-line human summary to stderr either way. On failure the exit code names
+the STAGE that failed and it publishes the shared failure record;
+``--help``'s EXIT CODES block and docs/tuning-operator-runbook.md's "Exit
+codes" state the numbers and the record's shape, so neither is repeated here.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence, TypeVar
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
@@ -112,11 +112,17 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    failed,
+)
 from jasper.cli._report import write_report
 from jasper.cli.gate_sweep import add_rungs_ms_argument
 
-EXIT_OK = 0
-EXIT_ERROR = 1
+_T = TypeVar("_T")
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -135,10 +141,9 @@ _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 #: ``json.JSONDecodeError`` subclasses); and any of the files this tool reads
 #: — or the one it WRITES, where an operator can name an ``--out`` they may
 #: not create — can simply not exist or not be permitted (``OSError``, which
-#: ``PermissionError`` subclasses). Every one of these is "this run produced
-#: no view", exactly what exit 1 already means, and :func:`main` maps the
-#: whole tuple there in one place so no subcommand can grow a traceback of
-#: its own.
+#: ``PermissionError`` subclasses). The LOAD stage claims this whole tuple;
+#: :func:`main` takes what no stage claimed, so no subcommand can grow a
+#: traceback of its own.
 #:
 #: ``struct.error`` was here for one reader that no longer exists: a
 #: header-truncated dump-ring WAV raised it out of ``scipy.io.wavfile.read``
@@ -148,6 +153,63 @@ _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 _ROUND_TOOL_ERRORS: tuple[type[Exception], ...] = (
     RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError,
 )
+
+#: The named ``reason`` each failing stage publishes. The bucket is the STAGE,
+#: never the exception type — one ``RoundViewsError`` is raised both for a
+#: round that could not be read and for a view that declined one, so a
+#: type-based split answers the operator's "where do I go" wrong.
+REASON_REFUSED = "round_views_refused"
+REASON_UNREADABLE = "round_views_unreadable_round"
+REASON_UNWRITABLE = "round_views_unwritable_out"
+
+_REASON_BY_CODE = {
+    EXIT_REFUSED: REASON_REFUSED,
+    EXIT_UNREADABLE: REASON_UNREADABLE,
+    EXIT_WRITE_FAILED: REASON_UNWRITABLE,
+}
+
+
+class _StageFailed(Exception):
+    """A failure a stage claimed, carrying that stage's exit code."""
+
+    def __init__(self, code: int, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.code = code
+
+
+def _stage(
+    code: int,
+    errors: tuple[type[Exception], ...],
+    fn: Callable[..., _T],
+    *args: Any,
+    **kwargs: Any,
+) -> _T:
+    """Run one stage; what it raises from ``errors`` gets that stage's code."""
+
+    try:
+        return fn(*args, **kwargs)
+    except errors as exc:
+        raise _StageFailed(code, exc) from exc
+
+
+def _load_round(round_dir: str | Path) -> BankedRound:
+    """Read one round directory. A failure here is the ROUND, not the view."""
+
+    return _stage(
+        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_banked_round, Path(round_dir)
+    )
+
+
+def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
+    """Publish one view. ``OSError`` only, and that is the whole rule.
+
+    A ``ValueError`` out of the strict writer is a payload this run should not
+    have built — co-metrics over partial bearing coverage yields ``NaN``, which
+    ``allow_nan=False`` rejects — and sending that operator to fix the
+    filesystem sends them to the wrong place. It falls to :func:`main`.
+    """
+
+    return _stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
 
 
 def _default_out(round_: BankedRound, name: str) -> Path:
@@ -181,9 +243,11 @@ def _frequency_default_out(source: Path) -> Path:
 
 
 def _cmd_entry(args: argparse.Namespace) -> int:
-    banked = load_banked_round(Path(args.round_dir))
-    grade = entry_state_grade(banked)
-    written = write_report(
+    banked = _load_round(args.round_dir)
+    # A packet missing `entry_baseline` is a corrupt packet, which this grade's
+    # own docstring puts in the unreadable arm — not a view declining a round.
+    grade = _stage(EXIT_UNREADABLE, (KeyError, TypeError), entry_state_grade, banked)
+    written = _write(
         grade.to_dict(), args.out, _default_out(banked, "entry_state_grade.json")
     )
     report = grade.report
@@ -193,8 +257,8 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     if report is None:
         # Exit 0, not 1: "this round banked no gradeable entry baseline" is an
         # ANSWER — the one this door exists to give instead of an operator's
-        # hand-rolled evaluation — not a failure to read the round. Exit 1 is
-        # reserved for a round directory that could not be read at all.
+        # hand-rolled evaluation — not a failure to read the round, which is
+        # what the unreadable exit is for.
         print(f"entry-state: NOT GRADED — {grade.reason}", file=sys.stderr)
         return EXIT_OK
     # `is False` / `is None`, never a bare truthiness test, for exactly the
@@ -218,10 +282,10 @@ def _cmd_entry(args: argparse.Namespace) -> int:
 
 
 def _cmd_frozen(args: argparse.Namespace) -> int:
-    baseline = load_banked_round(Path(args.baseline_dir))
-    target = load_banked_round(Path(args.target_dir))
+    baseline = _load_round(args.baseline_dir)
+    target = _load_round(args.target_dir)
     result = frozen_reference_grade(baseline, target)
-    written = write_report(
+    written = _write(
         result.to_dict(), args.out, _default_out(target, "frozen_reference.json")
     )
     print(
@@ -233,7 +297,7 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
 
 
 def _cmd_per_seat(args: argparse.Namespace) -> int:
-    banked = load_banked_round(Path(args.round_dir))
+    banked = _load_round(args.round_dir)
     verify = verify_pose_curve(banked)
     seats = per_seat_curves(
         banked, verify.curve, norm_band_hz=(args.norm_lo, args.norm_hi)
@@ -256,7 +320,7 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
             for seat in seats
         ],
     }
-    written = write_report(payload, args.out, _default_out(banked, "per_seat.json"))
+    written = _write(payload, args.out, _default_out(banked, "per_seat.json"))
     print(
         f"per-seat: {len(seats)} seat(s) ({', '.join(s.position_id for s in seats)}); "
         f"verify pose {'included' if verify.curve is not None else f'ABSENT ({verify.reason})'}"
@@ -269,13 +333,13 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
 def _load_rounds(round_dirs: Sequence[str]) -> list[tuple[str, BankedRound]]:
     """The (label, round) pairs both repeat verbs grade, labelled by the
     directory the operator named."""
-    return [(round_dir, load_banked_round(Path(round_dir))) for round_dir in round_dirs]
+    return [(round_dir, _load_round(round_dir)) for round_dir in round_dirs]
 
 
 def _cmd_repeat(args: argparse.Namespace) -> int:
     rounds = _load_rounds(args.round_dirs)
     result = repeatability_spread(rounds)
-    written = write_report(
+    written = _write(
         result.to_dict(), args.out, _default_out(rounds[0][1], "repeatability.json")
     )
     shipped = next((m for m in result.metrics if m.name == SHIPPED_POOL_METRIC), None)
@@ -303,7 +367,9 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
         repeatability_spread(rounds),
         rounds=[repeat_floor_provenance(round_dir, banked) for round_dir, banked in rounds],
     )
-    record = write_repeat_floor(payload, state_path=path)
+    record = _stage(
+        EXIT_WRITE_FAILED, (OSError,), write_repeat_floor, payload, state_path=path
+    )
     thresholds = stopping_thresholds(record)
     aggregate = record["metrics"][SHIPPED_POOL_METRIC]
     print(
@@ -315,7 +381,7 @@ def _cmd_repeat_floor(args: argparse.Namespace) -> int:
 
 
 def _cmd_agreement(args: argparse.Namespace) -> int:
-    banked = load_banked_round(Path(args.round_dir))
+    banked = _load_round(args.round_dir)
     lo_hz = args.lo if args.lo is not None else default_agreement_lo_hz(banked)
     verify = verify_pose_curve(banked)
     seats = per_seat_curves(
@@ -338,7 +404,7 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
         "testify_db": args.testify_db,
         "features": [feature.to_dict() for feature in features],
     }
-    written = write_report(payload, args.out, _default_out(banked, "agreement.json"))
+    written = _write(payload, args.out, _default_out(banked, "agreement.json"))
     # `common_mode is True`, never a bare truthiness test: `None` (not
     # evaluable, below AGREEMENT_TESTIFY_MIN seats) must not be silently
     # counted alongside `False` (evaluated and failed the bar).
@@ -354,9 +420,9 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
 
 
 def _cmd_co_metrics(args: argparse.Namespace) -> int:
-    banked = load_banked_round(Path(args.round_dir))
+    banked = _load_round(args.round_dir)
     result = audibility_co_metrics(banked)
-    written = write_report(
+    written = _write(
         result.to_dict(), args.out, _default_out(banked, "audibility_co_metrics.json")
     )
     on_axis = (
@@ -401,10 +467,10 @@ def _band_sweep_line(band: Any) -> str:
 
 
 def _cmd_spec_sweep(args: argparse.Namespace) -> int:
-    banked = load_banked_round(Path(args.round_dir))
+    banked = _load_round(args.round_dir)
     report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
-    written = write_report(
+    written = _write(
         payload, args.out, _default_out(banked, "spec_gate_sensitivity.json"),
     )
     print(
@@ -437,7 +503,7 @@ def _frequency_source(path: Path):
             state=str(info.get("state") or "") or None,
         ))
     else:
-        run = frequency_run(load_banked_round(path).packet)
+        run = frequency_run(_load_round(path).packet)
     if not run.series:
         raise ValueError(f"{path}: no usable frequency-response curves")
     return run
@@ -445,10 +511,18 @@ def _frequency_source(path: Path):
 
 def _cmd_frequency(args: argparse.Namespace) -> int:
     source_a = Path(args.source_a)
-    run_a = _frequency_source(source_a)
-    run_b = _frequency_source(Path(args.source_b)) if args.source_b else None
+    # Resolving a source IS this verb's load stage, "that document holds no
+    # curves" included: the fix is to name a different source.
+    run_a = _stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a)
+    run_b = (
+        _stage(
+            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, Path(args.source_b)
+        )
+        if args.source_b
+        else None
+    )
     payload = build_frequency_view(run_a, run_b)
-    written = write_report(payload, args.out, _frequency_default_out(source_a))
+    written = _write(payload, args.out, _frequency_default_out(source_a))
     print(
         f"frequency: {len(payload['runs'])} run(s)"
         f"{f' -> {written}' if written else ''}",
@@ -494,9 +568,15 @@ def build_parser() -> argparse.ArgumentParser:
             "     still exit 0 -- \"not gradeable yet\" is a valid verdict,\n"
             "     not a failure, so check the printed line rather than only\n"
             "     the code if that distinction matters to your caller\n"
-            "  1  EXIT_ERROR -- the round or session source could not be\n"
-            "     read or built into a view, or the view could not be\n"
-            "     written; \"error: <detail>\" on stderr"
+            "  1  EXIT_REFUSED -- the round read, and the view itself\n"
+            "     declined to grade it (a round with no cloud group, a\n"
+            "     repeat floor from a single round)\n"
+            "  2  EXIT_UNREADABLE -- the round or source could not be\n"
+            "     read into a comparable view\n"
+            "  3  EXIT_WRITE_FAILED -- graded, but --out could not be\n"
+            "     written\n"
+            "  1-3 print \"<status> (<reason>): <detail>\" on stderr and the\n"
+            "     same record as JSON on stdout"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -589,9 +669,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
+    except _StageFailed as staged:
+        return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged))
     except _ROUND_TOOL_ERRORS as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_ERROR
+        # What no stage claimed: the round READ, and the view then declined to
+        # grade it. That is the refusal exit, not an unreadable one.
+        return failed(EXIT_REFUSED, REASON_REFUSED, str(exc))
 
 
 if __name__ == "__main__":

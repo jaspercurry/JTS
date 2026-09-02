@@ -1007,7 +1007,6 @@ Live Pi state without modifying anything:
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + monotonic boot timelines + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks plus `log-noise-summary-latest.txt` for line counts and repeated-message fingerprints. |
 | [`scripts/journal-review.sh`](../scripts/journal-review.sh) | Read-only journal-health digest run ON the Pi for the last `--since` window (default `7 days ago`): journal disk usage + retention/truncation, per-unit auto-restart counts, warning+ volume by unit, top `event=<domain.action>` keys with a week-over-week DELTA + never-seen-before keys, OOM/watchdog fingerprints, and repeated-message fingerprints (reuses `fetch-pi-logs.sh`'s fingerprinter). `--json` for machine consumption. Bounded (windowed journalctl + awk, no full-journal scan); always exits 0; the only write is its own `/var/lib/jasper/journal-review.state.json` week-over-week baseline. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |
-| [`scripts/pi-system-soak.sh`](../scripts/pi-system-soak.sh) | Convenience wrapper for a bounded `jasper-system-soak` run on the active Pi; writes a versioned JSON resource artifact. |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, volume routing, wake/turn boundaries) |
 | [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. |
@@ -2023,7 +2022,9 @@ a door that never touches v2 state.
 
 **Exit codes are the contract**, because the caller is often a script: `0`
 accepted, `1` the evidence could not be read, `2` the prescription was refused,
-`3` an accepted prescription could not be staged. A refusal is the loop
+`3` an accepted prescription could not be staged. **`1` and `2` are this
+tool's own way round** — the read-only measurement tools' shared rule (the
+runbook's "Exit codes") has them the other way. A refusal is the loop
 working, not a crash — `--json` prints the machine-readable `reason` slug plus
 the evidence behind it, so a prescriber can correct itself rather than guess.
 `3` is separate from `1` because the two send you to different places: `2`
@@ -2165,9 +2166,9 @@ geometry is disclosed in one place, the evidence packet's `not_evaluated` block
 as `vertical_plane_response`; the remote tier and the unwired crossover-search
 modules carry their own disclosures about their own artifacts.
 
-**Exit codes are the contract**: `0` classified and filed, `1` the round could
-not be read, `2` refused, `3` the verdict could not be written. `--json` prints
-the named `reason` and the evidence behind it.
+**Exit codes are the contract** — the shared stage-named rule the runbook's
+"Exit codes" owns. `--json` prints the named `reason` and the evidence behind
+it.
 
 The 2026-08-19 lab harness this was promoted from
 (`captures/*/tools/classify_*.py`) also fitted a single-delay null ladder
@@ -2332,10 +2333,9 @@ state, never a fabricated pass or fail. `--lo` defaults to the round's own
 Each subcommand writes its JSON result into the round directory by default
 (`per_seat.json`, `frozen_reference.json`, `agreement.json` under the graded
 round's own dir; `repeatability.json` under the first round dir for `repeat`)
-— `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
-success, `1` when a round directory could not be read into a comparable view
-(an unreadable evidence document, a bundle with no graded spec, or any of the
-round's other documented failure shapes).
+— `--out PATH` writes somewhere else, `--out -` writes to stdout. On failure
+it publishes the shared record and the shared stage-named exit code; the
+runbook's "Exit codes" owns both.
 
 Hardware-free coverage — including a golden fixture whose `spec` block is a
 REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite
@@ -3378,18 +3378,15 @@ changes, outputd/fanin/voice STATUS drift, or journal volume. It is a
 diagnostic artifact generator, not a daemon and not part of normal
 production polling.
 
-From the laptop, prefer the bounded wrapper:
+From the laptop, run it through the bounded diagnostic lane:
 
 ```sh
-bash scripts/pi-system-soak.sh --duration 30m --profile idle
-bash scripts/pi-system-soak.sh --duration 30m --profile realistic --include-pss
+bash scripts/pi-run-diagnostic.sh -- /opt/jasper/.venv/bin/jasper-system-soak --duration 30m --profile idle
 ```
 
-The wrapper runs `/opt/jasper/.venv/bin/jasper-system-soak` through
-[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh), so
-systemd applies the usual diagnostic bounds (`MemoryHigh`,
-`MemoryMax`, `MemorySwapMax=0`, `RuntimeMaxSec`, positive
-`OOMScoreAdjust`). The command writes JSON under
+[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) applies
+the usual diagnostic bounds (`MemoryHigh`, `MemoryMax`, `MemorySwapMax=0`,
+`RuntimeMaxSec`, positive `OOMScoreAdjust`). The command writes JSON under
 `/var/lib/jasper/diagnostics/system-soak/` by default and prints the
 artifact path.
 

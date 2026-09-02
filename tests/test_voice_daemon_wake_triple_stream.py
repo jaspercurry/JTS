@@ -420,52 +420,84 @@ def _cfg(
     )
 
 
-def test_configured_wake_legs_single_stream():
-    """Only the primary device set → only the "on" leg, with its device."""
+@pytest.mark.parametrize(
+    ("cfg_kwargs", "expected"),
+    [
+        pytest.param(
+            {"mic_device": "Array"},
+            [("on", "Array")],
+            id="configured_wake_legs_single_stream",
+        ),
+        pytest.param(
+            {"mic_device": "udp:9876", "mic_device_raw": "udp:9877"},
+            [("on", "udp:9876"), ("off", "udp:9877")],
+            id="configured_wake_legs_dual_stream",
+        ),
+        pytest.param(
+            {
+                "mic_device": "udp:9876",
+                "mic_device_raw": "udp:9877",
+                "mic_device_dtln": "udp:9878",
+            },
+            [("on", "udp:9876"), ("off", "udp:9877"), ("dtln", "udp:9878")],
+            id="configured_wake_legs_triple_stream",
+        ),
+        pytest.param(
+            {
+                "mic_device": "udp:9876",
+                "mic_device_chip_aec_150": "udp:9887",
+                "mic_device_chip_aec_210": "udp:9888",
+            },
+            [
+                ("on", "udp:9876"),
+                ("chip_aec_150", "udp:9887"),
+                ("chip_aec_210", "udp:9888"),
+            ],
+            id="configured_wake_legs_chip_legs_built_when_set",
+        ),
+    ],
+)
+def test_configured_wake_legs(cfg_kwargs, expected):
+    """Each leg is built, with its device, exactly when its device var
+    is set: "on" alone for a bare primary device; software (off, dtln)
+    or chip-beam legs join it as their vars are set."""
     from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(mic_device="Array"))
-    assert [(s.token, dev) for s, dev in legs] == [("on", "Array")]
+    legs = _configured_wake_legs(_cfg(**cfg_kwargs))
+    assert [(s.token, dev) for s, dev in legs] == expected
 
 
-def test_configured_wake_legs_dual_stream():
+@pytest.mark.parametrize(
+    ("cfg_kwargs", "expected_tokens"),
+    [
+        pytest.param(
+            {
+                "mic_device": "udp:9876",
+                "mic_device_raw": "",
+                "mic_device_dtln": "udp:9878",
+            },
+            ["on", "dtln"],
+            id="configured_wake_legs_independent_gating",
+        ),
+        pytest.param(
+            {"mic_device": ""},
+            ["on"],
+            id="configured_wake_legs_primary_always_present",
+        ),
+        pytest.param(
+            {"mic_device": "udp:9876", "mic_device_chip_aec_150": "udp:9887"},
+            ["on", "chip_aec_150"],
+            id="configured_wake_legs_chip_beams_gate_independently",
+        ),
+    ],
+)
+def test_configured_wake_legs_tokens_only(cfg_kwargs, expected_tokens):
+    """Optional legs gate independently — voice never opens a UDP
+    listener for an unconfigured leg. "on" is always present, even with
+    an empty device (the AEC reconciler owns making it real, or parking
+    voice), so `self._legs["on"]` never KeyErrors."""
     from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(
-        _cfg(mic_device="udp:9876", mic_device_raw="udp:9877"),
-    )
-    assert [(s.token, dev) for s, dev in legs] == [
-        ("on", "udp:9876"), ("off", "udp:9877"),
-    ]
-
-
-def test_configured_wake_legs_triple_stream():
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
-        mic_device="udp:9876", mic_device_raw="udp:9877",
-        mic_device_dtln="udp:9878",
-    ))
-    assert [(s.token, dev) for s, dev in legs] == [
-        ("on", "udp:9876"), ("off", "udp:9877"), ("dtln", "udp:9878"),
-    ]
-
-
-def test_configured_wake_legs_independent_gating():
-    """Optional legs gate independently: DTLN configured without the
-    chip-direct ("off") leg yields on + dtln, no off — so voice never
-    opens a UDP listener for an unconfigured leg."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
-        mic_device="udp:9876", mic_device_raw="", mic_device_dtln="udp:9878",
-    ))
-    assert [s.token for s, _ in legs] == ["on", "dtln"]
-
-
-def test_configured_wake_legs_primary_always_present():
-    """The "on" leg is always built — even with an empty device (the AEC
-    reconciler owns ensuring the device is real, or parking voice). Keeps
-    WakeLoop's `self._legs["on"]` alias invariant from KeyError-ing."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(mic_device=""))
-    assert [s.token for s, _ in legs] == ["on"]
+    legs = _configured_wake_legs(_cfg(**cfg_kwargs))
+    assert [s.token for s, _ in legs] == expected_tokens
 
 
 def test_configured_wake_legs_chip_legs_not_built_when_unset():
@@ -482,34 +514,6 @@ def test_configured_wake_legs_chip_legs_not_built_when_unset():
     assert tokens == ["on", "off", "dtln"]
     assert "chip_aec_150" not in tokens
     assert "chip_aec_210" not in tokens
-
-
-def test_configured_wake_legs_chip_legs_built_when_set():
-    """Each chip beam leg is built (with its device) when its device var is
-    non-empty. With only the chip vars set, the software off/dtln legs stay
-    unbuilt (single-chip mutual exclusion is the reconciler's job; here we
-    just confirm the per-leg gating threads the chip device through)."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
-        mic_device="udp:9876",
-        mic_device_chip_aec_150="udp:9887",
-        mic_device_chip_aec_210="udp:9888",
-    ))
-    assert [(s.token, dev) for s, dev in legs] == [
-        ("on", "udp:9876"),
-        ("chip_aec_150", "udp:9887"),
-        ("chip_aec_210", "udp:9888"),
-    ]
-
-
-def test_configured_wake_legs_chip_beams_gate_independently():
-    """One chip beam can be configured without the other — voice never opens
-    a UDP listener for an unconfigured beam."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
-        mic_device="udp:9876", mic_device_chip_aec_150="udp:9887",
-    ))
-    assert [s.token for s, _ in legs] == ["on", "chip_aec_150"]
 
 
 def test_leg_device_attr_covers_all_wake_input_legs():
