@@ -106,8 +106,6 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   web assets (`deploy/assets/`, design system in `app.css`).
   `scripts/` — laptop-side operator tools. `experiments/usb-turntable` is
   production (turntable-driven speaker measurement) despite the path.
-- `capture-page/` + `relay/` + `jasper/capture_relay/` — phone-mic capture
-  (separate trust boundary; deliberate).
 - Audio path: renderers → snd-aloop/ring → jasper-fanin → CamillaDSP →
   jasper-outputd → DAC ([docs/audio-paths.md](docs/audio-paths.md)).
 - **Single-writer env files** under `/var/lib/jasper/` (wizard- or
