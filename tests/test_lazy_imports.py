@@ -626,15 +626,22 @@ def test_doctor_wake_check_does_not_load_sklearn() -> None:
             "openai", "openai_loaded",
             id="voice_daemon_import_does_not_load_openai",
         ),
+        pytest.param(
+            "scipy", "scipy_loaded",
+            id="voice_daemon_import_does_not_load_scipy",
+        ),
     ],
 )
-def test_voice_daemon_import_does_not_load_adapter_sdk(
+def test_voice_daemon_import_does_not_load_heavy_optional_dependency(
     sys_modules_name: str, result_key: str,
 ) -> None:
-    """Importing jasper.voice_daemon must not eagerly load a provider
-    adapter SDK (google.genai, openai). Each adapter's SDK import stays
-    lazy inside _make_connection / _resolve_connect_call so a user on a
-    different provider doesn't pay that import cost."""
+    """Importing jasper.voice_daemon must not eagerly load a heavy
+    optional dependency. Provider adapter SDKs (google.genai, openai)
+    stay lazy inside _make_connection / _resolve_connect_call so a user
+    on a different provider doesn't pay that import cost. scipy stays
+    out entirely: it costs ~58 MB RSS, which a 415 MB streambox cannot
+    spare, and jasper-voice's MemoryHigh is sized on its absence
+    (issue #3697)."""
     probe = (
         "import sys\n"
         "import jasper.voice_daemon  # noqa: F401\n"
@@ -644,8 +651,8 @@ def test_voice_daemon_import_does_not_load_adapter_sdk(
     result = _run_probe(probe)
     assert result.get(result_key) is False, (
         f"{sys_modules_name} was loaded into sys.modules just by importing "
-        "jasper.voice_daemon. Adapter SDK imports must stay lazy (inside "
-        "_make_connection branches)."
+        "jasper.voice_daemon. Heavy optional dependencies must stay lazy, "
+        "inside the path that actually needs them."
     )
 
 
