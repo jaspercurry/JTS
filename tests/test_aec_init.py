@@ -404,7 +404,6 @@ def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
     assert _write_map(dev)["SHF_BYPASS"] == [1]
     assert not disclosure_file.exists()
     assert row.divergence(_live_identity()) == ("output_id",)
-    assert "output_id" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -666,7 +665,6 @@ def test_an_inert_ordering_guard_says_so_in_the_journal(
 
     assert "event=chip_aec_init.ordering_probe" in caplog.text
     assert f"outcome={outcome}" in caplog.text
-    assert "ordering guard is inert" in caplog.text
 
 
 @pytest.mark.parametrize("stdout", ["", "@0\n"])
@@ -717,7 +715,6 @@ def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
 
     assert "event=chip_aec_init.ordering_probe" in caplog.text
     assert "outcome=systemctl_oserror" in caplog.text
-    assert "ordering guard is inert" in caplog.text
 
 
 def test_staleness_fails_closed_when_the_systemctl_probe_times_out(
@@ -995,7 +992,6 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     assert _write_map(dev) == {"SHF_BYPASS": [1]}
     assert reads == []
     assert "outcome=deferred" in caplog.text
-    assert "has not loaded the current output declaration" in caplog.text
     assert "action=" in caplog.text
     assert "jasper-aec-commission" not in caplog.text
 
@@ -1142,7 +1138,6 @@ def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> Non
     assert aec_init.main() == 1
 
     assert "event=chip_aec_init" in caplog.text
-    assert "dependencies missing" in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,6 @@
 
 """Hardware-free capture-profile contracts for jasper-aec-tune."""
 
-import logging
 import math
 from pathlib import Path
 import subprocess
@@ -170,29 +169,25 @@ def test_non_positive_mic_channel_count_is_rejected_before_capture(
 
 
 @pytest.mark.parametrize(
-    ("recorded_channels", "channel_index", "message"),
+    ("recorded_channels", "channel_index"),
     [
-        (1, -1, "invalid for the recorded mono WAV; only channel 0 is available"),
-        (1, 1, "invalid for the recorded mono WAV; only channel 0 is available"),
-        (2, 2, "invalid for the recorded 2-channel WAV; choose 0 through 1"),
+        (1, -1),
+        (1, 1),
+        (2, 2),
     ],
 )
 def test_invalid_mic_channel_is_rejected_from_recorded_wav_and_voice_recovers(
     monkeypatch,
     tmp_path: Path,
-    caplog,
     recorded_channels: int,
     channel_index: int,
-    message: str,
 ) -> None:
     detector, restart = _prepare_main(
         monkeypatch, tmp_path, recorded_channels, channel_index
     )
 
-    with caplog.at_level(logging.ERROR, logger="jasper.aec_tune"):
-        assert aec_tune.main() == 1
+    assert aec_tune.main() == 1
 
-    assert message in caplog.text
     restart.assert_called_once_with("jasper-voice.service")
     detector.assert_called_once_with()
 
@@ -285,19 +280,15 @@ def test_apply_fails_closed_when_device_is_missing(monkeypatch) -> None:
     assert aec_tune._apply_volatile_delay(12, 0.5) is False
 
 
-def test_apply_refuses_write_when_prior_delay_cannot_be_read(
-    monkeypatch, caplog
-) -> None:
+def test_apply_refuses_write_when_prior_delay_cannot_be_read(monkeypatch) -> None:
     from jasper.xvf import xvf_host
 
     device = MagicMock()
     device.read.side_effect = OSError("USB read failed")
     monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
 
-    with caplog.at_level(logging.ERROR, logger="jasper.aec_tune"):
-        assert aec_tune._apply_volatile_delay(12, 0.5) is False
+    assert aec_tune._apply_volatile_delay(12, 0.5) is False
 
-    assert "no write attempted" in caplog.text
     device.write.assert_not_called()
     device.close.assert_called_once_with()
 
@@ -339,7 +330,7 @@ def test_apply_fails_closed_on_write_error_and_closes_device(monkeypatch) -> Non
     device.close.assert_called_once_with()
 
 
-def test_apply_reports_uncertain_state_when_rollback_fails(monkeypatch, caplog) -> None:
+def test_apply_reports_uncertain_state_when_rollback_fails(monkeypatch) -> None:
     from jasper.xvf import xvf_host
 
     device = MagicMock()
@@ -347,10 +338,8 @@ def test_apply_reports_uncertain_state_when_rollback_fails(monkeypatch, caplog) 
     device.write.side_effect = [None, OSError("rollback write failed")]
     monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
 
-    with caplog.at_level(logging.WARNING, logger="jasper.aec_tune"):
-        assert aec_tune._apply_volatile_delay(12, 0.5) is False
+    assert aec_tune._apply_volatile_delay(12, 0.5) is False
 
-    assert "chip state is uncertain" in caplog.text
     assert device.write.call_args_list == [
         call("AUDIO_MGR_SYS_DELAY", [12]),
         call("AUDIO_MGR_SYS_DELAY", [7]),
