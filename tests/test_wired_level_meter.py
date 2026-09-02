@@ -25,6 +25,8 @@ from jasper.audio_measurement.wired_level_meter import (
     WiredLevelMeter,
 )
 
+from tests.test_wired_capture import FakePcm
+
 RATE = 48_000
 CHANNELS = 2
 
@@ -33,29 +35,6 @@ def _frames_bytes(values):
     """Interleaved S32_LE frames: ``values`` is [(ch0, ch1), ...]."""
     return b"".join(struct.pack("<ii", a, b) for a, b in values)
 
-
-class FakePcm:
-    """A scripted capture PCM: ``(frames, values)`` steps, then silence.
-
-    Idling as silence rather than as ``(0, b"")`` is load-bearing: dead reads
-    trip the reader's 8-consecutive-failure guard about 8 ms after the script
-    runs out, which under suite load beats the test's own ``drain()`` to the
-    sample the script already delivered.
-    """
-
-    def __init__(self, script):
-        self._script = list(script)
-        self.closed = False
-
-    def read(self):
-        if self._script:
-            frames, values = self._script.pop(0)
-            return frames, _frames_bytes(values)
-        time.sleep(0.001)
-        return 16, _frames_bytes([(0, 0)] * 16)
-
-    def close(self):
-        self.closed = True
 
 def _meter(script, *, channels=CHANNELS):
     return WiredLevelMeter(
