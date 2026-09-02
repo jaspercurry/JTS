@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.atomic_io import read_regular_bytes_nofollow
+from jasper.audio_measurement.ramp import capped_gap_step_db
 from jasper.mics import xvf3800
 
 if TYPE_CHECKING:
@@ -83,6 +84,12 @@ MIN_TIMING_PEAK = 0.20
 MIN_RAW_EXCESS_SNR_DB = 10.0
 MIN_BEAM_ACQUISITION_DB = 8.0
 MIN_BEAM_SUPPRESSION_DB = 10.0
+# What the level probe aims the raw mics at: the stricter of the two level
+# gates, plus a margin, so clearing it clears both.
+LEVEL_TARGET_MARGIN_DB = 5.0
+TARGET_RAW_EXCESS_SNR_DB = (
+    max(MIN_RAW_EXCESS_SNR_DB, MIN_BEAM_ACQUISITION_DB) + LEVEL_TARGET_MARGIN_DB
+)
 MAX_RAW_LEVEL_DELTA_DB = 1.0
 RATE = 16_000
 PLAYBACK_RATE = 48_000
@@ -584,11 +591,12 @@ def _bandpass(values: np.ndarray) -> np.ndarray:
     return scipy_signal.sosfiltfilt(sos, values.astype(np.float64))
 
 
-def dbfs_rms(values: np.ndarray) -> float:
-    import numpy as np
+def _dbfs_power(power: float) -> float:
+    return 10 * math.log10(power / 32_768**2) if power > 0 else -300.0
 
-    rms = float(np.sqrt(np.mean(np.square(values, dtype=np.float64))))
-    return 20 * math.log10(rms / 32_768) if rms > 0 else -300.0
+
+def dbfs_rms(values: np.ndarray) -> float:
+    return _dbfs_power(_power(values))
 
 
 def _arrival_index(corr: np.ndarray) -> int:
@@ -691,7 +699,17 @@ def _power(values: np.ndarray) -> float:
     return float(np.mean(np.square(values.astype(np.float64))))
 
 
-def _capture_windows(channels: np.ndarray, active: np.ndarray) -> tuple[int, list[float], list[float], int]:
+def _capture_windows(
+    channels: np.ndarray, active: np.ndarray, *, quiet_from_pre_guard: bool = False
+) -> tuple[int, list[float], list[float], int, tuple[float, float]]:
+    """Per-raw-mic excitation and excess SNR, plus the worst mic's two guards.
+
+    The post-guard begins at the sweep's last sample, so it holds the reverb
+    tail, which rises with the fader; only the pre-guard is a level-independent
+    noise floor.  ``quiet_from_pre_guard`` is for a caller sizing a fader move.
+    The gate keeps the ``max`` of both: it judges a capture, not a fader.
+    """
+
     import numpy as np
 
     from jasper.audio_measurement.alignment import cross_correlation_alignment
@@ -705,21 +723,22 @@ def _capture_windows(channels: np.ndarray, active: np.ndarray) -> tuple[int, lis
         raise ValueError("product capture lacks quiet guards")
     echoes: list[float] = []
     snrs: list[float] = []
+    guards: list[tuple[float, float]] = []
     clips = 0
     for index in range(2, 6):
-        quiet = max(
-            _power(channels[start - GUARD : start, index]),
-            _power(channels[start + ACTIVE : start + ACTIVE + GUARD, index]),
-        )
+        pre = _power(channels[start - GUARD : start, index])
+        post = _power(channels[start + ACTIVE : start + ACTIVE + GUARD, index])
+        quiet = pre if quiet_from_pre_guard else max(pre, post)
         signal = _power(channels[start : start + ACTIVE, index]) - quiet
         if signal <= 0 or quiet <= 0:
             raise ValueError("raw excitation is not above room noise")
         echoes.append(signal)
         snrs.append(10 * math.log10(signal / quiet))
+        guards.append((pre, post))
         clips += int(np.count_nonzero(
             np.abs(channels[start : start + ACTIVE, index].astype(np.int32)) >= CLIP
         ))
-    return start, echoes, snrs, clips
+    return start, echoes, snrs, clips, guards[snrs.index(min(snrs))]
 
 
 def analyze_product(
@@ -731,8 +750,10 @@ def analyze_product(
 
     import numpy as np
 
-    on_start, on_raw, on_snr, on_clips = _capture_windows(aec_on, active_stimulus)
-    off_start, off_raw, off_snr, off_clips = _capture_windows(aec_off, active_stimulus)
+    on_start, on_raw, on_snr, on_clips, _ = _capture_windows(aec_on, active_stimulus)
+    off_start, off_raw, off_snr, off_clips, _ = _capture_windows(
+        aec_off, active_stimulus
+    )
     raw_ratio = float(np.median(np.asarray(on_raw) / np.asarray(off_raw)))
     raw_delta = 10 * math.log10(raw_ratio)
     suppression: list[float] = []
@@ -770,6 +791,58 @@ def analyze_product(
     ):
         raise Rejected("product", result.evidence())
     return result
+
+
+@dataclass(frozen=True)
+class LevelProbe:
+    raw_excess_snr_db: float
+    clipped_samples: int
+    pre_guard_dbfs: float
+    post_guard_dbfs: float
+
+    def offset_db(self, step_cap_db: float) -> float:
+        """One step toward `TARGET_RAW_EXCESS_SNR_DB`, saturated upward.
+
+        ASSUMES the fader moves raw excess SNR dB for dB — valid while the
+        pre-guard is noise-dominated.  A clipped capture understates its own
+        excitation, so it caps at zero and `analyze_product` refuses it.
+        """
+
+        return capped_gap_step_db(
+            measured_db=self.raw_excess_snr_db,
+            target_db=TARGET_RAW_EXCESS_SNR_DB,
+            cap_db=0.0 if self.clipped_samples else step_cap_db,
+        )
+
+    def reaches_target(self, step_cap_db: float) -> bool:
+        """Whether ONE capped step lands on the target.
+
+        A clipped capture is never asked to: its step caps at zero, so it can
+        only fail this, and `analyze_product`'s clip gate is the right refusal.
+        """
+
+        return bool(self.clipped_samples) or (
+            self.raw_excess_snr_db + self.offset_db(step_cap_db)
+            >= TARGET_RAW_EXCESS_SNR_DB
+        )
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "warmup_raw_excess_snr_db": round(self.raw_excess_snr_db, 2),
+            "target_raw_excess_snr_db": TARGET_RAW_EXCESS_SNR_DB,
+            "warmup_clipped_samples": self.clipped_samples,
+            "pre_guard_dbfs": round(self.pre_guard_dbfs, 2),
+            "post_guard_dbfs": round(self.post_guard_dbfs, 2),
+        }
+
+
+def analyze_level(capture: np.ndarray, active_stimulus: np.ndarray) -> LevelProbe:
+    """`analyze_product`'s own raw excess SNR, against the pre-guard alone."""
+
+    _, _, snrs, clips, guards = _capture_windows(
+        capture, active_stimulus, quiet_from_pre_guard=True
+    )
+    return LevelProbe(min(snrs), clips, *(_dbfs_power(power) for power in guards))
 
 
 def commissioning_stimulus() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
