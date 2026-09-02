@@ -32,8 +32,9 @@
 # Usage:
 #   bash scripts/claim-librespot.sh
 #
-# Defaults: PI_HOST=${JASPER_HOSTNAME:-jts.local}, PI_USER=pi,
-# OAUTH_PORT=8091. Override via env if needed.
+# Target: PI_HOST / JASPER_HOSTNAME, else this checkout's .env.local
+# (scripts/_lib.sh; it refuses rather than guess a speaker). PI_USER
+# defaults to pi, OAUTH_PORT to 8091. Override via env if needed.
 
 set -euo pipefail
 

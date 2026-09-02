@@ -103,7 +103,9 @@ python3 scripts/aec-probe-timing.py \
   --runs 2
 ```
 
-The laptop-side wrapper SSHes to `${PI_USER:-pi}@${PI_HOST:-jts.local}`,
+The laptop-side wrapper SSHes to the speaker this checkout targets
+(`scripts/_pi_target.py`: `--pi-host`/`--pi-user`, then `PI_HOST`,
+then `.env.local` — an unnamed target is refused, not guessed),
 runs the hardware worker with `/opt/jasper/.venv/bin/python`, pulls the
 remote artifact directory into `logs/` via `sudo tar`, and leaves the
 remote `/tmp` artifact in place for manual inspection. Remote artifacts

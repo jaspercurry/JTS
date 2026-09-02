@@ -120,7 +120,7 @@ def _resolve(lib: Path, *, cwd: Path, env: dict[str, str] | None = None) -> str:
         [
             "bash",
             "-c",
-            'set -euo pipefail; source "$1"; resolve_repo_python',
+            'set -euo pipefail; JTS_LIB_TARGET_OPTIONAL=1 source "$1"; resolve_repo_python',
             "bash",
             str(lib),
         ],

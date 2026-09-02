@@ -814,7 +814,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             script = textwrap.dedent(
                 f"""\
                 set -euo pipefail
-                . {lib}
+                JTS_LIB_TARGET_OPTIONAL=1 . {lib}
                 write_laptop_state 192.168.1.42 pi "" jts3.local
                 """
             )

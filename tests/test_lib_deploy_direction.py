@@ -141,7 +141,7 @@ def _classify(
     repo: Path, local_sha: str, installed_sha: str, *, git_shim: Path | None = None
 ) -> str:
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'classify_deploy_direction "$1" "$2"'
     )
     proc = subprocess.run(
@@ -225,7 +225,7 @@ def test_git_error_on_second_ancestry_probe_is_unknown(history, tmp_path):
 
 def _manifest_value(manifest: str, key: str) -> str:
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'build_manifest_value "$1" "$2"'
     )
     proc = subprocess.run(
@@ -313,7 +313,7 @@ def _classify_vs_main(
     git_shim: Path | None = None,
 ) -> str:
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'classify_installed_vs_main "$1" "$2"'
     )
     proc = subprocess.run(
@@ -390,7 +390,7 @@ def test_git_error_during_ancestry_is_unknown_not_behind(main_history, tmp_path)
 def test_default_main_ref_is_origin_main(main_history):
     # Called with one arg, the helper defaults the ref to origin/main.
     repo, _a, _b, c, _d = main_history
-    script = f'source "{LIB}"; classify_installed_vs_main "$1"'
+    script = f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; classify_installed_vs_main "$1"'
     proc = subprocess.run(
         ["bash", "-c", script, "bash", c],
         capture_output=True, text=True, timeout=30, cwd=repo,
@@ -439,7 +439,7 @@ def deploy_history(tmp_path):
 # so we never fight Python str.format against bash braces.
 _PREFLIGHT_HARNESS = r"""
 set -o pipefail
-source "@LIB@"
+JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 # Extract the real preflight_deploy_direction() — its def line through the
 # first column-0 '}'. Eval defines it; nothing else in the script runs.
 eval "$(awk '/^preflight_deploy_direction\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"

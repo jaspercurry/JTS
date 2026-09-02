@@ -1734,6 +1734,57 @@ def test_a_hostname_override_against_the_checkouts_host_is_still_disclosed(
     assert row["split"] is True
 
 
+def test_an_unnamed_target_refuses_instead_of_measuring_the_default_speaker(
+    checkout, wizard, tmp_path
+):
+    """#3498: `jts.local` is whichever box on the LAN claimed the name, so a
+    round with nothing naming its speaker has no honest guess to make."""
+    repo, _fake_bin, _tmp = checkout
+    (repo / ".env.local").unlink()
+    trail = tmp_path / "trail.jsonl"
+
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+        JASPER_IDENTITY_FILE=str(tmp_path / "absent-identity.env"),
+    )
+
+    assert proc.returncode == 78  # EXIT_CONFIG
+    assert ssh_lines == [] and bank_lines == []
+    row = _trail(trail)[0]
+    assert row["step"] == "resolve_target"
+    assert row["ok"] is False
+
+
+def test_on_the_box_itself_the_trail_names_the_identity_file_it_read(
+    checkout, wizard, tmp_path
+):
+    """`_lib.sh` says which of its sources answered, so the trail names a
+    file the operator can go look at rather than one guessed from whether
+    `.env.local` exists."""
+    repo, _fake_bin, _tmp = checkout
+    (repo / ".env.local").unlink()
+    identity = tmp_path / "identity.env"
+    identity.write_text("JASPER_IDENTITY_AVAHI_HOSTNAME=jts7.local\n"
+                        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts7.local\n",
+                        encoding="utf-8")
+    trail = tmp_path / "trail.jsonl"
+
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+        JASPER_IDENTITY_FILE=str(identity),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert all("pi@jts7.local" in line for line in ssh_lines)
+    row = _trail(trail)[0]
+    assert (row["host"], row["host_from"]) == (
+        "jts7.local", "this box's identity.env")
+
+
 def test_a_403_open_names_the_host_mismatch_it_could_be(checkout, tmp_path):
     """A 403 is what the management-host guard returns; it cannot say which."""
     server = _Wizard(open_status=403)

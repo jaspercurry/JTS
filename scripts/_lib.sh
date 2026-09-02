@@ -40,7 +40,17 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #            unset for the caller to resolve from that same host.
 #   file     neither was set, so this checkout's `.env.local` supplies
 #            both (written by scripts/onboard.sh and scripts/use).
-#   default  neither was set and no file names a host: jts.local.
+#   identity this invocation is running ON a speaker, so the box's own
+#            recorded identity answers — the EFFECTIVE mDNS name, and a
+#            refusal when the reconciler flagged a collision or drift
+#            (see jts_lib_identity_hostname).
+#   unset    nothing names a target and the caller declared it does not
+#            need one (JTS_LIB_TARGET_OPTIONAL=1): PI_HOST stays unset.
+#
+# With none of those, sourcing REFUSES (exit 78) instead of guessing
+# `jts.local`: on a multi-speaker LAN that name resolves to whichever box
+# claimed it, so a guess deploys to, or measures, the wrong speaker
+# silently (issue #3498, docs/tuning-master-plan.md invariant 7).
 #
 # PI_USER is a login, not an identity: caller, then file, then `pi`.
 #
@@ -62,6 +72,52 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # it, so deploy-to-pi.sh gives the guard no state file — reading it
 # would bless the wrong Pi, writing it would corrupt the checkout's own.
 #
+# The hostname a speaker records for ITSELF, for an invocation running on
+# the box (over ssh, say) rather than on the laptop. Same file, same keys
+# and same JASPER_IDENTITY_FILE override that jasper/identity_state.py
+# reads, so both sides of the repo answer "which speaker is this"
+# identically. The reconciler records the EFFECTIVE mDNS name Avahi
+# answers to alongside the configured one; the effective name is what
+# actually reaches this box, so it wins.
+#
+# Returns 4 when the reconciler flagged a collision or drift: the recorded
+# names DISAGREE, and the configured one then resolves to whichever other
+# box on the LAN claimed it (issue #3498). Empty (and success) when the
+# file is absent or names none.
+jts_lib_identity_hostname() {
+    local file="${JASPER_IDENTITY_FILE:-/var/lib/jasper/identity.env}"
+    local line value avahi="" configured="" collision="" drift=""
+    [[ -r "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        value="${line#*=}"
+        value="${value%$'\r'}"
+        case "$line" in
+            JASPER_IDENTITY_AVAHI_HOSTNAME=*) avahi="$value" ;;
+            JASPER_IDENTITY_CONFIGURED_HOSTNAME=*) configured="$value" ;;
+            JASPER_IDENTITY_COLLISION=*) collision="$value" ;;
+            JASPER_IDENTITY_DRIFT=*) drift="$value" ;;
+        esac
+    done < "$file"
+    if [[ "$collision" == "1" || "$drift" == "1" ]]; then
+        return 4
+    fi
+    printf '%s\n' "${avahi:-$configured}"
+}
+
+# The refusal, as a function so a script whose --help / usage path runs
+# AFTER the source can defer it: source with JTS_LIB_TARGET_OPTIONAL=1 and
+# call this once arg parsing has decided the run really needs a speaker.
+# No-op when a target was resolved.
+jts_lib_require_target() {
+    if [[ -n "${PI_HOST:-}" ]]; then
+        return 0
+    fi
+    printf '%s%s\n' \
+        "_lib.sh: no target speaker — set PI_HOST=<host> or JASPER_HOSTNAME=<name>, " \
+        "or run scripts/onboard.sh <host> / scripts/use <host> for this checkout" >&2
+    exit 78
+}
+
 # The temporaries are prefixed because this file is sourced INTO other
 # scripts, whose own variables must survive it.
 _jts_lib_caller_host="${PI_HOST:-}"
@@ -93,14 +149,30 @@ elif [[ -n "${PI_HOST:-}" || -n "${JASPER_HOSTNAME:-}" ]]; then
     export JTS_TARGET_FROM=file
     export PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-}}"
 else
-    export JTS_TARGET_FROM=default
-    export PI_HOST=jts.local
+    _jts_lib_identity_rc=0
+    _jts_lib_identity_host="$(jts_lib_identity_hostname)" \
+        || _jts_lib_identity_rc=$?
+    if [[ "$_jts_lib_identity_rc" == 0 && -n "$_jts_lib_identity_host" ]]; then
+        export JTS_TARGET_FROM=identity
+        export PI_HOST="$_jts_lib_identity_host"
+    elif [[ "${JTS_LIB_TARGET_OPTIONAL:-}" == "1" ]]; then
+        export JTS_TARGET_FROM=unset
+        unset PI_HOST
+    elif [[ "$_jts_lib_identity_rc" != 0 ]]; then
+        printf '%s%s\n' \
+            "_lib.sh: this box's recorded identity is in collision or drift — the " \
+            "name it was configured with resolves to another speaker; set PI_HOST=<host>" >&2
+        exit 78
+    else
+        jts_lib_require_target
+    fi
 fi
 if [[ -n "$_jts_lib_caller_user" ]]; then
     export PI_USER="$_jts_lib_caller_user"
 fi
 export PI_USER="${PI_USER:-pi}"
-unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user
+unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user \
+    _jts_lib_identity_host _jts_lib_identity_rc
 
 # Print the Python executable for repository-bound laptop tooling.
 # Precedence is the effective PYTHON value (one executable token/path),

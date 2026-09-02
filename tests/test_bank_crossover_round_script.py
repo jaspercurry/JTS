@@ -39,12 +39,15 @@ SCRIPT = ROOT / "scripts" / "bank-crossover-round.sh"
 def _run(
     *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    # The script targets a speaker, so _lib.sh requires one to be named
+    # (#3498) — nothing here reaches the network, so an unroutable name
+    # keeps the refusal under test the dest-dir one.
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=env if env is not None else {**os.environ, "PI_HOST": "jts9.invalid"},
     )
 
 

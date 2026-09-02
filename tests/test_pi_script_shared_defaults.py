@@ -15,6 +15,8 @@ import textwrap
 
 import pytest
 
+from scripts import _pi_target
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_NAMES = (
@@ -33,6 +35,23 @@ INVOCATIONS = {
     "verify-ref-no-silence-bug.sh": ([], 1),
     "wake-rate-test.sh": (["1"], 23),
 }
+
+
+# sysexits EX_CONFIG: _lib.sh refuses rather than guess a speaker (#3498).
+NO_TARGET_EXIT = 78
+
+
+def _identity_file(tmp_path: Path, extra: str = "") -> Path:
+    """A reconciler-shaped identity.env, as jasper-identity-reconcile writes
+    it (key names owned by jasper/identity_state.py)."""
+    path = tmp_path / "identity.env"
+    path.write_text(
+        "JASPER_IDENTITY_OS_HOSTNAME=jts7\n"
+        "JASPER_IDENTITY_AVAHI_HOSTNAME=jts7.local\n"
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts7.local\n" + extra,
+        encoding="utf-8",
+    )
+    return path
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -114,6 +133,9 @@ def _run_script(
     env = os.environ.copy()
     for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
         env.pop(key, None)
+    # Hermetic against a real box: point the on-box identity lookup at a
+    # path that does not exist unless a test names one.
+    env["JASPER_IDENTITY_FILE"] = str(repo / "absent-identity.env")
     env.update(inherited)
     env.update(
         {
@@ -250,10 +272,12 @@ def test_jasper_hostname_compatibility_fallback_comes_from_shared_owner(
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
-def test_final_pi_target_defaults_come_from_shared_owner(
+def test_unnamed_target_refuses_instead_of_guessing_a_speaker(
     script_repo: tuple[Path, Path, Path],
     name: str,
 ) -> None:
+    """#3498: `jts.local` resolves to whichever box on the LAN claimed the
+    name, so an unnamed target is a refusal — never a guess, never ssh."""
     result, calls = _run_script(
         script_repo,
         name,
@@ -261,8 +285,156 @@ def test_final_pi_target_defaults_come_from_shared_owner(
         inherited={},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
-    assert "pi@jts.local" in calls
+    assert result.returncode == NO_TARGET_EXIT, result.stdout + result.stderr
+    assert calls == ""
+
+
+def test_on_box_identity_file_supplies_the_target(
+    script_repo: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """Run ON a speaker there IS a right answer: the hostname the
+    reconciler recorded for this box (jasper/identity_state.py's file)."""
+    result, calls = _run_script(
+        script_repo,
+        "tail-pi-logs.sh",
+        env_local=None,
+        inherited={"JASPER_IDENTITY_FILE": str(_identity_file(tmp_path))},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pi@jts7.local" in calls
+
+
+@pytest.mark.parametrize(
+    "flag", ["JASPER_IDENTITY_COLLISION", "JASPER_IDENTITY_DRIFT"]
+)
+def test_a_disagreeing_on_box_identity_refuses_instead_of_naming_a_speaker(
+    script_repo: tuple[Path, Path, Path],
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    """The reconciler flags the recorded names as disagreeing exactly when
+    the configured one resolves to a DIFFERENT box on the LAN, so there is
+    no name left to hand out (#3498)."""
+    result, calls = _run_script(
+        script_repo,
+        "tail-pi-logs.sh",
+        env_local=None,
+        inherited={
+            "JASPER_IDENTITY_FILE": str(_identity_file(tmp_path, f"{flag}=1\n")),
+        },
+    )
+
+    assert result.returncode == NO_TARGET_EXIT, result.stdout + result.stderr
+    assert calls == ""
+
+
+def test_the_effective_mdns_name_outranks_the_configured_one(
+    script_repo: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """What the LAN answers to is what reaches this box. A file recording
+    the two without a collision/drift flag predates them; the effective
+    name is still the one that resolves."""
+    path = tmp_path / "identity.env"
+    path.write_text(
+        "JASPER_IDENTITY_AVAHI_HOSTNAME=jts7-2.local\n"
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts7.local\n",
+        encoding="utf-8",
+    )
+
+    result, calls = _run_script(
+        script_repo,
+        "tail-pi-logs.sh",
+        env_local=None,
+        inherited={"JASPER_IDENTITY_FILE": str(path)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pi@jts7-2.local" in calls
+
+
+def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
+    script_repo: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--host <ip>` on a laptop script names the target itself, so _lib.sh's
+    refusal must not swallow it -- while the checkout's PI_USER still
+    applies (scripts/_pi_target.py's per-field override)."""
+    repo, _fake_bin, _log = script_repo
+    monkeypatch.setattr(_pi_target, "LIB_SH", repo / "scripts" / "_lib.sh")
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(repo / "absent-identity.env"))
+
+    assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
+        "192.168.1.5", "pi")
+
+    (repo / ".env.local").write_text("PI_USER=checkout-user\n", encoding="utf-8")
+    assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
+        "192.168.1.5", "checkout-user")
+
+
+def test_explicit_target_outranks_the_on_box_identity_file(
+    script_repo: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_script(
+        script_repo,
+        "tail-pi-logs.sh",
+        env_local=None,
+        inherited={
+            "JASPER_IDENTITY_FILE": str(_identity_file(tmp_path)),
+            "PI_HOST": "explicit.invalid",
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pi@explicit.invalid" in calls
+    assert "jts7.local" not in calls
+
+
+# Scripts whose --help / usage path runs AFTER they source _lib.sh, with the
+# argv that reaches the speaker. They defer the refusal instead of taking it
+# at source time, so help stays readable on a checkout with no target set.
+_HELP_BEFORE_TARGET = (
+    ("multiroom-spike.sh", ["--help"], ["--teardown"]),
+    ("pi-run-diagnostic.sh", ["--help"], ["--", "true"]),
+)
+
+
+@pytest.mark.parametrize(
+    ("script", "help_args", "action_args"),
+    _HELP_BEFORE_TARGET,
+    ids=[case[0] for case in _HELP_BEFORE_TARGET],
+)
+def test_help_needs_no_target_but_the_action_still_refuses(
+    tmp_path: Path,
+    script: str,
+    help_args: list[str],
+    action_args: list[str],
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    for name in ("_lib.sh", script):
+        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
+    env = os.environ.copy()
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        env.pop(key, None)
+    env["JASPER_IDENTITY_FILE"] = str(repo / "absent-identity.env")
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(repo / "scripts" / script), *args],
+            env=env, capture_output=True, text=True, timeout=15,
+        )
+
+    helped = _run(help_args)
+    assert helped.returncode == 0, helped.stdout + helped.stderr
+    assert (helped.stdout + helped.stderr).strip()
+
+    assert _run(action_args).returncode == NO_TARGET_EXIT
 
 
 def test_gemini_unknown_alias_exits_without_network(

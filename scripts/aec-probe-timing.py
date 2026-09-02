@@ -933,9 +933,31 @@ def pull_remote_dir(*, target: str, remote_dir: str, local_parent: Path) -> Path
     return safe_extract_tar(result.stdout, local_parent)
 
 
+def ssh_target(args: argparse.Namespace) -> str:
+    """``user@host`` for the laptop -> Pi hop, resolved by the shared
+    scripts/_pi_target.py: ``--pi-host`` wins for the host only, and
+    nothing naming a speaker is a refusal, never ``jts.local`` (#3498).
+
+    Imported HERE rather than at module scope: this same file is piped to
+    the Pi and re-run with --run-on-pi, where that module is not on the
+    path and no target needs resolving.
+    """
+    try:
+        from _pi_target import LibTargetError, resolve_pi_target
+    except ModuleNotFoundError as exc:
+        if exc.name != "_pi_target":
+            raise
+        from scripts._pi_target import LibTargetError, resolve_pi_target
+    try:
+        host, user = resolve_pi_target(host_override=args.pi_host)
+    except LibTargetError as exc:
+        raise SystemExit(str(exc)) from exc
+    return f"{args.pi_user or user}@{host}"
+
+
 def run_via_ssh(args: argparse.Namespace) -> int:
     script_text = Path(__file__).read_text(encoding="utf-8")
-    target = f"{args.pi_user}@{args.pi_host}"
+    target = ssh_target(args)
     remote_args = [
         "sudo",
         args.remote_python,
@@ -1002,8 +1024,10 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--run-on-pi", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--pi-host", default=os.environ.get("PI_HOST", os.environ.get("JASPER_HOSTNAME", "jts.local")))
-    parser.add_argument("--pi-user", default=os.environ.get("PI_USER", "pi"))
+    # Both default to None: scripts/_pi_target.py resolves the unnamed half
+    # (see ssh_target), and only the laptop side needs one at all.
+    parser.add_argument("--pi-host", default=None)
+    parser.add_argument("--pi-user", default=None)
     parser.add_argument("--remote-python", default=DEFAULT_REMOTE_PYTHON)
     parser.add_argument(
         "--ref-source",
