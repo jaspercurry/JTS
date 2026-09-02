@@ -1457,6 +1457,41 @@ def test_manage_units_empty_units_is_noop():
     assert resp["units"] == []
 
 
+@pytest.mark.parametrize("reset_ok", [True, False])
+def test_reset_then_manage_runs_the_action_whatever_the_reset_did(
+    monkeypatch, reset_ok,
+):
+    """The single owner of "clear the budget, then act anyway".
+
+    ``reset-failed`` is denied for START_ONLY units and exits nonzero against
+    an already-GC'd oneshot (#3237), so its verdict may never gate — or be
+    mistaken for — the action's. This is the pin every caller of
+    :func:`restart_broker.reset_then_manage` inherits instead of restating.
+    """
+    calls: list[tuple[str, str, bool, float]] = []
+
+    def fake_manage(*units, verb="restart", reason="", no_block=True, timeout=5.0):
+        calls.append((units[0], verb, no_block, timeout))
+        if verb == "reset-failed":
+            return {"ok": reset_ok, "error": "" if reset_ok else "denied"}
+        return {"ok": True, "action": verb, "units": list(units)}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage)
+
+    resp = restart_broker.reset_then_manage(
+        "jasper-fanin.service", verb="restart", reason="t", timeout=8.0,
+    )
+
+    assert resp == {
+        "ok": True, "action": "restart", "units": ["jasper-fanin.service"],
+    }
+    assert calls == [
+        ("jasper-fanin.service", "reset-failed", False,
+         restart_broker._RESET_TIMEOUT_SEC),
+        ("jasper-fanin.service", "restart", True, 8.0),
+    ]
+
+
 def test_manage_units_prefers_broker_over_fallback(broker, monkeypatch):
     """When the broker IS reachable, manage_units uses it and never touches
     the direct path — even as root."""
