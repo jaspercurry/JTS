@@ -97,9 +97,14 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.camilla_emit import emit_peaking_biquad
+from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
+
+#: The CLI tests here build a packet from a live session bundle with no
+#: --drivers/--applied-profile, so none may read this machine's own.
+pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
 
 REPO = Path(__file__).resolve().parents[1]
 BAND = (824.35, 3297.4)
@@ -2825,8 +2830,8 @@ def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
     # this reference packet's fingerprint matches the one the CLI builds.
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     code, out, _ = _run_cli(
@@ -2856,8 +2861,8 @@ def _saved_packet(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = tmp_path / "packet.json"
     path.write_text(json.dumps(packet))
@@ -2975,8 +2980,8 @@ def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     payload = json.dumps(_document([_cut(-1.5)], packet)).encode()
     code, out, _ = _run_cli(
@@ -3026,8 +3031,8 @@ def test_a_refusal_exits_two_and_prints_the_machine_readable_payload(
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = _write_document(tmp_path, _document(filters, packet))
     code, out, err = _run_cli(
@@ -3076,8 +3081,8 @@ def test_a_refusal_from_the_candidate_seam_still_exits_two(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     with mock.patch.object(

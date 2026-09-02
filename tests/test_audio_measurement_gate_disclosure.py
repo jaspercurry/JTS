@@ -317,6 +317,23 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
             gating.ENTANGLEMENT_SOURCE_UNKNOWN,
             None,
         ),
+        # A measured arrival so early it's a subnormal float: it survives
+        # ``_finite``'s screen but the formula's quotient overflows past a
+        # finite float, so this must fall through rather than raise.
+        (
+            {"schema_version": 2, "floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 0.0, "first_reflection_ms": 1e-317},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # Same overflow, reached through the declared fallback instead.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            1e-309,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
     ],
 )
 def test_entanglement_floor_prefers_measured_then_declared_then_unknown(

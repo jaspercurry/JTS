@@ -152,33 +152,23 @@ _UNSET = _Unset()
 
 
 def _active_camilla_floor(field: str) -> int | None:
-    """Resolve the active output DAC profile's codified CamillaDSP floor field.
+    """The active output DAC's codified ``LatencyFloor.<field>``, or None.
 
-    Reads the resolved output-hardware state the audio-hardware reconciler
-    writes (``/run/jasper-output-hardware/output_hardware.json``, overridable
-    via ``JASPER_OUTPUT_HARDWARE_STATE_PATH``) — the SAME profile resolution
-    ``jasper.output_hardware`` / the reconciler use to pick a profile id — and
-    returns that profile's ``LatencyFloor.<field>`` (``camilla_chunksize`` or
-    ``camilla_target_level``), or ``None`` when the state is unreadable, the
-    profile is unknown, or the DAC declares no floor. Best-effort and
-    env-independent on purpose: a fresh box reproduces the tuned floor with no
-    per-user config, and a box whose state file is not yet written simply keeps
-    the global default rather than failing config generation. Import of the
-    hardware modules is deferred so this contract module stays import-cheap for
-    the socket-activated web surfaces that never call it.
+    None when the reconciler has resolved no DAC, the profile is unknown, or
+    the DAC declares no floor — the caller then keeps the global default, so
+    a box whose record is not yet written still generates a config. The
+    hardware modules are imported lazily so this contract module stays
+    import-cheap for the socket-activated web surfaces that never call it.
     """
     try:
         from jasper.audio_hardware.dac import latency_floor_for
-        from jasper.output_hardware import load_state
+        from jasper.output_hardware import active_dac_profile_id
     except ImportError:
         return None
-    # load_state is itself fail-soft (OSError / JSONDecodeError → None); it does
-    # not raise for a missing or malformed state file. No floor when the state is
-    # unreadable or the profile is unknown / declares no floor.
-    state = load_state()
-    if state is None or not state.profile_id:
+    profile_id = active_dac_profile_id()
+    if profile_id is None:
         return None
-    floor = latency_floor_for(state.profile_id)
+    floor = latency_floor_for(profile_id)
     if floor is None:
         return None
     return getattr(floor, field, None)

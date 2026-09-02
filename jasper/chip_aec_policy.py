@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from .audio_hardware import dac as dac_profiles
+from .output_hardware import published_dac_id
 
 
 DacChipAecStatus = Literal["approved", "needs_calibration"]
@@ -336,7 +337,7 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
     )
     if not status:
         return None
-    active_dac_id = normalize_dac_id(env.get("JASPER_AUDIO_DAC_ID", "unknown"))
+    active_dac_id = normalize_dac_id(published_dac_id(env))
     raw_gate_dac_id = str(env.get("JASPER_AEC_CHIP_AEC_DAC_ID") or "").strip()
     if not raw_gate_dac_id:
         return None

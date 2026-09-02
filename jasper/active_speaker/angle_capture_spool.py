@@ -64,6 +64,10 @@ from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_measurement.measurement_geometry import (
+    DeclaredGeometry,
+    GeometryFieldError,
+)
 from jasper.log_event import log_event
 
 from .angle_capture import AngleCaptureRequest, AngleStop
@@ -268,6 +272,10 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
         "program": request.program,
+        # The household's tape measure, or null when nobody was asked. Written
+        # unconditionally and read back defaulted, on the same additive terms
+        # as the keys above, so the schema version does not move.
+        "declared_geometry": request.declared_geometry_record(),
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a
@@ -277,6 +285,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
                 "angle_deg": stop.angle_deg,
                 "regime": stop.regime,
                 "elevation_deg": stop.elevation_deg,
+                "candidate_id": stop.candidate_id,
             }
             for stop in request.stops
         ],
@@ -300,6 +309,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
         level_matched=request.level_matched,
+        declared_geometry=request.declared_geometry is not None,
         replaced=replaced,
     )
     return path
@@ -492,6 +502,22 @@ def _coerced_delay_us(raw: Any) -> float:
             SPOOL_MALFORMED,
             f"the staged walk's delay_us is not a number: {raw!r}",
         )
+def _declared_geometry(block: object) -> DeclaredGeometry | None:
+    """The banked geometry, or ``None`` when the walk carries none.
+
+    A block that is PRESENT and unusable refuses rather than reading as
+    absent: an operator who stated the room's heights and got a session that
+    silently banked no geometry would find out only when the offline reader
+    had nothing to compute the entanglement floor from.
+    """
+    if block is None:
+        return None
+    if not isinstance(block, Mapping):
+        _refuse(SPOOL_MALFORMED, "declared_geometry is not a JSON object")
+    try:
+        return DeclaredGeometry.from_dict(block)
+    except GeometryFieldError as exc:
+        _refuse(SPOOL_MALFORMED, f"declared_geometry is unusable: {exc}")
 
 
 def _validate(raw: bytes) -> AngleCaptureRequest:
@@ -569,9 +595,11 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
             AngleStop(
                 entry.get("angle_deg"),  # type: ignore[arg-type]
                 str(entry.get("regime")),
-                # A document staged before this key existed is a walk at
-                # mark height, so the schema version does not move.
+                # A document staged before either key existed is a walk at
+                # mark height measuring the speaker as it stands, so the schema
+                # version does not move for them.
                 entry.get("elevation_deg", 0),  # type: ignore[arg-type]
+                str(entry.get("candidate_id") or ""),
             )
         )
     return AngleCaptureRequest(
@@ -583,6 +611,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         delay_us=_coerced_delay_us(doc.get("delay_us")),
         level_matched=bool(doc.get("level_matched")),
         program=str(doc.get("program") or ""),
+        declared_geometry=_declared_geometry(doc.get("declared_geometry")),
     )
 
 

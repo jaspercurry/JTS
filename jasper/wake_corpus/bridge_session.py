@@ -77,6 +77,7 @@ from .capture_plan import (
     WakeCorpusCapturePlan,
     fingerprint_mapping,
 )
+from jasper.output_hardware import published_dac_id
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
@@ -102,7 +103,7 @@ def _chip_aec_gate_for_status(
     if runtime_gate is not None:
         return runtime_gate.to_dict()
     return resolve_chip_aec_dac_gate(
-        system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+        published_dac_id(system_env),
         testing_requested=testing_requested,
     ).to_dict()
 
@@ -1964,7 +1965,7 @@ def _capture_plan_runtime_snapshot() -> dict[str, Any]:
         "chip_primary_leg": merged_env.get("JASPER_AEC_CHIP_AEC_PRIMARY_LEG", ""),
     }
     dac_reference_fingerprint_source = {
-        "audio_dac_id": system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+        "audio_dac_id": published_dac_id(system_env),
         "dac": dac_reference.get("dac"),
         "reference": dac_reference.get("reference"),
         "chip_gate": chip_gate_identity(chip_gate),

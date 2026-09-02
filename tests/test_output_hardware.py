@@ -1175,3 +1175,81 @@ def test_published_record_carries_the_partial_composite_reason(
     assert [issue["code"] for issue in published["issues"]] == [
         "saved_composite_partially_present"
     ]
+
+
+def test_active_dac_profile_id_reads_only_the_reconciler_record(
+    tmp_path, monkeypatch,
+) -> None:
+    from jasper.output_hardware import (
+        active_dac_profile_id,
+        load_state,
+        published_dac_id,
+        write_state,
+    )
+
+    path = tmp_path / "output_hardware.json"
+    # The env publication names a DAC throughout; the resolver never reads it.
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", HIFIBERRY_DAC8X_DEVICE_ID)
+
+    assert active_dac_profile_id(path) is None
+    write_state(
+        OutputHardwareState(
+            profile_id="unknown", profile_label="", status="missing",
+            physical_output_count=0,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) is None
+    assert load_state(path).observed_profile_id is None
+    # A single DAC needs BOTH ready status AND a selected card — mirrors the
+    # bash reconciler's own `apply_observed_single_policy` gate bit for bit.
+    # OBSERVED does not care; the record already names the hardware it saw.
+    write_state(
+        OutputHardwareState(
+            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, profile_label="Apple",
+            status="ready", physical_output_count=2,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) is None
+    assert load_state(path).observed_profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+    write_state(
+        OutputHardwareState(
+            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, profile_label="Apple",
+            status="ready", physical_output_count=2, selected_card_id="A",
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) == APPLE_USB_C_DONGLE_DEVICE_ID
+    assert load_state(path).observed_profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+    # The reconciler's rule: a single DAC counts as ACTIVE only while ready;
+    # OBSERVED does not care — the record still names the hardware it saw.
+    write_state(
+        OutputHardwareState(
+            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, profile_label="Apple",
+            status="partial", physical_output_count=2, selected_card_id="A",
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) is None
+    assert load_state(path).observed_profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+    # The dual-Apple composite counts as ACTIVE as soon as it is named, parked
+    # or not, so observed and active agree here.
+    write_state(
+        OutputHardwareState(
+            profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID, profile_label="Dual",
+            status="partial", physical_output_count=4,
+        ),
+        path,
+    )
+    assert active_dac_profile_id(path) == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert (
+        load_state(path).observed_profile_id
+        == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    )
+
+    assert published_dac_id({}) == "unknown"
+    assert (
+        published_dac_id({"JASPER_AUDIO_DAC_ID": HIFIBERRY_DAC8X_DEVICE_ID})
+        == HIFIBERRY_DAC8X_DEVICE_ID
+    )

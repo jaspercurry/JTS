@@ -28,6 +28,7 @@ from jasper.output_topology import (
     HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     PAIRING_INTENTS,
+    OutputHardware,
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
@@ -35,7 +36,7 @@ from jasper.output_topology import (
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
-    hardware_from_env,
+    unknown_output_hardware,
     load_output_topology,
     load_output_topology_snapshot,
     load_output_topology_strict,
@@ -260,43 +261,61 @@ def test_passive_shape_predicates_separate_subless_from_with_sub() -> None:
     assert topology_is_subless_passive_mains(_topology(groups=[])) is False
 
 
-def test_hardware_from_env_reports_known_output_counts() -> None:
-    dac8x = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
-        "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
-    })
-    apple = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
-        "JASPER_AUDIO_DAC_CARD": "A",
-    })
-    dual_apple = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": DUAL_APPLE_ACTIVE_DEVICE_ID,
-    })
-    dac8x_studio = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
-        "JASPER_AUDIO_DAC_CARD": "DAC8XStudio",
-    })
-    unknown = hardware_from_env({})
+def test_unknown_output_hardware_declares_no_outputs() -> None:
+    unknown = unknown_output_hardware()
 
-    assert dac8x.physical_output_count == 8
-    assert dac8x.outputs[4].human_label == "DAC output 5"
-    assert dac8x.clock_domain_id == "alsa:sndrpihifiberry"
-    assert apple.physical_output_count == 2
-    assert apple.clock_domain_label == "Single Apple USB audio device clock"
-    assert dual_apple.physical_output_count == 4
-    assert dual_apple.clock_domain_id == "profile:dual-apple-usb-c-dac-4ch"
-    assert dual_apple.device_label == "Dual Apple USB-C DAC 4-channel pair"
-    assert dac8x_studio.physical_output_count == 8
-    assert dac8x_studio.device_label == "HiFiBerry DAC8x Studio"
-    assert dac8x_studio.clock_domain_id == "alsa:DAC8XStudio"
+    assert unknown.device_id == "unknown"
     assert unknown.physical_output_count == 0
     assert unknown.outputs == ()
 
 
+@pytest.mark.parametrize(
+    "hardware,clock_domain_id",
+    [
+        (
+            {
+                "device_id": "hifiberry_dac8x",
+                "device_label": "HiFiBerry DAC8x",
+                "physical_output_count": 8,
+                "card_id": "sndrpihifiberry",
+            },
+            "alsa:sndrpihifiberry",
+        ),
+        (
+            {
+                "device_id": "dual_apple_usb_c_dac_4ch",
+                "device_label": "Dual Apple USB-C DAC 4-channel pair",
+                "physical_output_count": 4,
+            },
+            "profile:dual-apple-usb-c-dac-4ch",
+        ),
+    ],
+)
+def test_loaded_hardware_derives_clock_domain_and_output_labels(
+    hardware, clock_domain_id,
+) -> None:
+    loaded = OutputHardware.from_mapping(hardware)
+
+    assert loaded.clock_domain_id == clock_domain_id
+    assert [output.human_label for output in loaded.outputs] == [
+        f"DAC output {index + 1}" for index in range(hardware["physical_output_count"])
+    ]
+
+
+def test_topology_draft_reads_the_reconciler_record_never_the_env(monkeypatch) -> None:
+    """With no usable record the draft is unknown hardware, whatever the env
+    publication says — the env copy can outlive the DAC it names."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
+    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+
+    draft = new_topology_draft()
+
+    assert draft.hardware.device_id == "unknown"
+    assert draft.hardware.physical_output_count == 0
+
+
 def test_empty_topology_draft_is_honest_and_no_audio_allowed() -> None:
-    topology = new_topology_draft(
-        hardware=hardware_from_env({"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"})
-    )
+    topology = new_topology_draft(hardware=OutputHardware.from_mapping(_base_hardware()))
     payload = topology.to_dict(include_evaluation=True)
 
     assert payload["status"] == "draft"
@@ -835,9 +854,11 @@ def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
 
 def test_clock_domain_report_flags_unknown_output_clocking() -> None:
     topology = new_topology_draft(
-        hardware=hardware_from_env({
-            "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
-            "JASPER_AUDIO_DAC_CARD": "Mystery",
+        hardware=OutputHardware.from_mapping({
+            "device_id": "mystery_usb_audio",
+            "device_label": "Mystery USB audio",
+            "physical_output_count": 2,
+            "card_id": "Mystery",
         })
     )
 

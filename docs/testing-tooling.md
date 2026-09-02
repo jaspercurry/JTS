@@ -2222,14 +2222,26 @@ tournament's "dominance decides" rule was actually judged on (issue #2769).
 `captures/` is gitignored; those originals never entered the repo, so there is
 nothing to `git rm` — this tool is the one copy going forward.
 
-Every subcommand reads a *banked round directory*, the tree
-`scripts/bank-crossover-round.sh <dest-dir>` produces (see
-["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
+Every subcommand reads a round directory in either of the two shapes a round
+comes in, told apart by
+[`round_inputs`](../jasper/active_speaker/crossover_v2/round_inputs.py): a
+*banked round directory*, the tree `scripts/bank-crossover-round.sh
+<dest-dir>` produces (see
+["Crossover-v2 round banking"](#crossover-v2-round-banking) above) — a
 `bundle/<session>/` evidence bundle and optional `state.json` /
-`design-draft.json` / `applied-profile.json`. `jasper-round-views` reads no
-`dumps/` tree: the ring is
-gone and the packet it builds takes no path into one. No file is globbed or
-re-parsed by hand — positions and the graded spec come from
+`design-draft.json` / `applied-profile.json` — or a *live session bundle*
+still on the speaker (`/var/lib/jasper/active_speaker/sessions/<id>`), whose
+three non-bundle inputs come from their on-Pi SSOT paths instead, so a round
+can be graded before it is banked. `per-seat` and `agreement` say which shape
+was read in their `banked` field. A live bundle borrows the speaker's one flow
+state only when that state names the same session the bundle filed its round
+artifacts under — a dozen session directories are retained against one state
+file, so an older one grades with no state rather than with the current
+round's. Views land in a banked round's own tree, and beside the caller for a
+live one (the session directory is the daemon's). `jasper-round-views` reads
+no `dumps/` tree: the ring is gone and the packet it builds takes no path into
+one. No file is globbed or re-parsed by hand — positions and the graded spec
+come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
 grading comes from
 [`flat_spec.evaluate_flat_spec`](../jasper/active_speaker/flat_spec.py) and
@@ -2385,6 +2397,12 @@ jasper-angle-capture stage --program baseline --size express
 jasper-angle-capture plan  --program baseline --size full     # dry run
 jasper-angle-capture stage --program spot --azimuth 22 --elevation 10
 
+# THE CANDIDATE CYCLE: the same poses, once per banked candidate, adjacent so
+# the microphone moves once per pose. Each plays the ALIGNMENT it was minted
+# with; a candidate carrying linearization EQ, or another crossover corner, is
+# refused rather than measured as something it is not.
+jasper-angle-capture stage --program tournament --size full --candidates fp1,fp2
+
 # THE OPERATOR ESCAPE HATCH: a free-form angle list no program names.
 jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
 jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
@@ -2392,6 +2410,11 @@ jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 # R-1's reverse-null: the same walk, with this session's design-axis MEASURE
 # capture riding the tweeter branch sign-flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
+
+# THE ROOM the household measured, asked once and banked with the session
+jasper-angle-capture stage --program baseline --size express \
+  --speaker-height-m 0.92 --mic-height-m 1.0 --distance-m 1.0 \
+  --ceiling-height-m 2.44
 
 # withdraw the staged walk
 jasper-angle-capture withdraw
@@ -2433,6 +2456,23 @@ would silently turn a just-off-axis request into an **on-axis** capture. There
 is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
 the regime vocabulary and the mover vocabulary are all
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
+
+`--speaker-height-m` / `--mic-height-m` / `--distance-m` are the
+household's own tape measure in **metres** (`--ceiling-height-m` optional), and
+are stated together or not at all; omit all three and `stage` falls back to
+whatever `jasper-declare-geometry set` stored on the box, which is the same
+[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) the
+flags build. The driving LLM asks once, in-session; the
+walk carries them to the session, which banks them as
+`crossover_v2/<relay_session_id>/declared_geometry.json` and reports them at
+`session.declared_geometry` in the evidence packet — an absence block naming
+its reason when there is no room to report, so "nobody was asked" and "the
+banked file could not be read" never read alike. The declaration rides the
+durable state into the grading stage, which re-banks it in its own bundle.
+Nothing in the session computes from them — the room's entanglement floor
+(`2.5 / t_first_bounce`) is an offline toolbox step, and this human answer is
+its only viable source because the reflection finder is structurally blind on
+this rig class.
 
 **`--polarity` / `--inverted-role` are WALK-level, not per angle**, because the
 reverse-null is one act at one place: the pair names what this session's

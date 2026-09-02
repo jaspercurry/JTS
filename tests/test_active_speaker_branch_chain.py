@@ -33,8 +33,10 @@ from jasper.active_speaker.branch_chain import (
     confirmed_protection_sections,
     crossover_response_complex,
     crossover_response_db,
+    far_field_ceiling_hz,
     headroom_charge_db,
     radiating_band_hz,
+    recommended_distance,
 )
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 # The runtime re-proof's own float slack, imported rather than restated so the
@@ -995,3 +997,40 @@ def test_the_model_is_the_butterworth_biquad_cascade_the_graph_realizes(
         freqs, (CrossoverSection(fc_hz, order, highpass=highpass),)
     )
     assert float(np.max(np.abs(actual_db - expected_db))) < 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# piston geometry: where a close reference stands (#3501)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "diameter_in, fc_hz, expected_in",
+    [(5.5, 2500.0, 12.4), (12.0, 500.0, 25.3), (2.5, 2500.0, 5.3)],
+)
+def test_recommended_distance_lands_where_the_issue_says(
+    diameter_in, fc_hz, expected_in
+):
+    record = recommended_distance(diameter_in * 0.0254, fc_hz)
+    assert record["distance_in"] == pytest.approx(expected_in, abs=0.1)
+    assert record["distance_m"] == pytest.approx(
+        record["far_field_term_m"] + record["margin_term_m"]
+    )
+    assert record["far_field_ceiling_hz"] > record["band_top_hz"]
+    # The margin is the dominant term at every anchor; the far-field distance
+    # is the correction on top, which is why both are published separately.
+    assert record["margin_term_m"] > record["far_field_term_m"]
+    # A tolerance is a MAGNITUDE, never a signed gain to apply.
+    assert record["placement_tolerance_db"] > 0.0
+
+
+def test_the_far_field_criterion_is_a_ceiling_not_a_floor():
+    """A close mic is near-field at HIGH frequencies, never at low ones: the
+    Rayleigh distance grows with frequency, so solving it for f bounds above."""
+    near = far_field_ceiling_hz(0.1397, 0.30)
+    far = far_field_ceiling_hz(0.1397, 1.00)
+    assert far > near
+    # Twice the aperture radius is four times the Rayleigh distance.
+    assert far_field_ceiling_hz(2.0 * 0.1397, 1.00) == pytest.approx(0.25 * far)
+    with pytest.raises(ValueError):
+        far_field_ceiling_hz(0.0, 1.00)

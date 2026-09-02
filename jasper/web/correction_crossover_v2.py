@@ -133,9 +133,6 @@ logger = logging.getLogger(__name__)
 
 STATE_SCHEMA_VERSION = 1
 STATE_KIND = "jts_crossover_v2_flow_state"
-DEFAULT_V2_STATE_PATH = Path(
-    "/var/lib/jasper/active_speaker_crossover_v2_state.json"
-)
 
 # The wizard-facing relay kind label (mirrors the legacy
 # "crossover_sweep:<kind>" labels so /status.relay consumers need no new
@@ -143,14 +140,15 @@ DEFAULT_V2_STATE_PATH = Path(
 V2_RELAY_KIND_SESSION = "crossover_v2:session"
 V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 
-# The durable v2 state document's own vocabulary and its schema live in
-# :mod:`jasper.active_speaker.crossover_v2.durable_state`, which owns what the
-# file CONTAINS in both directions. This module owns the FILE — where it lives,
-# when it is written, and how durably. Re-bound here under their historical
+# The durable v2 state document's own vocabulary, its schema, and its one
+# on-Pi path live in :mod:`jasper.active_speaker.crossover_v2.durable_state`,
+# which owns what the file CONTAINS in both directions. This module owns the
+# WRITE — when it happens and how durably. Re-bound here under their historical
 # names because that is where the endpoints suite and the status projection
 # name them.
 FINDING_HOUSEHOLD_REFS_KEY = _durable.FINDING_HOUSEHOLD_REFS_KEY
 MAX_PERSISTED_SUM_POINTS = _durable.MAX_PERSISTED_SUM_POINTS
+DEFAULT_V2_STATE_PATH = _durable.DEFAULT_V2_STATE_PATH
 
 _state_lock = threading.RLock()
 _state_path_override: Path | None = None
@@ -1955,9 +1953,11 @@ def _take_staged_angle_walk(
     capture_source: str,
     preset: Any,
     topology: Any,
-) -> tuple[tuple[Any, ...], str, Any, dict[str, float]] | None:
-    """This session's staged angle walk as ``(poses, consumer, spec, trims)``,
-    or ``None``.
+) -> tuple[
+    tuple[Any, ...], str, dict[int, Any], dict[str, float], Any, tuple[Any, ...]
+] | None:
+    """This session's staged angle walk as
+    ``(poses, consumer, specs, trims, geometry, claims)``, or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
     ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
@@ -1983,13 +1983,22 @@ def _take_staged_angle_walk(
     rather than read from the document, because it decides which pose table the
     walk runs and may have exactly one writer.
 
-    ``spec`` is this session's MEASURE ``MeasureSpec``, built HERE because
-    adoption is where the document's ``(polarity, inverted_role)`` pair first
-    meets the gate that judges it. Built rather than checked: the same object
-    the engine leg plays, so no second construction can disagree with the one
-    that was validated. A pair ``MeasureSpec.__post_init__`` refuses therefore
-    refuses the open here, in the spec's own sentence, rather than reaching a
-    capture callback as a 500.
+    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, built
+    HERE because adoption is where the document's ``(polarity, inverted_role)``
+    pair first meets the gate that judges it. Built rather than checked: the
+    same objects the engine leg plays, so no second construction can disagree
+    with the one that was validated. A pair ``MeasureSpec.__post_init__``
+    refuses therefore refuses the open here, in the spec's own sentence, rather
+    than reaching a capture callback as a 500.
+
+    The design-axis MEASURE index is always in the map, carrying the walk-level
+    spec. A STOP is in it only when it names a candidate: a candidate is played
+    as the alignment it was minted with, which only the engine leg can install,
+    where a walk naming none is the shipped one and stays on the leg it already
+    ran on. ``claims`` is what each stop's graph CARRIED — the candidate, the
+    polarity it rode, the level match it played through — for the pose records
+    the flow banks, so a reader selecting by candidate sees the graph the take
+    was measured under rather than the default one.
 
     ``trims`` is the per-role attenuation a ``--level-matched`` walk's graph
     will carry, RESOLVED HERE and empty for every walk that asked for none.
@@ -2037,6 +2046,7 @@ def _take_staged_angle_walk(
     a resumed half-walk would bank poses under a consumer nothing re-declared.
     """
     from jasper.active_speaker.angle_capture import (
+        WALK_CANDIDATE_NOT_MEASURABLE,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NEEDS_WIRED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
@@ -2045,7 +2055,12 @@ def _take_staged_angle_walk(
         WALK_POLARITY_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
+        candidate_measure_axes,
         session_lateral_walk,
+    )
+    from jasper.active_speaker.candidate_bank import (
+        CandidateBankRefusal,
+        find_banked_candidate,
     )
     from jasper.active_speaker.angle_capture_spool import (
         AngleRequestRefused,
@@ -2053,6 +2068,7 @@ def _take_staged_angle_walk(
         take_staged_angle_request,
     )
     from jasper.active_speaker.crossover_v2.capture_plan import (
+        build_v2_cloud_index_phase_map,
         position_angle_deg,
         position_elevation_deg,
     )
@@ -2062,11 +2078,14 @@ def _take_staged_angle_walk(
     )
     from jasper.active_speaker.crossover_v2.journey import (
         LATERAL_CONSUMER_FORWARD_MODEL,
+        PHASE_LATERAL,
+        PHASE_MEASURE,
     )
     from jasper.active_speaker.crossover_v2.measure_spec import (
         MeasureSpec,
         inverted_roles_for,
     )
+    from jasper.active_speaker.crossover_v2.spatial import TakeClaim
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2166,6 +2185,82 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
+    candidate_ids = tuple(stop.candidate_id for stop in request.stops)
+    if any(candidate_ids) and capture_source != SOURCE_WIRED:
+        raise refused(
+            WALK_CANDIDATE_NOT_MEASURABLE,
+            "a candidate is played as the alignment it was minted with, which "
+            f"rides the engine MEASURE leg only a {SOURCE_WIRED} session "
+            f"binds; this session's capture source is {capture_source!r}",
+        )
+    try:
+        axes_by_candidate = {
+            candidate_id: candidate_measure_axes(
+                find_banked_candidate(candidate_id).candidate, preset=preset,
+            )
+            for candidate_id in sorted(set(candidate_ids) - {""})
+        }
+    except LateralWalkRefused as exc:
+        raise refused(exc.reason, exc.detail) from exc
+    except CandidateBankRefusal as exc:
+        # The bank's own vocabulary, unwrapped: a second slug for "no such
+        # candidate" would send an operator looking in the wrong place.
+        raise refused(exc.code, exc.detail) from exc
+    # Asked of the ONE owner of this session's index space rather than counted
+    # here, so the specs cannot be keyed to captures the plan never runs.
+    walk_index_phase = build_v2_cloud_index_phase_map(
+        plan_shape=plan_shape,
+        include_cloud_measure=plans_cloud_group,
+        include_lateral=True,
+        lateral_prompts=prompts,
+    )
+    specs_by_index: dict[int, Any] = {
+        index: measure_spec
+        for index, phase in walk_index_phase.items()
+        if phase == PHASE_MEASURE
+    }
+    try:
+        for index, prompt, stop in zip(
+            sorted(
+                i for i, phase in walk_index_phase.items()
+                if phase == PHASE_LATERAL
+            ),
+            prompts,
+            request.stops,
+        ):
+            if not stop.candidate_id:
+                continue
+            specs_by_index[index] = MeasureSpec(
+                kind=MEASURE_KIND_CANDIDATE,
+                positions=(stop.angle_deg,),
+                vertical_deg=stop.elevation_deg,
+                pose_prompts=(prompt.text,),
+                candidate_id=stop.candidate_id,
+                # The level match stays the WALK's: the trims are the
+                # speaker's own and are resolved once above, never per
+                # candidate.
+                level_matched=request.level_matched,
+                **axes_by_candidate[stop.candidate_id],
+            )
+    except ValueError as exc:
+        # The BACKSTOP behind ``candidate_measure_axes``'s normalisation: the
+        # axes here come from the candidate rather than the operator, so a pair
+        # this spec refuses is a candidate this walk cannot play — refused in
+        # the spec's own sentence rather than escaping the open as a 500 with
+        # the document already consumed.
+        raise refused(WALK_CANDIDATE_NOT_MEASURABLE, str(exc)) from exc
+    lateral_claims = tuple(
+        TakeClaim(
+            candidate_id=stop.candidate_id,
+            # WHAT THE STOP'S GRAPH CARRIED, never the walk's default: a stop
+            # that played a candidate's flipped branch under the speaker's own
+            # level match must not bank as an ordinary pose.
+            polarity=axes_by_candidate[stop.candidate_id]["polarity"],
+            level_matched=measure_spec.level_matched,
+            level_match_trims_db=dict(level_trims) or None,
+        ) if stop.candidate_id else TakeClaim()
+        for stop in request.stops
+    )
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
@@ -2178,6 +2273,7 @@ def _take_staged_angle_walk(
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
         level_matched=request.level_matched,
+        declared_geometry=request.declared_geometry is not None,
         # WHICH evidence answered, so a take's receipts name the source of the
         # gains its graph carries instead of leaving a reader to guess between
         # the banked trim and the guided captures. Empty on an unmatched walk.
@@ -2185,9 +2281,17 @@ def _take_staged_angle_walk(
         level_match_trims_db=",".join(
             f"{role}:{db:g}" for role, db in sorted(level_trims.items())
         ),
+        candidates=",".join(sorted(set(candidate_ids) - {""})),
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
     )
-    return prompts, LATERAL_CONSUMER_FORWARD_MODEL, measure_spec, level_trims
+    return (
+        prompts,
+        LATERAL_CONSUMER_FORWARD_MODEL,
+        specs_by_index,
+        level_trims,
+        request.declared_geometry,
+        lateral_claims,
+    )
 
 
 def _resolve_measurement_level_trims(
@@ -2890,6 +2994,72 @@ def bind_evidence_publishers(
         )
 
     return publish_check, publish_candidate, refs
+
+
+def publish_declared_geometry(
+    store: Any, relay_session_id: str, geometry: Any
+) -> None:
+    """Bank what the household measured, once, when they were asked.
+
+    ``None`` publishes nothing: most sessions carry no declaration, and an
+    empty artifact would read as a room somebody measured to zero.
+
+    The values are CARRIED, never computed from: the entanglement floor
+    (``2.5 / t_first_bounce``) is an offline toolbox step over the banked
+    packet, and the reflection finder this rig class ships is structurally
+    blind to the bounce it would need, so the human answer is the only source.
+    """
+    if geometry is None:
+        return
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        DECLARED_GEOMETRY_ARTIFACT,
+        DECLARED_GEOMETRY_KIND,
+    )
+
+    store.publish_json_artifact(
+        f"crossover_v2/{relay_session_id}/{DECLARED_GEOMETRY_ARTIFACT}",
+        {"schema_version": 1, "kind": DECLARED_GEOMETRY_KIND, **geometry.to_dict()},
+    )
+
+
+#: Where the declaration rides from the stage that took the walk to the stage
+#: that grades it, inside the durable ``evidence`` block the findings
+#: projection and the cloud fingerprints already cross on.
+DECLARED_GEOMETRY_STATE_KEY = "declared_geometry"
+
+
+def declared_geometry_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """Stage 1's tape measure, as :func:`publish_declared_geometry` takes it.
+
+    The read side of :data:`DECLARED_GEOMETRY_STATE_KEY`. Stage 2 stages no
+    walk and opens its OWN bundle, so without this the post-apply packet would
+    report a room nobody ever declared — the reading defect that block's
+    absence reason exists to prevent, arriving by a different door.
+
+    ``None`` is every session nobody was asked about, and also a record too
+    damaged to read back: an unreadable declaration is not a room, and a
+    grading stage must not be refused its open over one.
+    """
+    from jasper.audio_measurement.measurement_geometry import (
+        DeclaredGeometry,
+        GeometryFieldError,
+    )
+
+    evidence = (state or {}).get("evidence")
+    record = (
+        evidence.get(DECLARED_GEOMETRY_STATE_KEY)
+        if isinstance(evidence, Mapping) else None
+    )
+    if not isinstance(record, Mapping):
+        return None
+    try:
+        return DeclaredGeometry.from_dict(record)
+    except GeometryFieldError:
+        log_event(
+            logger, "correction.crossover_v2_declared_geometry_unreadable",
+            declared=",".join(sorted(str(key) for key in record)),
+        )
+        return None
 
 
 def bind_round_receipt(
@@ -5773,7 +5943,7 @@ def _bind_engine_measure_leg(
     stimulus_capture: Any,
     index_phase_map: Mapping[int, str],
     run_async: Any,
-    measure_spec: Any = None,
+    specs_by_index: Mapping[int, Any] | None = None,
 ) -> Callable[[int, int, Any], Any] | None:
     """The wired walk's engine leg: MEASURE captures through ``measure()``.
 
@@ -5783,7 +5953,8 @@ def _bind_engine_measure_leg(
     capture half — the relay). The closure answers ``None`` for every index it
     does NOT claim, and the walk's own path is unchanged for those.
 
-    **It claims exactly the MEASURE indices.** That is the one phase the
+    **It claims every index ``specs_by_index`` names, and the MEASURE ones
+    besides.** MEASURE is the one phase the
     engine can drive end-to-end today: its kind exists
     (``MEASURE_KIND_CANDIDATE``), its program is routed (a verify-class summed
     sweep is structurally not re-admittable, so the transaction's readmit gate
@@ -5861,21 +6032,20 @@ def _bind_engine_measure_leg(
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
-    measure_indices = {
-        index for index, phase in index_phase_map.items()
+    # What each claimed capture asks for. The bare candidate spec is the
+    # ordinary session's, at every MEASURE index; a staged walk hands over the
+    # specs ADOPTION already built and validated, so what reaches the graph is
+    # what the refusal gate passed rather than a second construction from the
+    # same words. A walk's own stop appears here only when it names a
+    # candidate, so a candidate-free walk keeps the leg it already ran on.
+    specs: dict[int, Any] = {
+        index: MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
+        for index, phase in index_phase_map.items()
         if phase == PHASE_MEASURE
     }
-    if not measure_indices:
+    specs.update(specs_by_index or {})
+    if not specs:
         return None
-
-    # What this session's MEASURE capture asks for. ``None`` is the ordinary
-    # session's bare candidate spec; a staged walk that declared R-1's reverse
-    # polarity hands over the spec ADOPTION already built and validated, so the
-    # pair reaching the graph is the pair the refusal gate passed rather than a
-    # second construction from the same two words.
-    spec = measure_spec if measure_spec is not None else MeasureSpec(
-        kind=MEASURE_KIND_CANDIDATE,
-    )
 
     def _raise_as_todays_failure(incident: str) -> NoReturn:
         """The incident, as the exception type the classifier already maps.
@@ -5906,8 +6076,11 @@ def _bind_engine_measure_leg(
         )
 
     def _measure_capture(index: int, attempt: int, entry: Any) -> Any:
-        del entry  # MEASURE is the unprompted design-axis capture
-        if index not in measure_indices:
+        # The pose an index was prompted at rides its own spec, so the entry
+        # states nothing this leg reads.
+        del entry
+        spec = specs.get(index)
+        if spec is None:
             return None
         async def _measured() -> Any:
             # The selector runs a body and returns nothing (its flow-leg body
@@ -6372,15 +6545,24 @@ def prepare_v2_session(
     # ONCE, here, so every surface downstream — the index map, the spec, the
     # gate — reads one shape rather than a half-updated one.
     plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
-    # The MEASURE spec a staged walk may state (R-1's reverse polarity). Bound
-    # here rather than inside the branch below because ``_open`` reads it on
-    # both stages, and stage 2 takes no MEASURE capture at all: ``None`` is the
-    # engine leg's own default spec, which is every ordinary session.
-    engine_measure_spec: Any = None
+    # Capture index -> the MEASURE spec a staged walk states there (R-1's
+    # reverse polarity, and #3498's per-pose candidate). Bound here rather than
+    # inside the branch below because ``_open`` reads it on both stages, and
+    # stage 2 takes no MEASURE capture at all: empty is the engine leg's own
+    # default spec at every MEASURE index, which is every ordinary session.
+    engine_measure_specs: dict[int, Any] = {}
     # The per-role attenuation that spec's graph carries, resolved once at
     # adoption beside it. Empty on every session that stages no level-matched
     # walk, which is every ordinary one.
     engine_level_trims: dict[str, float] = {}
+    # What each stop of a staged walk was measured UNDER, in stop order, for
+    # the pose records the flow banks. Empty on every session that stages none.
+    lateral_claims: tuple[Any, ...] = ()
+    # The household's tape measure, if the operator was asked for it. Bound
+    # beside the two above for the same reason: ``_open`` reads it on both
+    # stages. Stage 2 stages no walk, so it rehydrates the room from durable
+    # state below rather than taking one.
+    declared_geometry: Any = None
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
         # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
@@ -6421,8 +6603,10 @@ def prepare_v2_session(
             (
                 lateral_prompts,
                 lateral_consumer,
-                engine_measure_spec,
+                engine_measure_specs,
                 engine_level_trims,
+                declared_geometry,
+                lateral_claims,
             ) = staged_walk
             include_lateral = True
             stage1_index_phase = build_v2_cloud_index_phase_map(
@@ -6522,6 +6706,10 @@ def prepare_v2_session(
         # ``CrossoverV2Session.__init__`` so the "values plus a date, or
         # nothing" rule has one owner.
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
+        # #3498's tape measure, rehydrated so the bundle this stage banks
+        # carries the same room stage 1 was told. Without it the post-apply
+        # packet reports a household that was never asked.
+        declared_geometry = declared_geometry_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
         attempt_store = _attempt_loop_store_snapshot()
@@ -6662,6 +6850,17 @@ def prepare_v2_session(
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
+        # Here rather than at the bundle open: the artifact is filed under the
+        # MINTED provider session id, which does not exist until the line above.
+        publish_declared_geometry(
+            evidence_store, relay_session_id, declared_geometry
+        )
+        if declared_geometry is not None:
+            # …and into durable ``evidence``, which is how the room reaches the
+            # stage that GRADES it: stage 2 stages no walk and banks its own
+            # bundle, so this is the only channel it has. Written on both
+            # stages so a re-armed verify keeps re-banking the same room.
+            refs[DECLARED_GEOMETRY_STATE_KEY] = declared_geometry.to_dict()
         # One signal per RELAY session, shared by the play seam (which fires
         # it) and the relay runner (which installs the armed capture's phone
         # progress ladder on it). A wired session has no page to pace, so it
@@ -6845,6 +7044,7 @@ def prepare_v2_session(
                 # #2732 P2. From the SAME take the map and the spec above read.
                 lateral_consumer=lateral_consumer,
                 lateral_prompts=lateral_prompts,
+                lateral_claims=lateral_claims,
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
                 tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
@@ -6953,7 +7153,7 @@ def prepare_v2_session(
                 stimulus_capture=stimulus_capture,
                 index_phase_map=opening.plan.index_phase_map,
                 run_async=run_async,
-                measure_spec=engine_measure_spec,
+                specs_by_index=engine_measure_specs,
             ),
         )
         held = _HeldSession(tuning=tuning, run=source_run)

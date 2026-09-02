@@ -20,6 +20,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.tuning_scope` — the comparability fingerprint a round banks at entry:
   the graph's content hashed over the layers it measures through, preference
   EQ excluded.
+* :mod:`.round_inputs` — where one round's evidence inputs are, for both
+  shapes a round comes in: a banked tree or a live session bundle on the box.
 * :mod:`.round_views` — the round-grading comparison views a laptop campaign
   had been re-deriving by hand.
 * :mod:`.frequency_view` — retained round packets translated into the neutral
@@ -79,6 +81,9 @@ order — so this list is what exists, not a plan:
   layout those two readers open, out of WAVs and records the bundle already has.
 * :mod:`.feature_classifier` — what KIND of feature is that, measured from a
   round's own banked captures.
+* :mod:`.close_reference` — a close capture corrected to the far distance,
+  sub-sample aligned and subtracted, so each spec band says whether the far
+  read was the speaker or the room.
 * :mod:`.feature_classification` — what KIND of feature is that, read from a
   banked verdict and nothing else.
 * :mod:`.refusal_copy` — what the household is told when a round refuses: the
@@ -121,6 +126,9 @@ call and neither extends:
   nothing has played: a round's two banked solos summed through one
   candidate's filters, trims, delay and polarity, offline, and the
   predicted-vs-measured delta where the round also banked a VERIFY sum.
+* :mod:`.round_captures` — a round's summed captures, each bound to the
+  program its BYTES were played through and deconvolved: the one loader both
+  the gate sweep and the close reference read a round with.
 * :mod:`.gate_sweep` — room or speaker, decided on a ladder of gate windows:
   one round's captures read at every rung and every declared pose, so a
   feature whose across-pose spread grows as the window admits the room can be

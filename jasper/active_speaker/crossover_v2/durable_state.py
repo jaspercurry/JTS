@@ -17,10 +17,13 @@ analysis offline — a banked session must be re-readable by an analysis that di
 not exist when it was captured. A writer whose readers lived somewhere else
 would make one document have two owners, which is how the keys drift.
 
-**What is NOT here: the file.** The host owns where the state lives, when it is
-written and how durably —
+**What is NOT here: reading or writing the file.** The host owns when the
+state is written and how durably —
 ``jasper.web.correction_crossover_v2``'s ``load_v2_state`` / ``save_v2_state``
-keep the path, the schema version, the atomic write and the fsync decision.
+keep the schema version, the atomic write and the fsync decision. Only
+:data:`DEFAULT_V2_STATE_PATH`, the document's one on-Pi location, lives here,
+because its readers outside ``jasper.web`` already import this module for the
+file's format and should not import a socket-activated wizard to learn a path.
 This module never opens anything, which is what lets a test build a document
 without a filesystem and what will let the engine's record store write one
 without a web host. :func:`build_conductor_state` returns the document and the
@@ -65,6 +68,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.log_event import log_event
@@ -73,7 +77,13 @@ from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
 
+#: Where this document lives on a speaker. Re-exported by
+#: ``jasper.web.correction_crossover_v2`` under the same name, which still owns
+#: the write.
+DEFAULT_V2_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_v2_state.json")
+
 __all__ = [
+    "DEFAULT_V2_STATE_PATH",
     "FINDING_HOUSEHOLD_REFS_KEY",
     "MAX_PERSISTED_SUM_POINTS",
     "ConductorState",

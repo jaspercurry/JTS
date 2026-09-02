@@ -21,7 +21,9 @@ review: this feature is NOT a route around the retired lateral-walk statistic.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -34,9 +36,16 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
     PHASE_MEASURE,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    POLARITY_INVERTED,
+    POLARITY_NORMAL,
+)
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
@@ -1009,3 +1018,183 @@ def test_mutation_the_distance_guard_cannot_be_dropped() -> None:
                 mark_distance_m=ac.MARK_DISTANCE_M * 2,
             )
         )
+
+
+# --------------------------------------------------------------------------- #
+# 7. the household's declared geometry -- carried, never judged here
+# --------------------------------------------------------------------------- #
+
+
+def test_the_declared_geometry_is_opt_in_and_passed_through_untouched() -> None:
+    """A program states POSE geometry; the ROOM stays the caller's to state.
+
+    The room itself is
+    :mod:`jasper.audio_measurement.measurement_geometry`'s -- its own tests
+    own the bounds and the banked shape; this seam only carries it.
+    """
+    assert ac.per_driver_at([0]).declared_geometry is None
+    room = DeclaredGeometry(speaker_height_m=0.9, mic_height_m=1.0, distance_m=1.05)
+    assert ac.request_for_program(
+        mp.program("baseline", "express"), declared_geometry=room,
+    ).declared_geometry is room
+
+
+# --------------------------------------------------------------------------- #
+# 8. the candidate cycle: what a stop measures, and what it may not play
+# --------------------------------------------------------------------------- #
+
+
+def _fake_preset(
+    *, fc_hz: float = 2000.0, order: int = 4, upper: str = "tweeter",
+) -> object:
+    """A preset shaped only as ``preset_crossover_geometry`` reads one."""
+    return SimpleNamespace(crossover_regions=(SimpleNamespace(
+        fc_hz=fc_hz,
+        target_type="LinkwitzRiley",
+        order=order,
+        lower_driver="woofer",
+        upper_driver=upper,
+    ),))
+
+
+def _fake_candidate(
+    *, linearization: dict | None = None, preset: object | None = None,
+    polarity: str | None = None, delay_role: str | None = None,
+    delay_us: float | None = None,
+) -> object:
+    return SimpleNamespace(
+        fingerprint="fp-a",
+        linearization=linearization or {},
+        source_preset=_fake_preset() if preset is None else preset,
+        alignment=SimpleNamespace(
+            polarity=polarity, delay_role=delay_role, delay_us=delay_us,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("program", "candidates"),
+    [
+        (mp.program("tournament", "express"), ()),
+        (mp.program("tournament", "express"), ("fp-a", "fp-b")),
+        (mp.program("tournament", "full"), ("fp-a", "fp-b", "fp-c")),
+        (mp.program("baseline", "express"), ("fp-a", "fp-b")),
+    ],
+    ids=["no-cycle", "one-pose", "three-poses", "with-repeats"],
+)
+def test_candidates_expand_pose_major_candidate_minor(
+    program: mp.MeasurementProgram, candidates: tuple[str, ...],
+) -> None:
+    """A cycle costs CAPTURES and never travel.
+
+    The variants at one pose are adjacent stops, so the microphone still moves
+    once per distinct pose and two candidates are only ever compared from the
+    same place.
+    """
+    request = ac.request_for_program(program, candidates=candidates)
+    cycle = candidates or ("",)
+
+    assert len(request.stops) == program.capture_count * len(cycle)
+    # Candidate-minor: the cycle repeats intact under every capture.
+    assert [s.candidate_id for s in request.stops] == (
+        list(cycle) * program.capture_count
+    )
+    # Pose-major: one contiguous run per table row, so nothing walks twice.
+    assert len(request.stops) > 0
+    runs = [
+        key for key, _ in itertools.groupby(
+            (s.angle_deg, s.elevation_deg) for s in request.stops
+        )
+    ]
+    assert len(runs) == len(program.poses)
+    assert len(set(runs)) == program.mic_move_count
+
+
+def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> None:
+    """The MEASURE graph carries alignment and nothing else, so that is all a
+    banked candidate may change about a stop -- and the flipped branch is the
+    region's upper driver, the convention the candidate was minted under."""
+    axes = ac.candidate_measure_axes(
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=250.0),
+        preset=_fake_preset(),
+    )
+
+    assert axes == {
+        "polarity": POLARITY_INVERTED,
+        "inverted_role": "tweeter",
+        "delayed_role": "woofer",
+        "delay_us": 250.0,
+    }
+    # A candidate minted with no alignment plays the ordinary graph.
+    assert ac.candidate_measure_axes(_fake_candidate())["polarity"] == (
+        POLARITY_NORMAL
+    )
+
+
+def test_a_branch_no_measurement_graph_carries_refuses_by_name() -> None:
+    """The flipped branch is read off the candidate's own crossover, so a
+    region whose upper driver is not a branch the graph carries would reach
+    ``MeasureSpec`` as a pair it refuses. Same corner on both sides, so the
+    ONLY thing this can be refusing is the branch."""
+    odd = _fake_preset(upper="horn")
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.candidate_measure_axes(
+            _fake_candidate(polarity="invert", preset=odd), preset=odd,
+        )
+
+    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
+
+
+def test_a_polarity_only_candidate_states_no_half_delay() -> None:
+    """The candidate model allows ``(0.0, role)`` and ``MeasureSpec`` refuses
+    it, so an alignment that delays nothing must reach the spec naming nothing
+    -- otherwise a walk stages and then dies at the open with its document
+    already consumed."""
+    axes = ac.candidate_measure_axes(
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0),
+        preset=_fake_preset(),
+    )
+
+    assert (axes["delayed_role"], axes["delay_us"]) == ("", 0.0)
+    # The whole point: the spec these axes are for accepts them.
+    spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **axes)
+    assert (spec.polarity, spec.inverted_role) == (POLARITY_INVERTED, "tweeter")
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reason"),
+    [
+        (
+            _fake_candidate(linearization={"tweeter": {"filters": [{}]}}),
+            ac.WALK_CANDIDATE_NOT_MEASURABLE,
+        ),
+        (
+            _fake_candidate(delay_role="horn", delay_us=250.0),
+            ac.WALK_CANDIDATE_NOT_MEASURABLE,
+        ),
+        (
+            _fake_candidate(preset=_fake_preset(fc_hz=1600.0)),
+            ac.WALK_CANDIDATE_CORNER_MISMATCH,
+        ),
+        (
+            _fake_candidate(preset=_fake_preset(order=2)),
+            ac.WALK_CANDIDATE_CORNER_MISMATCH,
+        ),
+        (
+            _fake_candidate(preset=SimpleNamespace(crossover_regions=())),
+            ac.WALK_CANDIDATE_CORNER_MISMATCH,
+        ),
+    ],
+    ids=["linearization", "unknown-delayed-branch", "another-corner",
+         "another-slope", "unreadable"],
+)
+def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
+    candidate: object, reason: str,
+) -> None:
+    """Both refusals are walk refusals, so an adopting session and the staging
+    door report them under one vocabulary."""
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.candidate_measure_axes(candidate, preset=_fake_preset())
+
+    assert excinfo.value.reason == reason
+    assert reason in ac.WALK_REFUSAL_REASONS

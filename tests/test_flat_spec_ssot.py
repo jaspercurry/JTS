@@ -541,12 +541,8 @@ _UNKNOWN = "unknown"
         ),
         pytest.param([], (None, _UNKNOWN), id="no-seats-know-nothing"),
         pytest.param(
-            [(400.0, _DECLARED), (0.0, _DECLARED)], (None, _UNKNOWN),
-            id="a-zero-floor-is-not-a-clamp-at-dc",
-        ),
-        pytest.param(
             [(400.0, _DECLARED), (610.0, "surveyed")], (None, _UNKNOWN),
-            id="a-word-outside-the-vocabulary-is-unknown",
+            id="a-seat-whose-pair-cannot-be-true-is-unknown",
         ),
     ],
 )
@@ -563,9 +559,13 @@ def test_the_groups_room_floor_is_the_worst_seats_and_the_weakest_provenance(
     DID know would claim the silent one is cleaner than the rest. And the
     source is the WEAKEST of the pool: one declared seat makes the aggregate
     declared, since that is what a reader would have to assume about it.
+
+    Each seat is read through ``gating.EntanglementFloor.coerce``, which is
+    where "a pair that cannot be true is unknown" is pinned; what this pins is
+    the POOLING.
     """
-    floor_hz, source = cloud_entanglement_floor_hz(per_position)
-    assert (floor_hz, source) == expected
+    floor = cloud_entanglement_floor_hz(per_position)
+    assert (floor.hz, floor.source) == expected
 
 
 def test_the_floor_clamp_never_inflates_the_interference_interval_count():

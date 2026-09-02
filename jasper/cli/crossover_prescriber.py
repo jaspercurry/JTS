@@ -68,12 +68,6 @@ from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
 
-from jasper.active_speaker.baseline_profile import (
-    DEFAULT_STATE_PATH as _APPLIED_PROFILE_DEFAULT_PATH,
-)
-from jasper.active_speaker.repeat_floor import (
-    DEFAULT_STATE_PATH as _REPEAT_FLOOR_DEFAULT_PATH,
-)
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -107,8 +101,11 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
     stage_prescription,
     staged_prescription_pending,
 )
-from jasper.active_speaker.design_draft import (
-    DEFAULT_DESIGN_DRAFT_PATH as _DRIVERS_DEFAULT_PATH,
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    APPLIED_PROFILE_DEFAULT_PATH,
+    DRIVERS_DEFAULT_PATH,
+    REPEAT_FLOOR_DEFAULT_PATH,
+    round_inputs,
 )
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TARGET_DB_SPL,
@@ -193,20 +190,38 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 
     ``--packet`` short-circuits the build: the two sources are exclusive, and
     :func:`_evidence_source_error` has already refused an invocation that named
-    both. The on-speaker defaults are resolved HERE rather than at the argparse
+    both. Which SHAPE the positional is, and where the design draft and the
+    applied profile therefore live, is
+    :func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs`'
+    answer — the same resolver ``jasper-round-views`` reads a round through, so
+    a live session directory and a banked round tree mean the same thing to
+    both tools. Those defaults are resolved THERE rather than at the argparse
     default, so "the operator passed this flag" stays answerable — which is
-    what that refusal is decided on.
+    what that refusal is decided on, and which is why an explicit flag is
+    applied here rather than folded into the resolver.
     """
     if args.packet:
         return _read_packet_file(Path(args.packet))
+    inputs = round_inputs(Path(args.session_dir))
     return build_crossover_evidence_packet(
-        Path(args.session_dir),
+        inputs.session_dir,
+        # No default for the flow state, unlike the two below: the web host
+        # rewrites it as a round runs, and a rebuild fingerprints what it read
+        # — so a defaulted state would move a packet's fingerprint between
+        # `packet` and the `propose`/`stage` that judges against it minutes
+        # later, which is the mismatch `--packet` exists to remove.
         state_path=Path(args.state) if args.state else None,
-        driver_draft_path=Path(args.drivers or _DRIVERS_DEFAULT_PATH),
-        applied_profile_path=Path(
-            args.applied_profile or _APPLIED_PROFILE_DEFAULT_PATH
+        driver_draft_path=(
+            Path(args.drivers) if args.drivers else inputs.design_draft_path
         ),
-        repeat_floor_path=Path(args.repeat_floor or _REPEAT_FLOOR_DEFAULT_PATH),
+        applied_profile_path=(
+            Path(args.applied_profile)
+            if args.applied_profile
+            else inputs.applied_profile_path
+        ),
+        repeat_floor_path=(
+            Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path
+        ),
     )
 
 
@@ -1307,8 +1322,8 @@ _STATE_HELP = (
     "the crossover-v2 flow state JSON, banked separately from the bundle"
 )
 _STATE_HELP_OPTIONAL = (
-    f"{_STATE_HELP}. Optional; without it the packet cannot carry the "
-    "per-claim verify verdicts or the Fc selection, and says so"
+    f"{_STATE_HELP}. Optional and NOT defaulted; without it the packet cannot "
+    "carry the per-claim verify verdicts or the Fc selection, and says so"
 )
 _STATE_HELP_REQUIRED = (
     f"{_STATE_HELP}. REQUIRED for this verb: the round a prescription becomes "
@@ -1320,14 +1335,14 @@ _STATE_HELP_REQUIRED = (
 #: What ``--drivers`` is, and where it points when not given. A blend
 #: prescription never needs it, and a per-driver one is refused by name
 #: without a readable file here — which is the packet's own honesty rule
-#: applied to a second evidence source. Defaulted to the on-speaker path
-#: (rather than left ``None``) so an operator running this CLI on the speaker
-#: itself does not have to name a file that is already sitting there; a
-#: laptop or a speaker that was never commissioned reads it as unavailable,
-#: same as before.
+#: applied to a second evidence source. Defaulted (rather than left ``None``)
+#: so an operator running this CLI on the speaker itself does not have to name
+#: a file that is already sitting there; a laptop or a speaker that was never
+#: commissioned reads it as unavailable, same as before.
 _DRIVERS_HELP = (
     "the active-speaker design draft JSON, which carries the confirmed "
-    f"driver-safety profile. Defaults to {_DRIVERS_DEFAULT_PATH}. Without a "
+    "driver-safety profile. Defaults to the round's own banked copy, or "
+    f"{DRIVERS_DEFAULT_PATH} for a live session directory. Without a "
     "readable file there, the packet cannot say where each driver's own band "
     "starts and ends, and a per-driver prescription has no bound to be "
     "checked against"
@@ -1341,7 +1356,8 @@ _DRIVERS_HELP = (
 #: never touches v2 state.
 _APPLIED_PROFILE_HELP = (
     "the applied baseline profile JSON — this speaker's record of what it is "
-    f"PLAYING. Defaults to {_APPLIED_PROFILE_DEFAULT_PATH}. Without a "
+    "PLAYING. Defaults to the round's own banked copy, or "
+    f"{APPLIED_PROFILE_DEFAULT_PATH} for a live session directory. Without a "
     "readable file there, the packet cannot name the correction the graph "
     "already carries, so a per-driver prescription's displacement is "
     "reported unknown rather than guessed"
@@ -1353,7 +1369,8 @@ _APPLIED_PROFILE_HELP = (
 #: stopping thresholds fall back to the codified assumptions, saying so.
 _REPEAT_FLOOR_HELP = (
     "the banked repeat floor JSON — this rig's measured touched-nothing "
-    f"repeat spread. Defaults to {_REPEAT_FLOOR_DEFAULT_PATH}. Without a "
+    "repeat spread. Defaults to the round's own banked copy, or "
+    f"{REPEAT_FLOOR_DEFAULT_PATH} for a live session directory. Without a "
     "readable file there, the packet's in_capture_repeat_floor reads "
     "unavailable and its plateau/margin are the codified assumptions"
 )
@@ -1391,7 +1408,8 @@ def _add_evidence_args(
         nargs="?" if optional_positional else None,
         help=(
             "a commissioning bundle directory (the one holding info.json and "
-            "evidence/v1/artifacts/crossover_v2/<relay-session-id>/)"
+            "evidence/v1/artifacts/crossover_v2/<relay-session-id>/), or a "
+            "banked round tree holding one"
             + (
                 ". Omit on a virgin speaker with no session yet -- status "
                 "reports what it can (declared state lives at --drivers / "

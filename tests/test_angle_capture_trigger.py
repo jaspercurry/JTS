@@ -45,6 +45,7 @@ from jasper.active_speaker.angle_capture import (
     resolve_request,
     summed_at,
 )
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     POLARITY_INVERTED,
@@ -141,6 +142,10 @@ def slot(tmp_path, monkeypatch):
         "jasper.active_speaker.session_volume_plan.read_measurement_hold",
         lambda: None,
     )
+    # ...and the box's standing ``jasper-declare-geometry`` declaration, which
+    # a flagless ``stage`` now falls back to: a developer's box that has one
+    # must not make these walks bank a room they never stated.
+    monkeypatch.setattr(cli, "DECLARED_GEOMETRY_PATH", tmp_path / "declared.json")
     try:
         yield path, volume_state
     finally:
@@ -500,6 +505,36 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
     taken = spool.take_staged_angle_request()
     assert taken.level_matched is False
     assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
+
+
+def test_the_candidate_each_stop_measures_rides_the_document(slot):
+    """The cycle's label, from the stated walk to the banked one.
+
+    Per-STOP and not walk-level, because a candidate cycle is adjacent stops at
+    one pose. ADDITIVE at the same schema version, so a document staged before
+    the key existed reads as the walk that measures the speaker as it stands.
+    """
+    path, _ = slot
+    request = AngleCaptureRequest(
+        stops=(
+            AngleStop(0, REGIME_PER_DRIVER, 0, "fp-a"),
+            AngleStop(0, REGIME_PER_DRIVER, 0, "fp-b"),
+        ),
+    )
+    spool.stage_angle_request(request)
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert [stop["candidate_id"] for stop in doc["stops"]] == ["fp-a", "fp-b"]
+    assert spool.take_staged_angle_request() == request
+
+    older = dict(doc, stops=[
+        {k: v for k, v in stop.items() if k != "candidate_id"}
+        for stop in doc["stops"]
+    ])
+    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
+    path.write_text(json.dumps(older), encoding="utf-8")
+    taken = spool.take_staged_angle_request()
+    assert [stop.candidate_id for stop in taken.stops] == ["", ""]
 
 
 def test_an_ordinary_walk_asks_for_no_level_match(slot):
@@ -1008,10 +1043,12 @@ def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
         ["--program", "baseline", "--azimuth", "5"],
         ["--program", "baseline", "--regime", "summed"],
         ["--program", "spot"],
+        ["--angles", "0", "--candidates", "fp-a"],
         [],
     ],
     ids=["both-doors", "geometry-beside-a-row", "regime-beside-a-program",
-         "spot-without-a-bearing", "neither-door"],
+         "spot-without-a-bearing", "candidates-beside-a-free-form-walk",
+         "neither-door"],
 )
 def test_a_malformed_invocation_is_a_usage_error(argv):
     """Exit 2, from argparse, before anything is built or banked.
@@ -1228,3 +1265,116 @@ def test_mutation_the_busy_guard_cannot_be_removed(slot):
     # The positive control: the SAME request, the same slot, an idle speaker.
     volume_state.unlink()
     assert spool.stage_angle_request(per_driver_at([0])).is_file()
+
+
+# --------------------------------------------------------------------------- #
+# the household's declared geometry: stated once, banked, read back
+# --------------------------------------------------------------------------- #
+
+_GEOMETRY_FLAGS = [
+    "--speaker-height-m", "0.9",
+    "--mic-height-m", "1.0",
+    "--distance-m", "1.05",
+]
+_GEOMETRY = DeclaredGeometry(0.9, 1.0, 1.05, 2.4)
+
+
+def test_the_declared_geometry_rides_the_document_and_the_receipt(slot, capsys):
+    """The whole operator hop: the LLM's four flags to the taken request.
+
+    The three distances are the only viable source for the room's entanglement
+    floor -- the reflection finder is structurally blind on this rig class --
+    so the receipt echoes what was banked rather than leaving the household's
+    answer visible only inside a file nobody opens.
+    """
+    path, _ = slot
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", "baseline", "--size", "express",
+         *_GEOMETRY_FLAGS, "--ceiling-height-m", "2.4", "--json"]
+    )
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["declared_geometry"] == (
+        _GEOMETRY.to_dict()
+    )
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["declared_geometry"] == _GEOMETRY.to_dict()
+    assert spool.take_staged_angle_request().declared_geometry == _GEOMETRY
+
+
+def test_a_flagless_walk_takes_the_declaration_the_box_already_holds(slot, monkeypatch, tmp_path):
+    """``jasper-declare-geometry set`` is the standing answer (#3498).
+
+    One class, one stored declaration, one banked shape: the flags are the
+    one-off override, and a household that already declared its rig should
+    not have to restate it at every ``stage``.
+    """
+    path, _ = slot
+    stored = tmp_path / "measurement_geometry.json"
+    _GEOMETRY.save(stored)
+    monkeypatch.setattr(cli, "DECLARED_GEOMETRY_PATH", stored)
+
+    args = cli.build_parser().parse_args(["stage", "--angles", "0"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["declared_geometry"] == _GEOMETRY.to_dict()
+    assert spool.take_staged_angle_request().declared_geometry == _GEOMETRY
+
+
+def test_a_walk_nobody_was_asked_about_banks_no_geometry(slot):
+    """Opt-in, and ADDITIVE: a document staged before the key reads the same."""
+    path, _ = slot
+    args = cli.build_parser().parse_args(["stage", "--angles", "0"])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["declared_geometry"] is None
+    assert spool.take_staged_angle_request().declared_geometry is None
+
+    older = {k: v for k, v in doc.items() if k != "declared_geometry"}
+    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
+    path.write_text(json.dumps(older), encoding="utf-8")
+    assert spool.take_staged_angle_request().declared_geometry is None
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--speaker-height-m", "0.9"],
+        ["--speaker-height-m", "0.9", "--mic-height-m", "1.0"],
+        ["--distance-m", "1.0", "--ceiling-height-m", "2.4"],
+        ["--ceiling-height-m", "2.4"],
+    ],
+)
+def test_a_partial_geometry_is_a_usage_error_not_a_half_banked_room(slot, flags):
+    """All three or none: two of the three derive no entanglement floor."""
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["stage", "--angles", "0", *flags])
+    assert excinfo.value.code == 2
+    assert not spool.staged_angle_request_pending()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d.update(declared_geometry="1.0"),
+        lambda d: d.update(declared_geometry={}),
+        lambda d: d["declared_geometry"].update(distance_m=0.0),
+    ],
+)
+def test_mutation_a_banked_geometry_that_is_unusable_refuses_by_name(slot, mutate):
+    """Present-but-unusable refuses; it must never read as "nobody was asked"."""
+    path, _ = slot
+    spool.stage_angle_request(
+        AngleCaptureRequest(
+            stops=(AngleStop(0, REGIME_PER_DRIVER),), declared_geometry=_GEOMETRY,
+        )
+    )
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    mutate(doc)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        spool.take_staged_angle_request()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED

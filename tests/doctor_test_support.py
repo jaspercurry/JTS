@@ -4,8 +4,11 @@
 
 """Narrow shared helpers for the jasper-doctor domain test modules."""
 
+import os
+
 from jasper.cli import doctor
 from jasper.config import Config
+from jasper.output_hardware import OutputCardFact, OutputHardwareState, write_state
 
 
 def _registered_check_names() -> set[str]:
@@ -89,3 +92,29 @@ def _grouping_cfg(**overrides):
     }
     values.update(overrides)
     return GroupingConfig(**values)
+
+
+def record_active_dac(
+    profile_id: str, *, card_id: str | None = None, status: str = "ready",
+) -> None:
+    """Write the reconciler's record naming ``profile_id`` at the path conftest
+    isolates, so a check resolves the DAC the way a live box does.
+
+    ``selected_card_id`` defaults to ``card_id`` (or ``profile_id`` when no
+    card is given) because ``active_profile_id`` requires a non-empty one for
+    a single DAC — a bare ``status="ready"`` without it would resolve no
+    active DAC and no floor, unlike every real reconciler-written record."""
+    children = (
+        (OutputCardFact(card_id=card_id, device_id=profile_id),) if card_id else ()
+    )
+    write_state(
+        OutputHardwareState(
+            profile_id=profile_id,
+            profile_label=profile_id,
+            status=status,
+            physical_output_count=2,
+            selected_card_id=card_id or profile_id,
+            child_devices=children,
+        ),
+        os.environ["JASPER_OUTPUT_HARDWARE_STATE_PATH"],
+    )

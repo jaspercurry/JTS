@@ -64,6 +64,7 @@ from jasper.active_speaker.linearization_fit import (
     linearization_filters_by_role,
     worst_headroom_cost_db,
 )
+from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 from jasper.web import correction_crossover_v2 as v2host
 
@@ -132,8 +133,12 @@ _APPLIED_INCUMBENT = (
 
 
 
-# Production refuses a session with no volume owner; stand one up.
-pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
+# Production refuses a session with no volume owner; stand one up. The CLI
+# tests below build a packet from a live session bundle with no
+# --drivers/--applied-profile, so none may read this machine's own.
+pytestmark = pytest.mark.usefixtures(
+    "a_process_with_a_volume_owner", "no_real_pi_paths"
+)
 
 def _document(**overrides: Any) -> bytes:
     """The accepted document's bytes, verbatim unless a test changes one field.
@@ -1202,8 +1207,8 @@ def test_the_stage_verb_banks_a_document_judged_against_a_saved_packet_FILE(
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     packet_path = tmp_path / "packet.json"
     packet_path.write_text(json.dumps(packet))

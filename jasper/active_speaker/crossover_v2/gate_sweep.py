@@ -48,10 +48,8 @@ business.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -59,13 +57,11 @@ import numpy as np
 
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.gating import (
     TAPER_FRACTION,
     TRUSTED_FLOOR_MULTIPLIER,
     build_gate_window,
 )
-from jasper.audio_measurement.sweep import read_wav_mono
 
 from .feature_classifier import (
     CENTRE_SEARCH_OCT,
@@ -76,6 +72,7 @@ from .feature_classifier import (
     detrend,
     feature_q,
 )
+from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures
 
 SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
@@ -125,13 +122,8 @@ NULL_MODEL_HOST_S = 0.2
 
 # --- refusals: every one names the input that was missing --------------------
 
-REFUSE_NO_CAPTURES = "gate_sweep_no_captures"
-REFUSE_NO_PROGRAMS = "gate_sweep_no_programs"
-REFUSE_PROGRAM_UNMATCHED = "gate_sweep_program_hash_unmatched"
-REFUSE_RADIATED_BAND_MISSING = "gate_sweep_radiated_band_missing"
 REFUSE_REFERENCE_BAND_EMPTY = "gate_sweep_reference_band_empty"
 REFUSE_SINGLE_POSE = "gate_sweep_single_pose"
-REFUSE_CAPTURE_UNREADABLE = "gate_sweep_capture_unreadable"
 
 # --- why a band has no sensitivity -------------------------------------------
 
@@ -141,229 +133,10 @@ NULL_BAND_BELOW_GRID_RESOLUTION = "graded_band_narrower_than_grid"
 NULL_DEGENERATE_SHORT_RUNG = "short_rung_sigma_is_zero"
 
 
-class GateSweepRefused(Exception):
-    """A named refusal with the evidence behind it. Never a bare failure."""
-
-    def __init__(self, reason: str, detail: Mapping[str, Any]) -> None:
-        super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
-        self.reason = reason
-        self.detail = dict(detail)
-
-
-@dataclass
-class PoseCapture:
-    """One banked capture, its declared pose, and its gated curves."""
-
-    capture_id: str
-    phase: str | None
-    wav: Path
-    program: Path
-    program_sha256: str
-    azimuth_deg: float | None
-    vertical_deg: float | None
-    mark_distance_m: float | None
-    radiated_band_hz: tuple[float, float]
-    sample_rate: int
-    ir: np.ndarray
-    peak_idx: int
-    reference_const_db: float = 0.0
-    #: Normalised dB on the analysis grid, keyed by rung in ms.
-    curves: dict[float, np.ndarray] = field(default_factory=dict)
-    #: The same curves with their one-octave broad tilt removed.
-    detrended: dict[float, np.ndarray] = field(default_factory=dict)
-
-    @property
-    def pose_key(self) -> str:
-        """The FULL declared pose. Never a seat index (#3503)."""
-        return "az{}_el{}_d{}".format(
-            _pose_field(self.azimuth_deg),
-            _pose_field(self.vertical_deg),
-            _pose_field(self.mark_distance_m),
-        )
-
-
-def _pose_field(value: float | None) -> str:
-    return "na" if value is None else f"{value:+.2f}"
-
-
 def analysis_grid() -> np.ndarray:
     """Log grid at :data:`GRID_FRACTION` points per octave."""
     n = int(round(GRID_FRACTION * np.log2(GRID_HI_HZ / GRID_LO_HZ))) + 1
     return GRID_LO_HZ * 2.0 ** (np.arange(n) / GRID_FRACTION)
-
-
-# --------------------------------------------------------------------------- #
-# discovery — capture to program by content hash, never by label
-# --------------------------------------------------------------------------- #
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
-    """The program hash this sidecar declares, or one hashed from its bytes.
-
-    The sidecar's ``provenance.stimulus.wav_sha256`` is the authority. When
-    it is absent the stimulus PATH is hashed from its own bytes instead —
-    still content, never ``provenance.stimulus.phase``, which declares
-    ``verify`` on captures whose played bytes were ``cloud_verify`` (#3504).
-    """
-    provenance = doc.get("provenance")
-    stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
-    if not isinstance(stimulus, Mapping):
-        return None
-    declared = stimulus.get("wav_sha256")
-    if isinstance(declared, str) and declared:
-        return declared
-    for key in ("wav_path", "path", "program_path"):
-        named = stimulus.get(key)
-        if isinstance(named, str) and named:
-            candidate = Path(named)
-            if not candidate.is_absolute():
-                candidate = root / named
-            if candidate.is_file():
-                return _sha256(candidate)
-    return None
-
-
-def _radiated_band(doc: Mapping[str, Any]) -> tuple[float, float] | None:
-    """The band this capture's DUT actually radiates, from its own curves.
-
-    Absent yields ``None`` rather than a default span, for the reason
-    :mod:`~jasper.audio_measurement.gate_disclosure`'s header records: the
-    un-intersected band priced a tweeter from 357 Hz where it has no output
-    and over-reported by 3x (E5, #1969).
-    """
-    curves = doc.get("curves")
-    if not isinstance(curves, Sequence):
-        return None
-    los: list[float] = []
-    his: list[float] = []
-    for curve in curves:
-        band = curve.get("band_hz") if isinstance(curve, Mapping) else None
-        if isinstance(band, Sequence) and len(band) == 2:
-            los.append(float(band[0]))
-            his.append(float(band[1]))
-    if not los:
-        return None
-    return (min(los), max(his))
-
-
-def discover_captures(round_dir: Path) -> tuple[PoseCapture, ...]:
-    """Every summed capture under ``round_dir``, bound to its own program.
-
-    ``round_dir`` is a banked round directory (the one holding ``bundle/``)
-    or the bundle itself. Raises :class:`GateSweepRefused` naming the missing
-    input — an empty result is a finding, never an empty tuple.
-    """
-    round_dir = Path(round_dir)
-    sidecars = sorted(round_dir.glob("**/summed/summed_*.json"))
-    if not sidecars:
-        raise GateSweepRefused(
-            REFUSE_NO_CAPTURES,
-            {"round_dir": str(round_dir), "looked_for": "**/summed/summed_*.json"},
-        )
-    programs: dict[str, Path] = {}
-    for candidate in sorted(round_dir.glob("**/*program*.wav")):
-        programs.setdefault(_sha256(candidate), candidate)
-    if not programs:
-        raise GateSweepRefused(
-            REFUSE_NO_PROGRAMS,
-            {"round_dir": str(round_dir), "looked_for": "**/*program*.wav"},
-        )
-
-    captures: list[PoseCapture] = []
-    # Decoded once per unique program, not once per capture.
-    program_audio: dict[str, tuple[np.ndarray, int]] = {}
-    for sidecar in sidecars:
-        try:
-            doc = json.loads(sidecar.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise GateSweepRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "detail": str(exc)},
-            ) from exc
-        wav = sidecar.with_suffix(".wav")
-        if not wav.is_file():
-            raise GateSweepRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "detail": "no WAV beside the sidecar"},
-            )
-        sha = _declared_program_sha(doc, round_dir)
-        program = programs.get(sha) if sha is not None else None
-        if program is None:
-            raise GateSweepRefused(
-                REFUSE_PROGRAM_UNMATCHED,
-                {
-                    "sidecar": sidecar.name,
-                    "declared_stimulus_sha256": sha,
-                    "programs_present": sorted(
-                        {path.name for path in programs.values()}
-                    ),
-                    "note": (
-                        "capture-to-program binding is by content hash; the "
-                        "sidecar's declared stimulus phase is not consulted"
-                    ),
-                },
-            )
-        band = _radiated_band(doc)
-        if band is None:
-            raise GateSweepRefused(
-                REFUSE_RADIATED_BAND_MISSING,
-                {
-                    "sidecar": sidecar.name,
-                    "note": (
-                        "the reference band is intersected with the band the "
-                        "DUT radiates; without it no honest band exists"
-                    ),
-                },
-            )
-        signal, rate = read_wav_mono(wav)
-        program_key = str(sha)
-        if program_key not in program_audio:
-            program_audio[program_key] = read_wav_mono(program)
-        program_signal, program_rate = program_audio[program_key]
-        if rate != program_rate:
-            raise GateSweepRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {
-                    "sidecar": sidecar.name,
-                    "detail": f"{rate} Hz capture against {program_rate} Hz program",
-                },
-            )
-        ir = regularized_deconvolution_full(signal, program_signal, rate).astype(
-            np.float64
-        )
-        captures.append(
-            PoseCapture(
-                capture_id=str(doc.get("position_id") or sidecar.stem),
-                phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
-                wav=wav,
-                program=program,
-                program_sha256=str(sha),
-                azimuth_deg=_number(doc.get("position_deg")),
-                vertical_deg=_number(doc.get("vertical_deg")),
-                mark_distance_m=_number(doc.get("mark_distance_m")),
-                radiated_band_hz=band,
-                sample_rate=int(rate),
-                ir=ir,
-                peak_idx=int(np.argmax(np.abs(ir))),
-            )
-        )
-    if len(captures) < 2:
-        raise GateSweepRefused(
-            REFUSE_SINGLE_POSE,
-            {
-                "captures": [cap.capture_id for cap in captures],
-                "note": "across-pose sigma needs at least two poses",
-            },
-        )
-    return tuple(sorted(captures, key=lambda cap: cap.capture_id))
-
-
-def _number(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) else None
 
 
 # --------------------------------------------------------------------------- #
@@ -435,14 +208,32 @@ def _intersect(
     return (lo, hi) if lo < hi else None
 
 
+@dataclass(frozen=True)
+class SweepCurves:
+    """One capture read through the whole ladder — this sweep's own scratch.
+
+    Held beside the capture rather than written onto it: the loader's
+    :class:`~.round_captures.PoseCapture` is data, and two readers of one
+    round must never see each other's derived curves.
+    """
+
+    capture: PoseCapture
+    reference_const_db: float
+    #: Normalised dB on the analysis grid, keyed by rung in ms.
+    curves: dict[float, np.ndarray]
+    #: The same curves with their one-octave broad tilt removed.
+    detrended: dict[float, np.ndarray]
+
+
 def _read_curves(
     captures: Sequence[PoseCapture], grid: np.ndarray, rungs_ms: Sequence[float]
-) -> None:
-    """Fill every capture's normalised and detrended curves, in place."""
+) -> tuple[SweepCurves, ...]:
+    """Every capture's normalised and detrended curves, in capture order."""
+    reads: list[SweepCurves] = []
     for capture in captures:
         reference_band = _intersect(REFERENCE_BAND_HZ, capture.radiated_band_hz)
         if reference_band is None:
-            raise GateSweepRefused(
+            raise RoundCapturesRefused(
                 REFUSE_REFERENCE_BAND_EMPTY,
                 {
                     "capture": capture.capture_id,
@@ -461,9 +252,9 @@ def _read_curves(
             peak_idx=capture.peak_idx,
             grid=grid,
         )
-        capture.reference_const_db = _band_mean_db(
-            reference_curve, grid, reference_band
-        )
+        reference_const_db = _band_mean_db(reference_curve, grid, reference_band)
+        curves: dict[float, np.ndarray] = {}
+        detrended: dict[float, np.ndarray] = {}
         for rung in rungs_ms:
             raw = (
                 reference_curve
@@ -476,8 +267,17 @@ def _read_curves(
                     grid=grid,
                 )
             )
-            capture.curves[rung] = raw - capture.reference_const_db
-            capture.detrended[rung] = detrend(capture.curves[rung], grid)
+            curves[rung] = raw - reference_const_db
+            detrended[rung] = detrend(curves[rung], grid)
+        reads.append(
+            SweepCurves(
+                capture=capture,
+                reference_const_db=reference_const_db,
+                curves=curves,
+                detrended=detrended,
+            )
+        )
+    return tuple(reads)
 
 
 # --------------------------------------------------------------------------- #
@@ -498,7 +298,7 @@ class NotchFit:
 
 
 def fit_notch(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     *,
     rung_ms: float,
@@ -517,8 +317,8 @@ def fit_notch(
     centres: list[float] = []
     depths: list[float] = []
     qs: list[float] = []
-    for capture in captures:
-        curve = capture.detrended[rung_ms]
+    for read in reads:
+        curve = read.detrended[rung_ms]
         index = int(np.argmax(np.abs(curve[mask])))
         centre = float(grid[mask][index])
         centres.append(centre)
@@ -617,7 +417,7 @@ def _resolution(freq_hz: float, rung_ms: float) -> str:
 
 
 def _across_pose_sigma(
-    captures: Sequence[PoseCapture], rungs_ms: Sequence[float]
+    reads: Sequence[SweepCurves], rungs_ms: Sequence[float]
 ) -> dict[float, np.ndarray]:
     """Across-pose standard deviation of the normalised curves, per rung.
 
@@ -625,13 +425,13 @@ def _across_pose_sigma(
     means the spread is the poses disagreeing, and nothing else.
     """
     return {
-        rung: np.std(np.array([cap.curves[rung] for cap in captures]), axis=0, ddof=1)
+        rung: np.std(np.array([read.curves[rung] for read in reads]), axis=0, ddof=1)
         for rung in rungs_ms
     }
 
 
 def _feature_result(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
     hz: float,
@@ -656,19 +456,19 @@ def _feature_result(
         "valid_rungs_ms": list(valid),
         "poses": [
             {
-                "pose_key": cap.pose_key,
-                "capture_id": cap.capture_id,
-                "azimuth_deg": cap.azimuth_deg,
-                "vertical_deg": cap.vertical_deg,
-                "mark_distance_m": cap.mark_distance_m,
+                "pose_key": read.capture.pose_key,
+                "capture_id": read.capture.capture_id,
+                "azimuth_deg": read.capture.azimuth_deg,
+                "vertical_deg": read.capture.vertical_deg,
+                "mark_distance_m": read.capture.mark_distance_m,
                 "value_db_by_rung": {
-                    _key(r): float(cap.curves[r][grid_index]) for r in rungs_ms
+                    _key(r): float(read.curves[r][grid_index]) for r in rungs_ms
                 },
                 "detrended_db_by_rung": {
-                    _key(r): float(cap.detrended[r][grid_index]) for r in rungs_ms
+                    _key(r): float(read.detrended[r][grid_index]) for r in rungs_ms
                 },
             }
-            for cap in captures
+            for read in reads
         ],
     }
     if len(valid) < 2:
@@ -682,8 +482,8 @@ def _feature_result(
         result["sensitivity_null_reason"] = NULL_DEGENERATE_SHORT_RUNG
         return result
 
-    fit = fit_notch(captures, grid, rung_ms=long_, nominal_hz=bin_hz)
-    host = captures[0]
+    fit = fit_notch(reads, grid, rung_ms=long_, nominal_hz=bin_hz)
+    host = reads[0].capture
     hosts = null_model_hosts(host, host_rung_ms=long_)
     bias_by_host = {
         name: window_bias_db(
@@ -698,8 +498,8 @@ def _feature_result(
     }
     bias = bias_by_host["real"]
     raw_delta = float(
-        np.median([cap.detrended[long_][grid_index] for cap in captures])
-        - np.median([cap.detrended[short][grid_index] for cap in captures])
+        np.median([read.detrended[long_][grid_index] for read in reads])
+        - np.median([read.detrended[short][grid_index] for read in reads])
     )
     bias_delta = bias[long_] - bias[short]
     synthetic = bias_by_host["synthetic"]
@@ -734,7 +534,7 @@ def _feature_result(
 
 
 def _band_result(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
     band: tuple[float, float, float],
@@ -743,8 +543,8 @@ def _band_result(
 ) -> dict[str, Any]:
     lo_hz, hi_hz, tolerance_db = band
     radiated = (
-        max(cap.radiated_band_hz[0] for cap in captures),
-        min(cap.radiated_band_hz[1] for cap in captures),
+        max(read.capture.radiated_band_hz[0] for read in reads),
+        min(read.capture.radiated_band_hz[1] for read in reads),
     )
     graded = _intersect((lo_hz, hi_hz), radiated)
     result: dict[str, Any] = {
@@ -768,12 +568,12 @@ def _band_result(
 
     longest = max(rungs_ms)
     median_detrended = np.median(
-        np.array([cap.detrended[longest] for cap in captures]), axis=0
+        np.array([read.detrended[longest] for read in reads]), axis=0
     )
     worst_index = int(np.argmax(np.abs(median_detrended[mask])))
     worst_hz = float(grid[mask][worst_index])
 
-    feature = _feature_result(captures, grid, sigma, worst_hz, rungs_ms=rungs_ms)
+    feature = _feature_result(reads, grid, sigma, worst_hz, rungs_ms=rungs_ms)
     result["worst_bin_hz"] = feature.pop("bin_hz")
     # The band's deepest feature is not always its most window-divergent one
     # (P1), so the whole band's mean sigma is published beside the worst
@@ -848,14 +648,14 @@ def _spec_band_of(hz: float) -> list[float] | None:
 
 
 def _feature_at(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
     hz: float,
     *,
     rungs_ms: Sequence[float],
 ) -> dict[str, Any]:
-    result = _feature_result(captures, grid, sigma, hz, rungs_ms=rungs_ms)
+    result = _feature_result(reads, grid, sigma, hz, rungs_ms=rungs_ms)
     return {
         "requested_hz": hz,
         "band_hz": _spec_band_of(result["bin_hz"]),
@@ -893,7 +693,7 @@ def sweep_round(
     deepest one. Each is read exactly as a band's worst bin is, null model
     included, and reported under ``features``.
 
-    Raises :class:`GateSweepRefused` naming the missing input.
+    Raises :class:`RoundCapturesRefused` naming the missing input.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     if len(rungs) < 2:
@@ -906,9 +706,17 @@ def sweep_round(
                 f"({GRID_LO_HZ:g}-{GRID_HI_HZ:g} Hz)"
             )
     captures = discover_captures(Path(round_dir))
+    if len(captures) < 2:
+        raise RoundCapturesRefused(
+            REFUSE_SINGLE_POSE,
+            {
+                "captures": [cap.capture_id for cap in captures],
+                "note": "across-pose sigma needs at least two poses",
+            },
+        )
     grid = analysis_grid()
-    _read_curves(captures, grid, rungs)
-    sigma = _across_pose_sigma(captures, rungs)
+    reads = _read_curves(captures, grid, rungs)
+    sigma = _across_pose_sigma(reads, rungs)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
@@ -916,28 +724,30 @@ def sweep_round(
         "frame": frame_descriptor(rungs, grid),
         "poses": [
             {
-                "pose_key": cap.pose_key,
-                "capture_id": cap.capture_id,
-                "phase": cap.phase,
-                "azimuth_deg": cap.azimuth_deg,
-                "vertical_deg": cap.vertical_deg,
-                "mark_distance_m": cap.mark_distance_m,
-                "capture_wav": cap.wav.name,
-                "program_wav": cap.program.name,
-                "program_sha256_12": cap.program_sha256[:12],
-                "sample_rate_hz": cap.sample_rate,
-                "direct_peak_ms": 1000.0 * cap.peak_idx / cap.sample_rate,
-                "reference_const_db": cap.reference_const_db,
-                "radiated_band_hz": list(cap.radiated_band_hz),
+                "pose_key": read.capture.pose_key,
+                "capture_id": read.capture.capture_id,
+                "phase": read.capture.phase,
+                "azimuth_deg": read.capture.azimuth_deg,
+                "vertical_deg": read.capture.vertical_deg,
+                "mark_distance_m": read.capture.mark_distance_m,
+                "capture_wav": read.capture.wav.name,
+                "program_wav": read.capture.program.name,
+                "program_sha256_12": read.capture.program_sha256[:12],
+                "sample_rate_hz": read.capture.sample_rate,
+                "direct_peak_ms": (
+                    1000.0 * read.capture.peak_idx / read.capture.sample_rate
+                ),
+                "reference_const_db": read.reference_const_db,
+                "radiated_band_hz": list(read.capture.radiated_band_hz),
             }
-            for cap in captures
+            for read in reads
         ],
         "bands": [
-            _band_result(captures, grid, sigma, band, rungs_ms=rungs)
+            _band_result(reads, grid, sigma, band, rungs_ms=rungs)
             for band in SPEC_BANDS
         ],
         "features": [
-            _feature_at(captures, grid, sigma, hz, rungs_ms=rungs) for hz in wanted
+            _feature_at(reads, grid, sigma, hz, rungs_ms=rungs) for hz in wanted
         ],
         "sigma_map": _sigma_map(grid, sigma, rungs),
     }

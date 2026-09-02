@@ -45,6 +45,7 @@ from .chip_aec_policy import (
 from .control import client as control
 from .env_load import parse_env_file
 from .log_event import log_event
+from .output_hardware import published_dac_id
 
 
 CURRENT_SCHEMA_VERSION = 1
@@ -742,11 +743,9 @@ def _dac_details(
             or os.environ.get("JASPER_AUDIO_DAC_CARD")
             or ""
         )
-    dac_id = (
-        system_env.get("JASPER_AUDIO_DAC_ID")
-        or os.environ.get("JASPER_AUDIO_DAC_ID")
-        or dac_pcm
-    )
+    # The id is the reconciler's publication and nothing else — no process-env
+    # fallback on purpose, unlike outputd's pcm/card/backend facts above.
+    dac_id = published_dac_id(system_env)
     return {
         "id": dac_id,
         "pcm": dac_pcm,
