@@ -25,6 +25,9 @@ pub mod assistant_reference;
 // tests. See the module doc and #1717.
 pub mod assistant_source;
 pub mod config;
+// Edge-triggered "the output stage is emitting silence it did not intend"
+// detector over whichever content source is live (#3458).
+pub mod content_fill;
 pub mod core;
 // outputd's multi-room role: the `dac_content` reader (Increment 3) — the
 // round-trip lane a grouping member's snapclient feeds. The canonical design
