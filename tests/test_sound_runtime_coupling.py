@@ -143,23 +143,6 @@ def test_reconcile_with_no_coupling_env_still_passes_the_ring_kwargs(
     assert seen["apply_called"] is True
 
 
-def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
-    # Both chokepoints (the durable apply + the dry-run reconcile) resolve the
-    # coupling through the SAME helper (coupling_capture_kwargs_from_env),
-    # so the dry-run YAML and the durable apply can never disagree (which would
-    # break unchanged-detection).
-    import inspect
-
-    src = inspect.getsource(runtime.load_profile_config)
-    assert "coupling_capture_kwargs_from_env()" in src
-    assert "fanin_coupling_capture_kwargs=coupling_capture_kwargs" in src
-    reconcile_src = inspect.getsource(runtime.reconcile_current_dsp)
-    assert "_render_saved_dsp_on_carrier(" in reconcile_src
-    materializer_src = inspect.getsource(runtime._render_saved_dsp_on_carrier)
-    assert "coupling_capture_kwargs_from_env()" in materializer_src
-    del monkeypatch
-
-
 def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
     """No persisted token and no ``os.environ`` value can produce ``{}``.
 

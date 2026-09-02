@@ -100,19 +100,16 @@ def test_identity_path_env_override(monkeypatch, tmp_path):
     assert identity_state.snapshot()["status"] == "ok"
 
 
-def test_state_resilience_wires_identity_snapshot():
-    """Pin the /state wiring: jasper-control's resilience block must
-    surface identity_state.snapshot() (the dashboard/doctor consumers
-    key off /state.resilience.identity). Static source pin, same style
-    as the control-client route-table guard."""
-    from pathlib import Path
+async def test_state_resilience_wires_identity_snapshot(monkeypatch, tmp_path):
+    """/state's resilience block must surface identity_state.snapshot()
+    (the dashboard/doctor consumers key off /state.resilience.identity)."""
+    from jasper.control import state_aggregate
 
-    repo = Path(__file__).resolve().parents[1]
-    server_src = (repo / "jasper" / "control" / "server.py").read_text()
-    aggregate_src = (
-        repo / "jasper" / "control" / "state_aggregate.py"
-    ).read_text()
-    assert 'from . import state_aggregate as _state_aggregate' in server_src
-    assert '"/state": "_get_state"' in server_src
-    assert "return await _state_aggregate._get_state(" in server_src
-    assert '"identity": identity_state.snapshot()' in aggregate_src
+    monkeypatch.setattr(identity_state, "snapshot", lambda: {"status": "collision"})
+    state = await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path=str(tmp_path / "voice.sock"),
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+    )
+    assert state["resilience"]["identity"] == {"status": "collision"}
