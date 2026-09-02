@@ -198,6 +198,17 @@ def get_state(
     return data if isinstance(data, dict) else {}
 
 
+def get_system_snapshot(
+    *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
+) -> dict:
+    """The ``/system/snapshot`` payload as a dict — sampler metrics
+    (``metrics.current``, incl. ``throttled_now``/``throttled_history``),
+    audio/airplay health, and build info. Raises :class:`ControlError` if
+    jasper-control is unreachable; returns ``{}`` for a non-dict body."""
+    data = get("/system/snapshot", base_url=base_url, timeout=timeout).json()
+    return data if isinstance(data, dict) else {}
+
+
 def get_measurement(
     *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
 ) -> dict:

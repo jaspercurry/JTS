@@ -189,7 +189,10 @@ def parked_muted_exits(topology: OutputTopology | None = None) -> str:
     than raising inside a reporting surface.
     """
 
-    from jasper.active_speaker.playback_route import active_lane_capability_gap
+    from jasper.active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
 
     try:
         resolved = topology or load_output_topology_strict()
@@ -198,7 +201,10 @@ def parked_muted_exits(topology: OutputTopology | None = None) -> str:
         gap = active_lane_capability_gap(resolved)
     except (OutputTopologyError, OSError, ValueError, TypeError, KeyError):
         return PARKED_MUTED_EXITS
-    if gap is None:
+    # An unrecognized DAC profile is not proof the active lane is impossible —
+    # see active_lane_capability_gap's docstring — so it takes the same exit
+    # as a genuinely capable DAC, not the no-active-lane one.
+    if not isinstance(gap, ActiveLaneCapabilityGap):
         return PARKED_MUTED_EXITS
     return f"{gap.device_label} cannot drive an active speaker layout — {PARKED_MUTED_EXITS_NO_ACTIVE_LANE}"
 

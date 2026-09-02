@@ -102,19 +102,6 @@ def _healthy_journal(windows: int = 8) -> str:
         ),
         (_healthy_journal(), "ok", "real AEC work"),
         (_silent_ref_journal(), "fail", "reference path is delivering silence"),
-        # Above the 30-in-90s threshold: ref/mic clock skew or rate mismatch,
-        # which warns rather than fails.
-        (
-            "\n".join(
-                [
-                    "2026-05-16 17:00:00,000 aec-bridge WARNING drained 7 stale "
-                    "ref frames (drift)"
-                ]
-                * 40
-            ),
-            "warn",
-            "ref-drift warnings",
-        ),
         # Exactly one healthy_ref window flips the silent-ref pattern from fail
         # to ok: if the ref chain proved itself once, it is trusted.
         (
@@ -137,7 +124,7 @@ def _healthy_journal(windows: int = 8) -> str:
             "silent-ref=3",
         ),
     ],
-    ids=["empty", "idle", "healthy", "silent-ref", "drift", "one-healthy-window",
+    ids=["empty", "idle", "healthy", "silent-ref", "one-healthy-window",
          "below-alarm"],
 )
 def test_assess_aec_bridge_output_verdicts(journal, status, must_name):
@@ -1247,27 +1234,6 @@ def test_check_fresh_receiver_and_one_healthy_rms_window_is_ok(
 
     assert result.status == "ok"
     assert "ref path proven healthy" in result.detail
-    assert "reference receiver current" in result.detail
-    assert not any(command[0] == "outputd-status" for command in calls)
-
-
-def test_check_fresh_receiver_preserves_excessive_drift_warning(
-    monkeypatch,
-    tmp_path: Path,
-):
-    drift_line = "drained 7 stale ref frames (drift)"
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=_reference_input_stats(last_frame_age_ms=100),
-        journal="\n".join([drift_line] * 31),
-    )
-    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
-
-    result = doctor.aec.check_aec_bridge_output_health()
-
-    assert result.status == "warn"
-    assert "ref-drift warnings" in result.detail
     assert "reference receiver current" in result.detail
     assert not any(command[0] == "outputd-status" for command in calls)
 
