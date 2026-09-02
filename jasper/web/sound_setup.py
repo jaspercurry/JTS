@@ -2592,9 +2592,15 @@ def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 
+    design_draft = load_design_draft()
     payload = build_tuning_handoff(
-        baseline_profile=_active_speaker_baseline_profile_payload(),
-        design_draft=load_design_draft(),
+        # Recompiled on the click rather than read off the page: a tab left
+        # open since before a declaration edit must not mint a handoff for a
+        # baseline that no longer stands.
+        baseline_profile=_active_speaker_baseline_profile_payload(
+            design_draft=design_draft
+        ),
+        design_draft=design_draft,
     )
     log_event(
         logger,
@@ -5198,8 +5204,13 @@ def _active_speaker_summed_validation_active_conflict(
 def _active_speaker_baseline_profile_payload(
     *,
     write: bool = False,
+    design_draft: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return or compile the active-speaker baseline profile candidate."""
+    """Return or compile the active-speaker baseline profile candidate.
+
+    ``design_draft`` lets a caller that has already read the draft hand it in
+    rather than pay for a second read of the same file.
+    """
 
     from jasper.active_speaker.baseline_profile import (
         build_baseline_profile_candidate,
@@ -5209,7 +5220,8 @@ def _active_speaker_baseline_profile_payload(
     from jasper.active_speaker.measurement import load_measurement_state
 
     topology = load_output_topology()
-    design_draft = load_design_draft()
+    if design_draft is None:
+        design_draft = load_design_draft()
     preview = load_crossover_preview(current_design_draft=design_draft)
     measurements = load_measurement_state(topology)
     payload = build_baseline_profile_candidate(
