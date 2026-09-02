@@ -2053,7 +2053,9 @@ a door that never touches v2 state.
 
 **Exit codes are the contract**, because the caller is often a script: `0`
 accepted, `1` the evidence could not be read, `2` the prescription was refused,
-`3` an accepted prescription could not be staged. A refusal is the loop
+`3` an accepted prescription could not be staged. **`1` and `2` are this
+tool's own way round** — the read-only measurement tools' shared rule (the
+runbook's "Exit codes") has them the other way. A refusal is the loop
 working, not a crash — `--json` prints the machine-readable `reason` slug plus
 the evidence behind it, so a prescriber can correct itself rather than guess.
 `3` is separate from `1` because the two send you to different places: `2`
@@ -2195,9 +2197,9 @@ geometry is disclosed in one place, the evidence packet's `not_evaluated` block
 as `vertical_plane_response`; the remote tier and the unwired crossover-search
 modules carry their own disclosures about their own artifacts.
 
-**Exit codes are the contract**: `0` classified and filed, `1` refused, `2` the
-round could not be read, `3` the verdict could not be written. `--json` prints
-the named `reason` and the evidence behind it.
+**Exit codes are the contract** — the shared stage-named rule the runbook's
+"Exit codes" owns. `--json` prints the named `reason` and the evidence behind
+it.
 
 The 2026-08-19 lab harness this was promoted from
 (`captures/*/tools/classify_*.py`) also fitted a single-delay null ladder
@@ -2361,10 +2363,9 @@ state, never a fabricated pass or fail. `--lo` defaults to the round's own
 Each subcommand writes its JSON result into the round directory by default
 (`per_seat.json`, `frozen_reference.json`, `agreement.json` under the graded
 round's own dir; `repeatability.json` under the first round dir for `repeat`)
-— `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
-success, and on failure the stage that failed — `1` the view declined, `2` the
-round could not be read, `3` the result could not be written — with the same
-record on stdout as JSON (see the runbook's "Exit codes").
+— `--out PATH` writes somewhere else, `--out -` writes to stdout. On failure
+it publishes the shared record and the shared stage-named exit code; the
+runbook's "Exit codes" owns both.
 
 Hardware-free coverage — including a golden fixture whose `spec` block is a
 REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite

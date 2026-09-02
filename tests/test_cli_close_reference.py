@@ -25,7 +25,7 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import (
-    REFUSE_NO_CAPTURE,
+    REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
     REFUSE_PROGRAM_UNMATCHED,
 )
 from jasper.audio_measurement import gating
@@ -33,7 +33,9 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.sweep import synchronized_swept_sine
 from jasper.cli.close_reference import (
     AUTHORITY_TIER,
+    EXIT_WRITE_FAILED,
     REFUSE_NO_DRIVER_DIAMETER,
+    REFUSE_UNWRITABLE_OUT,
     _cmd_distance,
     build_parser,
     main,
@@ -176,7 +178,7 @@ def test_compare_still_runs_without_any_declared_diameter():
 
 @pytest.mark.parametrize(
     "corrupt, reason",
-    [("sha", REFUSE_PROGRAM_UNMATCHED), ("pose", REFUSE_NO_CAPTURE)],
+    [("sha", REFUSE_PROGRAM_UNMATCHED), ("pose", REFUSE_CLOSE_REFERENCE_NO_CAPTURE)],
 )
 def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     rounds, tmp_path, capsys, corrupt, reason
@@ -226,6 +228,20 @@ def test_a_declared_geometry_sets_each_windows_gate(rounds, tmp_path, capsys):
         assert window["gate_ms"] == pytest.approx(window["declared_clean_window_ms"])
     assert windows["close_window"]["gate_ms"] > windows["far_window"]["gate_ms"]
     assert report["geometry"]["declared_geometry"]["mic_height_m"] == 0.84
+
+
+def test_an_unwritable_out_is_named_not_a_traceback(rounds, tmp_path, capsys):
+    """Compared, and only the filing failed: its own exit code, not an
+    ``OSError`` escaping the writer."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+
+    rc = main(_compare_argv(rounds, blocker / "report.json"))
+
+    assert rc == EXIT_WRITE_FAILED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unwritable"
+    assert payload["reason"] == REFUSE_UNWRITABLE_OUT
 
 
 def test_distance_verb_prints_both_terms(capsys):

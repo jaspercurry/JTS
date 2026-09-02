@@ -52,7 +52,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
@@ -69,12 +68,14 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
 )
 from jasper.cli._report import write_report
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    fail_with_payload,
+)
 from jasper.cli.gate_sweep import add_rungs_ms_argument
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_ROUND_UNREADABLE = 2
-EXIT_WRITE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -107,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  1  EXIT_REFUSED -- classification itself was refused (e.g.\n"
             "     no captures to classify); \"refused: <reason> (...)\" on\n"
             "     stderr, and as JSON with --json\n"
-            "  2  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or the\n"
+            "  2  EXIT_UNREADABLE -- bundle_dir, info.json, or the\n"
             "     round shape itself could not be read -- the message names\n"
             "     which, and for the commonest cause (no admissible round\n"
             "     shape) names the two directory shapes this tool accepts\n"
@@ -170,14 +171,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) -> int:
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -198,22 +191,22 @@ def main(argv: list[str] | None = None) -> int:
                 "the shape bank-crossover-round.sh pulls (program WAVs in a "
                 "sibling crossover_v2/<relay>/ directory instead)"
             )
-        return _fail(
+        return fail_with_payload(
             message,
             {"ok": False, "error": why},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     session_id: str | None = None
     try:
         info = json.loads((args.bundle_dir / "info.json").read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        return _fail(
+        return fail_with_payload(
             f"cannot read the bundle's info.json: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
     if isinstance(info, dict) and isinstance(info.get("session_id"), str):
         session_id = info["session_id"]
@@ -247,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             programs_dir_display = programs_dir.relative_to(args.bundle_dir)
         except ValueError:  # pragma: no cover - defensive, see round_program_dir
             programs_dir_display = programs_dir
-        return _fail(
+        return fail_with_payload(
             f"refused: {refusal.reason} (programs read from {programs_dir_display})",
             {
                 "ok": False,
@@ -259,18 +252,18 @@ def main(argv: list[str] | None = None) -> int:
             code=EXIT_REFUSED,
         )
     except (OSError, ValueError) as exc:
-        return _fail(
+        return fail_with_payload(
             f"cannot read the round: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     destination = args.out or (round_dir / CLASSIFICATION_ARTIFACT)
     try:
         write_report(artifact, None, destination, make_parents=True)
     except OSError as exc:
-        return _fail(
+        return fail_with_payload(
             f"classified, but could not write {destination}: {exc}",
             {"ok": False, "error": str(exc), "path": str(destination)},
             as_json=args.json,

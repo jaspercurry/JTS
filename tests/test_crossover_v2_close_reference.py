@@ -37,7 +37,7 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     declared_clean_window_ms,
 )
 from jasper.active_speaker.crossover_v2.round_captures import (
-    REFUSE_UNREADABLE_ROUND,
+    REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND,
     RoundCapturesRefused,
     select_capture,
 )
@@ -379,7 +379,7 @@ def test_perfect_cancellation_reaches_agreement_not_no_data():
 def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path):
     with pytest.raises(RoundCapturesRefused) as excinfo:
         select_capture(tmp_path / "absent")
-    assert excinfo.value.reason == REFUSE_UNREADABLE_ROUND
+    assert excinfo.value.reason == REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND
 
 
 def test_a_misdeclared_distance_does_not_read_as_agreement():

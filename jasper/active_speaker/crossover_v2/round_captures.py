@@ -297,11 +297,12 @@ def _number(value: Any) -> float | None:
 # which capture of a round a single-capture reader takes
 # --------------------------------------------------------------------------- #
 
-#: :func:`select_capture`'s own two. The strings keep the close reference's
-#: name because they are published: they are the ``reason`` its report and its
-#: CLI's exit code are keyed on.
-REFUSE_UNREADABLE_ROUND = "close_reference_unreadable_round"
-REFUSE_NO_CAPTURE = "close_reference_no_capture"
+#: :func:`select_capture`'s own two, named for the reader that owns them so
+#: neither reads as a near-twin of :data:`REFUSE_NO_CAPTURES` above. The
+#: STRINGS keep the close reference's name because they are published: they
+#: are the ``reason`` its report and its CLI's exit code are keyed on.
+REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND = "close_reference_unreadable_round"
+REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 
 
 def select_capture(
@@ -320,7 +321,7 @@ def select_capture(
     """
     root = Path(round_dir)
     if not root.is_dir():
-        raise RoundCapturesRefused(REFUSE_UNREADABLE_ROUND, {"round_dir": str(root)})
+        raise RoundCapturesRefused(REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND, {"round_dir": str(root)})
     seen: list[str] = []
     if capture_id is not None:
         def wanted(doc: Mapping[str, Any]) -> bool:
@@ -339,7 +340,7 @@ def select_capture(
         ]
         if not named:
             raise RoundCapturesRefused(
-                REFUSE_NO_CAPTURE,
+                REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
                 {
                     "round_dir": str(root),
                     "capture_id": capture_id,
@@ -357,7 +358,7 @@ def select_capture(
     on_axis = discover_captures(root, select=on_axis_doc)
     if not on_axis:
         raise RoundCapturesRefused(
-            REFUSE_NO_CAPTURE,
+            REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
             {
                 "round_dir": str(root),
                 "note": "no capture declares azimuth 0 / elevation 0",

@@ -37,17 +37,18 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from jasper.active_speaker.crossover_v2.ring_projection import (
     RingProjectionRefused,
     project_ring,
 )
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_BUNDLE_UNREADABLE = 2
-EXIT_WRITE_FAILED = 3
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    fail_with_payload,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -89,14 +90,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) -> int:
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -108,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             setup_calibration_id=args.setup_calibration_id,
         )
     except RingProjectionRefused as refusal:
-        return _fail(
+        return fail_with_payload(
             f"refused: {refusal.reason}",
             {"ok": False, "reason": refusal.reason, "detail": refusal.detail},
             as_json=args.json,
@@ -119,8 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         # code here on purpose: the ring is written as it is read, so a
         # half-written ring and an unreadable bundle are the same instruction
         # to the operator — look at the filesystem, then run it again.
-        code = EXIT_WRITE_FAILED if isinstance(exc, OSError) else EXIT_BUNDLE_UNREADABLE
-        return _fail(
+        code = EXIT_WRITE_FAILED if isinstance(exc, OSError) else EXIT_UNREADABLE
+        return fail_with_payload(
             f"cannot project the round: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,

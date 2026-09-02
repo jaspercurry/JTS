@@ -1833,7 +1833,7 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
 def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _flat_ir())
     (bundle / "evidence/v1/artifacts/crossover_v2/wired-OTHER").mkdir(parents=True)
-    assert cli.main([str(bundle), "--dumps", str(dumps)]) == cli.EXIT_ROUND_UNREADABLE
+    assert cli.main([str(bundle), "--dumps", str(dumps)]) == cli.EXIT_UNREADABLE
     err = capsys.readouterr().err
     # Nit from the #2796 gate: the both-shapes guidance belongs on the
     # "structure missing entirely" refusal, not here -- this bundle's
@@ -1856,7 +1856,7 @@ def test_a_dir_matching_neither_shape_names_both_in_its_refusal(tmp_path, capsys
     programs_leaf = bundle / "crossover_v2/wired-TEST"
     assert programs_leaf.is_dir()
     code = cli.main([str(programs_leaf), "--dumps", str(dumps)])
-    assert code == cli.EXIT_ROUND_UNREADABLE
+    assert code == cli.EXIT_UNREADABLE
     err = capsys.readouterr().err
     assert "evidence/v1/artifacts/crossover_v2" in err
     assert "bank-crossover-round.sh" in err

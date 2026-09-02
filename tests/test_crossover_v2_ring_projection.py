@@ -394,5 +394,5 @@ def test_the_cli_refusal_and_unreadable_codes_are_distinct(tmp_path, capsys):
     empty = tmp_path / "b"
     empty.mkdir()
     assert cli.main([str(empty), "--out", str(tmp_path / "ring-b")]) == (
-        cli.EXIT_BUNDLE_UNREADABLE
+        cli.EXIT_UNREADABLE
     )
