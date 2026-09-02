@@ -190,11 +190,12 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 
     ``--packet`` short-circuits the build: the two sources are exclusive, and
     :func:`_evidence_source_error` has already refused an invocation that named
-    both. Where the three non-bundle inputs live is
+    both. Which SHAPE the positional is, and where the design draft and the
+    applied profile therefore live, is
     :func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs`'
     answer — the same resolver ``jasper-round-views`` reads a round through, so
     a live session directory and a banked round tree mean the same thing to
-    both tools. The defaults are resolved THERE rather than at the argparse
+    both tools. Those defaults are resolved THERE rather than at the argparse
     default, so "the operator passed this flag" stays answerable — which is
     what that refusal is decided on, and which is why an explicit flag is
     applied here rather than folded into the resolver.
@@ -204,7 +205,12 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     inputs = round_inputs(Path(args.session_dir))
     return build_crossover_evidence_packet(
         inputs.session_dir,
-        state_path=Path(args.state) if args.state else inputs.state_path,
+        # No default for the flow state, unlike the two below: the web host
+        # rewrites it as a round runs, and a rebuild fingerprints what it read
+        # — so a defaulted state would move a packet's fingerprint between
+        # `packet` and the `propose`/`stage` that judges against it minutes
+        # later, which is the mismatch `--packet` exists to remove.
+        state_path=Path(args.state) if args.state else None,
         driver_draft_path=(
             Path(args.drivers) if args.drivers else inputs.design_draft_path
         ),
@@ -1316,10 +1322,8 @@ _STATE_HELP = (
     "the crossover-v2 flow state JSON, banked separately from the bundle"
 )
 _STATE_HELP_OPTIONAL = (
-    f"{_STATE_HELP}. Optional; defaults to the round's own banked copy, or "
-    "this speaker's own flow state for a live session directory. Without a "
-    "readable file there the packet cannot carry the per-claim verify "
-    "verdicts or the Fc selection, and says so"
+    f"{_STATE_HELP}. Optional and NOT defaulted; without it the packet cannot "
+    "carry the per-claim verify verdicts or the Fc selection, and says so"
 )
 _STATE_HELP_REQUIRED = (
     f"{_STATE_HELP}. REQUIRED for this verb: the round a prescription becomes "

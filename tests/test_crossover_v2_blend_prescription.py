@@ -102,6 +102,10 @@ from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
 
+#: The CLI tests here build a packet from a live session bundle with no
+#: --drivers/--applied-profile, so none may read this machine's own.
+pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
+
 REPO = Path(__file__).resolve().parents[1]
 BAND = (824.35, 3297.4)
 REFERENCE_DB = -23.575
@@ -2826,7 +2830,6 @@ def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
     # this reference packet's fingerprint matches the one the CLI builds.
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
@@ -2858,7 +2861,6 @@ def _saved_packet(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
@@ -2978,7 +2980,6 @@ def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
@@ -3030,7 +3031,6 @@ def test_a_refusal_exits_two_and_prints_the_machine_readable_payload(
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
@@ -3081,7 +3081,6 @@ def test_a_refusal_from_the_candidate_seam_still_exits_two(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )

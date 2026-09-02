@@ -113,6 +113,10 @@ from jasper.cli import crossover_prescriber as cli
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
+#: The CLI tests here build a packet from a live session bundle with no
+#: --drivers/--applied-profile, so none may read this machine's own.
+pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
+
 #: The synthetic speaker: a woofer declared 40 Hz-4 kHz with a protective
 #: low-pass at 3 kHz, and a tweeter declared 1 kHz-20 kHz with a protective
 #: high-pass at 1.6 kHz — the B&C DE250 figure the shipped JTS3 preset carries.
@@ -3997,8 +4001,7 @@ def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
     draft_path.write_text(json.dumps(_draft()))
     # No explicit --applied-profile below, so this matches the CLI's default.
     packet = build_crossover_evidence_packet(
-        session, state_path=round_inputs_mod.state_default_path(),
-        driver_draft_path=draft_path,
+        session, driver_draft_path=draft_path,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     prescription_path = tmp_path / "p.json"
@@ -4016,29 +4019,19 @@ def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
 
 
 def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
-    tmp_path, capsys, monkeypatch
+    tmp_path, capsys
 ):
     """The packet's honesty rule reaching the operator: no band, named refusal.
 
     ``--drivers``/``--applied-profile`` are real argparse defaults now (F-7),
     so this speaker's own on-disk state at those paths — not just "the flag
-    was typed" — decides whether evidence is read. Redirected to files that
-    are never written, so the refusal is deterministic on any machine.
+    was typed" — decides whether evidence is read. The module's
+    ``no_real_pi_paths`` points both at files that are never written, so the
+    refusal is deterministic on any machine.
     """
-    monkeypatch.setattr(
-        round_inputs_mod, "state_default_path", lambda: tmp_path / "no-flow-state.json"
-    )
-    monkeypatch.setattr(
-        round_inputs_mod, "DRIVERS_DEFAULT_PATH", tmp_path / "no-drivers.json"
-    )
-    monkeypatch.setattr(
-        round_inputs_mod, "APPLIED_PROFILE_DEFAULT_PATH",
-        tmp_path / "no-applied-profile.json",
-    )
     session, _ = _bundle(tmp_path / "bundle")
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
@@ -4558,8 +4551,7 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
         applied_profile({"tweeter": INCUMBENT_TWEETER})
     ))
     packet = build_crossover_evidence_packet(
-        session, state_path=round_inputs_mod.state_default_path(),
-        driver_draft_path=draft_path, applied_profile_path=applied_path,
+        session, driver_draft_path=draft_path, applied_profile_path=applied_path,
     )
     prescription_path = tmp_path / "p.json"
     prescription_path.write_text(json.dumps(
@@ -4594,8 +4586,7 @@ def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(tmp_path, capsy
     draft_path.write_text(json.dumps(_draft()))
     # No explicit --applied-profile below, so this matches the CLI's default.
     packet = build_crossover_evidence_packet(
-        session, state_path=round_inputs_mod.state_default_path(),
-        driver_draft_path=draft_path,
+        session, driver_draft_path=draft_path,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
 

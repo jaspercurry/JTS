@@ -721,7 +721,7 @@ class VerifyPoseResult:
 
 
 def _banked_verify_curve(
-    state_path: Path | None,
+    inputs: RoundInputs,
 ) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
     """``((freqs_hz, measured_db), "")`` off the round's flow state, or
     ``(None, reason)``.
@@ -736,8 +736,14 @@ def _banked_verify_curve(
     parse itself is :func:`~.durable_state.verify_measured_curve_from_state`,
     the product's own reader for the key.
     """
+    state_path = inputs.state_path
     if state_path is None or not state_path.is_file():
-        return None, "the round names no readable flow state file"
+        # The resolver's code when it HAS one: "the speaker's state belongs to
+        # another session" is a different answer from "no state was banked",
+        # and only it names a round the operator could point at instead.
+        return None, (
+            inputs.state_reason or "the round names no readable flow state file"
+        )
     try:
         state = json.loads(state_path.read_text())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -781,7 +787,7 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     :func:`forward_model_verify_delta` therefore reads the same source
     verbatim rather than coming through here.
     """
-    banked_curve, reason = _banked_verify_curve(banked.inputs.state_path)
+    banked_curve, reason = _banked_verify_curve(banked.inputs)
     if banked_curve is None:
         return VerifyPoseResult(None, reason)
     freqs_hz, measured_db = banked_curve
@@ -881,7 +887,7 @@ def forward_model_verify_delta(
         "basis_round_dir": str(basis.round_dir),
         "measured_round_dir": str(measured.round_dir),
     }
-    verify_curve, reason = _banked_verify_curve(measured.inputs.state_path)
+    verify_curve, reason = _banked_verify_curve(measured.inputs)
     if verify_curve is None:
         return ForwardModelDeltaResult(None, reason, **dirs)
     measured_freqs_hz, measured_db = verify_curve

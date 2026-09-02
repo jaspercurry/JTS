@@ -133,9 +133,6 @@ logger = logging.getLogger(__name__)
 
 STATE_SCHEMA_VERSION = 1
 STATE_KIND = "jts_crossover_v2_flow_state"
-DEFAULT_V2_STATE_PATH = Path(
-    "/var/lib/jasper/active_speaker_crossover_v2_state.json"
-)
 
 # The wizard-facing relay kind label (mirrors the legacy
 # "crossover_sweep:<kind>" labels so /status.relay consumers need no new
@@ -143,14 +140,15 @@ DEFAULT_V2_STATE_PATH = Path(
 V2_RELAY_KIND_SESSION = "crossover_v2:session"
 V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 
-# The durable v2 state document's own vocabulary and its schema live in
-# :mod:`jasper.active_speaker.crossover_v2.durable_state`, which owns what the
-# file CONTAINS in both directions. This module owns the FILE — where it lives,
-# when it is written, and how durably. Re-bound here under their historical
+# The durable v2 state document's own vocabulary, its schema, and its one
+# on-Pi path live in :mod:`jasper.active_speaker.crossover_v2.durable_state`,
+# which owns what the file CONTAINS in both directions. This module owns the
+# WRITE — when it happens and how durably. Re-bound here under their historical
 # names because that is where the endpoints suite and the status projection
 # name them.
 FINDING_HOUSEHOLD_REFS_KEY = _durable.FINDING_HOUSEHOLD_REFS_KEY
 MAX_PERSISTED_SUM_POINTS = _durable.MAX_PERSISTED_SUM_POINTS
+DEFAULT_V2_STATE_PATH = _durable.DEFAULT_V2_STATE_PATH
 
 _state_lock = threading.RLock()
 _state_path_override: Path | None = None

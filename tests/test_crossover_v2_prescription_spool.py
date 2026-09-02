@@ -133,8 +133,12 @@ _APPLIED_INCUMBENT = (
 
 
 
-# Production refuses a session with no volume owner; stand one up.
-pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
+# Production refuses a session with no volume owner; stand one up. The CLI
+# tests below build a packet from a live session bundle with no
+# --drivers/--applied-profile, so none may read this machine's own.
+pytestmark = pytest.mark.usefixtures(
+    "a_process_with_a_volume_owner", "no_real_pi_paths"
+)
 
 def _document(**overrides: Any) -> bytes:
     """The accepted document's bytes, verbatim unless a test changes one field.
@@ -1203,7 +1207,6 @@ def test_the_stage_verb_banks_a_document_judged_against_a_saved_packet_FILE(
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        state_path=round_inputs_mod.state_default_path(),
         driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
         applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )

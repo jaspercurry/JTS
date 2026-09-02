@@ -55,6 +55,11 @@ from tests.crossover_v2_banked_round import (
     bank_verify_round,
 )
 
+#: A live session bundle resolves its three non-bundle inputs to the on-speaker
+#: SSOT paths; no test may read whatever sits at those absolute paths on the
+#: box running pytest.
+pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
+
 #: A log-spaced curve grid spanning all three SPEC_BANDS rows
 #: (250-2000 / 2000-8000 / 8000-16000 Hz) with plenty of bins in each.
 GRID = np.geomspace(280.0, 16000.0, 90)
@@ -180,7 +185,7 @@ def _make_round_dir(
 
 @pytest.mark.parametrize("live", [False, True])
 def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
-    tmp_path, monkeypatch, live
+    tmp_path, live
 ):
     """The SAME round, read the two ways it can be pointed at (#3498, #2882).
 
@@ -189,14 +194,6 @@ def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
     that cannot be re-derived from the paths, which of the two shapes was
     found, is disclosed rather than inferred.
     """
-    # A live bundle resolves its three non-bundle inputs to the on-speaker
-    # SSOT paths; no test may read whatever sits at those absolute paths on
-    # the box running pytest.
-    for name in ("DRIVERS_DEFAULT_PATH", "APPLIED_PROFILE_DEFAULT_PATH"):
-        monkeypatch.setattr(round_inputs_mod, name, tmp_path / f"unset-{name}.json")
-    monkeypatch.setattr(
-        round_inputs_mod, "state_default_path", lambda: tmp_path / "unset-state.json"
-    )
     round_dir = _make_round_dir(
         tmp_path, "r1",
         position_curves={
@@ -216,6 +213,33 @@ def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
     }
     assert loaded.curve_grid_hz.shape == GRID.shape
     assert loaded.graded_report.bands  # a real, non-empty rehydrated report
+
+
+def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
+    tmp_path, monkeypatch
+):
+    """One flow state on the speaker, a dozen retained session directories.
+
+    Every live bundle resolves to the SAME state file, so an older retained
+    session handed the current one would be graded on another round's verify
+    curve, verdicts and ordinal — wrong numbers rather than missing ones. The
+    two ids are compared in the namespace they share: the state's own
+    ``session_id`` against the relay directory the bundle filed its round
+    artifacts under.
+    """
+    curves = {"cloud_verify_02": ("onax", _flat_curve())}
+    mine = _make_round_dir(tmp_path, "r1", position_curves=curves) / "bundle" / "sess1"
+    other = _make_round_dir(tmp_path, "r2", position_curves=curves) / "bundle" / "sess1"
+    relay = other / "evidence/v1/artifacts/crossover_v2"
+    (relay / "cap1").rename(relay / "cap2")
+    state = tmp_path / "flow-state.json"
+    state.write_text(json.dumps({"session_id": "cap2"}))
+    monkeypatch.setattr(round_inputs_mod, "STATE_DEFAULT_PATH", state)
+
+    assert round_inputs_mod.round_inputs(other).state_path == state
+    stale = round_inputs_mod.round_inputs(mine)
+    assert stale.state_path is None
+    assert stale.state_reason == round_inputs_mod.STATE_NOT_THIS_SESSION
 
 
 def test_a_directory_of_neither_shape_refuses(tmp_path):
@@ -1118,6 +1142,45 @@ def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     rc = main(["per-seat", str(tmp_path / "nope")])
     assert rc == 1
     assert "error:" in capsys.readouterr().err
+
+
+def test_cli_reports_exit_1_when_the_view_cannot_be_written(tmp_path, capsys):
+    """An ``--out`` this process cannot create is the same contract an
+    unreadable round already has: the named exit code, not a traceback out of
+    the writer."""
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+
+    rc = main([
+        "per-seat", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
+    ])
+
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_writes_a_live_rounds_view_beside_the_caller(tmp_path, monkeypatch):
+    """A live session bundle is the daemon's directory, not the operator's.
+
+    Defaulting inside it made the ordinary invocation — grade the round I just
+    ran — depend on being able to write into the web host's own tree.
+    """
+    from jasper.cli.round_views import main
+
+    session_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    ) / "bundle" / "sess1"
+    here = tmp_path / "cwd"
+    here.mkdir()
+    monkeypatch.chdir(here)
+
+    assert main(["per-seat", str(session_dir)]) == 0
+
+    assert (here / "sess1-per_seat.json").is_file()
+    assert not (session_dir / "per_seat.json").exists()
 
 
 # --------------------------------------------------------------------------- #

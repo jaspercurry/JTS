@@ -20,10 +20,8 @@ import pytest
 
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
-from jasper.active_speaker.crossover_v2.round_views import (
-    _bundle_session_dir,
-    load_banked_round,
-)
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.round_bank import (
     REASON_ALREADY_BANKED,
     REASON_NOT_A_BUNDLE,
@@ -43,7 +41,7 @@ def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path
     test is about an unfinished one.
     """
     source = bank_measure_round(tmp_path / "live")
-    session_dir = _bundle_session_dir(source)
+    session_dir = round_inputs(source).session_dir
     mark_state(session_dir, state)
     return session_dir, source / "state.json"
 
@@ -76,11 +74,11 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present):
 
     # The round id is the receipt's, not the bundle's session id.
     assert banked.path == tmp_path / "campaigns" / "r1"
-    assert _bundle_session_dir(banked.path).name == session_dir.name
+    assert round_inputs(banked.path).session_dir.name == session_dir.name
     assert (banked.path / "bundle" / session_dir.name / "info.json").is_file()
-    assert load_banked_round(banked.path).session_dir == _bundle_session_dir(
+    assert load_banked_round(banked.path).session_dir == round_inputs(
         banked.path
-    )
+    ).session_dir
     provenance = json.loads((banked.path / "provenance.json").read_text())
     # What the caller is handed is what landed on disk -- no re-read needed.
     assert provenance == banked.provenance
@@ -130,7 +128,7 @@ def test_banked_bundle_files_are_hard_linked_not_copied(tmp_path):
         **_ssot(tmp_path, present=False),
     )
 
-    banked_session_dir = _bundle_session_dir(banked.path)
+    banked_session_dir = round_inputs(banked.path).session_dir
     for source_file in session_dir.rglob("*"):
         if source_file.is_file():
             banked_file = banked_session_dir / source_file.relative_to(session_dir)
@@ -161,7 +159,7 @@ def test_banked_bundle_falls_back_to_a_copy_when_linking_is_forbidden(
         **_ssot(tmp_path, present=False),
     )
 
-    banked_session_dir = _bundle_session_dir(banked.path)
+    banked_session_dir = round_inputs(banked.path).session_dir
     linked_any = False
     for source_file in session_dir.rglob("*"):
         if source_file.is_file():

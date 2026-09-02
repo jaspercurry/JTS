@@ -13,7 +13,10 @@ whether the round is still on the speaker or has been banked:
 * **live**, on the box: the bundle IS the session directory under
   ``/var/lib/jasper/active_speaker/sessions/<id>``, and the other four are the
   on-Pi SSOT files their owning modules declare — read here from those owners,
-  never re-spelled.
+  never re-spelled. The flow state is the one of the three that is a RECORD OF
+  ONE SESSION rather than of the speaker, and a dozen session directories are
+  retained against one state file, so it is handed over only to the session it
+  names (:func:`_live_state_path`).
 * **banked**, by ``scripts/bank-crossover-round.sh``: the bundle is copied to
   ``<round-dir>/bundle/<session>/`` and the same four are frozen beside it
   under fixed names.
@@ -30,14 +33,20 @@ under the reader.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from jasper.active_speaker.baseline_profile import (
     DEFAULT_STATE_PATH as APPLIED_PROFILE_DEFAULT_PATH,
 )
+from jasper.active_speaker.crossover_v2.durable_state import (
+    DEFAULT_V2_STATE_PATH as STATE_DEFAULT_PATH,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
+    round_artifact_dir,
 )
 from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as DRIVERS_DEFAULT_PATH,
@@ -55,9 +64,11 @@ __all__ = [
     "REPEAT_FLOOR_FILENAME",
     "RoundInputs",
     "RoundViewsError",
+    "STATE_DEFAULT_PATH",
     "STATE_FILENAME",
+    "STATE_NOT_THIS_SESSION",
+    "STATE_SESSION_UNKNOWN",
     "round_inputs",
-    "state_default_path",
 ]
 
 #: The four names ``bank-crossover-round.sh`` writes beside the copied bundle.
@@ -65,6 +76,12 @@ STATE_FILENAME = "state.json"
 DESIGN_DRAFT_FILENAME = "design-draft.json"
 APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
+
+#: Why a LIVE session resolves to no flow state. Codes rather than prose: they
+#: are what a reader decides on, and they reach an operator through the
+#: ``verify_pose.reason`` field the views already publish.
+STATE_NOT_THIS_SESSION = "state_not_this_session"
+STATE_SESSION_UNKNOWN = "state_session_unknown"
 
 
 class RoundViewsError(CrossoverEvidencePacketError):
@@ -81,11 +98,13 @@ class RoundViewsError(CrossoverEvidencePacketError):
 class RoundInputs:
     """The five paths one round's evidence packet is built from.
 
-    The four optional paths are ``None`` only for a banked round that did not
-    bank that sibling — absence the packet builder already reports inside the
-    document rather than raising on. A live round always names all four: the
-    SSOT file either exists on the speaker or its absence is reported the same
-    way.
+    The four optional paths are ``None`` for a banked round that did not bank
+    that sibling, and :attr:`state_path` is also ``None`` for a live round
+    whose flow state belongs to a different session
+    (:func:`_live_state_path`) — absence the packet builder already reports
+    inside the document rather than raising on. :attr:`state_reason` is the
+    code for that second case and empty otherwise; a reader that only wants
+    the paths can ignore it.
     """
 
     session_dir: Path
@@ -94,20 +113,40 @@ class RoundInputs:
     applied_profile_path: Path | None
     repeat_floor_path: Path | None
     banked: bool
+    state_reason: str = ""
 
 
-def state_default_path() -> Path:
-    """The flow state's on-Pi path, from the module that owns the FILE.
+def _live_state_path(session_dir: Path) -> tuple[Path | None, str]:
+    """The speaker's flow state, but only when it is THIS session's.
 
-    A function rather than a module constant beside the other two because the
-    owner is the web host: it imports this package, so importing it back at
-    module scope would invert that direction for one path. Deferred instead,
-    the way every other caller outside ``jasper.web`` reaches it (see
-    ``jasper/cli/doctor/correction.py``, ``jasper/cli/null_door.py``).
+    There is ONE flow state on a speaker and up to twelve retained session
+    directories, so a live bundle that is not the current round would
+    otherwise be handed another round's verify curve, verdicts and ordinal —
+    numbers that are wrong rather than missing. The two ids are compared in
+    the one namespace they share: the state's own ``session_id`` is a RELAY
+    id, and the bundle files its round artifacts under that same id
+    (``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``, which is what
+    :func:`~.evidence_packet.round_artifact_dir` returns).
+
+    A state file that is absent or unreadable is NOT refused here: nothing
+    claims it belongs to another round, and the packet builder already reports
+    an unreadable input inside the document it builds.
     """
-    from jasper.web.correction_crossover_v2 import DEFAULT_V2_STATE_PATH
-
-    return DEFAULT_V2_STATE_PATH
+    round_dir, _reason = round_artifact_dir(session_dir)
+    if round_dir is None:
+        return None, STATE_SESSION_UNKNOWN
+    try:
+        state = json.loads(STATE_DEFAULT_PATH.read_text())
+    except (OSError, UnicodeDecodeError, ValueError):
+        return STATE_DEFAULT_PATH, ""
+    if not isinstance(state, Mapping):
+        return STATE_DEFAULT_PATH, ""
+    session_id = state.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None, STATE_SESSION_UNKNOWN
+    if session_id != round_dir.name:
+        return None, STATE_NOT_THIS_SESSION
+    return STATE_DEFAULT_PATH, ""
 
 
 def _sibling(round_dir: Path, name: str) -> Path | None:
@@ -141,13 +180,15 @@ def round_inputs(path: Path) -> RoundInputs:
             banked=True,
         )
     if (path / "info.json").is_file():
+        state_path, state_reason = _live_state_path(path)
         return RoundInputs(
             session_dir=path,
-            state_path=state_default_path(),
+            state_path=state_path,
             design_draft_path=DRIVERS_DEFAULT_PATH,
             applied_profile_path=APPLIED_PROFILE_DEFAULT_PATH,
             repeat_floor_path=REPEAT_FLOOR_DEFAULT_PATH,
             banked=False,
+            state_reason=state_reason,
         )
     raise RoundViewsError(
         f"{path}: neither a banked round (no bundle/ directory) nor a live "

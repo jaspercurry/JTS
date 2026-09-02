@@ -469,6 +469,31 @@ def a_process_with_a_volume_owner(monkeypatch):
 
 
 @pytest.fixture
+def no_real_pi_paths(tmp_path, monkeypatch):
+    """Point ``round_inputs``' three on-Pi SSOT defaults at absent temp files.
+
+    A LIVE session bundle resolves its flow state, design draft and applied
+    profile to real ``/var/lib/jasper`` paths, so the two CLI suites that read
+    one -- ``jasper-crossover-prescriber`` and ``jasper-round-views`` -- would
+    otherwise answer differently on a box that is a speaker. Absent here is the
+    hermetic baseline; a test that wants one of the three populated re-points
+    the same attribute at a file it wrote.
+
+    **Opted into by name, never autouse.** Only those two suites resolve a live
+    bundle, so modules declare ``pytestmark = pytest.mark.usefixtures(...)``
+    rather than the whole tree paying for it.
+    """
+    from jasper.active_speaker.crossover_v2 import round_inputs
+
+    for name in (
+        "STATE_DEFAULT_PATH",
+        "DRIVERS_DEFAULT_PATH",
+        "APPLIED_PROFILE_DEFAULT_PATH",
+    ):
+        monkeypatch.setattr(round_inputs, name, tmp_path / f"unset-{name}.json")
+
+
+@pytest.fixture
 def logging_sandbox(monkeypatch):
     """Give a deterministic single 'journal' StreamHandler on a clean root
     (pytest's caplog handler would otherwise be the first one

@@ -2232,10 +2232,16 @@ comes in, told apart by
 `design-draft.json` / `applied-profile.json` — or a *live session bundle*
 still on the speaker (`/var/lib/jasper/active_speaker/sessions/<id>`), whose
 three non-bundle inputs come from their on-Pi SSOT paths instead, so a round
-can be graded before it is banked. The written JSON says which shape was read
-in its `banked` field. `jasper-round-views` reads no `dumps/` tree: the ring is
-gone and the packet it builds takes no path into one. No file is globbed or
-re-parsed by hand — positions and the graded spec come from
+can be graded before it is banked. `per-seat` and `agreement` say which shape
+was read in their `banked` field. A live bundle borrows the speaker's one flow
+state only when that state names the same session the bundle filed its round
+artifacts under — a dozen session directories are retained against one state
+file, so an older one grades with no state rather than with the current
+round's. Views land in a banked round's own tree, and beside the caller for a
+live one (the session directory is the daemon's). `jasper-round-views` reads
+no `dumps/` tree: the ring is gone and the packet it builds takes no path into
+one. No file is globbed or re-parsed by hand — positions and the graded spec
+come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
 grading comes from
 [`flat_spec.evaluate_flat_spec`](../jasper/active_speaker/flat_spec.py) and
