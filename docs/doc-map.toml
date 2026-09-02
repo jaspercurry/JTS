@@ -832,7 +832,6 @@ code = [
   "scripts/*capture*",
   "scripts/*audit*",
   "scripts/*probe*",
-  "scripts/*score*",
 ]
 docs = [
   "docs/testing-tooling.md",
