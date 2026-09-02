@@ -499,7 +499,7 @@ def ring_ioplug_wire_supported(
 # value — jts4 reached the ring that way on 2026-08-14, before its profile
 # declared a floor), CamillaDSP's ring open would fail and the arm would
 # roll back with a confusing daemon-level error — so the coupling reconciler
-# PREFLIGHTs the match and fail-closes to loopback with a crisp reason. The fix
+# PREFLIGHTs the match and refuses to arm, with a crisp reason instead. The fix
 # is always to bring the OUTPUTD period to the slot, never to raise this file.
 #
 # :func:`render_ring_conf_wire`'s PERIOD axis therefore has exactly one live
