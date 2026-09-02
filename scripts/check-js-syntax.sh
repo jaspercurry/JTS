@@ -19,7 +19,7 @@ if (( $# > 0 )); then
     for f in "$@"; do
         rel="${f#./}"
         case "${rel}" in
-            deploy/assets/*/js/*.js|tests/js/*.mjs|relay/src/*.js)
+            deploy/assets/*/js/*.js|tests/js/*.mjs)
                 if [[ -f "${REPO_ROOT}/${rel}" || -f "${f}" ]]; then
                     js_files+=("${rel}")
                 fi
@@ -32,8 +32,7 @@ else
     done < <(
         git -C "${REPO_ROOT}" ls-files \
             'deploy/assets/**/js/*.js' \
-            'tests/js/*.mjs' \
-            'relay/src/*.js'
+            'tests/js/*.mjs'
     )
 fi
 
