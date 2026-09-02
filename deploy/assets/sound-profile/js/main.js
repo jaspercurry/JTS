@@ -98,6 +98,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     commission: null, commissioningView: null,
     commissionBusy: '', commissionError: ''
   };
+  // The handoff card's copy state. `copiedRevision` is the declaration
+  // revision the copied prompt was MINTED against (server-stamped), so a
+  // later declaration edit turns the copy stale instead of drifting silently.
+  var tuningHandoff = {prompt: '', copied: false, selected: false, copiedRevision: null};
   var summedTestRequest = {token: 0, armTimer: null, current: null};
   var summedTestLevelUpdate = {timer: null, inFlight: false, pending: null};
   var commissionAutoRamp = {
@@ -149,8 +153,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     safetyDirty: false,
     editedDriverTargets: {},
     saving: false,
-    promptCopied: false,
-    promptSelected: false,
+    promptCopy: {copied: false, selected: false},
     researchRequest: null
   };
   var crossoverPreview = {payload: null, preparing: false, error: ''};
@@ -1444,8 +1447,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function invalidateDriverResearchBinding() {
     driverResearch.researchRequest = null;
-    driverResearch.promptCopied = false;
-    driverResearch.promptSelected = false;
+    driverResearch.promptCopy.copied = false;
+    driverResearch.promptCopy.selected = false;
   }
   function setManualDriverField(targetId, field, value) {
     var setting = driverSetting(targetId);
@@ -2091,8 +2094,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.dirty = false;
     driverResearch.safetyDirty = false;
     driverResearch.editedDriverTargets = {};
-    driverResearch.promptCopied = false;
-    driverResearch.promptSelected = false;
+    driverResearch.promptCopy.copied = false;
+    driverResearch.promptCopy.selected = false;
     driverResearch.researchRequest = payload.driver_research_request || null;
   }
   async function fetchDesignDraft() {
@@ -3511,11 +3514,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderDriverResearchAiHelper(topology) {
     var promptReady = driverResearchPromptReady(topology);
-    var promptSelected = driverResearch.promptSelected && !driverResearch.promptCopied;
-    var promptClass = 'driver-research__textarea' +
-      (promptSelected ? ' driver-research__textarea--compact' : ' driver-research__textarea--hidden');
-    var promptButtonLabel = driverResearch.promptCopied ? 'Copied' :
-      (promptSelected ? 'Selected' : 'Copy prompt');
+    var copyState = promptCopyState(driverResearch.promptCopy);
+    var promptSelected = copyState.selected;
+    var promptClass = copyState.promptClass;
+    var promptButtonLabel = copyState.label;
     return '<section class="driver-research__section driver-research__ai">' +
       '<div><h3 class="setting-row__title">Research your components</h3>' +
         '<p class="setting-row__hint">Copy the populated prompt, use it with the research assistant of your choice, then paste the JSON response here.</p></div>' +
@@ -3945,6 +3947,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           : renderBaselineProfileCard(),
         ''
       ) +
+      renderTuningHandoffCard() +
       renderOutputTopologyResetAction() +
     '</div>';
   }
@@ -4765,6 +4768,43 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       actions +
     '</div>';
   }
+  // Only a revision the page has seen move PAST the minted one is stale. The
+  // page's cached draft can lag the server's (the mint re-reads it), and a
+  // behind-by-one cache is not an edit the operator made.
+  function tuningHandoffStale() {
+    if (tuningHandoff.copiedRevision === null) return false;
+    var draft = driverResearch.designDraft || {};
+    var live = typeof draft.revision === 'number' ? draft.revision : 0;
+    return live > tuningHandoff.copiedRevision;
+  }
+  // Gated on the applied baseline and nothing else: no tuning flow is a
+  // prerequisite for using the speaker, so this card cannot appear before the
+  // speaker plays (#2883).
+  function renderTuningHandoffCard() {
+    if (!baselineProfileApplied()) return '';
+    var stale = tuningHandoffStale();
+    var copyState = promptCopyState(tuningHandoff, stale);
+    var selected = copyState.selected;
+    var promptClass = copyState.promptClass;
+    var label = copyState.label;
+    return '<div class="output-card">' +
+      '<div class="output-card__head"><div>' +
+        '<p class="output-card__title">Tune with an AI operator</p>' +
+        '<p class="setting-row__hint">Copy this prompt into a fresh AI session ' +
+          'that has an SSH connection to this speaker. It points at the ' +
+          'instructions installed on the box rather than repeating them, so it ' +
+          'cannot go out of date.</p></div>' +
+        '<button type="button" class="btn btn--ghost" data-act="copy-tuning-handoff">' +
+          escapeHtml(label) + '</button></div>' +
+      (stale ? '<p class="setting-row__hint" data-tuning-handoff-stale>' +
+        'Your declarations changed after you copied this prompt. Copy it again ' +
+        'before you start a session.</p>' : '') +
+      '<textarea id="tuning-handoff-prompt" class="' + promptClass + '" readonly ' +
+        (selected ? 'rows="6" ' : '') +
+        'aria-label="AI operator handoff prompt">' +
+        escapeHtml(tuningHandoff.prompt || '') + '</textarea>' +
+    '</div>';
+  }
   function rangeRow(label, value, min, max, opts) {
     opts = opts || {};
     var pct, thumb;
@@ -5334,6 +5374,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'stop-summed-test') { stopSummedTest(); }
     else if (act === 'record-summed-validation') { recordSummedValidation(t); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
+    else if (act === 'copy-tuning-handoff') { copyTuningHandoffPrompt(); }
     else if (act === 'commission-step') {
       startCommissionAutoRamp(t.getAttribute('data-role') || '', {
         confirm: false,
@@ -6453,12 +6494,46 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!button) return;
     var ready = driverResearchPromptReady(currentOutputTopology());
     button.disabled = !ready;
-    button.textContent = driverResearch.promptCopied ? 'Copied' :
-      (driverResearch.promptSelected ? 'Selected' : 'Copy prompt');
+    button.textContent = promptCopyState(driverResearch.promptCopy).label;
   }
   function updateDriverResearchImportSummary() {
     var summary = el('driver-research-import-summary');
     if (summary) summary.innerHTML = renderDriverResearchSummary();
+  }
+  // A minted prompt's textarea stays hidden until a copy is BLOCKED, at which
+  // point it is shown compact and pre-selected so the operator can finish the
+  // copy by hand. `stale` demotes a completed copy back to an offer.
+  function promptCopyState(state, stale) {
+    var selected = state.selected && !state.copied;
+    return {
+      selected: selected,
+      promptClass: 'driver-research__textarea' + (selected ?
+        ' driver-research__textarea--compact' : ' driver-research__textarea--hidden'),
+      label: (state.copied && !stale) ? 'Copied' :
+        (selected ? 'Selected' : 'Copy prompt')
+    };
+  }
+  // The shared tail of every copy-a-box-minted-prompt control: copy, record
+  // which of copied/selected happened, repaint, and never leave a blocked copy
+  // without selected text.
+  async function copyPromptField(fieldId, state, copiedMessage, afterRender) {
+    var field = el(fieldId);
+    if (!field) return;
+    var copied = await copyTextToClipboard(field.value, field);
+    state.copied = copied;
+    state.selected = !copied;
+    render();
+    if (afterRender) afterRender();
+    if (!copied) {
+      var fallback = el(fieldId);
+      if (fallback) {
+        fallback.focus();
+        fallback.select();
+        fallback.setSelectionRange(0, fallback.value.length);
+      }
+    }
+    status(copied ? copiedMessage :
+      'Copy was blocked by the browser. Prompt text is selected.', !copied);
   }
   async function copyTextToClipboard(text, sourceElement) {
     var secureContext = typeof window !== 'undefined' && window.isSecureContext;
@@ -6575,21 +6650,28 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Could not prepare the target-bound research prompt: ' + e.message, true);
       return;
     }
-    var copied = await copyTextToClipboard(prompt.value, prompt);
-    driverResearch.promptCopied = copied;
-    driverResearch.promptSelected = !copied;
-    render();
-    updateDriverResearchPromptButton();
-    if (!copied) {
-      var fallbackPrompt = el('driver-research-prompt');
-      if (fallbackPrompt) {
-        fallbackPrompt.focus();
-        fallbackPrompt.select();
-        fallbackPrompt.setSelectionRange(0, fallbackPrompt.value.length);
+    await copyPromptField('driver-research-prompt', driverResearch.promptCopy,
+      'Copied driver research prompt.', updateDriverResearchPromptButton);
+  }
+  async function copyTuningHandoffPrompt() {
+    var field = el('tuning-handoff-prompt');
+    if (!field) return;
+    try {
+      var resp = await fetch('./active-speaker/tuning-handoff', {cache: 'no-store'});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'handoff prompt could not be minted');
+      if (payload.status !== 'ready') {
+        throw new Error('this speaker has no applied profile to hand over yet');
       }
+      tuningHandoff.prompt = String(payload.prompt || '');
+      tuningHandoff.copiedRevision = (payload.binding || {}).design_draft_revision;
+      field.value = tuningHandoff.prompt;
+    } catch (e) {
+      status('Could not prepare the AI operator prompt: ' + e.message, true);
+      return;
     }
-    status(copied ? 'Copied driver research prompt.' :
-      'Copy was blocked by the browser. Prompt text is selected.', !copied);
+    await copyPromptField('tuning-handoff-prompt', tuningHandoff,
+      'Copied the AI operator prompt.');
   }
   // The research prompt asks for one ```json fenced block, and a chat UI's copy
   // button copies the block's contents — but people also paste the whole reply,
@@ -6635,8 +6717,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.dirty = true;
       driverResearch.safetyDirty = true;
       driverResearch.editedDriverTargets = {};
-      driverResearch.promptCopied = false;
-      driverResearch.promptSelected = false;
+      driverResearch.promptCopy.copied = false;
+      driverResearch.promptCopy.selected = false;
       status('Imported driver research. Review the visible values before updating the working setup.');
     } catch (e) {
       driverResearch.parsed = null;
