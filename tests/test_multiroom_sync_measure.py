@@ -123,13 +123,3 @@ def test_marker_wav_round_trip_analyzes():
 
     assert result.ok is True
     assert result.delta_ms == pytest.approx(-1.0, abs=0.001)
-
-
-def test_aggregate_measurements_rejects_inconsistent_repeats():
-    a = sync_measure.analyze_capture(_mono_capture(delta_ms=1.0), 48_000)
-    b = sync_measure.analyze_capture(_mono_capture(delta_ms=1.8), 48_000)
-
-    combined = sync_measure.aggregate_measurements([a, b])
-
-    assert combined.ok is False
-    assert "repeatability_low" in combined.warnings

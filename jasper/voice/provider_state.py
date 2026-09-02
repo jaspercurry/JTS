@@ -205,17 +205,6 @@ def read_active_model(provider: str, path: str | None = None) -> str | None:
     return model or default_model_id(provider)
 
 
-def read_active_provider_and_model(
-    path: str | None = None,
-) -> tuple[str, str | None]:
-    """Resolve provider + model in a single file read. Returns
-    ``("", None)`` when no provider is configured. Otherwise
-    ``(provider_id, model_string)`` where the model is the file's value
-    or the catalog default for that provider."""
-    state = read_active_provider_state(path)
-    return state.provider, state.model
-
-
 def read_active_model_from_env_files(
     provider: str, paths: "tuple[str, ...] | None" = None,
 ) -> str:

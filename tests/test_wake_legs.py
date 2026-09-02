@@ -39,7 +39,8 @@ _EXPECTED_TOKEN_PORTS = {
 
 
 def test_registry_tokens_and_ports_match_frozen_contract():
-    assert wake_legs.all_ports() == _EXPECTED_TOKEN_PORTS
+    ports = {leg.token: leg.udp_port for leg in wake_legs.REGISTRY}
+    assert ports == _EXPECTED_TOKEN_PORTS
 
 
 def test_tokens_names_and_ports_are_unique():
