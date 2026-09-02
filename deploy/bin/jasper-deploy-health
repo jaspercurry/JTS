@@ -90,6 +90,10 @@ FULL_REQUIRED_ACTIVE_UNITS = (
     "jasper-camilla.service",
     "jasper-mux.service",
     "jasper-input.service",
+    # A .path unit reports `active` while it waits. A missing or disabled one
+    # silently drops every accessory refresh request until the next reboot,
+    # which is invisible everywhere else.
+    "jasper-accessory-reconcile.path",
 )
 
 # Both profiles require the same units: jasper-input is an HID accessory
