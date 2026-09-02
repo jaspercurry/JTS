@@ -2562,7 +2562,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     the topology.)
 
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
-    ``RING_SLOT_FRAMES`` (``rust/jasper-ring/src/layout.rs``, no env
+    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
     override), so only a floor that EQUALS it is renderable. A DAC declaring
     any other floor never gets a rendered conf.d — shm_ring cannot reach its
     floor-optimal period this way — and the floor's outputd period/buffer
