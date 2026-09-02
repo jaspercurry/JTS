@@ -35,11 +35,10 @@ RATE = 48000
 DEFAULT_THRESHOLD = 0.006
 REFRACTORY_S = 0.250
 
-# Why a conversion is worthless, when it is. Closed vocabulary: the CLI keys
-# its exit status off these, so a new reason registers here.
+# Why a conversion is worthless, when it is. `ConversionResult.refusal` carries
+# one of these or None, and the CLI exits nonzero on any of them.
 REFUSAL_NO_PACKETS = "no_packets"
 REFUSAL_ALL_ZERO = "all_zero"
-REFUSAL_CODES = frozenset({REFUSAL_NO_PACKETS, REFUSAL_ALL_ZERO})
 
 _REF_UDP_PORT = 9891
 
@@ -56,6 +55,13 @@ def payloads(path: Path) -> Iterator[tuple[float, bytes]]:
     hide, so the caller classifies. Anything else (wrong port, a record too
     short to hold the headers) is skipped, mirroring tcpdump's own port filter
     at capture time.
+
+    A record pcap itself marks as TRUNCATED (captured length below the wire
+    length — ``tcpdump -s`` short of a period) is skipped rather than yielded:
+    it is a prefix of a datagram, not one, and its peak would be computed over
+    only the bytes that survived. A capture snaplen'd throughout therefore
+    yields nothing and is refused as ``no_packets`` instead of converting
+    clean off partial periods (#3509).
     """
 
     with open(path, "rb") as f:
@@ -75,10 +81,12 @@ def payloads(path: Path) -> Iterator[tuple[float, bytes]]:
             ph = f.read(16)
             if len(ph) < 16:
                 return
-            ts_s, ts_frac, incl, _orig = struct.unpack(endian + "IIII", ph)
+            ts_s, ts_frac, incl, orig_len = struct.unpack(endian + "IIII", ph)
             data = f.read(incl)
             if len(data) < incl:
                 return
+            if incl < orig_len:
+                continue
             # Ethernet(14) + IPv4(IHL) + UDP(8); parse IHL defensively.
             if incl < 14 + 20 + 8:
                 continue
@@ -140,10 +148,10 @@ def convert_pcap_to_detections(
     module docstring for why the two aren't unified).
 
     A capture carrying no usable datagram, or one carrying nothing but zeros,
-    is REFUSED (see ``REFUSAL_CODES``): the tap ran and the pipeline produced
-    an empty detections file, which is indistinguishable from "the speaker
-    played nothing" unless the result says so (#3509). The JSONL is still
-    written — a refusal is a verdict on the capture, not an I/O failure.
+    is REFUSED: the tap ran and the pipeline produced an empty detections
+    file, which is indistinguishable from "the speaker played nothing" unless
+    the result says so (#3509). The JSONL is still written — a refusal is a
+    verdict on the capture, not an I/O failure.
     """
 
     rt_minus_mono = time.clock_gettime(time.CLOCK_REALTIME) - time.monotonic()
@@ -207,7 +215,6 @@ __all__ = [
     "RATE",
     "REFRACTORY_S",
     "REFUSAL_ALL_ZERO",
-    "REFUSAL_CODES",
     "REFUSAL_NO_PACKETS",
     "ConversionResult",
     "convert_pcap_to_detections",

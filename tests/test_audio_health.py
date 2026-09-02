@@ -771,7 +771,55 @@ def test_a_deaf_content_source_is_an_issue_a_healthy_one_is_not() -> None:
     deaf = _compose(outputd=_outputd(content_deaf=True))
     assert deaf["signal_path"]["code"] == "output_deaf"
     assert deaf["signal_path"]["status"] == "issue"
+    assert deaf["overall"]["status"] == "issue"
     assert _compose(outputd=_outputd())["signal_path"]["code"] == "clean"
+    # A red headline with no incident row leaves `current_incident` None, so
+    # the fault never enters history and never records a recovery. Every other
+    # issue-status path code raises one; this is where it comes from.
+    rows = audio_health._state_issues(
+        _airplay(),
+        _outputd(content_deaf=True),
+        deaf["signal_path"],
+        {"status": "ok", "runtime": {"raw_mode": "disabled"}},
+        None,
+        None,
+        None,
+        activity_unknown=False,
+        coherence_park=None,
+        undeclared_hardware=None,
+        transport_park=None,
+    )
+    assert "path.outputd_content_deaf" in {row["key"] for row in rows}
+
+
+def test_a_deaf_output_never_displaces_the_cause_that_produced_it() -> None:
+    """Every upstream stall empties the ring, so `output_deaf` co-occurs.
+
+    It latches at 2 s while FANIN_STALE_MS trips at 5, so placing it ahead of
+    the fan-in watchdog would make `path_stalled` — and its
+    `path.fanin_watchdog_stale` row — unreachable for the whole outage.
+    Warmup is the same rule in time: outputd reads an empty ring before
+    CamillaDSP is producing, so a deploy's restart is not a deaf speaker.
+    """
+    stalled_airplay = _airplay()
+    stalled_airplay["current"]["fanin"]["watchdog"]["last_progress_age_ms"] = 60_000
+    stalled = compose_audio_health(
+        airplay=stalled_airplay,
+        outputd=_outputd(content_deaf=True),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert stalled["signal_path"]["code"] == "path_stalled"
+
+    warming = compose_audio_health(
+        airplay=_airplay(warmup=True),
+        outputd=_outputd(content_deaf=True),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert warming["signal_path"]["code"] != "output_deaf"
 
 
 def _output_hardware(
@@ -1560,6 +1608,37 @@ def test_stopped_camilla_outranks_the_deafness_it_causes() -> None:
     )
 
     assert health["signal_path"]["code"] == "camilla_stopped"
+
+
+def test_a_park_outranks_the_deafness_it_causes() -> None:
+    """A parked lane IS a lane with no producer, so it reads deaf by design.
+
+    `grouped_dac_content_lane` parks a box whose armed round-trip lane "has no
+    producer" — outputd zero-fills it forever. Letting `output_deaf` stand
+    would replace a structural verdict carrying its own rebuild issue with
+    "Try Restart audio", which cannot clear it.
+    """
+    for park in _live_parks():
+        health = compose_audio_health(
+            airplay=_airplay(),
+            outputd=_outputd(content_deaf=True),
+            route=_route(),
+            issues=[],
+            sampled_at=1000.0,
+            transport_park=park,
+        )
+        assert health["signal_path"]["code"] == "transport_unservable"
+
+    coherence = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(content_deaf=True),
+        route=_route(
+            transport={"coherence_errors": [_ROUTE_DISCONNECTED], "capability_gap": None}
+        ),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert coherence["signal_path"]["code"] == "transport_parked"
 
 
 def test_stopped_camilla_outranks_a_source_that_looks_like_it_is_playing() -> None:
@@ -4192,6 +4271,7 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
         "path.fanin_unavailable",
         "path.fanin_watchdog_stale",
         "path.outputd_backend_inactive",
+        "path.outputd_content_deaf",
         "path.outputd_unavailable",
         "path.outputd_watchdog_stale",
         "path.tts_queue_full",

@@ -170,6 +170,15 @@ SIGNAL_PATH_CODES = frozenset({
     "undeclared_hardware",
 })
 
+# Signal-path codes that name a CONSEQUENCE rather than a cause. `output_deaf`
+# is what a stopped DSP, a live coherence contradiction and a parked transport
+# ALL look like from the DAC end: the lane is armed, nothing produces for it,
+# so outputd zero-fills (`grouped_dac_content_lane` says "has no producer" in
+# so many words). Each of those detectors names something the household can
+# act on; "the speaker is playing silence" plus a restart prompt is neither
+# true to the cause nor a remedy that clears it.
+_SYMPTOM_ONLY_CODES = frozenset({"output_deaf"})
+
 # The two `_signal_path` codes that mean "outputd is not delivering audio, for
 # a reason `_signal_path` cannot see": outputd never started at all (its
 # missing-declaration `ExecCondition` kept the unit down, so its control socket
@@ -720,6 +729,20 @@ def _transport_park_signal(
     }
 
 
+def _yields_to_a_named_cause(signal_path: Mapping[str, Any]) -> bool:
+    """True when a cause-naming detector may replace this signal path.
+
+    The three "the box cannot emit at all" detectors in
+    :func:`compose_audio_health` share this guard: they claim the ground where
+    the path looks clean, plus :data:`_SYMPTOM_ONLY_CODES`. A concrete live
+    fan-in / outputd failure still wins.
+    """
+    return (
+        signal_path.get("status") != "issue"
+        or signal_path.get("code") in _SYMPTOM_ONLY_CODES
+    )
+
+
 def _stopped_dsp_signal(
     airplay: Mapping[str, Any],
     service_states: Mapping[str, Any] | None,
@@ -913,22 +936,6 @@ def _signal_path(
             ),
         }
 
-    # outputd is writing periods, but what it is writing is silence it did not
-    # intend — every input above stays healthy through a fully deaf chain, so
-    # this is the only one that can see it (#3458). The verdict is outputd's
-    # own: it owns the DAC geometry its threshold is derived from.
-    if _mapping(outputd_map.get("content")).get("deaf") is True:
-        return {
-            "code": "output_deaf",
-            "status": "issue",
-            "headline": "The speaker is playing silence",
-            "detail": (
-                "Sound is reaching the speaker's last step, but nothing is "
-                f"arriving for it to play. {RESTART_REMEDY} "
-                f"{DIAGNOSTICS_REMEDY}"
-            ),
-        }
-
     fanin = _mapping(fanin_raw)
     watchdog = _mapping(fanin.get("watchdog"))
     if _as_int(watchdog.get("last_progress_age_ms")) > FANIN_STALE_MS:
@@ -941,6 +948,34 @@ def _signal_path(
                 f"few seconds ago. {RESTART_REMEDY}"
             ),
         }
+
+    # outputd is writing periods, but what it is writing is silence it did not
+    # intend — every check that could see a CAUSE has already run, and none of
+    # them can see this: a deaf chain leaves both watchdogs progressing and
+    # every xrun count flat (#3458). The verdict is outputd's own: it owns the
+    # DAC geometry its threshold is derived from.
+    #
+    # Below the fan-in watchdog deliberately. A stalled fan-in starves
+    # CamillaDSP, which empties the ring, so outputd latches deaf at 2 s while
+    # FANIN_STALE_MS only trips at 5 — the cause outranks its own symptom, the
+    # same way `camilla_stopped` outranks this in `compose_audio_health`.
+    #
+    # Not during warmup: outputd primes and starts reading an empty ring
+    # before CamillaDSP is producing, so a deploy's coordinated restart would
+    # otherwise flicker the card (the gate `_stopped_dsp_signal` carries for
+    # the same reason).
+    if not warmup and _mapping(outputd_map.get("content")).get("deaf") is True:
+        return {
+            "code": "output_deaf",
+            "status": "issue",
+            "headline": "The speaker is playing silence",
+            "detail": (
+                "Sound is reaching the speaker's last step, but nothing is "
+                f"arriving for it to play. {RESTART_REMEDY} "
+                f"{DIAGNOSTICS_REMEDY}"
+            ),
+        }
+
     active = active_source
     inputs = _mapping(fanin.get("inputs"))
     active_input = _mapping(inputs.get(active)) if active else {}
@@ -1302,6 +1337,15 @@ def _state_issues(
     if path_code == "path_stalled":
         issues.append(_issue(
             "path.fanin_watchdog_stale",
+            scope="path",
+            impact="continuity",
+            severity="issue",
+            title=str(signal_path.get("headline")),
+            detail=str(signal_path.get("detail")),
+        ))
+    if path_code == "output_deaf":
+        issues.append(_issue(
+            "path.outputd_content_deaf",
             scope="path",
             impact="continuity",
             severity="issue",
@@ -2072,20 +2116,15 @@ def compose_audio_health(
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
         signal_path = _activity_unavailable_signal()
     stopped_dsp = _stopped_dsp_signal(ap, service_states)
-    if stopped_dsp is not None and (
-        signal_path.get("status") != "issue"
-        or signal_path.get("code") == "output_deaf"
-    ):
+    if stopped_dsp is not None and _yields_to_a_named_cause(signal_path):
         # Ahead of `parked` on the same principle parked states below: a
         # daemon that is not running is happening NOW and is fixed by starting
         # it, while parked is persistent and fixed by changing the layout.
         # A concrete live fan-in / outputd failure still wins — this only
-        # claims the ground where the path looks clean, plus `output_deaf`,
-        # which is this exact fault's CONSEQUENCE: the stopped DSP is the ring
-        # writer, so naming it is strictly more useful than naming the silence.
+        # claims the ground where the path looks clean, plus the symptom codes.
         signal_path = stopped_dsp
     parked = _parked_signal(route_state)
-    if parked is not None and signal_path.get("status") != "issue":
+    if parked is not None and _yields_to_a_named_cause(signal_path):
         # A verified structural fault outranks ok / warn / idle / unknown: the
         # box cannot emit audio at all, and absence of evidence should not hide
         # that.  It does NOT outrank a concrete live failure — parked is
@@ -2093,12 +2132,12 @@ def compose_audio_health(
         # is happening now and has its own remedy.
         signal_path = parked
     transport_parked = _transport_park_signal(transport_park)
-    if transport_parked is not None and signal_path.get("status") != "issue":
+    if transport_parked is not None and _yields_to_a_named_cause(signal_path):
         # Last of the three "the box cannot emit at all" detectors, and the
         # most structural: a live coherence contradiction or a stopped daemon
         # names something an operator can act on THIS boot, while a transport
         # park is cleared only by rebuilding the topology on the ring. Same
-        # `!= "issue"` guard, so neither of those is displaced.
+        # guard, so neither of those is displaced.
         signal_path = transport_parked
     undeclared_hardware = _undeclared_hardware_signal(
         output_hardware, output_topology_snapshot

@@ -40,6 +40,12 @@ def _record(ts_s: int, ts_us: int, data: bytes) -> bytes:
     return struct.pack("<IIII", ts_s, ts_us, len(data), len(data)) + data
 
 
+def _truncated_record(ts_s: int, ts_us: int, data: bytes, *, snaplen: int) -> bytes:
+    """A record tcpdump captured under a snaplen: incl_len < orig_len."""
+
+    return struct.pack("<IIII", ts_s, ts_us, snaplen, len(data)) + data[:snaplen]
+
+
 def _write_pcap(path, records: list[bytes]) -> None:
     # Legacy microsecond-resolution global header (magic 0xA1B2C3D4).
     global_hdr = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
@@ -97,11 +103,20 @@ def test_convert_pcap_to_detections_round_trip(tmp_path, monkeypatch):
 
 
 def test_payloads_skips_non_9891_and_short_records(tmp_path):
+    """#3509: a snaplen-truncated record is a PREFIX of a datagram, not one.
+
+    Every other length is now the caller's to classify, so this is the last
+    length check left — without it `tcpdump -s` short of a period converts
+    clean off partial periods, with a peak taken over only the surviving
+    bytes and nothing in the result saying so.
+    """
     loud = _payload(20000)
+    full = _udp_packet(loud)
     records = [
         _record(1, 0, _udp_packet(loud, dst_port=9999)),  # wrong port
         _record(1, 0, b"\x00" * 10),  # shorter than Ethernet+IPv4+UDP headers
-        _record(1, 0, _udp_packet(loud)),  # the only packet on the port
+        _truncated_record(1, 0, full, snaplen=96),  # pcap-marked truncation
+        _record(1, 0, full),  # the only packet on the port
     ]
     pcap_path = tmp_path / "ref9891.pcap"
     _write_pcap(pcap_path, records)
@@ -141,7 +156,7 @@ def test_a_wider_period_is_read_as_frames_and_a_ragged_one_is_counted(tmp_path):
     assert result.refusal is None
 
 
-def test_an_all_zero_capture_is_refused_with_a_registered_code(tmp_path):
+def test_an_all_zero_capture_is_refused_with_its_own_code(tmp_path):
     """A 150 s capture came back all zeros while music played (#3509).
 
     Every downstream surface saw an empty detections file, which is what a
@@ -158,7 +173,6 @@ def test_an_all_zero_capture_is_refused_with_a_registered_code(tmp_path):
     )
 
     assert result.refusal == ref9891_pcap.REFUSAL_ALL_ZERO
-    assert result.refusal in ref9891_pcap.REFUSAL_CODES
     assert result.n_packets == 2
 
     empty = tmp_path / "empty.pcap"
