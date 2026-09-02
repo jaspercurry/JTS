@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import types
 
 import numpy as np
 import pytest
@@ -132,9 +133,8 @@ async def test_mid_hold_silence_does_not_end_input_on_a_button_turn():
     # The frame still reaches the provider — bypassing the endpointer is
     # not the same as dropping audio.
     assert wl._turn.send_audio_calls == 1
-    # And Silero was never asked. That saves the per-frame CPU of the
-    # inference, not the memory: `WakeLoop.__init__` still constructs
-    # `SpeechVAD` unconditionally, so onnxruntime is resident either way.
+    # And Silero was never asked. This loop has one injected (it also has a
+    # wake leg); the memory half is pinned separately, below.
     assert wl._vad.predict_calls == 0
 
 
@@ -1059,3 +1059,114 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
 
     assert "event=barge.disabled_push_to_talk" in caplog.text
     assert "event=barge.disabled_no_reference" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Push-to-talk-only is reachable by PROFILE, not only by a missing room mic
+# ---------------------------------------------------------------------------
+
+
+def _wake_leg_cfg():
+    """Minimal Config stand-in for `_configured_wake_legs`, shaped like a
+    streambox: `mic_device` still carries the literal `"Array"` default and
+    the AEC reconciler never ran there, so nothing in the config says "no
+    always-listening mic". SimpleNamespace, not MagicMock — a MagicMock's
+    auto-created attrs are truthy and would defeat the empty-string gating
+    the function under test relies on."""
+    return types.SimpleNamespace(
+        mic_device="Array",
+        mic_device_raw="",
+        mic_device_dtln="",
+        mic_device_chip_aec_150="",
+        mic_device_chip_aec_210="",
+        local_mic_present=None,
+        manual_mic_sources={"wiim_remote_2": "udp:9892"},
+    )
+
+
+@pytest.mark.parametrize(
+    "wake_detection_supported, expected_tokens, expected_ptt_only",
+    [(False, [], True), (True, ["on"], False)],
+)
+def test_wake_legs_follow_the_profiles_wake_detection_grant(
+    wake_detection_supported, expected_tokens, expected_ptt_only,
+):
+    """A board without the headroom for always-on inference plans NO legs,
+    and the daemon it builds is push-to-talk-only by derivation.
+
+    Config alone cannot reach that verdict on such a box: `mic_device` reads
+    the shipped `"Array"` default and `local_mic_present` is None, so both
+    of the older no-leg terms are silent. Opening `"Array"` there raises
+    `InputDeviceUnavailable` and the daemon exits before it ever sees the
+    remote. See ADR-0214.
+    """
+    from jasper.voice_daemon import (
+        WakeLoop,
+        _configured_wake_legs,
+        _ManualMicRuntime,
+        _UNSET,
+    )
+
+    plan = _configured_wake_legs(
+        _wake_leg_cfg(), wake_detection_supported=wake_detection_supported,
+    )
+    assert [spec.token for spec, _device in plan] == expected_tokens
+
+    wl = WakeLoop.for_tests(
+        legs=_UNSET if plan else [],
+        manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+    )
+    assert wl._push_to_talk_only is expected_ptt_only
+
+
+@pytest.mark.parametrize("ptt_only, expect_vad", [(True, False), (False, True)])
+def test_silero_is_built_only_where_a_turn_can_ever_read_it(
+    monkeypatch, ptt_only, expect_vad,
+):
+    """Every `_vad` reader is already off on a button turn, so a
+    push-to-talk-only daemon must not pay for the model at all —
+    constructing `SpeechVAD` is what pulls openwakeword + onnxruntime into
+    a 415 MB box's resident set."""
+    from jasper import voice_daemon as vd
+
+    built: list[object] = []
+
+    class _CountingVad:
+        def __init__(self) -> None:
+            built.append(self)
+
+        def predict(self, _frame) -> float:
+            return 0.0
+
+        def reset(self) -> None:
+            return None
+
+    monkeypatch.setattr(vd, "SpeechVAD", _CountingVad)
+
+    wl = vd.WakeLoop.for_tests(
+        legs=[] if ptt_only else vd._UNSET,
+        manual_mics=[vd._ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        vad=None,
+    )
+
+    assert (wl._vad is not None) is expect_vad
+    assert len(built) == (0 if ptt_only else 1)
+
+
+async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
+    """`_begin_turn`'s LSTM reset was the ONE `_vad` site the push-to-talk
+    flags did not already gate, so it is the first thing a held button
+    would hit on a speaker that has no model to reset."""
+    from jasper import voice_daemon as vd
+
+    wl = vd.WakeLoop.for_tests(
+        legs=[],
+        manual_mics=[vd._ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        vad=None,
+    )
+    wl._active_manual_source = "wiim_remote_2"
+
+    await _drive_begin_turn(wl)
+
+    assert wl._vad is None
+    assert wl._manual_endpoint_this_turn is True

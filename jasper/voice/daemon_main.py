@@ -39,6 +39,10 @@ from ..cues import AudioCueManager, build_cue_tts_backend
 from ..google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
+from ..install_profile import (
+    install_profile_supports_wake_detection,
+    read_install_profile,
+)
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import BuildResult, Router, build_clients
@@ -955,7 +959,15 @@ async def run() -> None:
     # `wake=` must report what this daemon actually DOES, not what the config
     # happens to name — see `_wake_ready_detail`. Resolved once here because
     # the AsyncExitStack below opens its mics from this same list.
-    planned_wake_legs = _configured_wake_legs(cfg)
+    #
+    # The install marker is static for the process, so it is read once here
+    # and passed down rather than re-read per decision. See ADR-0214.
+    planned_wake_legs = _configured_wake_legs(
+        cfg,
+        wake_detection_supported=install_profile_supports_wake_detection(
+            read_install_profile(),
+        ),
+    )
     logger.info(
         "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
         cfg.voice_provider, _active_model(cfg),

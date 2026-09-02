@@ -111,6 +111,7 @@ from ..audio_profile_state import (  # noqa: F401 - route-mixin dependency expor
 )
 from ..install_profile import (  # noqa: F401 - route-mixin dependency exports
     STREAMBOX_INSTALL_PROFILE,
+    install_profile_allows_voice_brain,
     install_role_for_profile,
     read_install_profile,
     system_capabilities_for_profile,
@@ -275,10 +276,10 @@ def _read_diagnostics_snapshot(
     return body, ""
 
 
-# Streambox is the restricted profile: it runs the local audio graph and
-# sources but no voice brain or developer tools, so jasper-control gates
-# its route surface to the management + audio actions a streambox box
-# actually owns (full speakers allow everything).
+# Streambox is the restricted profile: jasper-control gates its route
+# surface to the management + audio actions every streambox owns (full
+# speakers allow everything). Capability-granted routes are added on top
+# by _control_route_allowed_for_install_profile, not listed here.
 _STREAMBOX_ALLOWED_GET_ROUTES = frozenset({
     "/healthz",
     "/volume",
@@ -305,6 +306,19 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/transport/next",
     "/transport/previous",
     "/transport/toggle",
+})
+# Routes a restricted profile earns from its CAPABILITY grant rather than
+# from its tier name. These are the assistant's own surface: the two
+# push-to-talk turn boundaries a paired remote's bridge posts, cue playback
+# (which proxies to the voice daemon so levels stay right), and restarting
+# the unit that serves them. The local-mic/wake/AEC routes are deliberately
+# absent — they need Capability.WAKE_DETECTION, which a streambox is not
+# granted. See ADR-0214.
+_ASSISTANT_POST_ROUTES = frozenset({
+    "/session/start",
+    "/session/end",
+    "/cue/play",
+    "/system/restart/voice",
 })
 
 
@@ -445,14 +459,19 @@ def _control_route_allowed_for_install_profile(
     path: str,
 ) -> bool:
     role = install_role_for_profile(profile)
-    if role == STREAMBOX_INSTALL_PROFILE:
-        if method == "GET":
-            return path in _STREAMBOX_ALLOWED_GET_ROUTES
-        if method == "POST":
-            return path in _STREAMBOX_ALLOWED_POST_ROUTES
+    if role != STREAMBOX_INSTALL_PROFILE:
+        # Full speakers allow every route.
+        return True
+    if method == "GET":
+        return path in _STREAMBOX_ALLOWED_GET_ROUTES
+    if method != "POST":
         return False
-    # Full speakers allow every route.
-    return True
+    if path in _STREAMBOX_ALLOWED_POST_ROUTES:
+        return True
+    return (
+        path in _ASSISTANT_POST_ROUTES
+        and install_profile_allows_voice_brain(profile)
+    )
 
 
 # _system_capabilities_for_profile was relocated to
