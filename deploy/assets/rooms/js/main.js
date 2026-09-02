@@ -530,12 +530,6 @@ function makeBondCard() {
 
   const trimIntro = h("p.info-card__note", null,
     "Balance the pair by ear while keeping the louder side at full trim.");
-  const balanceLink = h("a", {
-    href: "https://" + location.hostname + "/balance/",
-  }, "Balance automatically with a microphone ↗");
-  const balanceNote = h("p.info-card__note", null,
-    "Or: ", balanceLink,
-    " (uses the same measurement certificate as room correction).");
   const balanceBlock = h("div.balance-block", null,
     trimIntro,
     h("div.balance-control", null,
@@ -543,8 +537,7 @@ function makeBondCard() {
       balanceRange,
       h("span.balance-end", null, "Right")),
     h("div.balance-readout", null, balanceValue, balanceTrims, balanceReset),
-    balanceStatus,
-    balanceNote);
+    balanceStatus);
 
   const mainsHpCb = h("input", {
     type: "checkbox",

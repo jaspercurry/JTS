@@ -3196,6 +3196,7 @@ _PAIR_BALANCE_CONTROLLER_TEST = (
     _REPO / "tests" / "js" / "rooms_pair_balance_controller_test.mjs"
 )
 _DOM_APPEND_CHILDREN_TEST = _REPO / "tests" / "js" / "dom_test.mjs"
+_BOND_CARD_LINK_TEST = _REPO / "tests" / "js" / "rooms_bond_card_link_test.mjs"
 
 
 def test_dom_append_children_export_via_node():
@@ -3208,6 +3209,24 @@ def test_dom_append_children_export_via_node():
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_DOM_APPEND_CHILDREN_TEST)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["ok"] is True
+
+
+def test_bond_card_renders_no_https_balance_link_via_node():
+    """Issue #1842: the bond card's balance block used to build an
+    `https://<hostname>/balance/` "microphone" link — a relay design
+    ADR-0188 parked. On the self-signed origin that link fails hard
+    (ERR_CERT_AUTHORITY_INVALID). Pins that the card builds no <a> element at
+    all. Skips when node isn't on PATH."""
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_BOND_CARD_LINK_TEST)],
         capture_output=True,
         text=True,
         timeout=30,
