@@ -9,11 +9,10 @@ from jasper.local_sources import (
     local_source_lifecycles,
     local_source_park_units,
 )
+from jasper.local_sources.markers import MARKER_DIR, SHARED_LABEL, marker_path
 
 
 REPO = Path(__file__).resolve().parents[1]
-GUARD = "ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed"
-SOURCE_GUARD = GUARD
 LOADER_ENV_SCRUB = (
     "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES"
 )
@@ -47,7 +46,7 @@ PARK_RESTART_UNIT_DEPLOY_FILES = {
 }
 
 
-def test_every_parked_local_source_unit_has_systemd_start_guard():
+def test_every_parked_local_source_unit_has_systemd_start_marker():
     assert set(PARKED_UNIT_DEPLOY_FILES) == set(local_source_park_units())
     declared_runtime = {
         unit
@@ -70,17 +69,16 @@ def test_every_parked_local_source_unit_has_systemd_start_guard():
         text = path.read_text()
         if unit == "jasper-mux.service":
             # Shared arbiter infrastructure has role policy but no one source
-            # intent. Every source-owned resource below carries a fixed id.
-            assert SOURCE_GUARD in text, unit
-            assert f"{SOURCE_GUARD} --source" not in text, unit
+            # intent. Every source-owned resource below carries a fixed label.
+            assert f"ConditionPathExists={marker_path(SHARED_LABEL)}" in text, unit
             assert LOADER_ENV_SCRUB in text, unit
             continue
         source = declared_sources[unit]
-        assert f"{SOURCE_GUARD} --source {source}" in text, unit
+        assert f"ConditionPathExists={marker_path(source)}" in text, unit
         assert LOADER_ENV_SCRUB in text, unit
 
 
-def test_every_declared_bluetooth_accessory_adapter_has_source_start_guard():
+def test_every_declared_bluetooth_accessory_adapter_has_source_start_marker():
     """Optional adapters inherit Bluetooth Off from registry metadata."""
 
     services = {
@@ -93,11 +91,11 @@ def test_every_declared_bluetooth_accessory_adapter_has_source_start_guard():
         path = REPO / "deploy" / "systemd" / service
         assert path.exists(), service
         text = path.read_text()
-        assert f"{SOURCE_GUARD} --source bluetooth" in text, service
+        assert f"ConditionPathExists={marker_path('bluetooth')}" in text, service
         assert LOADER_ENV_SCRUB in text, service
 
 
-def test_source_start_guards_do_not_order_after_the_coordinator():
+def test_source_start_markers_do_not_order_after_the_coordinator():
     """The coordinator starts these units; an After= edge would deadlock."""
 
     accessory_paths = {
@@ -111,28 +109,21 @@ def test_source_start_guards_do_not_order_after_the_coordinator():
                 assert "jasper-source-intent-reconcile.service" not in line, path
 
 
-def test_composite_gadget_is_infrastructure_without_local_source_guard():
+def test_composite_gadget_is_infrastructure_without_local_source_marker():
     """The composite USB gadget is recomposed, not stopped, on park.
 
     When hardware permits it, the gadget carries the default-on management
-    network, so it must not carry the local-source ExecCondition: follower
-    parking withdraws audio without dropping NCM. The hardware and
-    audio-function gates live inside the gadget boundary.
+    network, so it must not carry a source marker gate: follower parking
+    withdraws audio without dropping NCM. The hardware and audio-function
+    gates live inside the gadget boundary.
     """
     for unit, path in PARK_RESTART_UNIT_DEPLOY_FILES.items():
         assert path.exists(), unit
-        assert GUARD not in path.read_text(), (
-            f"{unit} must NOT carry the local-source ExecCondition — it is "
+        text = path.read_text()
+        assert f"ConditionPathExists={MARKER_DIR}/" not in text, (
+            f"{unit} must NOT carry a source-intent marker gate — it is "
             "hardware-gated infrastructure that may carry the USB network."
         )
-
-
-def test_local_source_guard_console_script_is_installed():
-    pyproject = (REPO / "pyproject.toml").read_text()
-    assert (
-        'jasper-local-source-allowed = "jasper.local_sources.guard:main"'
-        in pyproject
-    )
 
 
 def test_usbgadget_unloads_gadget_modules_in_dependency_order():

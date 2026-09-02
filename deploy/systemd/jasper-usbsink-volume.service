@@ -10,6 +10,7 @@ Description=Jasper USB sink host-volume observer
 After=jasper-usbsink.service jasper-control.service
 Requires=jasper-usbsink.service
 PartOf=jasper-usbsink.service
+ConditionPathExists=/run/jasper-source-intent/allowed/usbsink
 
 [Service]
 Type=simple
@@ -17,7 +18,6 @@ TimeoutStartSec=2s
 TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
-ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink
 ExecStart=/opt/jasper/.venv/bin/jasper-usbsink-volume
 Restart=on-failure
 RestartSec=2s

@@ -8,6 +8,11 @@ StartLimitIntervalSec=0
 # Source intent owns whether BlueZ may run. Ordering is passive: neither this
 # oneshot nor an optional adapter may pull bluetooth.service up through Wants=.
 After=bluetooth.service
+# The adapter units this pass starts gate on the coordinator's marker files, so
+# a boot pass that races ahead of the coordinator would start nothing and report
+# its own failure. Ordering only: the coordinator never starts this unit (it
+# publishes a request file), so the edge cannot deadlock.
+After=jasper-source-intent-reconcile.service
 Before=jasper-voice.service
 
 [Service]

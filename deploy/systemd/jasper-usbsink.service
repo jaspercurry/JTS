@@ -15,6 +15,7 @@ Wants=jasper-fanin.service jasper-usbsink-volume.service
 # Restarting the gadget invalidates the prior readiness proof. PartOf makes the
 # marker stop/re-run with the gadget owner, including its wait-card barrier.
 PartOf=jasper-usbgadget.service
+ConditionPathExists=/run/jasper-source-intent/allowed/usbsink
 
 [Service]
 Type=oneshot
@@ -51,7 +52,6 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX
 RemoveIPC=true
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
-ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink
 ExecCondition=/bin/test -d /sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0
 ExecStartPre=/usr/local/sbin/jasper-usbsink-wait-card 30
 ExecStart=/bin/true
