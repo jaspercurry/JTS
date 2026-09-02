@@ -49,8 +49,10 @@ _VALID_COUPLINGS = VALID_COUPLINGS
 RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
 DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
 RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
-# Ring A/B slot size in frames. Mirrors rust/jasper-fanin/src/config.rs
-# RING_SLOT_FRAMES and c/jts-ring-ioplug/pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD.
+# Ring A/B slot size in frames. Mirrors rust/jasper-ring/src/layout.rs
+# RING_SLOT_FRAMES (the one Rust declaration, which jasper-fanin re-exports
+# and jasper-outputd reads) and c/jts-ring-ioplug/pcm_jts_ring.c
+# JTS_RING_DEFAULT_PERIOD.
 # The conf.d period parser and contract tests pin those copies to this value.
 #
 # The Rust side is a COMPILE-TIME const with no env override — fan-in always

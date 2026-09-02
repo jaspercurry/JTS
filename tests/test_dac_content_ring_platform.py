@@ -70,6 +70,7 @@ _OUTPUTD_DAC_CONTENT_RS = _REPO / "rust" / "jasper-outputd" / "src" / "dac_conte
 _OUTPUTD_RING_SOURCE_RS = (
     _REPO / "rust" / "jasper-outputd" / "src" / "shm_ring_source.rs"
 )
+_RING_LAYOUT_RS = _REPO / "rust" / "jasper-ring" / "src" / "layout.rs"
 
 #: The one rate this box runs. Neither the conf.d block nor the Python
 #: identity declares it — the ioplug inherits it and the Rust reader hardcodes
@@ -325,11 +326,6 @@ def test_the_dac_content_ring_slot_is_the_boxs_ring_slot():
     [
         ("DEFAULT_DAC_CONTENT_RING_PATH", "&str", DAC_CONTENT_RING_FILE),
         ("DAC_CONTENT_RING_SLOTS", "u32", DAC_CONTENT_RING_SLOTS),
-        (
-            "DAC_CONTENT_RING_PERIOD_FRAMES",
-            "u32",
-            DAC_CONTENT_RING_PERIOD_FRAMES,
-        ),
     ],
 )
 def test_the_reader_side_rust_constants_agree_with_the_python_ones(
@@ -351,6 +347,31 @@ def test_the_reader_side_rust_constants_agree_with_the_python_ones(
     assert needle in rust, (
         f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` — outputd's reader and "
         f"jasper.multiroom.dac_content_ring disagree about {rust_const}"
+    )
+
+
+def test_the_reader_side_period_is_read_from_the_shared_crate_not_respelled():
+    """The PERIOD, unlike the path and the depth, is not spelled per daemon.
+
+    outputd already links `jasper-ring` — the same crate fan-in links for the
+    writer half — so the slot is declared there once and read here, and there is
+    no second Rust literal for a slot change to miss. What the shared crate
+    declares is pinned against
+    :data:`jasper.fanin_coupling.RING_SLOT_FRAMES` (and against the C ioplug's
+    own `#define`, which cannot import a Rust const) by
+    ``tests/test_ring_emitter_ioplug_negotiation.py``.
+    """
+    needle = "pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = jasper_ring::RING_SLOT_FRAMES;"
+    assert needle in _read(_OUTPUTD_CONFIG_RS), (
+        f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` — the return ring's "
+        "slot is READ from jasper-ring, never re-declared as a literal"
+    )
+    rust_slot = re.search(
+        r"pub const RING_SLOT_FRAMES:\s*u32\s*=\s*(\d+);", _read(_RING_LAYOUT_RS)
+    )
+    assert rust_slot is not None and int(rust_slot.group(1)) == RING_SLOT_FRAMES, (
+        f"{_RING_LAYOUT_RS.name} must declare the slot as a plain literal equal "
+        f"to {RING_SLOT_FRAMES}; without it the needle above resolves to nothing"
     )
 
 

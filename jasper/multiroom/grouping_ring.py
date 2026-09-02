@@ -38,6 +38,7 @@ through machinery that is not about it.
 
 from __future__ import annotations
 
+from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
 from jasper.ring_assets import ring_writer_lock_path
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/62-jts-ring-grouping.conf`` defines —
@@ -77,7 +78,7 @@ GROUPING_RING_CHANNELS = 2
 #: depth is not tunable upward from a conf.d edit, and the only other depth axis
 #: is the period, which is also what bounds how coarse the writer's delay signal
 #: can get. What the depth buys and what the ceiling costs: the design's §3.2.
-GROUPING_RING_PERIOD_FRAMES = 128
+GROUPING_RING_PERIOD_FRAMES = RING_CAMILLA_CHUNKSIZE
 GROUPING_RING_SLOTS = 16
 
 #: The exclusive ``flock`` a C ioplug WRITER holds for the life of its mapping,

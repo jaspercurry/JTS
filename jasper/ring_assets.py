@@ -840,7 +840,7 @@ def render_ring_conf_wire(
 
     **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
     Ring A's slot size is fan-in's COMPILE-TIME constant
-    (``rust/jasper-fanin/src/config.rs`` ``RING_SLOT_FRAMES``, with no env
+    (``rust/jasper-ring/src/layout.rs`` ``RING_SLOT_FRAMES``, with no env
     override; ``mixer.rs`` creates the ring with it), so writing any other
     period into ``pcm.jts_ring_capture`` would make CamillaDSP's ioplug attach
     expect a geometry fan-in never builds — a hard ``RING_ATTACH_FATAL``
