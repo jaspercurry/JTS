@@ -126,6 +126,33 @@ def test_audio_graph_publishes_camilla_unit_state(
     assert graph["camilla"] == expected
 
 
+def test_camilla_row_survives_an_unreadable_route_plan(monkeypatch):
+    """An absent DAC throws the plan read AND stops CamillaDSP — same cause."""
+    def _boom():
+        raise OSError("no output hardware")
+
+    monkeypatch.setattr(
+        audio_runtime_plan, "build_audio_runtime_plan_from_system", _boom,
+    )
+
+    graph = state_aggregate._audio_graph_state(
+        fanin_status=None,
+        outputd_status=None,
+        service_states={
+            "jasper-camilla.service": {
+                "load_state": "loaded",
+                "active_state": "inactive",
+                "sub_state": "dead",
+                "result": "success",
+            },
+        },
+    )
+
+    assert graph is not None
+    assert graph["route"]["status"] == "unavailable"
+    assert graph["camilla"]["active_state"] == "inactive"
+
+
 # --- /state.audio_graph.coupling (P2) ----------------------------------------
 
 

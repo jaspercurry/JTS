@@ -241,7 +241,13 @@ def _audio_graph_state(
         plan = build_audio_runtime_plan_from_system()
     except Exception as e:  # noqa: BLE001
         logger.exception("audio graph route plan read failed")
-        return {"route": {"status": "unavailable", "error": str(e)}}
+        # The camilla row survives an unreadable plan: an absent DAC or an
+        # unreadable env file is a plausible cause of BOTH the throw here and a
+        # stopped CamillaDSP, so this is the degraded case the row exists for.
+        return {
+            "route": {"status": "unavailable", "error": str(e)},
+            "camilla": _camilla_unit_state(service_states),
+        }
 
     fanin_usbsink = fanin_usbsink_input(fanin_status)
     outputd_dac = (

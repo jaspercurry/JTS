@@ -404,16 +404,21 @@ restore_core_graph() {
 }
 
 # systemd's SIGTERM at TimeoutStartSec does not skip this: bash runs its EXIT
-# trap on a fatal signal, and children the trap spawns afterwards are not in
-# the already-signalled wave, so they run until the KillMode=control-group
-# SIGKILL at TimeoutStopSec (declared on the unit, not left to the manager
-# default, precisely because this ladder now depends on it).
+# trap on a fatal signal, and the cgroup kill sweep never re-signals a PID it
+# already hit, so the trap runs to the SIGKILL at TimeoutStopSec (declared on
+# the unit, not left to the manager default, precisely because this ladder now
+# depends on it). The sweep does re-read cgroup.procs until a pass finds no new
+# PIDs, so the first `systemctl` the trap forks can still lose that race.
 on_exit() {
+    # Released BEFORE the ladder, which is meant to still be running when the
+    # SIGKILL lands: a lock outliving the handler would suppress every later
+    # OnFailure= pass for the rest of the boot. Re-entry stays gated on the
+    # attempt stamp, written before anything is stopped.
+    rmdir "$LOCK_DIR" 2>/dev/null || true
     if (( RESTORE_OWED )); then
         emit aborted stage "$STAGE"
         restore_core_graph
     fi
-    rmdir "$LOCK_DIR" 2>/dev/null || true
 }
 
 mkdir -p "$RUN_DIR" 2>/dev/null || true
