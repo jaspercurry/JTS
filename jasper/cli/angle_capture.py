@@ -81,6 +81,7 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
     DeclaredGeometry,
+    load_declared_geometry,
 )
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
@@ -170,7 +171,7 @@ def _declared_on_the_box() -> DeclaredGeometry | None:
     diagnosed.
     """
     try:
-        return DeclaredGeometry.load(DECLARED_GEOMETRY_PATH)
+        return load_declared_geometry(DECLARED_GEOMETRY_PATH)
     except (OSError, ValueError):
         return None
 
@@ -286,7 +287,6 @@ def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
         return {"resolved": False, "reason": level.reason, "detail": level.detail}
     return {
         "resolved": True,
-        "target_db_spl": round(level.target_db_spl, 2),
         "anchor_db_spl": round(level.anchor_db_spl, 2),
         "reference_volume_db": round(level.reference_volume_db, 2),
         "mic_serial": level.mic_serial,
@@ -423,8 +423,8 @@ def _print_walk(payload: dict[str, Any]) -> None:
     print(
         "  level: "
         + (
-            f"{level['target_db_spl']:.1f} dB SPL at the mic (anchor "
-            f"{level['anchor_db_spl']:.1f}; reference volume "
+            f"{level['anchor_db_spl']:.1f} dB SPL at the mic (the banked "
+            f"anchor; reference volume "
             f"{level['reference_volume_db']:.1f} dB; "
             f"mic {level['mic_serial']})"
             if level["resolved"]
