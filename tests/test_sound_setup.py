@@ -406,8 +406,8 @@ class FakeVolumeCamilla:
 def _install_floor_tone_owner(fake: FakeVolumeCamilla) -> None:
     """Bind the process fader owner to this fake, as `jasper.web` binds the real one.
 
-    The audition's level control IS a COMMISSIONING claim now, so a test with
-    no owner registered exercises the degrade path instead of the subject. The
+    The audition's level control is a COMMISSIONING claim, so a test with no
+    owner registered exercises the degrade path instead of the subject. The
     autouse `_isolate_process_volume_owner` fixture clears this again after
     each test.
     """
@@ -417,11 +417,9 @@ def _install_floor_tone_owner(fake: FakeVolumeCamilla) -> None:
         return fake.db
 
     async def _write(db: float) -> bool:
-        # best_effort=True is the owner's door contract, and it is now the
-        # posture for BOTH directions: the audition's start no longer depends
-        # on the setter raising, because an unconfirmable level refuses the
-        # claim outright — a stronger check than a write that was merely
-        # accepted. `jasper.web` binds the real door the same way.
+        # best_effort=True is the owner's door contract in BOTH directions: an
+        # unconfirmable level refuses the claim outright rather than relying on
+        # the setter to raise. `jasper.web` binds the real door the same way.
         return await fake.set_volume_db(db, best_effort=True)
 
     install_volume_owner(
@@ -1459,9 +1457,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "detected_hardware_identity" in js
     # #2812 B1: the mismatch message is computed once, server-side, in
     # jasper.output_topology.declared_hardware_mismatch and published as
-    # payload.hardware_mismatch — the page reads that field rather than
-    # recomputing "Saved topology expects ..." locally, so the literal no
-    # longer lives here.
+    # payload.hardware_mismatch; the page reads that field rather than
+    # recomputing "Saved topology expects ..." locally.
     assert "hardwareMismatch" in js
     assert "Saved topology expects" not in js
     assert "Detected output hardware" not in js
@@ -1527,10 +1524,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Speaker layout is a draft." in js
     assert "active-speaker-issues--warning" in js
     assert "renderIssueList(issues, 5)" in js
-    # #2812 B1: the dual-Apple clock-blocker filter moved server-side into
+    # #2812 B1: the dual-Apple clock-blocker filter lives server-side in
     # jasper.output_topology.declared_hardware_mismatch (the same function
-    # backing payload.hardware_mismatch above); outputClockHardwareBlockers
-    # and its dual_apple_* code list no longer exist in this file.
+    # backing payload.hardware_mismatch above), not here.
     assert "function outputClockHardwareBlockers()" not in js
     assert "dual_apple_observed_" not in js
     assert "dual_apple_usb_topology_mismatch" not in js
@@ -1545,19 +1541,13 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
 # --------------------------------------------------------------------------
 # Commissioning blocker copy — the COMPLETENESS guards (#2344).
 #
-# #2344 shipped a blocker whose message carried an operator shell command and
-# whose code was registered in NO renderer map. Nothing failed, because every
-# copy map was only ever asserted for the entries it already had. These walk the
-# BACKEND's codes instead, so the next unregistered one fails here.
+# These walk the BACKEND's codes, so a newly minted blocker with no renderer
+# entry fails here rather than shipping.
 #
-# What is deliberately NOT asserted: "every backend blocker code has its own
-# entry in every map". 78 literal blocker codes exist and 46 have no specific
-# mapping BY DESIGN — the preparation failures out of `staging.py` (an invalid
-# crossover preview, an unassigned subwoofer output) are collapsed into the
-# `commissioning_candidate_prepared` gate's one sentence, which is the right
-# household copy for all of them. A guard demanding per-code entries would be a
-# 46-line exemption list restating that design, which protects nothing. These
-# assert the two properties that actually bite instead.
+# NOT asserted: "every backend blocker code has its own entry in every map".
+# Of 78 literal codes, 46 have no specific mapping by design — the preparation
+# failures out of `staging.py` collapse into the `commissioning_candidate_prepared`
+# gate's one sentence, which is the right household copy for all of them.
 # --------------------------------------------------------------------------
 
 _COMMISSION_CODE_MODULES = (
@@ -1589,16 +1579,11 @@ _COMMISSION_CODE_MODULES = (
 # An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
 # long CLI flag. Household surfaces must never carry one.
 #
-# THE LEFT BOUNDARY ADMITS A BACKTICK AND A SLASH, not whitespace alone, and
-# that was a hole rather than a nicety. Backend prose spells a remedy as
-# "Arm it with `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile …`",
-# where `sudo` follows a BACKTICK and the binary follows a SLASH — so neither
-# token had a whitespace boundary and the whole sentence scanned as
-# command-free. #2344's own blocker only tripped this by accident, on the space
-# before its `--endpoint` flag. Proved by mutation at #2412 Wave 3: misspelling
-# a new blocker's code left both guards below green while its message still
-# named a root command. Widened rather than reworded, because rewording the
-# message to suit the regex is gaming the guard.
+# The left boundary admits a backtick and a slash, not whitespace alone:
+# backend prose spells a remedy as "Arm it with
+# `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile …`", where `sudo`
+# follows a backtick and the binary follows a slash, so a whitespace-only
+# boundary scans that whole sentence as command-free.
 _OPERATOR_COMMAND_RE = re.compile(
     r"(?:^|[\s`/])(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
 )
@@ -1637,13 +1622,13 @@ def _blocker_dict_fields(node) -> tuple[object, object] | None:
     return fields["code"], fields.get("message")
 
 
-# The seeded builders, whose definitions live OUTSIDE the scanned modules
+# The seeded builders, defined OUTSIDE the scanned modules
 # (`jasper.active_speaker._common`), so nothing here can discover them. ARITY,
-# not name, disambiguates the `_issue` alias: most modules do
-# `from ._common import issue as _issue` — 3 positional args, severity first —
-# while `web_commissioning` does `from ._common import blocker_issue as _issue`
-# — 2 args, code first, always a blocker. Reading `args[1]` blindly would
-# collect MESSAGES as codes there. Value is (code_index, message_index).
+# not name, disambiguates the `_issue` alias: most modules import
+# `issue as _issue` (3 positional args, severity first) while
+# `web_commissioning` imports `blocker_issue as _issue` (2 args, code first),
+# so reading `args[1]` blindly would collect MESSAGES as codes there.
+# Value is (code_index, message_index).
 _SEEDED_BLOCKER_BUILDERS: dict[tuple[str, int], tuple[int, int]] = {
     ("_issue", 2): (0, 1),
     ("blocker_issue", 2): (0, 1),
@@ -1654,13 +1639,8 @@ _SEEDED_BLOCKER_BUILDERS: dict[tuple[str, int], tuple[int, int]] = {
 def _local_blocker_helpers(tree) -> dict[str, tuple[int, int]]:
     """Module-local helpers that forward their own params into a blocker issue.
 
-    Discovered BY DEFINITION, not by name. The walk used to recognise three
-    hard-coded helper names positionally and require `code=` in the keyword
-    branch, so `sound_setup`'s since-deleted `_commission_setup_issue` — called
-    positionally at seven sites — matched neither, and every one of those
-    blockers was invisible while the guard read as complete. Deleting that one
-    helper fixed that one instance; a name list still cannot be widened ahead of
-    the next helper somebody writes, and a definition scan can.
+    Discovered BY DEFINITION, not by name: a hard-coded name list cannot be
+    widened ahead of the next helper somebody writes, and a definition scan can.
 
     Returns ``name -> (code_arg_index, message_arg_index)`` for any function
     whose body builds a blocker (a literal `severity: "blocker"` dict, or a call
@@ -1702,21 +1682,14 @@ def _local_blocker_helpers(tree) -> dict[str, tuple[int, int]]:
 def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
     """AST-walk the commissioning modules for literal (code, message, where).
 
-    Mechanical on purpose: a hand-kept list of codes is the same class of bug as
-    a hand-kept list of copy entries — and so is a hand-kept list of the HELPER
-    NAMES that build them, which is why `_local_blocker_helpers` discovers those
-    from their definitions instead.
-
     Three shapes are collected: the seeded `_common` builders (by arity, see
     `_SEEDED_BLOCKER_BUILDERS`), any module-local helper that forwards its own
-    params into a blocker, and BARE `{"severity": "blocker", ...}` dict literals
-    — which the walk skipped entirely while it visited only `ast.Call`, hiding
-    five live mint sites in modules it was already scanning.
+    params into a blocker, and bare `{"severity": "blocker", ...}` dict literals.
 
-    Codes built from an f-string or a variable are invisible here. That is a
-    known bound, not an oversight: the property under test is about the literal
-    prose an author writes next to a literal code, and a computed code carries a
-    computed message the walk could not check either.
+    Codes built from an f-string or a variable are invisible here — a known
+    bound: the property under test is the literal prose an author writes next to
+    a literal code, and a computed code carries a computed message the walk
+    could not check either.
     """
     import ast
 
@@ -1876,14 +1849,11 @@ def test_every_preflight_gate_id_has_household_copy():
 
 
 def test_the_transport_blockers_are_registered_on_every_household_surface():
-    """The instance #2344 shipped without, re-pointed by #2412 Wave 3.
+    """Both directions of the shared code set (#2344, re-pointed by #2412).
 
-    The retired rung named a capability that no longer exists; its two map
-    entries were re-pointed rather than deleted, because the codes that replace
-    it carry the operator's reconciler commands — exactly what these maps exist
-    to intercept. Both directions are asserted: each new code present on both
-    surfaces, and the retired one absent from both. Asserting only the first
-    half would pass over a partial re-point that left the dead rung reachable.
+    Each live code present on both surfaces, and the retired ring-transport
+    rung absent from both: asserting only the first half would pass over a
+    partial re-point that left the dead rung reachable.
     """
     from jasper.active_speaker.commissioning_coordinator import (
         _SUMMED_TEST_FAILURE_COPY,
@@ -1893,24 +1863,13 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
     mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
     # The codes the BUILDERS actually raise, so a map entry cannot outlive a
-    # renamed emitter. Only the two that carry an operator command are held to
-    # the mapping by the command guard above; the ends-disagree code carries no
-    # command, so without this a misspelling in the emitter would leave its copy
-    # mapped to a code nothing raises and every guard green (proved by mutation).
+    # renamed emitter: the ends-disagree code carries no operator command, so
+    # the command guard above would not catch a misspelling in its emitter.
     emitted = {code for code, _, _ in _commission_blocker_pairs()}
-    # EXACT tokens, not substrings: `..._unarmed_X` contains `..._unarmed`, so a
-    # substring assertion passes over a misspelled rung — proved by mutation,
-    # which is why the ladder's real coverage is asserted BEHAVIOURALLY in
-    # tests/js/active_speaker_ui_test.mjs. This is the cheap second layer, not
-    # the guarantee.
-    #
-    # THE WHOLE SHARED SET, not the transport rungs alone. Pinning four of the
-    # eleven codes both surfaces carry left the other seven free to be renamed
-    # on one side only — the same partial-re-point hazard this test was written
-    # for, just further down the ladder. `ring_wire_declaration_invalid` joins
-    # the loop here rather than being asserted separately: it was mapped in the
-    # coordinator since #2364 and absent from the ladder until the gate lifted,
-    # and it never had the `emitted` half at all.
+    # Quoted tokens, not substrings: `..._unarmed_X` contains `..._unarmed`, so
+    # a substring assertion passes over a misspelled rung. The ladder's real
+    # coverage is asserted behaviourally in tests/js/active_speaker_ui_test.mjs;
+    # this is the cheap second layer, not the guarantee.
     for code in (
         "commissioning_transport_ends_disagree",
         "commissioning_ring_feed_unarmed",
@@ -1926,20 +1885,11 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
             f"the /sound/ issue ladder does not name {code}"
         )
         assert code in mapped, f"the combined-test card has no copy for {code}"
-    # The three the ladder reaches through a PREFIX rung, not by name. This is
-    # asserted as it is rather than as eight equal codes because the two
-    # surfaces genuinely disagree here and the pin must say which is true:
-    #
-    #   `for (var i = 0; …) if (String(codes[i]).indexOf('commission_startup_anchor_') === 0)`
-    #
-    # collapses all three into ONE sentence ("re-check the setup above, then
-    # start the tone again"), while Python routes them to THREE different
-    # families with three different remedies — back to Add your components, back
-    # to Confirm outputs, and retry-then-escalate. So the codes appear ZERO
-    # times literally in the ladder and `f"'{code}'" in helper_js` is false for
-    # every one of them. Pinned: each is emitted, each has Python copy, and the
-    # prefix rung that swallows them still exists. Not pinned as equivalent
-    # advice, because it is not.
+    # The three the ladder reaches through a PREFIX rung, never by name: its
+    # `indexOf('commission_startup_anchor_')` branch collapses all three into
+    # one sentence, while Python routes them to three families with three
+    # remedies. Pinned as emitted + copied + swallowed by a rung that exists —
+    # deliberately NOT pinned as equivalent advice, because it is not.
     assert "indexOf('commission_startup_anchor_') === 0" in helper_js, (
         "the /sound/ ladder no longer collapses the startup-anchor family by "
         "prefix; if it now names the codes, pin them like the eight above"
@@ -3360,12 +3310,9 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
 ):
     """A populated output-hardware state file must not 502 the route.
 
-    Regression: ``load_state`` returns a frozen ``OutputHardwareState`` when a
-    state file exists (every real Pi), and ``_send_json`` emits the payload
-    with plain ``json.dumps`` — which can't encode the dataclass. Embedding it
-    raw produced "Object of type OutputHardwareState is not JSON serializable"
-    -> HTTP 502 on ``/sound/output-topology``. The prior payload test only
-    exercised the no-file (``None``) path, so the defect shipped untested.
+    ``load_state`` returns a frozen ``OutputHardwareState`` whenever a state
+    file exists (every real Pi) and ``_send_json`` emits with plain
+    ``json.dumps``, which cannot encode a dataclass.
     """
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
@@ -3623,8 +3570,8 @@ def _declared_candidate_box(
     """Save one declared woofer/tweeter candidate at 5500 Hz, revision 1.
 
     Returns the recorded ``os.fsync`` fd list, already asserted empty: an
-    ordinary wizard design-draft save must not fsync, so that half of #2292
-    scope 2 is checked at every call site rather than in one test.
+    ordinary wizard design-draft save must not fsync (#2292), so that half is
+    checked at every call site rather than in one test.
     """
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _manual_settings
@@ -3737,8 +3684,8 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
 def test_apply_measured_crossover_geometry_writes_the_measured_declaration(
     monkeypatch, tmp_path: Path, selected_fc_hz, selected_slope,
 ) -> None:
-    """#2292 scope 2: the crossover-accept seam lands every moved field and
-    fsyncs its design-draft write (file + directory)."""
+    """The crossover-accept seam lands every moved field and fsyncs its
+    design-draft write, file and directory (#2292)."""
     fsync_calls = _declared_candidate_box(monkeypatch, tmp_path)
 
     saved = sound_setup.apply_measured_crossover_geometry(
@@ -5415,9 +5362,8 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
 @pytest.mark.parametrize(
     "scenario",
     [
-        # Distributed-active Slice 4: the module boots in follower mode (tabs +
-        # plot absent) and renders the local driver/crossover UI without
-        # fetching /state.
+        # The module boots in follower mode (tabs + plot absent) and renders
+        # the local driver/crossover UI without fetching /state.
         "followerModeRendersLocalDriverUi",
         "confirmedOutputKeepsResetPreconditions",
         "resetPartialCleanupSurfacesWarning",
@@ -5755,9 +5701,9 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
     assert payload["status"] == "skipped"
     assert payload["reason"] == "active_audition"
     assert fake.loaded_path is None
-    # The audition file is untouched by the skip. Its preference frame is
-    # present either way now, so what proves "not promoted" is that nothing was
-    # loaded and the file's bytes did not move -- asserted above and below.
+    # The audition file is untouched by the skip: its preference frame is
+    # present either way, so "not promoted" is proved by nothing being loaded
+    # and the file's bytes not moving.
     assert "sound_simple_bass:" in audition.read_text()
     assert not (config_dir / "sound_current.yml").exists()
     assert not (tmp_path / "dsp.json").exists()
@@ -5767,18 +5713,13 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
     _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    # Realistic apply-then-redeploy: the wizard save stamped sound_current.yml
-    # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id. A redeploy's
-    # dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID, so the two
-    # files differ ONLY in the cosmetic ``(id=...)`` header. Reconcile must still
-    # recognize this as unchanged and skip the gratuitous CamillaDSP reload.
-    #
-    # Tripwire: this previously pre-stamped the on-disk file with
-    # ``profile_id="reconcile-current-dsp"`` so the raw byte comparison matched
-    # by accident — masking that the no-op path is dead in production (the saved
-    # file never carries the reconcile id). Using a timestamp id here makes the
-    # test fail against the old id-sensitive comparison and pass against the
-    # header-normalizing fix.
+    # Realistic apply-then-redeploy: the wizard save stamps sound_current.yml
+    # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id, and a
+    # redeploy's dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID —
+    # so the two files differ ONLY in the cosmetic ``(id=...)`` header, which
+    # must still read as unchanged. The timestamp id below is load-bearing: a
+    # pre-stamped reconcile id would make the raw byte comparison match by
+    # accident, and the production no-op path never sees that id.
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     config_dir = tmp_path / "configs"
@@ -6894,9 +6835,9 @@ async def test_apply_profile_blocks_a_carrier_that_cannot_host_eq(
     saved evidence; here that evidence is absent (a bare tmp config dir), so
     the apply refuses with a specific, honest reason, never re-emits a stereo
     config over the active graph, and — since a refusal is a handled "blocked"
-    outcome, not a DSP failure — records NO dsp-apply state (SF-2; the
-    pre-check dry-runs the active carrier), so jasper-doctor's
-    check_dsp_apply_state stays clean on an active speaker.
+    outcome, not a DSP failure — records NO dsp-apply state (the pre-check
+    dry-runs the active carrier), so jasper-doctor's check_dsp_apply_state
+    stays clean on an active speaker.
     """
     from jasper.dsp_apply import last_dsp_apply_state
 
@@ -6946,8 +6887,8 @@ def test_carrier_refusal_unwraps_raw_and_wrapped():
 
 
 def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch):
-    # SF-4: the headline user-facing contract, exercised through the real
-    # do_POST handler (the carrier unit tests can't reach it). A graph that
+    # The headline user-facing contract, exercised through the real do_POST
+    # handler (the carrier unit tests cannot reach it). A graph that
     # can't host EQ yields HTTP 200 {status:"blocked"} — the page's honest-hint
     # vocabulary — never a 502 toast or a silent no-op. A regression that
     # dropped the handler's `return` (falling through to the 502 branch) would
@@ -6998,7 +6939,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
     assert payload["status"] == "blocked"
     assert payload["reason_code"] == "active_baseline_recompose_unavailable"
-    # Fail closed (active config never swapped) + SF-2 (no prepare_failed state).
+    # Fail closed: active config never swapped, no prepare_failed state.
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
 
@@ -7078,7 +7019,7 @@ def test_summed_validation_route_conflicts_while_combined_test_active(
 async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap(
     tmp_path: Path, monkeypatch
 ):
-    # SF-2 TOCTOU guard: the carrier is re-resolved UNDER the dsp-apply writer
+    # TOCTOU guard: the carrier is re-resolved UNDER the dsp-apply writer
     # lock, so if the loaded config is swapped to an active graph between the
     # pre-lock fast-check and lock acquisition (a concurrent active-startup load
     # shares that lock), the durable apply refuses in-lock and NEVER re-emits a
