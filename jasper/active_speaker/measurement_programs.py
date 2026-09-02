@@ -26,8 +26,6 @@ Deliberate omissions, so absence reads as a decision:
   (``crossover_v2.capture_plan.CLOUD_VERIFY_POSE_PROMPTS`` and
   ``verify_pose_table``, re-exported by ``crossover_v2_flow``); a second copy
   would be a second definition of one thing.
-* No ``tournament`` row. Its consumer is the per-pose candidate cycle, which
-  is not wired (plan, decision register R7); the row arrives with the cycle.
 * No absolute level. ``level_re_anchor_db`` is the only level a program
   states; :mod:`jasper.active_speaker.measurement_level` turns it into dB SPL
   against the banked seat-level anchor.
@@ -126,11 +124,25 @@ _BASELINE_EXPRESS_POSES: tuple[ProgramPose, ...] = (
     ProgramPose(0, 10),
 )
 
+# The candidate cycle's poses (#3498). Few and unrepeated on purpose: what a
+# tournament round multiplies is the CANDIDATE list, and a candidate is only
+# comparable to another measured from the same place, so poses cost travel
+# where candidates cost captures.
+_TOURNAMENT_EXPRESS_POSES: tuple[ProgramPose, ...] = (ProgramPose(0, 0),)
+
+_TOURNAMENT_FULL_POSES: tuple[ProgramPose, ...] = (
+    ProgramPose(0, 0),
+    ProgramPose(-20, 0),
+    ProgramPose(20, 0),
+)
+
 _PROGRAMS: Mapping[tuple[str, str], MeasurementProgram] = {
     (p.program_id, p.size): p
     for p in (
         MeasurementProgram("baseline", "full", _BASELINE_FULL_POSES),
         MeasurementProgram("baseline", "express", _BASELINE_EXPRESS_POSES),
+        MeasurementProgram("tournament", "full", _TOURNAMENT_FULL_POSES),
+        MeasurementProgram("tournament", "express", _TOURNAMENT_EXPRESS_POSES),
     )
 }
 

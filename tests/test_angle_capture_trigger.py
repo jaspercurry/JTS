@@ -507,6 +507,36 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
     assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
 
 
+def test_the_candidate_each_stop_measures_rides_the_document(slot):
+    """The cycle's label, from the stated walk to the banked one.
+
+    Per-STOP and not walk-level, because a candidate cycle is adjacent stops at
+    one pose. ADDITIVE at the same schema version, so a document staged before
+    the key existed reads as the walk that measures the speaker as it stands.
+    """
+    path, _ = slot
+    request = AngleCaptureRequest(
+        stops=(
+            AngleStop(0, REGIME_PER_DRIVER, 0, "fp-a"),
+            AngleStop(0, REGIME_PER_DRIVER, 0, "fp-b"),
+        ),
+    )
+    spool.stage_angle_request(request)
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert [stop["candidate_id"] for stop in doc["stops"]] == ["fp-a", "fp-b"]
+    assert spool.take_staged_angle_request() == request
+
+    older = dict(doc, stops=[
+        {k: v for k, v in stop.items() if k != "candidate_id"}
+        for stop in doc["stops"]
+    ])
+    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
+    path.write_text(json.dumps(older), encoding="utf-8")
+    taken = spool.take_staged_angle_request()
+    assert [stop.candidate_id for stop in taken.stops] == ["", ""]
+
+
 def test_an_ordinary_walk_asks_for_no_level_match(slot):
     """The flag is opt-in: without it the staged document is what it was."""
     path, _ = slot
@@ -1013,10 +1043,12 @@ def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
         ["--program", "baseline", "--azimuth", "5"],
         ["--program", "baseline", "--regime", "summed"],
         ["--program", "spot"],
+        ["--angles", "0", "--candidates", "fp-a"],
         [],
     ],
     ids=["both-doors", "geometry-beside-a-row", "regime-beside-a-program",
-         "spot-without-a-bearing", "neither-door"],
+         "spot-without-a-bearing", "candidates-beside-a-free-form-walk",
+         "neither-door"],
 )
 def test_a_malformed_invocation_is_a_usage_error(argv):
     """Exit 2, from argparse, before anything is built or banked.

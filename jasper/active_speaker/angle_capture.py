@@ -75,15 +75,15 @@ from __future__ import annotations
 
 import math
 import numbers
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
-from .crossover_v2.contracts import POLARITY_NORMAL
+from .crossover_v2.contracts import POLARITY_INVERTED, POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import MeasurementProgram
@@ -128,6 +128,7 @@ __all__ = [
     "pose_at_angle",
     "request_for_program",
     "walk_price",
+    "candidate_measure_axes",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -147,6 +148,8 @@ __all__ = [
     "WALK_POLARITY_NEEDS_WIRED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_LEVEL_MATCH_NEEDS_WIRED",
+    "WALK_CANDIDATE_NOT_MEASURABLE",
+    "WALK_CANDIDATE_CORNER_MISMATCH",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -310,11 +313,18 @@ class AngleStop:
     whole degrees ABOVE mark height, negative BELOW (``_VERTICAL_SIGNS``), and
     0 for a stop nobody raised. WHICH mover may be asked for a non-zero one is
     :data:`MOVER_MAX_ELEVATION_DEG`, judged by :class:`AngleCaptureRequest`.
+
+    ``candidate_id`` is the banked candidate fingerprint this stop measures,
+    ``""`` for the speaker as it stands. It is the label the bank is SELECTED
+    by afterwards (``record_index.bundle_measurements``), which is why it sits
+    on the stop rather than on the walk: a candidate cycle is adjacent stops at
+    one pose. WHAT a candidate may vary is :func:`candidate_measure_axes`.
     """
 
     angle_deg: int
     regime: str
     elevation_deg: int = 0
+    candidate_id: str = ""
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
@@ -594,6 +604,7 @@ def both_at(
 def request_for_program(
     program: MeasurementProgram,
     *,
+    candidates: tuple[str, ...] = (),
     mover: str = MOVER_HUMAN,
     polarity: str = POLARITY_NORMAL,
     inverted_role: str = "",
@@ -615,6 +626,11 @@ def request_for_program(
     level match and the household's declared room geometry stay the caller's to
     state (and the spec's to judge).
 
+    ``candidates`` expands POSE-MAJOR, CANDIDATE-MINOR: the variants at one
+    pose are ADJACENT stops, so the microphone still moves once per distinct
+    pose and two candidates are only ever compared from the same place. ``()``
+    is the walk that measures the speaker as it stands.
+
     Reach is not re-checked here: :class:`AngleCaptureRequest` already refuses a
     pose beyond the stated mover's envelope, in the vocabulary this module
     shares with the session.
@@ -628,9 +644,15 @@ def request_for_program(
         )
     return AngleCaptureRequest(
         stops=tuple(
-            AngleStop(pose.azimuth_deg, REGIME_PER_DRIVER, pose.elevation_deg)
+            AngleStop(
+                pose.azimuth_deg,
+                REGIME_PER_DRIVER,
+                pose.elevation_deg,
+                candidate,
+            )
             for pose in program.poses
             for _ in range(pose.repeats)
+            for candidate in (candidates or ("",))
         ),
         mover=mover,
         polarity=polarity,
@@ -916,6 +938,24 @@ WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 #: raised by the CALLER, since this module reads no session facts.
 WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 
+#: A stop names a banked candidate this walk cannot PLAY. The per-driver
+#: MEASURE graph omits crossover, linearization and the applied delays by
+#: contract (``camilla_yaml.emit_active_speaker_program_config``), so the only
+#: axes a stop can vary are the alignment ones
+#: :class:`~.crossover_v2.measure_spec.MeasureSpec` already carries. A
+#: candidate carrying linearization EQ is therefore not measurable through this
+#: path at all, and banking a take under its fingerprint would say a filter
+#: played that never did. Lifting it is the EQ candidate's own work, not a
+#: loosened check here.
+WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+
+#: A stop names a banked candidate minted against a different crossover corner
+#: than the one this speaker carries. The walk plays the candidate's ALIGNMENT
+#: over the speaker's own corner, so measuring one against the other would
+#: bank a take under a fingerprint whose corner never played. The detail names
+#: the axis that differs.
+WALK_CANDIDATE_CORNER_MISMATCH = "walk_candidate_corner_mismatch"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_DISTANCE_UNSUPPORTED,
     WALK_REGIME_UNSUPPORTED,
@@ -929,6 +969,8 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_POLARITY_NEEDS_WIRED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_LEVEL_MATCH_NEEDS_WIRED,
+    WALK_CANDIDATE_NOT_MEASURABLE,
+    WALK_CANDIDATE_CORNER_MISMATCH,
 })
 
 
@@ -951,6 +993,82 @@ class LateralWalkRefused(CrossoverV2FlowError):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+
+
+def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, Any]:
+    """The :class:`MeasureSpec` axes a banked candidate implies, or a refusal.
+
+    A stop plays the per-driver MEASURE graph, which omits crossover,
+    linearization and the applied delays by contract, so the only thing a
+    candidate can change about a stop is the ALIGNMENT it was minted with --
+    which branch rides flipped, and which carries the confirmation delay.
+    Returns exactly those keyword arguments, so the caller builds one spec and
+    this function names no fields the spec does not have.
+
+    Raises :data:`WALK_CANDIDATE_NOT_MEASURABLE` for a candidate whose
+    linearization EQ this graph cannot play, and
+    :data:`WALK_CANDIDATE_CORNER_MISMATCH` for one minted against another
+    corner.
+
+    ``preset`` is the SPEAKER's own capture preset, which only the adopting
+    session holds; ``None`` asks the candidate-only half, the same split
+    :data:`WALK_POLARITY_NEEDS_WIRED` already uses for the session facts this
+    module cannot read.
+    """
+    from .crossover_alignment import POLARITY_INVERT
+    from .crossover_declaration import preset_crossover_geometry
+
+    fingerprint = str(getattr(candidate, "fingerprint", "") or "")
+    if getattr(candidate, "linearization", None):
+        raise LateralWalkRefused(
+            WALK_CANDIDATE_NOT_MEASURABLE,
+            f"banked candidate {fingerprint} carries linearization EQ, and a "
+            "per-driver measurement graph plays no linearization",
+        )
+    minted = preset_crossover_geometry(getattr(candidate, "source_preset", None))
+    if minted is None:
+        raise LateralWalkRefused(
+            WALK_CANDIDATE_CORNER_MISMATCH,
+            f"banked candidate {fingerprint} declares no single readable "
+            "crossover to measure it against",
+        )
+    roles, geometry = minted
+    if preset is not None:
+        carried = preset_crossover_geometry(preset)
+        if carried is None:
+            raise LateralWalkRefused(
+                WALK_CANDIDATE_CORNER_MISMATCH,
+                "this speaker declares no single readable crossover to "
+                f"compare banked candidate {fingerprint} against",
+            )
+        carried_roles, carried_geometry = carried
+        # Every axis judged through ``matches`` and never through a second
+        # tolerance: one axis at a time is swapped for the speaker's own value,
+        # so an axis that differs is exactly one the comparator itself rejects.
+        differing = tuple(
+            axis
+            for axis in ("fc_hz", "filter_type", "slope_db_per_octave")
+            if not geometry.matches(
+                replace(geometry, **{axis: getattr(carried_geometry, axis)})
+            )
+        )
+        if carried_roles != roles or differing:
+            named = ", ".join(differing) or "between_roles"
+            raise LateralWalkRefused(
+                WALK_CANDIDATE_CORNER_MISMATCH,
+                f"banked candidate {fingerprint} was minted against another "
+                f"crossover; {named} differs from this speaker's",
+            )
+    alignment = getattr(candidate, "alignment", None)
+    inverted = getattr(alignment, "polarity", None) == POLARITY_INVERT
+    return {
+        # The candidate's convention is the region's UPPER driver relative to
+        # its lower one, which is the branch named here.
+        "polarity": POLARITY_INVERTED if inverted else POLARITY_NORMAL,
+        "inverted_role": roles[1] if inverted else "",
+        "delayed_role": str(getattr(alignment, "delay_role", None) or ""),
+        "delay_us": float(getattr(alignment, "delay_us", None) or 0.0),
+    }
 
 
 def session_lateral_walk(

@@ -506,7 +506,8 @@ writes, `withdraw` clears), the **poses**
 so one mic movement answers more questions than one capture can;
 which pose each take was measured at is derived from the bank into
 `position_cycle.json`), and the **programs** — `jasper-angle-capture
-stage --program baseline --size express|full` (or `--program spot --azimuth N
+stage --program baseline --size express|full` (or `--program tournament
+--size express|full --candidates fp1,fp2`, or `--program spot --azimuth N
 [--elevation M]`) walks a named pose table from
 [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py)
 rather than geometry you invented; `--angles` remains the operator escape hatch.

@@ -133,6 +133,8 @@ def test_full_baseline_matches_the_plans_repeat_structure() -> None:
     [
         ("baseline", "full", 13, 13, 16),
         ("baseline", "express", 5, 5, 8),
+        ("tournament", "full", 3, 3, 3),
+        ("tournament", "express", 1, 1, 1),
     ],
 )
 def test_shipped_rows(
@@ -166,7 +168,7 @@ def test_express_geometry() -> None:
 
 @pytest.mark.parametrize(
     ("program_id", "size"),
-    [("baseline", "medium"), ("tournament", "full"), ("spot", "express"), ("", "")],
+    [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")],
 )
 def test_unknown_lookup_names_the_valid_choices(program_id: str, size: str) -> None:
     """A miss carries the menu as a field, not only in its message."""
@@ -181,7 +183,12 @@ def test_unknown_lookup_names_the_valid_choices(program_id: str, size: str) -> N
 def test_available_programs_is_the_sorted_registry() -> None:
     choices = mp.available_programs()
 
-    assert choices == (("baseline", "express"), ("baseline", "full"))
+    assert choices == (
+        ("baseline", "express"),
+        ("baseline", "full"),
+        ("tournament", "express"),
+        ("tournament", "full"),
+    )
     rows = [mp.program(program_id, size) for program_id, size in choices]
     assert tuple((row.program_id, row.size) for row in rows) == choices
 
