@@ -60,6 +60,19 @@ LOW_BAND = 0  # SPEC_BANDS[0] == 250-2000 Hz
 #: A named bin that is resolution-valid at 20 ms and not at 5 ms.
 ANCHOR_UNRESOLVED_HZ = 300.0
 
+#: A round varying BOTH axes: (azimuth, elevation, late arrival). The three
+#: poses at ear height share one late arrival and the two above and below it
+#: each see their own, so the feature moves with HEIGHT alone -- the case an
+#: azimuth-only cloud cannot attribute (#3503). The (0, 0) anchor is in both
+#: families, which is why each reads three poses.
+MIXED_AXIS_POSES = (
+    (0.0, 0.0, 8.0),
+    (20.0, 0.0, 8.0),
+    (-20.0, 0.0, 8.0),
+    (0.0, 10.0, 8.9),
+    (0.0, -10.0, 9.8),
+)
+
 
 def _pose_ir(index: int, *, late_copy_ms: float | None) -> np.ndarray:
     """One pose's impulse response: direct, a baffle echo, maybe a room one.
@@ -151,6 +164,32 @@ def in_memory_round(
         for capture in discover_captures(root)
     )
     return root, stripped
+
+
+@pytest.fixture(scope="module")
+def height_varying_feature() -> dict:
+    """One bin of a mixed-axis round whose late arrival moves with height."""
+    captures = [
+        PoseCapture(
+            capture_id=f"mixed_{index:02d}",
+            phase=None,
+            wav=None,
+            program=None,
+            program_sha256="",
+            azimuth_deg=azimuth_deg,
+            vertical_deg=vertical_deg,
+            mark_distance_m=1.0,
+            radiated_band_hz=(150.0, 20000.0),
+            sample_rate=RATE,
+            ir=_pose_ir(index, late_copy_ms=late_copy_ms),
+            peak_idx=PEAK_IDX,
+        )
+        for index, (azimuth_deg, vertical_deg, late_copy_ms) in enumerate(
+            MIXED_AXIS_POSES
+        )
+    ]
+    (feature,) = sweep_features(captures, rungs_ms=(5.0, 20.0), at_hz=(FEATURE_HZ,))
+    return feature
 
 
 def test_common_mode_arrival_leaves_across_pose_sigma_flat(
@@ -542,3 +581,73 @@ def test_a_feature_whose_centre_walks_between_the_rungs_reads_moved() -> None:
     assert sensitivity["centre_shift_oct"] == pytest.approx(
         math.log2(centres["20"] / centres["4"])
     )
+
+
+# --------------------------------------------------------------------------- #
+# which AXIS the feature moves with (#3503)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("axis", "lo_ratio", "hi_ratio", "readable"),
+    [
+        pytest.param(gate_sweep.AXIS_ELEVATION, 3.0, math.inf, True, id="height"),
+        pytest.param(gate_sweep.AXIS_AZIMUTH, 0.0, 1.5, False, id="azimuth"),
+    ],
+)
+def test_only_the_axis_a_feature_moves_with_grows_its_own_sigma(
+    height_varying_feature: dict,
+    axis: str,
+    lo_ratio: float,
+    hi_ratio: float,
+    readable: bool,
+) -> None:
+    """The split #3503 asks for: one round, one bin, two answers.
+
+    Pooled over every pose these five captures disagree and the blended sigma
+    grows, which says the window admits something and not which axis it is.
+    Split, the poses that differ only in azimuth are window-invariant and the
+    ones that differ in height are not -- and the family that did not
+    disagree says so, rather than reporting its own noise as a ratio.
+    """
+    family = height_varying_feature["sigma_by_axis"][axis]
+    sigma = family["sigma_db_by_rung"]
+
+    assert family["n_poses"] == 3
+    assert lo_ratio < family["sigma_growth_ratio"] < hi_ratio
+    assert family["sigma_growth_readable"] is readable
+    assert set(sigma) == {"5", "20"}
+
+
+def test_an_azimuth_only_round_reads_as_one_azimuth_family(
+    pose_varying_report: dict,
+) -> None:
+    """The legacy round shape: no second axis, so no second family.
+
+    Every pose declares elevation 0, so the azimuth family IS the pose cloud
+    and its sigma is the all-pose sigma exactly -- the split adds a block and
+    moves no number an azimuth-only round already published.
+    """
+    band = _low_band(pose_varying_report)
+    by_axis = band["sigma_by_axis"]
+
+    assert set(by_axis) == {gate_sweep.AXIS_AZIMUTH}
+    assert by_axis[gate_sweep.AXIS_AZIMUTH]["n_poses"] == len(AZIMUTHS_DEG)
+    assert (
+        by_axis[gate_sweep.AXIS_AZIMUTH]["sigma_db_by_rung"]
+        == band["sigma_db_by_rung"]
+    )
+
+
+def test_a_round_that_declares_no_height_forms_no_axis_family(
+    in_memory_round: tuple[Path, tuple[PoseCapture, ...]],
+) -> None:
+    """An undeclared pose field is not a zero: no family is honest (#3503)."""
+    _root, captures = in_memory_round
+    unposed = tuple(
+        replace(capture, vertical_deg=None, mark_distance_m=None)
+        for capture in captures
+    )
+
+    (feature,) = sweep_features(unposed, rungs_ms=(5.0, 20.0), at_hz=(FEATURE_HZ,))
+    assert feature["sigma_by_axis"] == {}
