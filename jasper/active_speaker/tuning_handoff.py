@@ -21,8 +21,6 @@ from jasper.identity import (
     speaker_url,
 )
 
-TUNING_HANDOFF_KIND = "jts_tuning_handoff"
-
 HANDOFF_READY = "ready"
 HANDOFF_NOT_READY = "not_ready"
 
@@ -140,7 +138,6 @@ def build_tuning_handoff(
     else:
         reason = NO_APPLIED_BASELINE
     return {
-        "kind": TUNING_HANDOFF_KIND,
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,
         "reason": reason,
         "binding": binding,
