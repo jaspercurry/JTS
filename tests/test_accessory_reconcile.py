@@ -9,6 +9,7 @@ import pytest
 
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories import reconcile
+from tests.systemd_unit_helpers import value_for as _value_for
 from jasper.music_sources import Source
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -488,6 +489,112 @@ def test_main_returns_failure_for_authoritative_reconcile_errors(
     assert "event=accessory_mic.reconcile_failed" in caplog.text
 
 
+# --------------------------------------------------------------------------
+# Request protocol (jasper-accessory-reconcile.path)
+# --------------------------------------------------------------------------
+
+
+def test_a_request_is_published_readably_and_claimed_exactly_once(tmp_path):
+    """0664 because the reconciler runs as root with an empty
+    CapabilityBoundingSet: no DAC override, so it reads this file on the
+    ordinary group/other bits like anyone else."""
+    request = tmp_path / "accessory-reconcile.request"
+
+    reconcile.request_reconcile("bluetooth-pair", path=str(request))
+
+    assert request.read_text(encoding="utf-8") == "bluetooth-pair"
+    assert request.stat().st_mode & 0o777 == 0o664
+
+    assert reconcile.claim_reconcile_request(str(request)) == "bluetooth-pair"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_claiming_nothing_is_not_an_error(tmp_path):
+    assert reconcile.claim_reconcile_request(str(tmp_path / "absent")) is None
+
+
+def test_a_request_written_during_a_pass_survives_its_claim(tmp_path):
+    """The whole point of claiming by rename. A requester whose change landed
+    after the pass read BlueZ must get its own pass, not this one's verdict."""
+    request = tmp_path / "accessory-reconcile.request"
+    reconcile.request_reconcile("source-intent", path=str(request))
+
+    real_replace = reconcile.os.replace
+
+    def replace_then_race(src, dst):
+        real_replace(src, dst)
+        # A concurrent requester, landing the instant the claim frees the name.
+        # Keyed on the claim's own source: os.replace is global here, and
+        # request_reconcile publishes through it too (tmp -> request).
+        if str(src) == str(request):
+            reconcile.request_reconcile("bluetooth-forget", path=str(request))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(reconcile.os, "replace", replace_then_race)
+        assert reconcile.claim_reconcile_request(str(request)) == "source-intent"
+
+    assert request.exists(), "the racing request did not survive the claim"
+    assert request.read_text(encoding="utf-8") == "bluetooth-forget"
+    assert reconcile.claim_reconcile_request(str(request)) == "bluetooth-forget"
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    (
+        (reconcile.AccessoryReconcileError("stop here"), 1),
+        (RuntimeError("transient"), 0),
+    ),
+)
+def test_main_prefers_a_claimed_reason_over_the_fallback_argument(
+    monkeypatch,
+    caplog,
+    tmp_path,
+    failure: Exception,
+    code: int,
+):
+    """ExecStart carries `--reason boot` for the direct start; a request that is
+    waiting names its own requester and must win — on both failure branches,
+    since the soft one is the common outcome and the one that still exits 0."""
+    request = tmp_path / "accessory-reconcile.request"
+    reconcile.request_reconcile("bluetooth-forget", path=str(request))
+
+    def fail_run(awaitable):
+        awaitable.close()
+        raise failure
+
+    monkeypatch.setattr(reconcile.asyncio, "run", fail_run)
+
+    with caplog.at_level(logging.WARNING):
+        assert reconcile.main(
+            ["--reason", "boot", "--reason-file", str(request)],
+        ) == code
+
+    assert "reason=bluetooth-forget" in caplog.text
+    assert "reason=boot" not in caplog.text
+    # Drained even on the boot path: PathExists is level-triggered, so a
+    # request left on disk re-starts the oneshot forever.
+    assert not request.exists()
+
+
+def test_main_falls_back_to_its_argument_when_no_request_is_waiting(
+    monkeypatch,
+    caplog,
+    tmp_path,
+):
+    def fail_run(awaitable):
+        awaitable.close()
+        raise reconcile.AccessoryReconcileError("stop here")
+
+    monkeypatch.setattr(reconcile.asyncio, "run", fail_run)
+
+    with caplog.at_level(logging.ERROR):
+        assert reconcile.main(
+            ["--reason", "boot", "--reason-file", str(tmp_path / "absent")],
+        ) == 1
+
+    assert "reason=boot" in caplog.text
+
+
 def test_apply_adapter_services_disables_inactive_profile_service():
     calls = []
     failures = reconcile.apply_adapter_services(
@@ -903,12 +1010,27 @@ def test_adapter_service_systemctl_failures_are_observable(caplog):
     assert 'command="systemctl enable jasper-wiim-remote-mic.service"' in caplog.text
 
 
+def test_the_path_unit_watches_the_request_file_this_module_publishes():
+    """The watcher and the writers must name the same file; a drift here drops
+    every request silently, with the reconciler still reporting healthy."""
+    body = (ROOT / "deploy/systemd/jasper-accessory-reconcile.path").read_text(
+        encoding="utf-8",
+    )
+
+    assert _value_for(body, "PathExists") == (
+        reconcile.DEFAULT_RECONCILE_REQUEST_FILE
+    )
+    assert _value_for(body, "Unit") == "jasper-accessory-reconcile.service"
+    assert _value_for(body, "WantedBy") == "multi-user.target"
+
+
 def test_installer_enables_reconciler_not_profile_adapter_by_default():
     units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8",
     )
 
     assert "deploy/systemd/jasper-accessory-reconcile.service" in units_sh
+    assert "deploy/systemd/jasper-accessory-reconcile.path" in units_sh
     assert "deploy/systemd/jasper-wiim-remote-mic.service" in units_sh
     enable_block = units_sh.rsplit(
         "systemctl enable jasper-camilla.service jasper-fanin.service",
@@ -917,6 +1039,21 @@ def test_installer_enables_reconciler_not_profile_adapter_by_default():
     assert "jasper-accessory-reconcile.service" in enable_block
     assert "jasper-wiim-remote-mic.service" not in enable_block
     assert "jasper-accessory-reconcile --reason install" in units_sh
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("install_systemd_units", "start_streambox_runtime_units"),
+)
+def test_both_profiles_start_the_request_watcher_this_boot(function: str):
+    """`enable` alone arms the watcher for the NEXT boot. Every refresh
+    requested before then would be dropped, and nothing else would say so."""
+    units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
+        encoding="utf-8",
+    )
+    body = units_sh.split(f"{function}() {{", 1)[1].split("\n}", 1)[0]
+
+    assert "systemctl enable --now jasper-accessory-reconcile.path" in body
 
 
 def test_reconciler_does_not_order_before_adapter_it_restarts():
