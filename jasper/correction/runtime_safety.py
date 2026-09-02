@@ -19,7 +19,6 @@ from jasper.active_speaker.runtime_contract import (
     PARKED_MUTED_STATUS,
     classify_camilla_graph,
     classify_output_contract,
-    flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
     topology_allows_flat_dac_graph,
 )
@@ -53,22 +52,6 @@ def _load_topology_for_correction() -> OutputTopology:
         raise CorrectionRuntimeSafetyError(
             f"saved output topology is unavailable or invalid: {exc}"
         ) from exc
-
-
-def assert_flat_apply_safe(topology: OutputTopology | None = None) -> None:
-    """Refuse the legacy flat apply path under a protected topology.
-
-    The web flow now applies through the topology-aware graph carrier. This is
-    the compatibility backstop for older direct callers that still emit a flat
-    2-channel program graph. Fail closed: under a roleful/protected topology,
-    that graph could send full-range program to a compression driver.
-    """
-    reason = flat_program_graph_blocked_reason(topology)
-    if reason is not None:
-        raise CorrectionRuntimeSafetyError(
-            "room-correction apply requires a saved passive speaker layout: "
-            f"{reason}"
-        )
 
 
 def reset_config_path(
