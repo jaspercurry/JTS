@@ -56,6 +56,11 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_DEG_KEY,
     CrossoverV2FlowError,
 )
+from jasper.active_speaker import measurement_level as ml
+from jasper.active_speaker.seat_level_reference import (
+    SeatLevelTarget,
+    write_seat_level_reference,
+)
 from jasper.active_speaker.session_volume_plan import (
     DEFAULT_WALL_CLOCK_CEILING_S,
     SCHEMA_VERSION,
@@ -70,6 +75,46 @@ from jasper.identity import CROSSOVER_PAGE_PATH
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 
+# One banked anchor, and the vendor header that makes it absolute. The level
+# the receipt must print is ``ANCHOR_DB_SPL`` -- every shipped program drives
+# at ``level_re_anchor_db == 0``.
+ANCHOR_DB_SPL = 77.5
+REFERENCE_VOLUME_DB = -18.0
+# Stubbed so the receipt's level does not depend on the output topology of
+# whatever machine runs the suite; every shipped program clears it.
+CEILING_DB_SPL = 90.0
+CAL_WITH_SENS = (
+    '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
+)
+
+
+def _bank_an_anchor(tmp_path, monkeypatch):
+    """A converged seat-level reference, and a readable calibration behind it.
+
+    Only WHERE the mic's file is found is redirected: the real resolver parses
+    a real vendor header, so the receipt's serial and the refusal that fires
+    without one are the shipped ones.
+    """
+    reference = tmp_path / "seat_level_reference.json"
+    write_seat_level_reference(
+        reference_volume_db=REFERENCE_VOLUME_DB,
+        measured_db_spl=ANCHOR_DB_SPL,
+        target=SeatLevelTarget(target_db_spl=ANCHOR_DB_SPL, tolerance_db=2.5),
+        sensitivity={"sens_factor_db": -12.07, "serial": "8108494"},
+        max_main_volume_db=-6.0,
+        state_path=reference,
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", str(reference)
+    )
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+    real = ml.resolve_mic_sensitivity
+    monkeypatch.setattr(
+        ml, "resolve_mic_sensitivity", lambda **_kw: real(calibration_file=str(cal))
+    )
+    monkeypatch.setattr(ml, "_preset_ceiling_db_spl", lambda: CEILING_DB_SPL)
+
 
 @pytest.fixture
 def slot(tmp_path, monkeypatch):
@@ -82,6 +127,7 @@ def slot(tmp_path, monkeypatch):
     """
     path = tmp_path / "angle_request.json"
     spool.set_angle_request_spool_path_for_tests(path)
+    _bank_an_anchor(tmp_path, monkeypatch)
     volume_state = tmp_path / "session_volume.json"
     monkeypatch.setattr(
         "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
@@ -135,7 +181,7 @@ def test_cli_resolves_every_regime_and_mover_through_the_seam(regime, mover):
     args = cli.build_parser().parse_args(
         ["plan", "--angles", "0,7,-7,22,-22", "--regime", regime, "--mover", mover]
     )
-    built = cli._build_request(args)
+    built = cli._build_request(args).request
 
     expected = {
         REGIME_PER_DRIVER: per_driver_at,
@@ -151,7 +197,7 @@ def test_the_campaign_walk_plays_measure_at_five_angles_by_hand():
         ["plan", "--angles", "0,7,-7,22,-22", "--regime", "per_driver",
          "--mover", "human"]
     )
-    stops = resolve_request(cli._build_request(args))
+    stops = resolve_request(cli._build_request(args).request)
 
     assert [s.angle_deg for s in stops] == CAMPAIGN_ANGLES
     # Every stop plays MEASURE's interleaved per-driver object -- the forward
@@ -184,7 +230,7 @@ def test_both_pairs_the_regimes_so_the_microphone_moves_once_per_angle():
     args = cli.build_parser().parse_args(
         ["plan", "--angles", "0,45", "--regime", "both", "--mover", "arm"]
     )
-    stops = resolve_request(cli._build_request(args))
+    stops = resolve_request(cli._build_request(args).request)
 
     assert [(s.angle_deg, s.regime) for s in stops] == [
         (0, REGIME_PER_DRIVER), (0, REGIME_SUMMED),
@@ -263,7 +309,8 @@ def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
     assert "tweeter" in human
     assert "128.588" in human
 
-    payload = cli._walk_payload(cli._build_request(args))
+    stated = cli._build_request(args)
+    payload = cli._walk_payload(stated.request, cli._resolved_level(stated.program))
     assert payload["delayed_role"] == "tweeter"
     assert payload["delay_us"] == 128.588
 
@@ -343,7 +390,9 @@ def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
     from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
     record_fields = set(inspect.signature(cloud_position_record).parameters)
-    payload = cli._walk_payload(per_driver_at(CAMPAIGN_ANGLES))
+    payload = cli._walk_payload(
+        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
+    )
     banked = payload["stops"][0]["banks_as"]
 
     # Every planned field is a real field of the record…
@@ -361,7 +410,9 @@ def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
 
 
 def test_the_banked_pose_round_trips_the_commanded_bearing(slot):
-    payload = cli._walk_payload(per_driver_at(CAMPAIGN_ANGLES))
+    payload = cli._walk_payload(
+        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
+    )
     assert [s["banks_as"]["position_angle_deg"] for s in payload["stops"]] == (
         CAMPAIGN_ANGLES
     )
@@ -863,6 +914,61 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert taken.program == "baseline/express"
 
 
+def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
+    """A named program's level is the banked anchor, in dB SPL, on the receipt.
+
+    ``level_re_anchor_db`` is what the program states; everything else in the
+    block is what makes it absolute, so a reader never has to guess whether the
+    number was measured or defaulted.
+    """
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", "baseline", "--size", "express", "--json"]
+    )
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["level"] == {
+        "resolved": True,
+        "target_db_spl": ANCHOR_DB_SPL,
+        "anchor_db_spl": ANCHOR_DB_SPL,
+        "level_re_anchor_db": mp.program("baseline", "express").level_re_anchor_db,
+        "reference_volume_db": REFERENCE_VOLUME_DB,
+        "mic_serial": "8108494",
+    }
+    # Not written to the mailbox: nothing downstream reads a level yet, and a
+    # field no consumer reads is a second copy waiting to go stale.
+    assert "level" not in json.loads(pathlib.Path(slot[0]).read_text())
+
+
+def test_stage_refuses_by_name_when_no_anchor_is_banked(
+    slot, tmp_path, monkeypatch, capsys
+):
+    """§1a runs jasper-seat-level before anything measures; this names it."""
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", str(tmp_path / "gone.json")
+    )
+    args = cli.build_parser().parse_args(
+        ["stage", "--program", "baseline", "--size", "express", "--json"]
+    )
+
+    assert cli._cmd_stage(args) == cli.EXIT_REFUSED
+    body = json.loads(capsys.readouterr().out)
+
+    assert body["ok"] is False
+    assert body["reason"] == ml.SEAT_REFERENCE_MISSING
+    assert not spool.staged_angle_request_pending()
+
+    # ``plan`` is the dry run that SHOWS what is missing rather than refusing.
+    plan = cli.build_parser().parse_args(
+        ["plan", "--program", "baseline", "--size", "express", "--json"]
+    )
+    assert cli._cmd_plan(plan) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["level"] == {
+        "resolved": False,
+        "reason": ml.SEAT_REFERENCE_MISSING,
+        "detail": ml.SEAT_REFERENCE_MISSING_DETAIL,
+    }
+
+
 def test_a_spot_stages_one_raised_pose(slot, capsys):
     args = cli.build_parser().parse_args(
         ["stage", "--program", "spot", "--azimuth", "22", "--elevation", "10",
@@ -974,10 +1080,14 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     from jasper.active_speaker import angle_capture_spool as spool
     from jasper.cli import angle_capture as cli
 
-    slot, volume_state = sys.argv[1:3]
+    slot, volume_state, cal = sys.argv[1:4]
     spool.set_angle_request_spool_path_for_tests(Path(slot))
     import jasper.active_speaker.session_volume_plan as svp
     svp.DEFAULT_SESSION_VOLUME_STATE_PATH = Path(volume_state)
+    import jasper.active_speaker.measurement_level as ml
+    _real = ml.resolve_mic_sensitivity
+    ml.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
+    ml._preset_ceiling_db_spl = lambda: 90.0
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
     )
@@ -987,11 +1097,28 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
 
 def _stage_in_a_real_process(tmp_path) -> subprocess.CompletedProcess:
     root = pathlib.Path(__file__).resolve().parent.parent
-    env = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+    reference = tmp_path / "seat_level_reference.json"
+    write_seat_level_reference(
+        reference_volume_db=REFERENCE_VOLUME_DB,
+        measured_db_spl=ANCHOR_DB_SPL,
+        target=SeatLevelTarget(target_db_spl=ANCHOR_DB_SPL, tolerance_db=2.5),
+        sensitivity={"sens_factor_db": -12.07, "serial": "8108494"},
+        max_main_volume_db=-6.0,
+        state_path=reference,
+    )
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(root),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE": str(reference),
+    }
     return subprocess.run(
         [
             sys.executable, "-c", _STAGE_IN_A_REAL_PROCESS,
             str(tmp_path / "staged.json"), str(tmp_path / "absent-volume.json"),
+            str(cal),
         ],
         cwd=root, env=env, capture_output=True, text=True, timeout=120,
     )

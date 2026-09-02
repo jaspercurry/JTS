@@ -68,7 +68,7 @@ import argparse
 import json
 import logging
 import sys
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 from ._logging import CLI_LOG_FORMAT
 
@@ -99,6 +99,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_NORMAL,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
+from jasper.active_speaker.measurement_level import (
+    LevelUnresolved,
+    ResolvedLevel,
+    resolve_program_level,
+)
+from jasper.active_speaker.measurement_programs import MeasurementProgram
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
 EXIT_OK = 0
@@ -189,7 +195,7 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _chosen_program(args: argparse.Namespace) -> Any:
+def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
     """The program row ``--program`` names, after the usage rules argparse cannot.
 
     ``parser.error`` rather than a refusal, because these are malformed
@@ -210,7 +216,19 @@ def _chosen_program(args: argparse.Namespace) -> Any:
     return measurement_programs.program(args.program, args.size)
 
 
-def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
+class _Stated(NamedTuple):
+    """The stated walk, and the program row it came from (``None`` free-form).
+
+    The row is carried alongside rather than read back off ``request.program``:
+    that field is an identity STRING, and ``spot`` is not a registry row, so
+    there is nothing to look the level statement back up in.
+    """
+
+    request: AngleCaptureRequest
+    program: MeasurementProgram | None
+
+
+def _build_request(args: argparse.Namespace) -> _Stated:
     """The request the operator stated, through the seam's own constructors.
 
     Two doors, one seam. ``--program`` hands a
@@ -224,28 +242,67 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     ``AngleCaptureRequest``, which every route goes through.
     """
     if args.program:
-        return request_for_program(_chosen_program(args), **_graph_flags(args))
+        program = _chosen_program(args)
+        return _Stated(request_for_program(program, **_graph_flags(args)), program)
     regimes = _REGIME_STOPS[args.regime or REGIME_PER_DRIVER]
-    return AngleCaptureRequest(
-        stops=tuple(
-            AngleStop(angle, regime)
-            for angle in _parse_angles(args.angles)
-            for regime in regimes
+    return _Stated(
+        AngleCaptureRequest(
+            stops=tuple(
+                AngleStop(angle, regime)
+                for angle in _parse_angles(args.angles)
+                for regime in regimes
+            ),
+            **_graph_flags(args),
         ),
-        **_graph_flags(args),
+        None,
     )
 
 
-def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
+def _resolved_level(
+    program: MeasurementProgram | None,
+) -> ResolvedLevel | LevelUnresolved:
+    """This walk's absolute level, or the refusal that stops it being knowable.
+
+    Resolved ONCE per verb and carried as the object it is: ``plan`` prints the
+    refusal, ``stage`` hands the SAME exception to :func:`_refuse`, so neither
+    verb rebuilds one from the receipt it just flattened.
+    """
+    try:
+        return resolve_program_level(program)
+    except LevelUnresolved as exc:
+        return exc
+
+
+def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
+    """What this walk drives at, or the input that stops it being knowable.
+
+    Never a relative fallback: a receipt that printed ``+0 dB`` with no anchor
+    behind it would read as an absolute level nobody measured.
+    """
+    if isinstance(level, LevelUnresolved):
+        return {"resolved": False, "reason": level.reason, "detail": level.detail}
+    return {
+        "resolved": True,
+        "target_db_spl": round(level.target_db_spl, 2),
+        "anchor_db_spl": round(level.anchor_db_spl, 2),
+        "level_re_anchor_db": level.level_re_anchor_db,
+        "reference_volume_db": round(level.reference_volume_db, 2),
+        "mic_serial": level.mic_serial,
+    }
+
+
+def _walk_payload(
+    request: AngleCaptureRequest, level: ResolvedLevel | LevelUnresolved
+) -> dict[str, Any]:
     """The resolved walk, as one JSON-able document.
 
     Everything here is READ off the seam -- ``resolve_request`` for the stops,
     ``position_angle_deg`` for the round-tripped bearing, ``announced_indexes``
     for the prelude -- so this function states nothing the session would not.
 
-    ``program``, ``price`` and ``handoff_url`` are the RECEIPT: what was asked
-    for, what it costs the household, and where they run it. Everything else is
-    the resolved walk.
+    ``program``, ``price``, ``level`` and ``handoff_url`` are the RECEIPT: what
+    was asked for, what it drives at, what it costs the household, and where
+    they run it. Everything else is the resolved walk.
 
     ``banks_as`` is the receipt shape each stop produces: the fields of
     ``spatial.cloud_position_record`` this walk DETERMINES, and no others. The
@@ -258,6 +315,7 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
     return {
         "program": request.program,
         "price": walk_price(request),
+        "level": _level_block(level),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
@@ -368,6 +426,18 @@ def _print_walk(payload: dict[str, Any]) -> None:
         f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
         f"up to {price['ceiling_min']} min for the session that takes it"
     )
+    level = payload["level"]
+    print(
+        "  level: "
+        + (
+            f"{level['target_db_spl']:.1f} dB SPL at the mic (anchor "
+            f"{level['anchor_db_spl']:.1f} {level['level_re_anchor_db']:+.1f} re "
+            f"anchor; reference volume {level['reference_volume_db']:.1f} dB; "
+            f"mic {level['mic_serial']})"
+            if level["resolved"]
+            else f"unresolved -- {level['reason']}: {level['detail']}"
+        )
+    )
     print(
         f"  open {payload['handoff_url']} on the household's phone; the page "
         "states the price before Start"
@@ -405,12 +475,14 @@ def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
 
 def _cmd_plan(args: argparse.Namespace) -> int:
     try:
-        request = _build_request(args)
+        stated = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
-    payload = _walk_payload(request)
+    # An unresolved level is PRINTED here and refused by ``stage``: the dry run
+    # exists to show an operator what is missing before they commit to it.
+    payload = _walk_payload(stated.request, _resolved_level(stated.program))
     if args.json:
         print(json.dumps({"ok": True, **payload}, indent=2))
     else:
@@ -420,14 +492,21 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 def _cmd_stage(args: argparse.Namespace) -> int:
     try:
-        request = _build_request(args)
+        stated = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
-    payload = _walk_payload(request)
+    # The methodology levels the seat before anything measures, so a level this
+    # door cannot resolve names the step the operator skipped rather than
+    # staging a walk whose captures nobody could read absolutely. It is not
+    # written to the spool -- nothing downstream reads a level yet.
+    level = _resolved_level(stated.program)
+    if isinstance(level, LevelUnresolved):
+        return _refuse(level, as_json=args.json)
+    payload = _walk_payload(stated.request, level)
     try:
-        path = stage_angle_request(request)
+        path = stage_angle_request(stated.request)
     except AngleRequestRefused as exc:
         return _refuse(exc, as_json=args.json)
     except OSError as exc:
