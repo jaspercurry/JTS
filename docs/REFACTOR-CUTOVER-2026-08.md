@@ -1130,7 +1130,7 @@ by name.
 
 **The eighth is the only real placement call, and `contracts.py` wins it for the
 reason it loses the other seven.** `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` is a
-**wire-contract slot value**, not a threshold: `capture_relay/session.py:2377`
+**wire-contract slot value**, not a threshold: the capture-session code
 reads `terminal_outcome` as an opaque string and never branches on it, exactly as
 `:855-856` claims. `contracts.py` is already where that class of name lives —
 `MEASURE_KINDS :1433`, `POLARITIES :1451`, `POSITION_AXES :1456`, `ADOPTION_ROWS

@@ -933,9 +933,9 @@ sweeps, so only a human hardware operator runs them.
 validates mint, spec fetch and MAC verification without playing anything. The
 wire contract is [`PROTOCOL.md`](../experiments/e0-capture/PROTOCOL.md); read
 the [`README.md`](../experiments/e0-capture/README.md) before a hardware round,
-in particular its residual risk — a capture-page change to the `setup` payload
-is not refused, it degrades the round to uncalibrated data, and the only signal
-is `correction.crossover_v2_uncalibrated_capture` in the
+in particular its residual risk — a phone-transport change to the `setup`
+payload is not refused, it degrades the round to uncalibrated data, and the
+only signal is `correction.crossover_v2_uncalibrated_capture` in the
 `jasper-correction-web` journal. Coverage:
 `tests/test_e0_capture_experiment.py`.
 

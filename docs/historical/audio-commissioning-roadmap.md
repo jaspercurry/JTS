@@ -149,13 +149,6 @@ visibility), `0214b4333` (experimental USB turntable control), and
 fan-in/output path this run exercises and one is on the measurement path,
 so redeploy before the session.
 
-Release order is **direction-dependent**, not a constant — see
-[`capture-page/README.md`](../../capture-page/README.md) "Release order
-(direction matters)": the narrowing side always goes last, which puts the
-page first when adding a protocol and the Pi first when removing one. A
-plain Pi redeploy with no capture-page or relay-Worker change has no page
-or Worker component; it is one deploy.
-
 **2. Surface the crossover-region verdict as a first-class outcome.** The
 R18 absolute claim grades `[Fc/2, 2·Fc]` (`OVERLAP_OCTAVE_RATIO = 2.0`,
 band derived from Fc) at 2.0 dB **for the shipped 2 kHz two-way** —

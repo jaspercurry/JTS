@@ -35,7 +35,7 @@ confirm tap, the disclosure, the geometry-retake refusal) are pinned by
 `tests/test_crossover_v2_remote_tier.py`. No capture count is restated in this
 doc, so none needs a pin. The three-gesture start and the
 rejected-capture stall were re-derived during the adversarial review of
-PR #2505 — the acknowledgement gate from `capture-page/js/render.js`
+PR #2505 — the acknowledgement gate
 (`acceptedAcknowledgement`, and the `refs.acknowledgement` block that holds
 every `begin_capture` control disabled until the box is ticked), the Start tap
 from `main.js`'s `onPlanStart`, and the stall from `main.js`'s

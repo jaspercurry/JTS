@@ -221,16 +221,12 @@ Three changes, and PR-T3's **first and load-bearing** item:
    signal** instead of `advanceAfterAccepted`; the host calls the group
    close directly, then ends the session and returns the household to
    the speaker page.
-3. **The page's completion branch must be reordered.**
-   `runPlanCapture` in [`capture-page/js/main.js`](../capture-page/js/main.js)
-   tests `if (verdict.setComplete || (verdict.accepted && index >= target))`
-   → `renderPlanAllDone` **before** it tests `verdict.awaitingConfirm`.
-   In the pre-split 16-entry plan the final cloud position was index 10 of 16,
-   so the confirm screen renders. In a 10-entry stage-1 plan that
-   position IS the target, `run_capture_plan` emits
-   `capture_set_complete`, and the household would get the "All
-   measurements done" screen instead of the confirm the whole decision
-   rests on. The confirm test must win.
+3. **The completion branch must be reordered.** In the pre-split 16-entry
+   plan the final cloud position was index 10 of 16, so the confirm screen
+   renders. In a 10-entry stage-1 plan that position IS the target,
+   `run_capture_plan` emits `capture_set_complete`, and the household would
+   get the "All measurements done" screen instead of the confirm the whole
+   decision rests on. The confirm test must win.
 
 **Rejected alternative: a sentinel 11th entry to carry the confirming
 begin.** It hangs the session. `run_capture_plan` completes at
@@ -506,9 +502,7 @@ the mark at different heights.
 > promise that each position is prompted — so "no surprises" survives
 > while the wall does not. **The adjustable-spacing half of #1805 was
 > never built and is not revived by this**; the wide-offset floor below
-> still governs if it ever is. Current consent-screen truth lives in
-> [`jasper/capture_relay/spec.py`](../jasper/capture_relay/spec.py)'s
-> `build_crossover_sweep_spec`.
+> still governs if it ever is.
 
 **Units: a recorded owner ruling is being superseded by a newer one, and
 the supersession is explicit.** The body-part register is not incidental
@@ -539,8 +533,6 @@ Work PR-T4 owns:
   "a two-forearm move is a wide offset" comment goes with it.
 - `tests/test_correction_crossover_v2_endpoints.py` — four `"forearms"`
   assertions plus the two prompt fixtures that feed them.
-- `tests/test_capture_relay_spec.py` — a `"one hand-width"` literal in
-  the representative-copy body used for the spec size check.
 - `tests/js/capture_plan_loop_test.mjs` — the `"two forearms' length"`
   geometry-retry prompt literal.
 - **Two Pi-side constants carry the register, not one.**
@@ -656,25 +648,6 @@ the conductor's concurrency and lifecycle are already in hand.
   stage 2 repeats the unresolved payload through `capture_set_complete` and
   renders left-out copy instead of the generic done title.
 
-**Recorded deferral — per-step VISUAL distinctness (#1806's field list).**
-The owner's 2026-07-29 note asks for more than new words: *"the capture-page
-position screens change only one word (left ↔ right) between steps — too
-subtle to notice mid-session. Each position needs a visually distinct state
-(layout/diagram/step glyph), not a word swap."* PR-T4's absolute poses widen the
-copy's variation — a step now differs in its distance, its bearing, and
-often its height — but the improvement is uneven (measured, not
-asserted): at Full's shipped walk, 4 of the 7 transitions
-between prompted positions still differ in one word only (the LEFT/RIGHT pairs
-at 12 cm, 40 cm and 25 cm, and the ABOVE/BELOW pair at 12 cm), because the
-walk deliberately samples symmetric positions and D7 forbids reordering the
-table. **A glyph or diagram is therefore still owed, and it is NOT T4's:** the
-capture page renders the spec through a closed component vocabulary that is a
-SECURITY boundary (`capture-page/js/render.js` — a `type` it does not know
-renders nothing, which is what bounds a hostile payload to "wrong text on
-screen"). Adding a step glyph means extending that vocabulary, which belongs
-to a rung that can carry the renderer's threat model with it. Routed there,
-not dropped.
-
 **Recorded deferral — mic-agnostic wording in the REJECTION templates. CLOSED
 by PR #1959 (#1941 R4).** The same owner ruling makes "the microphone" the
 actor. PR-T4 applied it to every prompt, consent step, placement instruction,
@@ -766,7 +739,7 @@ between two open work orders, not a historical note — §2.2 is SHIPPED,
 not merely adopted.** `build_v2_capture_plan` emits
 `confirm_title: "Back on the mark, holding still?"` /
 `confirm_body: "Same spot, same height, pointed at the speaker."` on the
-VERIFY entry; `capture-page/js/main.js` renders them and gates the arm
+VERIFY entry, gates the arm
 on the tap; and both `tests/test_crossover_v2_conductor.py` and
 `tests/js/capture_plan_loop_test.mjs` pin them. So the confirm-then-tone
 grammar §2.2 established **survives and is what stage 2 opens with** —
@@ -775,8 +748,7 @@ follows an in-session apply). PR-T3 must keep the tap and re-anchor it
 to stage 2's own begin, not remove it.
 
 **Copy PR-T4 owns, beside `VERIFY_ANCHOR_HOLD_MESSAGE`:** the
-group-confirm screen's detail line in
-[`capture-page/js/main.js`](../capture-page/js/main.js) —
+group-confirm screen's detail line —
 *"JTS tunes the speaker next. Retake this spot first if you want to."*
 That sentence becomes false in stage 1: JTS tunes nothing next, the
 household decides next. It is the last thing a household reads before
@@ -855,8 +827,8 @@ NOT parallel with T3** — an earlier draft said it was. D7 edits
 `CLOUD_POSITION_PROMPTS` and `CLOUD_GEOMETRY_RETRY_PROMPTS`, Pi-side
 constants in `crossover_v2_flow.py`, the same module T3 rewrites the
 group-close seam in; and D7's orphaned-copy list reaches
-`crossover_envelope_v2.py`, `capture_relay/spec.py`, and
-`capture_geometry.py`. T4 lands **after** T3. T5 after T3.
+`crossover_envelope_v2.py` and `capture_geometry.py`. T4 lands
+**after** T3. T5 after T3.
 
 **Where the stage-2 preflight lands, and why it is split.** The
 render-time half is T2 (it is the review screen's own honesty layer, and
@@ -916,30 +888,12 @@ apply from the screen, because T3 is what makes the screen's Apply real.
 - **Two ambient windows, two purposes.** CHECK's pre-arm window and the
   in-sweep ambient windows are different measurements. D8 changes one
   string; collapsing them into one is a measurement defect.
-- **The relay TTL was duplicated and unpinned; PR-T4 collapsed the two
-  PYTHON copies, not the duplication entirely.** `900` was an independent
-  literal in `relay/src/worker.js` and `jasper/capture_relay/session.py`,
-  **and** hardcoded again in `jasper/capture_relay/correction_adapter.py`,
-  which is the value the v2 path actually gets (the v2 callers do not pass
-  `ttl_s`). PR-T4 had to publish that value to the phone (D8), so the
-  adapter's literal now imports `session.DEFAULT_TTL_S` and
-  `test_the_adapters_ttl_default_is_the_sessions_own_constant` pins it — a
-  pin that asserts *the two Python copies collapsed, not that the
-  duplication is gone entirely*. `relay/src/worker.js` keeps its own
-  deliberately: it is a separate release that must bound whatever any Pi
-  asks for, and there is still no equality test across that boundary. Any
-  PR that CHANGES a session's time budget resolves what remains first, or
-  states explicitly that it did not touch it (PR-T4 did not — it published
-  the value and changed no budget).
 - **`renderPlanCountdown` was dead when this was written; it is not any
   more.** #1823 made MEASURE a tap, and at the time no shipped plan reached
   the countdown. The REMOTE commission tier is its first shipped consumer:
   its entries auto-advance because an external positioner, not a hand, moves
   the microphone between them. The stale-countdown symptom named here is
   still closed — do not "fix" it — but the "dead" claim no longer holds.
-- **Page before Pi.** The capture page lives at `capture-page/` in the
-  repo root (not under `deploy/assets/`), ships via its own build, and
-  deploys before the Pi so a new page never meets an old conductor.
 
 ## Acceptance
 

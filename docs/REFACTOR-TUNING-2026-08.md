@@ -1458,7 +1458,7 @@ is real work — it is just work that needs no purchase order.
   slope out of it. (See also the small-docs item in wave 7 that fixes the header.)
 - **R-6 collides with the deletion waves, and the owner should settle it in one
   sentence.** `bass_extension/profile.py:impedance_import` and
-  `capture_relay/spec.py:build_bass_nearfield_spec` are fully validated, fully
+  the relay's `build_bass_nearfield_spec` are fully validated, fully
   serialized, and have **no producer and no consumer anywhere** — `13 §2.7` names
   them as clean right-sizing candidates, while this roster calls them *"two schema
   slots already wait."* Both readings are correct and they point opposite ways.

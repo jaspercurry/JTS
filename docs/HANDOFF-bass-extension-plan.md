@@ -282,7 +282,6 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 | Capture quality gate | `jasper/audio_measurement/quality.py` (`assess_capture`) + `quality_model.py` | Clip/SNR/AGC refusals per rung |
 | SNR policy | `jasper/audio_measurement/snr_policy.py` | Band-limited trust for LF decisions |
 | Mic calibration identity | `jasper/audio_measurement/calibration.py` (`CalibrationRecord.calibration_id`) | Profile binding |
-| Phone relay | `jasper/capture_relay/` — one new `CaptureSpec` builder, zero relay/page changes | Nearfield capture at each rung |
 | Level settle ramp | `jasper/audio_measurement/ramp.py` (`MeasurementRamp`, incl. AGC-slope verification) | Reaching each ladder rung reliably |
 | Excitation admission (two-boundary) | `jasper/audio_measurement/excitation_admission.py` + `excitation_artifacts.py` + `admitted_playback.py` | **Reuse the existing admission kind** — it is explicitly domain-agnostic; we only supply our own limits derivation |
 | Measurement window / renderer pause | `jasper/correction/coordinator.py` (`measurement_window`) | Exclusive playback window per session |
