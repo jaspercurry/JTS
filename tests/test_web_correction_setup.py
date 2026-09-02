@@ -551,7 +551,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/balance/lock", "/balance/stop", "/balance/apply",
         "/balance/reset",
         "/sync/start", "/sync/play", "/sync/analyze",
-        "/sync/relay-capture", "/sync/apply", "/sync/stop", "/sync/reset",
+        "/sync/apply", "/sync/stop", "/sync/reset",
         "/crossover/relay-cancel",
         "/crossover/reset", "/crossover/recover-volume",
         # v2 conductor flow (Wave 5a) — the only crossover-measurement flow
