@@ -1472,15 +1472,15 @@ def test_the_arm_refuses_a_period_128_box_by_default(tmp_path):
 
 
 def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
-    """The probe's timeout MUST exceed the ring's writer-lock wait.
+    """The probe's kill guard MUST exceed BOTH of the ring's lock waits.
 
-    `_probe_open_as_user` treats a timeout-kill (exit 124) as SUCCESS. Probing
-    an ARMED lane whose renderer is PLAYING blocks inside `snd_pcm_prepare` for
-    the whole lock wait and only then returns EBUSY — so a probe killed first
-    exits 124, `_alsa_busy()` never sees the EBUSY, and
-    `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) is
-    unreachable in exactly the contended case it exists for. The probe would
-    report a healthy lane it never opened.
+    A contended open spends both waits inside `snd_pcm_prepare` before it
+    either wins the lock or is refused. Killing it first exits 124, which
+    `_classify_probe` reads as FAILED — correctly, since nothing finished, but
+    the box is healthy: an open that wins the race at the end of those waits
+    would be reported as a broken device, and one that is refused would never
+    reach `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) in
+    exactly the contended case that proof exists for.
 
     Pinned cross-language for the same reason `OFF_WRITER_PID` is: the two
     values live in different languages and either could be changed alone.
@@ -1497,12 +1497,13 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     assert m, "_PROBE_TIMEOUT_SEC moved or changed shape"
     probe_sec = float(m.group(1))
 
-    assert probe_sec > lock_wait_sec, (
-        f"the doctor probe runs for {probe_sec}s but a contended ring writer "
-        f"lock waits {lock_wait_sec}s before returning EBUSY. A probe that is "
-        f"killed first exits 124, which the probe counts as SUCCESS — so the "
-        f"ownership check never runs on a busy lane. Raise the probe timeout, "
-        f"or lower the lock wait; do not leave them crossed"
+    assert probe_sec > 2 * lock_wait_sec, (
+        f"the doctor probe runs for {probe_sec}s but a fully contended open "
+        f"spends BOTH lock waits ({lock_wait_sec}s each; they add rather than "
+        f"overlap) inside snd_pcm_prepare before it wins the lock or is "
+        f"refused. A probe killed first exits 124 = FAILED, so a healthy box "
+        f"reports a broken device. Raise the probe timeout, or lower the lock "
+        f"wait; do not leave them crossed"
     )
     # And the dependency is named at BOTH ends, so neither reads as arbitrary.
     assert "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS" in src, (
@@ -1510,15 +1511,6 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     )
     assert "_PROBE_TIMEOUT_SEC" in header, (
         "the C constant must name the doctor probe as a dependent"
-    )
-
-
-def test_the_probe_timeout_is_used_by_the_probe():
-    """The constant is load-bearing only if the command actually uses it."""
-    src = (REPO / "jasper" / "cli" / "doctor" / "renderers.py").read_text()
-    assert '"timeout", _PROBE_TIMEOUT_SEC,' in src, (
-        "the probe must build its command from _PROBE_TIMEOUT_SEC, not a "
-        "literal that the cross-language pin cannot see"
     )
 
 

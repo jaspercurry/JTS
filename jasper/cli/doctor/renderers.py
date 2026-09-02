@@ -770,19 +770,25 @@ def _renderer_device_bluealsa() -> Optional[str]:
                     return m.group(1)
     return None
 
-def _systemd_user_for(unit: str) -> Optional[str]:
-    """Return the User= field of a systemd unit, or None if missing /
-    empty (systemd default = root in that case, which the caller
-    handles)."""
+def _systemd_unit_user(unit: str) -> tuple[Optional[str], str]:
+    """`(User=, LoadState=)` for `unit`. Empty User on a LOADED unit is root.
+
+    LoadState rides along because it is the ONLY thing separating "runs as
+    root" from "does not exist": `systemctl show` exits 0 with an empty User=
+    for an absent unit, so a renamed renderer would otherwise degrade into a
+    root probe that passes — asserting "as the unit's real User=" with no unit.
+    """
     try:
         r = subprocess.run(
-            ["systemctl", "show", unit, "-p", "User", "--value"],
+            ["systemctl", "show", unit, "-p", "LoadState", "-p", "User"],
             capture_output=True, text=True, timeout=2,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    u = r.stdout.strip()
-    return u or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "unknown"
+    props = dict(
+        line.split("=", 1) for line in r.stdout.splitlines() if "=" in line
+    )
+    return props.get("User") or None, props.get("LoadState") or "unknown"
 
 def _renderer_lane_device_overrides() -> dict[str, str]:
     """Renderer `--device` values the lane map declares (U3 / P6).
@@ -933,21 +939,18 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
-#: How long the probe lets `aplay` run before SIGTERMing it.
-#:
-#: **This MUST exceed `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, in
-#: `c/jts-ring-ioplug/jts_ring_shm.h`), which is how long a `jts_ring` writer
-#: waits for the ring's exclusive lock before returning EBUSY.
-#:
-#: Why, concretely: probing an ARMED renderer lane whose renderer is PLAYING
-#: means opening a ring someone already holds. The ioplug blocks inside
-#: `snd_pcm_prepare` for the full lock wait and only then returns EBUSY, so a
-#: probe killed FIRST exits 124 — which `_classify_probe` reads as OPENED —
-#: and the ownership proof never runs in the contended case it exists for.
-#:
-#: `tests/test_renderer_ring_lanes.py` pins this against the C header's value,
-#: so neither side can drift alone.
-_PROBE_TIMEOUT_SEC = "0.8"
+#: The probe is bounded by its OWN work, not by outlasting a timer: `aplay -s`
+#: writes `_PROBE_FRAMES` frames (100 ms at 48 kHz, per channel) then exits 0
+#: after open → prepare → write → drain — ~0.13 s (ring) / ~0.16 s (aloop) on a
+#: Pi. `_PROBE_TIMEOUT_SEC` is a backstop only: a kill (124) is a FAILURE, since
+#: a probe that never finished proved nothing. It **MUST exceed TWICE
+#: `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, `jts_ring_shm.h`) — both of a
+#: contended open's lock waits ADD inside `snd_pcm_prepare`, and an open that
+#: wins at the end of them must not be killed into a false failure (jts3: a
+#: singly contended open returns EBUSY at 0.55 s). Pinned, with the full
+#: rationale, by `test_renderer_ring_lanes.py`.
+_PROBE_FRAMES = "4800"
+_PROBE_TIMEOUT_SEC = "2.0"
 
 
 class ProbeOutcome(Enum):
@@ -960,56 +963,68 @@ class ProbeOutcome(Enum):
     FAILED = "failed"
 
 
-def _alsa_busy(stderr: str) -> bool:
-    """Does this WHOLE aplay stderr carry a single-writer refusal? `rc=-16`
-    is the ring ioplug's own errno, forwarded out of `jts_ring_prepare`
-    (`c/jts-ring-ioplug/pcm_jts_ring.c`); the prose forms are aplay's, which
-    refuses at open on the aloop lanes instead."""
-    return (
-        "rc=-16" in stderr
-        or "Device or resource busy" in stderr
-        or "EBUSY" in stderr
-        or "errno 16" in stderr
-    )
+#: The ring ioplug's own refusal, out of `jts_ring_prepare`
+#: (`c/jts-ring-ioplug/pcm_jts_ring.c`); BOTH halves must sit on ONE line, as a
+#: slave open further down the chain reports its own EBUSY — spelled
+#: `failed (-16)`, never `rc=-16` — which `rc=-16` alone would swallow.
+#: `_ALOOP_BUSY_MARKER` is aplay's refusal for an snd-aloop substream that
+#: already has a writer, anchored on its prefix likewise. Both captured on jts3.
+_RING_BUSY_MARKERS = ("jts_ring: writer_open(", "rc=-16")
+_ALOOP_BUSY_MARKER = "audio open error: Device or resource busy"
+
+
+def _busy_marker_line(stderr: str) -> Optional[str]:
+    """The stderr line proving the PCM opened and hit a single-writer lock.
+    EVERY line is scanned — `_classify_probe` owns why a slice cannot (#3515)."""
+    for line in stderr.splitlines():
+        if all(m in line for m in _RING_BUSY_MARKERS) or _ALOOP_BUSY_MARKER in line:
+            return line.strip()
+    return None
 
 
 def _classify_probe(returncode: int, stderr: str) -> tuple[ProbeOutcome, str]:
     """The ONE place a probe's (returncode, stderr) becomes a verdict.
 
-    124 = the timeout fired = aplay wrote silence for the whole
-    `_PROBE_TIMEOUT_SEC`; 0 is the same outcome reached by consuming
-    /dev/zero, which this duration never does.
+    A busy marker decides BEFORE the return code, and every line is searched:
+    the SNDERR fires the instant the lock wait expires, aplay then dumps ~15
+    hw_params lines, and the outer `timeout` can land anywhere in them — so a
+    contended probe can carry the marker AND be killed at 124 (#3515). It
+    cannot carry one and exit 0, both markers being fatal where they print.
 
-    Reading the WHOLE stderr is load-bearing (#3515): the ioplug refuses a
-    second writer from `prepare`, which alsa-lib runs inside
-    `snd_pcm_hw_params`, so aplay dumps ~15 hw_params lines AFTER the EBUSY
-    line. A tail of that carries `TICK_TIME: 0` and no marker at all.
+    Otherwise ONLY a clean exit is success: aplay bounds itself at
+    `_PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
+    completed. Everything else failed, 124 included: a killed probe finished
+    nothing and proves nothing.
     """
-    lines = stderr.strip().splitlines()
-    tail = " | ".join(lines[-2:])[:200]
-    if returncode in (0, 124):
-        return ProbeOutcome.OPENED, tail
-    if _alsa_busy(stderr):
-        marker = next((ln for ln in lines if _alsa_busy(ln)), "")
-        detail = f"busy: a live writer holds the lane | {marker.strip()}"
-        return ProbeOutcome.BUSY, detail[:200]
-    return ProbeOutcome.FAILED, tail or f"exit={returncode}"
+    marker = _busy_marker_line(stderr)
+    detail = (marker or stderr.strip())[:200]
+    if marker:
+        return ProbeOutcome.BUSY, detail
+    if returncode == 0:
+        return ProbeOutcome.OPENED, detail
+    if returncode == 124:
+        detail = f"killed at {_PROBE_TIMEOUT_SEC}s with the burst unfinished"
+    return ProbeOutcome.FAILED, detail or f"exit={returncode}"
 
 
 def _probe_open_as_user(
     device: str, user: Optional[str],
 ) -> tuple[ProbeOutcome, str]:
-    """Open `device` for a short silence playback AS `user`, and classify it.
+    """Open `device` for a short silence burst AS `user`, and classify it.
 
     Why aplay + /dev/zero: it exercises the same code path the renderer uses
     (alsalib's snd_pcm_open through the user-space plugin chain) while writing
-    only silence — additive into any mix, so safe while music is playing.
-
-    The duration is `_PROBE_TIMEOUT_SEC`; read its note before shortening it.
+    only silence — additive into any mix, so safe while music is playing. The
+    burst is `_PROBE_FRAMES`, the kill guard `_PROBE_TIMEOUT_SEC`; read both
+    notes before changing either.
     """
+    # `env LC_ALL=C` rides INSIDE the command because sudo resets the
+    # environment: `_ALOOP_BUSY_MARKER` is snd_strerror text, so translatable.
     cmd = [
+        "env", "LC_ALL=C",
         "timeout", _PROBE_TIMEOUT_SEC,
         "aplay", "-q",
+        "-s", _PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
@@ -1017,10 +1032,10 @@ def _probe_open_as_user(
     if user:
         cmd = ["sudo", "-n", "-u", user, *cmd]
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=3,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        r = _run(cmd, timeout=float(_PROBE_TIMEOUT_SEC) + 2.0)
+    # OSError, not just FileNotFoundError: a fork hitting ENOMEM on a 1 GB Pi
+    # must fail this renderer, not crash the check.
+    except (OSError, subprocess.TimeoutExpired) as e:
         return ProbeOutcome.FAILED, f"probe subprocess failed: {e}"
     return _classify_probe(r.returncode, r.stderr or "")
 
@@ -1050,14 +1065,36 @@ def _ring_renderer_devices() -> dict[str, str]:
     return {lane.ring_device: lane.label for lane in RENDERER_LANES}
 
 
+def _cgroup_owner_is_unit(pid: object, unit: str) -> tuple[bool, str]:
+    """Does `pid` run inside the SYSTEM manager's `unit`? Fail-closed: an
+    empty `unit` would make the membership test match any cgroup at all, and
+    an unreadable /proc entry proves nothing.
+
+    Rejecting `/user.slice/` is what stops a same-named unit under a per-user
+    manager (`/user.slice/user-N.slice/user@N.service/app.slice/<unit>`). Do
+    NOT tighten that to a `/system.slice/` prefix: JTS renderers declare
+    `Slice=jts-audio.slice`, so a real owner reads
+    `/jts.slice/jts-audio.slice/<unit>` and would be rejected.
+    """
+    if not unit:
+        return False, "no unit to attribute the writer to"
+    path = Path(f"/proc/{pid}/cgroup")
+    try:
+        cgroup = path.read_text()
+    except OSError as e:
+        return False, f"could not read {path}: {e}"
+    if f"/{unit}" in cgroup and "/user.slice/" not in cgroup:
+        return True, ""
+    return False, f"cgroup={cgroup.strip()!r}"
+
+
 def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     """Return whether an EBUSY renderer RING lane is owned by `unit`.
 
-    The ring's exact analogue of the aloop `owner_pid` check below. The caller
-    has already established that the probe resolved and opened the PCM (a BUSY
-    verdict); this reads the pid the ring itself published and checks its
-    cgroup, so "the renderer legitimately owns its ring" cannot be confused
-    with "some stray process is writing frames into the mix".
+    The ring's exact analogue of the aloop `owner_pid` check below: the caller
+    has already established that the probe opened the PCM (a BUSY verdict), so
+    this only has to separate "the renderer legitimately owns its ring" from
+    "some stray process is writing frames into the mix".
     """
     label = _ring_renderer_devices().get(device)
     if label is None:
@@ -1067,24 +1104,18 @@ def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     pid = ring_writer_pid(label)
     if pid is None:
         return False, f"ring for lane {label} names no writer"
-    cgroup_path = Path(f"/proc/{pid}/cgroup")
-    try:
-        cgroup = cgroup_path.read_text()
-    except OSError as e:
-        return False, f"could not read {cgroup_path}: {e}"
-    if f"/{unit}" in cgroup:
+    owned, why = _cgroup_owner_is_unit(pid, unit)
+    if owned:
         return True, f"busy/owned pid={pid} (ring writer)"
-    return False, f"busy but ring writer pid={pid} cgroup={cgroup.strip()!r}"
+    return False, f"busy but ring writer pid={pid} {why}"
 
 
 def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     """Return whether an EBUSY private fan-in lane is owned by `unit`.
 
-    A BUSY verdict proves the PCM resolved; it does not prove the expected
-    renderer owns the lane. The snd-aloop proc status exposes `owner_pid` and
-    systemd cgroups expose the owning unit, so combining both stops a stale
-    test process making doctor green. Ring lanes take the sibling path above,
-    which reads the same fact out of the ring header.
+    A BUSY verdict proves the PCM resolved, not that the expected renderer
+    owns the lane; `/proc/asound` publishes the aloop `owner_pid`, and ring
+    lanes take the sibling path above for the same fact.
 
     RETIREMENT. This aloop branch survives the audio-graph consolidation
     (#2285) because a renderer whose lane is NOT armed for ring ingress still
@@ -1108,43 +1139,33 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     if not m:
         return False, f"{status_path} has no owner_pid"
     pid = m.group(1)
-    cgroup_path = Path(f"/proc/{pid}/cgroup")
-    try:
-        cgroup = cgroup_path.read_text()
-    except OSError as e:
-        return False, f"could not read {cgroup_path}: {e}"
-    if f"/{unit}" in cgroup:
+    owned, why = _cgroup_owner_is_unit(pid, unit)
+    if owned:
         return True, f"busy/owned pid={pid}"
-    return False, f"busy but owner pid={pid} cgroup={cgroup.strip()!r}"
+    return False, f"busy but owner pid={pid} {why}"
 
 @doctor_check(order=73, group="renderers", exclusive_group="audio-probe")
 def check_renderer_device_resolvable() -> CheckResult:
-    """Verify each music renderer can actually open the ALSA device
-    it's configured to write to, AS its runtime systemd User=.
+    """Verify each music renderer can actually open the ALSA device it is
+    configured to write to, AS its runtime systemd User=.
 
-    The original bug this catches (PR #223, 2026-05-23): renderer users
-    could not read the asoundrc that defined the named ALSA PCMs, so
-    snd_pcm_open() returned "Unknown PCM" despite config strings looking
-    right. A real open attempt catches that class.
+    The original bug this catches (PR #223, 2026-05-23): renderer users could
+    not read the asoundrc that defined the named ALSA PCMs, so snd_pcm_open()
+    returned "Unknown PCM" despite config strings looking right.
 
     Fan-in caveat: renderer lanes are intentionally private single-writer
     lanes, so probing one whose renderer is active is refused with EBUSY —
     which PROVES the PCM resolved and opened. `_classify_probe` calls that
-    BUSY, and only then does the lane's published owner pid decide whether
-    the expected unit holds it (`_fanin_lane_busy_owner_matches`). A busy
-    verdict is never a substitute for the probe: a probe that failed for any
-    other reason stays a failure however healthy the lane looks.
-
-    Method: for each known renderer, look up its systemd User=, parse its
-    config for the configured ALSA device, and open that device as that user
-    for `_PROBE_TIMEOUT_SEC`. Safe to run anytime — it writes only silence.
+    BUSY, and only then does the lane's published owner pid decide whether the
+    expected unit holds it. A busy verdict is never a substitute for the
+    probe: a probe that failed for any other reason stays a failure however
+    healthy the lane looks.
 
     Returns:
       ok    — all configured renderers can open their device as their user
       fail  — any renderer can't open its device (this is the bug class)
-      warn  — partial info: some renderer's device or user wasn't
-              discoverable (likely the renderer isn't installed; treat
-              as informational)
+      warn  — a renderer's device or user wasn't discoverable (likely not
+              installed; informational)
     """
     label = "renderer ALSA device resolvable"
     renderers = [
@@ -1168,7 +1189,10 @@ def check_renderer_device_resolvable() -> CheckResult:
         # the aplay probe below will fail with "Unknown PCM ${VAR}" —
         # a false positive, since the running daemon has resolved it.
         resolved_device = _resolve_systemd_env_vars(device, unit)
-        user = _systemd_user_for(unit)
+        user, load_state = _systemd_unit_user(unit)
+        if load_state != "loaded":
+            failures.append(f"{name}: {unit} is {load_state}, not loaded")
+            continue
         outcome, detail = _probe_open_as_user(resolved_device, user)
         who = user or "root"
         # Show both the literal-parsed and resolved values when they
@@ -1181,10 +1205,7 @@ def check_renderer_device_resolvable() -> CheckResult:
         )
         if outcome is ProbeOutcome.OPENED:
             successes.append(f"{name}({who})→{display}")
-        elif outcome is ProbeOutcome.BUSY and (
-            resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
-            or resolved_device in _ring_renderer_devices()
-        ):
+        elif outcome is ProbeOutcome.BUSY:
             owned, owner_detail = _fanin_lane_busy_owner_matches(
                 resolved_device, unit,
             )

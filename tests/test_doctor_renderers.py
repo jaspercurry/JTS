@@ -5,6 +5,7 @@
 """Unit tests for the jasper-doctor renderers domain."""
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -359,12 +360,12 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.renderers,
-        "_systemd_user_for",
-        lambda unit: {
+        "_systemd_unit_user",
+        lambda unit: ({
             "shairport-sync.service": "shairport-sync",
             "librespot.service": "pi",
             "bluealsa-aplay.service": None,  # root
-        }[unit],
+        }[unit], "loaded"),
     )
     monkeypatch.setattr(
         doctor.renderers,
@@ -412,109 +413,329 @@ _UNKNOWN_PCM_STDERR = (
     "aplay: main:850: audio open error: No such file or directory\n"
 )
 
-# Same box, same command, nothing holding the lane: the probe ran its full
-# duration and `timeout` killed it.
+# Same box, same command, nothing holding the lane: the burst completed and
+# aplay exited 0 on its own. 19 slots x 256 frames covers the 4800 written.
 _IDLE_RING_LANE_STDERR = (
-    "aplay: pcm_write:2178: write error: Interrupted system call\n"
     "ALSA lib pcm_jts_ring.c:644:(jts_ring_close) jts_ring: closing "
-    "published_slots=166 drop_no_reader=0 full_waits=0\n"
+    "published_slots=19 drop_no_reader=0 full_waits=0\n"
 )
 
-_OWNED_CGROUP = "0::/system.slice/librespot.service\n"
+# The REAL shape on a JTS box: renderer units declare `Slice=jts-audio.slice`,
+# so an owner's cgroup is NOT under /system.slice/ and nothing may assume it is.
+_OWNED_CGROUP = "0::/jts.slice/jts-audio.slice/librespot.service\n"
 _STRAY_CGROUP = "0::/user.slice/user-1000.slice/session-1461.scope\n"
+# A same-named unit run by a per-user manager must not satisfy the gate.
+_USER_MANAGER_CGROUP = (
+    "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+    "librespot.service\n"
+)
 
 
-class _FakeCgroupPath:
+# Captured on jts3: aplay's own refusal for an snd-aloop substream that
+# already has a writer. Aloop lanes refuse at `snd_pcm_open`, so this is the
+# ONLY marker they produce — there is no ioplug line and no `rc=-16`.
+_BUSY_ALOOP_STDERR = "aplay: main:850: audio open error: Device or resource busy\n"
+
+# An ordinary alsa-lib warning, used to push the busy marker off both ends of
+# the stderr so no fixed slice — head or tail — can classify.
+_ALSA_CONFIG_WARNING = "ALSA lib conf.c:5205:(parse_args) Unknown parameter CARD\n"
+
+_ALOOP_OWNER_PID = 4242
+
+
+class _FakeProcPath:
+    """Serves the two /proc reads the ownership gate makes: the aloop
+    substream status (which names an owner pid) and that pid's cgroup."""
+
     def __init__(self, text):
         self._text = text
 
     def read_text(self):
+        if isinstance(self._text, BaseException):
+            raise self._text
         return self._text
 
 
-@pytest.mark.parametrize(
-    ("returncode", "stderr", "cgroup", "expect_outcome", "expect_status"),
-    [
-        # A ring lane refused by its OWN renderer's writer lock: the probe
-        # reached the lock, so the PCM resolved and opened.
-        (
-            1, _BUSY_RING_LANE_STDERR, _OWNED_CGROUP,
-            doctor.renderers.ProbeOutcome.BUSY, "ok",
-        ),
-        # The PR #223 bug class stays a hard failure.
-        (
-            1, _UNKNOWN_PCM_STDERR, _OWNED_CGROUP,
-            doctor.renderers.ProbeOutcome.FAILED, "fail",
-        ),
-        # Busy, but a stray process holds the ring — not the renderer.
-        (
-            1, _BUSY_RING_LANE_STDERR, _STRAY_CGROUP,
-            doctor.renderers.ProbeOutcome.BUSY, "fail",
-        ),
-        # The probe never executed. A live ring writer must not excuse that:
-        # the header proves the RENDERER opened the lane, never that the
-        # probe resolved it as the unit's User=.
-        (
-            1, "sudo: a password is required\n", _OWNED_CGROUP,
-            doctor.renderers.ProbeOutcome.FAILED, "fail",
-        ),
-        # One extra alsa-lib line must not defeat the Unknown-PCM failure:
-        # nothing here may key on a fixed slice of stderr.
+_OUTCOME = doctor.renderers.ProbeOutcome
+#: librespot's ARMED device (ring ingress) and its UNARMED one (snd-aloop).
+#: An un-armed box — the fleet default, and jts3 today — resolves to the
+#: latter, so both halves of the ownership gate are live and both are driven.
+_RING = "librespot_ring_lane"
+_ALOOP = "librespot_substream"
+
+# Each row: the device the renderer resolves to; what the probe subprocess does
+# — an (exit code, stderr) pair, or an exception it raises instead of running —
+# the cgroup the lane's published owner pid resolves to; and the verdict and
+# check status that must follow.
+_PROBE_ROWS = [
+    # A ring lane refused by its OWN renderer's writer lock: the probe
+    # reached the lock, so the PCM resolved and opened.
+    ("busy-owned", _RING, (1, _BUSY_RING_LANE_STDERR),
+     _OWNED_CGROUP, _OUTCOME.BUSY, "ok"),
+    # The ioplug's errno alone must carry the verdict: the `— EBUSY` gloss on
+    # that line is a conditional suffix in the C, and nothing else prints it.
+    (
+        "ring-marker-without-the-ebusy-gloss", _RING,
         (
             1,
-            _UNKNOWN_PCM_STDERR + "ALSA lib conf.c:5205: Unknown parameter\n",
-            _OWNED_CGROUP,
-            doctor.renderers.ProbeOutcome.FAILED, "fail",
+            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
+            "writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16\n",
         ),
-        # `timeout` fired: aplay wrote silence for the whole probe.
+        _OWNED_CGROUP, _OUTCOME.BUSY, "ok",
+    ),
+    # Split across two lines, neither half complete: the two markers must be
+    # required TOGETHER on ONE line, not merely both present somewhere.
+    (
+        "ring-marker-split-across-lines", _RING,
         (
-            124, _IDLE_RING_LANE_STDERR, _OWNED_CGROUP,
-            doctor.renderers.ProbeOutcome.OPENED, "ok",
+            1,
+            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
+            "writer_open(\n/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16\n",
         ),
-    ],
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # The ring's CAPTURE half refuses with the same errno and the same gloss
+    # (`pcm_jts_ring.c:758`). It is not this playback probe bouncing off the
+    # writer lock, so `rc=-16` alone must not carry a busy verdict.
+    (
+        "reader-open-refusal-is-not-our-busy", _RING,
+        (
+            1,
+            "ALSA lib pcm_jts_ring.c:759:(jts_ring_capture_prepare) jts_ring: "
+            "reader_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16 "
+            "(ring already has a live reader — EBUSY)\n",
+        ),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # The ownership gate is fail-closed: an unreadable cgroup proves nothing.
+    (
+        "cgroup-unreadable", _RING, (1, _BUSY_RING_LANE_STDERR),
+        PermissionError(13, "Permission denied"), _OUTCOME.BUSY, "fail",
+    ),
+    # A same-named unit under a per-user manager is not the system unit.
+    (
+        "user-manager-impostor", _RING, (1, _BUSY_RING_LANE_STDERR),
+        _USER_MANAGER_CGROUP, _OUTCOME.BUSY, "fail",
+    ),
+    # The SAME ioplug line with a different errno is NOT busy: `writer_open`
+    # prints it for every refusal and only glosses -EBUSY, so a geometry shear
+    # (-22) must stay a failure rather than borrow the ownership proof.
+    (
+        "ring-writer-open-failed-not-busy", _RING,
+        (
+            1,
+            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
+            "writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-22\n",
+        ),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # An UNARMED lane: aplay refuses at snd_pcm_open, so its own wording is the
+    # only marker there is — no ioplug line, no rc=-16 — and the owner pid
+    # comes from /proc/asound rather than the ring header.
+    ("aloop-busy-owned", _ALOOP, (1, _BUSY_ALOOP_STDERR),
+     _OWNED_CGROUP, _OUTCOME.BUSY, "ok"),
+    # The PR #223 bug class stays a hard failure.
+    ("unknown-pcm", _RING, (1, _UNKNOWN_PCM_STDERR),
+     _OWNED_CGROUP, _OUTCOME.FAILED, "fail"),
+    # Busy, but a stray process holds the ring — not the renderer.
+    ("busy-stray", _RING, (1, _BUSY_RING_LANE_STDERR),
+     _STRAY_CGROUP, _OUTCOME.BUSY, "fail"),
+    # Busy on a device in NEITHER lane map: nothing can prove who holds it.
+    ("busy-unknown-device", "some_other_pcm", (1, _BUSY_RING_LANE_STDERR),
+     _OWNED_CGROUP, _OUTCOME.BUSY, "fail"),
+    # The probe never executed. A live ring writer must not excuse that: the
+    # header proves the RENDERER opened the lane, never that the probe
+    # resolved it as the unit's User=.
+    (
+        "sudo-refused", _RING, (1, "sudo: a password is required\n"),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # One extra alsa-lib line must not defeat the Unknown-PCM failure:
+    # nothing here may key on a fixed slice of stderr.
+    (
+        "unknown-pcm-plus-a-line", _RING,
+        (1, _UNKNOWN_PCM_STDERR + _ALSA_CONFIG_WARNING),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # The same from the other end: a warning ABOVE the marker, a hw_params dump
+    # below it. Neither a head slice nor a tail slice can classify this.
+    (
+        "busy-between-a-warning-and-the-dump", _RING,
+        (1, _ALSA_CONFIG_WARNING + _BUSY_RING_LANE_STDERR),
+        _OWNED_CGROUP, _OUTCOME.BUSY, "ok",
+    ),
+    # A slave open deeper in the chain reports its own -16 and busy text; the
+    # PCM the probe asked for still did not resolve. Neither marker may match
+    # on a bare substring, or this reads as a healthy busy lane.
+    (
+        "slave-busy-then-unknown-pcm", _RING,
+        (
+            1,
+            "ALSA lib pcm_hw.c:1829:(snd_pcm_hw_open) open '/dev/snd/pcmC0D0p'"
+            " failed (-16): Device or resource busy\n" + _UNKNOWN_PCM_STDERR,
+        ),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # Nothing was contending: the burst completed and aplay exited 0 itself.
+    # This is the ONLY success shape.
+    (
+        "idle-burst-completed", _RING, (0, _IDLE_RING_LANE_STDERR),
+        _OWNED_CGROUP, _OUTCOME.OPENED, "ok",
+    ),
+    # Killed with the burst unfinished. Nothing completed, so nothing is
+    # proven — a kill is a failure, not a success reached by outlasting a
+    # timer.
+    (
+        "timeout-kill-no-marker", _RING, (124, ""),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # The marker outranks the exit code: the ioplug's SNDERR fires the instant
+    # the lock wait expires, and the outer `timeout` can land anywhere in the
+    # hw_params dump that follows, so a contended probe can carry BOTH.
+    (
+        "busy-and-timeout-killed", _RING, (124, _BUSY_RING_LANE_STDERR),
+        _STRAY_CGROUP, _OUTCOME.BUSY, "fail",
+    ),
+    # `timeout`/sudo could not exec what it was given.
+    (
+        "exit-126", _RING, (126, "sudo: unable to execute /usr/bin/aplay\n"),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    ("exit-127", _RING, (127, "aplay: command not found\n"),
+     _OWNED_CGROUP, _OUTCOME.FAILED, "fail"),
+    # The probe binary is missing, or the outer guard fired: nothing ran, so
+    # nothing is proven, however healthy the lane looks.
+    (
+        "exec-missing", _RING, FileNotFoundError("timeout"),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    (
+        "outer-guard-fired", _RING,
+        subprocess.TimeoutExpired(cmd=["timeout", "aplay"], timeout=4.0),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # A fork that cannot allocate on a 1 GB Pi must fail this renderer, not
+    # escape as an exception and crash the whole check.
+    (
+        "fork-enomem", _RING, OSError(12, "Cannot allocate memory"),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("device", "probe", "cgroup", "expect_outcome", "expect_status"),
+    [row[1:] for row in _PROBE_ROWS],
+    ids=[row[0] for row in _PROBE_ROWS],
 )
-def test_ring_lane_probe_verdict_and_check_status(
-    monkeypatch, returncode, stderr, cgroup, expect_outcome, expect_status
+def test_probe_verdict_and_check_status(
+    monkeypatch, device, probe, cgroup, expect_outcome, expect_status
 ):
-    """(returncode, stderr, ring header) -> verdict -> check status.
+    """(probe argv, probe result, lane owner) -> verdict -> check status.
 
     Real aplay output captured on jts3, run through the real classifier and
-    the real ownership gate; only the subprocess, the ring header and the
-    /proc cgroup read are stubbed. A busy verdict is what licenses the
-    ownership check — never a substitute for a probe that did not open."""
+    the real ownership gate; only the probe subprocess and the two /proc reads
+    are stubbed. A busy verdict is what licenses the ownership check — never a
+    substitute for a probe that did not open."""
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_librespot", lambda: device
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_unit_user", lambda unit: ("pi", "loaded")
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
+    )
+
+    argv: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None):
+        argv.append(cmd)
+        if isinstance(probe, BaseException):
+            raise probe
+        returncode, stderr = probe
+        return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    monkeypatch.setattr(
+        "jasper.renderer_lanes.ring_writer_pid", lambda label: _ALOOP_OWNER_PID
+    )
+    real_path = doctor.renderers.Path
+
+    def fake_path(arg):
+        if "/proc/asound/" in str(arg):
+            return _FakeProcPath(f"owner_pid : {_ALOOP_OWNER_PID}\n")
+        if str(arg).startswith("/proc/"):
+            return _FakeProcPath(cgroup)
+        return real_path(arg)
+
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+
+    outcome, _ = doctor.renderers._probe_open_as_user(device, "pi")
+    assert outcome is expect_outcome
+    # Non-negotiable #5's command, pinned as a list rather than as source text.
+    assert argv[0] == [
+        "sudo", "-n", "-u", "pi",
+        "env", "LC_ALL=C",
+        "timeout", doctor.renderers._PROBE_TIMEOUT_SEC,
+        "aplay", "-q",
+        "-s", doctor.renderers._PROBE_FRAMES,
+        "-D", device,
+        "-c", "2", "-r", "48000", "-f", "S16_LE",
+        "/dev/zero",
+    ]
+    assert doctor.check_renderer_device_resolvable().status == expect_status
+
+
+def test_ownership_gate_refuses_an_empty_unit(monkeypatch):
+    """`"/" in cgroup` matches everything, so an empty unit must fail closed.
+
+    Unreachable through the check today (the unit names are module constants),
+    which is why the guard needs its own pin. The cgroup read is stubbed with
+    a cgroup that WOULD match: reading the host's real /proc would pass on a
+    machine that has none, pinning nothing."""
+    monkeypatch.setattr(
+        doctor.renderers, "Path", lambda arg: _FakeProcPath(_OWNED_CGROUP)
+    )
+    owned, _ = doctor.renderers._cgroup_owner_is_unit(1, "")
+    assert owned is False
+
+
+@pytest.mark.parametrize(
+    ("load_state", "expect_status"),
+    [("not-found", "fail"), ("masked", "fail"), ("loaded", "ok")],
+)
+def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status):
+    """An unloaded unit must fail, not silently degrade to a root probe.
+
+    `systemctl show <unit> -p User` exits 0 with an EMPTY User= for a unit that
+    does not exist, which is indistinguishable from the genuine root case
+    (bluealsa-aplay really runs as root). Only LoadState separates them, so a
+    renamed or uninstalled renderer would otherwise be probed as root and pass
+    — the check claiming "as the unit's real User=" with no unit behind it."""
     monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
         doctor.renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
     )
-    monkeypatch.setattr(doctor.renderers, "_systemd_user_for", lambda unit: "pi")
     monkeypatch.setattr(
-        doctor.renderers, "_resolve_systemd_env_vars", lambda device, unit: device
+        doctor.renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
     )
     monkeypatch.setattr(
-        doctor.renderers.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(
-            returncode=returncode, stdout="", stderr=stderr
-        ),
+        doctor.renderers, "_systemd_unit_user", lambda unit: (None, load_state)
     )
-    monkeypatch.setattr(
-        "jasper.renderer_lanes.ring_writer_pid", lambda label: 4242
-    )
-    real_path = doctor.renderers.Path
-    monkeypatch.setattr(
-        doctor.renderers,
-        "Path",
-        lambda arg: (
-            _FakeCgroupPath(cgroup)
-            if str(arg).startswith("/proc/")
-            else real_path(arg)
-        ),
-    )
+    probed: list[list[str]] = []
 
-    outcome, _ = doctor.renderers._classify_probe(returncode, stderr)
-    assert outcome is expect_outcome
+    def fake_run(cmd, timeout=None):
+        probed.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
     assert doctor.check_renderer_device_resolvable().status == expect_status
+    # An unloaded unit must not even be probed.
+    assert bool(probed) is (load_state == "loaded")
 
 
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
@@ -533,12 +754,12 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.renderers,
-        "_systemd_user_for",
-        lambda unit: {
+        "_systemd_unit_user",
+        lambda unit: ({
             "shairport-sync.service": "shairport-sync",
             "librespot.service": "pi",
             "bluealsa-aplay.service": None,
-        }[unit],
+        }[unit], "loaded"),
     )
 
     # Simulate the bug: as shairport-sync user, the open fails with
@@ -572,7 +793,9 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+        doctor.renderers,
+        "_systemd_unit_user",
+        lambda unit: ("shairport-sync", "loaded"),
     )
     monkeypatch.setattr(
         doctor.renderers,
@@ -593,7 +816,9 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+        doctor.renderers,
+        "_systemd_unit_user",
+        lambda unit: ("shairport-sync", "loaded"),
     )
     monkeypatch.setattr(
         doctor.renderers,
@@ -637,12 +862,12 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.renderers,
-        "_systemd_user_for",
-        lambda unit: {
+        "_systemd_unit_user",
+        lambda unit: ({
             "shairport-sync.service": "shairport-sync",
             "librespot.service": "pi",
             "bluealsa-aplay.service": None,
-        }[unit],
+        }[unit], "loaded"),
     )
 
     # Mock _resolve_systemd_env_vars to simulate systemd returning

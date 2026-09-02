@@ -406,7 +406,7 @@ def _renderer_unit_user(unit: str) -> str | None:
 
     Only case 1 is a real answer; 2 and 3 are ignorance wearing the same value.
     The drop-in-aware net is the doctor's runtime `systemctl show -p User`
-    (``jasper.cli.doctor.renderers._systemd_user_for``), which resolves the full
+    (``jasper.cli.doctor.renderers._systemd_unit_user``), which resolves the full
     unit + drop-in merge and is what the PR #214 probe actually runs as. If this
     function's answer ever has to be trusted rather than merely advisory, use
     that instead.
