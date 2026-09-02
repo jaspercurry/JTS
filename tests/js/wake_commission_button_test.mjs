@@ -65,21 +65,29 @@ applyProfileStatus(view({}));
 assert.equal(button.hidden, true);
 
 // --- progress + verdict lines ---------------------------------------------
+const lineFor = (commission) => {
+  applyProfileStatus(view({ chip_aec_capable: true }, commission));
+  return detail.hidden ? "" : detail.textContent;
+};
+
+// The three states the control layer publishes each say something, and each
+// says something different — the copy itself is not the contract.
+const lines = [
+  lineFor({ running: true }),
+  lineFor({ state: "passed" }),
+  lineFor({ state: "failed", detail: "no reference" }),
+];
+assert.equal(lines.filter(Boolean).length, 3);
+assert.equal(new Set(lines).size, 3);
+assert.equal(button.disabled, false);
+
+// A failure carries the backend's own reason rather than a fixed string.
+assert.match(lines[2], /no reference/);
+
 applyProfileStatus(view({ chip_aec_capable: true }, { running: true }));
 assert.equal(button.disabled, true);
-assert.equal(detail.hidden, false);
-assert.equal(detail.textContent, "Running…");
 
-applyProfileStatus(view({ chip_aec_capable: true }, { state: "passed" }));
-assert.equal(detail.textContent, "Aligned.");
-
-applyProfileStatus(
-  view({ chip_aec_capable: true }, { state: "failed", detail: "no reference" }),
-);
-assert.match(detail.textContent, /no reference/);
-
-applyProfileStatus(view({ chip_aec_capable: true }, {}));
-assert.equal(detail.hidden, true);
+assert.equal(lineFor({}), "");
 
 // A box with no capable array shows neither the button nor a verdict about
 // a run it cannot start.

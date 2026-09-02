@@ -595,9 +595,9 @@ if (firmwareButton) {
 if (commissionButtonEl) {
   commissionButtonEl.addEventListener("click", async () => {
     if (!(await jtsConfirm(
-      "The speaker will play short test chirps for about 30 seconds. " +
+      "The speaker will play short test chirps for about a minute. " +
         "Music stops now and starts again when the run ends. " +
-        "Keep the room quiet.",
+        "Keep every speaker in the room quiet.",
       { title: "Play the calibration tones?" },
     ))) {
       return;
