@@ -93,20 +93,25 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import chain_response
 from jasper.audio_measurement.program_analysis import (
-    predicted_branch_sum,
+    ALIGNMENT_OK,
     summed_model_residual_delay_us,
 )
 
+from .plan_assembly import SummationFrame, compose_linearized_prediction
+
 __all__ = [
+    "CornerDisagreement",
     "GraphSummation",
+    "PreviousGraph",
     "commanded_delta",
+    "corner_disagreement",
     "graph_predicted_sum",
+    "previous_graph_prediction",
     "profile_crossover_fc_hz",
     "profile_graph_summation",
 ]
@@ -120,6 +125,9 @@ class GraphSummation:
     value, so the reader that extracts them from a profile and the model that
     consumes them cannot drift into two different opinions about which graph is
     being described.
+
+    ``trim_db`` is keyed by this speaker's branches LOWEST FIRST;
+    :func:`graph_predicted_sum` reads the graph's own roles off it.
 
     ``delay_us`` is SIGNED in the analysis frame (design §5.6.5: positive means
     the tweeter branch is delayed), never the non-negative magnitude a profile
@@ -148,15 +156,19 @@ class GraphSummation:
 def profile_graph_summation(
     profile: Mapping[str, Any] | None,
     *,
-    woofer_role: str,
-    tweeter_role: str,
+    roles: Sequence[str],
     draft_inverted_by_role: Mapping[str, bool],
 ) -> GraphSummation | None:
     """Read one applied profile as a :class:`GraphSummation`, or ``None``.
 
+    ``roles`` is this speaker's branches LOWEST FIRST — one on a 1-way main,
+    two otherwise. The frame conversions below are stated between ``roles[0]``
+    and ``roles[-1]``, the same declaration on a lone branch (zero delay, ``+1``
+    sign). More than two is refused: ONE delay and ONE relative sign.
+
     ``None`` — "this profile does not say what the speaker is playing" — for an
     absent profile, for one whose authoritative ``corrections`` mapping does not
-    carry BOTH roles, and for one that names a role without naming its
+    carry EVERY role, and for one that names a role without naming its
     ``gain_db``. It is never a graph that trims nothing: a fabricated unity
     graph would make the commanded axis claim the apply commands the whole of
     the previous profile's trim, which is the same class of wrong answer this
@@ -188,27 +200,29 @@ def profile_graph_summation(
         profile_linearization,
     )
 
+    if not 1 <= len(roles) <= 2:
+        return None
     corrections = profile_driver_corrections(profile)
-    woofer = corrections.get(woofer_role)
-    tweeter = corrections.get(tweeter_role)
-    if not isinstance(woofer, Mapping) or not isinstance(tweeter, Mapping):
+    entries: list[Mapping[str, Any]] = [
+        entry for role in roles
+        if isinstance(entry := corrections.get(role), Mapping)
+    ]
+    if len(entries) != len(roles):
         return None
-    woofer_gain, tweeter_gain = woofer.get("gain_db"), tweeter.get("gain_db")
-    if woofer_gain is None or tweeter_gain is None:
+    gains: list[Any] = [entry.get("gain_db") for entry in entries]
+    if any(gain is None for gain in gains):
         return None
+    lower, upper = entries[0], entries[-1]
     try:
-        trim_db = {
-            woofer_role: float(woofer_gain),
-            tweeter_role: float(tweeter_gain),
-        }
+        trim_db = {role: float(gain) for role, gain in zip(roles, gains)}
         # The profile records a non-negative magnitude on the delayed role
         # (``measured_crossover_candidate.driver_corrections``), so the sign is
-        # recovered from WHICH role carries it: a delayed tweeter is the
-        # positive direction of the analysis frame, a delayed woofer the
-        # negative one. Both are read rather than assuming only one is set.
+        # recovered from WHICH role carries it: a delayed upper branch is the
+        # positive direction of the analysis frame, a delayed lower one the
+        # negative. Both are read rather than assuming only one is set.
         delay_us = 1000.0 * (
-            float(tweeter.get("delay_ms") or 0.0)
-            - float(woofer.get("delay_ms") or 0.0)
+            float(upper.get("delay_ms") or 0.0)
+            - float(lower.get("delay_ms") or 0.0)
         )
     except (TypeError, ValueError):
         return None
@@ -218,10 +232,10 @@ def profile_graph_summation(
     # The frame conversion, in one place. The profile's flags are absolute and
     # the draft's are absolute; the model wants the difference between the two
     # relative polarities, because the branches already carry the draft's.
-    profile_flip = bool(woofer.get("inverted")) != bool(tweeter.get("inverted"))
+    profile_flip = bool(lower.get("inverted")) != bool(upper.get("inverted"))
     draft_flip = (
-        bool(draft_inverted_by_role.get(woofer_role))
-        != bool(draft_inverted_by_role.get(tweeter_role))
+        bool(draft_inverted_by_role.get(roles[0]))
+        != bool(draft_inverted_by_role.get(roles[-1]))
     )
     return GraphSummation(
         trim_db=trim_db,
@@ -232,7 +246,7 @@ def profile_graph_summation(
                 entry for entry in (linearization.get(role) or ())
                 if isinstance(entry, Mapping)
             )
-            for role in (woofer_role, tweeter_role)
+            for role in roles
         },
     )
 
@@ -300,26 +314,17 @@ def graph_predicted_sum(
     branch_tf: Mapping[str, Any],
     graph: GraphSummation,
     *,
-    woofer_role: str,
-    tweeter_role: str,
     anchor_delay_us: float | None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """``(freqs_hz, magnitude_db)`` this graph would produce on these branches.
 
-    The same three owners the applied side is built from, in the same order and
-    with the same arguments, so the two curves differ by the GRAPH and by
-    nothing else:
-
-    * :func:`~jasper.active_speaker.branch_chain.chain_response` for the
-      correction biquads — the repo's one biquad evaluator, and the same one
-      ``complex_correction_response`` bottoms out in, so a correction read back
-      off a profile is evaluated exactly as the fit's own was;
-    * :func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum`
-      for the trimmed, signed, delayed two-branch sum;
-    * :func:`~jasper.audio_measurement.program_analysis.
-      summed_model_residual_delay_us` for the residual, which is the ONLY
-      correct way to enter a delay here (its docstring carries the
-      double-counting hazard).
+    THE SAME composition the applied side is built from,
+    :func:`~.plan_assembly.compose_linearized_prediction`, so the two curves
+    differ by the GRAPH and by nothing else. Only the residual is this
+    function's own, through :func:`~jasper.audio_measurement.program_analysis.
+    summed_model_residual_delay_us` — the ONLY correct way to enter a delay
+    here (its docstring carries the double-counting hazard). The branches are
+    the GRAPH's own, lowest first.
 
     **The anchor is this capture's, and it does NOT cancel** — that is why it
     has to be this capture's. It sets where the blend null sits, and a null is
@@ -336,22 +341,23 @@ def graph_predicted_sum(
     """
     try:
         freqs = np.asarray(freqs_hz, dtype=float)
-        woofer = np.asarray(branch_tf[woofer_role], dtype=np.complex128)
-        tweeter = np.asarray(branch_tf[tweeter_role], dtype=np.complex128)
-        summed = predicted_branch_sum(
-            woofer * chain_response(graph.linearization.get(woofer_role, ()), freqs),
-            tweeter * chain_response(graph.linearization.get(tweeter_role, ()), freqs),
-            float(graph.trim_db.get(woofer_role, 0.0)),
-            float(graph.trim_db.get(tweeter_role, 0.0)),
-            int(graph.polarity_sign),
-            freqs_hz=freqs,
-            residual_delay_us=summed_model_residual_delay_us(
-                anchor_delay_us, graph.delay_us,
+        return compose_linearized_prediction(
+            SummationFrame(
+                freqs_hz=freqs,
+                branch_tf={
+                    role: np.asarray(branch_tf[role], dtype=np.complex128)
+                    for role in graph.trim_db
+                },
+                polarity_sign=int(graph.polarity_sign),
+                residual_delay_us=summed_model_residual_delay_us(
+                    anchor_delay_us, graph.delay_us,
+                ),
             ),
+            filters_by_role=graph.linearization,
+            role_attenuations_db=graph.trim_db,
         )
     except (KeyError, ValueError, TypeError, IndexError, AttributeError):
         return None
-    return freqs, 20.0 * np.log10(np.maximum(np.abs(summed), 1e-12))
 
 
 def commanded_delta(
@@ -390,3 +396,86 @@ def commanded_delta(
     except (ValueError, TypeError, IndexError, AttributeError):
         return None
     return grid, delta
+
+
+class CornerDisagreement(NamedTuple):
+    """Why an applied profile's corner and a capture's disagree."""
+
+    reason: str
+    fields: dict[str, Any]
+
+
+def corner_disagreement(
+    profile: Mapping[str, Any] | None, capture_fc_hz: float | None,
+) -> CornerDisagreement | None:
+    """Why the applied profile's corner and this capture's disagree, or ``None``.
+
+    Asked BEFORE the model is built: a previous graph modelled on branches
+    composed through a crossover it never ran is wrong by up to 5.88 dB against
+    the delta probe's 1.5 dB tolerance (adversarial panel, PR #2614). Both arms
+    of the one disagreement: a profile naming a DIFFERENT corner from this
+    capture's, and a profile naming one at all when the capture ran none. A
+    relative tolerance because both numbers have been through a JSON round trip.
+    """
+    applied_fc_hz = profile_crossover_fc_hz(profile)
+    if applied_fc_hz is None:
+        if capture_fc_hz is None:
+            return None
+        return CornerDisagreement("applied_profile_names_no_corner", {})
+    if capture_fc_hz is not None and math.isclose(
+        applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6
+    ):
+        return None
+    return CornerDisagreement("crossover_corner_moved", {
+        "applied_fc_hz": round(applied_fc_hz, 3),
+        "capture_fc_hz": (
+            None if capture_fc_hz is None else round(float(capture_fc_hz), 3)
+        ),
+    })
+
+
+class PreviousGraph(NamedTuple):
+    """One applied profile's graph, and what it predicts on this capture."""
+
+    graph: GraphSummation
+    predicted: tuple[np.ndarray, np.ndarray]
+
+
+def previous_graph_prediction(
+    profile: Mapping[str, Any] | None,
+    *,
+    roles: Sequence[str],
+    draft_inverted_by_role: Mapping[str, bool],
+    responses: Mapping[str, Any],
+    alignment: Any,
+) -> PreviousGraph | str:
+    """The previous graph on these branches, or the code refusing it.
+
+    The graph comes back beside its prediction; the caller journals both.
+    """
+    graph = profile_graph_summation(
+        profile, roles=roles, draft_inverted_by_role=draft_inverted_by_role,
+    )
+    if graph is None:
+        return "applied_profile_names_no_graph"
+    if any(role not in responses for role in roles):
+        return "capture_missing_a_declared_branch"
+    predicted = graph_predicted_sum(
+        # The LOWEST branch's grid, the one ``plan_linearization`` builds the
+        # applied side on, so both sides land on one grid.
+        responses[roles[0]].freqs_hz,
+        {role: response.complex_tf for role, response in responses.items()},
+        graph,
+        # The SAME gate the applied side's residual is derived through
+        # (``program_analysis._build_candidate``): an anchor the aligner refused
+        # is no anchor, and both sides then model the frame the
+        # independently-aligned branch pair is already in.
+        anchor_delay_us=(
+            alignment.anchor_delay_us
+            if alignment is not None and alignment.status == ALIGNMENT_OK
+            else None
+        ),
+    )
+    if predicted is None:
+        return "previous_graph_model_failed"
+    return PreviousGraph(graph, predicted)

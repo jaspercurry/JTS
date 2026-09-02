@@ -28,6 +28,9 @@ Modules:
     ``(program, capture) → ProgramAnalysis`` analysis (locate + integrity +
     clock-drift + per-driver response + GCC-PHAT alignment + candidate) for the
     session flow.
+  - :mod:`~jasper.audio_measurement.comparison_bands` — the bands a comparison
+    may be judged over: the branch-pair overlap, one branch's capture-SNR
+    window, a summed capture's crossover region, and a VERIFY tracking band.
   - :mod:`~jasper.audio_measurement.alignment` — cross-correlation location of a
     KNOWN stimulus inside a capture, with a 0..1 confidence margin and an
     optional fail-loud gate over it.

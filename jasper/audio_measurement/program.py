@@ -1185,10 +1185,12 @@ def build_measure_program(
     courtesy_prelude: bool = False,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): ``repeat_count``
-    interleaved woofer/tweeter sweep cycles.
+    interleaved sweep cycles, one per declared driver.
 
-    Exactly two drivers (2-way): ``roles_bands[0]`` is the lower driver (woofer,
-    ch0), ``roles_bands[1]`` is the upper (tweeter, ch1). Layout for
+    One or two drivers. On a 2-way, ``roles_bands[0]`` is the lower driver
+    (woofer, ch0) and ``roles_bands[1]`` the upper (tweeter, ch1). A 1-way
+    (passive full-range) has only ``roles_bands[0]``: one sweep per cycle, no
+    inter-driver gaps, and the ``_w`` segment spelling below. Layout for
     ``repeat_count`` cycles (default :data:`MEASURE_REPEAT_COUNT`)::
 
         [ambient window → pilot lo → gap → pilot hi → gap →]
@@ -1248,11 +1250,11 @@ def build_measure_program(
     refusal, not a shorter sweep.
 
     Segment IDs: each driver's first occurrence keeps exactly ``sweep_w`` /
-    ``sweep_t`` (existing lookups depend on these); later occurrences follow
-    :func:`_occurrence_suffix` (``sweep_w_rep``, ``sweep_w_rep2``, … /
-    ``sweep_t_rep``, ``sweep_t_rep2``, …). Gap IDs carry the SAME suffix as
-    the sweep that sizes them: ``gap_w_t`` / ``gap_t_w`` for the first cycle,
-    ``gap_w_t_rep`` / ``gap_t_w_rep`` for the second, and so on.
+    ``sweep_t`` (existing lookups depend on these — ``program_analysis`` anchors
+    drift on ``sweep_w``, so a 1-way's single role keeps that spelling); later
+    occurrences follow :func:`_occurrence_suffix` (``sweep_w_rep``, …). Gap IDs
+    carry the SAME suffix as the sweep that sizes them: ``gap_w_t`` /
+    ``gap_t_w`` on a 2-way, ``gap_w_w`` for a 1-way's inter-cycle settle.
 
     ``leading_pilot_gains_db`` (v2 session, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` pilot pair on ``leading_pilot_role``'s
@@ -1270,18 +1272,18 @@ def build_measure_program(
     ``False`` (the default) is byte-identical to the pre-#1677 composer.
     """
     roles = _validate_roles(roles_bands)
-    if len(roles) != 2:
-        raise ValueError("MEASURE is a 2-way flow: exactly two drivers required")
-    woofer, tweeter = roles[0], roles[1]
+    if not 1 <= len(roles) <= 2:
+        raise ValueError("MEASURE takes one or two drivers")
+    woofer = roles[0]
+    tweeter = roles[1] if len(roles) == 2 else None
     for rb in roles:
         if rb.role not in gain_plan:
             raise ValueError(f"gain_plan is missing role {rb.role!r}")
     if type(repeat_count) is not int or repeat_count < 1:
         raise ValueError("repeat_count must be a positive integer")
-    durations = {
-        woofer.role: DEFAULT_WOOFER_SWEEP_S,
-        tweeter.role: DEFAULT_TWEETER_SWEEP_S,
-    }
+    durations = {woofer.role: DEFAULT_WOOFER_SWEEP_S}
+    if tweeter is not None:
+        durations[tweeter.role] = DEFAULT_TWEETER_SWEEP_S
     if sweep_durations:
         durations.update(sweep_durations)
     channels = 1 + max(rb.channel for rb in roles)
@@ -1349,11 +1351,15 @@ def build_measure_program(
         return fitted
 
     w_f1, w_f2 = _band(woofer)
-    t_f1, t_f2 = _band(tweeter)
     w_meta = _fitted_meta(woofer, w_f1, w_f2)
-    t_meta = _fitted_meta(tweeter, t_f1, t_f2)
     gap_w_n = mesm_gap_samples(w_meta, ir_tail_s=ir_tail_s)
-    gap_t_n = mesm_gap_samples(t_meta, ir_tail_s=ir_tail_s)
+    t_band: tuple[float, float] | None = None
+    gap_t_n = 0
+    if tweeter is not None:
+        t_band = _band(tweeter)
+        gap_t_n = mesm_gap_samples(
+            _fitted_meta(tweeter, *t_band), ir_tail_s=ir_tail_s
+        )
 
     segments: list[ProgramSegment] = []
     cursor = 0
@@ -1416,10 +1422,19 @@ def build_measure_program(
         sweep_w = _sweep(f"sweep_w{suffix}", woofer, w_f1, w_f2, durations[woofer.role])
         segments.append(sweep_w)
         cursor += sweep_w.n_samples
+        if tweeter is None or t_band is None:
+            # One declared driver: the only silence between cycles is the
+            # MESM settle. None after the last — the tail silence follows.
+            if cycle < repeat_count - 1:
+                segments.append(_silence(f"gap_w_w{suffix}", cursor, gap_w_n))
+                cursor += gap_w_n
+            continue
         segments.append(_silence(f"gap_w_t{suffix}", cursor, gap_w_n))
         cursor += gap_w_n
 
-        sweep_t = _sweep(f"sweep_t{suffix}", tweeter, t_f1, t_f2, durations[tweeter.role])
+        sweep_t = _sweep(
+            f"sweep_t{suffix}", tweeter, t_band[0], t_band[1], durations[tweeter.role]
+        )
         segments.append(sweep_t)
         cursor += sweep_t.n_samples
         if cycle < repeat_count - 1:
@@ -1442,8 +1457,9 @@ VERIFY_PILOT_ROLE = "summed"
 
 
 def build_verify_program(
-    fc_hz: float,
+    fc_hz: float | None,
     *,
+    measurement_band_hz: tuple[float, float] | None = None,
     gain_db: float = BASE_STIMULUS_PEAK_DBFS,
     guard_s: float = DEFAULT_VERIFY_GUARD_S,
     sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
@@ -1463,6 +1479,12 @@ def build_verify_program(
     commissioning construct). ``fc_hz`` widens the low bound when the crossover
     is low so the lower shoulder ``fc/2`` is always excited:
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
+
+    ``fc_hz=None`` is the NO-CROSSOVER mode — a 1-way passive main, with no
+    corner, shoulder or overlap notch. It requires ``measurement_band_hz`` (the
+    speaker's own declared hull) and derives both bounds from it: the low edge
+    widens the same way, and the pilot rides the fixed flat window clamped INTO
+    the declaration, falling back to the declaration if the clamp collapses.
 
     ``leading_pilot_gains_db`` (v2 session, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``),
@@ -1489,11 +1511,21 @@ def build_verify_program(
     the prelude's compose-time clamp (``courtesy_tone_gain_db``) is the ONLY
     level guard here, exactly like the summed sweep itself.
     """
-    if not (fc_hz > 0) or not math.isfinite(fc_hz):
-        raise NullConfirmUnavailable(
-            NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
-        )
-    f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
+    if fc_hz is None:
+        if measurement_band_hz is None:
+            raise ValueError(
+                "a no-crossover VERIFY requires the declared measurement_band_hz"
+            )
+        band_lo, band_hi = (float(measurement_band_hz[0]), float(measurement_band_hz[1]))
+        if not (0 < band_lo < band_hi) or not math.isfinite(band_hi):
+            raise ValueError("measurement_band_hz must be a positive ascending band")
+        f1_hz = min(VERIFY_F_LO_HZ, band_lo)
+    else:
+        if not (fc_hz > 0) or not math.isfinite(fc_hz):
+            raise NullConfirmUnavailable(
+                NULL_REFUSE_FC_INVALID, "fc_hz must be finite and positive"
+            )
+        f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
     f2_hz = VERIFY_F_HI_HZ
     if not f1_hz < f2_hz:
         raise ValueError("verify sweep band collapsed")
@@ -1508,10 +1540,18 @@ def build_verify_program(
         # fixed 200-800 Hz window is only flat while the crossover overlap
         # sits above it, so the hi bound is clamped below the Fc/2 shoulder,
         # with an [fc/8, fc/4] fallback when the clamp collapses the band.
-        pilot_lo = VERIFY_PILOT_F_LO_HZ
-        pilot_hi = min(VERIFY_PILOT_F_HI_HZ, fc_hz / VERIFY_PILOT_FC_CLEARANCE_RATIO)
-        if not pilot_lo < pilot_hi:
-            pilot_lo, pilot_hi = fc_hz / 8.0, fc_hz / 4.0
+        if fc_hz is None:
+            # No corner, so no notch to clear: the fixed window need only sit
+            # inside the declared band.
+            pilot_lo = max(VERIFY_PILOT_F_LO_HZ, band_lo)
+            pilot_hi = min(VERIFY_PILOT_F_HI_HZ, band_hi)
+            if not pilot_lo < pilot_hi:
+                pilot_lo, pilot_hi = band_lo, band_hi
+        else:
+            pilot_lo = VERIFY_PILOT_F_LO_HZ
+            pilot_hi = min(VERIFY_PILOT_F_HI_HZ, fc_hz / VERIFY_PILOT_FC_CLEARANCE_RATIO)
+            if not pilot_lo < pilot_hi:
+                pilot_lo, pilot_hi = fc_hz / 8.0, fc_hz / 4.0
         # Same ordering rule as MEASURE (issues #1810 / #1812): beeps first,
         # then the settle, then the ambient window, then the pilots.
         prelude_at = cursor

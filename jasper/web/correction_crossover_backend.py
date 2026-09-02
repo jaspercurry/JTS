@@ -1378,17 +1378,15 @@ def status_payload() -> dict[str, Any]:
 
     payload = web_measurement.status_payload()
     payload["commission"] = web_commissioning.commission_status_payload()
-    # Layer-A gate: only active (`active_2_way` / `active_3_way`) speakers have
-    # driver/summed targets; a `full_range_passive` speaker has none, so
-    # `active=False` is the honest "this speaker has no crossover to tune" flag
-    # for the envelope-driven page to consume. Derived from the already-computed
-    # targets. (The active-only block below does its own fail-soft topology
-    # read for the safety-profile evaluation.)
+    # Layer-A gate: `active` means "this speaker has an inter-driver crossover
+    # to tune". Read off the SUMMED targets alone, which only `active_2_way` /
+    # `active_3_way` groups have; a subless `full_range_passive` speaker carries
+    # a driver target too, so counting those would flip the flag wrongly.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
     summed_count = len(targets.get("summed") or [])
-    payload["active"] = bool(driver_count or summed_count)
+    payload["active"] = bool(summed_count)
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
     )

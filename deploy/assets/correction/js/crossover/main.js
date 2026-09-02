@@ -182,13 +182,15 @@ function renderNudges(nudges, expertDetails, findings) {
 
 // Gauge fix (2026-07-24): plain-language text for
 // crossover_envelope_v2._candidate_review_payload's "linearization_outcome"
-// enum (jasper.active_speaker.crossover_v2_flow's
-// _last_linearization_outcome — the SAME six values that enum can hold).
-// Mirrors the existing polarity enum-to-text mapping just above in this
-// file; an unrecognized/empty value renders nothing (e.g. "" means
-// linearization was never evaluated this attempt).
+// enum (the values LinearizationState.outcome can hold). Mirrors the existing
+// polarity enum-to-text mapping just above in this file; an
+// unrecognized/empty value renders nothing (e.g. "" means linearization was
+// never evaluated this attempt) — which is why a new Python outcome has to be
+// added here too, or the round goes quiet on this screen.
 const LINEARIZATION_OUTCOME_TEXT = {
   fitted: 'driver linearization: fitted',
+  fitted_single_branch:
+    'driver linearization: fitted (one full-range branch, no inter-driver trim)',
   trim_rejected:
     'driver linearization: filters fitted, re-solved trim rejected (used the measured trim)',
   ineligible_mic_tier: 'driver linearization: skipped — needs a reference-tier mic',

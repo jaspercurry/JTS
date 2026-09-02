@@ -33,6 +33,7 @@ from dataclasses import replace
 import pytest
 
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2 import plan_assembly as pa
 from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
 )
@@ -539,5 +540,5 @@ def test_the_summed_owner_plumbing_is_gone_not_dormant():
     assert "summed_level_reference_db" not in names
     assert "level_frame_tolerance_db" not in names
     assert "summed_level_reference_db" not in {
-        f.name for f in fields(iv.LinearizationPlan)
+        f.name for f in fields(pa.LinearizationPlan)
     }

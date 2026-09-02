@@ -60,6 +60,13 @@ from jasper.audio_measurement.alignment import (
     gcc_phat,
     parabolic_peak,
 )
+from jasper.audio_measurement.comparison_bands import (
+    OVERLAP_OCTAVE_RATIO,
+    branch_snr_band_hz,
+    crossover_region_band_hz,
+    overlap_band_hz,
+    verify_tracking_band_hz,
+)
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -297,9 +304,6 @@ GCC_SNAP_RADIUS_PERIODS = 1.0 / 6.0
 # Alignment estimator status vocabulary.
 ALIGNMENT_OK = "ok"
 ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
-
-# Overlap band for trims / alignment / ripple: Fc ± 1 octave.
-OVERLAP_OCTAVE_RATIO = 2.0
 
 # --------------------------------------------------------------------------- #
 # Joint (polarity, delay) alignment selection
@@ -905,18 +909,17 @@ class MeasurementPriors:
     omits them reads a deterministic mismatch equal to their own in-band
     response (~1.7 dB measured on JTS3, against a ±1.5 dB tolerance).
 
-    ``measure_tweeter_sweep_lo_hz`` / ``measure_woofer_sweep_hi_hz`` carry the
-    MEASURE program's actual per-driver sweep bounds forward to VERIFY, whose
-    tracking comparison must trust the SAME band ``predicted_sum`` was built in
-    (see ``overlap_band_hz``); a wider nominal Fc±1-octave band would compare
-    real VERIFY capture data against sub-floor noise inherited from an
-    unexcited MEASURE branch. ``None`` falls back to the unclamped nominal
-    band. ``alignment_delay_bounds_us`` is the unsigned, declaration-derived
-    applied-delay magnitude range the flatness refinement may search, derived
-    by the session from the crossover region's ``delay_range_ms``; the
-    drift-corrected physical peak gap orients and centers one ±half-period
-    signed lobe inside it, and ``None`` keeps GCC as the applied-delay
-    estimate.
+    ``measure_excited_band_hz`` carries the band every MEASURE branch was
+    actually swept over forward to VERIFY, whose tracking comparison must trust
+    the SAME band ``predicted_sum`` was built in (see ``overlap_band_hz``); a
+    wider band would compare real VERIFY capture data against sub-floor noise
+    inherited from a branch MEASURE never drove there. ``None`` falls back to
+    the unclamped band. ``alignment_delay_bounds_us`` is the
+    unsigned, declaration-derived applied-delay magnitude range the flatness
+    refinement may search, derived by the session from the crossover region's
+    ``delay_range_ms``; the drift-corrected physical peak gap orients and
+    centers one ±half-period signed lobe inside it, and ``None`` keeps GCC as
+    the applied-delay estimate.
 
     Two priors are facts the host holds and hands down rather than ones this
     module could reach for, and each is read on exactly one path,
@@ -967,8 +970,7 @@ class MeasurementPriors:
     target_capture_dbfs: float = DEFAULT_TARGET_CAPTURE_DBFS
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     ambient_report: Mapping[str, Any] | None = None
-    measure_tweeter_sweep_lo_hz: float | None = None
-    measure_woofer_sweep_hi_hz: float | None = None
+    measure_excited_band_hz: tuple[float, float] | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
     explicit_alignment_delay_us: float | None = None
@@ -1555,6 +1557,9 @@ class ProgramAnalysis:
     # predicts stays invisible. Always a dict on a VERIFY analysis — the
     # numbers, or ``{"not_evaluated": <reason>}``; ``None`` elsewhere.
     verify_absolute: dict[str, Any] | None = None
+    # Why a MEASURE analysis carries no ``alignment`` and no ``candidate``;
+    # ``None`` on every analysis that has them, so absence cannot read as pass.
+    measure_pair_not_evaluated: str | None = None
     # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the tracking
     # scalars above were reduced from. A separate field rather than a key inside
     # ``verify_tracking`` because that dict travels to the phone in a
@@ -1568,9 +1573,10 @@ class ProgramAnalysis:
     # ``None`` whenever ``verify_tracking`` is (no prediction prior), and the
     # probe reads that as "no evidence", never as a pass.
     verify_tracking_curve: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)``: the two
+    # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)``: the
     # measured branches at the candidate's COMMITTED trim AND committed delay
-    # (``_build_candidate``'s ``predicted_applied``). The v2 session hands this
+    # (``_build_candidate``'s ``predicted_applied``), or the single branch
+    # itself on a 1-way main. The v2 session hands this
     # to the VERIFY analysis as ``MeasurementPriors.predicted_sum`` so VERIFY's
     # PASS is |measured − predicted| ≤ ±1.5 dB (design §5.2), not merely the
     # summed ripple.
@@ -2886,13 +2892,15 @@ def _driver_snr_block(
     not the window, that buys this.
 
     ``radiated_band_hz`` scopes the verdict to the band this branch's stimulus
-    actually drove — see :func:`branch_snr_band_hz`, which owns that policy.
+    actually drove — see :func:`~..comparison_bands.branch_snr_band_hz`, which
+    owns that policy.
     BOTH decision classes below take the same window, because "a row the sweep
     never entered is not evidence" is a statement about the MEASUREMENT, not
     about which law reads it.
 
-    Fails closed: a raw report with no captured segment to pair it against
-    produces no verdict at all rather than a cross-domain one. A segment that
+    Fails closed: a raw report with no captured segment to pair it against, or
+    a branch declaring neither a corner nor a radiated band to scope the verdict
+    by, produces no verdict at all rather than an unscoped one. A segment that
     is PRESENT but degenerate (a capture truncated before this sweep, so
     :func:`_raw_sweep_segment` clamps to fewer than 8 samples) instead makes
     ``band_levels_dbfs`` return no bands, so the block carries ``verdict:
@@ -2900,7 +2908,10 @@ def _driver_snr_block(
     on purpose: absent means "no evidence was offered", unknown means "evidence
     was offered and was unusable".
     """
-    if ambient_report is None or fc_hz is None:
+    if ambient_report is None:
+        return None
+    relevant_hz = branch_snr_band_hz(fc_hz, radiated_band_hz)
+    if relevant_hz is None:
         return None
     noise_domain, noise_bands = snr_policy.unwrap_noise_report(ambient_report)
     if noise_domain == "deconvolved":
@@ -2916,7 +2927,6 @@ def _driver_snr_block(
         band_method = "fft_band_power_difference"
     else:
         return None
-    relevant_hz = branch_snr_band_hz(fc_hz, radiated_band_hz)
     block = snr_policy.band_snr_verdicts(
         decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
         capture_bands=capture_bands,
@@ -3055,128 +3065,6 @@ def _aligned_branch_tf(
     gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     return freqs, H, fragment
-
-
-def overlap_band_hz(
-    fc_hz: float,
-    *,
-    tweeter_sweep_lo_hz: float | None = None,
-    woofer_sweep_hi_hz: float | None = None,
-) -> tuple[float, float]:
-    """SSOT overlap band for the GCC alignment, trim solve, ripple, and
-    VERIFY-tracking comparisons: the nominal ``Fc ± 1 octave`` band, clamped to
-    the TRUE driver-sweep overlap.
-
-    The nominal ``[Fc/OVERLAP_OCTAVE_RATIO, Fc*OVERLAP_OCTAVE_RATIO]`` band
-    silently assumes both drivers were excited across the whole span, but each
-    driver's MEASURE sweep only covers its own declared band (design §5.4) — a
-    tweeter sweep starting AT Fc makes ``[Fc/2, Fc)`` pure deconvolution noise
-    for that branch. That noise corrupts the GCC delay/confidence, the trim
-    solve, the predicted ripple, and, via the MEASURE-predicted sum, VERIFY's
-    tracking comparison; a hardware run failed to clear the alignment
-    confidence floor because of it. Clamping ``lo`` UP to the tweeter's actual
-    sweep floor and ``hi`` DOWN to the woofer's actual sweep ceiling keeps
-    every consumer inside frequencies BOTH branches have real excited energy
-    at. ``None`` bounds leave that side at the nominal Fc/octave edge.
-    """
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
-    if tweeter_sweep_lo_hz is not None:
-        lo = max(lo, float(tweeter_sweep_lo_hz))
-    if woofer_sweep_hi_hz is not None:
-        hi = min(hi, float(woofer_sweep_hi_hz))
-    return lo, hi
-
-
-def branch_snr_band_hz(
-    fc_hz: float,
-    radiated_band_hz: tuple[float, float] | None,
-) -> tuple[float, float]:
-    """The band ONE branch's capture-SNR verdict may be judged over.
-
-    ``[Fc/ρ, Fc·ρ]`` intersected with the band this branch's stimulus actually
-    radiated, so a row the sweep never entered cannot vote. Whichever edge
-    binds, binds: a tweeter swept from above ``Fc/ρ`` raises ``lo``, a woofer
-    swept to below ``Fc·ρ`` lowers ``hi``. ``radiated_band_hz`` of ``None``
-    leaves the nominal band untouched.
-
-    Erring CONSERVATIVE on row width: a row the window keeps can still be WIDER
-    than the sweep's coverage of it, and under a flat noise floor that
-    understates SNR by ``10*log10(row_width / covered_width)`` — always toward
-    REFUSING. The dilution is set by how deep inside a wide row the sweep's
-    edge lands, so it has no natural ceiling: 0.97 dB for a tweeter swept from
-    1600 Hz, 4.77 dB for a woofer swept only to 2000 Hz, 14.77 dB for one whose
-    ceiling sits just above the ``mid`` row's 1000 Hz floor.
-
-    An empty intersection (``lo >= hi``) is returned as-is, not widened. It
-    still admits rows overlapping the radiated band —
-    :func:`~jasper.audio_measurement.snr_policy.worst_band_verdict`'s
-    ``_band_overlaps`` tests ``row_hi > lo`` and ``row_lo < hi``
-    INDEPENDENTLY, so a row spanning the whole inverted interval satisfies both
-    — which makes "empty" a narrower franchise, not "no verdict". The guarantee
-    that holds either way: whatever a window admits still overlaps the radiated
-    band, since admission needs ``row_hi > lo >= radiated_lo`` and ``row_lo <
-    hi <= radiated_hi``.
-    """
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
-    if radiated_band_hz is None:
-        return lo, hi
-    return max(lo, float(radiated_band_hz[0])), min(hi, float(radiated_band_hz[1]))
-
-
-def crossover_region_band_hz(
-    fc_hz: float,
-    *,
-    validity_floor_hz: float | None,
-    radiated_band_hz: tuple[float, float] | None,
-) -> tuple[float, float] | None:
-    """The crossover region a SUMMED capture can be judged over, or ``None``.
-
-    ``[Fc/ρ, Fc·ρ]`` intersected with
-    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` over
-    this capture's own gate VALIDITY floor (``1/T``,
-    :func:`~jasper.audio_measurement.gating.f_valid_floor_hz`) and the band its
-    stimulus actually radiated, so the floor is always the evidence's own and
-    never a literal. Not the trusted floor (``2.5/T``): that one is disclosed
-    beside a verdict and never bounds this one
-    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
-    ``None`` when that intersection is empty: no band this capture supports, so
-    no number is invented for one.
-
-    Deliberately NOT :func:`overlap_band_hz`. That one clamps ``lo`` UP to the
-    tweeter's MEASURE sweep floor because its consumers read the TWEETER BRANCH
-    ALONE, which below that floor is deconvolution noise from a driver that was
-    never excited. A VERIFY summed capture has no such problem — one mono sweep
-    through the applied graph spanning ``[min(150, Fc/2), 20 kHz]`` — so the
-    composite is real below the tweeter's sweep floor, which is exactly where a
-    null lands when the tweeter is swept from Fc. Widening the MODEL-tracking
-    band there WOULD be dishonest; this band is for the absolute claim, which
-    needs no per-branch model. A JTS3 checkpoint graded ``[2000, 4000] Hz`` and
-    passed at 0.919 dB against 1.5 dB while its post-apply cloud measured
-    −4.80 dB at 1656 Hz, 344 Hz below the graded floor.
-
-    That figure is signal-derived and stated at 1/3-octave smoothing, the spec
-    gauge's convention. This function's consumer smooths at
-    :data:`VERIFY_TRACKING_SMOOTHING_FRACTION` (1/6 octave), which resolves a
-    narrow dip more sharply, so the two numbers are not expected to match.
-
-    Its one caller is ``_verify_absolute_result``, and that claim's ``band_hz``
-    is ALSO the region the blend correction is solved and graded over
-    (``crossover_v2.round_evidence._crossover_region_band_hz`` reads it back).
-    The correction consumes this function's output through that consumer rather
-    than calling it again, so the band a household is shown and the band a
-    filter is cut over are the same number by construction — and this stays a
-    one-caller function.
-    """
-    if not math.isfinite(fc_hz) or fc_hz <= 0.0:
-        return None
-    band = gate_disclosure.evaluation_band_hz(validity_floor_hz, radiated_band_hz)
-    if band is None:
-        return None
-    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, band[0])
-    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, band[1])
-    return (lo, hi) if lo < hi else None
 
 
 def _estimate_alignment(
@@ -5349,7 +5237,7 @@ def _repeat_driver_responses(
     role: str,
     calibration: "CalibrationCurve | None",
     ambient_report: Mapping[str, Any] | None,
-    fc_hz: float,
+    fc_hz: float | None,
     n_fft: int,
     priors: MeasurementPriors,
 ) -> tuple[DriverResponse, ...]:
@@ -5391,17 +5279,26 @@ def _repeat_driver_responses(
     return tuple(out)
 
 
+#: :attr:`ProgramAnalysis.measure_pair_not_evaluated`'s only value today: one
+#: driver, so no pair to align or to build a candidate across.
+MEASURE_PAIR_SINGLE_DRIVER = "single_driver_no_pair"
+
+
 def _analyze_measure(
     program, capture, sample_rate, global_offset, locations,
     calibration, geometry, priors,
 ) -> ProgramAnalysis:
-    if priors.crossover_fc_hz is None:
-        raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
-    fc_hz = float(priors.crossover_fc_hz)
+    # ``None`` is legal for exactly one shape: a 1-way passive main. On a
+    # TWO-branch program it still raises below, where ``seg_t`` is known.
+    fc_hz = None if priors.crossover_fc_hz is None else float(priors.crossover_fc_hz)
     drift = _estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
-    seg_t = program.segment("sweep_t")
+    seg_t = next(
+        (seg for seg in program.segments if seg.segment_id == "sweep_t"), None
+    )
+    if seg_t is not None and fc_hz is None:
+        raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
     epsilon = drift.epsilon_ppm / 1e6
     # Deconvolve both sweeps anchored at their SCHEDULE window (with a shared
     # pre-guard) so relative timing survives (the aligner relies on this); the
@@ -5410,18 +5307,21 @@ def _analyze_measure(
         capture, seg_w, global_offset + seg_w.start_sample, sample_rate,
         epsilon=epsilon,
     )
-    tweeter_full_ir, pre_t = _deconvolve_window(
-        capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
-        epsilon=epsilon,
-    )
     woofer_full_ir = _compose_configured_path_ir(
         seg_w.role, woofer_full_ir, sample_rate, _radiated_band_hz(seg_w), priors
     )
-    tweeter_full_ir = _compose_configured_path_ir(
-        seg_t.role, tweeter_full_ir, sample_rate, _radiated_band_hz(seg_t), priors
-    )
-    pre_samples = min(pre_w, pre_t)
-    n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
+    tweeter_full_ir = None
+    pre_samples = pre_w
+    if seg_t is not None:
+        tweeter_full_ir, pre_t = _deconvolve_window(
+            capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
+            epsilon=epsilon,
+        )
+        tweeter_full_ir = _compose_configured_path_ir(
+            seg_t.role, tweeter_full_ir, sample_rate, _radiated_band_hz(seg_t), priors
+        )
+        pre_samples = min(pre_w, pre_t)
+    n_fft = _n_fft_for(*[ir for ir in (woofer_full_ir, tweeter_full_ir) if ir is not None])
 
     # Primary responses are first-occurrence-derived, built from
     # woofer_full_ir/tweeter_full_ir. Repeats are additionally
@@ -5429,6 +5329,9 @@ def _analyze_measure(
     # `repeat_responses` on the matching primary; they never change a primary's
     # own freqs_hz/magnitude_db/complex_tf/gating/snr/validity_floor.
     occurrences_by_role = _sweep_occurrences_by_role(locations)
+    branches = [(seg_w, woofer_full_ir)]
+    if seg_t is not None and tweeter_full_ir is not None:
+        branches.append((seg_t, tweeter_full_ir))
     responses = tuple(
         replace(
             resp,
@@ -5443,82 +5346,87 @@ def _analyze_measure(
         )
         for resp in (
             _driver_response(
-                seg_w.role, woofer_full_ir, sample_rate,
+                seg.role, full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
-                radiated_band_hz=_radiated_band_hz(seg_w),
+                radiated_band_hz=_radiated_band_hz(seg),
                 capture_segment=_raw_sweep_segment(
-                    capture, seg_w, global_offset + seg_w.start_sample,
+                    capture, seg, global_offset + seg.start_sample,
                 ),
-            ),
-            _driver_response(
-                seg_t.role, tweeter_full_ir, sample_rate,
-                calibration=calibration, ambient_report=priors.ambient_report,
-                fc_hz=fc_hz, n_fft=n_fft,
-                radiated_band_hz=_radiated_band_hz(seg_t),
-                capture_segment=_raw_sweep_segment(
-                    capture, seg_t, global_offset + seg_t.start_sample,
-                ),
-            ),
+            )
+            for seg, full_ir in branches
         )
     )
 
-    alignment = _estimate_alignment(
-        capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
-        fc_hz, geometry, priors,
-        woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
-        pre_samples=pre_samples,
-    )
+    # ONE branch: nothing to align across and nothing to blend, so both come
+    # back absent WITH A REASON.
+    alignment: AlignmentEstimate | None = None
+    candidate: CrossoverCandidate | None = None
+    predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
+    pair_not_evaluated: str | None = MEASURE_PAIR_SINGLE_DRIVER
+    # ``fc_hz is not None`` is guaranteed by the raise above; restated to narrow.
+    if seg_t is not None and tweeter_full_ir is not None and fc_hz is not None:
+        pair_not_evaluated = None
+        alignment = _estimate_alignment(
+            capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
+            fc_hz, geometry, priors,
+            woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
+            pre_samples=pre_samples,
+        )
 
-    # The alignment reads BOTH branch impulse responses, so either one's
-    # capture SNR can be the reason its (polarity, delay) answer is noise —
-    # `_select_alignment_pair` refuses on the pair, not on a named driver. The
-    # ALIGNMENT-class verdict, not the magnitude one every surface displays:
-    # this decision is the one the 35 dB law was written for.
-    alignment_roles = {seg_w.role, seg_t.role}
-    branch_snr_insufficient = any(
-        driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT
-        for resp in responses
-        if resp.role in alignment_roles
-    )
-    candidate, predicted_sum = _build_candidate(
-        woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
-        seg_w.role, seg_t.role, alignment, calibration,
-        tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
-        woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
-        alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
-        branch_snr_insufficient=branch_snr_insufficient,
-        applied_alignment=priors.applied_alignment,
-        explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
-        explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
-    )
-    # `_build_candidate` owns the selection; the estimate published here is the
-    # one every downstream consumer reads (`alignment_to_candidate_fields`
-    # builds the APPLIED fields from it), so it must carry what was committed,
-    # with the correlation's own answer preserved beside it as the seed.
-    if candidate.alignment_objective in _SELECTOR_COMMITTED_OBJECTIVES:
-        alignment = replace(
-            alignment,
-            polarity=candidate.polarity,
-            polarity_sign=polarity_sign_of(candidate.polarity),
-            # READ, not re-derived. The rule — only a commitment whose POLARITY
-            # the flat sum actually chose may answer this — belongs to
-            # :attr:`AlignmentPairSelection.polarity_agrees_with_sum`, and the
-            # candidate carries its answer here. A second derivation at this
-            # line drifts as soon as that rule widens.
-            polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
+        # The alignment reads BOTH branch impulse responses, so either one's
+        # capture SNR can be the reason its (polarity, delay) answer is noise —
+        # `_select_alignment_pair` refuses on the pair, not on a named driver. The
+        # ALIGNMENT-class verdict, not the magnitude one every surface displays:
+        # this decision is the one the 35 dB law was written for.
+        alignment_roles = {seg_w.role, seg_t.role}
+        branch_snr_insufficient = any(
+            driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT
+            for resp in responses
+            if resp.role in alignment_roles
         )
-    # The delay half keeps its own condition: the anchor path is exactly where
-    # the committed delay can differ from the estimate's GCC seed, and reading
-    # the anchor's presence says so directly.
-    if candidate.anchor_delay_us is not None:
-        alignment = replace(
-            alignment,
-            delay_us=candidate.delay_us,
-            raw_delay_us=candidate.delay_us + alignment.parallax_us,
-            seed_delay_us=alignment.delay_us,
-            confidence_source="gcc_phat_seed",
+        candidate, predicted_sum = _build_candidate(
+            woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
+            seg_w.role, seg_t.role, alignment, calibration,
+            tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+            woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
+            alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
+            branch_snr_insufficient=branch_snr_insufficient,
+            applied_alignment=priors.applied_alignment,
+            explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
+            explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
         )
+        # `_build_candidate` owns the selection; the estimate published here is the
+        # one every downstream consumer reads (`alignment_to_candidate_fields`
+        # builds the APPLIED fields from it), so it must carry what was committed,
+        # with the correlation's own answer preserved beside it as the seed.
+        if candidate.alignment_objective in _SELECTOR_COMMITTED_OBJECTIVES:
+            alignment = replace(
+                alignment,
+                polarity=candidate.polarity,
+                polarity_sign=polarity_sign_of(candidate.polarity),
+                # READ, not re-derived. The rule — only a commitment whose POLARITY
+                # the flat sum actually chose may answer this — belongs to
+                # :attr:`AlignmentPairSelection.polarity_agrees_with_sum`, and the
+                # candidate carries its answer here. A second derivation at this
+                # line drifts as soon as that rule widens.
+                polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
+            )
+        # The delay half keeps its own condition: the anchor path is exactly where
+        # the committed delay can differ from the estimate's GCC seed, and reading
+        # the anchor's presence says so directly.
+        if candidate.anchor_delay_us is not None:
+            alignment = replace(
+                alignment,
+                delay_us=candidate.delay_us,
+                raw_delay_us=candidate.delay_us + alignment.parallax_us,
+                seed_delay_us=alignment.delay_us,
+                confidence_source="gcc_phat_seed",
+            )
+    else:
+        # One branch radiates the whole band, so the model of what this capture
+        # sums to IS that branch, at the fixed zero trim such a round ships.
+        predicted_sum = (responses[0].freqs_hz, responses[0].magnitude_db)
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a pre-pilot ambient window + a leading pilot pair; a
     # program carrying neither leaves the verdicts ``None``.
@@ -5533,6 +5441,7 @@ def _analyze_measure(
         driver_responses=responses,
         alignment=alignment,
         candidate=candidate,
+        measure_pair_not_evaluated=pair_not_evaluated,
         mic_tier=priors.mic_tier,
         mic_calibrated=priors.mic_calibrated,
         # Exact: composition returns its input untouched iff every prior map
@@ -5995,6 +5904,10 @@ def _build_candidate(
 ABSOLUTE_NO_FC = "no_crossover_fc"
 ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
 ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
+#: The speaker HAS no crossover region — a 1-way main. Its own slug rather than
+#: a fourth reader of the three above, which all say a round could not establish
+#: a region its speaker does have and send an operator to re-measure (#3480).
+ABSOLUTE_NO_CROSSOVER_TOPOLOGY = "no_crossover_topology"
 
 
 def _verify_absolute_result(
@@ -6022,9 +5935,14 @@ def _verify_absolute_result(
     Measured is smoothed and the target is not: the target is an analytic
     response with no noise to smooth, and smoothing would round the knee.
     """
+    transfers = priors.configured_crossover_response_by_role
+    if transfers is not None and not transfers:
+        # An EMPTY map, never a missing one. Asked BEFORE the corner: "has no
+        # crossover" and "nobody said where its crossover is" are two facts
+        # with two remedies, and both arrive with ``fc_hz is None``.
+        return {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY}
     if fc_hz is None:
         return {"not_evaluated": ABSOLUTE_NO_FC}
-    transfers = priors.configured_crossover_response_by_role
     if not transfers:
         return {"not_evaluated": ABSOLUTE_NO_TARGET}
     band = crossover_region_band_hz(
@@ -6100,12 +6018,15 @@ def _analyze_verify(
     tracking = None
     tracking_curve = None
     measured_db = None
-    if fc_hz is not None:
-        lo, hi = overlap_band_hz(
-            fc_hz,
-            tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
-            woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
-        )
+    band = verify_tracking_band_hz(
+        fc_hz,
+        radiated_band_hz=_radiated_band_hz(seg),
+        measure_excited_band_hz=priors.measure_excited_band_hz,
+    )
+    # The ripple and the reverse null are statements about a handoff, so they
+    # stay behind the corner rather than behind the band.
+    if fc_hz is not None and band is not None:
+        lo, hi = band
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
         # The one null-depth definition in the tree. It lives in
         # `audio_measurement.analysis` rather than beside its consumers because
@@ -6129,151 +6050,152 @@ def _analyze_verify(
             reverse_null_depth = crossover_null_depth_db(
                 summed.freqs_hz, summed.magnitude_db, fc_hz,
             )
-        if priors.predicted_sum is not None:
-            pred_freqs, pred_db = priors.predicted_sum
-            measured_db = analysis_mod.smooth_fractional_octave(
-                summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
-            )
-            predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
-            predicted_db = analysis_mod.smooth_fractional_octave(
-                summed.freqs_hz,
-                predicted_db_interp,
-                VERIFY_TRACKING_SMOOTHING_FRACTION,
-            )
-            # Validity-floor clamp: this capture's OWN reflection gate
-            # (`summed.validity_floor_hz`, from the same `_driver_response`
-            # call above) can be tighter than the nominal Fc±1-oct band at a
-            # reflective mic position — bins below that floor are an artifact
-            # of a truncated gate window (gating.f_valid_floor_hz), not a
-            # measurement, so they must not decide PASS/FAIL either way. This
-            # generalizes the notch exclusion from "deep predicted notch" to
-            # "below measurement validity": a fixed 65 ms prediction window can
-            # bake a desk-bounce reflection into the predicted sum's sub-floor
-            # region, invisible to notch exclusion because the false notch is
-            # not always deep enough to trip it. Applies to BOTH rms and max,
-            # and to the notch-exclusion bin set — the two exclusions compose
-            # (clamp first, then still exclude a genuine deep predicted notch
-            # above the floor).
-            floor_hz = summed.validity_floor_hz
-            lo_clamped = (
-                max(lo, floor_hz) if floor_hz is not None and math.isfinite(floor_hz) else lo
-            )
-            tracking_band = (lo_clamped, hi)
-            rms, max_abs = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db, tracking_band,
-            )
-            # Notch-excluded: the actual gating comparator
-            # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
-            rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db, tracking_band,
+    if band is not None and priors.predicted_sum is not None:
+        lo, hi = band
+        pred_freqs, pred_db = priors.predicted_sum
+        measured_db = analysis_mod.smooth_fractional_octave(
+            summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
+        )
+        predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
+        predicted_db = analysis_mod.smooth_fractional_octave(
+            summed.freqs_hz,
+            predicted_db_interp,
+            VERIFY_TRACKING_SMOOTHING_FRACTION,
+        )
+        # Validity-floor clamp: this capture's OWN reflection gate
+        # (`summed.validity_floor_hz`, from the same `_driver_response`
+        # call above) can be tighter than the band above at a reflective
+        # mic position — bins below that floor are an artifact
+        # of a truncated gate window (gating.f_valid_floor_hz), not a
+        # measurement, so they must not decide PASS/FAIL either way. This
+        # generalizes the notch exclusion from "deep predicted notch" to
+        # "below measurement validity": a fixed 65 ms prediction window can
+        # bake a desk-bounce reflection into the predicted sum's sub-floor
+        # region, invisible to notch exclusion because the false notch is
+        # not always deep enough to trip it. Applies to BOTH rms and max,
+        # and to the notch-exclusion bin set — the two exclusions compose
+        # (clamp first, then still exclude a genuine deep predicted notch
+        # above the floor).
+        floor_hz = summed.validity_floor_hz
+        lo_clamped = (
+            max(lo, floor_hz) if floor_hz is not None and math.isfinite(floor_hz) else lo
+        )
+        tracking_band = (lo_clamped, hi)
+        rms, max_abs = analysis_mod.tracking_error_db(
+            summed.freqs_hz, measured_db, predicted_db, tracking_band,
+        )
+        # Notch-excluded: the actual gating comparator
+        # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
+        rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
+            summed.freqs_hz, measured_db, predicted_db, tracking_band,
+            notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+            notch_reference_db=predicted_db_interp,
+        )
+        # Raw full-band (pre-floor-clamp) numbers, kept as DIAGNOSTIC
+        # fields only — never consumed by the gate.
+        raw_rms, raw_max = analysis_mod.tracking_error_db(
+            summed.freqs_hz, measured_db, predicted_db, (lo, hi),
+        )
+        # Hand the delta probe the very curves these scalars were reduced
+        # from, so it grades one comparison rather than a second.
+        tracking_curve = (summed.freqs_hz, measured_db, predicted_db)
+        tracking = {
+            "rms_db": rms,
+            "max_db": max_abs,
+            "rms_db_notch_excluded": rms_excl,
+            "max_db_notch_excluded": max_excl,
+            "tracking_band_hz": [tracking_band[0], tracking_band[1]],
+            "rms_db_full_band": raw_rms,
+            "max_db_full_band": raw_max,
+        }
+        # FRAME DISCIPLINE. The two curves above are not in the same frame:
+        # ``predicted_db`` is an ON-AXIS two-branch model composed from the
+        # MEASURE sitting, and ``measured_db`` is an IN-ROOM gated point
+        # measurement from the VERIFY sitting. Differencing them raw cannot
+        # tell instrument frame from model error — on one corpus a single
+        # −0.79 dB/octave tilt between exactly these two frames accounted
+        # for 84% of a "predictions are 2.02× optimistic" headline. So the
+        # frame is fitted, the two terms are disclosed, and the residual is
+        # reported BOTH ways.
+        #
+        # ``max_db_notch_excluded`` remains what gates
+        # (``crossover_v2_flow._verify_verdict``) and every raw scalar keeps
+        # its value: a measured tilt is EVIDENCE, not permission to
+        # re-grade. Attributing it — directivity, mic, sitting — needs an
+        # instrument this fit does not have, and until it is attributed the
+        # raw number is the honest one to refuse on.
+        #
+        # FITTED OVER THE BINS THIS COMPARISON TRUSTS — the validity-floor
+        # clamped band MINUS the deep-predicted-notch bins the gating
+        # comparator already refuses to grade. Inside a modelled notch the
+        # depth is hypersensitive to sub-dB branch differences, and a
+        # straight line drawn through one lets the notch lever the slope: on
+        # a 25 dB notch at a band edge an injected −0.800 dB/octave frame
+        # recovers as +0.226, the wrong sign, and would then be "removed"
+        # from the residual as instrument tilt. The mask comes from
+        # ``notch_excluded_band_mask``, the only owner of that bin choice.
+        #
+        # This REDUCES the lever without removing it. The exclusion bounds a
+        # notch's DEPTH (12 dB) and says nothing about its skirt WIDTH, so a
+        # wide surviving skirt still biases the estimate: on this path, a
+        # 1/6-octave 25 dB edge notch, the whole-band fit reads +5.72 and the
+        # trusted-bin fit +0.31 against a −0.800 truth — 18× better and still
+        # the wrong sign. A disclosed tilt is not trustworthy over a
+        # notch-heavy prediction, and ``tilt_removed <= raw`` is not a
+        # theorem.
+        frame_mask = analysis_mod.notch_excluded_band_mask(
+            summed.freqs_hz, predicted_db, tracking_band,
+            notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+            notch_reference_db=predicted_db_interp,
+        )
+        frame = fit_frame(
+            summed.freqs_hz[frame_mask],
+            measured_db[frame_mask],
+            predicted_db[frame_mask],
+        )
+        tilt_removed_rms_db: float | None = None
+        tilt_removed_max_db: float | None = None
+        if frame.fitted:
+            # One frame, estimated once from the trusted bins, removed from
+            # the measured curve — then each grade is re-taken by its OWN
+            # grader over its OWN bins, so both keep their established
+            # conventions and only the frame changed. Both graders
+            # mean-centre their error, and mean-centring is invariant to
+            # ANY additive constant, so the frame's OFFSET term cannot move
+            # either number whatever bin set it was fitted on; only the
+            # TILT can. That is why these are ``tilt_removed``.
+            deframed_db = measured_db - frame.frame_db(summed.freqs_hz)
+            # Twins for exactly the two numbers that reach a gate or a
+            # screen — the notch-excluded max the tolerance reads, and the
+            # RMS the expert disclosure prints. Not a twin for every raw
+            # scalar in the record: a beside-number nobody reads is a
+            # second thing to keep true.
+            tilt_removed_rms_db = analysis_mod.tracking_error_db(
+                summed.freqs_hz, deframed_db, predicted_db, tracking_band,
+            )[0]
+            tilt_removed_max_db = analysis_mod.notch_excluded_tracking_error_db(
+                summed.freqs_hz, deframed_db, predicted_db, tracking_band,
                 notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
                 notch_reference_db=predicted_db_interp,
-            )
-            # Raw full-band (pre-floor-clamp) numbers, kept as DIAGNOSTIC
-            # fields only — never consumed by the gate.
-            raw_rms, raw_max = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db, (lo, hi),
-            )
-            # Hand the delta probe the very curves these scalars were reduced
-            # from, so it grades one comparison rather than a second.
-            tracking_curve = (summed.freqs_hz, measured_db, predicted_db)
-            tracking = {
-                "rms_db": rms,
-                "max_db": max_abs,
-                "rms_db_notch_excluded": rms_excl,
-                "max_db_notch_excluded": max_excl,
-                "tracking_band_hz": [tracking_band[0], tracking_band[1]],
-                "rms_db_full_band": raw_rms,
-                "max_db_full_band": raw_max,
-            }
-            # FRAME DISCIPLINE. The two curves above are not in the same frame:
-            # ``predicted_db`` is an ON-AXIS two-branch model composed from the
-            # MEASURE sitting, and ``measured_db`` is an IN-ROOM gated point
-            # measurement from the VERIFY sitting. Differencing them raw cannot
-            # tell instrument frame from model error — on one corpus a single
-            # −0.79 dB/octave tilt between exactly these two frames accounted
-            # for 84% of a "predictions are 2.02× optimistic" headline. So the
-            # frame is fitted, the two terms are disclosed, and the residual is
-            # reported BOTH ways.
-            #
-            # ``max_db_notch_excluded`` remains what gates
-            # (``crossover_v2_flow._verify_verdict``) and every raw scalar keeps
-            # its value: a measured tilt is EVIDENCE, not permission to
-            # re-grade. Attributing it — directivity, mic, sitting — needs an
-            # instrument this fit does not have, and until it is attributed the
-            # raw number is the honest one to refuse on.
-            #
-            # FITTED OVER THE BINS THIS COMPARISON TRUSTS — the validity-floor
-            # clamped band MINUS the deep-predicted-notch bins the gating
-            # comparator already refuses to grade. Inside a modelled notch the
-            # depth is hypersensitive to sub-dB branch differences, and a
-            # straight line drawn through one lets the notch lever the slope: on
-            # a 25 dB notch at a band edge an injected −0.800 dB/octave frame
-            # recovers as +0.226, the wrong sign, and would then be "removed"
-            # from the residual as instrument tilt. The mask comes from
-            # ``notch_excluded_band_mask``, the only owner of that bin choice.
-            #
-            # This REDUCES the lever without removing it. The exclusion bounds a
-            # notch's DEPTH (12 dB) and says nothing about its skirt WIDTH, so a
-            # wide surviving skirt still biases the estimate: on this path, a
-            # 1/6-octave 25 dB edge notch, the whole-band fit reads +5.72 and the
-            # trusted-bin fit +0.31 against a −0.800 truth — 18× better and still
-            # the wrong sign. A disclosed tilt is not trustworthy over a
-            # notch-heavy prediction, and ``tilt_removed <= raw`` is not a
-            # theorem.
-            frame_mask = analysis_mod.notch_excluded_band_mask(
-                summed.freqs_hz, predicted_db, tracking_band,
-                notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
-                notch_reference_db=predicted_db_interp,
-            )
-            frame = fit_frame(
-                summed.freqs_hz[frame_mask],
-                measured_db[frame_mask],
-                predicted_db[frame_mask],
-            )
-            tilt_removed_rms_db: float | None = None
-            tilt_removed_max_db: float | None = None
-            if frame.fitted:
-                # One frame, estimated once from the trusted bins, removed from
-                # the measured curve — then each grade is re-taken by its OWN
-                # grader over its OWN bins, so both keep their established
-                # conventions and only the frame changed. Both graders
-                # mean-centre their error, and mean-centring is invariant to
-                # ANY additive constant, so the frame's OFFSET term cannot move
-                # either number whatever bin set it was fitted on; only the
-                # TILT can. That is why these are ``tilt_removed``.
-                deframed_db = measured_db - frame.frame_db(summed.freqs_hz)
-                # Twins for exactly the two numbers that reach a gate or a
-                # screen — the notch-excluded max the tolerance reads, and the
-                # RMS the expert disclosure prints. Not a twin for every raw
-                # scalar in the record: a beside-number nobody reads is a
-                # second thing to keep true.
-                tilt_removed_rms_db = analysis_mod.tracking_error_db(
-                    summed.freqs_hz, deframed_db, predicted_db, tracking_band,
-                )[0]
-                tilt_removed_max_db = analysis_mod.notch_excluded_tracking_error_db(
-                    summed.freqs_hz, deframed_db, predicted_db, tracking_band,
-                    notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
-                    notch_reference_db=predicted_db_interp,
-                )[1]
-            # ONE writer, ONE typed record. The raw pair below is assigned from
-            # the very locals published above, not recomputed, so the
-            # disclosure cannot state a different raw number than the gate
-            # reads.
-            #
-            # ``raw_max_db`` is the NOTCH-EXCLUDED max, not ``max_abs``: on
-            # every surface that renders a "level error" for this comparison
-            # that is what the phrase means, because it is what the tolerance
-            # gates on. A record pairing a tilt-removed notch-excluded max
-            # against a raw non-excluded one would be two bin sets under one
-            # label.
-            tracking["frame"] = FrameComparison(
-                fit=frame,
-                raw_rms_db=rms,
-                raw_max_db=max_excl,
-                tilt_removed_rms_db=tilt_removed_rms_db,
-                tilt_removed_max_db=tilt_removed_max_db,
-            ).to_dict()
+            )[1]
+        # ONE writer, ONE typed record. The raw pair below is assigned from
+        # the very locals published above, not recomputed, so the
+        # disclosure cannot state a different raw number than the gate
+        # reads.
+        #
+        # ``raw_max_db`` is the NOTCH-EXCLUDED max, not ``max_abs``: on
+        # every surface that renders a "level error" for this comparison
+        # that is what the phrase means, because it is what the tolerance
+        # gates on. A record pairing a tilt-removed notch-excluded max
+        # against a raw non-excluded one would be two bin sets under one
+        # label.
+        tracking["frame"] = FrameComparison(
+            fit=frame,
+            raw_rms_db=rms,
+            raw_max_db=max_excl,
+            tilt_removed_rms_db=tilt_removed_rms_db,
+            tilt_removed_max_db=tilt_removed_max_db,
+        ).to_dict()
     # A v2 VERIFY program opens with a pre-pilot ambient window + a leading
     # pilot pair (design §5.2) so the post-apply capture carries its own
     # behavioral-linearity evidence AND the noise floor needed to trust it; a

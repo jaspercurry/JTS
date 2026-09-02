@@ -140,8 +140,7 @@ def _planner_request(conductor, analysis) -> iv.LinearizationRequest:
         context=CandidateAcousticContext.from_sections(
             _candidate_sections(conductor, conductor._fc_hz)
         ),
-        woofer_role=conductor._woofer.role,
-        tweeter_role=conductor._tweeter.role,
+        roles=(conductor._woofer.role, conductor._tweeter.role),
         excited_band_hz={
             conductor._woofer.role: (seg_w.f1_hz, seg_w.f2_hz),
             conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),

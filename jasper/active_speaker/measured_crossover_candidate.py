@@ -76,6 +76,7 @@ from .camilla_yaml import (
     emit_active_speaker_baseline_config,
 )
 from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
+from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
 from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
 from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
@@ -100,6 +101,7 @@ _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 _LINEARIZATION_OUTCOME_VALUES = frozenset({
     "",
     "fitted",
+    LINEARIZATION_OUTCOME_SINGLE_BRANCH,
     "trim_rejected",
     "ineligible_mic_tier",
     "ineligible_repeats",

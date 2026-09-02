@@ -6,7 +6,7 @@
 
 Two layers:
 
-* **Synthetic (always runs).** ``_composed_swept_band_hz`` /
+* **Synthetic (always runs).** ``measurement_band_hz`` /
   ``_derive_cloud_echo_band_hz``'s band-derivation contract (containment, the
   HF-regime floor — clamped up to, and the clamp disclosed, since issue
   #1763 — and graceful degradation on a malformed contract), and
@@ -35,9 +35,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
 )
+from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
 from jasper.active_speaker.crossover_v2.spatial import (
     CLOUD_CURVE_MAX_JSON_POINTS,
-    _composed_swept_band_hz,
     _geometry_guidance_copy,
     _min_clamped_echo_band_width_hz,
 )
@@ -140,22 +140,22 @@ def test_cloud_curve_max_json_points_mirrors_the_verify_priors_decimation_cap():
 
 
 # --------------------------------------------------------------------------- #
-# _composed_swept_band_hz
+# measurement_band_hz
 # --------------------------------------------------------------------------- #
 
 
-def test_composed_swept_band_hz_unions_both_roles():
+def test_measurement_band_hz_unions_both_roles():
     roles = [
         RoleBand("woofer", 0, FrequencyBand(45.0, 6000.0)),
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
     ]
-    assert _composed_swept_band_hz(roles) == (45.0, 20000.0)
+    assert measurement_band_hz(roles) == (45.0, 20000.0)
 
 
-def test_composed_swept_band_hz_is_order_independent():
+def test_measurement_band_hz_is_order_independent():
     a = RoleBand("woofer", 0, FrequencyBand(45.0, 6000.0))
     b = RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0))
-    assert _composed_swept_band_hz([a, b]) == _composed_swept_band_hz([b, a])
+    assert measurement_band_hz([a, b]) == measurement_band_hz([b, a])
 
 
 # --------------------------------------------------------------------------- #
@@ -341,7 +341,7 @@ def test_a_plausible_jts3_like_contract_stays_inside_the_hf_regime_and_the_passb
         RoleBand("woofer", 0, FrequencyBand(45.0, 6000.0)),
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
     ]
-    signal_band = _composed_swept_band_hz(roles)
+    signal_band = measurement_band_hz(roles)
     echo_band = _derive_cloud_echo_band_hz(signal_band, (5000.0, 20000.0)).band_hz
 
     assert signal_band[0] <= echo_band[0] and echo_band[1] <= signal_band[1]
@@ -377,7 +377,7 @@ def test_the_real_jts3_contract_is_clamped_into_the_hf_regime_and_disclosed():
         RoleBand("woofer", 0, FrequencyBand(45.0, 6000.0)),
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
     ]
-    signal_band = _composed_swept_band_hz(roles)
+    signal_band = measurement_band_hz(roles)
     derived = _derive_cloud_echo_band_hz(signal_band, (2000.0, 18000.0))
 
     assert derived.band_hz == (4000.0, 18000.0)

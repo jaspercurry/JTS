@@ -70,6 +70,7 @@ from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
+    REGION_UNAVAILABLE,
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
@@ -83,6 +84,12 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     check_driver_document_size,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
+)
+from jasper.active_speaker.crossover_v2.alignment_prescription import (
+    ALIGNMENT_NO_CROSSOVER_REGION,
+)
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    TOPOLOGY_NO_CROSSOVER_REGION,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
@@ -115,6 +122,9 @@ from jasper.active_speaker.seat_level_reference import (
 )
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
+)
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
 )
 from jasper.identity import (
     CROSSOVER_PAGE_PATH,
@@ -1085,6 +1095,14 @@ def _next_actions(
             out.append(
                 "a blend prescription can be written for the crossover region "
                 f"{_band_phrase(*region['band_hz'])}"
+            )
+        elif region["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
+            out.append(
+                "this speaker has no crossover region, so the blend, alignment, "
+                "topology doors do not apply and refuse by name "
+                f"({REGION_UNAVAILABLE}, {ALIGNMENT_NO_CROSSOVER_REGION}, "
+                f"{TOPOLOGY_NO_CROSSOVER_REGION}) — the per-driver door below "
+                "is the whole loop here"
             )
         else:
             out.append(

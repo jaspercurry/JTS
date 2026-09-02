@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
-from .intervention import LevelConsistency, LinearizationPlan
+from .plan_assembly import LevelConsistency, LinearizationPlan
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
@@ -146,7 +146,7 @@ class LinearizationState:
     trim_band_estimate_db: Mapping[str, float] = field(default_factory=dict)
     polish_delta_db: Mapping[str, float] = field(default_factory=dict)
     """Per role: the MEASURE ripple polish's trim excursion off the band-average
-    solve, as :class:`~.intervention.LinearizationPlan` measured it.
+    solve, as :class:`~.plan_assembly.LinearizationPlan` measured it.
 
     Empty on every non-planning outcome — the "not measured" state, and NOT a
     synonym for "the polish moved nothing", which is an all-zero mapping. The

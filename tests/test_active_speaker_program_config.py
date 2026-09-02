@@ -361,11 +361,12 @@ def test_program_config_refuses_outputd_playback_lane():
         )
 
 
-def test_program_config_refuses_non_two_way_preset():
-    # W2 scope: the conductor's program topology is designed for a 2-way; a
-    # 3-way needs a designed reshape, not a silent generalization.
+def test_program_config_refuses_a_three_way_preset():
+    # Scope: this emitter routes one program channel per role, which a 1-way and
+    # a 2-way both are; a 3-way needs a designed reshape (mid-band MESM
+    # schedule, per-region alignment), not a silent generalization.
     preset = ActiveSpeakerPreset.from_mapping(_three_way_preset("stereo"))
-    with pytest.raises(ActiveSpeakerConfigError, match="scoped to 2-way"):
+    with pytest.raises(ActiveSpeakerConfigError, match="designed program reshape"):
         emit_active_speaker_program_config(
             preset,
             role_channels={"woofer": 0, "mid": 1, "tweeter": 2},

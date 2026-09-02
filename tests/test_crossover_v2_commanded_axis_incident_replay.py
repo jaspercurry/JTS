@@ -95,7 +95,7 @@ INCIDENT_RESIDUAL_OFFSET_DB = 3.2198
 FC_HZ = 1500.0
 FREQS_HZ = np.linspace(200.0, 20000.0, 2048)
 TRUSTED_BAND_HZ = (400.0, 16000.0)
-ROLES = {"woofer_role": "woofer", "tweeter_role": "tweeter"}
+ROLES = {"roles": ("woofer", "tweeter")}
 
 #: The correction filters the applied candidate emitted. Shape, not identity:
 #: the incident's own filter list was not retained in a form this test can read,
@@ -148,7 +148,7 @@ def _graph(
 
 def _summed(graph: cmd.GraphSummation) -> tuple[np.ndarray, np.ndarray]:
     summed = cmd.graph_predicted_sum(
-        FREQS_HZ, _branch_tf(), graph, anchor_delay_us=0.0, **ROLES,
+        FREQS_HZ, _branch_tf(), graph, anchor_delay_us=0.0,
     )
     assert summed is not None
     return summed
@@ -572,6 +572,20 @@ def test_a_profile_that_names_no_graph_is_an_absence_not_a_unity_graph():
     assert _read({}) is None
     assert _read(
         {"recomposition_snapshot": {"corrections": {"woofer": {"gain_db": 0.0}}}},
+    ) is None
+
+
+def test_a_third_branch_is_refused_rather_than_silently_dropped():
+    """One delay, one relative sign — a third branch has no place to be stated,
+    and the model reads only ``roles[0]`` and ``roles[-1]``."""
+    profile = _incident_profile()
+    profile["recomposition_snapshot"]["corrections"]["mid"] = {  # type: ignore[index]
+        "gain_db": -1.0, "delay_ms": 0.0, "inverted": False,
+    }
+    assert cmd.profile_graph_summation(
+        profile,
+        roles=("woofer", "mid", "tweeter"),
+        draft_inverted_by_role={**DRAFT_UPRIGHT, "mid": False},
     ) is None
 
 

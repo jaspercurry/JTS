@@ -178,6 +178,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
@@ -195,7 +196,6 @@ from jasper.audio_measurement.program_analysis import (
     IntegrityCheck,
     ProgramAnalysis,
     SegmentLocation,
-    overlap_band_hz,
     predicted_branch_sum,
     realized_branch_level_match,
     solve_branch_trims,
@@ -1308,7 +1308,7 @@ def test_applied_profile_delay_reads_back_in_the_analysis_sign_frame(
         ),
     )
     magnitude, role, _polarity = alignment_to_candidate_fields(
-        analysis, woofer_role="woofer", tweeter_role="tweeter",
+        analysis, roles=("woofer", "tweeter"),
     )
     assert magnitude == pytest.approx(abs(expected_us))
     assert role == ("tweeter" if expected_us >= 0.0 else "woofer")
@@ -2312,24 +2312,24 @@ def test_alignment_to_candidate_fields_sign_contract():
 
     # positive ⇒ tweeter earlier ⇒ tweeter delayed.
     delay, role, polarity = alignment_to_candidate_fields(
-        analysis_with(150.0), woofer_role="woofer", tweeter_role="tweeter",
+        analysis_with(150.0), roles=("woofer", "tweeter"),
     )
     assert (delay, role, polarity) == (150.0, "tweeter", "keep")
     # negative ⇒ woofer delayed, magnitude non-negative.
     delay, role, polarity = alignment_to_candidate_fields(
-        analysis_with(-90.0), woofer_role="woofer", tweeter_role="tweeter",
+        analysis_with(-90.0), roles=("woofer", "tweeter"),
     )
     assert (delay, role, polarity) == (90.0, "woofer", "keep")
     # inverted polarity maps to the W4 "invert" vocabulary.
     delay, role, polarity = alignment_to_candidate_fields(
         analysis_with(150.0, polarity="inverted"),
-        woofer_role="woofer", tweeter_role="tweeter",
+        roles=("woofer", "tweeter"),
     )
     assert polarity == "invert"
     # An edge-clamped estimate is not applied: trims-only candidate.
     delay, role, polarity = alignment_to_candidate_fields(
         analysis_with(150.0, status=ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW),
-        woofer_role="woofer", tweeter_role="tweeter",
+        roles=("woofer", "tweeter"),
     )
     assert (delay, role, polarity) == (None, None, None)
 
@@ -4718,13 +4718,14 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     )
     from jasper.web.correction_crossover_v2 import _post_apply_grade
 
-    # The whole input, enumerated: a crossover frequency, a plan SHAPE, and
-    # (since the 2026-08-24 geometry ruling) the POSE SET the walk takes. Not
-    # one of the three is a measured outcome, which is the structural half of
-    # the claim above — a pose set says where the microphone goes, never how
+    # The whole input, enumerated: a crossover frequency (or, on a speaker with
+    # none, its declared measurement band), a plan SHAPE, and the POSE SET the
+    # walk takes. Not one of the four is a measured outcome, which is the
+    # structural half of the claim above — a pose set says where the microphone
+    # goes, and a declared band what the speaker can be swept over, never how
     # the result came out.
     assert set(inspect.signature(build_v2_verify_capture_plan).parameters) == {
-        "fc_hz", "plan_shape", "verify_prompts",
+        "fc_hz", "measurement_band_hz", "plan_shape", "verify_prompts",
     }
 
     done = build_v2_verify_capture_plan(

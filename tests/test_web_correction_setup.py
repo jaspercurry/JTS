@@ -598,12 +598,9 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     signal — the failed session-start was invisible in journalctl. The 400
     response is correct for the browser; the gap was purely observability.
 
-    The refusal this bare box hits FIRST moved once (#2662 W2b): the relay
-    origin is now required only when the session actually opens on the relay,
-    so prepare's own speaker-level gate fires ahead of the old
-    "phone-mic relay capture is not configured" — a wired session must work on
-    a relay-unconfigured Pi. The subject here is unchanged: whichever gate
-    refuses, the refusal is journaled, never silent."""
+    WHICH gate this bare box hits first is not the subject and is free to move.
+    The subject is that whichever gate refuses, the refusal is journaled, never
+    silent, and it carries the code the household's screen renders from."""
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
@@ -620,7 +617,8 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     assert len(records) == 1
     message = records[0].getMessage()
     assert "route=/crossover/v2/session" in message
-    assert "no active crossover to measure" in message
+    assert "code=" in message
+    assert 'reason="' in message
 
 
 def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(

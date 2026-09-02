@@ -50,6 +50,7 @@ from jasper.log_event import log_event
 
 from ..branch_chain import CrossoverSection, sections_by_role
 from .contracts import (
+    LINEARIZATION_OUTCOME_SINGLE_BRANCH,
     PLAN_REFUSAL_REASONS,
     CandidateAcousticContext,
     CrossoverV2ContractError,
@@ -90,7 +91,7 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     """Map the persisted ``linearization_outcome`` onto an honest strategy.
 
     **Why the strategy is derived from the artifact string rather than read off
-    the live :class:`~.intervention.TrimDecision`.** The proposal is assembled
+    the live :class:`~.plan_assembly.TrimDecision`.** The proposal is assembled
     at the ONE commit seam, and the walk that reaches it holds a
     :class:`~.candidates.LinearizationState` — which retains the realized level
     match but **not** the trim decision.  The decision is a by-product of the
@@ -107,8 +108,8 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     never held the decision either.
 
     **``"trim_rejected"`` is precise, and provably so.**
-    :attr:`~.intervention.TrimDecision.outcome` returns ``"trim_rejected"`` if
-    and only if :attr:`~.intervention.TrimDecision.beyond_sanity_margin`, and
+    :attr:`~.plan_assembly.TrimDecision.outcome` returns ``"trim_rejected"`` if
+    and only if :attr:`~.plan_assembly.TrimDecision.beyond_sanity_margin`, and
     :func:`~.intervention.decide_trim` commits the anchor — strategy
     :attr:`TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` — on exactly
     that branch.  The two are the same bit read twice, not an inference, and
@@ -120,9 +121,20 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     string, so the honest answer is
     :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` — deliberately not narrowed
     to ``ANCHORED_COMMITTED``/``RESOLVED_COMMITTED`` by guessing.
+
+    **``"fitted_single_branch"`` is not a pair verdict.** A 1-way main's branch
+    is fitted and its filters ship, and there was never a pair to trim, so it
+    maps to :attr:`TrimStrategy.NO_PAIR_TO_TRIM` rather than to either
+    neighbour, which would claim a committed pair or report no correction.
     """
 
     outcome = str(linearization_outcome or "")
+    if outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH:
+        return (
+            TrimStrategy.NO_PAIR_TO_TRIM,
+            "the speaker has one branch, so there is no inter-driver trim to "
+            "commit; its linearization filters ship at a fixed 0 dB.",
+        )
     if outcome == "fitted":
         return (
             TrimStrategy.COMMITTED_PAIR_UNRECORDED,
@@ -150,6 +162,16 @@ def _candidate_sections(candidate: Any) -> dict[str, tuple[CrossoverSection, ...
     preset = getattr(candidate, "source_preset", None)
     regions = getattr(preset, "crossover_regions", ()) or ()
     return sections_by_role(regions)
+
+
+def _candidate_roles(candidate: Any) -> tuple[str, ...]:
+    """The branches this candidate carries, read off its own committed trims.
+
+    ``MeasuredCrossoverCandidate`` refuses a trim map that does not cover
+    exactly the preset's driver roles, so the map states the shape.
+    """
+    trims = getattr(candidate, "role_attenuations_db", None)
+    return tuple(trims) if isinstance(trims, Mapping) else ()
 
 
 def build_intervention_proposal(
@@ -189,7 +211,12 @@ def build_intervention_proposal(
 
     if candidate is None:
         raise CrossoverV2ContractError("a proposal needs a measured candidate")
-    context = CandidateAcousticContext.from_sections(_candidate_sections(candidate))
+    # A 1-way main has no corner for a context to own, and refusing it here
+    # would cost the round its proposal over the shape's own truth. Every OTHER
+    # candidate still needs one; the rule belongs to the context type.
+    context = CandidateAcousticContext.for_candidate(
+        _candidate_sections(candidate), roles=_candidate_roles(candidate),
+    )
     strategy, rationale = trim_strategy_for_outcome(
         getattr(candidate, "linearization_outcome", "")
     )
@@ -259,7 +286,9 @@ def plan_intervention_proposal(
         PROPOSAL_CREATED_EVENT,
         session_id=session_id,
         proposal_fingerprint=proposal.fingerprint,
-        candidate_fc_hz=round(proposal.fc_hz, 6),
+        candidate_fc_hz=(
+            None if proposal.fc_hz is None else round(proposal.fc_hz, 6)
+        ),
         trim_strategy=proposal.trim_strategy.value,
         candidate_fingerprint=proposal.candidate_fingerprint,
     )
