@@ -2331,7 +2331,6 @@ def test_unpark_leaves_units_the_install_deliberately_disabled_alone(tmp_path):
     the trap always runs.
     """
     brain = [
-        "jasper-input.service",
         "jasper-aec-init.service",
         "jasper-aec-reconcile.service",
     ]

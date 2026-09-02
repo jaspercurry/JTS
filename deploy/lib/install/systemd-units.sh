@@ -1017,10 +1017,14 @@ park_streambox_brain_units() {
     # Both full and streambox profiles run the same renderer/fan-in graph and USB
     # Audio Input needs its direct lane on either profile, so coupling and its
     # bounded health timer deliberately remain outside this parking list.
+    #
+    # jasper-input is out for the same reason: it translates HID key events into
+    # jasper-control HTTP calls, and jasper-control runs on both profiles. A
+    # streambox with a paired volume remote must keep its buttons.
     local brain_unit
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
-        jasper-aec-reconcile.service jasper-input.service \
+        jasper-aec-reconcile.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
     done
@@ -1098,7 +1102,8 @@ start_streambox_runtime_units() {
     local unit
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
-        jasper-control.service jasper-source-intent-reconcile.service
+        jasper-control.service jasper-source-intent-reconcile.service \
+        jasper-accessory-reconcile.service jasper-input.service
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \

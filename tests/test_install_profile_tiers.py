@@ -377,6 +377,22 @@ def test_streambox_parking_disables_brain_units():
     assert "systemctl disable --now" in parking
 
 
+def test_streambox_keeps_hid_accessory_bridge():
+    """A volume remote is renderer-side, not a voice-brain feature.
+
+    jasper-input translates HID key events into jasper-control HTTP calls and
+    jasper-control runs on both profiles, so parking it as a brain surface
+    silently costs a streambox its paired remote's buttons.
+    """
+    text = installer_text()
+    parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
+    assert "jasper-input.service" not in parking
+    streambox_runtime = text.split("start_streambox_runtime_units() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "jasper-input.service" in streambox_runtime
+
+
 def test_streambox_keeps_coupling_auto_for_usb_direct_capture():
     """Fan-in coupling is data-plane ownership, not a voice-brain feature.
 
