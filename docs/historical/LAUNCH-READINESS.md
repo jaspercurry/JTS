@@ -8,9 +8,7 @@
 > primary-source archaeology — specific facts (PR numbers, "what's done" lists,
 > file paths) reflect that moment and will drift. Read it for the narrative of
 > what launch readiness required, not as current operational truth; the shipped
-> state lives in the code, `CHANGELOG.md`, and the cited PRs. This doc itself
-> **superseded** the point-in-time audit snapshots `REVIEW-2026-06-04-*.md`,
-> `REVIEW-2026-06-12-oss-due-diligence.md`, and `REVIEW-google-oss-readiness.md`.
+> state lives in the code, `CHANGELOG.md`, and the cited PRs.
 
 The list was verified against `origin/main` — every "done" line was confirmed in
 the tree (the symbol / CI step / tag cited), not trusted from an older doc (the

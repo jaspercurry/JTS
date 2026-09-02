@@ -1004,8 +1004,7 @@ bracket) · and **`CrossoverLevelLease.run_level_match`, which this agent
 declared dead and was wrong about** — a bare-name grep answers *where an
 identifier appears*, never *what object an attribute is called on*, and a
 duck-typed `sess: Any` parameter breaks the chain. Only argument-tracing
-recovers it. `docs/REVIEW-deep-audit-2026-07-11.md` §476 is stale for the same
-reason.
+recovers it.
 
 **Coordination R5 — the volume-surface widening EXPIRES with this wave**, on the
 checkable standard adopted 2026-08-26: the enumerated set holds only W7's named
