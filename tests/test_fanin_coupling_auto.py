@@ -20,6 +20,7 @@ resolving a second route.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,8 +46,18 @@ from jasper.fanin_coupling import (
 
 
 def test_pure_auto_decision_module_does_not_import_transition_owner():
-    source = Path(ca.__file__).read_text(encoding="utf-8")
-    assert "from jasper.fanin.coupling_reconcile import" not in source
+    """ca is the pure decision surface; importing coupling_reconcile (the
+    state-owning module) would reintroduce the coupling ADR-0100 removed."""
+    tree = ast.parse(Path(ca.__file__).read_text(encoding="utf-8"), filename=ca.__file__)
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+            imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+    banned = "jasper.fanin.coupling_reconcile"
+    assert not any(m == banned or m.startswith(f"{banned}.") for m in imported)
 
 
 @pytest.fixture(autouse=True)

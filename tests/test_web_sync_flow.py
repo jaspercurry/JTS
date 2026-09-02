@@ -28,6 +28,8 @@ import jasper.multiroom.state as mstate
 from jasper.web import rooms_setup as rooms
 from jasper.web import active_speaker_flow, sync_flow
 
+from ._async_wait import wait_until_sync
+
 
 LEADER_G = {
     "enabled": True,
@@ -488,9 +490,7 @@ def test_analyze_gates_errors_retry_and_success(sync_env, monkeypatch):
     assert payload["ok"] is True
     assert sync_flow.active_phase() is None
     assert sync_flow.handle_status()["phase"] == "analyzed"
-    deadline = time.monotonic() + 1.0
-    while sync_env["window_closed"] != 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
+    wait_until_sync(lambda: sync_env["window_closed"] == 1)
     assert sync_env["window_closed"] == 1
 
 
@@ -509,9 +509,7 @@ def test_stop_terminates_playback_releases_window_and_watcher_finishes(sync_env)
     assert stop_status == HTTPStatus.OK
     assert stop_payload == {"ok": True}
     assert sync_env["procs"][0].terminated is True
-    deadline = time.monotonic() + 1.0
-    while sync_env["window_closed"] != 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
+    wait_until_sync(lambda: sync_env["window_closed"] == 1)
     assert sync_env["window_closed"] == 1
     for future in sync_env["futures"]:
         future.result(timeout=1)

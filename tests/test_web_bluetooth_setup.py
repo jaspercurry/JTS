@@ -36,6 +36,7 @@ import pytest
 
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from tests._web_test_helpers import make_real_handler
 
 
@@ -997,15 +998,13 @@ def test_pair_attempt_ttl_expiry_wakes_blocked_consumer_before_cancel(
 
     consumer_thread = threading.Thread(target=consume, daemon=True)
     consumer_thread.start()
-    deadline = time.monotonic() + 1
-    while not attempt.consumer_attached and time.monotonic() < deadline:
-        time.sleep(0.001)
+    wait_until_sync(lambda: attempt.consumer_attached, interval=0.001)
     assert attempt.consumer_attached is True
 
     bluetooth_setup._expire_pair_attempt(mac, attempt)
 
-    assert consumer_done.wait(timeout=1)
-    consumer_thread.join(timeout=1)
+    assert consumer_done.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+    consumer_thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert mac not in bluetooth_setup._PAIR_STREAMS
     assert received == [{
         "stage": "error",
