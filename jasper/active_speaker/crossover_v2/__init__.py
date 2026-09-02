@@ -63,6 +63,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.capture_plan` — the walk this session will do, decided before anything
   plays: how many positions, where they are, what the screen says at each, and
   which program every capture index runs.
+* :mod:`.sweep_spec` — the validated sweep spec a session opens on: the plan,
+  the 48 kHz mono capture format, and the consent surface.
 * :mod:`.position_cycle` — N takes at ONE pose: how they are staged, and how
   they read back.
 * :mod:`.capture_dispatch` — which screens an anchor capture (CHECK, MEASURE,
