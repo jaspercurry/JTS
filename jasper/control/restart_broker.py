@@ -238,6 +238,10 @@ _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Derive that exception from the already-normalized, validated request on the
 # server; a client-supplied number alone never grants a longer broker thread.
 _EXEC_TIMEOUT_CEILING_SEC = 120.0
+# `reset-failed` is a bookkeeping call against PID 1 with no unit transition to
+# wait on, so :func:`reset_then_manage` bounds it independently of whatever the
+# action it precedes is allowed to take.
+_RESET_TIMEOUT_SEC = 5.0
 _SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
 _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2703.0
 _CAMILLA_UNIT = "jasper-camilla.service"
@@ -733,3 +737,39 @@ def manage_units(
             level=logging.WARNING,
         )
     return resp
+
+
+def reset_then_manage(
+    *units: str,
+    verb: str = "restart",
+    reason: str = "",
+    no_block: bool = True,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Clear the units' systemd failure/start-rate state, then run ``verb``.
+
+    A deliberate operator or reconciler action gets a fresh, bounded retry
+    budget this way, so a burst of them cannot walk the target into its
+    ``StartLimitAction`` (#2175). The reset is best-effort in the strong
+    sense: ``reset-failed`` is denied for START_ONLY units and routinely exits
+    nonzero against an already-GC'd oneshot (#3237), so it is logged and
+    discarded. Only the ACTION's result is returned — a failed reset must
+    never be reported as, or turn into, a failed action.
+    """
+    reset = manage_units(
+        *units,
+        verb="reset-failed",
+        reason=reason,
+        no_block=False,
+        timeout=_RESET_TIMEOUT_SEC,
+    )
+    if not reset.get("ok"):
+        log_event(
+            logger, "restart_broker.reset_failed_skipped", verb=verb,
+            units=",".join(units), reason=reason,
+            error=str(reset.get("error") or f"rc={reset.get('rc')}"),
+            level=logging.WARNING,
+        )
+    return manage_units(
+        *units, verb=verb, reason=reason, no_block=no_block, timeout=timeout,
+    )

@@ -193,6 +193,9 @@ class CouplingResult:
 # are START_ONLY_UNITS in the broker, which would deny ``reset-failed`` anyway.
 _START_BUDGET_VERBS = frozenset({"start", "restart", "try-restart"})
 _CRASH_BUDGET_UNITS = frozenset({FANIN_UNIT, OUTPUTD_UNIT, CAMILLA_UNIT})
+# Mirrors restart_broker._RESET_TIMEOUT_SEC (which owns the bound
+# reset_then_manage actually applies); only the ceiling arithmetic below reads
+# it, so it is spelled here rather than paid for as an import.
 _RESET_FAILED_TIMEOUT_SEC = 5.0
 
 
@@ -209,36 +212,23 @@ def _restart_unit(
     "wait for fan-in up" step the camilla coordination below relies on. Pass True
     for a kick whose completion the caller does not wait on.
 
-    A start-consuming verb on a crash-budget daemon is preceded by a best-effort
-    ``reset-failed`` so this deliberate apply cannot walk the target into
-    StartLimitAction=reboot (see the block comment above); the reset never gates
-    the action it precedes. Guarded lazy import: a missing/broken control package
-    degrades to a reported failure, never an exception out of the reconcile that
-    would defeat the fail-safe ladder.
+    A start-consuming verb on a crash-budget daemon goes through
+    :func:`restart_broker.reset_then_manage`, so this deliberate apply cannot
+    walk the target into StartLimitAction=reboot (see the block comment above).
+    Guarded lazy import: a missing/broken control package degrades to a reported
+    failure, never an exception out of the reconcile that would defeat the
+    fail-safe ladder.
     """
     try:
         from jasper.control import restart_broker
     except ImportError as e:  # pragma: no cover - control pkg always present in prod
         return False, f"restart_broker unavailable: {e}"
-    if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS:
-        reset = restart_broker.manage_units(
-            unit,
-            verb="reset-failed",
-            reason=reason,
-            no_block=False,
-            timeout=_RESET_FAILED_TIMEOUT_SEC,
-        )
-        if not reset.get("ok"):
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result="start_budget_reset_failed",
-                unit=unit,
-                reason=reason,
-                detail=str(reset.get("error") or f"rc={reset.get('rc')}"),
-                level=logging.WARNING,
-            )
-    resp = restart_broker.manage_units(
+    drive = (
+        restart_broker.reset_then_manage
+        if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS
+        else restart_broker.manage_units
+    )
+    resp = drive(
         unit,
         verb=verb,
         reason=reason,

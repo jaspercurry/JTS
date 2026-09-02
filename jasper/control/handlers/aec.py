@@ -347,16 +347,7 @@ class AecRoutes(ControlHandlerMixin):
                 leg=leg,
                 client=self.address_string(),
             )
-            # Best-effort, like `server._reset_oneshot_unit`: a reset-failed
-            # that cannot run must never block the restart it precedes.
-            _server.restart_broker.manage_units(
-                _server._AEC_BRIDGE_UNIT,
-                verb="reset-failed",
-                reason="usb_mic_leg",
-                no_block=False,
-                timeout=5.0,
-            )
-            restart = _server.restart_broker.manage_units(
+            restart = _server.restart_broker.reset_then_manage(
                 _server._AEC_BRIDGE_UNIT,
                 verb="restart",
                 reason="usb_mic_leg",
