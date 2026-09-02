@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-26
 - **Status:** Superseded by
-  [ADR-0220](0220-source-start-gates-are-marker-files-published-by-the-coordinator.md)
+  [ADR-0221](0221-source-start-gates-are-marker-files-published-by-the-coordinator.md)
   (recorded when HANDOFF-source-lifecycle.md was trimmed to its operational
   spine)
 
