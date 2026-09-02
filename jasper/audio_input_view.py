@@ -233,11 +233,12 @@ def _echo_view(
     active = str(profile.get("active") or "")
     state = str(profile.get("state") or "unknown")
     reason = str(profile.get("reason") or "")
-    # The wake page's own commission button owns this remedy, so the SSH
-    # instruction it replaces stays in doctor and never reaches the browser.
+    # The page renders its commission button on the same chip-AEC capability
+    # fact, so drop the SSH remedy the button replaces only where that button
+    # will be there to replace it. Doctor keeps the instruction either way.
     action = (
         ""
-        if profile.get("commission_recommended")
+        if profile.get("commission_recommended") and mic_view.get("chip_aec_capable")
         else str(profile.get("action") or "")
     )
     managed_xvf = (

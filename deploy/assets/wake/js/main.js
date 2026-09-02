@@ -106,23 +106,12 @@ function applyFirmwareUpdateStatus(s) {
   }
 }
 
-// Progress while the run is live, verdict once it lands. `phase` and the
-// banked-delay numbers are optional in the outcome record, so an older record
-// degrades to the generic line instead of rendering "undefined".
 function commissionLine(commission, running) {
-  if (running) return commission.phase || "Running…";
+  if (running) return "Running…";
   if (commission.state === "failed") {
     return "Last alignment failed: " + (commission.detail || "see the journal");
   }
-  if (commission.state !== "passed") return "";
-  const bits = [];
-  if (Number.isFinite(commission.sys_delay)) {
-    bits.push("sys delay " + commission.sys_delay + " samples");
-  }
-  if (Number.isFinite(commission.k_samples)) {
-    bits.push("k " + commission.k_samples + " samples");
-  }
-  return bits.length ? "Aligned · " + bits.join(" · ") : "Aligned.";
+  return commission.state === "passed" ? "Aligned." : "";
 }
 
 function applyProfileStatus(s) {
@@ -153,7 +142,7 @@ function applyProfileStatus(s) {
   }
   const commissionDetail = el("echo-commission-detail");
   if (commissionDetail) {
-    const text = commissionLine(commission, running);
+    const text = chipCapable ? commissionLine(commission, running) : "";
     commissionDetail.hidden = !text;
     commissionDetail.textContent = text;
   }

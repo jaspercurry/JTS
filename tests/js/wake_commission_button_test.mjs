@@ -70,19 +70,8 @@ assert.equal(button.disabled, true);
 assert.equal(detail.hidden, false);
 assert.equal(detail.textContent, "Running…");
 
-applyProfileStatus(
-  view({ chip_aec_capable: true }, { running: true, phase: "Playing chirps" }),
-);
-assert.equal(detail.textContent, "Playing chirps");
-
 applyProfileStatus(view({ chip_aec_capable: true }, { state: "passed" }));
 assert.equal(detail.textContent, "Aligned.");
-
-applyProfileStatus(
-  view({ chip_aec_capable: true }, { state: "passed", sys_delay: 12, k_samples: 768 }),
-);
-assert.match(detail.textContent, /12/);
-assert.match(detail.textContent, /768/);
 
 applyProfileStatus(
   view({ chip_aec_capable: true }, { state: "failed", detail: "no reference" }),
@@ -90,6 +79,11 @@ applyProfileStatus(
 assert.match(detail.textContent, /no reference/);
 
 applyProfileStatus(view({ chip_aec_capable: true }, {}));
+assert.equal(detail.hidden, true);
+
+// A box with no capable array shows neither the button nor a verdict about
+// a run it cannot start.
+applyProfileStatus(view({ chip_aec_capable: false }, { state: "passed" }));
 assert.equal(detail.hidden, true);
 
 // --- a dismissed confirm starts no run ------------------------------------

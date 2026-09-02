@@ -918,39 +918,6 @@ def test_aec_full_status_commission_carries_last_run_verdict(
     }
 
 
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        ({}, {}),
-        ({"phase": "", "sys_delay": None}, {}),
-        ({"phase": 7, "k_samples": "768"}, {}),
-        ({"sys_delay": True}, {}),
-        (
-            {"phase": "Playing chirps", "sys_delay": 12, "k_samples": 768},
-            {"phase": "Playing chirps", "sys_delay": 12, "k_samples": 768},
-        ),
-    ],
-)
-def test_commission_status_passes_optional_progress_fields_through(
-    monkeypatch, tmp_path, record, expected,
-):
-    """Progress/alignment fields ride through only when the outcome record
-    carries them with the right type — an older or malformed record leaves
-    the keys absent rather than publishing a value the page would render."""
-    outcome = tmp_path / "chip-aec-commission.json"
-    outcome.write_text(json.dumps({"state": "passed", "detail": "", **record}))
-    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
-    monkeypatch.setattr(
-        aec_endpoints, "_AEC_COMMISSION_STATE_FILE", str(outcome),
-    )
-
-    status = aec_endpoints._commission_status()
-
-    assert {k: v for k, v in status.items() if k in {
-        "phase", "sys_delay", "k_samples"
-    }} == expected
-
-
 def test_aec_full_status_surfaces_required_xvf_firmware_update(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
