@@ -627,8 +627,11 @@ def fetch_and_reassemble(host: str, user: str, remote_path: str) -> ReassemblyRe
 
 def is_all_zero(raw: bytes) -> bool:
     """True when the capture carries no nonzero sample at all. An empty
-    capture counts as all-zero: neither one can be analyzed."""
-    return not raw.strip(b"\x00")
+    capture counts as all-zero: neither one can be analyzed.
+
+    Over a numpy VIEW of the buffer -- a 150 s capture is tens of MB, and
+    every bytes-level idiom for this copies it."""
+    return not np.any(np.frombuffer(raw, dtype=np.uint8))
 
 
 def deinterleave_s16le_stereo(raw: bytes) -> tuple[np.ndarray, np.ndarray]:

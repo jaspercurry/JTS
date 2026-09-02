@@ -566,15 +566,14 @@ fn run_alsa(
 
     while !shutdown.load(Ordering::Relaxed) {
         let period_clipped_samples: u32;
+        // Did THIS period carry content, or did the live source zero-fill it?
+        // Whichever arm below runs answers, in its own vocabulary (#3458).
+        let mut period_served = false;
         // An armed round-trip lane owns the content period outright: it fills
         // `content_buf` with the bond's program or with silence, so there is no
         // second source to consult and the arms below belong to a box with no
         // lane at all. Metrics are published BEFORE the fatal-fault `?` can
         // propagate, so `/state`'s last sample stays honest.
-        // Did THIS period carry content, or did the live source zero-fill it?
-        // Both sources answer the same question in their own vocabulary; the
-        // run of `false`s is what says the chain is deaf (#3458).
-        let mut period_served = false;
         let served_from_dac_content = match dac_content.as_mut() {
             Some(src) => {
                 let filled = src.fill_period(&mut content_buf);

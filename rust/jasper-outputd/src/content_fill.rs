@@ -54,7 +54,10 @@ impl ContentFill {
     /// period waits at least `DEAF_SECONDS`, never less. A hardcoded count
     /// would mean a different wall-clock on every period size.
     pub fn new(source: &'static str, dac: crate::alsa_backend::NegotiatedPcm) -> Self {
-        let periods_per_second = u64::from(dac.sample_rate).div_ceil(u64::from(dac.period_frames));
+        // `.max(1)` on the divisor, not a check: `div_ceil` PANICS on zero,
+        // and this runs on the daemon that owns the speaker.
+        let periods_per_second =
+            u64::from(dac.sample_rate).div_ceil(u64::from(dac.period_frames).max(1));
         Self {
             source,
             // At least one period: a geometry that would round to zero must
