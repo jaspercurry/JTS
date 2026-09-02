@@ -138,9 +138,7 @@ AUTHORITY_TIER = "advisory (`stage` mutates)"
 #: at the moment of banking and ``status`` says it to an operator who arrived
 #: later and found one waiting — the same fact at two moments, so a second
 #: wording here would be a second answer to "what becomes of this file".
-STAGED_LIFECYCLE_NOTE = (
-    "the next round takes it once and consumes it; an Undo withdraws it unrun"
-)
+STAGED_LIFECYCLE_NOTE = "the next round takes it once and consumes it"
 
 #: Why the staged section has nothing to report. A slug in the packet's own
 #: style, so the section that reads a file the packet never sees still answers
@@ -1173,7 +1171,7 @@ def _next_actions(
             "(--target-db-spl states another) and banks the reference"
         )
 
-    out.append(f"run, apply, or undo a round at {crossover_url}")
+    out.append(f"run or apply a round at {crossover_url}")
     return out
 
 
