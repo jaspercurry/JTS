@@ -102,6 +102,19 @@ class _FakeDiscovery:
         return []
 
 
+async def _await_pending_epoch(d, timeout: float = 2.0) -> None:
+    """Block until the daemon publishes a pending epoch.
+
+    Raises TimeoutError if it never appears, so an arbitration that
+    fails to start fails the test loudly instead of racing a sleep.
+    """
+    async def _poll() -> None:
+        while d._pending_epoch is None:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(_poll(), timeout)
+
+
 @pytest_asyncio.fixture
 async def daemon_setup(monkeypatch):
     """Start a PeeringDaemon with mocked transport/discovery."""
@@ -232,8 +245,7 @@ async def test_peer_higher_confidence_makes_us_lose(daemon_setup):
     task = asyncio.create_task(d._handle_arbitrate({
         "score": 0.6, "snr_db": 10.0, "rms_dbfs": -25.0, "can_serve": True,
     }))
-    # Wait a tick for the state machine to set _pending_epoch.
-    await asyncio.sleep(0.01)
+    await _await_pending_epoch(d)
     epoch = d._pending_epoch
     assert epoch is not None
 
@@ -257,7 +269,7 @@ async def test_foreign_claim_makes_us_lose(daemon_setup):
     task = asyncio.create_task(d._handle_arbitrate({
         "score": 0.6, "snr_db": 10.0, "rms_dbfs": -25.0, "can_serve": True,
     }))
-    await asyncio.sleep(0.01)
+    await _await_pending_epoch(d)
     epoch = d._pending_epoch
     assert epoch is not None
 
