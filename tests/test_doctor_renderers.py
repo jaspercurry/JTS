@@ -428,6 +428,81 @@ def test_renderer_resolvable_rejects_busy_lane_owned_by_wrong_unit(monkeypatch):
     assert "other.service" in r.detail
 
 
+@pytest.mark.parametrize(
+    "owned, owner_detail, expect_status, expect_in_detail",
+    [
+        (
+            True,
+            "busy/owned pid=4242 (ring writer)",
+            "ok",
+            "ring writer",
+        ),
+        (
+            False,
+            "ring for lane spotify names no writer",
+            "fail",
+            "names no writer",
+        ),
+    ],
+)
+def test_renderer_resolvable_ring_lane_busy_ignores_stderr_tail(
+    monkeypatch, owned, owner_detail, expect_status, expect_in_detail
+):
+    """The ring ioplug's busy token (`event=jts_ring.writer.busy ...
+    reason=writer_lock_held`) can land earlier in aplay's stderr than the
+    last two lines `_probe_open_as_user` keeps — a trailing hw_params dump
+    is what survives the tail. A ring lane's busy-ness must not depend on
+    that scan: the ring header's writer pid, surfaced through
+    `_fanin_lane_busy_owner_matches`, is checked on its own. A genuinely
+    unresolvable PCM (no ring writer at all) must still fail."""
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
+    )
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for", lambda unit: "pi")
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_probe_open_as_user",
+        # No busy token in the kept tail — only the trailing dump.
+        lambda dev, user: (False, "ALSA lib pcm_hw.c:1846: hw_params fail"),
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_fanin_lane_busy_owner_matches",
+        lambda dev, unit: (owned, owner_detail),
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == expect_status
+    assert expect_in_detail in r.detail
+
+
+def test_renderer_resolvable_ring_lane_unknown_pcm_fails_even_if_owned(monkeypatch):
+    """A ring lane's header-pid bypass must not let "Unknown PCM" — the
+    exact PR #223 bug class — through: even if the ring happens to name a
+    writer (a stale or unrelated pid), an Unknown-PCM probe failure stays a
+    hard failure."""
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
+    )
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for", lambda unit: "pi")
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_probe_open_as_user",
+        lambda dev, user: (False, "ALSA lib pcm.c:2722: Unknown PCM librespot_ring_lane"),
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_fanin_lane_busy_owner_matches",
+        lambda dev, unit: (True, "busy/owned pid=4242 (ring writer)"),
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "Unknown PCM" in r.detail
+
+
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     """The exact bug PR #223 fixes: configs look right, services look
     active, but shairport-sync's runtime user can't open the device.

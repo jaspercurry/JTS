@@ -1015,6 +1015,12 @@ def _alsa_busy(detail: str) -> bool:
         or "errno 16" in detail
     )
 
+#: alsa-lib's own wording for the PR #223 bug class (a user-space PCM
+#: alias the probing user cannot resolve) — never a busy signature, so a
+#: probe failure carrying it must stay a hard failure regardless of what a
+#: ring lane's header separately reports.
+_UNKNOWN_PCM_MARKER = "Unknown PCM"
+
 def _ring_renderer_devices() -> dict[str, str]:
     """Ring-lane PCM name -> the fan-in lane LABEL whose ring it carries.
 
@@ -1180,11 +1186,22 @@ def check_renderer_device_resolvable() -> CheckResult:
         if ok:
             successes.append(f"{name}({who})→{display}")
         elif (
-            (
-                resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
-                or resolved_device in _ring_renderer_devices()
+            # Ring lanes: the ring header's writer pid, read inside
+            # _fanin_lane_busy_owner_matches, is the honest busy signal on
+            # its own — the ioplug's stderr busy token can land earlier than
+            # the last two lines _probe_open_as_user keeps. Aloop fan-in
+            # lanes have no such header, so EBUSY in stderr still gates them.
+            # "Unknown PCM" is excluded from both: it is never a busy
+            # signature, and must stay a hard failure even if a ring's
+            # header happens to name an unrelated writer.
+            _UNKNOWN_PCM_MARKER not in detail
+            and (
+                resolved_device in _ring_renderer_devices()
+                or (
+                    resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
+                    and _alsa_busy(detail)
+                )
             )
-            and _alsa_busy(detail)
         ):
             owned, owner_detail = _fanin_lane_busy_owner_matches(
                 resolved_device, unit,
