@@ -56,6 +56,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.sound.profile import (
     RESPONSE_SAMPLE_RATE_HZ, FilterSpec, _filter_response_complex, _freq_trig,
@@ -631,6 +632,98 @@ def beaming_onset_hz(radiating_diameter_mm: float, *, ka: float = BEAMING_KA) ->
         raise ValueError(f"ka must be positive (got {ka})")
     radius_m = float(radiating_diameter_mm) / 2000.0
     return ka * DEFAULT_SOUND_SPEED_M_S / (2.0 * math.pi * radius_m)
+
+
+#: Driver diameters of margin added to the piston far-field distance by
+#: :func:`recommended_distance`. Chosen so the three anchor cases #3501 states
+#: land where it says they do: 5.5 in / 2.5 kHz -> ~12 in, 12 in / 500 Hz ->
+#: ~25 in, 2.5 in / 2.5 kHz -> ~5 in. It is the DOMINANT term at every one of
+#: them; the far-field term is a 0.3-1.4 in correction on top, which is why
+#: both are published separately.
+K_MARGIN = 2.0
+
+#: Placement slop the operator is held to, metres (+/- 0.5 in). Only the 1/r
+#: correction cares, and :func:`placement_tolerance_db` prices it.
+PLACEMENT_TOLERANCE_M = 0.0127
+
+#: Aim slop that costs nothing measurable in a close capture's validity band:
+#: the woofer is omnidirectional there, so +/-5 deg is free.
+AIM_TOLERANCE_DEG = 5.0
+
+
+def far_field_ceiling_hz(
+    diameter_m: float,
+    distance_m: float,
+    *,
+    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
+) -> float:
+    """Highest frequency at which ``distance_m`` is still the driver's far field.
+
+    The piston far-field (Rayleigh) distance is ``2*a**2/lambda`` for aperture
+    RADIUS ``a`` (Keele's near-field limit and D'Appolito's ``f_max = 4311/D``
+    are the same criterion in other clothes), and it GROWS with frequency, so
+    solving ``distance_m >= 2*a**2*f/c`` for ``f`` gives a CEILING, not a
+    floor: a close mic is near-field at HIGH frequencies, never at low ones.
+    """
+    radius = 0.5 * float(diameter_m)
+    if radius <= 0.0:
+        raise ValueError(f"diameter must be positive, got {diameter_m}")
+    return float(sound_speed_m_s) * float(distance_m) / (2.0 * radius**2)
+
+
+def placement_tolerance_db(
+    distance_m: float, *, tolerance_m: float = PLACEMENT_TOLERANCE_M
+) -> float:
+    """MAGNITUDE of the 1/r correction's uncertainty under ``+/- tolerance_m``
+    of mic placement, dB. An uncertainty, never a signed gain to apply."""
+    return 20.0 * math.log10((float(distance_m) + float(tolerance_m)) / float(distance_m))
+
+
+def recommended_distance(
+    diameter_m: float,
+    fc_hz: float,
+    *,
+    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
+) -> dict[str, Any]:
+    """Where to put the mic for a close reference of this driver (#3501).
+
+    ``r = 2*a**2/lambda_top + K_MARGIN*diameter``, evaluated at the top of the
+    close capture's validity band (``f_top = fc/2``). Both terms are returned
+    separately: the margin dominates and the far-field term is the correction,
+    and a reader who cannot see that split cannot tell whether a surprising
+    answer came from the driver's size or from its crossover.
+    """
+    diameter = float(diameter_m)
+    if diameter <= 0.0:
+        raise ValueError(f"diameter must be positive, got {diameter_m}")
+    if fc_hz <= 0.0:
+        raise ValueError(f"fc must be positive, got {fc_hz}")
+    f_top = 0.5 * float(fc_hz)
+    lambda_top = float(sound_speed_m_s) / f_top
+    radius = 0.5 * diameter
+    far_field_m = 2.0 * radius**2 / lambda_top
+    margin_m = K_MARGIN * diameter
+    distance_m = far_field_m + margin_m
+    return {
+        "driver_diameter_m": diameter,
+        "driver_diameter_in": diameter / METERS_PER_INCH,
+        "fc_hz": float(fc_hz),
+        "band_top_hz": f_top,
+        "wavelength_top_m": lambda_top,
+        "far_field_term_m": far_field_m,
+        "margin_term_m": margin_m,
+        "k_margin": K_MARGIN,
+        "distance_m": distance_m,
+        "distance_in": distance_m / METERS_PER_INCH,
+        "direct_gain_over_1m_db": 20.0 * math.log10(1.0 / distance_m),
+        "placement_tolerance_m": PLACEMENT_TOLERANCE_M,
+        "placement_tolerance_db": placement_tolerance_db(distance_m),
+        "aim_tolerance_deg": AIM_TOLERANCE_DEG,
+        "far_field_ceiling_hz": far_field_ceiling_hz(
+            diameter, distance_m, sound_speed_m_s=sound_speed_m_s
+        ),
+        "sound_speed_m_s": float(sound_speed_m_s),
+    }
 
 
 def chain_response(

@@ -43,18 +43,24 @@ import argparse
 import json
 import math
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
+from jasper.active_speaker.branch_chain import recommended_distance
 from jasper.active_speaker.crossover_v2.close_reference import (
     REFUSE_UNREADABLE_ROUND,
     compare_rounds,
-    recommended_distance,
 )
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
-from jasper.audio_measurement.measurement_geometry import DEFAULT_PATH, DeclaredGeometry
+from jasper.audio_measurement.measurement_geometry import (
+    DEFAULT_PATH,
+    METERS_PER_INCH,
+    DeclaredGeometry,
+)
 
 from ._logging import configure_verbose_logging
+from ._refusal import refused
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -64,23 +70,20 @@ EXIT_INPUT = 2
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory (plays nothing)"
 
-IN_PER_M = 1.0 / 0.0254
 
-
-def _refused(reason: str, detail: dict[str, Any]) -> int:
-    print(json.dumps(
-        {"status": "refused", "reason": reason, "detail": detail},
-        indent=2, sort_keys=True, default=str,
-    ))
-    print(f"refused ({reason}): {detail}", file=sys.stderr)
-    return EXIT_INPUT if reason == REFUSE_UNREADABLE_ROUND else EXIT_REFUSED
+def _refused(reason: str, detail: Mapping[str, Any]) -> int:
+    return refused(
+        reason,
+        json.dumps(detail, sort_keys=True, default=str),
+        exit_code=EXIT_INPUT if reason == REFUSE_UNREADABLE_ROUND else EXIT_REFUSED,
+    )
 
 
 def _diameter_m(args: argparse.Namespace) -> float | None:
     if args.driver_diameter_mm is not None:
         return float(args.driver_diameter_mm) / 1000.0
     if args.driver_diameter_in is not None:
-        return float(args.driver_diameter_in) * 0.0254
+        return float(args.driver_diameter_in) * METERS_PER_INCH
     return None
 
 
@@ -97,9 +100,9 @@ def _cmd_distance(args: argparse.Namespace) -> int:
     print(
         f"stand the mic {record['distance_in']:.1f} in "
         f"({record['distance_m'] * 100:.1f} cm) from the woofer: "
-        f"{record['far_field_term_m'] * IN_PER_M:.2f} in far-field at "
+        f"{record['far_field_term_m'] / METERS_PER_INCH:.2f} in far-field at "
         f"{record['band_top_hz']:.0f} Hz + "
-        f"{record['margin_term_m'] * IN_PER_M:.2f} in margin "
+        f"{record['margin_term_m'] / METERS_PER_INCH:.2f} in margin "
         f"({record['k_margin']:g} diameters); "
         f"+/-0.5 in costs {record['placement_tolerance_db']:.2f} dB, "
         f"+/-{record['aim_tolerance_deg']:.0f} deg of aim costs nothing; "

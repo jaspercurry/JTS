@@ -14,8 +14,10 @@ on the room while the bounce paths barely move.
 
 What this module computes, given the two impulse responses:
 
-1. **Where to stand.** :func:`recommended_distance` from driver diameter and
-   crossover corner, with both terms of the derivation printed.
+1. **Where to stand.** The piston geometry lives beside its sibling in
+   :mod:`jasper.active_speaker.branch_chain`
+   (:func:`~jasper.active_speaker.branch_chain.recommended_distance`), read
+   from the driver's diameter and crossover corner.
 2. **The correction.** Scale the close IR by ``r_close/r_far``, delay it by the
    geometric ``(r_far - r_close)/c``, then SUB-SAMPLE align it to the far IR's
    own direct arrival. A subtraction cancels only to the depth its phase error
@@ -36,8 +38,9 @@ declared geometry allows is published beside the gate actually used.
 
 **Every number carries its frame.** Window shape, lead, taper, smoothing
 fraction, grid, transform length, alignment band and upsample ride in the
-report's ``frame`` block, because the P1 offline run showed a banked
--8.78 dB feature reading -1.07 to -5.45 dB depending only on frame choices.
+report's ``frame`` block: one banked feature reads a materially different
+depth under each defensible frame (#3495; the evidence is
+``captures/recommission-day2-2026-09-01/p1-position-window/P1-REPORT.md``).
 
 Distances are DECLARED by the caller, never read from the sidecar: today's
 sidecars pin ``mark_distance_m = 1.0`` for every pose (a per-row distance
@@ -48,12 +51,18 @@ published and the declared one is used.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from jasper.active_speaker.branch_chain import (
+    AIM_TOLERANCE_DEG,
+    far_field_ceiling_hz,
+    placement_tolerance_db,
+)
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.gating import (
     SEARCH_T_MAX_MS,
@@ -78,13 +87,17 @@ from .feature_classifier import (
     smoothed_curve,
 )
 from .gate_sweep import gated_segment
-from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures
+from .round_captures import (
+    PoseCapture,
+    RoundCapturesRefused,
+    discover_captures,
+    doc_pose_key,
+)
 
 __all__ = [
     "ALIGNMENT_CONFIDENCE_FLOOR",
     "CLOSE_REFERENCE_SCHEMA_VERSION",
     "DEFAULT_GATE_MS",
-    "K_MARGIN",
     "MIN_BAND_POINTS",
     "RESIDUAL_N_FFT",
     "ROOM_RESIDUAL_FLOOR_DB",
@@ -96,9 +109,6 @@ __all__ = [
     "compare_impulse_responses",
     "compare_rounds",
     "declared_clean_window_ms",
-    "far_field_ceiling_hz",
-    "placement_tolerance_db",
-    "recommended_distance",
     "select_capture",
 ]
 
@@ -106,21 +116,6 @@ CLOSE_REFERENCE_SCHEMA_VERSION = 1
 
 #: The tool a reader re-runs to reproduce a report.
 GENERATED_BY = "jasper-close-reference"
-
-#: Driver diameters of margin added to the piston far-field distance. Chosen
-#: so the three anchor cases the issue states land where it says they do:
-#: 5.5 in / 2.5 kHz -> ~12 in, 12 in / 500 Hz -> ~25 in, 2.5 in / 2.5 kHz ->
-#: ~5 in. It is the DOMINANT term at every one of them; the far-field term is
-#: a 0.3-1.9 in correction on top, which is why both are published separately.
-K_MARGIN = 2.0
-
-#: Placement slop the operator is held to, metres (+/- 0.5 in). Only the 1/r
-#: correction cares, and :func:`placement_tolerance_db` prices it.
-PLACEMENT_TOLERANCE_M = 0.0127
-
-#: Aim slop that costs nothing measurable in the close capture's validity
-#: band: the woofer is omnidirectional there, so +/-5 deg is free.
-AIM_TOLERANCE_DEG = 5.0
 
 #: Gate length, ms, with neither an explicit gate nor a declared geometry to
 #: derive one from: the pipeline's own reflection-search ceiling, the longest
@@ -139,7 +134,7 @@ ALIGNMENT_CONFIDENCE_FLOOR = 0.25
 
 #: A residual at or above this level, relative to the direct, is "large".
 #: Well above the alignment budget's own floor across the close-reference
-#: band (2*sin(pi*f*dt) at 1 kHz and 5 us is -26 dB), so a room verdict is
+#: band (2*sin(pi*f*dt) at 1 kHz and 5 us is -30.1 dB), so a room verdict is
 #: never a re-reading of the tool's own timing error.
 ROOM_RESIDUAL_FLOOR_DB = -12.0
 
@@ -162,82 +157,8 @@ WINDOW_CLOSE = "close_window"
 
 
 # --------------------------------------------------------------------------- #
-# where to stand
+# what a subtraction can promise
 # --------------------------------------------------------------------------- #
-
-
-def far_field_ceiling_hz(
-    diameter_m: float,
-    distance_m: float,
-    *,
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
-) -> float:
-    """Highest frequency at which ``distance_m`` is still the driver's far field.
-
-    The piston far-field (Rayleigh) distance is ``2*a**2/lambda`` for aperture
-    RADIUS ``a`` (Keele's near-field limit and D'Appolito's ``f_max = 4311/D``
-    are the same criterion in other clothes), and it GROWS with frequency, so
-    solving ``distance_m >= 2*a**2*f/c`` for ``f`` gives a CEILING, not a
-    floor: a close mic is near-field at HIGH frequencies, never at low ones.
-    """
-    radius = 0.5 * float(diameter_m)
-    if radius <= 0.0:
-        raise ValueError(f"diameter must be positive, got {diameter_m}")
-    return float(sound_speed_m_s) * float(distance_m) / (2.0 * radius**2)
-
-
-def placement_tolerance_db(
-    distance_m: float, *, tolerance_m: float = PLACEMENT_TOLERANCE_M
-) -> float:
-    """What ``+/- tolerance_m`` of mic placement costs the 1/r correction, dB."""
-    return 20.0 * math.log10((float(distance_m) + float(tolerance_m)) / float(distance_m))
-
-
-def recommended_distance(
-    diameter_m: float,
-    fc_hz: float,
-    *,
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
-) -> dict[str, Any]:
-    """Where to put the mic for a close reference of this driver.
-
-    ``r = 2*a**2/lambda_top + K_MARGIN*diameter``, evaluated at the top of the
-    close capture's validity band (``f_top = fc/2``, issue #3501). Both terms
-    are returned separately: the margin dominates and the far-field term is
-    the correction, and a reader who cannot see that split cannot tell whether
-    a surprising answer came from the driver's size or from its crossover.
-    """
-    diameter = float(diameter_m)
-    if diameter <= 0.0:
-        raise ValueError(f"diameter must be positive, got {diameter_m}")
-    if fc_hz <= 0.0:
-        raise ValueError(f"fc must be positive, got {fc_hz}")
-    f_top = 0.5 * float(fc_hz)
-    lambda_top = float(sound_speed_m_s) / f_top
-    radius = 0.5 * diameter
-    far_field_m = 2.0 * radius**2 / lambda_top
-    margin_m = K_MARGIN * diameter
-    distance_m = far_field_m + margin_m
-    return {
-        "driver_diameter_m": diameter,
-        "driver_diameter_in": diameter / 0.0254,
-        "fc_hz": float(fc_hz),
-        "band_top_hz": f_top,
-        "wavelength_top_m": lambda_top,
-        "far_field_term_m": far_field_m,
-        "margin_term_m": margin_m,
-        "k_margin": K_MARGIN,
-        "distance_m": distance_m,
-        "distance_in": distance_m / 0.0254,
-        "direct_gain_over_1m_db": 20.0 * math.log10(1.0 / distance_m),
-        "placement_tolerance_m": PLACEMENT_TOLERANCE_M,
-        "placement_tolerance_db": placement_tolerance_db(distance_m),
-        "aim_tolerance_deg": AIM_TOLERANCE_DEG,
-        "far_field_ceiling_hz": far_field_ceiling_hz(
-            diameter, distance_m, sound_speed_m_s=sound_speed_m_s
-        ),
-        "sound_speed_m_s": float(sound_speed_m_s),
-    }
 
 
 def cancellation_depth_db(f_hz: float, lag_s: float) -> float:
@@ -335,6 +256,10 @@ def _power_ratio_db(
     return 10.0 * math.log10(num / den)
 
 
+# This verb publishes a per-band VERDICT by design: #3501 asked for the
+# comparison, not for more evidence. Its sibling `gate_sweep` publishes
+# evidence only and leaves the attribution to its reader; that difference is
+# deliberate, not drift.
 def _verdict(
     *,
     points: int,
@@ -438,6 +363,12 @@ def compare_impulse_responses(
     ``validity``, ``alignment`` and one ``windows`` entry per declared gate
     length, each carrying a :data:`SPEC_BANDS`-shaped band table. Nothing is
     printed and nothing is written.
+
+    **Both alignment segments are cut at the SHORTER of the two gates**
+    (published as ``alignment.alignment_gate_ms``): the far capture's clean
+    window is the bound because its first bounce arrives earliest, and one
+    lag aligned over a far segment that reached into room arrivals is then
+    inherited by every band of the corrected close IR.
     """
     far = np.asarray(far_ir, dtype=np.float64)
     close = np.asarray(close_ir, dtype=np.float64)
@@ -480,8 +411,8 @@ def compare_impulse_responses(
     far_span = int(round(far_gate_ms * 1e-3 * sr))
     close_span = int(round(close_gate_ms * 1e-3 * sr))
     lead = int(round(PHASE_GATE_LEAD_MS * 1e-3 * sr))
-    align_span = max(far_span, close_span)
-    align_ms = max(far_gate_ms, close_gate_ms)
+    align_span = min(far_span, close_span)
+    align_ms = min(far_gate_ms, close_gate_ms)
 
     # Validity: the gate's own resolution floor at the bottom, and the lower of
     # the crossover's half and the driver's far-field ceiling at the top.
@@ -619,6 +550,10 @@ def compare_impulse_responses(
             "comparison_band_hz": list(comparison_band_hz),
         },
         "alignment": {
+            # The window BOTH segments were cut at: the shorter of the two
+            # gates, so neither segment reaches past the far capture's own
+            # first bounce into the room.
+            "alignment_gate_ms": float(align_ms),
             "far_direct_peak_ms": 1000.0 * far_peak / sr,
             "close_direct_peak_ms": 1000.0 * close_peak / sr,
             "measured_shift_us": measured_shift_s * 1e6,
@@ -670,15 +605,28 @@ def select_capture(
     ``capture_id`` selects by the capture's own id or its WAV stem. With none,
     the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
     Raises :class:`~.round_captures.RoundCapturesRefused` rather than guessing.
+
+    The choice is made on each sidecar DOC, through
+    :func:`~.round_captures.discover_captures`'s ``select``, so the poses this
+    comparison discards are never deconvolved. The predicate records what it
+    was shown, which is what a refusal here has to name.
     """
     root = Path(round_dir)
     if not root.is_dir():
         raise RoundCapturesRefused(REFUSE_UNREADABLE_ROUND, {"round_dir": str(root)})
-    captures = discover_captures(root)
+    seen: list[str] = []
     if capture_id is not None:
+        def wanted(doc: Mapping[str, Any]) -> bool:
+            declared = doc.get("position_id")
+            seen.append(str(declared) if declared else "")
+            # A sidecar that declares no id takes its capture id from its own
+            # file name, which this predicate cannot see; it stays in and the
+            # WAV-stem match below decides.
+            return not declared or str(declared) == capture_id
+
         named = [
             capture
-            for capture in captures
+            for capture in discover_captures(root, select=wanted)
             if capture_id in (capture.capture_id, capture.wav.stem)
         ]
         if not named:
@@ -687,22 +635,25 @@ def select_capture(
                 {
                     "round_dir": str(root),
                     "capture_id": capture_id,
-                    "captures": [capture.capture_id for capture in captures],
+                    "captures": seen,
                 },
             )
         return named[0]
-    on_axis = [
-        capture
-        for capture in captures
-        if capture.azimuth_deg == 0 and capture.vertical_deg == 0
-    ]
+
+    def on_axis_doc(doc: Mapping[str, Any]) -> bool:
+        seen.append(doc_pose_key(doc))
+        # A pose declared as anything but a number compares False here, the
+        # same answer the decoded ``None`` gave.
+        return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
+
+    on_axis = discover_captures(root, select=on_axis_doc)
     if not on_axis:
         raise RoundCapturesRefused(
             REFUSE_NO_CAPTURE,
             {
                 "round_dir": str(root),
                 "note": "no capture declares azimuth 0 / elevation 0",
-                "poses": [capture.pose_key for capture in captures],
+                "poses": seen,
             },
         )
     return on_axis[0]

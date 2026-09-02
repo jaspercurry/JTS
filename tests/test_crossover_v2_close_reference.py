@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.close_reference import (
+    ALIGNMENT_CONFIDENCE_FLOOR,
     DEFAULT_GATE_MS,
     GATE_SOURCE_CALLER,
     GATE_SOURCE_DECLARED,
@@ -32,7 +33,6 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     cancellation_depth_db,
     compare_impulse_responses,
     declared_clean_window_ms,
-    recommended_distance,
     select_capture,
 )
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
@@ -56,6 +56,15 @@ DRIVER_DIAMETER_M = 0.1397
 #: pair of back-to-back runs with unknown interface latency actually costs.
 INJECTED_OFFSET_SAMPLES = 0.37
 INJECTED_OFFSET_US = INJECTED_OFFSET_SAMPLES / SAMPLE_RATE * 1e6
+
+#: The mismatched-window case: a far capture whose clean span is SHORT and a
+#: close capture whose declared window is long, with one bounce sitting
+#: between the two. The bounce is inside the close window and outside the far
+#: one, which is the whole point.
+SHORT_FAR_GATE_MS = 2.5
+LONG_CLOSE_GATE_MS = 6.0
+EARLY_BOUNCE_MS = 4.0
+EARLY_BOUNCE_DB = -8.0
 
 
 def _image_distance(distance_m: float) -> float:
@@ -104,6 +113,14 @@ def _report(*, reflection: bool, **kwargs) -> dict:
         driver_diameter_m=DRIVER_DIAMETER_M,
         **kwargs,
     )
+
+
+def _with_bounce(ir: np.ndarray, delay_ms: float, gain_db: float) -> np.ndarray:
+    """``ir`` plus a delayed, attenuated copy of itself: one room arrival."""
+    delay = int(round(delay_ms * 1e-3 * SAMPLE_RATE))
+    echo = np.zeros_like(ir)
+    echo[delay:] = ir[: ir.size - delay] * 10.0 ** (gain_db / 20.0)
+    return ir + echo
 
 
 def _geometry(distance_m: float = FAR_M) -> DeclaredGeometry:
@@ -155,6 +172,40 @@ def test_injected_fractional_offset_is_recovered(reflection):
         math.isfinite(entry["depth_db"])
         for entry in alignment["cancellation_budget_db"]
     )
+
+
+def test_alignment_is_cut_at_the_shorter_of_the_two_clean_windows():
+    """Two unequal windows, one bounce between them: the SHORT one bounds.
+
+    The far capture's clean window is 2.5 ms and the close capture's is 6 ms,
+    which is the ordinary case — the first bounce's excess path grows as the
+    mic nears the speaker. A -8 dB arrival sits at 4 ms, inside the close
+    window and outside the far one. Cutting both alignment segments at the
+    LONGER window would push the far segment past its own reflection-free
+    span into that arrival, and the one lag it produces is then inherited by
+    every band of the corrected close IR.
+    """
+    report = compare_impulse_responses(
+        _with_bounce(
+            _synthetic_ir(FAR_M, reflection=False), EARLY_BOUNCE_MS, EARLY_BOUNCE_DB
+        ),
+        _synthetic_ir(
+            CLOSE_M, reflection=False, offset_samples=INJECTED_OFFSET_SAMPLES
+        ),
+        sample_rate=SAMPLE_RATE,
+        far_m=FAR_M,
+        close_m=CLOSE_M,
+        fc_hz=FC_HZ,
+        driver_diameter_m=DRIVER_DIAMETER_M,
+        far_gate_ms=SHORT_FAR_GATE_MS,
+        close_gate_ms=LONG_CLOSE_GATE_MS,
+    )
+
+    alignment = report["alignment"]
+    assert alignment["alignment_gate_ms"] == SHORT_FAR_GATE_MS
+    assert alignment["trusted"] is True
+    # The lag is still the injected offset and nothing the room added.
+    assert abs(alignment["measured_minus_geometric_us"] + INJECTED_OFFSET_US) < 5.0
 
 
 def test_residual_matches_the_injected_reflection_level():
@@ -217,6 +268,53 @@ def test_the_close_windows_longer_gate_is_what_finds_the_room():
     }
 
 
+@pytest.mark.parametrize("reflection", [True, False])
+def test_the_alignment_block_says_what_it_measured(reflection):
+    """Every alignment number a reader acts on, against the fixture's own
+    geometry: the close mic is nearer, so its direct arrives EARLIER, and the
+    shift the correlator recovered is the geometric one less the offset the
+    fixture injected."""
+    alignment = _report(reflection=reflection)["alignment"]
+
+    assert isinstance(alignment["far_direct_peak_ms"], float)
+    assert isinstance(alignment["close_direct_peak_ms"], float)
+    assert alignment["close_direct_peak_ms"] < alignment["far_direct_peak_ms"]
+    assert alignment["measured_shift_us"] == pytest.approx(
+        alignment["geometric_delay_us"] - INJECTED_OFFSET_US, abs=5.0
+    )
+    assert alignment["confidence"] >= ALIGNMENT_CONFIDENCE_FLOOR
+    # The search bound is not what stopped the peak, so the lag is a reading
+    # rather than a clamped artifact.
+    assert alignment["at_search_edge"] is False
+
+
+@pytest.mark.parametrize(
+    "reflection, room_moves_the_worst_bin", [(True, True), (False, False)]
+)
+def test_each_band_names_its_worst_far_bin_and_what_the_close_read_there(
+    reflection, room_moves_the_worst_bin
+):
+    """The three per-band numbers a reader argues from.
+
+    The 900 Hz speaker-side notch is the control: it is in BOTH captures, so
+    the far read's worst bin lands on it either way and reads as a dip. What
+    changes is ``delta_at_worst_db`` — with the floor bounce present the close
+    capture reads that bin materially shallower, and that gap is the room.
+    """
+    graded = _graded(_report(reflection=reflection))
+    for row in graded:
+        lo_hz, hi_hz = row["graded_band_hz"]
+        assert lo_hz <= row["worst_far_bin_hz"] < hi_hz
+        assert isinstance(row["worst_far_deviation_db"], float)
+        assert isinstance(row["delta_at_worst_db"], float)
+        assert (abs(row["delta_at_worst_db"]) > 1.0) is room_moves_the_worst_bin
+
+    # The control: the notch is the low band's worst bin under both
+    # scenarios, and it reads as a DIP.
+    assert graded[0]["worst_far_bin_hz"] == pytest.approx(NOTCH_HZ, rel=0.05)
+    assert graded[0]["worst_far_deviation_db"] < 0.0
+
+
 def test_frame_and_validity_are_published():
     report = _report(reflection=True)
     for window in report["windows"]:
@@ -233,21 +331,6 @@ def test_frame_and_validity_are_published():
     assert validity["comparison_band_hz"][1] == pytest.approx(FC_HZ / 2.0)
     # A close mic is near-field at HIGH frequencies: the criterion is a ceiling.
     assert validity["far_field_ceiling_hz"] > validity["comparison_band_hz"][1]
-
-
-@pytest.mark.parametrize(
-    "diameter_in, fc_hz, expected_in",
-    [(5.5, 2500.0, 12.4), (12.0, 500.0, 25.3), (2.5, 2500.0, 5.3)],
-)
-def test_recommended_distance_lands_where_the_issue_says(
-    diameter_in, fc_hz, expected_in
-):
-    record = recommended_distance(diameter_in * 0.0254, fc_hz)
-    assert record["distance_in"] == pytest.approx(expected_in, abs=0.1)
-    assert record["distance_m"] == pytest.approx(
-        record["far_field_term_m"] + record["margin_term_m"]
-    )
-    assert record["far_field_ceiling_hz"] > record["band_top_hz"]
 
 
 @pytest.mark.parametrize(

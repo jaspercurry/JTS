@@ -107,6 +107,39 @@ def test_one_capture_is_a_round(tmp_path: Path) -> None:
     assert len(discover_captures(_write_round(tmp_path, poses=1))) == 1
 
 
+def test_a_filtered_pose_is_never_decoded(tmp_path: Path, monkeypatch) -> None:
+    """The reader's filter runs on the sidecar DOC, before the expensive half.
+
+    A close reference keeps one pose out of a round; deconvolving the other
+    two is work nothing reads. The count is of capture WAVs decoded — the
+    program WAV is decoded once whatever the filter says.
+    """
+    root = _write_round(tmp_path, poses=3)
+    decoded: list[str] = []
+    real = round_captures.read_wav_mono
+
+    def counting(path: Path):
+        decoded.append(Path(path).name)
+        return real(path)
+
+    monkeypatch.setattr(round_captures, "read_wav_mono", counting)
+    captures = discover_captures(
+        root, select=lambda doc: doc.get("position_id") == "cloud_verify_01"
+    )
+
+    assert [capture.capture_id for capture in captures] == ["cloud_verify_01"]
+    assert [name for name in decoded if name.startswith("summed_")] == [
+        "summed_cloud_verify_01.wav"
+    ]
+
+
+def test_a_filter_that_matches_nothing_is_an_answer_not_a_refusal(
+    tmp_path: Path,
+) -> None:
+    """The no-captures refusal is about the ROUND, not about the filter."""
+    assert discover_captures(_write_round(tmp_path), select=lambda doc: False) == ()
+
+
 def test_poses_are_keyed_on_the_full_declared_pose(tmp_path: Path) -> None:
     """#3503: same azimuth, different height, is a DIFFERENT pose."""
     ground = _write_round(tmp_path / "ground", vertical_deg=0.0)

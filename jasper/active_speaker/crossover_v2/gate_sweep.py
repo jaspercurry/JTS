@@ -208,10 +208,28 @@ def _intersect(
     return (lo, hi) if lo < hi else None
 
 
+@dataclass(frozen=True)
+class SweepCurves:
+    """One capture read through the whole ladder — this sweep's own scratch.
+
+    Held beside the capture rather than written onto it: the loader's
+    :class:`~.round_captures.PoseCapture` is data, and two readers of one
+    round must never see each other's derived curves.
+    """
+
+    capture: PoseCapture
+    reference_const_db: float
+    #: Normalised dB on the analysis grid, keyed by rung in ms.
+    curves: dict[float, np.ndarray]
+    #: The same curves with their one-octave broad tilt removed.
+    detrended: dict[float, np.ndarray]
+
+
 def _read_curves(
     captures: Sequence[PoseCapture], grid: np.ndarray, rungs_ms: Sequence[float]
-) -> None:
-    """Fill every capture's normalised and detrended curves, in place."""
+) -> tuple[SweepCurves, ...]:
+    """Every capture's normalised and detrended curves, in capture order."""
+    reads: list[SweepCurves] = []
     for capture in captures:
         reference_band = _intersect(REFERENCE_BAND_HZ, capture.radiated_band_hz)
         if reference_band is None:
@@ -234,9 +252,9 @@ def _read_curves(
             peak_idx=capture.peak_idx,
             grid=grid,
         )
-        capture.reference_const_db = _band_mean_db(
-            reference_curve, grid, reference_band
-        )
+        reference_const_db = _band_mean_db(reference_curve, grid, reference_band)
+        curves: dict[float, np.ndarray] = {}
+        detrended: dict[float, np.ndarray] = {}
         for rung in rungs_ms:
             raw = (
                 reference_curve
@@ -249,8 +267,17 @@ def _read_curves(
                     grid=grid,
                 )
             )
-            capture.curves[rung] = raw - capture.reference_const_db
-            capture.detrended[rung] = detrend(capture.curves[rung], grid)
+            curves[rung] = raw - reference_const_db
+            detrended[rung] = detrend(curves[rung], grid)
+        reads.append(
+            SweepCurves(
+                capture=capture,
+                reference_const_db=reference_const_db,
+                curves=curves,
+                detrended=detrended,
+            )
+        )
+    return tuple(reads)
 
 
 # --------------------------------------------------------------------------- #
@@ -271,7 +298,7 @@ class NotchFit:
 
 
 def fit_notch(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     *,
     rung_ms: float,
@@ -290,8 +317,8 @@ def fit_notch(
     centres: list[float] = []
     depths: list[float] = []
     qs: list[float] = []
-    for capture in captures:
-        curve = capture.detrended[rung_ms]
+    for read in reads:
+        curve = read.detrended[rung_ms]
         index = int(np.argmax(np.abs(curve[mask])))
         centre = float(grid[mask][index])
         centres.append(centre)
@@ -390,7 +417,7 @@ def _resolution(freq_hz: float, rung_ms: float) -> str:
 
 
 def _across_pose_sigma(
-    captures: Sequence[PoseCapture], rungs_ms: Sequence[float]
+    reads: Sequence[SweepCurves], rungs_ms: Sequence[float]
 ) -> dict[float, np.ndarray]:
     """Across-pose standard deviation of the normalised curves, per rung.
 
@@ -398,13 +425,13 @@ def _across_pose_sigma(
     means the spread is the poses disagreeing, and nothing else.
     """
     return {
-        rung: np.std(np.array([cap.curves[rung] for cap in captures]), axis=0, ddof=1)
+        rung: np.std(np.array([read.curves[rung] for read in reads]), axis=0, ddof=1)
         for rung in rungs_ms
     }
 
 
 def _feature_result(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
     hz: float,
@@ -429,19 +456,19 @@ def _feature_result(
         "valid_rungs_ms": list(valid),
         "poses": [
             {
-                "pose_key": cap.pose_key,
-                "capture_id": cap.capture_id,
-                "azimuth_deg": cap.azimuth_deg,
-                "vertical_deg": cap.vertical_deg,
-                "mark_distance_m": cap.mark_distance_m,
+                "pose_key": read.capture.pose_key,
+                "capture_id": read.capture.capture_id,
+                "azimuth_deg": read.capture.azimuth_deg,
+                "vertical_deg": read.capture.vertical_deg,
+                "mark_distance_m": read.capture.mark_distance_m,
                 "value_db_by_rung": {
-                    _key(r): float(cap.curves[r][grid_index]) for r in rungs_ms
+                    _key(r): float(read.curves[r][grid_index]) for r in rungs_ms
                 },
                 "detrended_db_by_rung": {
-                    _key(r): float(cap.detrended[r][grid_index]) for r in rungs_ms
+                    _key(r): float(read.detrended[r][grid_index]) for r in rungs_ms
                 },
             }
-            for cap in captures
+            for read in reads
         ],
     }
     if len(valid) < 2:
@@ -455,8 +482,8 @@ def _feature_result(
         result["sensitivity_null_reason"] = NULL_DEGENERATE_SHORT_RUNG
         return result
 
-    fit = fit_notch(captures, grid, rung_ms=long_, nominal_hz=bin_hz)
-    host = captures[0]
+    fit = fit_notch(reads, grid, rung_ms=long_, nominal_hz=bin_hz)
+    host = reads[0].capture
     hosts = null_model_hosts(host, host_rung_ms=long_)
     bias_by_host = {
         name: window_bias_db(
@@ -471,8 +498,8 @@ def _feature_result(
     }
     bias = bias_by_host["real"]
     raw_delta = float(
-        np.median([cap.detrended[long_][grid_index] for cap in captures])
-        - np.median([cap.detrended[short][grid_index] for cap in captures])
+        np.median([read.detrended[long_][grid_index] for read in reads])
+        - np.median([read.detrended[short][grid_index] for read in reads])
     )
     bias_delta = bias[long_] - bias[short]
     synthetic = bias_by_host["synthetic"]
@@ -507,7 +534,7 @@ def _feature_result(
 
 
 def _band_result(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
     band: tuple[float, float, float],
@@ -516,8 +543,8 @@ def _band_result(
 ) -> dict[str, Any]:
     lo_hz, hi_hz, tolerance_db = band
     radiated = (
-        max(cap.radiated_band_hz[0] for cap in captures),
-        min(cap.radiated_band_hz[1] for cap in captures),
+        max(read.capture.radiated_band_hz[0] for read in reads),
+        min(read.capture.radiated_band_hz[1] for read in reads),
     )
     graded = _intersect((lo_hz, hi_hz), radiated)
     result: dict[str, Any] = {
@@ -541,12 +568,12 @@ def _band_result(
 
     longest = max(rungs_ms)
     median_detrended = np.median(
-        np.array([cap.detrended[longest] for cap in captures]), axis=0
+        np.array([read.detrended[longest] for read in reads]), axis=0
     )
     worst_index = int(np.argmax(np.abs(median_detrended[mask])))
     worst_hz = float(grid[mask][worst_index])
 
-    feature = _feature_result(captures, grid, sigma, worst_hz, rungs_ms=rungs_ms)
+    feature = _feature_result(reads, grid, sigma, worst_hz, rungs_ms=rungs_ms)
     result["worst_bin_hz"] = feature.pop("bin_hz")
     # The band's deepest feature is not always its most window-divergent one
     # (P1), so the whole band's mean sigma is published beside the worst
@@ -621,14 +648,14 @@ def _spec_band_of(hz: float) -> list[float] | None:
 
 
 def _feature_at(
-    captures: Sequence[PoseCapture],
+    reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
     hz: float,
     *,
     rungs_ms: Sequence[float],
 ) -> dict[str, Any]:
-    result = _feature_result(captures, grid, sigma, hz, rungs_ms=rungs_ms)
+    result = _feature_result(reads, grid, sigma, hz, rungs_ms=rungs_ms)
     return {
         "requested_hz": hz,
         "band_hz": _spec_band_of(result["bin_hz"]),
@@ -688,8 +715,8 @@ def sweep_round(
             },
         )
     grid = analysis_grid()
-    _read_curves(captures, grid, rungs)
-    sigma = _across_pose_sigma(captures, rungs)
+    reads = _read_curves(captures, grid, rungs)
+    sigma = _across_pose_sigma(reads, rungs)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
@@ -697,28 +724,30 @@ def sweep_round(
         "frame": frame_descriptor(rungs, grid),
         "poses": [
             {
-                "pose_key": cap.pose_key,
-                "capture_id": cap.capture_id,
-                "phase": cap.phase,
-                "azimuth_deg": cap.azimuth_deg,
-                "vertical_deg": cap.vertical_deg,
-                "mark_distance_m": cap.mark_distance_m,
-                "capture_wav": cap.wav.name,
-                "program_wav": cap.program.name,
-                "program_sha256_12": cap.program_sha256[:12],
-                "sample_rate_hz": cap.sample_rate,
-                "direct_peak_ms": 1000.0 * cap.peak_idx / cap.sample_rate,
-                "reference_const_db": cap.reference_const_db,
-                "radiated_band_hz": list(cap.radiated_band_hz),
+                "pose_key": read.capture.pose_key,
+                "capture_id": read.capture.capture_id,
+                "phase": read.capture.phase,
+                "azimuth_deg": read.capture.azimuth_deg,
+                "vertical_deg": read.capture.vertical_deg,
+                "mark_distance_m": read.capture.mark_distance_m,
+                "capture_wav": read.capture.wav.name,
+                "program_wav": read.capture.program.name,
+                "program_sha256_12": read.capture.program_sha256[:12],
+                "sample_rate_hz": read.capture.sample_rate,
+                "direct_peak_ms": (
+                    1000.0 * read.capture.peak_idx / read.capture.sample_rate
+                ),
+                "reference_const_db": read.reference_const_db,
+                "radiated_band_hz": list(read.capture.radiated_band_hz),
             }
-            for cap in captures
+            for read in reads
         ],
         "bands": [
-            _band_result(captures, grid, sigma, band, rungs_ms=rungs)
+            _band_result(reads, grid, sigma, band, rungs_ms=rungs)
             for band in SPEC_BANDS
         ],
         "features": [
-            _feature_at(captures, grid, sigma, hz, rungs_ms=rungs) for hz in wanted
+            _feature_at(reads, grid, sigma, hz, rungs_ms=rungs) for hz in wanted
         ],
         "sigma_map": _sigma_map(grid, sigma, rungs),
     }

@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -55,8 +55,9 @@ class RoundCapturesRefused(Exception):
 class PoseCapture:
     """One banked capture, its declared pose, and its impulse response.
 
-    The curve dicts are scratch for whoever gates it — filled by the reader
-    that computes them, empty for a reader that does not.
+    Data only. Whatever a reader derives from ``ir`` — curves, references,
+    detrends — is that reader's own, held beside this rather than written back
+    onto it, so two readers of one round can never see each other's scratch.
     """
 
     capture_id: str
@@ -71,20 +72,34 @@ class PoseCapture:
     sample_rate: int
     ir: np.ndarray
     peak_idx: int
-    reference_const_db: float = 0.0
-    #: Normalised dB on the analysis grid, keyed by rung in ms.
-    curves: dict[float, np.ndarray] = field(default_factory=dict)
-    #: The same curves with their one-octave broad tilt removed.
-    detrended: dict[float, np.ndarray] = field(default_factory=dict)
 
     @property
     def pose_key(self) -> str:
         """The FULL declared pose. Never a seat index (#3503)."""
-        return "az{}_el{}_d{}".format(
-            _pose_field(self.azimuth_deg),
-            _pose_field(self.vertical_deg),
-            _pose_field(self.mark_distance_m),
-        )
+        return _pose_key(self.azimuth_deg, self.vertical_deg, self.mark_distance_m)
+
+
+def doc_pose_key(doc: Mapping[str, Any]) -> str:
+    """The pose a sidecar DOC declares, keyed as :attr:`PoseCapture.pose_key`.
+
+    Readable before the capture is decoded, so a reader that filters poses on
+    the doc can still name the ones it passed over (#3503).
+    """
+    return _pose_key(
+        _number(doc.get("position_deg")),
+        _number(doc.get("vertical_deg")),
+        _number(doc.get("mark_distance_m")),
+    )
+
+
+def _pose_key(
+    azimuth_deg: float | None,
+    vertical_deg: float | None,
+    mark_distance_m: float | None,
+) -> str:
+    return "az{}_el{}_d{}".format(
+        _pose_field(azimuth_deg), _pose_field(vertical_deg), _pose_field(mark_distance_m)
+    )
 
 
 def _pose_field(value: float | None) -> str:
@@ -144,14 +159,26 @@ def _radiated_band(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     return (min(los), max(his))
 
 
-def discover_captures(round_dir: Path) -> tuple[PoseCapture, ...]:
+def discover_captures(
+    round_dir: Path,
+    *,
+    select: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> tuple[PoseCapture, ...]:
     """Every summed capture under ``round_dir``, bound to its own program.
 
     ``round_dir`` is a banked round directory (the one holding ``bundle/``)
     or the bundle itself. Raises :class:`RoundCapturesRefused` naming the
-    missing input — an empty result is a finding, never an empty tuple. How
-    MANY captures a reader needs is the reader's own bar: the sweep wants two
-    poses, a close reference reads one.
+    missing input. How MANY captures a reader needs is the reader's own bar:
+    the sweep wants two poses, a close reference reads one.
+
+    ``select`` is that reader's filter over the parsed sidecar doc, applied
+    BEFORE the WAV is decoded and deconvolved — the expensive half — so a
+    reader that keeps one pose out of a round does not pay for the rest. The
+    program binding is checked for every sidecar either way, because a round
+    whose captures cannot be bound to their bytes is a finding about the
+    round, not about the pose asked for. A doc the filter rejects is neither
+    decoded nor refused on its radiated band, and with a filter an empty
+    result is an ordinary answer rather than the no-captures refusal.
     """
     round_dir = Path(round_dir)
     sidecars = sorted(round_dir.glob("**/summed/summed_*.json"))
@@ -203,6 +230,8 @@ def discover_captures(round_dir: Path) -> tuple[PoseCapture, ...]:
                     ),
                 },
             )
+        if select is not None and not select(doc):
+            continue
         band = _radiated_band(doc)
         if band is None:
             raise RoundCapturesRefused(
