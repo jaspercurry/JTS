@@ -334,7 +334,7 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     # operator run still seeds the right graph.
     coupling = args.coupling
     if coupling is None:
-        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+        from jasper.fanin.ring_health import read_persisted_coupling
 
         coupling = read_persisted_coupling()
     topology = load_output_topology_strict(args.topology)

@@ -509,7 +509,7 @@ def test_audio_health_reads_the_coupling_doctor_reads(monkeypatch, tmp_path) -> 
     model feeds it a value that resolves identically, rather than a transport
     SHAPE name that only happens to alias a coupling for two of three shapes.
     """
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import COUPLING_ENV_VAR, VALID_COUPLINGS
 
     fanin_env = tmp_path / "fanin.env"
