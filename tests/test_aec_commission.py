@@ -313,13 +313,20 @@ def test_only_the_newest_rejections_are_retained(tmp_path: Path) -> None:
         (root / stamp).mkdir(parents=True)
     directory = tmp_path / "run"
     directory.mkdir()
-    (directory / "final-m1-2.wav").write_bytes(b"RIFF")
+    for name in ("final-m1-2.wav", "aec-on.wav", "aec-off.wav", "adaptation.wav"):
+        (directory / name).write_bytes(b"RIFF")
 
     destination = aec_commission._retain_rejected_captures(directory, root)
 
     assert destination is not None
-    assert (destination / "final-m1-2.wav").exists()
-    assert not (directory / "final-m1-2.wav").exists()
+    # The product pair is as much a rejected run's evidence as the timing
+    # trials; the adaptation file it was recorded against is not.
+    assert sorted(path.name for path in destination.iterdir()) == [
+        "aec-off.wav",
+        "aec-on.wav",
+        "final-m1-2.wav",
+    ]
+    assert (directory / "adaptation.wav").exists()
     kept = sorted(path.name for path in root.iterdir())
     assert len(kept) == aec_commission.RETAINED_REJECTIONS
     assert destination.name in kept

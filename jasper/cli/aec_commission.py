@@ -34,12 +34,14 @@ from jasper.chip_aec_alignment import (
     MAX_CENTER_ERROR,
     MIN_EDGE_MARGIN,
     MicTiming,
+    ProductRejected,
     ProductResult,
     TimingRejected,
     analyze_product,
     analyze_timing,
     choose_delay,
     commissioning_stimulus,
+    dbfs_rms,
     load_artifact,
     median_samples,
     read_capture,
@@ -59,12 +61,15 @@ MARKER = Path("/run/jasper-chip-aec-commission/active")
 # Last-run outcome for status surfaces (/aec `commission`, the wake page).
 # Same shape family as jasper.cli.xvf_firmware_update's STATE_PATH record.
 STATE_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
-# Where a timing-rejected run's captures land instead of unwinding with the
-# temp dir, and how many rejections are kept.  Three is the run of rejections
-# the owner already has (#3271); a run's timing captures are at most 24 files
-# of 2 s x 6 ch x 16 kHz S16 (~9 MB), so the ceiling is ~30 MB of /var/lib.
+# Where a rejected run's captures land instead of unwinding with the temp
+# dir, and how many rejections are kept.  Three is the run of rejections the
+# owner already has (#3271); a run retains at most 26 files (24 timing trials
+# plus the product pair) of 2 s x 6 ch x 16 kHz S16 (~10 MB), so the ceiling
+# is ~30 MB of /var/lib.
 REJECTED_CAPTURE_DIR = Path("/var/lib/jasper/chip-aec-rejections")
 RETAINED_REJECTIONS = 3
+# Never the stimulus, warm-up, or adaptation files the same run writes.
+REJECTED_CAPTURE_GLOBS = ("*-m*-*.wav", "aec-o*.wav")
 # Reason literal that routes deploy/bin/jasper-aec-reconcile into its
 # arm-only dispatch while this process's marker is live; every other reason
 # under a live marker is a mutate-nothing no-op there.
@@ -154,7 +159,7 @@ def _final_timing(evidence: Sequence[MicTiming]) -> tuple[tuple[int, ...], float
 
 
 def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
-    """Move a rejected run's timing captures out of the unwinding temp dir.
+    """Move a rejected run's timing and product captures out of the temp dir.
 
     Best-effort: a retention failure must not replace the rejection the owner
     actually needs to read.
@@ -164,7 +169,12 @@ def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
     moved = 0
     try:
         destination.mkdir(parents=True, exist_ok=True)
-        for capture in sorted(directory.glob("*-m*-*.wav")):
+        captures = [
+            capture
+            for pattern in REJECTED_CAPTURE_GLOBS
+            for capture in directory.glob(pattern)
+        ]
+        for capture in sorted(captures):
             shutil.move(capture, destination / capture.name)
             moved += 1
         # Never a prune candidate: the box has no RTC, so a restored or stepped
@@ -211,6 +221,26 @@ def _timing_evidence(
         )
         raise CommissioningError(
             f"{rejection} phase={label} retained_captures={retained}"
+        ) from rejection
+
+
+def _product_evidence(
+    io, dev, hardware: Hardware, delay: int, stimulus: Path,
+    active: np.ndarray, directory: Path, rejection_dir: Path,
+) -> ProductResult:
+    try:
+        return io.product(dev, hardware, delay, stimulus, active, directory)
+    except ProductRejected as rejection:
+        retained = _retain_rejected_captures(directory, rejection_dir)
+        log_event(
+            logger,
+            "chip_aec_commission.product_rejected",
+            retained_captures=str(retained),
+            **rejection.fields,
+            level=logging.ERROR,
+        )
+        raise CommissioningError(
+            f"{rejection} retained_captures={retained}"
         ) from rejection
 
 
@@ -280,8 +310,9 @@ def _commission(
             io.adapt(stimulus, directory)
             if io.convergence(dev) != 1:
                 raise CommissioningError("AEC convergence did not transition 0 to 1")
-            product = io.product(
-                dev, hardware, choice.sys_delay, stimulus, active, directory
+            product = _product_evidence(
+                io, dev, hardware, choice.sys_delay, stimulus, active, directory,
+                rejection_dir,
             )
             artifact = AlignmentArtifact(
                 identity, choice.sys_delay + queue_median, choice.sys_delay
@@ -309,15 +340,7 @@ def _commission(
                 "lags": lags,
                 "center": center,
                 "worst_edge_margin": margin,
-                "raw_excess_snr_db": round(product.minimum_raw_excess_snr_db, 2),
-                "raw_level_delta_db": round(product.raw_level_delta_db, 3),
-                "beam_acquisition_db": tuple(
-                    round(value, 2) for value in product.beam_acquisition_db
-                ),
-                "beam_suppression_db": tuple(
-                    round(value, 2) for value in product.beam_suppression_db
-                ),
-                "clipped_samples": product.clipped_samples,
+                **product.evidence(),
             }
     finally:
         try:
@@ -662,6 +685,12 @@ class SystemIO:
             off = self._capture(hardware, stimulus, directory / "aec-off.wav")
         finally:
             self.apply(dev, hardware, delay, arm=True)
+        log_event(
+            logger,
+            "chip_aec_commission.product_capture",
+            aec_on_rms_dbfs=round(dbfs_rms(on), 2),
+            aec_off_rms_dbfs=round(dbfs_rms(off), 2),
+        )
         return analyze_product(on, off, active)
 
     def close(self, dev) -> None:
