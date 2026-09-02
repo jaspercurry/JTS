@@ -77,16 +77,27 @@ def test_voice_service_starts_udp_mic_producer_softly() -> None:
     jasper-aec-bridge. If voice starts while the bridge is inactive, the UDP
     capture socket binds but receives no frames, and voice watchdog-restarts.
 
-    This must stay a soft dependency: bridge restarts should not cascade-stop an
-    otherwise healthy voice daemon, and no-mic/custom-mic boxes should still use
-    the reconciler's existing gates.
+    The want is still SOFT — bridge restarts must not cascade-stop an
+    otherwise healthy voice daemon — but it is no longer static. `Wants=`
+    starts a unit even when it is disabled, so a static one re-pulls the whole
+    AEC stack onto a box whose mic never touches it: a streambox answering
+    through a paired Bluetooth remote reads the accessory path (udp:9892)
+    instead. jasper-aec-reconcile already decides whether the bridge runs, so
+    it writes and removes the want beside those same calls; that half is
+    pinned by test_voice_wants_the_bridge_only_while_the_bridge_carries_the_mic
+    in tests/test_aec_reconcile.py.
+
+    After= stays in the unit: pure ordering, free when the bridge is absent.
     """
     text = _unit_text()
     after = _directive_values(text, "After")
     wants = _directive_values(text, "Wants")
     assert "jasper-aec-bridge.service" in after, after
-    assert "jasper-aec-bridge.service" in wants, wants
+    assert "jasper-aec-bridge.service" not in wants, wants
     assert "Requires=jasper-aec-bridge.service" not in text
+    # The soft-dependency guarantee this test is named for still holds for the
+    # units that ARE unconditional.
+    assert "jasper-fanin.service" in wants, wants
 
 
 def test_voice_service_parks_on_mic_unavailable_exit() -> None:

@@ -1459,6 +1459,32 @@ run_systemctl() {
     "$SYSTEMCTL" "$@" || true
 }
 
+# Where the reconciler-owned voice drop-in lives. Overridable so the test
+# harness can point it at a temp tree, like JASPER_SYSTEMCTL does for systemctl.
+JASPER_SYSTEMD_DIR="${JASPER_SYSTEMD_DIR:-/etc/systemd/system}"
+VOICE_BRIDGE_WANT_DROPIN="${JASPER_SYSTEMD_DIR}/jasper-voice.service.d/10-aec-bridge-want.conf"
+
+set_voice_bridge_want() {
+    # $1 = "on" to make jasper-voice pull the bridge, "off" to stop it.
+    #
+    # The want cannot be static in the unit: `Wants=` starts a unit even when
+    # it is disabled, so a box with no local mic -- a streambox answering
+    # through a paired Bluetooth remote on the accessory path -- would start
+    # the AEC stack anyway. This reconciler already decides whether the bridge
+    # runs, so it decides whether voice wants it, from the same places.
+    local want_dir
+    want_dir="$(dirname "${VOICE_BRIDGE_WANT_DROPIN}")"
+    if [[ "$1" == "on" ]]; then
+        mkdir -p "${want_dir}" || return 0
+        printf '[Unit]\nWants=jasper-aec-bridge.service\n' \
+            > "${VOICE_BRIDGE_WANT_DROPIN}" || return 0
+    else
+        [[ -e "${VOICE_BRIDGE_WANT_DROPIN}" ]] || return 0
+        rm -f "${VOICE_BRIDGE_WANT_DROPIN}" || return 0
+    fi
+    run_systemctl daemon-reload
+}
+
 reset_failed_units() {
     local unit
     for unit in "$@"; do
@@ -1486,6 +1512,7 @@ stop_disable_aec() {
     fi
     run_systemctl stop jasper-aec-bridge.service jasper-aec-init.service
     run_systemctl disable jasper-aec-bridge.service jasper-aec-init.service
+    set_voice_bridge_want off
     reset_failed_units jasper-aec-bridge.service jasper-aec-init.service
 }
 
@@ -1515,6 +1542,7 @@ enable_start_aec() {
     # away. Caller-independent, so no call site can forget it.
     VOICE_RESTART_NEEDED=1
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
+    set_voice_bridge_want on
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
     # `restart` not `start`: jasper-aec-init is Type=oneshot with
     # RemainAfterExit=yes, so `start` is a no-op once it's run
@@ -1858,6 +1886,7 @@ activate_managed_chip_aec() {
         return 1
     fi
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
+    set_voice_bridge_want on
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
     if "$SYSTEMCTL" restart jasper-aec-init.service; then
         if disclosure="$(alignment_disclosure)"; then
