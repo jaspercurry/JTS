@@ -397,6 +397,15 @@ DELTA_PROBE_ROLLBACK_VERDICTS: frozenset[str] = frozenset({
     VERDICT_SPATIALLY_COSTLY,
 })
 
+#: The verdicts that carry no grade at all: both leave the shape question
+#: unanswered and leave :attr:`DeltaProbeMap.rms_error_db` at 0.0, so a reader
+#: ranking on that number must exclude them rather than read an unmeasured map
+#: as a perfect one.
+DELTA_PROBE_UNGRADED_VERDICTS: frozenset[str] = frozenset({
+    VERDICT_UNAVAILABLE,
+    VERDICT_SAFETY_ONLY,
+})
+
 #: The one reason the seam hands a rollback verdict to the adoption table
 #: instead of restoring on it (#2559). A stable string, because it rides the
 #: journal and the round receipt: an immediate restore that did not happen must
@@ -2462,6 +2471,7 @@ __all__ = [
     "DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB",
     "DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS",
     "DELTA_PROBE_ROLLBACK_VERDICTS",
+    "DELTA_PROBE_UNGRADED_VERDICTS",
     "DELTA_PROBE_SHORTFALL_GAIN_CEILING",
     "DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB",
     "DELTA_PROBE_TOLERANCE_HIGH_DB",

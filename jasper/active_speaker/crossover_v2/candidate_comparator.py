@@ -16,8 +16,9 @@ realized its own commanded shape best?* — and nothing else:
   is not a permission, and a top two sitting inside the measurement's own
   repeat floor is a tie this instrument cannot break.
 * It owns no verdict vocabulary: the exclusion set is
-  :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS` plus
-  the two verdicts carrying no grade, imported rather than restated.
+  :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS` and
+  :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_UNGRADED_VERDICTS`,
+  imported rather than restated.
 """
 
 from __future__ import annotations
@@ -28,8 +29,7 @@ from typing import Any
 
 from ..delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
-    VERDICT_SAFETY_ONLY,
-    VERDICT_UNAVAILABLE,
+    DELTA_PROBE_UNGRADED_VERDICTS,
     DeltaProbeMap,
 )
 
@@ -67,15 +67,9 @@ COMPARISON_REASONS: frozenset[str] = frozenset({
     REASON_NO_SURVIVOR,
 })
 
-#: Not rollbacks, and still unrankable: both leave the shape question
-#: unanswered and both leave ``rms_error_db`` at 0.0, which would sort an
-#: unmeasured candidate first. A map with no grade is excluded from a grade
-#: comparison rather than read as a perfect one.
-_UNGRADED_VERDICTS: frozenset[str] = frozenset({
-    VERDICT_UNAVAILABLE, VERDICT_SAFETY_ONLY,
-})
-
-_EXCLUDED_VERDICTS: frozenset[str] = DELTA_PROBE_ROLLBACK_VERDICTS | _UNGRADED_VERDICTS
+_EXCLUDED_VERDICTS: frozenset[str] = (
+    DELTA_PROBE_ROLLBACK_VERDICTS | DELTA_PROBE_UNGRADED_VERDICTS
+)
 
 
 @dataclass(frozen=True)
@@ -84,7 +78,6 @@ class CandidateRank:
 
     candidate_id: str
     verdict: str
-    rollback: bool
     max_error_db: float
     rms_error_db: float
     #: The number this candidate was actually ORDERED on: the map's
@@ -127,7 +120,6 @@ def _rank(candidate_id: str, probe: DeltaProbeMap) -> CandidateRank:
     return CandidateRank(
         candidate_id=candidate_id,
         verdict=probe.verdict,
-        rollback=probe.rollback,
         max_error_db=probe.max_error_db,
         rms_error_db=probe.rms_error_db,
         # Keyed on the FIELD and not on a verdict: a map either measured a

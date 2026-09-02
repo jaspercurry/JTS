@@ -138,7 +138,6 @@ def test_each_rank_carries_its_own_maps_numbers():
     assert comparison.ranked[0].to_dict() == {
         "candidate_id": "a",
         "verdict": probe.verdict,
-        "rollback": probe.rollback,
         "max_error_db": probe.max_error_db,
         "rms_error_db": probe.rms_error_db,
         "ranked_rms_db": probe.rms_error_db,
