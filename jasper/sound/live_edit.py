@@ -11,7 +11,7 @@ written in place and does not. Decided by comparing the RUNNING graph against
 the WANTED one, never by a caller declaring its own change safe (ADR-0177).
 See ADR-0211 for the CamillaDSP behaviour this mirrors. The rule is
 structural only: a moved broadband trim lands as a level step rather than a
-fade, which ADR-0218 accepts to keep a profile A/B unfaded.
+fade, which ADR-0219 accepts to keep a profile A/B unfaded.
 
 Both sides must be CamillaDSP's own normalization of a config
 (:meth:`~jasper.camilla.CamillaController.get_active_config_raw` and

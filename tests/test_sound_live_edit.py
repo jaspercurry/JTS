@@ -316,7 +316,7 @@ async def test_a_save_that_moves_a_broadband_trim_is_written_in_place(
 
     With match loudness on, each profile carries its own compensating trim, so
     ducking a moved one fades the audition. The step this accepts is bounded by
-    the trim's own range (ADR-0218).
+    the trim's own range (ADR-0219).
     """
     running = RUNNING.replace("sound_preamp", trim)
     current = _running_at(tmp_path, running)
