@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import types
 
 import numpy as np
 import pytest
@@ -1067,19 +1066,13 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
 
 
 def _wake_leg_cfg():
-    """Minimal Config stand-in for `_configured_wake_legs`, shaped like a
-    streambox: `mic_device` still carries the literal `"Array"` default and
-    the AEC reconciler never ran there, so nothing in the config says "no
-    always-listening mic". SimpleNamespace, not MagicMock — a MagicMock's
-    auto-created attrs are truthy and would defeat the empty-string gating
-    the function under test relies on."""
-    return types.SimpleNamespace(
+    """Streambox-shaped `_cfg` (tests/test_voice_daemon_wake_triple_stream.py):
+    `mic_device` still carries the literal `"Array"` default and the AEC
+    reconciler never ran there, so nothing in the config says "no
+    always-listening mic", plus a paired remote's manual mic source."""
+    from tests.test_voice_daemon_wake_triple_stream import _cfg
+    return _cfg(
         mic_device="Array",
-        mic_device_raw="",
-        mic_device_dtln="",
-        mic_device_chip_aec_150="",
-        mic_device_chip_aec_210="",
-        local_mic_present=None,
         manual_mic_sources={"wiim_remote_2": "udp:9892"},
     )
 
@@ -1117,6 +1110,35 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
         manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
     )
     assert wl._push_to_talk_only is expected_ptt_only
+
+
+def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
+    monkeypatch, caplog,
+):
+    """A `ValueError` from `read_install_profile()` (a corrupt/unrecognized
+    marker token) must not traceback out of `main()` — only
+    `InputDeviceUnavailable`/`VoiceProviderNotConfigured`/
+    `SpeechVADSetupError` are special-cased there, so anything else would
+    exit 1 and climb `Restart=on-failure` to `StartLimitAction=reboot`.
+    Fail OPEN: keep today's behaviour, planning wake legs as if the profile
+    always granted WAKE_DETECTION. See ADR-0214.
+    """
+    from jasper.voice import daemon_main
+    from jasper.voice_daemon import _configured_wake_legs
+
+    def _raise():
+        raise ValueError("invalid install profile 'bogus'")
+
+    monkeypatch.setattr(daemon_main, "read_install_profile", _raise)
+
+    with caplog.at_level(logging.WARNING):
+        supported = daemon_main._wake_detection_supported()
+
+    assert supported is True
+    assert "event=voice.install_profile_unreadable" in caplog.text
+
+    plan = _configured_wake_legs(_wake_leg_cfg(), wake_detection_supported=supported)
+    assert [spec.token for spec, _device in plan] == ["on"]
 
 
 @pytest.mark.parametrize("ptt_only, expect_vad", [(True, False), (False, True)])

@@ -210,6 +210,33 @@ def _require_usable_input(
     )
 
 
+def _wake_detection_supported() -> bool:
+    """Whether the install profile grants always-on wake inference.
+
+    ``read_install_profile()`` raises ``ValueError`` on an unparseable
+    marker token. ``main()`` special-cases only ``InputDeviceUnavailable``,
+    ``VoiceProviderNotConfigured`` and ``SpeechVADSetupError`` — anything
+    else would traceback out, exit 1, and climb ``Restart=on-failure`` to
+    ``StartLimitAction=reboot``. Fail OPEN (today's pre-ADR-0214 behaviour:
+    wake detection supported, legs planned as always) rather than reboot a
+    speaker over a corrupt marker file. Mirrors
+    ``jasper.control.server._control_install_profile``, which fails the
+    opposite way because its stakes are a route allowlist, not a daemon
+    crash.
+    """
+    try:
+        profile = read_install_profile()
+    except ValueError as e:
+        log_event(
+            logger,
+            "voice.install_profile_unreadable",
+            detail=str(e),
+            level=logging.WARNING,
+        )
+        return True
+    return install_profile_supports_wake_detection(profile)
+
+
 def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
     """The startup line's ``wake=`` field.
 
@@ -964,9 +991,7 @@ async def run() -> None:
     # and passed down rather than re-read per decision. See ADR-0214.
     planned_wake_legs = _configured_wake_legs(
         cfg,
-        wake_detection_supported=install_profile_supports_wake_detection(
-            read_install_profile(),
-        ),
+        wake_detection_supported=_wake_detection_supported(),
     )
     logger.info(
         "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",

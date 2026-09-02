@@ -55,6 +55,7 @@ SOURCE_INTENT_DISABLED = "disabled"
 MAX_SOURCE_INTENT_BYTES = 64 * 1024
 MAX_SOURCE_STATUS_BYTES = 64 * 1024
 MAX_GROUPING_ENV_BYTES = 64 * 1024
+MAX_ACCESSORY_MIC_ENV_BYTES = 64 * 1024
 RFKILL_CLASS_PATH = Path("/sys/class/rfkill")
 UAC2_CARD_PATH = Path("/proc/asound/UAC2Gadget")
 MAX_RFKILL_FIELD_BYTES = 32
@@ -165,17 +166,8 @@ def _accessory_mic_published() -> bool:
     same: this probe never invents an expectation it cannot evidence.
     """
 
-    try:
-        body = ACCESSORY_MIC_ENV_FILE.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return False
-    value = ""
-    for line in body.splitlines():
-        key, separator, raw = line.strip().partition("=")
-        if separator and key == MANUAL_MIC_SOURCES_KEY:
-            # Last assignment wins, mirroring systemd EnvironmentFile=.
-            value = raw.strip().strip("'\"").strip()
-    return bool(value)
+    env = _read_bounded_env(ACCESSORY_MIC_ENV_FILE, MAX_ACCESSORY_MIC_ENV_BYTES)
+    return bool(env.get(MANUAL_MIC_SOURCES_KEY, ""))
 
 
 def _observed_optional_units(profile: str) -> tuple[str, ...]:

@@ -71,6 +71,13 @@ while the reconciler publishes a mic source** in `accessory-mics.env`.
   `jasper-aec-reconcile` on disk. Starting it would run
   `systemctl enable jasper-voice.service` and permanently re-arm the brain, so
   the accessory reconciler never starts a parked gate owner.
+- A BlueZ discovery timeout in `reconcile_once` raises before the voice unit
+  is converged, deliberately: the same tick leaves `accessory-mics.env`
+  unwritten, so a timed-out probe changes neither.
+- `jasper-doctor`'s `voice`/`wake` groups stay omitted on a streambox by
+  role, not by live pairing state, so a streambox with a paired remote and a
+  dead `jasper-voice.service` is reported only by `jasper-deploy-health`'s
+  WARN (decision 5), never by doctor — a known gap left for a follow-up.
 - **Rejected: keeping the installer's `disable --now` and letting the
   reconciler enable the unit on demand.** Enablement survives reboots and the
   reconciler cannot; a box that booted with nothing paired would come up
