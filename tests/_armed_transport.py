@@ -6,9 +6,9 @@
 
 WHY IT EXISTS. `build_driver_commission_load_preflight`'s
 `commissioning_transport_armed` gate (Wave 3) reads two reconciler-owned files
-FRESH — fan-in's coupling and outputd's ACTIVE-endpoint marker — and both
-readers fail SAFE, so a test that declares neither reads `loopback` with the
-marker false. Off the ring that costs nothing: the gate's ring branch is not
+FRESH — fan-in's coupling and outputd's ACTIVE-endpoint marker — and a test
+that declares neither has no `fanin.env` to read and a false marker. Off the
+ring that costs nothing: the gate's ring branch is not
 taken and both conjuncts stay `True`. On the ring it is the difference between
 `status="loaded"` and `status="blocked"`.
 
@@ -52,8 +52,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from jasper.fanin_coupling import COUPLING_SHM_RING
-
 
 def arm_ring_transport(monkeypatch: Any) -> None:
     """Report fan-in coupled to Ring A and outputd armed on the ACTIVE ring.
@@ -71,8 +69,8 @@ def arm_ring_transport(monkeypatch: Any) -> None:
     avoid.
     """
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda path=None: COUPLING_SHM_RING,
+        "jasper.fanin.ring_health.persisted_coupling_feeds_ring",
+        lambda path=None: True,
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed",

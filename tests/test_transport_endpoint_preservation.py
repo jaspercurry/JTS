@@ -1293,13 +1293,16 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
 # --------------------------------------------------------------------------
 
 
-def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str, marker: str):
+def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str | None, marker: str):
     """Point BOTH reconciler-owned files at ``tmp_path`` and write the state.
 
     Real files rather than stubbed predicates: the gate's contract is that it
     reads each file FRESH on every call, and a monkeypatched predicate cannot
     fail that way. Both module constants are imported inside the reader
     functions, so rebinding them here redirects the real read.
+
+    ``coupling=None`` writes the file with the coupling key ABSENT — the shape a
+    box carries before the reconciler has ever named a transport.
     """
     from jasper.fanin_coupling import (
         COUPLING_ENV_VAR,
@@ -1308,7 +1311,10 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str, marker: str):
 
     fanin_env = Path(tmp_path) / "fanin.env"
     outputd_env = Path(tmp_path) / "outputd.env"
-    fanin_env.write_text(f"{COUPLING_ENV_VAR}={coupling}\n", encoding="utf-8")
+    fanin_env.write_text(
+        "" if coupling is None else f"{COUPLING_ENV_VAR}={coupling}\n",
+        encoding="utf-8",
+    )
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
@@ -1345,37 +1351,48 @@ def _transport_armed_gate(preflight):
     )
 
 
+@pytest.mark.parametrize(
+    "coupling,feeds_ring",
+    [("shm_ring", True), ("", True), (None, True), ("loopback", False)],
+    ids=["declared", "empty", "absent_key", "refused_token"],
+)
 async def test_the_guarded_load_refuses_a_ring_graph_nothing_fills(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, coupling, feeds_ring,
 ):
-    """COUPLING conjunct, isolated: the endpoint IS armed, fan-in is not coupled.
+    """COUPLING conjunct, isolated: the endpoint IS armed, so only this moves.
 
-    Under `loopback` fan-in writes the snd-aloop substream and nothing fills
-    Ring A, so a ring-capture graph sweeps into digital silence with every
-    daemon healthy. The marker is armed here on purpose: only the coupling term
-    can produce this refusal, so a mutation of the OTHER term cannot be scored
-    against this test.
+    ADR-0100 left one transport: `jasper-fanin` serves an absent key, an empty
+    value and `shm_ring` alike and refuses anything else as a config-class fault
+    (exit 78, the unit parks). A DECLARATION is therefore not what fills Ring A,
+    and only a value the daemon refuses says the ring is unfed — that box's
+    fan-in is parked, so a ring-capture graph sweeps into digital silence with
+    every other daemon healthy.
+
+    The marker is armed in every case on purpose: only the coupling term can
+    move this verdict, so a mutation of the OTHER term cannot be scored here.
     """
     topology, preset = _commissioning_box()
-    _ring_transport_state(monkeypatch, tmp_path, coupling="loopback", marker="1")
+    _ring_transport_state(monkeypatch, tmp_path, coupling=coupling, marker="1")
 
-    preflight = _ring_load_preflight(topology, preset, tmp_path / "unfed")
+    preflight = _ring_load_preflight(topology, preset, tmp_path / "feed")
 
-    assert preflight["load_allowed"] is False
-    assert _transport_armed_gate(preflight)["passed"] is False
+    assert _transport_armed_gate(preflight)["passed"] is feeds_ring
     codes = {issue.get("code") for issue in preflight["issues"]}
-    assert "commissioning_ring_feed_unarmed" in codes, preflight["issues"]
+    unfed = "commissioning_ring_feed_unarmed" in codes
+    assert unfed is (not feeds_ring), preflight["issues"]
     assert "commissioning_active_endpoint_unarmed" not in codes, preflight["issues"]
     assert "commissioning_ring_transport_unsupported" not in codes, preflight["issues"]
-    refusal = next(
-        issue
-        for issue in preflight["issues"]
-        if issue.get("code") == "commissioning_ring_feed_unarmed"
-    )
-    assert refusal["severity"] == "blocker"
-    # The OPERATOR surface names the executable remedy; the household surfaces
-    # never do, which is what the copy guards in tests/test_sound_setup.py pin.
-    assert "jasper-fanin-coupling-reconcile shm_ring" in refusal["message"]
+    if not feeds_ring:
+        assert preflight["load_allowed"] is False
+        refusal = next(
+            issue
+            for issue in preflight["issues"]
+            if issue.get("code") == "commissioning_ring_feed_unarmed"
+        )
+        assert refusal["severity"] == "blocker"
+        # The OPERATOR surface names the executable remedy; the household
+        # surfaces never do — the copy guards in test_sound_setup.py pin that.
+        assert "jasper-fanin-coupling-reconcile shm_ring" in refusal["message"]
 
 
 async def test_the_guarded_load_refuses_a_ring_graph_nothing_reads(
@@ -1446,10 +1463,10 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
 ):
     """SCOPE: a non-ring graph needs no ring armed, and consults neither file.
 
-    Both files are pointed at paths that do not exist, so both readers would
-    fail SAFE — loopback, marker false — and refuse if they were consulted at
-    all. The gate passes, which is the proof that an unarmed fleet box on the
-    ALSA active lane behaves exactly as it did before this wave.
+    Both files are pointed at paths that do not exist, so the marker reader
+    would refuse if it were consulted at all. The gate passes, which is the
+    proof that an unarmed fleet box on the ALSA active lane behaves exactly as
+    it did before this wave.
     """
     from jasper.active_speaker.startup_load import (
         build_driver_commission_load_preflight,
@@ -1487,10 +1504,9 @@ async def test_the_guarded_load_refuses_a_ring_graph_whose_transport_state_is_co
 ):
     """A non-UTF-8 reconciler file is an unarmed transport, not a traceback.
 
-    Both readers fail-safe on ``OSError`` and normalise every malformed VALUE,
-    so a missing file, an empty one, a typo and garbage keys all already resolve
-    to unarmed. One input class escaped both: a non-UTF-8 byte raises
-    ``UnicodeDecodeError`` — a ``ValueError``, not an ``OSError`` — and this
+    Both readers normalise every malformed VALUE, so a typo and a garbage key
+    already resolve to unarmed. One input class escaped both: a non-UTF-8 byte
+    raises ``UnicodeDecodeError`` — a ``ValueError``, not an ``OSError`` — and this
     preflight is the first caller to read either file, so the exception would
     leave it and take the blocker with it. On a Pi that is the ordinary shape of
     SD-card corruption or a write truncated by a power cut, and the suppressed
