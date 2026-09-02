@@ -548,17 +548,35 @@ def remote_capture_cmd(seconds: float, session: str) -> str:
     )
 
 
+def sniffer_kill_pattern(session: str) -> str:
+    """The `pkill -f` pattern that matches THIS session's sniffer, only.
+
+    `pkill -f` matches whole command lines, so the bare path also matched
+    the cleanup shell's own argv -- which carries it -- and SIGTERMed that
+    shell before the `rm` after it ever ran, leaking a root-owned capture
+    every run. Anchoring to the interpreter fixes that without widening
+    the pattern: `remote_capture_cmd`'s `env` execs the script as
+    `python3 <path> ...` (verified with `ps -eo args` on the box), while
+    every wrapper around it starts with `sudo` and the cleanup shell with
+    `bash`. Tracks remote_capture_cmd's launch shape.
+    """
+    return "^python3 " + remote_sniffer_path(session).replace(".", "\\.")
+
+
 def cleanup_session(host: str, user: str, session: str) -> None:
     """Kill the remote sniffer BY ITS UNIQUE PATH (never a broad pkill
     pattern -- a concurrent session's sniffer must survive) and remove
     this session's remote temp files. Best-effort: called from `finally`
     (including on KeyboardInterrupt), so a cleanup failure is printed,
     never raised -- it must not mask the real outcome or hang the exit."""
-    sniffer = remote_sniffer_path(session)
     paths = " ".join(
-        shlex.quote(p) for p in (sniffer, remote_capture_path(session), remote_click_path(session))
+        shlex.quote(p)
+        for p in (remote_sniffer_path(session), remote_capture_path(session), remote_click_path(session))
     )
-    remote_cmd = f"sudo pkill -f {shlex.quote(sniffer)} >/dev/null 2>&1; sudo rm -f {paths}"
+    remote_cmd = (
+        f"sudo pkill -f {shlex.quote(sniffer_kill_pattern(session))} >/dev/null 2>&1; "
+        f"sudo rm -f {paths}"
+    )
     try:
         ssh_run(host, user, remote_cmd, timeout=15)
     except SystemExit as exc:

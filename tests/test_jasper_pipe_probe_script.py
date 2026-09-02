@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -325,6 +326,25 @@ def test_the_sniffers_jasper_imports_resolve_with_only_the_stdlib() -> None:
         capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_the_sniffer_kill_pattern_cannot_match_the_shell_that_runs_it() -> None:
+    """`pkill -f` matches whole command lines, and the shell running cleanup
+    carries the sniffer's path in its own argv -- so a bare-path pattern
+    SIGTERMs that shell and the `rm -f` after it never runs, leaking a
+    root-owned multi-MB capture on the Pi every run. Anchoring to the
+    interpreter keeps the kill by-exact-path without matching itself."""
+    session = "abc12345"
+    pattern = re.compile(jasper_pipe_probe.sniffer_kill_pattern(session))
+    sniffer = jasper_pipe_probe.remote_sniffer_path(session)
+    out = jasper_pipe_probe.remote_capture_path(session)
+
+    # The sniffer's real argv on the box: `env` execs it as `python3 <path>`.
+    assert pattern.search(f"python3 {sniffer} 10.0 {out}")
+    # The cleanup shell's own argv names the same path and must NOT match.
+    assert not pattern.search(f"bash -c sudo pkill -f {pattern.pattern}; sudo rm -f {sniffer} {out}")
+    # Nor may it reach a concurrent session's sniffer.
+    assert not pattern.search(f"python3 {jasper_pipe_probe.remote_sniffer_path('deadbeef')} 10.0")
 
 
 def test_a_box_on_another_commit_is_refused_before_the_sniffer_runs(
