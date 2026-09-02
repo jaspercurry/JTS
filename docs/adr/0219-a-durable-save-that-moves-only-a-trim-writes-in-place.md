@@ -29,8 +29,31 @@ the structural comparison already names.
 - A `/sound` headroom-trim drag, a match-loudness toggle, and an active-path
   reconcile that changes `active_baseline_headroom` now land as an instant
   level step rather than a bracketed fade. That is the accepted cost.
-- The step is bounded: `HEADROOM_TRIM_MAX_DB` on the stereo path,
-  `MAX_PROGRAM_HEADROOM_DB` on the active path. `devices.volume_limit`
-  remains the hard ceiling and is untouched by any of this.
-- The live-draft path is unaffected: it freezes the output trim, so a draft
-  never moved a Gain to begin with.
+- The step is bounded per parameter, not in aggregate. `HEADROOM_TRIM_MAX_DB`
+  (12 dB) caps the manual trim, but the match-loudness compensation added on
+  top of it has no cap of its own: `loudness_compensation_db` is the mean
+  power of `response_preview`, which sums every active filter's response, and
+  each contributing band is clamped individually — `ADVANCED_GAIN_LIMIT_DB`
+  and `SIMPLE_EQ_LIMIT_DB`, both 12 dB — never the total. One boosted band
+  caps a save near 24 dB (12 trim + 12 compensation); several overlapping
+  boosted bands push it past that, since nothing bounds the sum.
+  `devices.volume_limit` remains the hard ceiling and is untouched by any of
+  this. The active-path step, `MAX_PROGRAM_HEADROOM_DB` (40 dB), is worth
+  reading for what it actually is: `sound_reconcile` moving
+  `active_baseline_headroom` in the background, not the listener gesture the
+  Why leans on.
+- The live-draft path is unaffected in the steady state: it freezes the
+  output trim to the saved profile's own value, so a draft never moves a
+  Gain to begin with. That buys "not draft-derived", not "always equal to
+  what's running" — when the running graph disagrees with the saved trim (a
+  settings re-apply that raised, leaving its `warning` payload with the old
+  graph still loaded, or an audition graph whose own compensation differs
+  from the saved profile's), the next band drag diffs `sound_preamp` too,
+  and it is now a `parameters`-only change like the dragged band, so it
+  writes in place un-ducked — where the pre-#3678 Gain rule forced a ducked
+  swap.
+- This decision still owes the hardware check ADR-0216 named for its own
+  half: on the Saved tab with match loudness on, an A/B between two profiles
+  with different loudness compensation should be silent, and a `/sound`
+  headroom drag should land as a step. The journal tell is `event=sound.apply`
+  with no `-41.67 dB` fader excursion beside it for the A/B.
