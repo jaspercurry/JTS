@@ -24,8 +24,6 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from ...active_speaker.bundles import sessions_dir
-from ...active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...memory_policy import memory_headroom_thresholds
 from ...wake_events import (
@@ -406,29 +404,20 @@ def check_disk_space() -> CheckResult:
 _STORAGE_WALK_MAX_ENTRIES = 50_000
 _STORAGE_WALK_MAX_DEPTH = 6
 
-# The active-speaker stores nest far deeper than the generic cap: a banked
-# round is <campaign-root>/<round>/bundle/<session>/evidence/v1/artifacts/
-# crossover_v2/<relay>/positions/<file> -- nine directory levels, and the
-# sessions store is the same tail two levels up. At depth 6 the walk stops
-# above every artifact directory and reports a few percent of the real size,
-# which is worse than no figure. The entry cap still bounds the walk.
-_ACTIVE_SPEAKER_WALK_MAX_DEPTH = 10
 
-
-def _bounded_dir_size(root: Path, *, max_depth: int | None = None) -> tuple[int, bool]:
+def _bounded_dir_size(root: Path) -> tuple[int, bool]:
     """Sum file sizes under ``root`` with a bounded ``os.scandir`` walk.
 
     Returns ``(total_bytes, truncated)``. ``truncated`` is True when
-    either the entry cap or the depth cap (``max_depth``, defaulting to
-    :data:`_STORAGE_WALK_MAX_DEPTH`) stopped the walk early, so the
-    caller can render the figure as a floor. Deliberately self-contained
-    (does not reuse jasper.correction.bundles' unbounded ``rglob`` helper)
+    either the entry cap or :data:`_STORAGE_WALK_MAX_DEPTH` stopped the
+    walk early, so the caller can render the figure as a floor.
+    Deliberately self-contained (does not reuse jasper.correction.bundles'
+    unbounded ``rglob`` helper)
     because a doctor probe must stay total and cheap regardless of how
     pathological the directory has become. Symlinks are not followed
     (``scandir`` is_dir/is_file default) so a stray symlink loop can't
     inflate the count or escape the tree. Per-entry OSErrors are skipped,
     never raised."""
-    depth_cap = _STORAGE_WALK_MAX_DEPTH if max_depth is None else max_depth
     total = 0
     entries_seen = 0
     truncated = False
@@ -449,7 +438,7 @@ def _bounded_dir_size(root: Path, *, max_depth: int | None = None) -> tuple[int,
                     return total, truncated
                 try:
                     if entry.is_dir(follow_symlinks=False):
-                        if depth + 1 <= depth_cap:
+                        if depth + 1 <= _STORAGE_WALK_MAX_DEPTH:
                             stack.append((Path(entry.path), depth + 1))
                         else:
                             truncated = True
@@ -585,36 +574,6 @@ def check_wake_events_storage() -> CheckResult:
             "check the ring reaper (journalctl -u jasper-voice | grep "
             "wake_events) or lower the cap."
         ),
-    )
-
-
-@doctor_check(order=42.35, group="memory")
-def check_active_speaker_storage() -> CheckResult:
-    """Read-only size disclosure for the two active-speaker evidence stores.
-
-    Disclosure, not a warning: neither store has an enforced byte budget.
-    Session storage is bundle-capped and evicts its own oldest complete
-    bundles (``bundles.enforce_retention``); the campaign home
-    (``jasper-round-bank``'s output) never evicts at all and is
-    operator-pruned. So there is no threshold an operator could act on — only
-    the number, and where to go and delete rounds if it has grown."""
-    parts = []
-    for label, path in (
-        ("sessions", sessions_dir()),
-        ("campaigns", DEFAULT_CAMPAIGN_ROOT),
-    ):
-        if not path.is_dir():
-            parts.append(f"{label} 0 MiB ({path} absent)")
-            continue
-        total, truncated = _bounded_dir_size(
-            path, max_depth=_ACTIVE_SPEAKER_WALK_MAX_DEPTH
-        )
-        floor = "≥" if truncated else ""
-        parts.append(f"{label} {floor}{total / (1024 * 1024):.0f} MiB under {path}")
-    return CheckResult(
-        "active-speaker storage",
-        "ok",
-        "; ".join(parts) + " — operator-pruned; remove a banked round to reclaim",
     )
 
 

@@ -46,30 +46,51 @@ def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path
     return session_dir, source / "state.json"
 
 
-def _ssot(tmp_path: Path, *, present: bool) -> dict[str, Path]:
-    """The design-draft/applied-profile SSOT paths, written or absent."""
+def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]:
+    """The non-state SSOT paths, written or absent.
+
+    ``absent`` names one of them to leave unwritten while the rest are present.
+    """
     paths = {
         "design_draft_path": tmp_path / "ssot" / "design_draft.json",
         "applied_profile_path": tmp_path / "ssot" / "applied_profile.json",
+        "repeat_floor_path": tmp_path / "ssot" / "repeat_floor.json",
     }
     if present:
-        for path in paths.values():
+        for key, path in paths.items():
+            if key == absent:
+                continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({"kind": path.stem}))
     return paths
 
 
-@pytest.mark.parametrize("present", [True, False], ids=["ssot-present", "ssot-absent"])
-def test_banked_tree_is_the_one_round_views_reads(tmp_path, present):
+@pytest.mark.parametrize(
+    "present, absent, missing",
+    [
+        (True, "", []),
+        (
+            False,
+            "",
+            ["design-draft.json", "applied-profile.json", "repeat-floor.json"],
+        ),
+        (True, "repeat_floor_path", ["repeat-floor.json"]),
+    ],
+    ids=["ssot-present", "ssot-absent", "repeat-floor-absent"],
+)
+def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, missing):
     """The assembled tree loads back through ``load_banked_round`` either way:
-    an absent SSOT document is named in ``provenance.json``, never a refusal."""
+    an absent SSOT document is named in ``provenance.json``, never a refusal.
+
+    The repeat floor is one of the four the reader opens, so a round banked
+    without it says so rather than dropping it silently."""
     session_dir, state_path = _live_session(tmp_path)
 
     banked = bank_round(
         session_dir,
         campaign_root=tmp_path / "campaigns",
         state_path=state_path,
-        **_ssot(tmp_path, present=present),
+        **_ssot(tmp_path, present=present, absent=absent),
     )
 
     # The round id is the receipt's, not the bundle's session id.
@@ -84,11 +105,14 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present):
     assert provenance == banked.provenance
     assert provenance["source"] == "on-box"
     assert provenance["session_id"] == session_dir.name
-    assert provenance["missing"] == (
-        [] if present else ["design-draft.json", "applied-profile.json"]
-    )
-    for name in ("state.json", "design-draft.json", "applied-profile.json"):
-        assert (banked.path / name).is_file() is (name not in provenance["missing"])
+    assert provenance["missing"] == missing
+    for name in (
+        "state.json",
+        "design-draft.json",
+        "applied-profile.json",
+        "repeat-floor.json",
+    ):
+        assert (banked.path / name).is_file() is (name not in missing)
 
 
 @pytest.mark.parametrize(
