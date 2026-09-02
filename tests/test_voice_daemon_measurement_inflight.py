@@ -624,7 +624,6 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     tts_socket: str,
 ) -> None:
     """A later AUDIO failure cannot erase an earlier command's audible tail."""
-    import scipy.signal
 
     import jasper.audio_io as audio_io_mod
     from jasper.audio_io import OutputdTtsPlayout
@@ -651,11 +650,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
             return None
 
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
@@ -807,15 +802,11 @@ async def test_cancelled_cue_tail_retains_output_episode(
     path: str,
 ) -> None:
     """Accepted cue PCM keeps admin/proactive ownership under cancellation."""
-    import scipy.signal
 
+    import jasper.audio_io as audio_io_mod
     from jasper.audio_io import OutputdTtsPlayout
 
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
@@ -1854,17 +1845,12 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
 ) -> None:
     import wave
 
-    import scipy.signal
-
+    import jasper.audio_io as audio_io_mod
     from jasper.audio_io import OutputdTtsPlayout
     from jasper.cues import AudioCueManager
     from jasper.cues.registry import find
 
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
     restore_started = asyncio.Event()

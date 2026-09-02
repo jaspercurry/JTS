@@ -58,13 +58,7 @@ class _CaptureStream:
 
 
 def _make_playout(monkeypatch) -> tuple[OutputdTtsPlayout, _CaptureStream]:
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
