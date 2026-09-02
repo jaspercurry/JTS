@@ -97,9 +97,14 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.camilla_emit import emit_peaking_biquad
+from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
+
+#: The CLI tests here build a packet from a live session bundle with no
+#: --drivers/--applied-profile, so none may read this machine's own.
+pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
 
 REPO = Path(__file__).resolve().parents[1]
 BAND = (824.35, 3297.4)
@@ -613,17 +618,23 @@ def test_the_declared_gate_number_paths_are_paths_the_packet_really_publishes(
         "disclosure": "reflection measured at 5.33 ms after the direct arrival",
         "reflection_measured": True,
         "moved_rms_db": 2.59, "reflection_delay_ms": 5.33,
+        "entanglement_floor_hz": 400.0,
+        "entanglement_floor_source": "declared_geometry",
     }}}
     session, state_path = _bundle(tmp_path, state=state, position_over={
         "gate_moved_rms_db": 1.37, "gate_reflection_delay_ms": 5.33,
+        "gate_entanglement_floor_hz": 400.0,
+        "gate_entanglement_floor_source": "declared_geometry",
     })
     packet = build_crossover_evidence_packet(session, state_path=state_path)
     declared = packet["reflections"]["uncertainty"]["not_uncertainties"]
 
     foreign = sorted(name for name in declared if "." in name or "[]" in name)
     assert foreign == [
+        "positions[].gate_entanglement_floor_hz",
         "positions[].gate_moved_rms_db",
         "positions[].gate_reflection_delay_ms",
+        "verify.gate.entanglement_floor_hz",
         "verify.gate.moved_rms_db",
         "verify.gate.reflection_delay_ms",
     ]
@@ -1549,8 +1560,8 @@ def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
 
     A cross-seat spread contains the field's real seat-to-seat variation AND the
     per-capture measurement noise, and this round cannot separate them —
-    separating them needs a repeat spread at a fixed pose, which is calibration
-    experiment E2 and has not been run. The rule bars publishing a pooled number
+    separating them needs a repeat spread at a fixed pose, which is the banked
+    repeat floor the accuracy budget reads. The rule bars publishing a pooled number
     AS a kind, so the block publishes it as neither: ``fields`` is empty, and the
     figure is declared under ``unseparated`` with a label deliberately kept OUT
     of the closed kind set, so a reader applying the set test concludes "not one
@@ -1566,7 +1577,6 @@ def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
     # Both halves named, and what would separate them.
     assert "seat to seat" in declared["of"]
     assert "measurement noise" in declared["of"]
-    assert "E2" in declared["of"] and "has not been run" in declared["of"]
     assert "never as a random or a systematic one" in declared["of"]
     assert "never pooled" in block["uncertainty"]["note"]
     # n IS published here — unlike the classification block, which says it does
@@ -2820,8 +2830,8 @@ def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):
     # this reference packet's fingerprint matches the one the CLI builds.
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     code, out, _ = _run_cli(
@@ -2851,8 +2861,8 @@ def _saved_packet(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = tmp_path / "packet.json"
     path.write_text(json.dumps(packet))
@@ -2916,6 +2926,7 @@ def test_a_document_echoing_another_packet_still_refuses_against_the_file(
 @pytest.mark.parametrize("extra", [
     pytest.param(["--drivers", "draft.json"], id="drivers"),
     pytest.param(["--applied-profile", "applied.json"], id="applied-profile"),
+    pytest.param(["--repeat-floor", "floor.json"], id="repeat-floor"),
     pytest.param(["--state", "state.json"], id="state"),
     pytest.param(["session-dir"], id="session_dir"),
 ])
@@ -2969,8 +2980,8 @@ def test_the_cli_reads_a_prescription_from_stdin(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     payload = json.dumps(_document([_cut(-1.5)], packet)).encode()
     code, out, _ = _run_cli(
@@ -3020,8 +3031,8 @@ def test_a_refusal_exits_two_and_prints_the_machine_readable_payload(
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = _write_document(tmp_path, _document(filters, packet))
     code, out, err = _run_cli(
@@ -3070,8 +3081,8 @@ def test_a_refusal_from_the_candidate_seam_still_exits_two(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(
         session,
-        driver_draft_path=cli._DRIVERS_DEFAULT_PATH,
-        applied_profile_path=cli._APPLIED_PROFILE_DEFAULT_PATH,
+        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
+        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
     )
     path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
     with mock.patch.object(

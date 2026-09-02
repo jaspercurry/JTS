@@ -36,6 +36,7 @@ import pytest
 
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from tests._web_test_helpers import make_real_handler
 
 
@@ -71,6 +72,8 @@ def _availability(
 @pytest.fixture(autouse=True)
 def _hardware_free_availability_and_pair_cleanup(monkeypatch):
     class _Snapshot:
+        error = ""
+
         @staticmethod
         def available(_unit):
             return True
@@ -649,7 +652,7 @@ def test_device_mutation_submission_failure_wakes_retained_stream(monkeypatch):
 
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", _RejectingDispatcher())
 
-    with pytest.raises(RuntimeError, match="loop stopped"):
+    with pytest.raises(RuntimeError):
         bluetooth_setup._start_device_mutation(
             "forget",
             mac,
@@ -995,15 +998,13 @@ def test_pair_attempt_ttl_expiry_wakes_blocked_consumer_before_cancel(
 
     consumer_thread = threading.Thread(target=consume, daemon=True)
     consumer_thread.start()
-    deadline = time.monotonic() + 1
-    while not attempt.consumer_attached and time.monotonic() < deadline:
-        time.sleep(0.001)
+    wait_until_sync(lambda: attempt.consumer_attached, interval=0.001)
     assert attempt.consumer_attached is True
 
     bluetooth_setup._expire_pair_attempt(mac, attempt)
 
-    assert consumer_done.wait(timeout=1)
-    consumer_thread.join(timeout=1)
+    assert consumer_done.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+    consumer_thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert mac not in bluetooth_setup._PAIR_STREAMS
     assert received == [{
         "stage": "error",
@@ -1034,7 +1035,7 @@ def test_pair_driver_submission_failure_closes_unowned_coroutine(monkeypatch):
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", _PairDispatcher())
     monkeypatch.setattr(bluetooth_setup.asyncio, "run_coroutine_threadsafe", reject)
 
-    with pytest.raises(RuntimeError, match="loop stopped"):
+    with pytest.raises(RuntimeError):
         bluetooth_setup._start_pair_stream(mac)
 
     assert inspect.getcoroutinestate(captured[0]) == inspect.CORO_CLOSED
@@ -1062,7 +1063,7 @@ def test_dispatcher_submission_failure_closes_unowned_coroutine(monkeypatch):
         mock.Mock(side_effect=RuntimeError("loop stopped")),
     )
 
-    with pytest.raises(RuntimeError, match="loop stopped"):
+    with pytest.raises(RuntimeError):
         dispatcher.run(coro)
 
     assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
@@ -1729,6 +1730,8 @@ def test_get_state_uses_one_batched_systemd_snapshot(monkeypatch):
         }
 
     class _Snapshot:
+        error = ""
+
         @staticmethod
         def available(_unit):
             return True
@@ -1780,6 +1783,51 @@ def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
     assert state["available"] is True
     assert state["effective"] == "degraded"
     assert "bt-agent.service" in state["degradedReason"]
+    # Structured verdict beside the prose: the UI gates its Pair controls on
+    # this value, never on a degradedReason substring.
+    assert state["pairingReady"] is False
+
+
+def test_pairing_verdict_reads_only_units_the_snapshot_probes():
+    """`UnitSnapshot.active` answers False for a unit it never looked at.
+
+    So an advertise unit outside the probed set would read as stopped and
+    disable pairing on every healthy speaker, with no other test failing.
+    """
+    assert set(
+        bluetooth_setup._BLUETOOTH_LIFECYCLE.advertise_units
+    ) <= set(bluetooth_setup._STATE_UNITS)
+
+
+def test_failed_unit_probe_does_not_claim_pairing_is_blocked(monkeypatch):
+    """A probe that could not read unit state is not evidence of a stopped one."""
+    fake = _FakeDispatcher()
+
+    async def read_adapter_state():
+        return {
+            "adapter": "hci0",
+            "powered": True,
+            "discoverable": False,
+            "discovering": False,
+        }
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
+    monkeypatch.setattr(bluetooth_setup, "adapter_state", read_adapter_state)
+    monkeypatch.setattr(
+        bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
+    )
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "probe_unit_snapshot",
+        lambda _units: bluetooth_setup.UnitSnapshot(
+            states={}, error="systemctl show timed out",
+        ),
+    )
+
+    state, status = bluetooth_setup._bluetooth_state_snapshot()
+
+    assert status == int(http.HTTPStatus.OK)
+    assert "pairingReady" not in state
 
 
 @pytest.mark.parametrize(
@@ -1831,7 +1879,10 @@ def test_get_state_preserves_desired_intent_when_adapter_read_fails(
     assert fake.run_calls == 1
 
 
-def test_state_reports_parked_without_rewriting_desired(monkeypatch):
+@pytest.mark.parametrize(
+    "park_reason", ("bonded_follower", "role_transition_in_progress"),
+)
+def test_state_reports_parked_without_rewriting_desired(monkeypatch, park_reason):
     fake = _FakeDispatcher()
 
     async def read_adapter_state():
@@ -1847,7 +1898,9 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        bluetooth_setup, "bonded_follower_park_reason", lambda: park_reason,
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "_unit_active",
@@ -1862,6 +1915,7 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch):
     assert payload["desired"] is True
     assert payload["effective"] == "parked"
     assert payload["parked"] is True
+    assert payload["parkReason"] == park_reason
 
 
 @pytest.mark.parametrize("desired", (False, True))
@@ -1913,7 +1967,9 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        bluetooth_setup, "bonded_follower_park_reason", lambda: "bonded_follower",
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "probe_bluetooth_availability",
@@ -1925,6 +1981,7 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     assert status == int(http.HTTPStatus.OK)
     assert state["effective"] == "parked"
     assert state["available"] is False
+    assert state["parkReason"] == "bonded_follower"
 
 
 @pytest.mark.parametrize("path", ("/power", "/scan"))

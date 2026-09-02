@@ -9,15 +9,10 @@ from __future__ import annotations
 import pytest
 
 from jasper.fanin_coupling import (
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAPTURE_DEVICE,
-    RING_CAMILLA_CHUNKSIZE,
-    RING_CAMILLA_ENABLE_RATE_ADJUST,
-    RING_CAMILLA_QUEUELIMIT,
-    RING_CAMILLA_TARGET_LEVEL,
     RING_PLAYBACK_DEVICE,
     RING_WIRE_FORMAT,
     RING_WIRE_FORMAT_WIDE,
@@ -26,21 +21,23 @@ from jasper.fanin_coupling import (
     resolve_coupling,
     resolve_ring_path,
     resolve_ring_slots,
+    ring_capacity_frames,
 )
+from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
 
-def test_resolve_coupling_defaults_to_loopback():
-    assert resolve_coupling(None) == COUPLING_LOOPBACK
-    assert resolve_coupling("") == COUPLING_LOOPBACK
-    assert resolve_coupling("   ") == COUPLING_LOOPBACK
-
-
-def test_resolve_coupling_accepts_explicit_transports_case_insensitive():
-    assert resolve_coupling("loopback") == COUPLING_LOOPBACK
+def test_resolve_coupling_names_the_ring_or_nothing():
+    # ONE transport (ADR-0100): the resolver either names it or answers None.
+    # None is "this file names no transport" — an unwritten key and a retired
+    # token alike — never a second route; `coupling_value_removed` is what tells
+    # those two apart.
     assert resolve_coupling(" SHM_RING ") == COUPLING_SHM_RING
     assert resolve_coupling("Shm_Ring") == COUPLING_SHM_RING
+    for raw in ("loopback", "fifo", "pipe", "disabled", "transport_pipe",
+                None, "", "  "):
+        assert resolve_coupling(raw) is None
 
 
 def test_coupling_value_removed_flags_every_token_but_the_ring():
@@ -68,10 +65,6 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
         "capture_format": RING_WIRE_FORMAT_WIDE,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT_WIDE,
-        "chunksize": RING_CAMILLA_CHUNKSIZE,
-        "target_level": RING_CAMILLA_TARGET_LEVEL,
-        "queuelimit": RING_CAMILLA_QUEUELIMIT,
-        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
     # S32_LE, NOT the historical S16LE default — resolve_ring_wire_format's
     # default flipped WIDE in PR #2601 (convergence design §3.2/B3): narrow was a
@@ -169,10 +162,12 @@ def test_ring_kwargs_emit_ring_capture_device_s32le():
     # §3.2/B3). RING_WIRE_FORMAT (S16_LE) is the operator's narrow rollback
     # token now, not what an armed-but-undeclared box emits.
     assert RING_WIRE_FORMAT_WIDE == "S32_LE"
-    assert "chunksize: 128" in cfg
-    assert "target_level: 128" in cfg
-    assert "queuelimit: 1" in cfg
-    assert "enable_rate_adjust: false" in cfg
+    # The coupling carries DEVICES, not geometry: this emit resolves its own
+    # chunk through resolve_camilla_latency_for_devices, which clamps a ring end
+    # to what the transport can negotiate. The VALUE is the box's floor and
+    # varies; the bound does not.
+    devices = parse_camilla_devices_config(cfg)
+    assert devices["chunksize"] <= ring_capacity_frames()
 
 
 def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
@@ -207,18 +202,7 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
         "capture_format": RING_WIRE_FORMAT_WIDE,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT_WIDE,
-        "chunksize": RING_CAMILLA_CHUNKSIZE,
-        "target_level": RING_CAMILLA_TARGET_LEVEL,
-        "queuelimit": RING_CAMILLA_QUEUELIMIT,
-        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
-
-
-def test_resolve_coupling_answers_loopback_for_every_non_ring_value():
-    # The retired token is what a migrating box's file still says; the resolver
-    # names it so `coupling_value_removed` and the doctor can report it.
-    for raw in ("fifo", "pipe", "disabled", "transport_pipe", None, "", "  "):
-        assert resolve_coupling(raw) == COUPLING_LOOPBACK
 
 
 def test_member_kwargs_are_pipe_sink_detects_grouped_sink():

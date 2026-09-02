@@ -20,9 +20,12 @@ conductor test file; importers name this module instead.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -59,6 +62,7 @@ from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     AlignmentEstimate,
@@ -2001,3 +2005,106 @@ def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
         "worst_hz": worst_hz,
         "n_bins": 16384,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Banked rounds that carry CAPTURES
+# --------------------------------------------------------------------------- #
+
+#: Every round below is banked at the pipeline's own rate.
+CAPTURE_RATE = 48_000
+
+#: The pose ladder a walked round declares, cycled when a round has more
+#: captures than the walk has stops.
+CAPTURE_AZIMUTHS_DEG = (-22.0, -7.0, 0.0, 7.0, 22.0)
+
+#: Both programs a banked round carries, and the phase every sidecar's
+#: ``provenance.stimulus`` NAMES whichever one its ``wav_sha256`` hashes. On a
+#: cloud round the two disagree — the live mislabel #3504 documents.
+_PROGRAM_PHASES = ("cloud_verify", "verify")
+_DECLARED_STIMULUS_PHASE = "verify"
+
+
+def bank_capture_round(
+    root: Path,
+    irs: Sequence[np.ndarray],
+    *,
+    program: np.ndarray | None = None,
+    phase: str = "cloud_verify",
+    capture_ids: Sequence[str] | None = None,
+    positions_deg: Sequence[float] | None = None,
+    vertical_deg: float = 0.0,
+    distance_m: float | None = 1.0,
+    radiated_band_hz: tuple[float, float] | None = (150.0, 20000.0),
+    declared_sha: str | None = None,
+) -> Path:
+    """A banked-round directory whose captures are known convolutions.
+
+    One capture per entry in ``irs``: the played program convolved with that
+    impulse response, peak-normalised, beside the sidecar declaring its pose —
+    so what a reader of this round should recover is knowable in advance.
+
+    Both programs are written whichever one played, so every round built here
+    exercises the binding a reader has to get right: a capture belongs to the
+    program its bytes HASH, never to the one its phase label names.
+
+    ``radiated_band_hz`` of ``None`` omits the ``curves`` key — the shape of a
+    round banked without a declared radiated band.
+    """
+    bundle = root / "bundle" / "b0"
+    programs = bundle / "crossover_v2" / "wired-test"
+    summed = bundle / "summed"
+    programs.mkdir(parents=True)
+    summed.mkdir(parents=True)
+
+    played = (
+        synchronized_swept_sine(duration_approx_s=1.0, sample_rate=CAPTURE_RATE)[0]
+        if program is None
+        else np.asarray(program, dtype=np.float64)
+    )
+    decoy, _ = synchronized_swept_sine(
+        f1=30.0, duration_approx_s=1.0, sample_rate=CAPTURE_RATE
+    )
+    played_path = programs / f"{phase}_program.wav"
+    write_sweep_wav(played_path, played, CAPTURE_RATE)
+    write_sweep_wav(
+        programs / f"{next(p for p in _PROGRAM_PHASES if p != phase)}_program.wav",
+        decoy,
+        CAPTURE_RATE,
+    )
+    played_sha = hashlib.sha256(played_path.read_bytes()).hexdigest()
+
+    for index, ir in enumerate(irs):
+        capture = np.convolve(
+            played.astype(np.float64), np.asarray(ir, dtype=np.float64)
+        )
+        capture = 0.5 * capture / float(np.max(np.abs(capture)))
+        capture_id = (
+            f"{phase}_{index:02d}" if capture_ids is None else capture_ids[index]
+        )
+        stem = f"summed_{capture_id}"
+        write_sweep_wav(
+            summed / f"{stem}.wav", capture.astype(np.float32), CAPTURE_RATE
+        )
+        doc: dict[str, Any] = {
+            "position_id": capture_id,
+            "phase": phase,
+            "wav_path": f"summed/{stem}.wav",
+            "position_deg": (
+                CAPTURE_AZIMUTHS_DEG[index % len(CAPTURE_AZIMUTHS_DEG)]
+                if positions_deg is None
+                else float(positions_deg[index])
+            ),
+            "vertical_deg": vertical_deg,
+            "mark_distance_m": distance_m,
+            "provenance": {
+                "stimulus": {
+                    "phase": _DECLARED_STIMULUS_PHASE,
+                    "wav_sha256": declared_sha or played_sha,
+                }
+            },
+        }
+        if radiated_band_hz is not None:
+            doc["curves"] = [{"role": "summed", "band_hz": list(radiated_band_hz)}]
+        (summed / f"{stem}.json").write_text(json.dumps(doc))
+    return root

@@ -26,7 +26,7 @@ def _run(remote_id: str, env_file: Path, accept_new: str = "") -> subprocess.Com
     # _lib.sh sources REPO_ROOT/.env.local at load time; that's harmless
     # here (we pass the env file under test explicitly as an argument).
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'verify_or_record_peer_id "$1" "$2" "$3"'
     )
     return subprocess.run(

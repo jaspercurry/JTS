@@ -59,7 +59,7 @@ DEPLOY = ROOT / "scripts" / "deploy-to-pi.sh"
 
 
 def _management_cidrs(*, repo_root: Path | None = None) -> subprocess.CompletedProcess[str]:
-    script = f'source "{LIB}"; '
+    script = f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
     if repo_root is not None:
         script += f'REPO_ROOT="{repo_root}"; '
     script += "usb_gadget_management_cidrs"
@@ -99,7 +99,7 @@ def test_management_cidrs_missing_module_is_a_clean_skip(tmp_path):
 
 
 def _in_cidr(ip: str, cidr: str) -> subprocess.CompletedProcess[str]:
-    script = f'source "{LIB}"; ipv4_in_cidr "$1" "$2"'
+    script = f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; ipv4_in_cidr "$1" "$2"'
     return subprocess.run(
         ["bash", "-c", script, "bash", ip, cidr],
         capture_output=True, text=True, timeout=30,
@@ -151,7 +151,7 @@ def test_garbage_input_does_not_match_and_does_not_error():
 
 _ADVISORY_HARNESS = r"""
 set -euo pipefail
-source "@LIB@"
+JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 eval "$(awk '/^resolve_pi_host_ipv4_addrs\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
 eval "$(awk '/^warn_if_pi_host_on_gadget_network\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
 declare -F warn_if_pi_host_on_gadget_network >/dev/null || { echo "harness: extraction failed" >&2; exit 99; }

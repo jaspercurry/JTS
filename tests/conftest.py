@@ -48,6 +48,35 @@ if sys.version_info < (3, 11):
     )
 
 
+# --- subprocesses must import the tree under test ----------------------
+#
+# 141 test files spawn a subprocess that imports `jasper` (a scripts/ entry
+# point or a console script); 9 of them pass an explicit PYTHONPATH. The
+# other ~132 inherit the parent env, and `jasper` then resolves through the
+# venv's EDITABLE install — a .pth finder pinned to the checkout the venv was
+# built in. That is the right tree in a plain clone and the WRONG one in a
+# git worktree, where the venv belongs to the main checkout and the main
+# checkout sits on whatever branch its own agent left it on.
+#
+# The failure mode that matters is not the loud one. On 2026-09-01 a worktree
+# lane reported 5 failures in test_jasper_pipe_probe_script because the main
+# checkout was mid-refactor on another branch and had no `analytic_signal` —
+# an ImportError, so it was noticed. Had that branch merely CHANGED the
+# function's behavior instead of removing it, those tests would have PASSED
+# while validating code that is not the code under test, in a lane whose
+# whole job is to gate a merge.
+#
+# Setting it here rather than in the lane scripts covers every entry point
+# (scripts/test-fast, scripts/test-merge, a bare pytest, an IDE runner) and
+# every spawn shape, and prepending keeps an operator's own PYTHONPATH.
+# No-op in CI and in a plain clone, where this path is already the one the
+# editable install points at.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    [_REPO_ROOT, *(p for p in [os.environ.get("PYTHONPATH", "")] if p)]
+)
+
+
 # --- socketserver shutdown latency -------------------------------------
 #
 # 23 test files spin a throwaway ThreadingHTTPServer per test (51 call
@@ -116,6 +145,25 @@ def _serve_forever_with_fast_shutdown(
 
 
 socketserver.BaseServer.serve_forever = _serve_forever_with_fast_shutdown
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--regenerate-goldens",
+        action="store_true",
+        default=False,
+        help=(
+            "rewrite golden fixtures from the code under test, then fail the "
+            "golden tests so the run is visibly a regeneration; review with "
+            "`git diff` and re-run without the flag"
+        ),
+    )
+
+
+@pytest.fixture
+def regenerate_goldens(request: pytest.FixtureRequest) -> bool:
+    """True under ``--regenerate-goldens``: write fixtures instead of comparing."""
+    return bool(request.config.getoption("--regenerate-goldens"))
 
 
 @pytest.fixture(autouse=True)
@@ -437,6 +485,31 @@ def a_process_with_a_volume_owner(monkeypatch):
         return fader["db"]
 
     seat_process_volume_owner(monkeypatch, _set, _get)
+
+
+@pytest.fixture
+def no_real_pi_paths(tmp_path, monkeypatch):
+    """Point ``round_inputs``' three on-Pi SSOT defaults at absent temp files.
+
+    A LIVE session bundle resolves its flow state, design draft and applied
+    profile to real ``/var/lib/jasper`` paths, so the two CLI suites that read
+    one -- ``jasper-crossover-prescriber`` and ``jasper-round-views`` -- would
+    otherwise answer differently on a box that is a speaker. Absent here is the
+    hermetic baseline; a test that wants one of the three populated re-points
+    the same attribute at a file it wrote.
+
+    **Opted into by name, never autouse.** Only those two suites resolve a live
+    bundle, so modules declare ``pytestmark = pytest.mark.usefixtures(...)``
+    rather than the whole tree paying for it.
+    """
+    from jasper.active_speaker.crossover_v2 import round_inputs
+
+    for name in (
+        "STATE_DEFAULT_PATH",
+        "DRIVERS_DEFAULT_PATH",
+        "APPLIED_PROFILE_DEFAULT_PATH",
+    ):
+        monkeypatch.setattr(round_inputs, name, tmp_path / f"unset-{name}.json")
 
 
 @pytest.fixture

@@ -277,6 +277,12 @@ rsyncs to the remote user's `${HOME}/jts/`, then runs the idempotent
 set. `install.sh` writes that metadata to `/var/lib/jasper/build.txt`, which
 is what the `/system/` dashboard reports.
 
+After merging a PR, `git fetch origin` and confirm `git merge-base
+--is-ancestor <merge-commit> origin/main` before deploying — a fetch run
+seconds after a merge can still miss GitHub's ref advance, and deploying
+an unchanged SHA exits 0 without landing anything (`deploy-to-pi.sh`
+flags that case as a same-SHA redeploy so it never reads as one).
+
 There are exactly two install profiles, `full` and `streambox`. A fresh Pi
 Zero 2 W with no persisted marker resolves to `streambox`; everything else
 resolves to `full`. Both use the same repo and the same deploy path. The

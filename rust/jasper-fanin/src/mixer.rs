@@ -47,15 +47,15 @@
 //! contract documented in `src/watchdog.rs`.
 
 mod direct_capture;
+mod lane_fade;
 mod ring_capture;
-mod wake_ramp;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use alsa::pcm::{Access, Format, Frames, HwParams, State, PCM};
+use alsa::pcm::{Access, Format, Frames, HwParams, State, IO, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 use log::{info, warn};
@@ -75,9 +75,9 @@ use crate::xrun_log::{XrunEvent, XrunSource};
 
 use direct_capture::{read_direct_and_render, DirectCapture};
 pub use direct_capture::{DirectObservability, DrainStats};
+use lane_fade::LaneFade;
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
-use wake_ramp::LaneWakeRamp;
 
 /// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
 /// does the ring this daemon publishes to. Not configurable.
@@ -85,19 +85,25 @@ pub const CHANNELS: u32 = 2;
 
 /// PCM sample format for this daemon's snd-aloop capture lanes — the
 /// per-renderer inputs, which since ADR-0100 are the only aloop lanes left.
-/// The program this daemon publishes does not use this format at all: it
-/// carries the ring's own wire (`ring_wire_format`), and no aloop lane is
-/// written.
 ///
-/// The renderer aliases' slaves in `deploy/alsa/asoundrc.jasper` must name this
-/// same format — they are the playback half of the pairs opened here — so
-/// moving it is a same-commit change to both. `tests/test_fanin_wiring.py` pins
-/// the ALSA side; `tests/test_aloop_program_lane_width.py` pins this one.
+/// Lane ingress is NOT its own width axis: it is this box's one resolved wire
+/// ([`Config::program_wire_is_wide`]), the same fact that decides the program
+/// ring's payload and the assistant wire. An operator's
+/// `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` rollback therefore narrows ingress
+/// with everything else.
 ///
-/// Narrow here is a JTS DECLARATION about ingress, not an snd-aloop limit and
-/// not the box's program width. That capability is the RING's
-/// (`ring_wire_format`).
-pub const FORMAT: Format = Format::S16LE;
+/// snd-aloop pins both halves of a cable to one format, so the renderer
+/// aliases' slaves in `deploy/alsa/asoundrc.jasper` declare the same width and
+/// move with this; `tests/test_fanin_wiring.py` pins that side and
+/// `check_fanin_asound_wiring` compares the deployed file against the wire the
+/// box resolves.
+fn lane_capture_format(program_wire_is_wide: bool) -> Format {
+    if program_wire_is_wide {
+        Format::S32LE
+    } else {
+        Format::S16LE
+    }
+}
 
 /// Sentinel for "no ALSA playback delay sample has landed", which since
 /// ADR-0100 is every period: this daemon opens no playback PCM to sample. It
@@ -505,6 +511,11 @@ pub struct TrimControl {
     /// second `TRIM` before the loop consumed the first just re-sets the same
     /// flag (one trim results).
     pub pending: AtomicBool,
+    /// Set by a `DECAY_SNAP` control command; consumed by the work loop the same
+    /// way. The ONLY lever that opens a cushion-refill window on demand — a
+    /// still-locked snap-back otherwise needs a real ladder demotion, so the
+    /// hold this repo ships (ADR-0214) is unprovable on hardware without it.
+    pub decay_snap_pending: AtomicBool,
     /// Cumulative TRIM operations that actually dropped ≥1 frame on this lane.
     pub trims: AtomicU64,
     /// Cumulative frames dropped by TRIM from this lane's resampler ring. Paired
@@ -522,6 +533,7 @@ impl TrimControl {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             pending: AtomicBool::new(false),
+            decay_snap_pending: AtomicBool::new(false),
             trims: AtomicU64::new(0),
             trimmed_frames: AtomicU64::new(0),
             auto_fired: AtomicBool::new(false),
@@ -535,6 +547,7 @@ impl TrimControl {
     pub fn test_fixture(trims: u64, trimmed_frames: u64, pending: bool) -> Self {
         Self {
             pending: AtomicBool::new(pending),
+            decay_snap_pending: AtomicBool::new(false),
             trims: AtomicU64::new(trims),
             trimmed_frames: AtomicU64::new(trimmed_frames),
             auto_fired: AtomicBool::new(false),
@@ -727,9 +740,10 @@ pub(crate) struct ProgramWidthAudit {
 /// * the OUTPUT — the ring publishes from its own attached header, and
 ///   `fill_wide_ring_payload` keys off that header rather than off
 ///   `program_width`;
-/// * the LANES — `open_direct_input` decides at construction whether to
-///   allocate a spine-scale period buffer, and the mixer reads exactly that
-///   allocation (`read_buf_wide.is_empty()`) to pick a lane's sum entry.
+/// * the LANES — each lane constructor decides at construction whether to
+///   allocate a spine-scale period buffer (`spine_read_buf`), and the mixer
+///   reads exactly that allocation (`read_buf_wide.is_empty()`) to pick a
+///   lane's sum entry.
 ///
 /// The two axes are checked DIFFERENTLY, and the asymmetry is the whole point.
 ///
@@ -739,18 +753,14 @@ pub(crate) struct ProgramWidthAudit {
 /// * The LANE axis is a ONE-WAY IMPLICATION — `any_lane_is_wide` implies
 ///   `declared_wide`, never the reverse. A spine-scale lane feeding a
 ///   narrow-scale sum is the +96 dB fault worth parking for. The reverse, a
-///   wide sum with no wide lane, is **the ordinary configuration**: only the
-///   USB DIRECT lane ever allocates a spine-scale buffer, and USB Audio Input
-///   is off by default and resolved by a different reconciler than the wire, so
-///   a wide box with USB off has zero wide lanes and is perfectly correct. Every
-///   i16 lane promotes at `mix_into`'s Wide arm; that is exactly what
+///   wide sum with no wide lane, is **legal and must construct**: a box with
+///   no lanes at all still resolves a wide wire, and any i16 lane promotes at
+///   `mix_into`'s Wide arm — which is exactly what
 ///   `wide_payload_is_information_equivalent_to_the_narrow_payload` pins.
 ///
-/// Requiring equality on the lane axis would therefore park a CORRECT box:
-/// arming a wire while USB Audio Input is off — or a household simply toggling
-/// USB off at `/sources/` on an armed box — would exit 78 with no audio path and
-/// no self-recovery. Fail-closed is right for the fault; it is a liveness
-/// hazard when pointed at a legal state.
+/// Requiring equality on the lane axis would therefore park a CORRECT box —
+/// exit 78, no audio path, no self-recovery. Fail-closed is right for the
+/// fault; it is a liveness hazard when pointed at a legal state.
 ///
 /// What the surviving check guards is a lane contributing at the wrong numeric
 /// scale. The `debug_assert` in `mix_into_wide` states the same contract but is
@@ -1366,11 +1376,10 @@ pub struct Input {
     /// The lane's period lands HERE unless `read_buf_wide` is non-empty.
     read_buf: Vec<i16>,
     /// Per-input SPINE-SCALE read buffer (i32 interleaved stereo), allocated
-    /// ONLY for the USB DIRECT lane on a wide wire (U2 / #2223). EMPTY — and so
-    /// zero heap, a `Vec` with no capacity does not allocate — on every other
-    /// lane, on every `loopback` box, and on a box an operator has pinned to the
-    /// narrow wire. Since the ring wire's resolver defaults wide, an armed
-    /// `shm_ring` box allocates this without declaring anything.
+    /// on a wide wire and EMPTY — so zero heap, a `Vec` with no capacity does
+    /// not allocate — on a box an operator has pinned to the narrow wire. Since
+    /// the wire's resolver defaults wide, an ordinary box allocates this
+    /// without declaring anything (`spine_read_buf`).
     ///
     /// Non-empty is the lane's OWN width switch, and the mixer reads it exactly
     /// that way (`read_buf_wide.is_empty()` picks the sum entry). One allocation
@@ -1409,11 +1418,12 @@ pub struct Input {
     trim: Arc<TrimControl>,
     /// Per-lane MIX MUTE, shared with the state-server thread. The control
     /// endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads it at
-    /// the SUM stage (`lane_mix_contributes`) and skips this lane's contribution
-    /// when set — WITHOUT touching this lane's capture, `frames_read`, or
-    /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
-    /// mux's latest-source-wins arbitration primitive for the USB lane — the
-    /// sole USB-silencing mechanism in the one-pipeline design.
+    /// the SUM stage (`lane_mix_contributes`) and takes this lane's contribution
+    /// to zero across `lane_fade`'s 10 ms window — silent within a period or
+    /// two, not within a sample — WITHOUT touching this lane's capture,
+    /// `frames_read`, or `rms_dbfs_x100` telemetry, which are accounted BEFORE
+    /// the gate. This is mux's latest-source-wins arbitration primitive for the
+    /// USB lane — the sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
     /// Default `false` (contribute).
     muted: Arc<AtomicBool>,
@@ -1427,11 +1437,12 @@ pub struct Input {
     /// `ring{}` block from it. `None` (and absent from STATUS) for every other
     /// lane — the same optional-block idiom as `direct_obs` and `resampler`.
     ring_obs: Option<ring_capture::RingLaneObservability>,
-    /// Per-lane WAKE FADE-IN state (issue #3443). Held by every lane and usable
-    /// at both lane scales, because it runs over this lane's rendered period —
-    /// the one thing all four read arms produce. Tracked before the selection
-    /// gate and applied after it; inert on [`MEASUREMENT_LANE`].
-    wake_ramp: LaneWakeRamp,
+    /// Per-lane WAKE FADE-IN and SELECTION FADE state (issue #3443). Held by
+    /// every lane and usable at both lane scales, because it runs over this
+    /// lane's rendered period — the one thing all four read arms produce.
+    /// Silence is tracked before the selection gate and both windows are applied
+    /// after it; inert on [`MEASUREMENT_LANE`].
+    lane_fade: LaneFade,
 }
 
 impl Mixer {
@@ -1744,6 +1755,9 @@ impl Mixer {
             // The cushion decay's live demand gauge, published by the decay
             // itself; `build_obs` subtracts it from the ratio above (#3466).
             decay_demand_milli_ppm: Arc::clone(&resampler.decay_demand_milli_ppm),
+            // The decay's declared refill window — `build_obs` clears
+            // `Obs::steady` on it (ADR-0214).
+            decay_refilling: Arc::clone(&resampler.decay_refilling),
             // The static acquisition ceiling — build_obs's anchor for
             // descent-compensating the fill it feeds the ladder (#3466).
             ceiling_fill_frames: resampler.target_fill_frames,
@@ -1941,11 +1955,11 @@ impl Mixer {
             // this daemon already emits inline (`record_drain_entry`).
             let woke = if input.read_buf_wide.is_empty() {
                 input
-                    .wake_ramp
+                    .lane_fade
                     .observe(&input.read_buf[..active], self.period_frames)
             } else {
                 input
-                    .wake_ramp
+                    .lane_fade
                     .observe(&input.read_buf_wide[..active], self.period_frames)
             };
             if woke {
@@ -1959,6 +1973,12 @@ impl Mixer {
             // reconciliation, not of which source is passed to the sum). No-op
             // when no resampler / decay disabled.
             if let Some(r) = input.resampler.as_mut() {
+                // The DECAY_SNAP lever, consumed on the thread that owns the
+                // resampler (the control thread cannot touch it), before the
+                // tick so the window is open by the time the gauges publish.
+                if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
+                    r.force_decay_snap_back();
+                }
                 r.tick_decay(decay_l0, decay_commanded_ppm_abs);
             }
             // Selection AND mute gate. Both are applied at the SUM only — the
@@ -1968,24 +1988,38 @@ impl Mixer {
             // reads the USB DIRECT lane's pre-mute level to keep a muted-but-
             // streaming host "playing" (no mute→release→mute flap). See
             // `lane_mix_contributes`.
-            if !lane_mix_contributes(
+            let contributes = lane_mix_contributes(
                 selected_input,
                 idx,
                 &input.label,
                 input.muted.load(Ordering::Relaxed),
-            ) {
-                continue;
-            }
-            // 3c. WAKE FADE-IN, application half (issue #3443). Only a period
-            // that actually ENTERS the sum spends the window, so a lane that
-            // woke while mux still had it out keeps its ramp owed until `SELECT`
-            // lands (mux arbitrates at 1 Hz). Spending it on discarded periods
-            // instead would leave the sum opening on the very step this exists
-            // to remove. A silent period holds the window rather than eating it.
-            if input.read_buf_wide.is_empty() {
-                input.wake_ramp.apply(&mut input.read_buf[..active]);
+            );
+            // 3c. PER-LANE FADES, application half (issue #3443): the wake
+            // window on a period that enters the sum, then the selection window
+            // that carries the lane in and out of it. The gate's verdict is an
+            // INPUT here rather than a `continue` — a lane mux has just dropped
+            // keeps reaching the sum until its window closes, which is what
+            // stops a switch away from an already-PLAYING source removing a
+            // full-amplitude waveform between one sample and the next. Only a
+            // period that enters the sum spends the wake window, so a lane that
+            // woke while mux still had it out keeps that ramp owed until
+            // `SELECT` lands (mux arbitrates at 1 Hz). `false` means the lane is
+            // fully out and contributes nothing this period.
+            let reaches_sum = if input.read_buf_wide.is_empty() {
+                input.lane_fade.shape_period(
+                    &mut input.read_buf[..active],
+                    self.period_frames,
+                    contributes,
+                )
             } else {
-                input.wake_ramp.apply(&mut input.read_buf_wide[..active]);
+                input.lane_fade.shape_period(
+                    &mut input.read_buf_wide[..active],
+                    self.period_frames,
+                    contributes,
+                )
+            };
+            if !reaches_sum {
+                continue;
             }
             // Only sum the samples we actually got (`active`, computed above for
             // the per-lane RMS). `read_input` zero-pads the tail of
@@ -1999,10 +2033,9 @@ impl Mixer {
                     self.program_width,
                 );
             } else {
-                // A spine-scale lane (the USB DIRECT capture on a wide wire):
-                // its period is already in the sum's own scale, so it enters
-                // with no shift and no narrowing — the low bits a hi-res host
-                // sent reach the summed write.
+                // A spine-scale lane: its period is already in the sum's own
+                // scale, so it enters with no shift and no narrowing — the low
+                // bits a hi-res source sent reach the summed write.
                 mix_into_wide(
                     &mut self.sum_buf[..active],
                     &input.read_buf_wide[..active],
@@ -2661,8 +2694,12 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
     selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
 
-/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter
-/// the sum this period iff it is selected AND not muted.
+/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples are
+/// wanted in the sum this period iff it is selected AND not muted.
+///
+/// This is the WANT, not the gate. `mixer::lane_fade` consumes it and carries
+/// the lane to or from that state across a 10 ms window, so a lane this returns
+/// `false` for still reaches the sum, decaying, until its window closes.
 ///
 /// The mute is mux's latest-source-wins arbitration primitive for the USB
 /// lane — the only USB-silencing mechanism. It is
@@ -2674,7 +2711,7 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// makes mux think the host stopped (which would flap mute→release→mute).
 ///
 /// Selection and mute both drop the lane from the sum, so a muted lane is
-/// silenced exactly like a de-selected one — the same `continue`. This function
+/// silenced exactly like a de-selected one — the same window. This function
 /// takes only values (no atomics/side effects) so the decision is exhaustively
 /// unit-testable without ALSA and can never itself perturb telemetry.
 fn lane_mix_contributes(selected_input: i32, input_index: usize, label: &str, muted: bool) -> bool {
@@ -2877,9 +2914,7 @@ fn open_input(
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
-        // An aloop renderer lane is S16 at its capture PCM, so it has no wide
-        // period to hold at any wire width.
-        read_buf_wide: Vec::new(),
+        read_buf_wide: spine_read_buf(config.program_wire_is_wide(), period_samples),
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
         rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
@@ -2890,26 +2925,42 @@ fn open_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: None,
-        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
+        lane_fade: LaneFade::for_lane(label, config.sample_rate),
     })
 }
 
-/// Whether the USB DIRECT lane allocates a spine-scale period buffer — the ONE
-/// decision that makes a lane wide.
+/// Zero a lane's period buffer from `from_sample` on — whichever width the lane
+/// holds its period in. Every read path renders a fault, an idle producer or a
+/// short read as silence, and none of them should have to restate the width
+/// fork to do it.
 ///
-/// The DIRECT lane is the only lane that can be spine-scale, and only on a wide
-/// wire: the gadget capture is already `S32_LE` at `readi`, so on a wide box its
-/// period never passes through i16 at all. On a narrow box the buffer stays
-/// empty and the lane reads, resamples, and mixes exactly as before.
+/// Takes the two buffers rather than the `Input` so a caller can silence its
+/// lane while holding a borrow of another of the lane's fields — every read
+/// path silences with its PCM or its ring reader borrowed.
+pub(super) fn silence_period(narrow: &mut [i16], wide: &mut [i32], from_sample: usize) {
+    if wide.is_empty() {
+        narrow[from_sample..].fill(0);
+    } else {
+        wide[from_sample..].fill(0);
+    }
+}
+
+/// A lane's SPINE-SCALE period buffer — allocated on a wide wire, empty on a
+/// narrow one. The ONE place that decides, for every lane source (aloop, ring,
+/// USB direct), whether that lane carries its period at spine scale.
 ///
-/// A one-line pure function on purpose. Non-empty `read_buf_wide` is not merely
-/// a buffer — it is the lane's OWN width switch, read by the drain (which side
-/// of the capture fork), by the render (which `render_period`), and by the sum
-/// (which entry). Inverting it points every one of those at the wrong scale at
-/// once, so the decision earns a test that a pure helper makes possible and an
-/// inline `if` on a `&Config` does not.
-fn lane_wants_spine_buffer(program_wire_is_wide: bool) -> bool {
-    program_wire_is_wide
+/// Non-empty `read_buf_wide` is not merely a buffer — it is the lane's OWN
+/// width switch, read by the drain (which side of the capture fork), by the
+/// render (which `render_period`), and by the sum (which entry). Inverting it
+/// points every one of those at the wrong scale at once, so the decision earns
+/// a test that a pure helper makes possible and an inline `if` on a `&Config`
+/// does not. An empty `Vec` has no capacity, so a narrow box allocates nothing.
+fn spine_read_buf(program_wire_is_wide: bool, period_samples: usize) -> Vec<i32> {
+    if program_wire_is_wide {
+        vec![0i32; period_samples]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
@@ -2970,11 +3021,7 @@ fn open_direct_input(
         }
     };
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    let read_buf_wide = if lane_wants_spine_buffer(config.program_wire_is_wide()) {
-        vec![0i32; period_samples]
-    } else {
-        Vec::new()
-    };
+    let read_buf_wide = spine_read_buf(config.program_wire_is_wide(), period_samples);
     // The deferred device-open channel (#2533). Spawned at construction, before
     // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
     // failure leaves the lane WITHOUT self-heal rather than restoring the inline
@@ -3034,7 +3081,7 @@ fn open_direct_input(
             drain_stats: DrainStats::new(),
         }),
         ring_obs: None,
-        wake_ramp: LaneWakeRamp::for_lane(label, config.sample_rate),
+        lane_fade: LaneFade::for_lane(label, config.sample_rate),
     }
 }
 
@@ -3177,8 +3224,9 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
             .with_context(|| format!("set_channels({})", CHANNELS))?;
         hwp.set_rate(config.sample_rate, ValueOr::Nearest)
             .with_context(|| format!("set_rate({})", config.sample_rate))?;
-        hwp.set_format(FORMAT)
-            .with_context(|| format!("set_format({:?})", FORMAT))?;
+        let format = lane_capture_format(config.program_wire_is_wide());
+        hwp.set_format(format)
+            .with_context(|| format!("set_format({:?})", format))?;
         hwp.set_access(Access::RWInterleaved)
             .context("set_access(RWInterleaved)")?;
         hwp.set_period_size(config.period_frames as i64, ValueOr::Nearest)
@@ -3188,6 +3236,25 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }
     Ok(())
+}
+
+/// Read and throw away up to `periods` whole periods, returning the frames
+/// discarded. On non-blocking capture, `readi` returns `Err(EAGAIN)` the instant
+/// the ring drops below one period (it drained faster than `avail` claimed) —
+/// that `Err` arm is the normal early-stop. `Ok(0)` is a defensive guard for a
+/// 0-frame return that shouldn't occur here. The `0..periods` bound (≤ MAX)
+/// means it can never spin regardless. Generic over the sample type so the
+/// lane's width picks the IO handle and the scratch together.
+fn discard_periods<S: Copy>(io: &IO<'_, S>, scratch: &mut [S], periods: i64) -> u64 {
+    let mut discarded: u64 = 0;
+    for _ in 0..periods {
+        match io.readi(scratch) {
+            Ok(0) => break,
+            Ok(n) => discarded += n as u64,
+            Err(_) => break,
+        }
+    }
+    discarded
 }
 
 /// Bounded per-input catch-up resync. Called once per lane per period,
@@ -3247,25 +3314,20 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
         return; // healthy lane — the overwhelmingly common path.
     }
 
-    let io = match pcm.io_i16() {
-        Ok(io) => io,
-        Err(_) => return,
-    };
-    // Discard whole periods into the existing read_buf scratch (reused; no
-    // allocation). read_input overwrites read_buf next, so trashing it here
-    // is safe. On non-blocking capture, readi returns Err(EAGAIN) the instant
-    // the ring drops below one period (it drained faster than avail claimed) —
-    // that Err arm is the normal early-stop. Ok(0) is a defensive guard for a
-    // 0-frame return that shouldn't occur here. The 0..to_drain bound (≤ MAX)
-    // means it can never spin regardless.
-    let mut discarded_frames: u64 = 0;
-    for _ in 0..to_drain {
-        match io.readi(&mut input.read_buf) {
-            Ok(0) => break,
-            Ok(n) => discarded_frames += n as u64,
-            Err(_) => break,
+    // Discard whole periods into the lane's existing period scratch (reused; no
+    // allocation), at the width that lane holds. read_input overwrites the same
+    // buffer next, so trashing it here is safe.
+    let discarded_frames = if input.read_buf_wide.is_empty() {
+        match pcm.io_i16() {
+            Ok(io) => discard_periods(&io, &mut input.read_buf, to_drain),
+            Err(_) => return,
         }
-    }
+    } else {
+        match pcm.io_i32() {
+            Ok(io) => discard_periods(&io, &mut input.read_buf_wide, to_drain),
+            Err(_) => return,
+        }
+    };
     if discarded_frames == 0 {
         return;
     }
@@ -3488,25 +3550,35 @@ fn read_input(
     // Non-direct lanes always have Some(pcm); the direct lane never reaches
     // this path. A None here means a silent lane — render silence.
     let Some(pcm) = input.pcm.as_ref() else {
-        input.read_buf.fill(0);
+        silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
         return Ok(0);
     };
-    let io = pcm.io_i16().context("getting i16 IO handle for input")?;
-    match io.readi(&mut input.read_buf) {
+    // Read at the width this lane holds its period in. The PCM was opened at
+    // that same width (`lane_capture_format`) — one allocation decision sizes
+    // both — so the typed IO handle can never disagree with the wire.
+    let read = if input.read_buf_wide.is_empty() {
+        let io = pcm.io_i16().context("getting i16 IO handle for input")?;
+        io.readi(&mut input.read_buf)
+    } else {
+        let io = pcm.io_i32().context("getting i32 IO handle for input")?;
+        io.readi(&mut input.read_buf_wide)
+    };
+    match read {
         Ok(frames) => {
             input
                 .frames_read
                 .fetch_add(frames as u64, Ordering::Relaxed);
-            // Zero the tail of read_buf if we got less than a full
+            // Zero the tail of the period buffer if we got less than a full
             // period. The mixer's sum loop bounds the read region by
             // `frames`, but defense-in-depth: future code paths that
             // read the whole buffer (e.g., RMS for active detection)
             // should see zeros, not stale data, in the unfilled tail.
             if frames < requested_frames {
-                let active = frames * (CHANNELS as usize);
-                for s in &mut input.read_buf[active..] {
-                    *s = 0;
-                }
+                silence_period(
+                    &mut input.read_buf,
+                    &mut input.read_buf_wide,
+                    frames * (CHANNELS as usize),
+                );
             }
             Ok(frames)
         }
@@ -3515,7 +3587,7 @@ fn read_input(
                 // Non-blocking read with no data ready. Renderer is
                 // idle (or hasn't opened its substream yet). Treat
                 // as silence.
-                input.read_buf.fill(0);
+                silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 Ok(0)
             }
             PcmIoFate::Xrun => {
@@ -3536,7 +3608,7 @@ fn read_input(
                     count,
                 });
                 pcm.try_recover(e, true).context("recovering input xrun")?;
-                input.read_buf.fill(0);
+                silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 Ok(0)
             }
             PcmIoFate::Fatal => Err(e).context(format!(
@@ -3586,7 +3658,7 @@ fn recover_resampler_input_xrun(
     // The aloop resampler lane always has Some(pcm) (only the direct lane is
     // None, and it uses recover_direct_xrun instead).
     let Some(pcm) = input.pcm.as_ref() else {
-        input.read_buf.fill(0);
+        silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
         return Ok(());
     };
     pcm.try_recover(error, true)
@@ -3602,7 +3674,7 @@ fn recover_resampler_input_xrun(
     if let Some(r) = input.resampler.as_mut() {
         r.reset();
     }
-    input.read_buf.fill(0);
+    silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
     Ok(())
 }
 
@@ -3630,9 +3702,10 @@ fn read_into_resampler_and_render(
     // The aloop resampler lane always has Some(pcm); the direct lane routes to
     // read_direct_and_render and never reaches here.
     if input.pcm.is_none() {
-        input.read_buf.fill(0);
+        silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
         return Ok(0);
     }
+    let wide = !input.read_buf_wide.is_empty();
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     if read_budget_remaining > 0 {
@@ -3678,13 +3751,21 @@ fn read_into_resampler_and_render(
                 let frames_to_read = frames_remaining.min(period_frames);
                 let samples_to_read = frames_to_read * (CHANNELS as usize);
                 let read_result = {
-                    let io = input
+                    let pcm = input
                         .pcm
                         .as_ref()
-                        .expect("aloop resampler lane always has Some(pcm)")
-                        .io_i16()
-                        .context("getting i16 IO handle for resampler input")?;
-                    io.readi(&mut input.read_buf[..samples_to_read])
+                        .expect("aloop resampler lane always has Some(pcm)");
+                    if wide {
+                        let io = pcm
+                            .io_i32()
+                            .context("getting i32 IO handle for resampler input")?;
+                        io.readi(&mut input.read_buf_wide[..samples_to_read])
+                    } else {
+                        let io = pcm
+                            .io_i16()
+                            .context("getting i16 IO handle for resampler input")?;
+                        io.readi(&mut input.read_buf[..samples_to_read])
+                    }
                 };
                 match read_result {
                     Ok(0) => {
@@ -3695,7 +3776,11 @@ fn read_into_resampler_and_render(
                         input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
                         let samples = n * (CHANNELS as usize);
                         if let Some(r) = input.resampler.as_mut() {
-                            r.push_input(&input.read_buf[..samples]);
+                            if wide {
+                                r.push_input_wide(&input.read_buf_wide[..samples]);
+                            } else {
+                                r.push_input(&input.read_buf[..samples]);
+                            }
                         }
                         frames_remaining = frames_remaining.saturating_sub(n);
                         read_budget_remaining = read_budget_remaining.saturating_sub(n);
@@ -3737,13 +3822,22 @@ fn read_into_resampler_and_render(
         }
     }
 
-    // Render exactly one DAC-paced period into read_buf for the mixer to sum.
+    // Render exactly one DAC-paced period into the lane's period buffer for the
+    // mixer to sum. Same resampling kernel either way — only the emit tail's
+    // rails differ (`render_period_wide` rounds at i32 instead of dividing the
+    // spine-scale accumulator back down to i16).
     let real_frames = match input.resampler.as_mut() {
-        Some(r) => r.render_period(&mut input.read_buf),
+        Some(r) => {
+            if wide {
+                r.render_period_wide(&mut input.read_buf_wide)
+            } else {
+                r.render_period(&mut input.read_buf)
+            }
+        }
         None => {
             // Unreachable in practice (only called when resampler.is_some()),
             // but stay safe: emit silence.
-            input.read_buf.fill(0);
+            silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
             0
         }
     };
@@ -5755,15 +5849,25 @@ mod tests {
 
     // ---- SF-B / SF-C: the width cross-check and the lane's width switch ----
 
-    /// SF-C: the ONE decision that makes a lane spine-scale. Inverting it points
-    /// the capture fork, the render, and the sum entry at the wrong scale
-    /// simultaneously, and the `debug_assert` in `mix_into_wide` cannot catch it
-    /// on the Pi — the release profile compiles debug assertions out. So the
-    /// decision is pinned here, where a mutation has to fail.
+    /// SF-C: the ONE decision that makes a lane spine-scale, and the ALSA open
+    /// format that has to agree with it.
+    ///
+    /// Inverting the buffer points the capture fork, the render, and the sum
+    /// entry at the wrong scale simultaneously, and the `debug_assert` in
+    /// `mix_into_wide` cannot catch it on the Pi — the release profile compiles
+    /// debug assertions out. Inverting the open format is just as silent at
+    /// compile time and louder at runtime: `read_input` picks its typed IO
+    /// handle off the buffer and alsa-lib verifies that handle against the
+    /// PCM's negotiated format, so an aloop lane whose two halves disagreed
+    /// would fail every read. Both are pinned here, where a mutation has to
+    /// fail, and pinned together because they are one decision.
     #[test]
-    fn only_a_wide_wire_gives_a_lane_a_spine_scale_buffer() {
-        assert!(lane_wants_spine_buffer(true));
-        assert!(!lane_wants_spine_buffer(false));
+    fn a_lanes_wire_decides_its_open_format_and_its_period_buffer_together() {
+        assert_eq!(spine_read_buf(true, 4), vec![0i32; 4]);
+        assert_eq!(lane_capture_format(true), Format::S32LE);
+
+        assert!(spine_read_buf(false, 4).is_empty());
+        assert_eq!(lane_capture_format(false), Format::S16LE);
     }
 
     /// Every COHERENT shape constructs — including the one that has no wide lane
@@ -5794,12 +5898,9 @@ mod tests {
     /// A WIDE WIRE WITH USB AUDIO INPUT OFF MUST START. This is not a corner
     /// case — it is the shape an armed box has by default.
     ///
-    /// Only the USB DIRECT lane ever allocates a spine-scale buffer, and USB
-    /// Audio Input is off by default and resolved by a different reconciler than
-    /// the wire; the two are not coupled anywhere. So arming a box's wire while
-    /// USB is off — jts3's documented configuration — yields `declared=Wide,
-    /// output_is_wide=true, any_lane_is_wide=false`, and every i16 lane simply
-    /// promotes at `mix_into`'s Wide arm.
+    /// The lane axis is an implication, not an equality, so a wide box with no
+    /// wide lane — `declared=Wide, output_is_wide=true, any_lane_is_wide=false`
+    /// — must construct: any i16 lane simply promotes at `mix_into`'s Wide arm.
     ///
     /// An earlier revision of this check required equality on the lane axis and
     /// would have exited 78 here: no audio path, no self-recovery, operator-only

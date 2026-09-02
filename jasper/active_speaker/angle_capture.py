@@ -4,71 +4,23 @@
 
 """Capture a stated set of ANGLES, in a stated stimulus regime, by a stated mover.
 
-The composition this module owns is
-``{per-driver | summed} x {angles} x {arm | human-guided}``, and it exists
-because two of those three axes were already clean while the third had no input
-port at all:
-
-* **The program axis was clean.**
-  :func:`~jasper.active_speaker.crossover_v2.programs.program_for_phase`
-  dispatches by object identity, and the per-driver program is one composed
-  object -- ``build_measure_program``'s interleaved woofer/tweeter schedule, both
-  drivers in ONE capture on channels 0 and 1, so they share an exact common time
-  origin. This module selects that same object; it does not compose a second
-  per-driver shape.
-* **The mover axis was clean.** The flow states an advance policy
-  (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`
-  -- a machine advances, so every entry auto-begins) separately from a pose
-  statement
-  (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.positions_gated`
-  -- poses are stated as bearings and every begin is held until somebody reports
-  the microphone in place), and ``_positioned_prompt`` restates a pose's copy as
-  that angle. Both a driver and a person can hold the second without the first.
-* **The angle axis was welded.** Degrees were DERIVED and never REQUESTED:
-  :func:`position_angle_deg` reads a bearing off a pose's ``offset_cm``, and the
-  only pose table that reaches the per-driver program off the design axis is
-  ``LATERAL_POSE_PROMPTS`` -- a fixed six-row tuple derived from two hard-coded
-  cm offsets, behind an import-time length guard. There was no way to ask for
-  45 deg, and no way to ask for a summed capture at an angle at all.
-
-**So the one new primitive here is the INVERSE of the existing derivation**
-(:func:`pose_at_angle`), and everything else is composition over shipped parts.
-Degrees become an input that round-trips exactly through the cm-primary
-representation the evidence sidecar, the ``wide`` rule and the attribution stage
-already read, so an angle-requested capture banks in the same shape as a
+Composes ``{per-driver | summed} x {angles} x {arm | human-guided}`` over
+shipped parts. The one new primitive is :func:`pose_at_angle`, the INVERSE of
+:func:`position_angle_deg`: degrees round-trip exactly through the cm-primary
+representation the evidence sidecar, the ``wide`` rule and the attribution
+stage already read, so an angle-requested capture banks in the same shape as a
 hand-walked one and stays comparable with it.
 
-**What this is NOT, stated because the distinction is load-bearing.**  These
-poses are FORWARD-MODEL INPUT and never a pose-ratio statistic.  The two are
-different consumers with different validity arguments:
+These poses are FORWARD-MODEL INPUT, never a pose-ratio statistic: the
+lateral-walk statistic was retired as invalidated (PR #2717, #2711), and the
+P2 complex-summation model consumes each angle's transfer function directly.
 
-* The **lateral-walk STATISTIC** was paused on 2026-08-18
-  ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717)) because the
-  statistic itself was invalidated -- a max-over-poses reduction that ranked
-  below its own repeat noise, and whose argmax pose is frequently the zero-offset
-  closing repeat.  It was retired with the corner hunt it fed; a redesign would
-  have to clear that four-point bar
-  ([#2711](https://github.com/jaspercurry/JTS/issues/2711)).
-* **Per-driver responses at angles** -- the P2 crossover search's
-  complex-summation model, which predicts a candidate's summed response from the
-  per-driver complex responses -- need no pose-ratio statistic at all.  The model
-  consumes each angle's complex transfer function directly.  The pose-ratio
-  cancellation that invalidated the statistic is a property of the REDUCTION,
-  not of the captures, and PR #2717's own evidence says so in as many words:
-  "The poses are clean; it is the max-over-poses reduction into one scalar that
-  cannot separate candidates."
-
-This module therefore **never constructs**
-:data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL`: it returns
-poses and refusals, and the session host is what tags indexes with a phase.  A
-taken walk runs as the session's lateral group and so does reach
-``_close_lateral_walk``, whose close publishes nothing.
+This module never constructs :data:`~.crossover_v2.journey.PHASE_LATERAL` --
+it returns poses and refusals, and the session host tags indexes with a phase.
 
 Dependency direction: a sibling of :mod:`jasper.active_speaker.crossover_v2_flow`
-that imports FROM it, the same direction
-:mod:`jasper.active_speaker.crossover_envelope_v2` already takes.  It is
-deliberately NOT under ``jasper/active_speaker/crossover_v2/``, whose modules
-forbid importing the flow.
+that imports FROM it. Deliberately NOT under ``jasper/active_speaker/crossover_v2/``,
+whose modules forbid importing the flow.
 """
 
 from __future__ import annotations
@@ -77,13 +29,24 @@ import math
 import numbers
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram
 
-from .crossover_v2.contracts import POLARITY_NORMAL
+from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
+from .crossover_v2.contracts import (
+    DRIVER_ROLES,
+    POLARITY_INVERTED,
+    POLARITY_NORMAL,
+)
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
+from .measurement_programs import MeasurementProgram
+from .crossover_v2.spatial import (
+    POSITION_AXIS_HORIZONTAL,
+    POSITION_AXIS_VERTICAL,
+)
 from .crossover_v2_flow import (
     MARK_DISTANCE_M,
     POSITION_DEG_KEY,
@@ -100,6 +63,7 @@ from .crossover_v2_flow import (
     position_angle_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
+    wall_clock_ceiling_s,
 )
 
 __all__ = [
@@ -110,12 +74,17 @@ __all__ = [
     "MOVER_HUMAN",
     "MOVERS",
     "MAX_ANGLE_DEG",
+    "MAX_ELEVATION_DEG",
     "ARM_ENVELOPE_DEG",
     "MOVER_MAX_ANGLE_DEG",
+    "MOVER_MAX_ELEVATION_DEG",
     "AngleStop",
     "AngleCaptureRequest",
     "ResolvedStop",
     "pose_at_angle",
+    "request_for_program",
+    "walk_price",
+    "candidate_measure_axes",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -134,6 +103,7 @@ __all__ = [
     "WALK_POLARITY_NEEDS_WIRED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_LEVEL_MATCH_NEEDS_WIRED",
+    "WALK_CANDIDATE_NOT_MEASURABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -191,10 +161,15 @@ MAX_ANGLE_DEG = 80
 #: this one may depend on; ``tests/test_arm_walk.py`` pins the two together.
 ARM_ENVELOPE_DEG = 45
 
-#: The per-mover bound :class:`AngleCaptureRequest` enforces -- the only place
-#: that knows BOTH the mover and its stops. A person can stand anywhere the
-#: geometry stays honest (:data:`MAX_ANGLE_DEG`); the arm is bounded by its own
-#: travel. Checked when the walk is STATED rather than when a
+#: How far ABOVE or BELOW mark height a person may be asked to hold the
+#: microphone. Covers the plan's baseline vertical walk (+/-20 deg) with margin
+#: and no more: nothing establishes a person can hold a wider rise repeatably.
+MAX_ELEVATION_DEG = 30
+
+#: The per-mover, per-axis bound :class:`AngleCaptureRequest` enforces -- the
+#: only place that knows BOTH the mover and its stops. A person can stand
+#: anywhere the geometry stays honest (:data:`MAX_ANGLE_DEG`); the arm is
+#: bounded by its own travel. Checked when the walk is STATED rather than when a
 #: session takes it, because the alternative is a session that stalls: the
 #: position gate publishes a target this mover cannot reach and then spends its
 #: whole ``REMOTE_POSITION_HOLD_BUDGET_S`` (600 s) per stop waiting for a report
@@ -202,6 +177,13 @@ ARM_ENVELOPE_DEG = 45
 MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_ARM: ARM_ENVELOPE_DEG,
     MOVER_HUMAN: MAX_ANGLE_DEG,
+})
+
+#: The elevation half of the pair above. The arm's 0 is a fact about the rig,
+#: not a placeholder: it rotates about the vertical axis and cannot tilt.
+MOVER_MAX_ELEVATION_DEG: Mapping[str, int] = MappingProxyType({
+    MOVER_ARM: 0,
+    MOVER_HUMAN: MAX_ELEVATION_DEG,
 })
 
 #: Which composed program object each regime plays -- stated as the PHASE whose
@@ -227,6 +209,10 @@ def _validated_angle(angle_deg: object) -> int:
     :class:`AngleStop`, :func:`pose_at_angle` and the three request
     constructors are all reachable directly, so the bounds live here rather
     than on whichever one a caller happened to use first.
+
+    Both axes come through here: what differs between them is REACH, a
+    property of the mover rather than of the geometry
+    (:data:`MOVER_MAX_ELEVATION_DEG`).
 
     **Silent truncation never returns from this function, and that is the point
     rather than a style preference.** The constructors used to coerce with
@@ -276,15 +262,31 @@ class AngleStop:
     honest at (:func:`position_angle_deg`'s own reasoning: the mark is placed
     "about" 1 m out, and a tenth of a degree claims a precision the placement
     never had).
+
+    ``elevation_deg`` is the ORTHOGONAL bearing in the same frame -- signed
+    whole degrees ABOVE mark height, negative BELOW (``_VERTICAL_SIGNS``), and
+    0 for a stop nobody raised. WHICH mover may be asked for a non-zero one is
+    :data:`MOVER_MAX_ELEVATION_DEG`, judged by :class:`AngleCaptureRequest`.
+
+    ``candidate_id`` is the banked candidate fingerprint this stop measures,
+    ``""`` for the speaker as it stands. It is the label the bank is SELECTED
+    by afterwards (``record_index.bundle_measurements``), which is why it sits
+    on the stop rather than on the walk: a candidate cycle is adjacent stops at
+    one pose. WHAT a candidate may vary is :func:`candidate_measure_axes`.
     """
 
     angle_deg: int
     regime: str
+    elevation_deg: int = 0
+    candidate_id: str = ""
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
         # never reaches a record or an equality check as a numpy scalar.
         object.__setattr__(self, "angle_deg", _validated_angle(self.angle_deg))
+        object.__setattr__(
+            self, "elevation_deg", _validated_angle(self.elevation_deg)
+        )
         if self.regime not in REGIMES:
             raise CrossoverV2FlowError(
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
@@ -321,6 +323,19 @@ class AngleCaptureRequest:
     adopts this walk. An operator who could state numbers here could measure
     one speaker through another's level match.
 
+    ``declared_geometry`` is the household's own tape measure -- the toolbox's
+    own :class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`,
+    which is also what ``jasper-declare-geometry`` stores and what derives the
+    room's ``entanglement_floor_hz``. Carried and never judged here: the
+    operator states it once at ``stage`` and it rides onto the session's banked
+    evidence. ``None`` is every walk nobody was asked about, which is most of
+    them.
+
+    ``program`` is PROVENANCE, not geometry: the name of the
+    :class:`~.measurement_programs.MeasurementProgram` these stops came from
+    (``"baseline/express"``, ``"spot"``), or ``""`` for a free-form walk
+    nobody named. Nothing parses it -- the stops are the walk.
+
     ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
     because the reverse-null is **one act at one place**
     (``docs/REFACTOR-TUNING-2026-08.md`` §1: design-axis-only, where the
@@ -343,6 +358,8 @@ class AngleCaptureRequest:
     delayed_role: str = ""
     delay_us: float = 0.0
     level_matched: bool = False
+    program: str = ""
+    declared_geometry: DeclaredGeometry | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -352,19 +369,30 @@ class AngleCaptureRequest:
             raise CrossoverV2FlowError(
                 f"mover must be one of {MOVERS}, got {self.mover!r}"
             )
-        bound = MOVER_MAX_ANGLE_DEG[self.mover]
-        outside = tuple(
-            stop.angle_deg for stop in self.stops if abs(stop.angle_deg) > bound
+        self._refuse_beyond_reach(
+            POSITION_AXIS_HORIZONTAL,
+            MOVER_MAX_ANGLE_DEG[self.mover],
+            tuple(stop.angle_deg for stop in self.stops),
         )
+        self._refuse_beyond_reach(
+            POSITION_AXIS_VERTICAL,
+            MOVER_MAX_ELEVATION_DEG[self.mover],
+            tuple(stop.elevation_deg for stop in self.stops),
+        )
+
+    def _refuse_beyond_reach(
+        self, axis: str, bound: int, asked: tuple[int, ...]
+    ) -> None:
+        # A LateralWalkRefused rather than a bare CrossoverV2FlowError so the
+        # refusal carries the walk vocabulary's own machine slug: this IS a walk
+        # refusal, simply the one decidable from the request alone, with no
+        # session needed to judge it.
+        outside = tuple(deg for deg in asked if abs(deg) > bound)
         if outside:
-            # A LateralWalkRefused rather than a bare CrossoverV2FlowError so the
-            # refusal carries the walk vocabulary's own machine slug: this IS a
-            # walk refusal, it is simply the one decidable from the request alone
-            # (mover plus angles), with no session needed to judge it.
             raise LateralWalkRefused(
                 WALK_OVER_MOVER_ENVELOPE,
-                f"mover={self.mover!r} travels +/-{bound} deg, so it cannot "
-                "reach "
+                f"mover={self.mover!r} travels +/-{bound} deg on the {axis} "
+                "axis, so it cannot reach "
                 + ", ".join(f"{deg:+d}" for deg in outside)
                 + " deg",
             )
@@ -382,13 +410,23 @@ class AngleCaptureRequest:
         """
         return self.mover == MOVER_ARM
 
+    def declared_geometry_record(self) -> dict[str, float] | None:
+        """The tape measure as every writer banks it, or ``None`` for none.
+
+        One owner for the "or nothing": the spool document and the CLI's plan
+        JSON both carry this field, and two spellings of one conditional are
+        two places for the null to drift.
+        """
+        geometry = self.declared_geometry
+        return geometry.to_dict() if geometry is not None else None
+
 
 # --------------------------------------------------------------------------- #
 # angle -> pose: the one new primitive
 # --------------------------------------------------------------------------- #
 
 
-def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
+def pose_at_angle(angle_deg: int, elevation_deg: int = 0) -> CloudPositionPrompt:
     """The pose at a stated bearing -- the exact inverse of
     :func:`position_angle_deg`.
 
@@ -405,15 +443,19 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
     is stored in centimetres, and ``position_angle_deg(pose_at_angle(d)) == d``
     for every whole degree this accepts. That round trip is a test, not a claim.
 
+    ``elevation_deg`` rides the same construction on the orthogonal axis,
+    stored in ``vertical_offset_cm`` and read back by
+    :func:`position_elevation_deg`.
+
     ``role`` is DERIVED from :data:`WIDE_OFFSET_MIN_CM`, not chosen: a stop past
     the wide class answers the off-axis question and one inside it answers the
     on-axis one, which reproduces the shipped table's own assignment exactly
     (its 12 and 25 cm rows are ``onax``, its 40 and 60 cm rows are ``offax``)
-    without a second table to drift from it. A vertical
-    (:data:`POSITION_ROLE_XOVR`) pose is unreachable here by construction --
-    this seam states a horizontal bearing and elevation is the ratified
-    deferred axis -- which is also what keeps :func:`position_angle_deg` from
-    ever being handed a row it must refuse.
+    without a second table to drift from it. It is derived from the SIDEWAYS
+    offset alone: :data:`POSITION_ROLE_XOVR` means a pose commanding NO
+    horizontal bearing, and every pose here commands one (0 deg included),
+    which is what keeps :func:`position_angle_deg` -- it refuses an XOVR row
+    outright -- from ever being handed one on the retention path.
 
     **The copy is stated as the ANGLE for BOTH movers.** A request stated in
     degrees reads back in degrees whoever is holding the microphone, so this
@@ -434,8 +476,8 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
     is what a taut string does by construction and what an arm does by radius.
     """
     degrees = _validated_angle(angle_deg)
-    offset_cm = 100.0 * MARK_DISTANCE_M * math.tan(math.radians(abs(degrees)))
-    sign = 0 if degrees == 0 else (1 if degrees > 0 else -1)
+    elevation = _validated_angle(elevation_deg)
+    offset_cm = _offset_cm_at(degrees)
     role = POSITION_ROLE_OFFAX if offset_cm >= WIDE_OFFSET_MIN_CM else POSITION_ROLE_ONAX
     geometric = CloudPositionPrompt(
         # A placeholder sentence, immediately replaced: the pose's identity is
@@ -445,9 +487,24 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
         detail="",
         offset_cm=offset_cm,
         role=role,
-        lateral_sign=sign,
+        lateral_sign=_sign_of(degrees),
+        vertical_sign=_sign_of(elevation),
+        vertical_offset_cm=_offset_cm_at(elevation),
     )
     return remote_position_prompt(geometric)
+
+
+def _sign_of(degrees: int) -> int:
+    return 0 if degrees == 0 else (1 if degrees > 0 else -1)
+
+
+def _offset_cm_at(degrees: int) -> float:
+    """The cm displacement one bearing names, in the mark's own plane.
+
+    The tangent :func:`position_angle_deg` and :func:`position_elevation_deg`
+    both invert, written once so the two axes cannot drift apart.
+    """
+    return 100.0 * MARK_DISTANCE_M * math.tan(math.radians(abs(degrees)))
 
 
 # --------------------------------------------------------------------------- #
@@ -498,6 +555,91 @@ def both_at(
     return AngleCaptureRequest(stops=tuple(stops), mover=mover)
 
 
+def request_for_program(
+    program: MeasurementProgram,
+    *,
+    candidates: tuple[str, ...] = (),
+    mover: str = MOVER_HUMAN,
+    polarity: str = POLARITY_NORMAL,
+    inverted_role: str = "",
+    delayed_role: str = "",
+    delay_us: float = 0.0,
+    level_matched: bool = False,
+    declared_geometry: DeclaredGeometry | None = None,
+) -> AngleCaptureRequest:
+    """The walk one named program asks for, in the table's own order.
+
+    Per-driver at every pose, because that is the only regime a session walk
+    plays (:data:`WALK_REGIME_UNSUPPORTED`). A pose's ``repeats`` become that
+    many ADJACENT identical stops, which is how the shipped seam already says
+    "more captures here": the microphone moves once per DISTINCT pose, so
+    repeats cost captures and no travel.
+
+    The graph flags are passed through untouched -- a program states POSE
+    geometry and nothing else, so the reverse-null, the confirmation delay, the
+    level match and the household's declared room geometry stay the caller's to
+    state (and the spec's to judge).
+
+    ``candidates`` expands POSE-MAJOR, CANDIDATE-MINOR: the variants at one
+    pose are ADJACENT stops, so the microphone still moves once per distinct
+    pose and two candidates are only ever compared from the same place. ``()``
+    is the walk that measures the speaker as it stands.
+
+    Reach is not re-checked here: :class:`AngleCaptureRequest` already refuses a
+    pose beyond the stated mover's envelope, in the vocabulary this module
+    shares with the session.
+    """
+    return AngleCaptureRequest(
+        stops=tuple(
+            AngleStop(
+                pose.azimuth_deg,
+                REGIME_PER_DRIVER,
+                pose.elevation_deg,
+                candidate,
+            )
+            for pose in program.poses
+            for _ in range(pose.repeats)
+            for candidate in (candidates or ("",))
+        ),
+        mover=mover,
+        polarity=polarity,
+        inverted_role=inverted_role,
+        delayed_role=delayed_role,
+        delay_us=delay_us,
+        level_matched=level_matched,
+        declared_geometry=declared_geometry,
+        # ``spot`` carries caller geometry rather than a registry row, so its
+        # size names nothing an operator chose.
+        program=(
+            program.program_id
+            if program.program_id == "spot"
+            else f"{program.program_id}/{program.size}"
+        ),
+    )
+
+
+def walk_price(
+    request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
+) -> dict[str, int]:
+    """What this walk costs the person holding the microphone.
+
+    ``ceiling_min`` prices the SESSION that takes the walk -- the plan's base
+    entries plus these stops -- rounded UP to whole minutes so the printed
+    number is never under the real ceiling. ``plan_shape`` names WHICH session,
+    because base entries are a property of the resolved shape; ``None`` is the
+    default shape, for a surface pricing a walk before any tier is chosen.
+    """
+    return {
+        "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
+        "captures": len(request.stops),
+        "ceiling_min": math.ceil(
+            wall_clock_ceiling_s(
+                stage1_base_entries(plan_shape) + len(request.stops)
+            ) / 60
+        ),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # resolution -- request -> the shipped primitives
 # --------------------------------------------------------------------------- #
@@ -520,6 +662,7 @@ class ResolvedStop:
     index: int
     angle_deg: int
     regime: str
+    elevation_deg: int
     prompt: CloudPositionPrompt
     program_phase: str
     screen: Mapping[str, str]
@@ -535,26 +678,14 @@ class ResolvedStop:
 def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) -> dict[str, str]:
     """One stop's advance policy and, for an arm, its target position.
 
-    Mirrors ``_entry_advance`` / ``_entry_policy`` for a request-shaped walk:
-    a hand-guided stop is a tap (the person's own settle signal), an arm-driven
-    one auto-begins behind the cancelable countdown AND declares the angle the
-    position gate must wait for. The two arm behaviours are emitted together
-    because a countdown without the gate fires into an arm still in motion.
+    The two arm behaviours are emitted together because a countdown without the
+    gate fires into an arm still in motion. A hand-guided stop declares no
+    target: whether its begins are HELD is the SESSION's fact
+    (:attr:`V2PlanShape.positions_gated`), which this seam cannot see.
 
-    **This is the REQUEST's own preview, which is why a hand-guided stop
-    declares no target here.** Whether a walk's begins are HELD is the
-    SESSION's fact, not the request's -- a person's walk is gated when the
-    session hosting it is (:attr:`V2PlanShape.positions_gated`), and that
-    session builds its own entries through ``_entry_policy`` off its own shape.
-    Guessing a target from the mover alone would be a second answer to a
-    question this seam cannot see. The one consumer of this bag is
-    ``jasper-angle-capture plan``'s dry run.
-
-    The angle is re-read off the POSE through the shipped
-    :func:`position_angle_deg` rather than copied from the request, so the
-    number the gate acts on is the number the banked pose carries. A copy taken
-    from the request would be a second source for one fact, and the round trip
-    is exactly what would hide a defect in it.
+    The angle is re-read off the POSE through :func:`position_angle_deg` rather
+    than copied from the request, so the number the gate acts on is the number
+    the banked pose carries.
     """
     if not request.externally_positioned:
         return {"auto_advance": AUTO_ADVANCE_TAP}
@@ -569,20 +700,19 @@ def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) ->
 def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
     """The whole request, resolved into indexed stops in running order.
 
-    This is the seam: everything above is a statement of intent and everything
-    below consumes shipped machinery. Each stop resolves to the pose its angle
-    names, the program object its regime names, and the advance policy its mover
-    names -- three independent axes composed once, here, so no caller has to
-    know how any of the three is implemented.
+    The seam: each stop resolves to the pose its angle names, the program
+    object its regime names, and the advance policy its mover names -- three
+    independent axes composed once, here.
     """
     resolved: list[ResolvedStop] = []
     for offset, stop in enumerate(request.stops):
-        pose = pose_at_angle(stop.angle_deg)
+        pose = pose_at_angle(stop.angle_deg, stop.elevation_deg)
         resolved.append(
             ResolvedStop(
                 index=offset + 1,
                 angle_deg=stop.angle_deg,
                 regime=stop.regime,
+                elevation_deg=stop.elevation_deg,
                 prompt=pose,
                 program_phase=_REGIME_PROGRAM_PHASE[stop.regime],
                 screen=_screen_policy(request, pose),
@@ -647,9 +777,11 @@ WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 #: through.
 WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 
-#: A stop is outside the stated mover's own reach (:data:`MOVER_MAX_ANGLE_DEG`).
-#: Decided by :class:`AngleCaptureRequest` itself, so a walk the arm cannot serve
-#: is refused where it is STATED -- at ``jasper-angle-capture plan``/``stage`` --
+#: A stop is outside the stated mover's own reach on one AXIS
+#: (:data:`MOVER_MAX_ANGLE_DEG`, :data:`MOVER_MAX_ELEVATION_DEG`) -- one slug
+#: for both axes, with the axis in the detail sentence. Decided by
+#: :class:`AngleCaptureRequest` itself, so a walk the arm cannot serve is
+#: refused where it is STATED -- at ``jasper-angle-capture plan``/``stage`` --
 #: rather than stalling a live session one 600 s hold at a time.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
@@ -721,6 +853,17 @@ WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 #: raised by the CALLER, since this module reads no session facts.
 WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 
+#: A stop names a banked candidate this walk cannot PLAY. The per-driver
+#: MEASURE graph omits crossover, linearization and the applied delays by
+#: contract (``camilla_yaml.emit_active_speaker_program_config``), so the only
+#: axes a stop can vary are the alignment ones
+#: :class:`~.crossover_v2.measure_spec.MeasureSpec` already carries. A
+#: candidate carrying linearization EQ is therefore not measurable through this
+#: path at all, and banking a take under its fingerprint would say a filter
+#: played that never did. Lifting it is the EQ candidate's own work, not a
+#: loosened check here.
+WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -733,6 +876,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_POLARITY_NEEDS_WIRED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_LEVEL_MATCH_NEEDS_WIRED,
+    WALK_CANDIDATE_NOT_MEASURABLE,
 })
 
 
@@ -755,6 +899,64 @@ class LateralWalkRefused(CrossoverV2FlowError):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+
+
+def candidate_measure_axes(candidate: Any) -> dict[str, Any]:
+    """The :class:`MeasureSpec` axes a banked candidate implies, or a refusal.
+
+    A stop plays the per-driver MEASURE graph, which omits crossover,
+    linearization and the applied delays by contract, so the only thing a
+    candidate can change about a stop is the ALIGNMENT it was minted with.
+    The axes come back NORMALISED to what that spec accepts; anything the
+    graph cannot play refuses as :data:`WALK_CANDIDATE_NOT_MEASURABLE`.
+    """
+    from .crossover_alignment import POLARITY_INVERT
+    from .crossover_declaration import preset_crossover_geometry
+
+    fingerprint = str(getattr(candidate, "fingerprint", "") or "")
+    if getattr(candidate, "linearization", None):
+        raise LateralWalkRefused(
+            WALK_CANDIDATE_NOT_MEASURABLE,
+            f"banked candidate {fingerprint} carries linearization EQ, and a "
+            "per-driver measurement graph plays no linearization",
+        )
+    minted = preset_crossover_geometry(getattr(candidate, "source_preset", None))
+    if minted is None:
+        raise LateralWalkRefused(
+            WALK_CANDIDATE_NOT_MEASURABLE,
+            f"banked candidate {fingerprint} declares no single readable "
+            "crossover, so the branch its alignment flips cannot be named",
+        )
+    roles, _geometry = minted
+    alignment = getattr(candidate, "alignment", None)
+    inverted = getattr(alignment, "polarity", None) == POLARITY_INVERT
+    # The candidate's convention is the region's UPPER driver relative to its
+    # lower one, which is the branch named here.
+    inverted_role = roles[1] if inverted else ""
+    delay_us = float(getattr(alignment, "delay_us", None) or 0.0)
+    # A zero delay names no branch. ``MeasuredCrossoverAlignment`` accepts the
+    # pair ``(0.0, role)`` and :class:`MeasureSpec` refuses it, so an alignment
+    # that delays nothing is stated here as one that names nothing rather than
+    # reaching the spec as a half-stated pair.
+    delayed_role = (
+        str(getattr(alignment, "delay_role", None) or "") if delay_us else ""
+    )
+    for axis, role in (
+        ("inverted_role", inverted_role), ("delayed_role", delayed_role),
+    ):
+        if role and role not in DRIVER_ROLES:
+            raise LateralWalkRefused(
+                WALK_CANDIDATE_NOT_MEASURABLE,
+                f"banked candidate {fingerprint} names {role!r} as its "
+                f"{axis}, and a measurement graph carries only "
+                f"{', '.join(DRIVER_ROLES)}",
+            )
+    return {
+        "polarity": POLARITY_INVERTED if inverted else POLARITY_NORMAL,
+        "inverted_role": inverted_role,
+        "delayed_role": delayed_role,
+        "delay_us": delay_us,
+    }
 
 
 def session_lateral_walk(

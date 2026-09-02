@@ -275,26 +275,10 @@ def test_each_class_parks_naming_its_issue_or_remedy(
 @pytest.mark.parametrize(
     "topology,env,park_class,issue,remedy", _PARK_CASES
 )
-def test_each_class_is_loud_under_ring_only(
-    topology, env, park_class, issue, remedy
-):
-    state = transport_park.snapshot(topology, env, ring_only=True)
+def test_each_class_is_loud(topology, env, park_class, issue, remedy):
+    state = transport_park.snapshot(topology, env)
     assert state["status"] == "parked"
     assert state["parked"] is True
-    assert park_class in {park["park_class"] for park in state["parks"]}
-
-
-@pytest.mark.parametrize(
-    "topology,env,park_class,issue,remedy", _PARK_CASES
-)
-def test_each_class_is_pending_while_loopback_still_exists(
-    topology, env, park_class, issue, remedy
-):
-    """The behaviour-preserving half: a box the loopback route still carries
-    is disclosed, never reported silent."""
-    state = transport_park.snapshot(topology, env, ring_only=False)
-    assert state["status"] == "pending"
-    assert state["parked"] is False
     assert park_class in {park["park_class"] for park in state["parks"]}
 
 
@@ -307,7 +291,7 @@ def test_ring_armed_roleful_composite_does_not_park():
     parks = transport_park.classify(_composite_active_2way(), _ARMED)
     assert parks == ()
     assert transport_park.snapshot(
-        _composite_active_2way(), _ARMED, ring_only=True
+        _composite_active_2way(), _ARMED
     )["status"] == "ok"
 
 
@@ -348,21 +332,17 @@ def test_a_clean_passive_mono_box_is_ring_eligible_and_does_not_park():
     assert transport_park.classify(topology, {}) == ()
 
 
-@pytest.mark.parametrize("ring_only", [True, False])
-def test_snapshot_separates_clean_mono_from_mono_with_issues(ring_only: bool):
-    """The status pair the operator surfaces read. A clean mono box is `ok` on
-    both transports; one still awaiting its physical output is `pending` while
-    loopback carries it and `parked` once the ring is the only route."""
-    clean = transport_park.snapshot(_full_range_mono(), {}, ring_only=ring_only)
+def test_snapshot_separates_clean_mono_from_mono_with_issues():
+    """The status pair the operator surfaces read. A clean mono box is `ok`;
+    one still awaiting its physical output is `parked`."""
+    clean = transport_park.snapshot(_full_range_mono(), {})
     assert clean["status"] == "ok"
     assert clean["parked"] is False
     assert clean["parks"] == []
 
-    unassigned = transport_park.snapshot(
-        _mono_awaiting_its_output(), {}, ring_only=ring_only
-    )
-    assert unassigned["status"] == ("parked" if ring_only else "pending")
-    assert unassigned["parked"] is ring_only
+    unassigned = transport_park.snapshot(_mono_awaiting_its_output(), {})
+    assert unassigned["status"] == "parked"
+    assert unassigned["parked"] is True
     assert PARK_MONO_FULL_RANGE in {
         park["park_class"] for park in unassigned["parks"]
     }
@@ -475,7 +455,7 @@ def test_unconfigured_topology_does_not_park():
 def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
     """No ring geometry of either kind and no class names it. Saying "ok" here
     would tell an operator the ring can serve a box it demonstrably cannot."""
-    state = transport_park.snapshot(topology, {}, ring_only=True)
+    state = transport_park.snapshot(topology, {})
     assert state["status"] == "unclassified"
     assert state["parked"] is False
     assert state["parks"] == []
@@ -484,7 +464,7 @@ def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
 def test_unclassified_reaches_no_household_surface():
     from jasper.control.audio_health import _state_issues, _transport_park_signal
 
-    state = transport_park.snapshot(_left_only(), {}, ring_only=True)
+    state = transport_park.snapshot(_left_only(), {})
     assert _transport_park_signal(state) is None
     assert not _state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
@@ -495,37 +475,8 @@ def test_a_ring_eligible_box_still_reports_ok():
     """The ok arm must stay reachable — otherwise `unclassified` has quietly
     become the answer for everything."""
     assert transport_park.snapshot(
-        _full_range_stereo(), {}, ring_only=True
+        _full_range_stereo(), {}
     )["status"] == "ok"
-
-
-# --- the gate ----------------------------------------------------------------
-
-
-def test_ring_only_is_derived_from_the_coupling_vocabulary(monkeypatch):
-    """No flag to flip: the transport deletion removes the loopback coupling
-    and this answers True with no second edit."""
-    from jasper import fanin_coupling
-
-    monkeypatch.setattr(
-        fanin_coupling,
-        "VALID_COUPLINGS",
-        frozenset({fanin_coupling.COUPLING_SHM_RING}),
-    )
-    assert transport_park.ring_only_transport() is True
-
-    monkeypatch.setattr(
-        fanin_coupling,
-        "VALID_COUPLINGS",
-        frozenset({fanin_coupling.COUPLING_SHM_RING, fanin_coupling.COUPLING_LOOPBACK}),
-    )
-    assert transport_park.ring_only_transport() is False
-
-
-def test_todays_tree_is_ring_only_so_the_parks_are_live():
-    """The transport deletion landed: `shm_ring` is the only legal coupling, so
-    a box in one of the four classes is reported PARKED rather than pending."""
-    assert transport_park.ring_only_transport() is True
 
 
 def test_a_box_in_two_classes_reports_both():
@@ -548,7 +499,7 @@ def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):
     corrupt.write_text("{not json at all", encoding="utf-8")
     monkeypatch.setattr(ot, "topology_path", lambda _p=None: corrupt)
 
-    state = transport_park.snapshot(env={}, ring_only=True)
+    state = transport_park.snapshot(env={})
     assert state["status"] == "unavailable"
     assert state["parked"] is False
     assert state["parks"] == []
@@ -562,7 +513,7 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ot, "topology_path", lambda _p=None: tmp_path / "absent.json"
     )
-    assert transport_park.snapshot(env={}, ring_only=True)["status"] == "ok"
+    assert transport_park.snapshot(env={})["status"] == "ok"
 
 
 # --- doctor -----------------------------------------------------------------
@@ -572,7 +523,6 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
     "status,expected",
     [
         ("ok", "ok"),
-        ("pending", "warn"),
         ("parked", "fail"),
         ("unavailable", "warn"),
         ("unclassified", "warn"),
@@ -587,7 +537,6 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
         lambda *a, **k: {
             "status": status,
             "parked": status == "parked",
-            "ring_only": status == "parked",
             "parks": [
                 {
                     "park_class": PARK_MONO_FULL_RANGE,
@@ -632,7 +581,7 @@ def test_an_unproven_endpoint_warns_without_naming_a_park(
     """
     from jasper.cli.doctor.audio_runtime import check_ring_transport_park
 
-    state = transport_park.snapshot(topology, env, ring_only=False)
+    state = transport_park.snapshot(topology, env)
     assert state["unproven_endpoint"] is unproven
     assert state["status"] == "ok"
     assert state["parks"] == []
@@ -650,7 +599,7 @@ def test_no_named_park_also_reports_an_unproven_endpoint(
     """The seam signal is the COMPLEMENT of class (c) on the same two inputs,
     so a named park and the signal cannot describe one box — the double-report
     ADR-0178 refuses, refused again."""
-    state = transport_park.snapshot(topology, env, ring_only=True)
+    state = transport_park.snapshot(topology, env)
     assert state["unproven_endpoint"] is False
 
 
@@ -659,7 +608,7 @@ def test_an_unproven_endpoint_reaches_no_household_surface():
     silent afterwards; there is no household action either way."""
     from jasper.control.audio_health import _state_issues, _transport_park_signal
 
-    state = transport_park.snapshot(_stereo_plus_subwoofer(), {}, ring_only=True)
+    state = transport_park.snapshot(_stereo_plus_subwoofer(), {})
     assert state["unproven_endpoint"] is True
     assert _transport_park_signal(state) is None
     issues = _state_issues(
@@ -705,7 +654,7 @@ def test_an_armed_endpoint_whose_graph_never_moved_names_itself(monkeypatch):
     """
     _loaded_graph(monkeypatch, converged=False, detail="plays hw:0,0")
     state = transport_park.snapshot(
-        _active_topology("stereo", "active_2_way"), _ARMED, ring_only=True
+        _active_topology("stereo", "active_2_way"), _ARMED
     )
     # NOT a park: a refusal leaves the loaded graph running, so the "emits
     # nothing" claim `parked` makes would be false.
@@ -729,7 +678,7 @@ def test_a_converged_or_unreadable_graph_claims_no_refusal(monkeypatch, kwargs):
     (`active_speaker_parked`, `camilla_recover`) are already loud about it."""
     _loaded_graph(monkeypatch, **kwargs)
     state = transport_park.snapshot(
-        _active_topology("stereo", "active_2_way"), _ARMED, ring_only=True
+        _active_topology("stereo", "active_2_way"), _ARMED
     )
     assert state["converge_refused"] is None
 
@@ -755,7 +704,7 @@ def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
     pays nothing, which is what this test pins.
     """
     reads = _loaded_graph(monkeypatch, converged=False)
-    state = transport_park.snapshot(topology, env, ring_only=True)
+    state = transport_park.snapshot(topology, env)
     assert state["converge_refused"] is None
     assert reads == []
 
@@ -801,7 +750,7 @@ def test_an_armed_endpoint_under_no_active_modes_discloses_off_composite(
     """
     from jasper.cli.doctor.audio_runtime import check_ring_transport_park
 
-    state = transport_park.snapshot(topology, env, ring_only=False)
+    state = transport_park.snapshot(topology, env)
     assert state["endpoint_armed_without_active_modes"] is armed_without_modes
     assert state["status"] == "ok"
     assert state["parks"] == []
@@ -818,7 +767,7 @@ def test_the_two_endpoint_signals_are_never_both_true():
     """
     for env in ({}, _ARMED):
         state = transport_park.snapshot(
-            _stereo_plus_subwoofer(), env, ring_only=False
+            _stereo_plus_subwoofer(), env
         )
         assert not (
             state["unproven_endpoint"]
@@ -847,7 +796,6 @@ def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
     state = {
         "status": "ok",
         "parked": False,
-        "ring_only": True,
         "parks": [],
         "unproven_endpoint": False,
         "converge_refused": refusal,
@@ -868,7 +816,7 @@ def test_a_converge_refusal_reaches_no_household_surface(monkeypatch):
 
     _loaded_graph(monkeypatch, converged=False)
     state = transport_park.snapshot(
-        _active_topology("stereo", "active_2_way"), _ARMED, ring_only=True
+        _active_topology("stereo", "active_2_way"), _ARMED
     )
     assert state["converge_refused"]
     assert _transport_park_signal(state) is None
@@ -904,7 +852,7 @@ def test_a_live_park_writes_one_household_incident_per_class(
 ):
     from jasper.control.audio_health import _state_issues
 
-    state = transport_park.snapshot(topology, env, ring_only=True)
+    state = transport_park.snapshot(topology, env)
     issues = _state_issues(
         {"warmup_active": True},
         None,
@@ -917,38 +865,10 @@ def test_a_live_park_writes_one_household_incident_per_class(
     assert f"path.transport_park.{park_class}" in keys
 
 
-@pytest.mark.parametrize(
-    "topology,env,park_class,issue,remedy", _PARK_CASES
-)
-def test_a_pending_park_reaches_no_household_surface(
-    topology, env, park_class, issue, remedy
-):
-    """The box plays on the loopback route; calling it silent would be the
-    confusion ADR-0100 exists to prevent, pointed the wrong way."""
-    from jasper.control.audio_health import (
-        _state_issues,
-        _transport_park_signal,
-    )
-
-    state = transport_park.snapshot(topology, env, ring_only=False)
-    issues = _state_issues(
-        {"warmup_active": True},
-        None,
-        {},
-        {},
-        None,
-        transport_park=state,
-    )
-    assert not [
-        row for row in issues if str(row["key"]).startswith("path.transport_park.")
-    ]
-    assert _transport_park_signal(state) is None
-
-
 def test_a_live_park_takes_the_household_headline():
     from jasper.control.audio_health import PARKED_HEADLINE, _transport_park_signal
 
-    state = transport_park.snapshot(_mono_awaiting_its_output(), {}, ring_only=True)
+    state = transport_park.snapshot(_mono_awaiting_its_output(), {})
     signal = _transport_park_signal(state)
     assert signal is not None
     assert signal["status"] == "issue"
@@ -972,7 +892,7 @@ def test_a_live_park_says_which_shape_parked_the_box(
         _transport_park_signal,
     )
 
-    state = transport_park.snapshot(topology, env, ring_only=True)
+    state = transport_park.snapshot(topology, env)
     rows = {
         row["key"]: row
         for row in _state_issues(
@@ -998,7 +918,7 @@ def test_each_park_class_gets_its_own_household_sentence():
     details = set()
     for case in _PARK_CASES:
         topology, env, park_class = case.values[:3]
-        state = transport_park.snapshot(topology, env, ring_only=True)
+        state = transport_park.snapshot(topology, env)
         details.add(_park_detail(
             [park for park in state["parks"] if park["park_class"] == park_class]
         ))
@@ -1022,7 +942,6 @@ def test_an_unnamed_park_class_keeps_the_canned_sentence():
     state = {
         "status": "parked",
         "parked": True,
-        "ring_only": True,
         "parks": [{
             "park_class": "a_shape_with_no_message",
             "issue": "#9999",

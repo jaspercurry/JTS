@@ -627,7 +627,6 @@ def _active_chip_inputs() -> dict:
             },
         },
         "voice_wake_legs": {"on"},
-        "bridge_journal_text": "",
     }
 
 
@@ -712,7 +711,7 @@ def _outputd_stability_inputs() -> dict:
     }
 
 
-def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
+def test_chip_aec_readiness_snapshot_uses_schema_helper_and_passes():
     artifact = audio_validation.build_chip_aec_readiness_artifact(
         **_active_chip_inputs(),
     )
@@ -720,7 +719,7 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert isinstance(artifact, ValidationArtifact)
     assert artifact.schema_version == audio_validation.CURRENT_SCHEMA_VERSION
     assert artifact.profile == "xvf_chip_aec"
-    assert artifact.status == "warn"
+    assert artifact.status == "pass"
     assert artifact.mic_id == "xvf3800"
     assert artifact.dac_id == "apple_usb_c_dongle"
     assert artifact.checks["runtime_identity"]["status"] == "pass"
@@ -732,7 +731,9 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert artifact.checks["dac_support"]["status"] == "pass"
     assert artifact.checks["dac_reference"]["status"] == "pass"
     assert artifact.checks["wake_legs"]["status"] == "pass"
-    assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
+    assert "measured_drift_delay" not in artifact.checks
+    # The readiness recommendation stays gated behind an explicit hardware
+    # run even though every readiness check passes.
     assert artifact.recommendation == "run_hardware_validation"
     assert "readiness_snapshot" in artifact.notes[0]
 
@@ -1155,7 +1156,6 @@ def test_run_chip_aec_hardware_validation_refuses_inactive_without_force(monkeyp
         "_read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
-    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
 
     result = audio_validation.run_chip_aec_hardware_validation(
         report_only=True,
@@ -1190,7 +1190,6 @@ def test_run_chip_aec_hardware_validation_report_only_does_not_write(monkeypatch
         "_read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
-    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
     monkeypatch.setattr(
         audio_validation,
         "write_artifact",
@@ -1250,7 +1249,6 @@ def test_run_chip_aec_hardware_validation_uses_one_bounded_window(
         "_read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
-    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
     monkeypatch.setattr(audio_validation.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(
         audio_validation,
@@ -1411,13 +1409,13 @@ def test_latest_artifact_summary_reads_timestamped_artifacts(tmp_path):
 
     assert path.name != "latest.json"
     assert summary["state"] == "current"
-    assert summary["status"] == "warn"
+    assert summary["status"] == "pass"
     assert summary["artifact_path"] == str(path)
     assert summary["hardware"] == {
         "mic_id": "xvf3800",
         "dac_id": "apple_usb_c_dongle",
     }
-    assert summary["check_statuses"]["measured_drift_delay"] == "not_run"
+    assert "measured_drift_delay" not in summary["check_statuses"]
 
 
 def test_latest_artifact_summary_prefers_latest_pointer(tmp_path):
@@ -1434,7 +1432,7 @@ def test_latest_artifact_summary_prefers_latest_pointer(tmp_path):
     )
 
     assert summary["artifact_path"] == str(latest_path)
-    assert summary["status"] == "warn"
+    assert summary["status"] == "pass"
     assert "reason" not in summary
 
 

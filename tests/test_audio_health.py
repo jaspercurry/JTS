@@ -128,11 +128,12 @@ def _outputd(
     tts_budget_frames: int = 96000,
     delay_age_ms: int = 10,
     clipped_samples: int = 0,
+    content_deaf: bool = False,
 ) -> dict:
     return {
         "backend": backend,
         "mix": {"clipped_samples": clipped_samples},
-        "content": {"xrun_count": content_xruns},
+        "content": {"xrun_count": content_xruns, "deaf": content_deaf},
         "dac": {
             "xrun_count": dac_xruns,
             "sample_rate": 48000,
@@ -758,6 +759,67 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
     )
 
     assert health["signal_path"]["code"] == "output_stalled"
+
+
+def test_a_deaf_content_source_is_an_issue_a_healthy_one_is_not() -> None:
+    """#3458: outputd emitting silence it did not intend read `clean` here.
+
+    Every other input to the signal path — the backend, both watchdogs, the
+    xrun counts — stays healthy through it, so the verdict outputd publishes
+    is the only thing that can move this off green.
+    """
+    deaf = _compose(outputd=_outputd(content_deaf=True))
+    assert deaf["signal_path"]["code"] == "output_deaf"
+    assert deaf["signal_path"]["status"] == "issue"
+    assert deaf["overall"]["status"] == "issue"
+    assert _compose(outputd=_outputd())["signal_path"]["code"] == "clean"
+    # A red headline with no incident row leaves `current_incident` None, so
+    # the fault never enters history and never records a recovery. Every other
+    # issue-status path code raises one; this is where it comes from.
+    rows = audio_health._state_issues(
+        _airplay(),
+        _outputd(content_deaf=True),
+        deaf["signal_path"],
+        {"status": "ok", "runtime": {"raw_mode": "disabled"}},
+        None,
+        None,
+        None,
+        activity_unknown=False,
+        coherence_park=None,
+        undeclared_hardware=None,
+        transport_park=None,
+    )
+    assert "path.outputd_content_deaf" in {row["key"] for row in rows}
+
+
+def test_a_deaf_output_never_displaces_the_cause_that_produced_it() -> None:
+    """Every upstream stall empties the ring, so `output_deaf` co-occurs.
+
+    It latches at 2 s while FANIN_STALE_MS trips at 5, so placing it ahead of
+    the fan-in watchdog would make `path_stalled` — and its
+    `path.fanin_watchdog_stale` row — unreachable for the whole outage.
+    Warmup is the same rule in time: outputd reads an empty ring before
+    CamillaDSP is producing, so a deploy's restart is not a deaf speaker.
+    """
+    stalled_airplay = _airplay()
+    stalled_airplay["current"]["fanin"]["watchdog"]["last_progress_age_ms"] = 60_000
+    stalled = compose_audio_health(
+        airplay=stalled_airplay,
+        outputd=_outputd(content_deaf=True),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert stalled["signal_path"]["code"] == "path_stalled"
+
+    warming = compose_audio_health(
+        airplay=_airplay(warmup=True),
+        outputd=_outputd(content_deaf=True),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert warming["signal_path"]["code"] != "output_deaf"
 
 
 def _output_hardware(
@@ -1533,6 +1595,50 @@ def test_stopped_camilla_is_not_reported_as_a_clean_signal_path() -> None:
     assert health["overall"]["headline"] == health["signal_path"]["headline"]
     # The state this response must never claim while the DSP is dead.
     assert health["overall"]["headline"] != "Audio is ready"
+
+
+def test_stopped_camilla_outranks_the_deafness_it_causes() -> None:
+    """The stopped DSP is the ring writer, so `output_deaf` is its symptom.
+
+    Naming the cause is strictly more useful than naming the silence, and
+    `output_deaf` is the one issue-status shape a stopped DSP displaces.
+    """
+    health = _compose_camilla(
+        _CAMILLA_CLEAN_STOP, outputd=_outputd(content_deaf=True)
+    )
+
+    assert health["signal_path"]["code"] == "camilla_stopped"
+
+
+def test_a_park_outranks_the_deafness_it_causes() -> None:
+    """A parked lane IS a lane with no producer, so it reads deaf by design.
+
+    `grouped_dac_content_lane` parks a box whose armed round-trip lane "has no
+    producer" — outputd zero-fills it forever. Letting `output_deaf` stand
+    would replace a structural verdict carrying its own rebuild issue with
+    "Try Restart audio", which cannot clear it.
+    """
+    for park in _live_parks():
+        health = compose_audio_health(
+            airplay=_airplay(),
+            outputd=_outputd(content_deaf=True),
+            route=_route(),
+            issues=[],
+            sampled_at=1000.0,
+            transport_park=park,
+        )
+        assert health["signal_path"]["code"] == "transport_unservable"
+
+    coherence = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(content_deaf=True),
+        route=_route(
+            transport={"coherence_errors": [_ROUTE_DISCONNECTED], "capability_gap": None}
+        ),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert coherence["signal_path"]["code"] == "transport_parked"
 
 
 def test_stopped_camilla_outranks_a_source_that_looks_like_it_is_playing() -> None:
@@ -3870,7 +3976,7 @@ def _household_messages(payload, path: str = "") -> list[tuple[str, str]]:
 
 
 def _live_parks() -> tuple[dict, ...]:
-    """One ring-only `transport_park` verdict per park class (#3120).
+    """One `transport_park` verdict per park class (#3120).
 
     Driven from that module's own `_PARK_CASES` table rather than a second
     copy of it, so a fifth class added there is swept here without an edit —
@@ -3881,9 +3987,7 @@ def _live_parks() -> tuple[dict, ...]:
     from tests.test_transport_park import _PARK_CASES
 
     return tuple(
-        transport_park_reader.snapshot(
-            case.values[0], case.values[1], ring_only=True
-        )
+        transport_park_reader.snapshot(case.values[0], case.values[1])
         for case in _PARK_CASES
     )
 
@@ -3947,6 +4051,9 @@ def _household_shapes() -> dict[str, dict]:
         ),
         "output_stalled": _compose_with(
             _airplay(**playing), outputd=_outputd(progress_age_ms=30_000)
+        ),
+        "output_deaf": _compose_with(
+            _airplay(**playing), outputd=_outputd(content_deaf=True)
         ),
         "path_stalled": _compose_with(_mutated(
             lambda ap: _fanin(ap)["watchdog"].update(last_progress_age_ms=60_000),
@@ -4162,6 +4269,7 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
         "path.fanin_unavailable",
         "path.fanin_watchdog_stale",
         "path.outputd_backend_inactive",
+        "path.outputd_content_deaf",
         "path.outputd_unavailable",
         "path.outputd_watchdog_stale",
         "path.tts_queue_full",

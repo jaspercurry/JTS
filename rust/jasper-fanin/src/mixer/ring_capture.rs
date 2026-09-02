@@ -53,7 +53,7 @@
 //! ## Allocation and blocking
 //!
 //! Zero allocation in the steady path: [`read_ring_and_render`] consumes directly
-//! into the lane's existing `read_buf`, and the retry path formats no strings
+//! into the lane's existing period buffer, and the retry path formats no strings
 //! (the detach reason is a `&'static str` on a copy `enum`). The ATTACHED path
 //! does not block — `try_consume_slot` is a non-blocking memcpy-or-zero-fill, and
 //! the only syscalls are the ones `jasper_ring` makes on the mapping itself.
@@ -92,7 +92,7 @@
 
 use super::*;
 
-use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
+use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead, SAMPLE_FORMAT_S32LE};
 
 /// Render periods between reattach attempts while `Detached`, and between
 /// orphaned-inode probes while `Attached`.
@@ -360,24 +360,21 @@ pub(super) enum RingCapture {
     Detached { periods_until_retry: u64 },
 }
 
-/// The geometry a renderer-ingress lane attaches with. Stereo `S16_LE` at the
-/// box's sample rate, one slot per fan-in render period, depth derived from the
-/// aloop cushion the lane replaced.
+/// The geometry a renderer-ingress lane attaches with. Stereo at the box's
+/// sample rate, one slot per fan-in render period, depth derived from the aloop
+/// cushion the lane replaced.
 ///
-/// **The wire stays S16 here on purpose, and it is not the U2 width axis.** Every
-/// renderer lane's producer is an ALSA `plug:` wrapper over a 48 kHz `S16_LE`
-/// substream — the consolidation plan's boundary table pins it there — and U3
-/// moves the transport WITHOUT moving the width, so a narrow renderer sums
-/// exactly the bytes it summed before. That is a property of the lane class, not
-/// of which lanes happen to be migrated, so it holds unchanged for each lane
-/// P6b-d adds. Widening a renderer lane is a separate decision with its own
-/// evidence, taken on the same `RingWireFormat` axis the program ring already
-/// has.
+/// The WIRE is this box's one resolved width ([`Config::program_wire_is_wide`]),
+/// the same fact that decides the program ring's payload — a renderer lane is
+/// not a second width axis. The write end declares the same width in
+/// `deploy/alsa/conf.d/61-jts-renderer-lanes.conf`; fan-in creates the ring, so
+/// a box whose declarations have sheared fails the RENDERER's `snd_pcm_open`
+/// loudly rather than narrowing anything silently.
 pub(super) fn renderer_ring_geometry(config: &Config) -> Option<Geometry> {
     Some(Geometry {
         rate: config.sample_rate,
         channels: CHANNELS,
-        sample_format: SAMPLE_FORMAT_S16LE,
+        sample_format: config.ring_wire_format.sample_format_id(),
         period_frames: config.period_frames,
         n_slots: config.renderer_ring_slots()?,
     })
@@ -590,7 +587,7 @@ pub(super) fn open_ring_input(
     let geometry = renderer_ring_geometry(config).unwrap_or(Geometry {
         rate: config.sample_rate,
         channels: CHANNELS,
-        sample_format: SAMPLE_FORMAT_S16LE,
+        sample_format: config.ring_wire_format.sample_format_id(),
         period_frames: config.period_frames,
         n_slots: crate::config::RING_SLOTS_MIN,
     });
@@ -649,7 +646,22 @@ pub(super) fn open_ring_input(
         }
     };
 
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    ring_lane_input(label, path, geometry, ring, ring_attacher, resampler, obs)
+}
+
+/// The one place a ring lane's `Input` is assembled, for production and for the
+/// tests alike: the lane's period width follows the ring's own `sample_format`,
+/// so the slot geometry and the buffer it is consumed into cannot disagree.
+fn ring_lane_input(
+    label: &str,
+    path: String,
+    geometry: Geometry,
+    ring: RingCapture,
+    ring_attacher: Option<RingAttacher>,
+    resampler: Option<LaneResampler>,
+    obs: RingLaneObservability,
+) -> Input {
+    let period_samples = (geometry.period_frames as usize) * (CHANNELS as usize);
     Input {
         // A ring lane does NOT open its aloop substream — its only source is the
         // SHM ring, the same way the DIRECT lane's only source is the gadget.
@@ -664,9 +676,10 @@ pub(super) fn open_ring_input(
         // would tell an operator the opposite of the truth.
         pcm_name: path,
         read_buf: vec![0i16; period_samples],
-        // A renderer ring lane is S16 at its wire (see `renderer_ring_geometry`),
-        // so it has no spine-scale period to hold at any box width.
-        read_buf_wide: Vec::new(),
+        read_buf_wide: super::spine_read_buf(
+            geometry.sample_format == SAMPLE_FORMAT_S32LE,
+            period_samples,
+        ),
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
         rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
@@ -677,17 +690,17 @@ pub(super) fn open_ring_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: Some(obs),
-        wake_ramp: super::LaneWakeRamp::for_lane(label, config.sample_rate),
+        lane_fade: super::LaneFade::for_lane(label, geometry.rate),
     }
 }
 
-/// Read one period from a renderer-ingress ring lane and render it into
-/// `read_buf`. Returns the number of REAL (non-silence) frames — `period_frames`
-/// on a filled slot, `0` on an empty ring or while detached.
+/// Read one period from a renderer-ingress ring lane and render it into the
+/// lane's period buffer. Returns the number of REAL (non-silence) frames —
+/// `period_frames` on a filled slot, `0` on an empty ring or while detached.
 ///
 /// Never returns `Err` and never blocks. One slot is consumed per call because the
 /// ring's slot IS one fan-in render period by construction, so the whole read is a
-/// single non-blocking `try_consume_slot` straight into the lane's existing
+/// single non-blocking consume straight into the lane's existing
 /// buffer: no allocation, no intermediate copy, no drain loop, and no catch-up
 /// resync — a bounded ring cannot back up past its own depth the way an aloop
 /// capture ring can, so `drain_input_excess` has nothing to do here and is not
@@ -705,7 +718,7 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
     // take the whole summed music path down to enforce an invariant whose
     // violation costs one lane.
     let Some(mut ring) = input.ring.take() else {
-        input.read_buf.fill(0);
+        super::silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
         return 0;
     };
 
@@ -734,16 +747,29 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
                 *periods_until_check -= 1;
             }
             let want = period_frames * (CHANNELS as usize);
-            // Guard the slot-shaped copy: `try_consume_slot` requires exactly one
-            // slot's worth of samples. `read_buf` is built at
+            // Guard the slot-shaped copy: a consume requires exactly one slot's
+            // worth of samples. The lane's period buffer is built at
             // `period_frames * CHANNELS` and the geometry's slot is `period_frames`,
             // so these agree by construction; a mismatch would be a construction
             // bug, and rendering silence is the safe answer to one.
-            if input.read_buf.len() < want {
-                input.read_buf.fill(0);
+            let wide = !input.read_buf_wide.is_empty();
+            let held = if wide {
+                input.read_buf_wide.len()
+            } else {
+                input.read_buf.len()
+            };
+            if held < want {
+                super::silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 0
             } else {
-                let read = reader.try_consume_slot(&mut input.read_buf[..want]);
+                // One slot, at this lane's width. Both entry points are typed
+                // views of the same byte copy in the ring core; the buffer the
+                // lane allocated at construction picks which.
+                let read = if wide {
+                    reader.try_consume_slot_wide(&mut input.read_buf_wide[..want])
+                } else {
+                    reader.try_consume_slot(&mut input.read_buf[..want])
+                };
                 let metrics = reader.metrics();
                 if let Some(obs) = &input.ring_obs {
                     obs.publish(&metrics);
@@ -764,7 +790,7 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
             }
         }
         RingCapture::Detached { .. } => {
-            input.read_buf.fill(0);
+            super::silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
             ring = maybe_reattach_ring(ring, input);
             0
         }
@@ -909,21 +935,25 @@ mod tests {
     //! likely to be wrong on hardware and least likely to be reachable there.
 
     use super::*;
-    use jasper_ring::TestRingWriter;
+    use jasper_ring::{RingWriter, TestRingWriter, SAMPLE_FORMAT_S16LE};
 
     /// A lane geometry small enough to keep the fixtures fast and legible, and
     /// still a legal ring (`n_slots` inside 2..=16, one slot per period).
     const TEST_PERIOD: u32 = 64;
     const TEST_SLOTS: u32 = 4;
 
-    fn test_geometry() -> Geometry {
+    fn geometry_at(sample_format: u32) -> Geometry {
         Geometry {
             rate: 48_000,
             channels: CHANNELS,
-            sample_format: SAMPLE_FORMAT_S16LE,
+            sample_format,
             period_frames: TEST_PERIOD,
             n_slots: TEST_SLOTS,
         }
+    }
+
+    fn test_geometry() -> Geometry {
+        geometry_at(SAMPLE_FORMAT_S16LE)
     }
 
     fn ring_path(name: &str) -> String {
@@ -936,10 +966,13 @@ mod tests {
     }
 
     /// Build a ring lane `Input` directly, bypassing `Config` so the test does
-    /// not have to mutate process env. Mirrors `open_ring_input`'s construction
-    /// exactly, so what the tests exercise is what production builds.
+    /// not have to mutate process env; the `Input` itself comes from the same
+    /// `ring_lane_input` production uses.
     fn ring_lane(path: &str) -> Input {
-        let geometry = test_geometry();
+        ring_lane_at(path, test_geometry())
+    }
+
+    fn ring_lane_at(path: &str, geometry: Geometry) -> Input {
         let obs = RingLaneObservability::new(path.to_string(), geometry);
         let ring = match attach_ring(path, geometry) {
             Ok(reader) => {
@@ -957,34 +990,20 @@ mod tests {
                 }
             }
         };
-        let period_samples = (TEST_PERIOD as usize) * (CHANNELS as usize);
         // A REAL attacher thread, like production: the reattach path is what most
         // of this module's tests exercise, and stubbing the worker would test a
         // lane shape no box ever runs.
         let ring_attacher =
             Some(RingAttacher::spawn("spotify", Arc::clone(&obs.attach_pending)).unwrap());
-        Input {
-            pcm: None,
-            direct: None,
-            direct_opener: None,
-            ring: Some(ring),
+        ring_lane_input(
+            "spotify",
+            path.to_string(),
+            geometry,
+            ring,
             ring_attacher,
-            label: "spotify".to_string(),
-            pcm_name: path.to_string(),
-            read_buf: vec![0i16; period_samples],
-            read_buf_wide: Vec::new(),
-            xrun_count: Arc::new(AtomicU64::new(0)),
-            frames_read: Arc::new(AtomicU64::new(0)),
-            rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
-            catchup_resync_frames: Arc::new(AtomicU64::new(0)),
-            catchup_events: Arc::new(AtomicU64::new(0)),
-            resampler: None,
-            trim: TrimControl::new(),
-            muted: Arc::new(AtomicBool::new(false)),
-            direct_obs: None,
-            ring_obs: Some(obs),
-            wake_ramp: super::LaneWakeRamp::for_lane("spotify", geometry.rate),
-        }
+            None,
+            obs,
+        )
     }
 
     fn cleanup(path: &str) {
@@ -1122,6 +1141,66 @@ mod tests {
         );
 
         cleanup(&blocker);
+    }
+
+    /// A WIDE lane carries a renderer's low bits all the way to the mix.
+    ///
+    /// The ring lane's width is the box's one resolved wire, so on a wide box
+    /// the slot is S32 and the period lands in `read_buf_wide` — the same
+    /// spine-scale buffer the mixer sums without a shift. The payload is a
+    /// 24-bit-in-S32 pattern whose low byte is exactly what a narrow lane's
+    /// truncation used to discard (#3460); publishing it as explicit
+    /// little-endian bytes means this pins the wire layout too, not just the
+    /// reader's own cast.
+    #[test]
+    fn a_wide_lane_carries_a_24_bit_sample_to_the_mix_bit_exact() {
+        let path = ring_path("wide");
+        cleanup(&path);
+        let geometry = geometry_at(SAMPLE_FORMAT_S32LE);
+        let mut input = ring_lane_at(&path, geometry);
+        assert!(
+            !is_detached(&input),
+            "the reader creates the ring when absent"
+        );
+
+        let samples = (TEST_PERIOD as usize) * (CHANNELS as usize);
+        // 24-bit content in S32 placement: the low byte is the bit the narrow
+        // wire could not carry, and the high nibble varies per sample so a
+        // stride bug cannot pass.
+        let payload: Vec<i32> = (0..samples)
+            .map(|i| ((i as i32) << 16) | 0x0000_5600)
+            .collect();
+        let mut bytes = Vec::with_capacity(samples * 4);
+        for s in &payload {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        let mut writer = RingWriter::create_or_attach(&path, geometry).unwrap();
+        assert_eq!(writer.publish_bytes(&bytes), PublishOutcome::Published);
+
+        let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
+        assert_eq!(
+            frames, TEST_PERIOD as usize,
+            "a filled slot is a full period"
+        );
+        assert_eq!(
+            input.read_buf_wide, payload,
+            "a wide lane's period must reach the sum bit for bit, low byte included",
+        );
+        assert!(
+            input.read_buf.iter().all(|&s| s == 0),
+            "the narrow buffer stays silent on a wide lane — one buffer holds the \
+             period and the mixer picks it by which one is allocated",
+        );
+
+        // Empty ring: silence in the buffer the lane actually holds.
+        input.read_buf_wide.fill(0x1234_5678);
+        let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
+        assert_eq!(frames, 0, "an empty ring contributes no real frames");
+        assert!(
+            input.read_buf_wide.iter().all(|&s| s == 0),
+            "an empty ring must zero-fill the lane's own period buffer",
+        );
+        cleanup(&path);
     }
 
     /// The steady path: a live writer's slots are consumed one per period, byte
@@ -1356,11 +1435,6 @@ mod tests {
         }
         assert_eq!(input.read_buf.capacity(), cap, "no reallocation");
         assert_eq!(input.read_buf.as_ptr(), ptr, "the same buffer throughout");
-        assert!(
-            input.read_buf_wide.is_empty(),
-            "a renderer ring lane is S16 at its wire and must hold no spine-scale \
-             buffer — U3 moves the transport, not the width"
-        );
 
         cleanup(&path);
     }

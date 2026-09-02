@@ -148,6 +148,36 @@ Diagnostic scripts redact environment-style secret assignments in their
 log/config snapshots before writing logs or bundles to disk. Wake-event
 audio stays local to the speaker unless an operator explicitly exports it.
 
+### CamillaGUI
+
+CamillaGUI (`deploy/systemd/camillagui*`) is a third-party web UI for
+hand-authoring CamillaDSP configs — a prebuilt binary fetched unmodified
+from `HEnquist/camillagui-backend` releases, run root-backed
+(`ReadWritePaths=/etc/camilladsp /var/lib/camillagui /var/log`). It is a
+separate service chain from `jasper-control` and the `jasper/web/`
+wizards: nginx does not front it, so it carries none of the Host/Origin,
+CSRF, or control-token guards those surfaces share. Through it, an
+operator can author and live-apply any CamillaDSP config for any device,
+including one that omits or raises `devices.volume_limit` above JTS's
+0 dB safety ceiling — CamillaGUI has no knowledge of that convention.
+
+What bounds it: the listener (`systemd-socket-proxyd`, socket-activated)
+binds loopback-only, `127.0.0.1:5005`, proxying to a backend on
+`127.0.0.1:5006` (also socket-activated, so both idle-exit and reclaim
+their RAM between sessions) — since #2319, there is no LAN-wide bind, so
+reaching it from a laptop requires an explicit tunnel:
+`ssh -L 5005:localhost:5005 <pi-host>`, then `http://localhost:5005/`.
+`jasper-doctor`'s `CamillaDSP volume_limit` check (`jasper/cli/doctor/
+audio.py`) is the backstop: it fails when the *active* config on disk
+exceeds the 0 dB ceiling. It is detective, not preventive — a config
+applied through CamillaGUI reaches the DAC before the next doctor run
+notices it.
+
+Operator assumption: tunnelling to CamillaGUI is equivalent to a root
+shell on the audio path. Treat the tunnel like any other
+root-administrative access, and run `jasper-doctor` (or check
+`/system/`) after using it to confirm the safety floor still holds.
+
 ## Out of Scope
 
 Security reports are welcome even when the current fix is only a

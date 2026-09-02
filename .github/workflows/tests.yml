@@ -484,7 +484,6 @@ jobs:
             rust/jasper-host-clock
             rust/jasper-fanin
             rust/jasper-outputd
-            rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
 
       - name: Rust formatting + Clippy
@@ -563,15 +562,6 @@ jobs:
       - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-dual-dac-lab — build + test (release, locked)
-        if: steps.rust-needed.outputs.run == 'true'
-        # Lab-only crate: install.sh does NOT build it, so this step is
-        # its only rot gate. Without it, a shared-dependency bump (the
-        # same `alsa` crate the production daemons pin) can silently
-        # break the lab runner until someone needs it on a bench.
-        working-directory: rust/jasper-dual-dac-lab
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
   ci:

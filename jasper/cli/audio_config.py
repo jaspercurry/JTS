@@ -91,6 +91,19 @@ def _cmd_explain(args: argparse.Namespace) -> int:
             print(f"    operator: {setting.operator_value}")
         if setting.generated_value is not None:
             print(f"    generated: {setting.generated_value}")
+    # The settings above are POLICY; this is the OBSERVATION beside them (see
+    # AudioRuntimePlan.camilla_emitted). Both output modes carry it.
+    emitted = plan.camilla_emitted
+    if emitted is None:
+        print("  camilla_emitted: unread")
+    else:
+        print(
+            f"  camilla_emitted: chunksize={emitted.chunksize} "
+            f"target_level={emitted.target_level} "
+            f"capture={emitted.capture_device} "
+            f"playback={emitted.playback_device} "
+            f"[{emitted.config_path}]"
+        )
     if plan.errors:
         print("Errors:")
         for error in plan.errors:
@@ -393,7 +406,7 @@ def _renderer_unit_user(unit: str) -> str | None:
 
     Only case 1 is a real answer; 2 and 3 are ignorance wearing the same value.
     The drop-in-aware net is the doctor's runtime `systemctl show -p User`
-    (``jasper.cli.doctor.renderers._systemd_user_for``), which resolves the full
+    (``jasper.cli.doctor.renderers._systemd_unit_user``), which resolves the full
     unit + drop-in merge and is what the PR #214 probe actually runs as. If this
     function's answer ever has to be trusted rather than merely advisory, use
     that instead.

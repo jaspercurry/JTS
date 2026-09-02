@@ -72,12 +72,6 @@ static-source twin (same technique as ``tests/test_outputd_wiring.py``):
   was removed, or its key text changed) also fails, so each list only
   shrinks.
 
-``rust/jasper-dual-dac-lab`` is deliberately out of scope: unlike every crate
-in ``RUNTIME_CRATES`` below, it is not a ``path = "../..."`` Cargo dependency
-of either daemon at all -- it has its own standalone binary target and is
-never linked into ``jasper-fanin`` or ``jasper-outputd``. It is a lab
-measurement tool, not code that ships.
-
 ``jasper-ring``, ``jasper-resampler``, ``jasper-clock``, and
 ``jasper-host-clock`` ARE real ``path`` dependencies of one or both daemons
 and are scanned here for the same reason the daemons' own crates are:
@@ -113,9 +107,9 @@ trusting a name):
   BOTH daemons (``jasper-fanin/Cargo.toml``, ``jasper-outputd/Cargo.toml``)
   and its env-parsing helpers (``env_str``, ``env_parse``) run on every
   daemon startup to read config -- it was a real gap against this section's
-  own inclusion criterion, not a deliberate exclusion like
-  ``jasper-dual-dac-lab`` above. Its only panic-family constructs are
-  ``assert!``/``assert_eq!`` calls inside ``#[cfg(test)] mod tests``, so
+  own inclusion criterion, not a deliberate exclusion. Its only panic-family
+  constructs are ``assert!``/``assert_eq!`` calls inside ``#[cfg(test)] mod
+  tests``, so
   adding it needed no new ``ALLOWED_EXPECTS``/``ALLOWED_ASSERTS`` entries.
 """
 from __future__ import annotations
@@ -609,6 +603,18 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "tripwire is developer feedback on a debug run, so promoting it to "
         "a release assert would add a panic site in the audio path without "
         "adding coverage."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "the i32-typed slot view is only valid on an S32LE ring",
+    ): (
+        "The wide twin of the i16 tripwire above, covering "
+        "RingReader::try_consume_slot_wide -- which measures its buffer in "
+        "4-byte samples and is therefore correct only on an S32LE geometry. "
+        "Same audit in every respect: debug-only, on a geometry the mapping "
+        "was constructed with rather than external input, with the real "
+        "guard being the wire-format behaviour tests in jasper-fanin "
+        "(a_wide_lane_carries_a_24_bit_sample_to_the_mix_bit_exact)."
     ),
     (
         "jasper-ring/src/lib.rs",

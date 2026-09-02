@@ -44,6 +44,12 @@ Modules:
     of its trusted validity range with the band the DUT radiates, and the
     single writer of the sentence that distinguishes "a reflection was found
     and removed" from "nothing was found; the window was capped".
+  - :mod:`~jasper.audio_measurement.measurement_geometry` — the
+    operator-declared rig geometry (speaker/mic heights, distance, optional
+    ceiling) that derives an ``entanglement_floor_hz`` on rig classes where
+    :mod:`~jasper.audio_measurement.gating`'s measured reflection finder
+    structurally never fires (issue #3502); ``declared_geometry`` provenance,
+    never mistaken for a measurement.
   - :mod:`~jasper.audio_measurement.room_boundary` — the room-correction band
     ceiling, and its seam with the gated speaker spec.
   - :mod:`~jasper.audio_measurement.analysis` — fractional-octave smoothing,

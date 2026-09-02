@@ -40,6 +40,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.spatial import (
+    cloud_entanglement_floor_hz,
     cloud_trusted_floor_hz,
     cloud_validity_floor_hz,
 )
@@ -429,6 +430,60 @@ def test_a_floor_below_the_spec_edge_changes_no_graded_number():
     assert clamped["validity_floor_hz"] == pytest.approx(99.0)
 
 
+def test_the_cloud_report_publishes_its_seats_pooled_room_floor_and_grades_the_same(
+):
+    """#3502 — the aggregate reaches the graded report, and moves no verdict.
+
+    The seats' floors are pooled by ``cloud_entanglement_floor_hz`` and echoed
+    on the report with the provenance they were pooled under. The floor MARKS
+    and never clamps, so every band, the reference level and the verdict are
+    byte-identical to the same combine with no declaration at all — which is
+    what makes wiring it safe to land on a rig mid-campaign.
+    """
+    combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
+    rows = [
+        {"gate_entanglement_floor_hz": 400.0,
+         "gate_entanglement_floor_source": _DECLARED},
+        {"gate_entanglement_floor_hz": 610.0,
+         "gate_entanglement_floor_source": _DECLARED},
+    ]
+    declared = assemble_cloud_group_result(
+        combined, echo_band_hz=SYNTHETIC_BAND_HZ, position_records=rows,
+    )
+    # A round banked before the writers existed carries neither key.
+    undeclared = assemble_cloud_group_result(
+        combined, echo_band_hz=SYNTHETIC_BAND_HZ, position_records=[{}, {}],
+    )
+
+    assert declared["spec"]["entanglement_floor_hz"] == pytest.approx(610.0)
+    assert declared["spec"]["entanglement_floor_source"] == _DECLARED
+    assert undeclared["spec"]["entanglement_floor_hz"] is None
+    assert undeclared["spec"]["entanglement_floor_source"] == _UNKNOWN
+    for key in ("bands", "reference_db", "overall_passed", "excluded_intervals"):
+        assert json.dumps(
+            _without_room_marks(declared["spec"][key]), sort_keys=True
+        ) == json.dumps(
+            _without_room_marks(undeclared["spec"][key]), sort_keys=True
+        ), key
+    assert json.dumps(declared["flatness"], sort_keys=True) == json.dumps(
+        undeclared["flatness"], sort_keys=True
+    )
+
+
+def _without_room_marks(value):
+    """Strip the one field the room floor is ALLOWED to move, so the rest of
+    the report can be compared for equality."""
+    if isinstance(value, list):
+        return [_without_room_marks(v) for v in value]
+    if isinstance(value, dict):
+        return {
+            k: _without_room_marks(v)
+            for k, v in value.items()
+            if k != "room_entangled_below_hz"
+        }
+    return value
+
+
 def test_no_floor_clamps_nothing_and_is_disclosed_as_unknown():
     """``None`` is "the lower edge could not be verified", not zero and not a
     withheld gauge — the whole 2-16 kHz evidence would otherwise be thrown
@@ -458,6 +513,59 @@ def test_the_trusted_floor_is_two_and_a_half_over_T_and_unknown_stays_unknown():
     assert cloud_trusted_floor_hz(-5.0) is None
     assert cloud_trusted_floor_hz(float("inf")) is None
     assert cloud_trusted_floor_hz(float("nan")) is None
+
+
+_MEASURED = "measured_reflection"
+_DECLARED = "declared_geometry"
+_UNKNOWN = "unknown"
+
+
+@pytest.mark.parametrize(
+    ("per_position", "expected"),
+    [
+        pytest.param(
+            [(400.0, _DECLARED), (610.0, _DECLARED)], (610.0, _DECLARED),
+            id="all-declared-takes-the-worst",
+        ),
+        pytest.param(
+            [(400.0, _MEASURED), (610.0, _MEASURED)], (610.0, _MEASURED),
+            id="all-measured-stays-measured",
+        ),
+        pytest.param(
+            [(610.0, _MEASURED), (400.0, _DECLARED)], (610.0, _DECLARED),
+            id="one-declared-seat-makes-the-pool-declared",
+        ),
+        pytest.param(
+            [(400.0, _DECLARED), (None, _UNKNOWN)], (None, _UNKNOWN),
+            id="one-unknown-seat-un-knows-the-group",
+        ),
+        pytest.param([], (None, _UNKNOWN), id="no-seats-know-nothing"),
+        pytest.param(
+            [(400.0, _DECLARED), (610.0, "surveyed")], (None, _UNKNOWN),
+            id="a-seat-whose-pair-cannot-be-true-is-unknown",
+        ),
+    ],
+)
+def test_the_groups_room_floor_is_the_worst_seats_and_the_weakest_provenance(
+    per_position, expected
+):
+    """``cloud_entanglement_floor_hz`` — ``cloud_trusted_floor_hz``'s "worst of
+    the positions" argument applied to the floor no window choice can lower.
+
+    The combined curve is a power mean ACROSS these seats, so a bin below any
+    one seat's floor is room-entangled in the average: the MAX is the only
+    floor under which every marked bin is marked everywhere. One seat that does
+    not know its floor un-knows the group's, because a max over the seats that
+    DID know would claim the silent one is cleaner than the rest. And the
+    source is the WEAKEST of the pool: one declared seat makes the aggregate
+    declared, since that is what a reader would have to assume about it.
+
+    Each seat is read through ``gating.EntanglementFloor.coerce``, which is
+    where "a pair that cannot be true is unknown" is pinned; what this pins is
+    the POOLING.
+    """
+    floor = cloud_entanglement_floor_hz(per_position)
+    assert (floor.hz, floor.source) == expected
 
 
 def test_the_floor_clamp_never_inflates_the_interference_interval_count():

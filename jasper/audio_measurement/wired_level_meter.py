@@ -105,6 +105,14 @@ class WiredLevelMeter:
         self._pending: list[Any] = []
         self._seq = 0
         self._reader_error: WiredCaptureError | None = None
+        #: Only a reader death BEFORE the mic ever proves itself alive fails
+        #: start(). Set by the reader thread strictly before it calls
+        #: _first_chunk.set(), never after, so start()'s read of it once
+        #: _first_chunk.wait() returns is race-free without self._lock — a
+        #: death on chunk 2 that beats start() to the check must not turn a
+        #: momentarily-healthy mic into "the microphone is gone" (that death
+        #: still reaches drain() via _reader_error, unchanged).
+        self._startup_error: WiredCaptureError | None = None
 
     def _measure(self, data: bytes, length: int) -> tuple[float, float, bool]:
         import numpy as np
@@ -170,6 +178,8 @@ class WiredLevelMeter:
                 self._first_chunk.set()
         except WiredCaptureError as exc:
             self._reader_error = exc
+            if not self._first_chunk.is_set():
+                self._startup_error = exc
             self._first_chunk.set()
 
     def start(self, *, ready_timeout_s: float = START_TIMEOUT_S) -> None:
@@ -188,9 +198,9 @@ class WiredLevelMeter:
                 f"{ready_timeout_s:g}s — the measurement microphone is not "
                 "delivering samples"
             )
-        if self._reader_error is not None:
+        if self._startup_error is not None:
             self.stop()
-            raise self._reader_error
+            raise self._startup_error
 
     def drain(self) -> list[Any]:
         """Take every sample measured since the last call.

@@ -17,10 +17,13 @@ analysis offline — a banked session must be re-readable by an analysis that di
 not exist when it was captured. A writer whose readers lived somewhere else
 would make one document have two owners, which is how the keys drift.
 
-**What is NOT here: the file.** The host owns where the state lives, when it is
-written and how durably —
+**What is NOT here: reading or writing the file.** The host owns when the
+state is written and how durably —
 ``jasper.web.correction_crossover_v2``'s ``load_v2_state`` / ``save_v2_state``
-keep the path, the schema version, the atomic write and the fsync decision.
+keep the schema version, the atomic write and the fsync decision. Only
+:data:`DEFAULT_V2_STATE_PATH`, the document's one on-Pi location, lives here,
+because its readers outside ``jasper.web`` already import this module for the
+file's format and should not import a socket-activated wizard to learn a path.
 This module never opens anything, which is what lets a test build a document
 without a filesystem and what will let the engine's record store write one
 without a web host. :func:`build_conductor_state` returns the document and the
@@ -65,15 +68,23 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 
 from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
 
+#: Where this document lives on a speaker. Re-exported by
+#: ``jasper.web.correction_crossover_v2`` under the same name, which still owns
+#: the write.
+DEFAULT_V2_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_v2_state.json")
+
 __all__ = [
+    "DEFAULT_V2_STATE_PATH",
     "FINDING_HOUSEHOLD_REFS_KEY",
     "MAX_PERSISTED_SUM_POINTS",
     "ConductorState",
@@ -654,32 +665,6 @@ def _delta_prior_from_state(
         np.asarray(freqs, dtype=float),
         np.asarray(delta, dtype=float),
     )
-
-
-def _finite(value: Any) -> float | None:
-    """Mirrors ``crossover_envelope_v2._finite``'s guard (reject bool,
-    reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review follow-up):
-    this module and that one stay symmetric about what counts as a
-    displayable number, rather than one layer trusting a raw ``float(v)``
-    the other layer would refuse. That symmetry is one-directional until
-    #2470 lands: the ``OverflowError`` guard below is this function's
-    alone, and the twin is exactly the trusting layer this note warns
-    about until it mirrors the guard.
-
-    Never raises. An unbounded JSON integer (``10 ** 400``) makes
-    ``float()`` raise ``OverflowError`` rather than returning ``inf`` —
-    this runs on every :func:`crossover_v2_status_block` read (the
-    wizard's poll path), so an escaping conversion would be a 500 on a
-    plain page load, the same hazard :func:`_household_findings_status`
-    already guards against, and the same fallback (#2245).
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if number == number and abs(number) != float("inf") else None
 
 
 def _candidate_headroom_cost_db(linearization: Any) -> float:

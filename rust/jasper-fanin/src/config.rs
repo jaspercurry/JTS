@@ -59,7 +59,7 @@ pub const RENDERER_RING_PREFIX: &str = "lane-";
 /// always mixed regardless of selection, so diagnostics keep working when the
 /// household has pinned a source ([`crate::mixer`]'s selection gate), and its
 /// stimuli are never onset-shaped, because the measurement loop deconvolves
-/// against the signal it believes it played (`mixer::wake_ramp`).
+/// against the signal it believes it played (`mixer::lane_fade`).
 pub const MEASUREMENT_LANE: &str = "correction";
 
 /// The ring file a renderer-ingress lane reads, derived from the fan-in lane
@@ -467,7 +467,7 @@ impl Config {
     /// A one-line predicate on purpose: it is read at construction (which lane
     /// source to build), and making it a named method keeps the ring lane's
     /// selection testable without an ALSA device, the same way
-    /// `lane_wants_spine_buffer` isolates the width decision.
+    /// `spine_read_buf` isolates the width decision.
     pub fn lane_is_renderer_ring(&self, label: &str) -> bool {
         self.renderer_ring_lanes.iter().any(|l| l == label)
     }

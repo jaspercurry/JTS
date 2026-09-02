@@ -19,9 +19,10 @@ from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import read_camilla_device_field
 from ...env_load import merged_env_files
-from ...fanin_coupling import RING_SLOT_FRAMES
+from ...fanin_coupling import RING_SLOT_FRAMES, read_declared_ring_wire_format
 from ._registry import doctor_check
-from ._shared import CheckResult, _active_audio_dac_id, _run
+from ...output_hardware import active_dac_profile_id
+from ._shared import CheckResult, _run
 from .correction import _active_camilla_config_path
 
 # Asset paths are shared with the coupling reconciler. Historical private names
@@ -412,8 +413,18 @@ def check_fanin_asound_wiring() -> CheckResult:
         "bluealsa_substream": "hw:Loopback,0,2",
         CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
     }
+    # The lane WIDTH is not this file's to choose: snd-aloop pins both halves of
+    # a cable to one format, and the reader half is jasper-fanin, which opens
+    # every capture side at the box's one resolved wire. So the expectation is
+    # that wire, and an operator's narrow rollback pin that did not also narrow
+    # /etc/asound.conf shows up here rather than as a renderer whose open fails.
+    try:
+        wire = read_declared_ring_wire_format()
+    except ValueError as e:
+        return CheckResult(label, "fail", str(e))
     missing: list[str] = []
     wrong: list[str] = []
+    sheared: list[str] = []
     for alias, slave in expected_aliases.items():
         block = _asound_pcm_block(active, alias)
         if block is None:
@@ -422,20 +433,31 @@ def check_fanin_asound_wiring() -> CheckResult:
             f'pcm "{slave}"' not in block
             or "rate 48000" not in block
             or "channels 2" not in block
-            or "format S16_LE" not in block
         ):
             wrong.append(f"{alias}≠{slave}")
-    if missing or wrong:
+        elif f"format {wire}" not in block:
+            # Reported apart from a wrong slave: the lane is wired correctly and
+            # only its WIDTH disagrees with the box's resolved wire, which has
+            # its own remedy (narrow the shipped asoundrc and redeploy, or drop
+            # the pin) and would be misdiagnosed as a broken lane.
+            sheared.append(alias)
+    if missing or wrong or sheared:
         parts = []
         if missing:
             parts.append("missing " + ", ".join(missing))
         if wrong:
             parts.append("wrong slave " + ", ".join(wrong))
+        if sheared:
+            parts.append(
+                f"lane width ≠ {wire} (this box's resolved wire): "
+                + ", ".join(sheared)
+            )
         return CheckResult(
             label,
             "fail",
-            "; ".join(parts) + ". Re-run deploy/install.sh to restore "
-            "the fan-in asoundrc.",
+            "; ".join(parts) + f". Every slave must be 48000/2/{wire} over its "
+            "own substream. Re-run deploy/install.sh to restore the fan-in "
+            "asoundrc.",
         )
 
     stale_state = Path("/var/lib/jasper/audio_topology.env")
@@ -1190,14 +1212,23 @@ def check_audio_runtime_plan() -> CheckResult:
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
 
     plan = build_audio_runtime_plan_from_system()
+    # Policy vs observation: see AudioRuntimePlan.camilla_emitted. This check
+    # reports the difference, never judges it — the `camilla ring chunk` check
+    # owns the over-capacity failure.
+    emitted = plan.camilla_emitted
     summary = (
         f"profile={plan.profile_id}, route={plan.route_mode}, "
         f"route_profile={plan.route_profile.route_id}, "
         f"route_hash={plan.route_config_hash}, "
-        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value}, "
-        f"camilla={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
+        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value or '(unset)'}, "
+        f"camilla_policy={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
         f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
-        f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
+        + (
+            f"camilla_emitted={emitted.chunksize}/{emitted.target_level}, "
+            if emitted is not None
+            else "camilla_emitted=unread, "
+        )
+        + f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
         f"{plan.setting('JASPER_OUTPUTD_DAC_BUFFER_FRAMES').value}, "
         f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}"
     )
@@ -1220,22 +1251,31 @@ def check_audio_runtime_plan() -> CheckResult:
 def check_fanin_coupling_value() -> CheckResult:
     """The persisted fan-in coupling must be a RECOGNIZED token.
 
-    A migrating box may carry ``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` (the
-    removed coupling) or a typo. ``resolve_coupling`` fails such a value
-    safe to loopback at daemon start, and the ``--auto`` reconciler converges it
-    loudly (``event=…result=removed_coupling_failsafe``); this surfaces the stale
-    value until that pass runs so the operator knows the persisted file names a
+    A migrating box may carry ``JASPER_FANIN_CAMILLA_COUPLING=loopback`` (the
+    removed transport) or a typo. jasper-fanin REFUSES such a value at start
+    (exit 78) and the ``--auto`` reconciler converges it loudly
+    (``event=…result=removed_coupling_failsafe``); this surfaces the stale value
+    until that pass runs so the operator knows the persisted file names a
     transport that no longer exists.
+
+    An ABSENT key is not that state: fan-in serves the ring for it (ADR-0100),
+    so a box the reconciler has not written yet is ``ok`` on the ring.
     """
     from jasper.fanin.ring_health import FANIN_ENV_PATH
-    from jasper.fanin_coupling import COUPLING_ENV_VAR, coupling_value_removed
+    from jasper.fanin_coupling import (
+        COUPLING_ENV_VAR,
+        COUPLING_SHM_RING,
+        coupling_value_removed,
+    )
     from jasper.env_file import read_value
 
     label = "fan-in coupling value"
     try:
         text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
-        return CheckResult(label, "ok", "no fanin.env — coupling defaults to loopback")
+        return CheckResult(
+            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}"
+        )
     raw = read_value(text, COUPLING_ENV_VAR)
     if coupling_value_removed(raw):
         return CheckResult(
@@ -1246,7 +1286,11 @@ def check_fanin_coupling_value() -> CheckResult:
             "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
             "the file.",
         )
-    return CheckResult(label, "ok", f"{COUPLING_ENV_VAR}={raw or '(unset → loopback)'}")
+    return CheckResult(
+        label,
+        "ok",
+        f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
+    )
 
 
 def _requires_roleful_graph() -> bool:
@@ -2462,7 +2506,8 @@ def check_ring_conf_floor_render() -> CheckResult:
     (``latency_floor_for``), the period from the conf.d file itself.
 
     Statuses:
-      ok    — no declared floor (the shipped default stands, by rule); a
+      ok    — no active DAC in the reconciler's record (nothing to render);
+              no declared floor (the shipped default stands, by rule); a
               declared floor that is not ``RING_SLOT_FRAMES`` (a documented
               product boundary, not drift — see below); or the conf.d already
               declares the floor's period.
@@ -2536,7 +2581,13 @@ def check_ring_conf_floor_render() -> CheckResult:
     # checks already reach for it lazily.
     from ...audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
-    dac_id = _active_audio_dac_id()
+    dac_id = active_dac_profile_id()
+    if dac_id is None:
+        return CheckResult(
+            label, "ok",
+            "skipped — the output-hardware record names no active DAC, so there "
+            "is no declared floor to render",
+        )
     floor = latency_floor_for(dac_id)
     # The eligibility half this check cannot read off the conf.d. Appended to
     # every OK branch, so an operator never has to already know that the floor is
@@ -2987,18 +3038,35 @@ def _transport_route_remedy() -> str:
     lane, so recommending it sends an operator into a loop. Naming the
     reconciler stays right for the reconcilable case: an active-capable DAC
     whose generated env has drifted.
+
+    A third branch — the layout needs a roleful graph but the DAC's
+    ``device_id`` has no registered profile at all — gets its own sentence
+    rather than falling into either bucket: the reconciler is not proven
+    futile there (no profile says it *can't* work), but it is not proven to
+    help either, so naming it alone would be a guess dressed as a remedy.
     """
-    from jasper.active_speaker.playback_route import active_lane_capability_gap
+    from jasper.active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        UnrecognizedDacProfile,
+        active_lane_capability_gap,
+    )
     from jasper.output_topology import load_output_topology
 
     gap = active_lane_capability_gap(load_output_topology())
-    if gap is not None:
+    if isinstance(gap, ActiveLaneCapabilityGap):
         return (
             f". {gap.device_label} does not support the active speaker lane, so "
             "this cannot be reconciled: choose a passive speaker layout on this "
             "speaker's /sound/setup/ page (passive sends full-range audio to "
             "every output — only safe when the speaker has its own built-in "
             "passive crossover), or attach an active-capable DAC."
+        )
+    if isinstance(gap, UnrecognizedDacProfile):
+        return (
+            f". DAC profile {gap.device_id!r} is not recognized, so whether it "
+            "supports the active speaker lane is unknown: "
+            "jasper-audio-hardware-reconcile may not help here until a profile "
+            "for this DAC exists."
         )
     return (
         ". Run jasper-audio-hardware-reconcile to restore the paired "
@@ -3032,7 +3100,6 @@ def _outputd_transport_health(
     :func:`check_ring_split_transport`'s question.
     """
     from jasper.fanin_coupling import (
-        COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         outputd_bridge_is_ring,
     )
@@ -3051,13 +3118,9 @@ def _outputd_transport_health(
     outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
-    # ``None`` is the planner's own spelling for "not the ring" — it resolves to
-    # the non-ring shape without this module naming a retired token.
-    coupling = COUPLING_SHM_RING if outputd_on_ring else None
-    topology = transport_topology_for_coupling(
-        coupling,
-        outputd_env=outputd_env,
-    )
+    # NO COUPLING HANDED IN: the planner reads outputd's own bridge out of the
+    # env, which is the half this check is about.
+    topology = transport_topology_for_coupling(outputd_env=outputd_env)
     expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
     if actual_content_source != expected_content_source:
@@ -3088,7 +3151,6 @@ def _outputd_transport_health(
         )
     else:
         transport_report = transport_coherence_report(
-            coupling=coupling,
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
         )
@@ -3762,15 +3824,9 @@ def check_ring_transport_park() -> CheckResult:
     """No topology this box declares is one the ring cannot serve (ADR-0178).
 
     ADR-0100 makes ``shm_ring`` the only central transport; ADR-0178 names the
-    four shapes it cannot carry and the tracked issue each waits on. Severity
-    follows whether the loopback route still exists:
-
-    * ring-only and parked — the speaker emits NOTHING and no automatic path
-      recovers it, which is the ``fail`` definition the rest of the doctor
-      uses for a park;
-    * loopback still legal — ``warn``. The box plays today; the disclosure is
-      the inventory of what the transport deletion will park, named issue by
-      issue so the operator can clear them before it lands, not after.
+    four shapes it cannot carry and the tracked issue each waits on. A parked
+    box emits NOTHING and no automatic path recovers it, which is the
+    ``fail`` definition the rest of the doctor uses for a park.
 
     The classification, the issue numbers and the remedy text all come from
     ``jasper.control.transport_park`` — the same reader
@@ -3881,18 +3937,10 @@ def check_ring_transport_park() -> CheckResult:
             part = f"{part}. REMEDY: {remedy}"
         named.append(part)
 
-    if status == "parked":
-        return CheckResult(
-            label,
-            "fail",
-            "PARKED — no ring serves this box, so it emits nothing: "
-            + "; ".join(named),
-        )
     return CheckResult(
         label,
-        "warn",
-        "this box plays on the loopback route today, but the ring cannot "
-        "serve it — it parks when the loopback route is deleted: "
+        "fail",
+        "PARKED — no ring serves this box, so it emits nothing: "
         + "; ".join(named),
     )
 

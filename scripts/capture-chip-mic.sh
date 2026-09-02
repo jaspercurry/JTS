@@ -19,10 +19,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 SECONDS_=${1:-10}
 TS=$(date +%Y%m%d-%H%M%S)
 OUT=${2:-captures/chip-mic-${TS}.wav}
-PI=${PI_HOST:-pi@${JASPER_HOSTNAME:-jts.local}}
+PI="${PI_USER}@${PI_HOST}"
 
 mkdir -p "$(dirname "$OUT")"
 

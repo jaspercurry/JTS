@@ -24,7 +24,6 @@ rust_crates=(
   rust/jasper-tts-protocol
   rust/jasper-fanin
   rust/jasper-outputd
-  rust/jasper-dual-dac-lab
 )
 host_clock_crate="rust/jasper-host-clock"
 

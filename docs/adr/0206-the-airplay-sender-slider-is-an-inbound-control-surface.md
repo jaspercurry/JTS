@@ -147,3 +147,29 @@ for one concern is the failure mode ADR-0176 was written to prevent;
   "drop it" is a rejected write: `last` advances only on a 2xx, so a 409 or
   a timeout retries the same value on the next pass rather than being
   recorded as delivered.
+- **2026-09-01, from the hardware run: session start is a fade-up, not one
+  message.** The connect-time push this ADR expected to watch arrived on jts3
+  as ~10 messages 200 ms apart, animating the sender's slider from the bottom
+  of its scale up to the level the user had actually left it at; replaying it
+  walked the master ~28 dB down and back over two seconds. While the
+  session-start marker is present the hook now waits for that burst to settle
+  — two unchanged 200 ms passes — and adopts the settled level in one post,
+  still flagged `observation_initial`. A sender's nudge, and the same ramp
+  shape on mute→unmute, carry no marker and still track step by step.
+- **2026-09-01, same run: holding the animation is only half of it — restore
+  first.** The Mac sends the mute sentinel at session *teardown*, so the
+  speaker really is at 0 % between sessions. Holding the next session's
+  fade-up then kept it there for the ~2 s the animation takes, with content
+  already flowing: silence, then audio. The hook now remembers the last
+  non-zero percent it delivered (`airplay-restore.pct`, beside the published
+  value) and posts it the moment it claims the session-start marker, before
+  the hold — so audio returns at the level the owner last listened at, and the
+  settled level is normally that same value and is skipped as already
+  delivered. Both of a session's writes carry `observation_initial`. That
+  still defers against a mute latched *at the speaker*, which is what the flag
+  is for; it does not defer against the teardown's own 0 %, because an
+  accepted observation writes a canonical level and clears `pre_mute_level`
+  rather than latching a mute. The trade: a user who deliberately muted at the
+  sender and then disconnected comes back unmuted at their last real level.
+  Accepted — opening a fresh session is play intent, and the mute is one press
+  away at either end.

@@ -159,6 +159,7 @@ SIGNAL_PATH_CODES = frozenset({
     "input_stalled",
     "output_absent",
     "output_backend_inactive",
+    "output_deaf",
     "output_stalled",
     "path_stalled",
     "path_unreported",
@@ -168,6 +169,15 @@ SIGNAL_PATH_CODES = frozenset({
     "tts_queue_full",
     "undeclared_hardware",
 })
+
+# Signal-path codes that name a CONSEQUENCE rather than a cause. `output_deaf`
+# is what a stopped DSP, a live coherence contradiction and a parked transport
+# ALL look like from the DAC end: the lane is armed, nothing produces for it,
+# so outputd zero-fills (`grouped_dac_content_lane` says "has no producer" in
+# so many words). Each of those detectors names something the household can
+# act on; "the speaker is playing silence" plus a restart prompt is neither
+# true to the cause nor a remedy that clears it.
+_SYMPTOM_ONLY_CODES = frozenset({"output_deaf"})
 
 # The two `_signal_path` codes that mean "outputd is not delivering audio, for
 # a reason `_signal_path` cannot see": outputd never started at all (its
@@ -370,7 +380,10 @@ def _transport_state(
     ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
     loosely because this module imports the topology layer lazily.
     """
-    from ..active_speaker.playback_route import active_lane_capability_gap
+    from ..active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
     from ..audio_runtime_plan import transport_coherence_report
 
     report = transport_coherence_report(
@@ -382,7 +395,9 @@ def _transport_state(
     return {
         "coherence_errors": list(report.errors),
         "coherence_notes": list(report.notes),
-        "capability_gap": gap.to_dict() if gap is not None else None,
+        # An unrecognized DAC profile carries no capability_gap: it is not
+        # proof of a gap, only the absence of a profile to check.
+        "capability_gap": gap.to_dict() if isinstance(gap, ActiveLaneCapabilityGap) else None,
     }
 
 
@@ -396,7 +411,10 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     this reason rather than instead of it.
     """
     from ..active_speaker.environment import read_camilla_statefile_config_path
-    from ..active_speaker.playback_route import active_lane_capability_gap
+    from ..active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
     from ..active_speaker.runtime_contract import (
         active_graph_is_parked,
         parked_muted_exits,
@@ -428,7 +446,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
             f"({parked_muted_exits(topology)})"
         ],
         "coherence_notes": [],
-        "capability_gap": gap.to_dict() if gap is not None else None,
+        "capability_gap": gap.to_dict() if isinstance(gap, ActiveLaneCapabilityGap) else None,
     }
 
 
@@ -476,13 +494,10 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     return _transport_state(
         # The plan's own resolved COUPLING, never its transport topology NAME.
         # `transport_coherence_report` takes a coupling TOKEN and re-derives the
-        # shape itself (from that token plus outputd's endpoint marker), so a
-        # shape name handed in here goes through `resolve_coupling`, whose
-        # deliberate fail-SAFE maps everything outside {loopback, shm_ring} to
-        # loopback. Two of the three shape names alias their coupling token
-        # (TRANSPORT_LOOPBACK, TRANSPORT_SHM_RING), so the substitution looked
-        # right until the third arrived: on an armed roleful box the shape is
-        # `shm_ring_active`, which silently resolved to loopback and told a
+        # shape itself (from that token plus outputd's bridge and endpoint
+        # marker), so a shape NAME handed in here would be read as a token that
+        # names no transport. On an armed roleful box the shape is
+        # `shm_ring_active`, which is not a coupling, and the substitution told a
         # demonstrably-playing speaker it was parked (#2376) while `/state`'s own
         # coupling surface reported the ring armed and live. This reads the fact
         # doctor reads — the persisted coupling — resolved once, by the same plan
@@ -696,13 +711,8 @@ def _transport_park_signal(
 ) -> dict[str, Any] | None:
     """Return the signal path for a LIVE transport park, or ``None``.
 
-    Only ``status="parked"`` reaches the household: that is the ring-only
-    state where no transport serves this box and it emits nothing. A
-    ``"pending"`` verdict — the box is in one of ADR-0178's four classes but
-    the loopback route still carries it — is an OPERATOR fact and stops at
-    jasper-doctor and ``/state``. Telling a household its playing speaker is
-    parked would be the confusion ADR-0100 exists to prevent, pointed the
-    wrong way.
+    Only ``status="parked"`` reaches the household: that is the state where
+    no transport serves this box and it emits nothing.
 
     Presentation only, exactly like :func:`_parked_signal`: the incident rows
     :func:`_state_issues` writes from the same snapshot keep one row per park
@@ -719,6 +729,20 @@ def _transport_park_signal(
     }
 
 
+def _yields_to_a_named_cause(signal_path: Mapping[str, Any]) -> bool:
+    """True when a cause-naming detector may replace this signal path.
+
+    The three "the box cannot emit at all" detectors in
+    :func:`compose_audio_health` share this guard: they claim the ground where
+    the path looks clean, plus :data:`_SYMPTOM_ONLY_CODES`. A concrete live
+    fan-in / outputd failure still wins.
+    """
+    return (
+        signal_path.get("status") != "issue"
+        or signal_path.get("code") in _SYMPTOM_ONLY_CODES
+    )
+
+
 def _stopped_dsp_signal(
     airplay: Mapping[str, Any],
     service_states: Mapping[str, Any] | None,
@@ -727,8 +751,7 @@ def _stopped_dsp_signal(
 
     :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
     and outputd, and both are built to keep looping when the stage between
-    them disappears: fan-in's default `loopback` coupling is timer-paced
-    ("structurally immune"), `shm_ring`
+    them disappears: fan-in's `shm_ring` coupling
     free-run-drops on an absent reader rather than blocking, outputd reads its
     content lane nonblocking and zero-fills ("absent content becomes silence.
     This keeps the final output loop alive"), and BOTH `last_progress_age_ms`
@@ -924,6 +947,34 @@ def _signal_path(
                 f"few seconds ago. {RESTART_REMEDY}"
             ),
         }
+
+    # outputd is writing periods, but what it is writing is silence it did not
+    # intend — every check that could see a CAUSE has already run, and none of
+    # them can see this: a deaf chain leaves both watchdogs progressing and
+    # every xrun count flat (#3458). The verdict is outputd's own: it owns the
+    # DAC geometry its threshold is derived from.
+    #
+    # Below the fan-in watchdog deliberately. A stalled fan-in starves
+    # CamillaDSP, which empties the ring, so outputd latches deaf at 2 s while
+    # FANIN_STALE_MS only trips at 5 — the cause outranks its own symptom, the
+    # same way `camilla_stopped` outranks this in `compose_audio_health`.
+    #
+    # Not during warmup: outputd primes and starts reading an empty ring
+    # before CamillaDSP is producing, so a deploy's coordinated restart would
+    # otherwise flicker the card (the gate `_stopped_dsp_signal` carries for
+    # the same reason).
+    if not warmup and _mapping(outputd_map.get("content")).get("deaf") is True:
+        return {
+            "code": "output_deaf",
+            "status": "issue",
+            "headline": "The speaker is playing silence",
+            "detail": (
+                "Sound is reaching the speaker's last step, but nothing is "
+                f"arriving for it to play. {RESTART_REMEDY} "
+                f"{DIAGNOSTICS_REMEDY}"
+            ),
+        }
+
     active = active_source
     inputs = _mapping(fanin.get("inputs"))
     active_input = _mapping(inputs.get(active)) if active else {}
@@ -1285,6 +1336,15 @@ def _state_issues(
     if path_code == "path_stalled":
         issues.append(_issue(
             "path.fanin_watchdog_stale",
+            scope="path",
+            impact="continuity",
+            severity="issue",
+            title=str(signal_path.get("headline")),
+            detail=str(signal_path.get("detail")),
+        ))
+    if path_code == "output_deaf":
+        issues.append(_issue(
+            "path.outputd_content_deaf",
             scope="path",
             impact="continuity",
             severity="issue",
@@ -2055,15 +2115,15 @@ def compose_audio_health(
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
         signal_path = _activity_unavailable_signal()
     stopped_dsp = _stopped_dsp_signal(ap, service_states)
-    if stopped_dsp is not None and signal_path.get("status") != "issue":
+    if stopped_dsp is not None and _yields_to_a_named_cause(signal_path):
         # Ahead of `parked` on the same principle parked states below: a
         # daemon that is not running is happening NOW and is fixed by starting
         # it, while parked is persistent and fixed by changing the layout.
-        # Same `!= "issue"` guard, so a concrete live fan-in / outputd failure
-        # still wins — this only claims the ground where the path looks clean.
+        # A concrete live fan-in / outputd failure still wins — this only
+        # claims the ground where the path looks clean, plus the symptom codes.
         signal_path = stopped_dsp
     parked = _parked_signal(route_state)
-    if parked is not None and signal_path.get("status") != "issue":
+    if parked is not None and _yields_to_a_named_cause(signal_path):
         # A verified structural fault outranks ok / warn / idle / unknown: the
         # box cannot emit audio at all, and absence of evidence should not hide
         # that.  It does NOT outrank a concrete live failure — parked is
@@ -2071,12 +2131,12 @@ def compose_audio_health(
         # is happening now and has its own remedy.
         signal_path = parked
     transport_parked = _transport_park_signal(transport_park)
-    if transport_parked is not None and signal_path.get("status") != "issue":
+    if transport_parked is not None and _yields_to_a_named_cause(signal_path):
         # Last of the three "the box cannot emit at all" detectors, and the
         # most structural: a live coherence contradiction or a stopped daemon
         # names something an operator can act on THIS boot, while a transport
         # park is cleared only by rebuilding the topology on the ring. Same
-        # `!= "issue"` guard, so neither of those is displaced.
+        # guard, so neither of those is displaced.
         signal_path = transport_parked
     undeclared_hardware = _undeclared_hardware_signal(
         output_hardware, output_topology_snapshot

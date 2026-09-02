@@ -24,6 +24,9 @@ This module does no I/O and holds no state:
   (rectangular head through the peak, half-Hann taper into the reflection)
   and returns the :data:`~jasper.active_speaker.driver_acoustics` SC-2
   gating-block fragment describing what it did.
+* :func:`build_gate_window` is that window's SHAPE in isolation, for a
+  caller that already knows the peak and the span — including a caller
+  forcing a span this module would not have chosen (a gate ladder).
 * :func:`exempt_gating_block` builds the SC-2 block for a capture that is
   exempt from gating (today's near-field driver capture, taken a few
   centimetres from the driver — too close for a room reflection to matter).
@@ -32,6 +35,13 @@ This module does no I/O and holds no state:
 * :func:`f_trusted_floor_hz` is the *disclosed-beside-it* stricter floor
   (see "The gating contract" below). It sizes no window here; what reads it
   is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
+* :func:`f_entanglement_floor_hz` is the same multiplier over the room's
+  first-bounce time rather than the window — the floor no window choice can
+  lower (#3495). This module states the formula and the provenance words;
+  :mod:`~jasper.audio_measurement.gate_disclosure` decides which source a
+  given capture has.
+* :class:`EntanglementFloor` is that floor and its provenance as one value,
+  and the single enforcer of the invariant binding them (#3522).
 
 Pipeline stage: **derive**. This module turns a deconvolved impulse
 response into a windowed one plus the record of what it did. It owns
@@ -165,6 +175,13 @@ logger = logging.getLogger(__name__)
 #: reader comparing records across the boundary can tell which convention a
 #: ToA was written under.
 GATING_SCHEMA_VERSION = 2
+
+#: Schema at which ``first_reflection_ms`` began reporting the reflection's
+#: ARRIVAL rather than its onset (schema 1 stored the onset). Pinned
+#: independently of GATING_SCHEMA_VERSION on purpose: an unrelated future
+#: bump to that version must not reinterpret an already-written v2 block.
+ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION = 2
+
 WINDOW_KIND = "half_hann_tail"
 
 # --- P1a consult table (see docs/active-crossover-information-design.md) ---
@@ -334,6 +351,22 @@ TOA_REFINE_MS = 0.5
 
 FLOOR_MEASURED = "measured_reflection"
 FLOOR_SEARCH_BOUND = "search_span_bound"
+# Entanglement-floor provenance (:func:`f_entanglement_floor_hz`), the
+# vocabulary's single home (#3502). Measured is FLOOR_MEASURED's own word:
+# the entanglement floor is measured exactly when the gate's bound was, off
+# the same reflection. Unknown is NEVER read as clean: nothing was proven.
+ENTANGLEMENT_SOURCE_MEASURED = FLOOR_MEASURED
+ENTANGLEMENT_SOURCE_DECLARED = "declared_geometry"
+ENTANGLEMENT_SOURCE_UNKNOWN = "unknown"
+#: The closed set of provenance words. A value outside it is a caller bug,
+#: not data: the field is a vocabulary, not free text.
+ENTANGLEMENT_SOURCES = frozenset(
+    {
+        ENTANGLEMENT_SOURCE_MEASURED,
+        ENTANGLEMENT_SOURCE_DECLARED,
+        ENTANGLEMENT_SOURCE_UNKNOWN,
+    }
+)
 NEAR_FIELD_EXEMPT = "near_field"
 
 
@@ -381,6 +414,102 @@ def f_trusted_floor_hz(window_s: float) -> float:
     spec's band clamps do — see :data:`TRUSTED_FLOOR_MULTIPLIER`.
     """
     return TRUSTED_FLOOR_MULTIPLIER * f_valid_floor_hz(window_s)
+
+
+def f_entanglement_floor_hz(t_first_bounce_s: float) -> float:
+    """The frequency below which speaker and room can no longer be separated.
+
+    ``2.5 / t_first_bounce`` — the room's own floor, where
+    :func:`f_trusted_floor_hz` is the gated window's (``2.5 / T``). Below it
+    a window long enough to resolve the frequency already contains the
+    reflection, so no gate length separates speaker from room.
+    """
+    if not math.isfinite(t_first_bounce_s) or not (t_first_bounce_s > 0):
+        raise ValueError(
+            f"t_first_bounce_s must be finite and positive (got {t_first_bounce_s!r})"
+        )
+    return TRUSTED_FLOOR_MULTIPLIER / t_first_bounce_s
+
+
+def intersect_bands(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float] | None:
+    """The band both of ``a`` and ``b`` cover, or ``None`` when they do not.
+
+    Strict ``lo < hi``: a zero-width touch, and any non-finite edge, is ``None``.
+    """
+    lo, hi = max(a[0], b[0]), min(a[1], b[1])
+    return (lo, hi) if lo < hi else None
+
+
+@dataclass(frozen=True)
+class EntanglementFloor:
+    """The room's floor and where it came from, as ONE value.
+
+    The invariant is single and it lives HERE: a floor is known exactly when
+    its source is not :data:`ENTANGLEMENT_SOURCE_UNKNOWN`, and a known floor
+    is a finite, positive frequency. Constructing this type is the only place
+    that rule is enforced, so a seam wanting it enforced builds one rather
+    than re-deriving the check.
+
+    Strict by default: a call site handing over a pair that cannot be true
+    has a bug, and :meth:`coerce` is the ONE lenient door, for persisted data.
+    """
+
+    hz: float | None
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, str) or self.source not in ENTANGLEMENT_SOURCES:
+            raise ValueError(
+                f"source must be one of {sorted(ENTANGLEMENT_SOURCES)} "
+                f"(got {self.source!r})"
+            )
+        if (self.hz is None) != (self.source == ENTANGLEMENT_SOURCE_UNKNOWN):
+            raise ValueError(
+                f"floor and source disagree (got {self.hz!r} and {self.source!r}): "
+                "a known floor names where it came from, and an unknown one "
+                "carries no number"
+            )
+        if self.hz is not None:
+            if isinstance(self.hz, bool):
+                raise TypeError(f"floor must be a frequency, not a bool (got {self.hz!r})")
+            object.__setattr__(self, "hz", float(self.hz))
+        if self.hz is not None and not (math.isfinite(self.hz) and self.hz > 0.0):
+            raise ValueError(f"floor must be finite and positive (got {self.hz!r})")
+
+    @classmethod
+    def unknown(cls) -> "EntanglementFloor":
+        """Nothing measured and nothing declared — the ordinary state on this
+        rig class (#3502), read as :data:`ENTANGLEMENT_SOURCE_UNKNOWN` says."""
+        return cls(None, ENTANGLEMENT_SOURCE_UNKNOWN)
+
+    @classmethod
+    def from_bounce_s(cls, t_first_bounce_s: float, source: str) -> "EntanglementFloor":
+        """:func:`f_entanglement_floor_hz` of ``t_first_bounce_s``, named.
+
+        ``source`` says which bounce time this was and may not be
+        :data:`ENTANGLEMENT_SOURCE_UNKNOWN`: a floor derived from a time is
+        known by construction, so the unknown word would be a lie about the
+        number beside it. A non-physical time raises, from the formula.
+        """
+        if source == ENTANGLEMENT_SOURCE_UNKNOWN:
+            raise ValueError("a floor derived from a bounce time is never unknown")
+        return cls(f_entanglement_floor_hz(t_first_bounce_s), source)
+
+    @classmethod
+    def coerce(cls, hz: Any, source: Any) -> "EntanglementFloor":
+        """A PERSISTED pair, read leniently — anything inconsistent is unknown.
+
+        A document is not a call site: it was written by a build that may not
+        have had the field, and rehydrating a disagreement verbatim would
+        build a record that raises the moment anything re-reads it. So an
+        unreadable word, a floor with no provenance, a provenance with no
+        floor, and a non-physical number all become :meth:`unknown` here
+        rather than raising. This is the only place that leniency lives.
+        """
+        try:
+            return cls(None if hz is None else float(hz), source)
+        except (TypeError, ValueError):
+            return cls.unknown()
 
 
 def analytic_signal(x: np.ndarray) -> np.ndarray:
@@ -743,6 +872,61 @@ def _fragment(
     }
 
 
+def build_gate_window(
+    n: int,
+    *,
+    peak_idx: int,
+    span: int,
+    taper_fraction: float = TAPER_FRACTION,
+    lead: int | None = None,
+) -> np.ndarray:
+    """The gate's window shape alone: a float64 array of length ``n``.
+
+    Unity from the head through ``peak_idx``, a flat plateau, then a
+    half-Hann tail ``0.5 * (1 + cos(pi t))`` over the last
+    ``taper_fraction`` of ``span`` samples, and zero past ``peak_idx +
+    span``. This is the single owner of that shape — every window this
+    module applies, and every window a forced-span caller builds, comes
+    from here, so a ladder rung and a shipped gate cannot drift apart.
+
+    ``lead`` bounds the head. ``None`` is the shipped path: rectangular all
+    the way to index 0, which is correct when the array was already trimmed
+    to a fixed pre-peak margin. An integer starts the window ``lead``
+    samples before the peak with a raised-cosine fade into it, which is
+    what a FORCED span needs — an unbounded head would add the whole
+    pre-peak array to the window, so a 3 ms rung could not be built from an
+    IR carrying a 5 ms lead, and a hard edge there would itself become a
+    feature of the spectrum under test.
+
+    Raises ``ValueError`` when the window would not fit inside ``n``:
+    truncating it silently would publish a shorter window than the one the
+    caller's numbers are stated against.
+    """
+    end = peak_idx + span
+    if span <= 0 or peak_idx < 0 or end >= n:
+        raise ValueError(
+            f"gate window does not fit: n={n} peak_idx={peak_idx} span={span}"
+        )
+    win = np.zeros(n, dtype=np.float64)
+    if lead is None:
+        win[: peak_idx + 1] = 1.0
+    else:
+        start = max(0, peak_idx - lead)
+        win[start : peak_idx + 1] = 1.0
+        fade = peak_idx - start
+        if fade:
+            win[start:peak_idx] = np.hanning(fade * 2)[:fade]
+    taper_len = max(1, int(round(taper_fraction * span)))
+    flat_end = max(peak_idx, end - taper_len)
+    win[peak_idx:flat_end] = 1.0
+    tail_len = end - flat_end  # always > 0: taper_len >= 1 and span > 0
+    idx = np.arange(flat_end, end + 1)
+    t = (idx - flat_end) / tail_len
+    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
+    # win[end + 1:] stays 0 from initialization.
+    return win
+
+
 def gate_impulse_response(
     ir: np.ndarray,
     sample_rate: int,
@@ -845,16 +1029,7 @@ def gate_impulse_response(
         reflection_onset_ms = None
         first_reflection_ms = None
 
-    win = np.zeros(n, dtype=np.float64)
-    win[: p + 1] = 1.0
-    taper_len = max(1, int(round(taper_fraction * span)))
-    flat_end = max(p, end - taper_len)
-    win[p:flat_end] = 1.0
-    tail_len = end - flat_end  # always > 0 here: taper_len >= 1 and span > 0
-    idx = np.arange(flat_end, end + 1)
-    t = (idx - flat_end) / tail_len
-    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
-    # win[end + 1:] stays 0 from initialization.
+    win = build_gate_window(n, peak_idx=p, span=span, taper_fraction=taper_fraction)
 
     gated = (ir_arr.astype(np.float64) * win).astype(np.float32)
     fragment = _fragment(
@@ -905,15 +1080,9 @@ def apply_gate_fragment(
     end = p + span
     if not (0 <= p < end < len(ir_arr)):
         raise ValueError("signal gate fragment is outside the paired IR")
-    win = np.zeros(len(ir_arr), dtype=np.float64)
-    win[: p + 1] = 1.0
-    taper_len = max(1, int(round(taper_fraction * span)))
-    flat_end = max(p, end - taper_len)
-    win[p:flat_end] = 1.0
-    tail_len = end - flat_end
-    idx = np.arange(flat_end, end + 1)
-    t = (idx - flat_end) / tail_len
-    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
+    win = build_gate_window(
+        len(ir_arr), peak_idx=p, span=span, taper_fraction=taper_fraction
+    )
     return (ir_arr.astype(np.float64) * win).astype(np.float32)
 
 

@@ -38,7 +38,8 @@ of RAM; respect its budget (bounded loops, no heavy analysis on-device — use
    direction guards (deliberate overrides: `JTS_ACCEPT_NEW_IDENTITY=1`,
    `JASPER_DEPLOY_ALLOW_DOWNGRADE=1`).
 5. **Renderer ALSA devices** must resolve as the unit's real `User=`:
-   `sudo -u $USER aplay -D $DEVICE -c 2 -r 48000 -f S16_LE -d 0.1 /dev/zero`.
+   `sudo -n -u $USER env LC_ALL=C timeout <N> aplay -q -s <F> -D $DEVICE -c 2
+   -r 48000 -f S16_LE /dev/zero`; exit 0 only. N, F: renderers.py constants.
 6. **No silent deafness:** a new code path that prevents wake response must
    play a cue (`jasper/cues/registry.py`).
 7. **Paid tests:** `tests/voice_eval/` opens paid realtime-LLM sessions.

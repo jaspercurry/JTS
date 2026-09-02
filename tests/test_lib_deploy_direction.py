@@ -141,7 +141,7 @@ def _classify(
     repo: Path, local_sha: str, installed_sha: str, *, git_shim: Path | None = None
 ) -> str:
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'classify_deploy_direction "$1" "$2"'
     )
     proc = subprocess.run(
@@ -225,7 +225,7 @@ def test_git_error_on_second_ancestry_probe_is_unknown(history, tmp_path):
 
 def _manifest_value(manifest: str, key: str) -> str:
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'build_manifest_value "$1" "$2"'
     )
     proc = subprocess.run(
@@ -313,7 +313,7 @@ def _classify_vs_main(
     git_shim: Path | None = None,
 ) -> str:
     script = (
-        f'source "{LIB}"; '
+        f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'classify_installed_vs_main "$1" "$2"'
     )
     proc = subprocess.run(
@@ -390,7 +390,7 @@ def test_git_error_during_ancestry_is_unknown_not_behind(main_history, tmp_path)
 def test_default_main_ref_is_origin_main(main_history):
     # Called with one arg, the helper defaults the ref to origin/main.
     repo, _a, _b, c, _d = main_history
-    script = f'source "{LIB}"; classify_installed_vs_main "$1"'
+    script = f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; classify_installed_vs_main "$1"'
     proc = subprocess.run(
         ["bash", "-c", script, "bash", c],
         capture_output=True, text=True, timeout=30, cwd=repo,
@@ -439,7 +439,7 @@ def deploy_history(tmp_path):
 # so we never fight Python str.format against bash braces.
 _PREFLIGHT_HARNESS = r"""
 set -o pipefail
-source "@LIB@"
+JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 # Extract the real preflight_deploy_direction() — its def line through the
 # first column-0 '}'. Eval defines it; nothing else in the script runs.
 eval "$(awk '/^preflight_deploy_direction\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
@@ -508,3 +508,70 @@ def test_preflight_skips_gracefully_when_origin_main_absent(deploy_history):
     assert proc.returncode == 0
     assert "skipped (origin/main unavailable" in proc.stdout
     assert "is behind origin/main" not in proc.stderr
+
+
+# ── Integration: same-SHA redeploy is called out distinctly (#2447) ──────
+#
+# A fetch seconds after a merge can miss GitHub's ref advance; deploying
+# that stale HEAD onto a Pi that already has it exits 0 and, without this,
+# prints the exact same "✓ build manifest advanced" line a real change
+# would. preflight_deploy_direction sets DEPLOY_DIRECTION; this drives it
+# together with the real verify_manifest_advanced (also extracted, same
+# technique) to pin that the two stay wired together end to end.
+
+_VERIFY_SAME_SHA_HARNESS = r"""
+set -o pipefail
+JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
+eval "$(awk '/^preflight_deploy_direction\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
+eval "$(awk '/^verify_manifest_advanced\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
+declare -F preflight_deploy_direction >/dev/null || { echo "harness: preflight extraction failed" >&2; exit 99; }
+declare -F verify_manifest_advanced >/dev/null || { echo "harness: verify extraction failed" >&2; exit 99; }
+ensure_origin_fetched() { :; }
+run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
+SUDO_INTERACTIVE=0; DIRTY=""; BRANCH=main
+PI_HOST="@HOST@"; SHA_FULL="@LOCAL@"; SHA="${SHA_FULL:0:8}"
+MANIFEST="JASPER_GIT_SHA_FULL=@INSTALLED@
+JASPER_GIT_BRANCH=main
+JASPER_INSTALL_AT=2026-01-01T00:00:00-00:00"
+preflight_deploy_direction
+# By the time install.sh has run, the manifest names whatever local HEAD
+# is (the redeploy target) rather than what was installed before.
+MANIFEST="JASPER_GIT_SHA_FULL=@LOCAL@
+JASPER_INSTALL_STATUS=ok"
+verify_manifest_advanced
+"""
+
+
+def _run_verify_same_sha(repo, *, installed, local, host="bench-pi.local"):
+    script = (
+        _VERIFY_SAME_SHA_HARNESS
+        .replace("@LIB@", str(LIB))
+        .replace("@DEPLOY@", str(DEPLOY))
+        .replace("@HOST@", host)
+        .replace("@LOCAL@", local)
+        .replace("@INSTALLED@", installed)
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True, text=True, timeout=30, cwd=repo,
+    )
+
+
+def test_verify_flags_same_sha_redeploy_distinctly(deploy_history):
+    # installed == local: redeploying the exact commit already on the Pi.
+    repo, _sha_a, sha_c = deploy_history
+    proc = _run_verify_same_sha(repo, installed=sha_c, local=sha_c)
+    assert proc.returncode == 0, proc.stderr
+    assert "✓ build manifest advanced" in proc.stdout
+    assert "same-SHA redeploy" in proc.stdout
+    assert "no new commit landed" in proc.stdout
+
+
+def test_verify_stays_quiet_on_same_sha_line_for_a_real_change(deploy_history):
+    # installed == A, local == C: a genuine forward deploy — the same-SHA
+    # callout must not fire for it.
+    repo, sha_a, sha_c = deploy_history
+    proc = _run_verify_same_sha(repo, installed=sha_a, local=sha_c)
+    assert proc.returncode == 0, proc.stderr
+    assert "✓ build manifest advanced" in proc.stdout
+    assert "same-SHA redeploy" not in proc.stdout

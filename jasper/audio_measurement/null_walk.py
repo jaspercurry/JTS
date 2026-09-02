@@ -29,6 +29,8 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
+from jasper.json_fields import finite_float
+
 MIN_CAPTURE_COUNT = 5
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
@@ -164,12 +166,9 @@ def geometry_seed_us(
 
 
 def _finite(value: Any, *, field: str) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError) as exc:
-        raise NullWalkError(f"{field} must be numeric") from exc
-    if not math.isfinite(out):
-        raise NullWalkError(f"{field} must be finite")
+    out = finite_float(value)
+    if out is None:
+        raise NullWalkError(f"{field} must be a finite number")
     return out
 
 
@@ -282,8 +281,6 @@ class NullWalkSpec:
         separate 25-candidate budget.
         """
 
-        if isinstance(relative_delay_us, bool):
-            raise NullWalkError("relative_delay_us must be numeric")
         relative = _finite(relative_delay_us, field="relative_delay_us")
         raw_index = (relative - self.geometry_seed_us) / self.step_us
         nearest = round(raw_index)

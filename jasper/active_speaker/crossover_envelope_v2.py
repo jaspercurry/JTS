@@ -49,7 +49,10 @@ import logging
 import time
 from typing import Any, Mapping
 
+from ..json_fields import finite_float as _finite
 from ..log_event import log_event
+from .angle_capture import AngleCaptureRequest, walk_price
+from .angle_capture_spool import peek_staged_angle_request
 from .attempts_loop import (
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
@@ -98,9 +101,11 @@ from .crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLOUD_CLOSE_RUNNING,
+    CrossoverV2FlowError,
     TIER_EXPRESS,
     TIER_REMOTE,
     TIER_FULL,
+    resolve_plan_shape,
     tier_display_info,
 )
 from .crossover_v2.contracts import (
@@ -276,13 +281,6 @@ _ROLE_ORDER = {"woofer": 0, "tweeter": 1}
 # disclosure only needs the top of the ladder, where an uncorrected driver's
 # natural rolloff is otherwise invisible on every other screen.
 _TOP_OCTAVES_HZ = ("8000", "12000", "16000")
-
-
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if number == number and abs(number) != float("inf") else None
 
 
 def _linearization_octave_rows(
@@ -2765,11 +2763,37 @@ def _recommended_tier(status: Mapping[str, Any]) -> str:
     return TIER_EXPRESS if str(_v2(status).get("tier") or "") == TIER_FULL else TIER_FULL
 
 
+def _staged_walk_request() -> AngleCaptureRequest | None:
+    """The staged walk, or ``None`` when none is staged.
+
+    A PEEK: the session open is still the only take, so a household that reads
+    this price and never presses Start leaves the walk staged.
+
+    A slot that cannot be read, or a document that no longer validates, says
+    NOTHING here — the session open refuses that loudly in the producing
+    module's own words, and a chooser that repeated the refusal would be a
+    second vocabulary for one fact. Every refusal the spool raises is a
+    ``CrossoverV2FlowError``, a hand-edited field it cannot coerce included,
+    so a corrupt document costs this screen an offer and nothing else.
+
+    PRICING is the caller's: one document, but its ceiling belongs to the
+    session that takes it, so each tier card prices it against its own shape.
+    """
+    try:
+        return peek_staged_angle_request()
+    except CrossoverV2FlowError:
+        return None
+
+
 def _tier_action(
-    tier: str, info: Mapping[str, Mapping[str, int]], *, recommended: bool,
+    tier: str,
+    info: Mapping[str, Mapping[str, int]],
+    *,
+    recommended: bool,
+    staged_walk: AngleCaptureRequest | None = None,
 ) -> dict[str, Any]:
     detail = info[tier]
-    return {
+    action: dict[str, Any] = {
         "id": f"start_v2_session_{tier}",
         "label": _TIER_LABELS[tier],
         # One-line claims difference (§1.3/§3), derived from the plan shape —
@@ -2792,6 +2816,32 @@ def _tier_action(
         "endpoint": "/correction/crossover/v2/session",
         "body": {"tier": tier},
     }
+    if staged_walk is not None:
+        # The price is stated BEFORE Start because the walk is taken by the
+        # session open (``_take_staged_angle_walk``) whichever tier is pressed:
+        # the household is agreeing to these extra mic moves either way, so the
+        # chooser is the last screen that can say so.
+        # Priced against THIS tier's shape through ``resolve_plan_shape``, the
+        # same tier → shape resolution the capture plans themselves use — a
+        # second map here would be the desync ``V2PlanShape`` exists to close.
+        price = walk_price(staged_walk, plan_shape=resolve_plan_shape(tier))
+        action["staged_walk"] = {
+            "program": staged_walk.program,
+            "mic_moves": price["mic_moves"],
+            "captures": price["captures"],
+            # The WHOLE session's ceiling, not the walk's own share of it: the
+            # line above quotes stage minutes for a session these stops
+            # lengthen, so a card that stopped at the extra spots would
+            # under-state what the household is agreeing to.
+            "ceiling_min": price["ceiling_min"],
+        }
+        action["description"] += (
+            f" Plus a staged walk ({staged_walk.program or 'free-form'}): "
+            f"{price['mic_moves']} more spots, "
+            f"{price['captures']} more measurements; up to "
+            f"{price['ceiling_min']} min for the whole session."
+        )
+    return action
 
 
 def _tier_choice_actions(
@@ -2807,9 +2857,13 @@ def _tier_choice_actions(
     info = tier_display_info()
     recommended = _recommended_tier(status)
     other = TIER_FULL if recommended == TIER_EXPRESS else TIER_EXPRESS
+    # Read ONCE, for both actions — one document, one peek per poll. Each
+    # action prices it against its own tier: the walk belongs to the session,
+    # and the session is whichever tier the household presses.
+    staged_walk = _staged_walk_request()
     return (
-        _tier_action(recommended, info, recommended=True),
-        [_tier_action(other, info, recommended=False)],
+        _tier_action(recommended, info, recommended=True, staged_walk=staged_walk),
+        [_tier_action(other, info, recommended=False, staged_walk=staged_walk)],
     )
 
 
@@ -3002,34 +3056,32 @@ def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
     }]
 
 
-# --- failure recency (issue #1942) -------------------------------------------
+# --- session recency (issues #1942, #1947) -----------------------------------
 
-#: How long a persisted terminal failure keeps rendering as the LIVE screen.
+#: How long a dated record keeps rendering as the LIVE screen.
 #:
 #: **Why a clock at all, when a structural signal is usually better.** The
-#: question this branch has to answer is "is the household still in the moment
-#: this failure happened?", and it is asked on a plain GET. Every structural
-#: fact in the durable state — ``session_id``, ``accepted_phases``,
-#: ``applied``, ``verify`` — is frozen by the terminal persist and then reads
-#: IDENTICALLY one second later and one week later, so none of them can
-#: discriminate. The one structural fact that does change, relay liveness,
-#: changes the WRONG WAY: a terminal failure purges its own relay within
-#: ``TERMINAL_FAILURE_PURGE_GRACE_S`` (3 s), so keying on it would age out a
-#: failure the household is actively reading. That leaves the record's own
-#: age, which is why #1942's fix is a timestamp rather than a session binding.
+#: question is "is the household still in the moment this record was written?",
+#: and it is asked on a plain GET. Every structural fact in the durable state —
+#: ``session_id``, ``accepted_phases``, ``applied``, ``verify`` — is frozen by
+#: the last persist and then reads IDENTICALLY one second later and one week
+#: later, so none of them can discriminate. The one structural fact that does
+#: change, relay liveness, changes the WRONG WAY: a terminal failure purges its
+#: own relay within ``TERMINAL_FAILURE_PURGE_GRACE_S`` (3 s), so keying on it
+#: would age out a screen the household is actively reading.
 #:
-#: **Why 30 minutes.** A terminal failure screen is read with a microphone in
-#: hand and acted on in seconds to minutes; the defect this guards against is
-#: measured in hours to days. Thirty minutes sits an order of magnitude clear
-#: of both. Erring long is the conservative direction on purpose: every
-#: realistic in-session case keeps the shipped screen byte-for-byte, and only
-#: an unambiguously-returning household takes the new path.
+#: **Why 30 minutes.** These screens are read with a microphone in hand and
+#: acted on in seconds to minutes; the defect they guard against is measured in
+#: hours to days. Thirty minutes sits an order of magnitude clear of both.
+#: Erring long is the conservative direction on purpose: every realistic
+#: in-session case keeps the shipped screen byte-for-byte, and only an
+#: unambiguously-returning household takes the new path.
 #:
 #: Not borrowed from the relay's ``DEFAULT_TTL_S``: that is TIME_BUDGET_LINK,
 #: the lifetime of a link which is already dead by the time this is asked, and
 #: ``jasper.web._systemd`` already documents that a cloud session legitimately
 #: outlasts it. Reusing it would import a caveat rather than a meaning.
-FAILURE_FRESH_WINDOW_S = 30 * 60.0
+SESSION_FRESH_WINDOW_S = 30 * 60.0
 
 # The one-line history note's reason clause, keyed on the reason's TEMPLATE
 # rather than its code: a resume needs the SHAPE of what happened, and the
@@ -3051,17 +3103,18 @@ _FAILURE_HISTORY_REASON_DEFAULT = "it didn't finish"
 def _record_is_fresh(record: Mapping[str, Any]) -> bool:
     """Is this persisted record the moment the household is in RIGHT NOW?
 
-    Named for the RECORD rather than the failure it was written for: two kinds
-    of dated record now ask this question — the terminal failure (#1942) and a
-    banked finding (WO-1's read half) — and both want the identical answer from
-    one clock, so neither can drift into its own idea of "still current".
+    Named for the RECORD rather than any one writer: three kinds of dated
+    record ask this question — the terminal failure (#1942), a banked finding
+    (WO-1's read half) and the session's own last activity (#1947, through
+    :func:`_session_is_live`) — and all three want the identical answer from
+    one clock, so none can drift into its own idea of "still current".
 
-    A record with no ``at`` — every failure record written before #1942 — answers
-    False. That is the migration story and it is the fail-honest direction:
-    the state file's schema version is deliberately NOT bumped for this key
-    (a bump makes ``load_v2_state`` reject every deployed Pi's file, which
-    would discard ``previous_candidate_fingerprint`` and the way back with
-    it), so legacy records simply arrive undated. Undated means "we cannot say this is
+    A record with no ``at`` answers False. That is the migration story and it
+    is the fail-honest direction: the state file's schema version is
+    deliberately NOT bumped for these keys (a bump makes ``load_v2_state``
+    reject every deployed Pi's file, which would discard
+    ``previous_candidate_fingerprint`` and the way back with it), so legacy
+    records simply arrive undated. Undated means "we cannot say this is
     current", and the flow must never assert currency it cannot support.
 
     A clock that has stepped BACKWARD since the write yields a negative age
@@ -3071,7 +3124,39 @@ def _record_is_fresh(record: Mapping[str, Any]) -> bool:
     at = _finite(record.get("at"))
     if at is None:
         return False
-    return time.time() - at <= FAILURE_FRESH_WINDOW_S
+    return time.time() - at <= SESSION_FRESH_WINDOW_S
+
+
+def _session_is_live(status: Mapping[str, Any]) -> bool:
+    """Is the durable state's session the one the household is in RIGHT NOW?
+
+    The generalisation #1942 deliberately scoped to one branch (#1947): a
+    session can end — walked away from, browser closed, Pi rebooted — without
+    ever persisting a terminal failure, and those states replayed the dead
+    session's screen, its live imperative and its numbers on the next plain
+    GET. The clock is the state file's own ``updated_at``, which
+    ``crossover_v2_status_block`` projects and whose every write site is a
+    session transition; see that projection for why no second stamp is added.
+
+    A NON-TERMINAL relay block short-circuits the clock, and this is the one
+    place that signal is sound. #1942 rejected relay liveness because a
+    terminal failure purges its own relay within
+    ``TERMINAL_FAILURE_PURGE_GRACE_S`` — true of the FAILURE record, which
+    still keys on its own stamp alone. Here there is no failure and no purge,
+    so a slot the wizard still holds is proof the session is not over, and it
+    has to win: the closing screen's ``awaiting_confirm`` waits on a human, and
+    a commission's own wall-clock ceiling
+    (``session_volume_plan.MAX_WALL_CLOCK_CEILING_S``) is 3600 s — double this
+    window — so a legitimately in-flight session CAN idle past it. Unknown
+    statuses read as in flight, which is ``SESSION_ENDED_STATUSES``'s own rule
+    and the safe direction: waiting costs a poll, ending early strands a round.
+    """
+    from .arm_walk import SESSION_ENDED_STATUSES
+
+    relay_status = str(_mapping(status.get("relay")).get("status") or "")
+    if relay_status and relay_status not in SESSION_ENDED_STATUSES:
+        return True
+    return _record_is_fresh({"at": _v2(status).get("updated_at")})
 
 
 def _record_when_phrase(record: Mapping[str, Any]) -> str:
@@ -3128,6 +3213,55 @@ def _failure_history_note(code: str, failure: Mapping[str, Any]) -> str:
         else _FAILURE_HISTORY_REASON_DEFAULT
     )
     return f"Your last measurement ended {when} — {reason}."
+
+
+def _session_history_note(status: Mapping[str, Any]) -> str:
+    """The aged NO-failure session's ONE quiet line: what happened, and when.
+
+    A session that simply stopped — walked away from, browser closed, Pi
+    rebooted (#1947) — left no reason code, so this is deliberately the weakest
+    true statement: it ended, when it ended, and whether the speaker was left
+    tuned. The tuned/not-tuned split is the one fact a returning household most
+    needs, and the only claim this screen still makes about the dead session.
+    """
+    v2 = _v2(status)
+    when = _record_when_phrase({"at": v2.get("updated_at")})
+    if bool(v2.get("applied")):
+        return (
+            f"Your last measurement ended {when}, with the tuning it found "
+            "already applied to your speaker."
+        )
+    return f"Your last measurement ended {when} before it finished."
+
+
+def _banked_progress_note(status: Mapping[str, Any]) -> str:
+    """What a stopped session KEPT, when the screen would otherwise imply a
+    blind start-over (#2100).
+
+    The failed Full stage 2 that filed #2100 kept an applied tuning and a
+    passing check at the mark, and the household surface said only that the
+    measurement ended — so the honest recovery (re-walk every spot) read as
+    losing everything. Naming what survived is what makes the re-walk
+    explicable rather than unexplained.
+
+    ``""`` whenever the state cannot support the claim: nothing applied, or an
+    express commission, which has no cross-position post-apply walk to be
+    missing (§1.3 degraded-claims table). The line never implies the spatial
+    group can be resumed — current doctrine invalidates every capture phase on
+    a new relay session, and it says so.
+    """
+    v2 = _v2(status)
+    if not bool(v2.get("applied")):
+        return ""
+    if str(v2.get("tier") or "") == TIER_EXPRESS or _cloud_verify_block(status):
+        return ""
+    kept = "Your speaker keeps the tuning that was applied"
+    if str(_mapping(v2.get("verify")).get("outcome") or "") == "pass":
+        kept += ", and the check at the mark passed"
+    return (
+        f"{kept}. Only the wider check across several spots did not finish, "
+        "and re-running it starts again from the first spot."
+    )
 
 
 # --- banked findings (WO-1's read half; panel lens C, CC1) --------------------
@@ -3187,42 +3321,43 @@ def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
     return notes
 
 
-def _aged_failure_envelope(
-    code: str, failure: Mapping[str, Any], status: Mapping[str, Any],
+def _aged_session_envelope(
+    status: Mapping[str, Any], *, code: str, text: str,
 ) -> dict[str, Any]:
-    """A failure that outlived its session: the ENTRY screen plus history.
+    """A session that is over: the ENTRY screen plus ONE quiet dated line.
 
-    Requirement R11 of #1941, owned by #1942. A returning household must not
-    be greeted by a terminal screen from a session that is over — least of all
-    one carrying the previous session's ``verify.evidence`` numbers as if they
-    were a live verdict. So the aged path renders the ordinary entry screen,
-    unchanged, and reports the prior outcome as ONE quiet ``info`` line.
+    Requirement R11 of #1941 (#1942, generalised by #1947). A returning
+    household must not be greeted by a screen from a session that is over —
+    least of all one carrying the previous session's ``verify.evidence``
+    numbers as if they were a live verdict, or a live imperative to go stand in
+    front of the speaker. So every aged path renders the ordinary entry screen,
+    unchanged, and reports the prior outcome as one ``info`` nudge.
 
     Three properties this shape buys, all of them the point:
 
     * **The entry screen's DATA contract, not just its copy.** There are TWO
-      numbers surfaces on this flow, and an earlier revision of this fix only
-      closed one of them. ``expert_details`` is empty on the entry screen and
-      so needs nothing done to it — but ``_envelope`` copies ``cloud`` /
-      ``cloud_chart`` / ``tier`` through from ``status`` on EVERY screen, the
-      persisted ``cloud`` sits beside ``failure`` in the same state file, and
-      ``crossover/main.js`` calls ``renderCloud`` with no screen switch. So a
-      resume rendered the dead session's before/after chart card — its curve,
-      its spec-band numbers, and a caption promising "the after-correction
-      curve appears once the second measurement pass finishes", a live-
-      progress claim about a session that ended yesterday. Those three keys
-      are nulled below. ``None`` is not a special aged-only value: it is what
-      the ``tier`` key's own contract already calls unknown, and this screen
-      genuinely HAS no session.
+      numbers surfaces on this flow. ``expert_details`` is empty on the entry
+      screen and so needs nothing done to it — but ``_envelope`` copies
+      ``cloud`` / ``cloud_chart`` / ``tier`` through from ``status`` on EVERY
+      screen, the persisted ``cloud`` sits beside ``failure`` in the same state
+      file, and ``crossover/main.js`` calls ``renderCloud`` with no screen
+      switch. So a resume rendered the dead session's before/after chart card —
+      its curve, its spec-band numbers, and a caption promising "the
+      after-correction curve appears once the second measurement pass
+      finishes", a live-progress claim about a session that ended yesterday.
+      Those three keys are nulled below. ``None`` is not a special aged-only
+      value: it is what the ``tier`` key's own contract already calls unknown,
+      and this screen genuinely HAS no session.
     * **The way back survives, when there is one to offer.** A resume with a
       prior banked candidate keeps the same route out the live screens carry —
       :func:`_way_back_action`, present exactly when the pre-apply stash names
       a candidate the bank can republish.
-    * **Uniform across templates.** A stale ``hard_stop`` gets the same
-      treatment as a stale ``verify_fail``, because "act on this now" is
-      equally untrue of both. If the blocking condition still holds, the next
-      session refuses again and the household reads a FRESH verdict —
-      strictly better than acting on a day-old one that may already be fixed.
+    * **Uniform across templates and phases.** A stale ``hard_stop`` gets the
+      same treatment as a stale ``verify_fail`` or a stale VERIFY prompt,
+      because "act on this now" is equally untrue of all of them. If the
+      blocking condition still holds, the next session refuses again and the
+      household reads a FRESH verdict — strictly better than acting on a
+      day-old one that may already be fixed.
     """
     next_action, alternate_actions = _tier_choice_actions(status)
     env = _entry_envelope(
@@ -3236,7 +3371,7 @@ def _aged_failure_envelope(
             # styles the two differently (crossover/main.js renderNudges), so
             # the quiet presentation needs no page change.
             "severity": "info",
-            "text": _failure_history_note(code, failure),
+            "text": text,
         }],
     )
     # The dead session's measurement payloads. Nulled AFTER the build rather
@@ -3697,24 +3832,75 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # session's verify numbers, presented as the live verdict. Only a
         # failure that is still the household's current moment gets the
         # terminal screen; an older one is history on the entry screen. See
-        # ``FAILURE_FRESH_WINDOW_S`` for why the discriminator is the
-        # record's own age and not a session binding.
-        #
-        # Note the aged branch does NOT fall through into the phase chain
-        # below: post-apply, ``_persist_terminal_failure`` keeps
-        # ``accepted_phases``, so the stale state resolves to PHASE_VERIFY and
-        # a fall-through would invite the household to "confirm the result" of
-        # a session that ended yesterday. Landing them on the entry screen is
-        # the deliberate destination, not a side effect of where they were.
+        # ``SESSION_FRESH_WINDOW_S`` for why the discriminator is the
+        # record's own age and not a session binding. Keyed on the failure's
+        # OWN stamp rather than the session clock: this screen is about the
+        # moment that failure happened, and a later unrelated persist must not
+        # revive it.
         if _record_is_fresh(failure):
             env = _failure_envelope(
                 failure_code, status, active_step, applied=applied,
             )
+            note = _banked_progress_note(status)
+            if note:
+                env["nudges"].append({
+                    "code": "crossover_v2_banked_progress",
+                    "severity": "info",
+                    "text": note,
+                })
         else:
-            env = _aged_failure_envelope(failure_code, failure, status)
+            env = _aged_session_envelope(
+                status,
+                code=failure_code,
+                text=_failure_history_note(failure_code, failure),
+            )
         log_event(
             logger, "correction.crossover_v2_envelope_serve",
             screen=env["screen"], phase=phase, failure=failure_code,
+        )
+        return env
+
+    # #1947: the same defect on every route that persists NO failure record —
+    # a session walked away from, a closed browser, a reboot. Its screens are
+    # frozen durable state with a live imperative on them ("put the microphone
+    # back… follow the measurement page") and yesterday's curve and spec
+    # numbers beside it, replayed undated on the next plain GET.
+    #
+    # Two phases are exempt, and neither is an oversight. PHASE_DONE is a
+    # receipt about what the speaker is playing NOW, which stays exactly as
+    # true a week later as it was at the close, and it asks nothing of anybody.
+    # PHASE_REVIEW is untimed BY CONSTRUCTION (D3.5, see _review_envelope): the
+    # candidate lives in durable state with no TTL precisely so it survives a
+    # browser close and a jasper-web restart, and the entry screen has no route
+    # back to it — _way_back_action resolves the candidate the last APPLY
+    # displaced, never a pending one — so aging it out would silently strand a
+    # whole commission's captures. #1947's case B (review replays the dead
+    # session's numbers undated) therefore stays open, and wants a dated review
+    # screen rather than this branch.
+    #
+    # ``session_id`` gates it because a box that has never measured has no
+    # session to be dead: its state file does not exist, so the clock reads
+    # absent for the same reason a stale one does, and dating a first-ever
+    # start screen would be the opposite dishonesty to the one being fixed.
+    #
+    # Like the aged failure above, this does NOT fall through into the phase
+    # chain: post-apply the stale state resolves to PHASE_VERIFY, and a
+    # fall-through would invite the household to "confirm the result" of a
+    # session that ended yesterday. Landing them on the entry screen is the
+    # deliberate destination, not a side effect of where they were.
+    if (
+        phase not in (PHASE_DONE, PHASE_REVIEW)
+        and str(v2.get("session_id") or "")
+        and not _session_is_live(status)
+    ):
+        env = _aged_session_envelope(
+            status,
+            code="crossover_v2_session_ended",
+            text=_session_history_note(status),
+        )
+        log_event(
+            logger, "correction.crossover_v2_envelope_serve",
+            screen=env["screen"], phase=phase, failure="",
         )
         return env
 

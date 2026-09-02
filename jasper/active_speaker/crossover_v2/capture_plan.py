@@ -60,6 +60,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     ExcitationProgram,
@@ -274,7 +275,7 @@ def format_position_distance(offset_cm: float) -> str:
     between 0.1 m and 0.6 m, and "0.12 m LEFT" is worse copy than "12 cm
     LEFT" for the same number.
     """
-    inches = round(float(offset_cm) / 2.54)
+    inches = round(float(offset_cm) / (METERS_PER_INCH * 100.0))
     return f"{inches:g} in ({float(offset_cm):g} cm)"
 
 
@@ -358,6 +359,16 @@ class CloudPositionPrompt:
         return float(self.offset_cm) >= WIDE_OFFSET_MIN_CM
 
     @property
+    def at_mark(self) -> bool:
+        """Whether the pose asks for no move at all — on EITHER axis.
+
+        Derived for the same reason ``wide`` is: a raised pose is not at the
+        mark, and a reader computing this from ``offset_cm`` alone would bank
+        one as if it were.
+        """
+        return float(self.offset_cm) == 0.0 and float(self.vertical_offset_cm) == 0.0
+
+    @property
     def text(self) -> str:
         """Headline + detail as one string — the evidence sidecar's ``prompt``.
 
@@ -378,6 +389,11 @@ _LATERAL_SIGNS = {"LEFT": -1, "RIGHT": 1}
 # mark height, positive is ABOVE, so a row that SAYS "ABOVE" cannot be signed
 # down. The words are the ``updown`` slot ``_VERTICAL_POSE`` fills.
 _VERTICAL_SIGNS = {"BELOW": -1, "ABOVE": 1}
+
+# The same table read the other way, for copy generated FROM a sign rather than
+# parsed into one -- inverted so ABOVE cannot be signed down in one of two
+# places.
+_VERTICAL_WORDS = {sign: word for word, sign in _VERTICAL_SIGNS.items()}
 
 
 def _pose(
@@ -798,21 +814,36 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     reading exactly what Full's walk records. That is the whole point of
     deriving this instead of writing a parallel table: the remote tier is a
     different OPERATOR, not a different measurement.
+
+    The elevation clause is additive: a pose at mark height reads exactly the
+    sentence it read before elevation was sayable. The 0° verb is the one thing
+    a rise changes, and it has to — "LEAVE the microphone on the design axis"
+    is a stand-still instruction, so a pose that also asks for a rise would tell
+    the household not to move and then to move.
     """
     degrees_ = position_angle_deg(prompt)
+    elevation = position_elevation_deg(prompt)
     if degrees_ == 0:
-        headline = "Leave the microphone on the design axis (0°)."
+        verb = "Leave" if elevation == 0 else "Keep"
+        bearing = f"{verb} the microphone on the design axis (0°)"
         detail = f"On the mark, {MARK_DISTANCE_M:g} m out, pointed at the speaker."
     else:
         side = "LEFT" if degrees_ < 0 else "RIGHT"
-        headline = (
+        bearing = (
             f"Turn the microphone to {degrees_:+d}° "
-            f"({abs(degrees_)}° {side} of the design axis)."
+            f"({abs(degrees_)}° {side} of the design axis)"
         )
         detail = (
             f"Keep it {MARK_DISTANCE_M:g} m from the speaker and pointed at it."
         )
-    return replace(prompt, headline=headline, detail=detail)
+    if elevation == 0:
+        return replace(prompt, headline=f"{bearing}.", detail=detail)
+    updown = _VERTICAL_WORDS[1 if elevation > 0 else -1]
+    return replace(
+        prompt,
+        headline=f"{bearing}, and {abs(elevation)}° {updown} mark height.",
+        detail=detail,
+    )
 
 # What the household reads during the apply hold, and the same entry's fallback
 # screen body. It carries a REPOSITION instruction because the pre-apply cloud
@@ -1263,7 +1294,7 @@ class V2PlanShape:
         pre-apply cloud (anchor plus ``N − 1`` prompted positions), 10 at
         Full's defaults, 6 for express. NOT what stage 1 runs: the
         ``STAGE1_INCLUDES_*`` flags decide that, and the real count is
-        :func:`_stage1_capture_target` — two readers have been misled by the
+        :func:`stage1_base_entries` — two readers have been misled by the
         older wording (#2098, and the remote session-open journal). Stage 1
         applies nothing (D1), so it carries no post-apply entry at all."""
         return 1 + self.cloud_measure_positions
@@ -1720,7 +1751,7 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # adoption table) is already merged, and the capture is what it has been
 # waiting on.
 #
-# Applied at the PRODUCTION seams (``_stage1_capture_target``,
+# Applied at the PRODUCTION seams (``stage1_base_entries``,
 # ``prepare_v2_session``) exactly like its two siblings — the builders below
 # keep whatever a caller asks for.
 STAGE1_INCLUDES_ENTRY_BASELINE = True
@@ -1739,10 +1770,18 @@ STAGE1_INCLUDES_ENTRY_BASELINE = True
 # ``lateral_mark_return_drift_db`` all serve that walk; only the stage-1 arming
 # is gone, so the two builders below still take ``include_lateral`` from
 # whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
-def _stage1_capture_target(shape: Any) -> int:
-    """Stage 1's REAL capture count, not the cloud-inclusive shape target."""
+def stage1_base_entries(plan_shape: V2PlanShape | None = None) -> int:
+    """Stage 1's REAL capture count, not the cloud-inclusive shape target.
+
+    Also the ``base_entries`` a session hands a staged angle walk — the
+    captures it takes that are NOT the walk (``include_lateral=False``) — so a
+    price stated before Start counts the same base the session will run,
+    whichever way the ``STAGE1_INCLUDES_*`` flags are set. ``None`` resolves
+    the default shape, which is what a surface pricing a walk before any tier
+    is chosen has.
+    """
     return len(build_v2_cloud_index_phase_map(
-        plan_shape=shape,
+        plan_shape=plan_shape,
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
@@ -2677,6 +2716,24 @@ def build_v2_verify_session_spec(
     )
 
 
+def wall_clock_ceiling_s(capture_target: int) -> float:
+    """The ceiling for a plan of ``capture_target`` captures.
+
+    The arithmetic :func:`session_wall_clock_ceiling_s` states, reachable by a
+    caller holding a capture count rather than a plan object.
+    """
+    from jasper.active_speaker.session_volume_plan import (
+        DEFAULT_WALL_CLOCK_CEILING_S,
+        MAX_WALL_CLOCK_CEILING_S,
+    )
+
+    extra = max(0, capture_target - CAPTURE_PLAN_TARGET)
+    return min(
+        MAX_WALL_CLOCK_CEILING_S,
+        DEFAULT_WALL_CLOCK_CEILING_S + extra * WALL_CLOCK_CEILING_PER_ENTRY_S,
+    )
+
+
 def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     """The walked-away volume ceiling for one plan, scaled by its length.
 
@@ -2718,17 +2775,8 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     maximum the unclamped value would be 3720 s and the plan's hard cap binds at
     3600 s.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        DEFAULT_WALL_CLOCK_CEILING_S,
-        MAX_WALL_CLOCK_CEILING_S,
-    )
-
     target = int(getattr(capture_plan, "capture_target", CAPTURE_PLAN_TARGET) or 0)
-    extra = max(0, target - CAPTURE_PLAN_TARGET)
-    return min(
-        MAX_WALL_CLOCK_CEILING_S,
-        DEFAULT_WALL_CLOCK_CEILING_S + extra * WALL_CLOCK_CEILING_PER_ENTRY_S,
-    )
+    return wall_clock_ceiling_s(target)
 
 
 # Per accepted capture beyond the 3-entry baseline. 120 s covers a prompt read,
@@ -2828,14 +2876,14 @@ def tier_display_info() -> dict[str, dict[str, int]]:
         )
         return {
             tier: {
-                "capture_target": (_stage1_capture_target(shape)
+                "capture_target": (stage1_base_entries(shape)
                                    + shape.verify_capture_target),
                 "estimated_minutes": 0,
                 # Present even here: the chooser's copy reads both, and a
                 # KeyError on the degraded path would take the whole
                 # microphone_check screen down over a duration it already
                 # knows how to render as unknown.
-                "stage1_captures": _stage1_capture_target(shape),
+                "stage1_captures": stage1_base_entries(shape),
                 "stage2_captures": shape.verify_capture_target,
             }
             for tier, shape in ((t, resolve_plan_shape(t)) for t in TIERS)

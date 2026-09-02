@@ -409,9 +409,10 @@ def _bounded_dir_size(root: Path) -> tuple[int, bool]:
     """Sum file sizes under ``root`` with a bounded ``os.scandir`` walk.
 
     Returns ``(total_bytes, truncated)``. ``truncated`` is True when
-    either the entry cap or the depth cap stopped the walk early, so the
-    caller can render the figure as a floor. Deliberately self-contained
-    (does not reuse jasper.correction.bundles' unbounded ``rglob`` helper)
+    either the entry cap or :data:`_STORAGE_WALK_MAX_DEPTH` stopped the
+    walk early, so the caller can render the figure as a floor.
+    Deliberately self-contained (does not reuse jasper.correction.bundles'
+    unbounded ``rglob`` helper)
     because a doctor probe must stay total and cheap regardless of how
     pathological the directory has become. Symlinks are not followed
     (``scandir`` is_dir/is_file default) so a stray symlink loop can't

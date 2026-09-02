@@ -15,6 +15,8 @@ import textwrap
 
 import pytest
 
+from scripts import _pi_target
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_NAMES = (
@@ -33,6 +35,10 @@ INVOCATIONS = {
     "verify-ref-no-silence-bug.sh": ([], 1),
     "wake-rate-test.sh": (["1"], 23),
 }
+
+
+# sysexits EX_CONFIG: _lib.sh refuses rather than guess a speaker (#3498).
+NO_TARGET_EXIT = 78
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -250,10 +256,12 @@ def test_jasper_hostname_compatibility_fallback_comes_from_shared_owner(
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
-def test_final_pi_target_defaults_come_from_shared_owner(
+def test_unnamed_target_refuses_instead_of_guessing_a_speaker(
     script_repo: tuple[Path, Path, Path],
     name: str,
 ) -> None:
+    """#3498: `jts.local` resolves to whichever box on the LAN claimed the
+    name, so an unnamed target is a refusal — never a guess, never ssh."""
     result, calls = _run_script(
         script_repo,
         name,
@@ -261,8 +269,69 @@ def test_final_pi_target_defaults_come_from_shared_owner(
         inherited={},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
-    assert "pi@jts.local" in calls
+    assert result.returncode == NO_TARGET_EXIT, result.stdout + result.stderr
+    assert calls == ""
+
+
+def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
+    script_repo: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--host <ip>` on a laptop script names the target itself, so _lib.sh's
+    refusal must not swallow it -- while the checkout's PI_USER still
+    applies (scripts/_pi_target.py's per-field override)."""
+    repo, _fake_bin, _log = script_repo
+    monkeypatch.setattr(_pi_target, "LIB_SH", repo / "scripts" / "_lib.sh")
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        monkeypatch.delenv(key, raising=False)
+
+    assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
+        "192.168.1.5", "pi")
+
+    (repo / ".env.local").write_text("PI_USER=checkout-user\n", encoding="utf-8")
+    assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
+        "192.168.1.5", "checkout-user")
+
+
+# Scripts whose --help / usage path runs AFTER they source _lib.sh, with the
+# argv that reaches the speaker. They defer the refusal instead of taking it
+# at source time, so help stays readable on a checkout with no target set.
+_HELP_BEFORE_TARGET = (
+    ("multiroom-spike.sh", ["--help"], ["--teardown"]),
+    ("pi-run-diagnostic.sh", ["--help"], ["--", "true"]),
+)
+
+
+@pytest.mark.parametrize(
+    ("script", "help_args", "action_args"),
+    _HELP_BEFORE_TARGET,
+    ids=[case[0] for case in _HELP_BEFORE_TARGET],
+)
+def test_help_needs_no_target_but_the_action_still_refuses(
+    tmp_path: Path,
+    script: str,
+    help_args: list[str],
+    action_args: list[str],
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    for name in ("_lib.sh", script):
+        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
+    env = os.environ.copy()
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        env.pop(key, None)
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(repo / "scripts" / script), *args],
+            env=env, capture_output=True, text=True, timeout=15,
+        )
+
+    helped = _run(help_args)
+    assert helped.returncode == 0, helped.stdout + helped.stderr
+    assert (helped.stdout + helped.stderr).strip()
+
+    assert _run(action_args).returncode == NO_TARGET_EXIT
 
 
 def test_gemini_unknown_alias_exits_without_network(

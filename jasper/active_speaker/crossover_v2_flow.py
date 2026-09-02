@@ -414,7 +414,6 @@ _LATERAL_POSE_OFFSETS_CM = _plan._LATERAL_POSE_OFFSETS_CM
 _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
 _program_duration_ms = _plan._program_duration_ms
-_stage1_capture_target = _plan._stage1_capture_target
 announced_capture_indexes = _plan.announced_capture_indexes
 assert_cloud_plan_fits_relay_capacity = _plan.assert_cloud_plan_fits_relay_capacity
 build_v2_capture_plan = _plan.build_v2_capture_plan
@@ -434,6 +433,7 @@ express_cloud_measure_positions = _plan.express_cloud_measure_positions
 format_position_distance = _plan.format_position_distance
 normalize_tier = _plan.normalize_tier
 position_angle_deg = _plan.position_angle_deg
+position_elevation_deg = _plan.position_elevation_deg
 position_geometry = _plan.position_geometry
 relay_plan_attempts_required = _plan.relay_plan_attempts_required
 remote_cloud_measure_positions = _plan.remote_cloud_measure_positions
@@ -441,12 +441,14 @@ remote_cloud_verify_positions = _plan.remote_cloud_verify_positions
 remote_position_prompt = _plan.remote_position_prompt
 resolve_plan_shape = _plan.resolve_plan_shape
 session_wall_clock_ceiling_s = _plan.session_wall_clock_ceiling_s
+stage1_base_entries = _plan.stage1_base_entries
 stage1_plan_max_attempts = _plan.stage1_plan_max_attempts
 tier_display_info = _plan.tier_display_info
 tier_is_externally_positioned = _plan.tier_is_externally_positioned
 v2_first_begin_timeout_s = _plan.v2_first_begin_timeout_s
 verify_pose_table = _plan.verify_pose_table
 walk_shape_for = _plan.walk_shape_for
+wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 
 
 # :mod:`jasper.active_speaker.crossover_v2.refusal_copy`
@@ -524,6 +526,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR as SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS as SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     _gate_disclosure as _gate_disclosure,
+    _gate_entanglement_floor as _gate_entanglement_floor,
     _gate_floor_source as _gate_floor_source,
     _gate_moved_rms_db as _gate_moved_rms_db,
     _gate_record as _gate_record,
@@ -537,6 +540,46 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     _sweep_schedule_diag_fields as _sweep_schedule_diag_fields,
     _sweep_schedule_ok as _sweep_schedule_ok,
 )
+
+
+from jasper.audio_measurement import measurement_geometry as _measurement_geometry
+
+#: Where this module reads the operator's declared rig from. Its own name so a
+#: test can point the capture path at a file of its own; the writer's default
+#: is :data:`~jasper.audio_measurement.measurement_geometry.DEFAULT_PATH`.
+DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
+
+
+def _declared_first_bounce_s(distance_m: float | None) -> float | None:
+    """The operator-declared rig's first bounce at ONE capture's distance.
+
+    Read FRESH on every capture rather than resolved once at session start:
+    ``jasper-declare-geometry`` is a separate process writing a wizard-owned
+    file under :data:`DECLARED_GEOMETRY_PATH`, and a session that cached it
+    would keep publishing a floor the operator has since corrected. ``None``
+    when nothing is declared, which every consumer publishes as
+    ``entanglement_floor_source = unknown`` (#3502) — absent is the ordinary
+    state and warns about nothing.
+
+    **A file that exists and cannot be read is unknown HERE, not a raised
+    round.** The reader raises on one, deliberately, so ``jasper-declare-geometry
+    show`` can report it; on the capture path the same exception would abort
+    every attempt and every seat of the round over a fact that clamps nothing,
+    so it is journaled once and read as undeclared.
+    """
+    try:
+        return _measurement_geometry.declared_first_bounce_s(
+            distance_m, path=DECLARED_GEOMETRY_PATH
+        )
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log_event(
+            logger, "correction.crossover_v2_declared_geometry_unreadable",
+            level=logging.WARNING,
+            path=str(DECLARED_GEOMETRY_PATH),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return None
+
 
 # --------------------------------------------------------------------------- #
 # tuning constants
@@ -2160,6 +2203,7 @@ class CrossoverV2Session:
         driver_prescription: "DriverPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+        lateral_claims: Sequence["_spatial.TakeClaim"] = (),
         verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
@@ -2372,6 +2416,11 @@ class CrossoverV2Session:
             tuple(lateral_prompts) if lateral_prompts is not None
             else LATERAL_POSE_PROMPTS
         )
+        # What each pose of the walk was measured UNDER (#3498) — the banked
+        # candidate, and the graph axes its stop carried — in the same order as
+        # the prompts above. Empty on every walk that measures the speaker as
+        # it stands, which is every shipped one.
+        self._lateral_claims: tuple[_spatial.TakeClaim, ...] = tuple(lateral_claims)
         # The POST-APPLY walk's pose set, resolved through the same one resolver
         # the plan builder uses so the session and the plan cannot read
         # different tables — the desync ``V2PlanShape`` exists to close, applied
@@ -3242,11 +3291,17 @@ class CrossoverV2Session:
         authorize; the consumer widens its own uncertainty with this number
         instead. ``None`` when either bracket pose is missing — never ``0.0``,
         which would read as "nothing moved".
+
+        The closing pose is the first at-mark pose AFTER the walk's last
+        off-mark one, so a program whose at-mark repeats all sit before the
+        first move brackets nothing and answers ``None``.
         """
-        opening = next((p for p in self._lateral_poses if p.at_mark), None)
-        closing = next(
-            (p for p in reversed(self._lateral_poses) if p.at_mark), None
+        poses = self._lateral_poses
+        left_the_mark = max(
+            (i for i, p in enumerate(poses) if not p.at_mark), default=-1
         )
+        opening = next((p for p in poses if p.at_mark), None)
+        closing = next((p for p in poses[left_the_mark + 1:] if p.at_mark), None)
         if opening is None or closing is None or opening.index == closing.index:
             return None
         drift: dict[str, float] = {}
@@ -4211,7 +4266,9 @@ class CrossoverV2Session:
         # recording. See ``locate_failed_message``.
         reflection_measured: bool | None = None
         if verdict.code == REASON_VERIFY_INCONCLUSIVE:
-            gate_record = _gate_record(analysis.summed_response)
+            # Read, never recomputed: the one verdict carrying this code
+            # stashed THIS capture's record via ``_set_verify_outcome``.
+            gate_record = self._verify_gate
             if gate_record is not None:
                 reflection_measured = bool(gate_record["reflection_measured"])
         verdict = replace(
@@ -5159,13 +5216,14 @@ class CrossoverV2Session:
             prompt=prompt.text,
             role=prompt.role,
             offset_cm=float(prompt.offset_cm),
-            at_mark=float(prompt.offset_cm) == 0.0,
+            at_mark=prompt.at_mark,
             curves=tuple(curves),
         )
         log_event(
             logger, "correction.crossover_v2_lateral_pose",
             session_id=self.session_id, pose_id=pose.pose_id, index=index,
             attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
+            vertical_deg=position_elevation_deg(prompt),
             at_mark=pose.at_mark, curves=len(pose.curves),
         )
         # Outside the lock below, unlike the cloud's in-lock retention: that
@@ -5181,7 +5239,7 @@ class CrossoverV2Session:
                 [p for p in self._lateral_poses if p.index != index] + [pose],
                 key=lambda p: p.index,
             )
-            payload: dict[str, Any] = {"position_id": pose.pose_id}
+            payload: dict[str, Any] = {"pose_id": pose.pose_id}
             if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
                 payload.update(self._close_lateral_walk())
             return PhaseVerdict(True, payload=payload)
@@ -5194,16 +5252,39 @@ class CrossoverV2Session:
         ``prompt`` must be :meth:`_prompt_shown_for`'s result — the sidecar's
         bearing names where the operator was sent, not where the table wanted.
         Same shape for both consumers, so their poses stay comparable.
+
+        Both angles come off that prompt through the shipped derivations, so a
+        pose the operator was sent BOTH sideways and up records both numbers
+        rather than claiming mark height for a microphone somebody raised.
         """
         self._seams.bank_take(
             result,
             _spatial.lateral_pose_record(
                 pose,
                 position_deg=position_angle_deg(prompt),
+                vertical_deg=position_elevation_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
+                claim=self._lateral_claim(pose.index),
                 **self._capture_stamp(result),
             ),
         )
+
+    def _lateral_claim(self, index: int) -> "_spatial.TakeClaim":
+        """What the pose at this capture index was measured under.
+
+        Positioned by ``group_offsets(PHASE_LATERAL).index``, the derivation
+        :meth:`_cloud_prompt` uses to pick this index's prompt out of the same
+        walk table, so the claim and the prompt can never come from two
+        different positions of one walk. An empty claim for every pose no walk
+        stated one for, which is every shipped walk.
+        """
+        offsets = self._journey.plan.group_offsets(PHASE_LATERAL)
+        try:
+            position = offsets.index(index)
+        except ValueError:
+            return _spatial.TakeClaim()
+        claims = self._lateral_claims
+        return claims[position] if position < len(claims) else _spatial.TakeClaim()
 
     def _close_lateral_walk(self) -> dict[str, Any]:
         """Record that the walk finished. Publishes nothing.
@@ -5364,6 +5445,21 @@ class CrossoverV2Session:
         retained.append(position)
         retained.sort(key=lambda p: p.index)
         gating = getattr(position.response, "gating", None) or {}
+        # THIS seat's distance, not the rig's: the room floor rises with
+        # distance, so the pose's own mark distance is what the declared
+        # geometry is evaluated at.
+        bounce_s = _declared_first_bounce_s(position.geometry.mark_distance_m)
+        gate = _gate_record(position.response, declared_first_bounce_s=bounce_s) or {}
+        # The room survives a capture with no gating block, which is the one
+        # state ``_gate_record`` reports as no record at all — see
+        # ``_gate_entanglement_floor``.
+        entanglement_floor_hz, entanglement_floor_source = (
+            (gate["entanglement_floor_hz"], gate["entanglement_floor_source"])
+            if gate
+            else _gate_entanglement_floor(
+                position.response, declared_first_bounce_s=bounce_s
+            )
+        )
         metadata = _spatial.cloud_position_record(
             position_id=position.position_id,
             phase=phase,
@@ -5377,9 +5473,11 @@ class CrossoverV2Session:
             session_id=self.session_id,
             gate_window_ms=_gate_window_ms(position.response),
             gate_floor_source=_gate_floor_source(position.response),
-            gate_disclosure=_gate_disclosure(position.response),
-            gate_moved_rms_db=_gate_moved_rms_db(position.response),
-            gate_reflection_delay_ms=_gate_reflection_delay_ms(position.response),
+            gate_disclosure=gate.get("disclosure"),
+            gate_moved_rms_db=gate.get("moved_rms_db"),
+            gate_reflection_delay_ms=gate.get("reflection_delay_ms"),
+            gate_entanglement_floor_hz=entanglement_floor_hz,
+            gate_entanglement_floor_source=entanglement_floor_source,
             validity_floor_hz=getattr(
                 position.response, "validity_floor_hz", None
             ),
@@ -7825,7 +7923,10 @@ class CrossoverV2Session:
         # capture's window in MILLISECONDS, and in the one method where
         # confusing the two produced a household-visible bug they should not
         # share a name.
-        gate_record = _gate_record(analysis.summed_response)
+        gate_record = _gate_record(
+            analysis.summed_response,
+            declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
+        )
         # The pre-grade ladder — locate, pilot level, capture integrity (issue
         # #1971), linearity — belongs to
         # :func:`~jasper.active_speaker.crossover_v2.capture_dispatch.verify_integrity_screens`,
@@ -9147,6 +9248,7 @@ __all__ = [
     "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
+    "stage1_base_entries",
     "stage1_plan_max_attempts",
     "LATERAL_POSE_PROMPTS",
     "CLOUD_VERIFY_POSE_PROMPTS",

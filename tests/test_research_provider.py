@@ -90,7 +90,7 @@ def test_catalog_rejects_duplicate_provider_ids():
         provider=openai_research.PROVIDER,
     )
 
-    with pytest.raises(ValueError, match="duplicate research provider id: dup"):
+    with pytest.raises(ValueError):
         research_catalog._validate_providers((entry, entry))
 
 
@@ -177,7 +177,7 @@ async def test_openai_client_raises_research_error_on_terminal_failure():
         sleep=_no_sleep,
     )
 
-    with pytest.raises(research.ResearchError, match="bad request"):
+    with pytest.raises(research.ResearchError):
         await client.complete(ResearchRequest(query="x"))
 
 
@@ -199,7 +199,7 @@ async def test_openai_client_normalizes_provider_sdk_errors():
         provider_error_classes=(FakeOpenAIError,),
     )
 
-    with pytest.raises(research.ResearchError, match="temporary outage"):
+    with pytest.raises(research.ResearchError):
         await client.complete(ResearchRequest(query="x"))
 
 

@@ -22,13 +22,16 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 from types import SimpleNamespace
 
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker import candidate_bank
 from jasper.active_speaker import angle_capture_spool as spool
+from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
@@ -48,6 +51,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
 
@@ -78,6 +82,11 @@ def slot(tmp_path, monkeypatch):
         yield
     finally:
         spool.set_angle_request_spool_path_for_tests(None)
+
+
+#: Where the design-axis MEASURE capture sits in a stage-1 plan, which is the
+#: index a walk's own walk-level spec is keyed to.
+_MEASURE_INDEX = 2
 
 
 def _hand_shape():
@@ -168,7 +177,7 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
         taken = _take()
 
     assert taken is not None
-    prompts, consumer, _spec, _trims = taken
+    prompts, consumer, _specs, _trims, _geometry, _candidates = taken
     assert consumer == LATERAL_CONSUMER_FORWARD_MODEL
     assert [flow.position_angle_deg(p) for p in prompts] == CAMPAIGN_ANGLES
 
@@ -181,6 +190,99 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
     # Single-use: the next session is an ordinary one. The document is spent by
     # the take, not by the session succeeding.
     assert _take() is None
+
+
+def test_a_peek_reads_the_staged_walk_without_spending_it(slot):
+    """The page prices a staged walk before Start; the open is still the take.
+
+    Same reader, same request object -- what a peek does NOT do is empty the
+    slot, so a household that reads the price and never presses Start still has
+    its walk.
+    """
+    assert spool.peek_staged_angle_request() is None
+
+    request = ac.request_for_program(mp.program("baseline", "express"))
+    spool.stage_angle_request(request)
+    assert spool.peek_staged_angle_request() == request
+    assert spool.staged_angle_request_pending() is True
+    assert spool.peek_staged_angle_request() == request
+
+    assert spool.take_staged_angle_request() == request
+    assert spool.staged_angle_request_pending() is False
+    assert spool.peek_staged_angle_request() is None
+
+
+@pytest.mark.parametrize(
+    "read", [spool.peek_staged_angle_request, spool.take_staged_angle_request],
+)
+def test_a_field_the_document_cannot_coerce_refuses_by_name(slot, read):
+    """A hand-edited ``delay_us`` is a REFUSAL, not a bare ``ValueError``.
+
+    Both readers, because the page peeks this slot on every poll while only the
+    session open takes it: a coercion escaping as ``ValueError`` would take the
+    tier chooser down on every poll and 500 the open, instead of costing the
+    chooser one offer and refusing the open by name.
+    """
+    path = spool.angle_request_spool_path()
+    spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["delay_us"] = "12us"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        read()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED
+
+
+def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
+    """A program's clocks are honoured STRUCTURALLY, not wired a second time.
+
+    The walk's stops enter the plan's ``capture_target``
+    (``build_v2_cloud_index_phase_map`` counts ``lateral_prompts``), and the
+    session ceiling scales on that target -- so the price stated before Start
+    is never under what the session that takes the walk actually budgets.
+    """
+    express = mp.program("baseline", "express")
+    request = ac.request_for_program(express)
+    spool.stage_angle_request(request)
+    prompts = _take()[0]
+
+    plan = flow.build_v2_capture_plan(
+        _ROLES_BANDS, _FC_HZ, plan_shape=_hand_shape(),
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=True,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        lateral_prompts=prompts,
+    )
+    assert plan.capture_target >= express.capture_count
+    session_ceiling_s = flow.session_wall_clock_ceiling_s(plan)
+    # The stops are the ONLY entries this walk adds to the base plan, so the
+    # stated price is that session's own ceiling rounded up -- not merely a
+    # bound over it, and not a base the price counted for itself.
+    assert ac.walk_price(request)["ceiling_min"] == math.ceil(session_ceiling_s / 60)
+    assert (
+        flow.wall_clock_ceiling_s(flow.stage1_base_entries() + len(request.stops))
+        == session_ceiling_s
+    )
+@pytest.mark.parametrize("declared", [True, False])
+def test_the_take_carries_the_households_declared_geometry_out(slot, declared):
+    """The take is the hop the geometry rides (#3498).
+
+    Carried, never judged: the session banks it and the entanglement floor is
+    derived offline. ``None`` is every walk nobody was asked about.
+    ``tests/test_crossover_v2_stage_bridge.py`` pins where it lands.
+    """
+    geometry = DeclaredGeometry(0.9, 1.0, 1.05) if declared else None
+    spool.stage_angle_request(
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+            declared_geometry=geometry,
+        )
+    )
+    taken = _take()
+
+    assert taken is not None
+    assert taken[4] == geometry
 
 
 def test_a_refused_walk_refuses_the_open_and_is_consumed(slot, caplog):
@@ -247,6 +349,48 @@ def test_a_banked_stop_past_the_movers_reach_refuses_at_the_take_too(slot, caplo
     assert "consumed=true" in line and "session_continues=false" in line
 
 
+def test_a_raised_walk_survives_the_spool_and_reaches_the_session(slot):
+    """BOTH bearings cross the document, not just the azimuth.
+
+    The spool is the only thing between a stated walk and the session that
+    runs it, so an elevation dropped there re-plans the walk as a horizontal
+    one — silently, and with the operator's own receipt still saying otherwise.
+    """
+    spool.stage_angle_request(
+        ac.AngleCaptureRequest(
+            stops=(
+                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0),
+                ac.AngleStop(22, ac.REGIME_PER_DRIVER, 20),
+                ac.AngleStop(-22, ac.REGIME_PER_DRIVER, -20),
+            ),
+            mover=ac.MOVER_HUMAN,
+        )
+    )
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
+
+    assert [flow.position_elevation_deg(p) for p in prompts] == [0, 20, -20]
+    assert [flow.position_angle_deg(p) for p in prompts] == [0, 22, -22]
+
+
+def test_a_document_staged_before_elevation_existed_reads_as_mark_height(slot):
+    """Additive at the reader, at the SAME schema version.
+
+    The rule the polarity pair already follows: the key is written
+    unconditionally and read back with a default, so a document banked before
+    the axis was sayable still runs — as the walk at mark height it always was.
+    """
+    spool.stage_angle_request(ac.per_driver_at([7]))
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    for stop in doc["stops"]:
+        del stop["elevation_deg"]
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    request = spool.take_staged_angle_request()
+
+    assert [stop.elevation_deg for stop in request.stops] == [0]
+
+
 def test_a_staged_walk_refuses_while_the_session_already_walks_one(slot, caplog):
     """Two lateral groups cannot share one session's index space.
 
@@ -288,7 +432,7 @@ def test_the_taken_walk_becomes_the_sessions_map_and_its_prompted_entries(slot):
     six spots while the conductor measured five.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
-    prompts, _consumer, _spec, _trims = _take()
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
     shape = _hand_shape()
 
     mapping = flow.build_v2_cloud_index_phase_map(
@@ -327,7 +471,7 @@ def test_an_arm_driven_walk_declares_the_angle_its_gate_waits_for(slot):
     spool.stage_angle_request(
         ac.per_driver_at(CAMPAIGN_ANGLES, mover=ac.MOVER_ARM)
     )
-    prompts, _consumer, _spec, _trims = _take(_arm_shape())
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take(_arm_shape())
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_arm_shape(),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
@@ -350,7 +494,7 @@ def test_the_consent_copy_quotes_the_walk_the_household_will_actually_take(slot)
     reach at a household about to be walked past it is the dishonesty the
     orientation sentence exists to prevent."""
     spool.stage_angle_request(ac.per_driver_at([0, 45, -45]))
-    prompts, _consumer, _spec, _trims = _take()
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
     wide = flow.walk_shape_for(
         cloud_positions=0, lateral=True, lateral_prompts=prompts,
     )
@@ -393,11 +537,111 @@ def _played_measure_spec(measure_spec, monkeypatch):
         stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
         index_phase_map={1: PHASE_MEASURE},
         run_async=asyncio.run,
-        measure_spec=measure_spec,
+        specs_by_index={} if measure_spec is None else {1: measure_spec},
     )
     assert leg(1, 1, entry=None) == "the-engine-take"
     one, = played
     return one
+
+
+def _banked(monkeypatch, **alignment):
+    """A banked candidate whose corner is the preset ``_take`` is handed."""
+    region = SimpleNamespace(
+        fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
+        lower_driver="woofer", upper_driver=DRIVER_ROLE_TWEETER,
+    )
+    preset = SimpleNamespace(crossover_regions=(region,))
+    monkeypatch.setattr(
+        candidate_bank, "find_banked_candidate",
+        lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
+            fingerprint=fingerprint, linearization={}, source_preset=preset,
+            alignment=SimpleNamespace(**alignment),
+        )),
+    )
+    return preset
+
+
+def test_a_candidate_stop_banks_under_the_graph_it_actually_played(
+    slot, monkeypatch,
+):
+    """The pose record's claim is the STOP's graph, not the walk's default.
+
+    A reader selecting by ``candidate_id`` is asking what that variant
+    measured; a claim that said ``normal`` and ``level_matched=false`` while
+    the stop rode a flipped branch through the speaker's own level match would
+    answer with a graph that never played.
+    """
+    preset = _banked(monkeypatch, polarity="invert", delay_role=None, delay_us=None)
+    _with_measured_trims(monkeypatch, {DRIVER_ROLE_TWEETER: -9.5})
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
+        level_matched=True,
+    ))
+    _prompts, _consumer, specs, _trims, _geometry, claims = _take(preset=preset)
+
+    spec, = [s for i, s in specs.items() if s.candidate_id]
+    claim, = claims
+    assert (claim.candidate_id, claim.polarity) == ("fp-a", spec.polarity)
+    assert claim.polarity == POLARITY_INVERTED
+    assert (claim.level_matched, spec.level_matched) == (True, True)
+    assert claim.level_match_trims_db == {DRIVER_ROLE_TWEETER: -9.5}
+
+
+def test_a_polarity_only_candidate_reaches_a_spec_the_open_accepts(
+    slot, monkeypatch,
+):
+    """A zero delay stated with a branch is a pair ``MeasureSpec`` refuses, and
+    at the open the document is already consumed — so the walk must reach a
+    spec that builds rather than a ValueError with nothing left to re-stage."""
+    preset = _banked(
+        monkeypatch, polarity="invert", delay_role=DRIVER_ROLE_TWEETER, delay_us=0.0,
+    )
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
+    ))
+    _prompts, _consumer, specs, _trims, _geometry, _claims = _take(preset=preset)
+
+    spec, = [s for i, s in specs.items() if s.candidate_id]
+    assert (spec.delayed_role, spec.delay_us) == ("", 0.0)
+    assert spec.inverted_role == DRIVER_ROLE_TWEETER
+
+
+def test_the_engine_leg_plays_the_spec_its_own_index_names(monkeypatch):
+    """One leg, one spec per claimed capture (#3498).
+
+    A stop that names a candidate rides the alignment that candidate was minted
+    with, so the leg cannot hand every index one spec. An index no spec names
+    and no MEASURE phase claims stays on the flow leg, which is what keeps a
+    candidate-free walk on the path it already ran on.
+    """
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    monkeypatch.setattr(v2host, "_session_abort_target", None)
+    played: list = []
+
+    class _Tuning:
+        async def measure(self, spec):
+            played.append(spec)
+            return SimpleNamespace(stimuli=(SimpleNamespace(
+                record_id="rec-1", banked=True, incident="", level_db=-22.0,
+            ),))
+
+    at_pose = MeasureSpec(
+        kind=MEASURE_KIND_CANDIDATE, positions=(20,), candidate_id="fp-a",
+    )
+    leg = v2host._bind_engine_measure_leg(
+        tuning=_Tuning(),
+        stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
+        index_phase_map={1: PHASE_MEASURE, 3: PHASE_LATERAL, 4: PHASE_LATERAL},
+        run_async=asyncio.run,
+        specs_by_index={3: at_pose},
+    )
+
+    assert leg(4, 1, entry=None) is None
+    assert leg(3, 1, entry=None) == "the-engine-take"
+    assert leg(1, 1, entry=None) == "the-engine-take"
+    assert [(s.candidate_id, s.positions) for s in played] == [
+        ("fp-a", (20,)), ("", ()),
+    ]
 
 
 def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatch):
@@ -410,7 +654,8 @@ def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatc
     the validated pair and the played pair get to differ.
     """
     spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
-    _prompts, _consumer, spec, _trims = _take()
+    _prompts, _consumer, specs, _trims, _geometry, _candidates = _take()
+    spec = specs[_MEASURE_INDEX]
 
     played = _played_measure_spec(spec, monkeypatch)
     assert (played.kind, played.polarity, played.inverted_role) == (
@@ -434,7 +679,8 @@ def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
         delayed_role=DRIVER_ROLE_TWEETER,
         delay_us=250.0,
     ))
-    _prompts, _consumer, spec, _trims = _take()
+    _prompts, _consumer, specs, _trims, _geometry, _candidates = _take()
+    spec = specs[_MEASURE_INDEX]
 
     played = _played_measure_spec(spec, monkeypatch)
     assert (played.delayed_role, played.delay_us) == (DRIVER_ROLE_TWEETER, 250.0)
@@ -471,7 +717,8 @@ def test_a_level_matched_walk_carries_the_boxs_own_trims_to_the_session(
         inverted_role=DRIVER_ROLE_TWEETER, level_matched=True,
     ))
     with caplog.at_level(logging.INFO):
-        _prompts, _consumer, spec, trims = _take()
+        _prompts, _consumer, specs, trims, _geometry, _candidates = _take()
+        spec = specs[_MEASURE_INDEX]
 
     assert spec.level_matched is True
     assert trims == {DRIVER_ROLE_TWEETER: -9.5}
@@ -493,7 +740,8 @@ def test_an_ordinary_walk_resolves_no_trims_and_reads_no_evidence(
 
     monkeypatch.setattr(v2host, "_resolve_measurement_level_trims", _spy)
     spool.stage_angle_request(ac.per_driver_at([0]))
-    _prompts, _consumer, spec, trims = _take()
+    _prompts, _consumer, specs, trims, _geometry, _candidates = _take()
+    spec = specs[_MEASURE_INDEX]
 
     assert spec.level_matched is False and trims == {}
     # Called once and answered empty — the real resolver short-circuits on the

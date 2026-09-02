@@ -4,55 +4,31 @@
 
 """State one angle walk, see exactly what it will run, and leave it for a session.
 
-The operator's door onto
-:mod:`jasper.active_speaker.angle_capture` (#2732) -- the seam that resolves
-``{per-driver | summed} x {angles} x {arm | human-guided}`` onto the shipped
-program, pose and gate machinery, and that shipped with no way for anybody to
-state a request.
+The operator's door onto :mod:`jasper.active_speaker.angle_capture` (#2732).
+``plan`` prints the walk a request resolves to and writes nothing; ``stage``
+runs the SAME resolution and banks the request where the next measurement
+session takes it, once
+(:mod:`jasper.active_speaker.angle_capture_spool`). Neither runs a capture,
+opens a session, plays anything, or moves a microphone.
 
-Two verbs, and deliberately nothing between them:
+``--program`` names a row of :mod:`jasper.active_speaker.measurement_programs`,
+which owns the geometry; ``--angles`` is the escape hatch for a bearing no
+program names.
 
-* ``plan`` reads a request and prints the walk it resolves to -- every stop's
-  index, angle, pose, program, advance policy and banking shape. It writes
-  nothing and touches no state, so it is the safe thing to run first and the
-  thing to paste into a session log.
-* ``stage`` runs the SAME resolution and then banks the request where the next
-  measurement session will take it
-  (:mod:`jasper.active_speaker.angle_capture_spool`).
+**Angles are parsed, never coerced.** A field is handed to
+:class:`~jasper.active_speaker.angle_capture.AngleStop` as an ``int`` only when
+written as a whole number; anything else passes through unchanged so the seam
+refuses it. ``int("0.4")`` raises but ``int(0.4)`` is ``0``, and an angle
+truncated to zero is an ON-AXIS capture nobody asked for. There is no second
+validator here.
 
-``plan`` is the dry run of ``stage`` rather than a different question -- the
-same constructors, the same refusals, the same resolved walk -- which is the
-shape ``jasper-crossover-prescriber``'s ``propose``/``stage`` pair already
-establishes for this operator, and for the same reason: a staging verb with a
-laxer check would be the second, weaker reader these designs exist to avoid.
+**Exit codes are part of the contract**: ``0`` accepted, ``2`` the request was
+refused (fix the request), ``3`` an accepted request could not be banked (fix
+the speaker's filesystem). A refusal prints its machine-readable reason on
+stdout as JSON when asked, and the human sentence on stderr either way.
 
-**Angles are parsed, never coerced.** ``--angles 0,7,-7,22,-22`` is split and
-each field handed to :class:`~jasper.active_speaker.angle_capture.AngleStop`
-as an ``int`` **only when it is written as a whole number**; anything else
-(``7.5``, ``0.4``, ``+7 deg``) is passed through unchanged so the seam's own
-``_validated_angle`` refuses it in its own words. That matters more than it
-looks: ``int("0.4")`` raises, but ``int(0.4)`` is ``0``, and an angle silently
-truncated to zero is an ON-AXIS capture the operator never asked for. There is
-no second validator here -- bounds, whole-degree-ness, the regime vocabulary and
-the mover vocabulary are all the seam's.
-
-**Exit codes are part of the contract**, because the caller of this tool is
-often a script: ``0`` accepted, ``2`` the request was refused (a bad angle, an
-unknown regime or mover, or a measurement session already holding the speaker),
-``3`` an accepted request could not be banked. A refusal is not a crash -- it is
-the door working -- so it prints the machine-readable reason on stdout as JSON
-when asked, and the human sentence on stderr either way. ``3`` is its own code
-rather than folded into ``2`` because the two send an operator to different
-places: ``2`` means fix the request, ``3`` means fix the speaker's filesystem.
-
-**What this tool does NOT do, stated plainly rather than implied.** It does not
-run a capture, open a session, play anything, or move a microphone. ``stage``
-places a request; the next measurement session takes it, once. ``plan`` is the
-dry run -- the only way to see what a stated walk resolves to, in the units the
-session will use -- and ``stage`` gives the request a durable, single-use home
-instead of a shell variable. What a taken walk then does, and what it
-deliberately does not publish, is ``docs/testing-tooling.md``
-("Angle-walk door").
+What a taken walk then does, and what it deliberately does not publish, is
+``docs/testing-tooling.md`` ("Angle-walk door").
 """
 
 from __future__ import annotations
@@ -65,6 +41,7 @@ from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
 
+from jasper.active_speaker import measurement_programs
 from jasper.active_speaker.angle_capture import (
     MOVER_HUMAN,
     MOVERS,
@@ -74,8 +51,14 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest,
     AngleStop,
     announced_indexes,
-    position_angle_deg,
+    candidate_measure_axes,
+    request_for_program,
     resolve_request,
+    walk_price,
+)
+from jasper.active_speaker.candidate_bank import (
+    CandidateBankRefusal,
+    find_banked_candidate,
 )
 from jasper.active_speaker.angle_capture_spool import (
     AngleRequestRefused,
@@ -89,15 +72,53 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_NORMAL,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
+from jasper.active_speaker.measurement_programs import MeasurementProgram
+from jasper.active_speaker.seat_level_reference import (
+    LevelUnresolved,
+    ResolvedLevel,
+    resolve_anchor_level,
+)
+from jasper.audio_measurement.measurement_geometry import (
+    DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
+    DeclaredGeometry,
+    GeometryFieldError,
+)
+from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
+#: The named program does not exist. Not a walk refusal -- no walk was stated,
+#: so it does not borrow ``WALK_REFUSAL_REASONS``' vocabulary.
+UNKNOWN_PROGRAM = "unknown_program"
+
+#: The program ids this door offers, derived from the registry so a new row
+#: reaches the registry's own refusal rather than an argparse "invalid choice".
+#: ``spot`` is appended because it carries the caller's own bearing instead of
+#: being a registry row.
+PROGRAM_IDS = tuple(sorted({
+    pid for pid, _size in measurement_programs.available_programs()
+})) + ("spot",)
+PROGRAM_SIZES = tuple(sorted({
+    size for _pid, size in measurement_programs.available_programs()
+}))
+
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). `stage`
 #: writes the walk for the next session; `plan` and `withdraw` do not.
 AUTHORITY_TIER = "mutating (`stage` writes; `plan`/`withdraw` do not)"
+
+
+def _size_phrase() -> str:
+    """``--size``'s choices with each tier's shape, read off the registry."""
+    return ", ".join(
+        f"{size} ({row.mic_move_count} spots, {row.capture_count} captures)"
+        for size, row in (
+            (size, measurement_programs.program("baseline", size))
+            for size in PROGRAM_SIZES
+        )
+    )
 
 
 def _angle_field(text: str) -> Any:
@@ -140,50 +161,184 @@ _REGIME_STOPS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _declared_on_the_box() -> DeclaredGeometry | None:
+    """The box's standing declaration (``jasper-declare-geometry set``), if any.
+
+    The flags below are the one-off override; this is the answer a household
+    already gave once. An unreadable file reads as absent rather than refusing
+    the walk -- ``jasper-declare-geometry show`` is where a damaged
+    declaration is diagnosed.
+    """
+    try:
+        return DeclaredGeometry.load(DECLARED_GEOMETRY_PATH)
+    except (OSError, ValueError):
+        return None
+
+
+def _declared_geometry(args: argparse.Namespace) -> DeclaredGeometry | None:
+    """The household's tape measure -- all three distances, or none of them.
+
+    All-or-nothing because the entanglement floor the toolbox derives needs
+    the whole triangle: two of the three would bank a geometry no reader can
+    use, which is worse than banking none. The ceiling is genuinely optional
+    (a floor bounce is bounded without it) but is not a geometry on its own.
+    """
+    stated = (args.speaker_height_m, args.mic_height_m, args.distance_m)
+    parser: argparse.ArgumentParser = args.parser
+    if all(value is None for value in stated):
+        if args.ceiling_height_m is not None:
+            parser.error(
+                "--ceiling-height-m goes with --speaker-height-m, "
+                "--mic-height-m and --distance-m"
+            )
+        return _declared_on_the_box()
+    if any(value is None for value in stated):
+        parser.error(
+            "--speaker-height-m, --mic-height-m and --distance-m are "
+            "stated together or not at all"
+        )
+    return DeclaredGeometry(*stated, args.ceiling_height_m)
+
+
+def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
+    """The walk-level graph statement, which both request paths carry alike."""
+    return {
+        "mover": args.mover,
+        "polarity": args.polarity,
+        "inverted_role": args.inverted_role,
+        "delayed_role": args.delayed_role,
+        "delay_us": args.delay_us,
+        "level_matched": args.level_matched,
+        "declared_geometry": _declared_geometry(args),
+    }
+
+
+def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
+    """The banked candidates this walk cycles, judged before it is staged.
+
+    Each fingerprint goes through the bank's own door, so one that names
+    nothing refuses in the bank's vocabulary rather than a second one; what a
+    candidate may VARY is the seam's
+    (:func:`~jasper.active_speaker.angle_capture.candidate_measure_axes`),
+    asked here so a walk no session could play is refused at staging instead of
+    at the open.
+    """
+    fingerprints = tuple(
+        field.strip()
+        for field in (args.candidates or "").split(",")
+        if field.strip()
+    )
+    for fingerprint in fingerprints:
+        candidate_measure_axes(find_banked_candidate(fingerprint).candidate)
+    return fingerprints
+
+
+def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
+    """The program row ``--program`` names, after the usage rules argparse cannot.
+
+    ``parser.error`` rather than a refusal, because these are malformed
+    INVOCATIONS rather than walks the seam judged: ``--regime`` beside a
+    program, geometry beside a registry row, or a ``spot`` with no bearing. The
+    parser is carried on the namespace so this stays one function instead of
+    one per verb.
+    """
+    parser: argparse.ArgumentParser = args.parser
+    if args.regime is not None:
+        parser.error("--regime goes with --angles; programs play per_driver at every pose")
+    if args.program == "spot":
+        if args.azimuth is None:
+            parser.error("--program spot needs --azimuth (and --elevation for a raised pose)")
+        return measurement_programs.spot_program(args.azimuth, args.elevation or 0)
+    if args.azimuth is not None or args.elevation is not None:
+        parser.error("--azimuth/--elevation belong to --program spot; a named program owns its poses")
+    return measurement_programs.program(args.program, args.size)
+
+
 def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     """The request the operator stated, through the seam's own constructors.
 
-    Built with :class:`AngleStop` directly rather than through ``per_driver_at``
-    / ``summed_at`` / ``both_at`` for one reason: ``--regime both`` must emit the
-    PAIRED order those constructors define (per-driver then summed at each
-    angle, so the microphone moves once per angle), and expressing all three
-    regimes as one comprehension over ``_REGIME_STOPS`` keeps the pairing rule
-    in one place instead of branching to a third constructor. The validation is
-    identical either way -- it lives in ``AngleStop``, which every route goes
-    through.
+    Two doors, one seam. ``--program`` hands a
+    :class:`~jasper.active_speaker.measurement_programs.MeasurementProgram` to
+    ``request_for_program``, which owns the pose->stop expansion; ``--angles``
+    builds :class:`AngleStop` directly, because ``--regime both`` must emit the
+    PAIRED order ``both_at`` defines (per-driver then summed at each angle, so
+    the microphone moves once per angle) and one comprehension over
+    ``_REGIME_STOPS`` keeps that pairing rule in one place. The validation is
+    identical either way -- it lives in ``AngleStop`` and
+    ``AngleCaptureRequest``, which every route goes through.
     """
-    angles = _parse_angles(args.angles)
-    regimes = _REGIME_STOPS[args.regime]
-    stops = tuple(
-        AngleStop(angle, regime) for angle in angles for regime in regimes
-    )
+    if args.program:
+        return request_for_program(
+            _chosen_program(args),
+            candidates=_resolved_candidates(args),
+            **_graph_flags(args),
+        )
+    if args.candidates:
+        args.parser.error(
+            "--candidates goes with --program; a free-form angle list states "
+            "no candidate cycle"
+        )
+    regimes = _REGIME_STOPS[args.regime or REGIME_PER_DRIVER]
     return AngleCaptureRequest(
-        stops=stops,
-        mover=args.mover,
-        polarity=args.polarity,
-        inverted_role=args.inverted_role,
-        delayed_role=args.delayed_role,
-        delay_us=args.delay_us,
-        level_matched=args.level_matched,
+        stops=tuple(
+            AngleStop(angle, regime)
+            for angle in _parse_angles(args.angles)
+            for regime in regimes
+        ),
+        **_graph_flags(args),
     )
 
 
-def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
+def _resolved_level() -> ResolvedLevel | LevelUnresolved:
+    """This walk's absolute level, or the refusal that stops it being knowable.
+
+    Resolved ONCE per verb and carried as the object it is: ``plan`` prints the
+    refusal, ``stage`` hands the SAME exception to :func:`_refuse`, so neither
+    verb rebuilds one from the receipt it just flattened.
+    """
+    try:
+        return resolve_anchor_level()
+    except LevelUnresolved as exc:
+        return exc
+
+
+def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
+    """What this walk drives at, or the input that stops it being knowable.
+
+    Never a relative fallback: a receipt that printed ``+0 dB`` with no anchor
+    behind it would read as an absolute level nobody measured.
+    """
+    if isinstance(level, LevelUnresolved):
+        return {"resolved": False, "reason": level.reason, "detail": level.detail}
+    return {
+        "resolved": True,
+        "target_db_spl": round(level.target_db_spl, 2),
+        "anchor_db_spl": round(level.anchor_db_spl, 2),
+        "reference_volume_db": round(level.reference_volume_db, 2),
+        "mic_serial": level.mic_serial,
+    }
+
+
+def _walk_payload(
+    request: AngleCaptureRequest, level: ResolvedLevel | LevelUnresolved
+) -> dict[str, Any]:
     """The resolved walk, as one JSON-able document.
 
     Everything here is READ off the seam -- ``resolve_request`` for the stops,
-    ``position_angle_deg`` for the round-tripped bearing, ``announced_indexes``
-    for the prelude -- so this function states nothing the session would not.
+    ``announced_indexes`` for the prelude -- so this function states nothing
+    the session would not.
 
-    ``banks_as`` is the receipt shape each stop produces: the fields of
-    ``spatial.cloud_position_record`` this walk DETERMINES, and no others. The
-    rest of that record (``captured_at``, ``wav_sha256``, the gate disclosure,
-    the ripple) is measured, so a planner that printed placeholders for them
-    would be inventing evidence. ``position_id`` and ``take_id`` are likewise
-    absent: they are minted at consume time against the real attempt number.
+    ``program``, ``price``, ``level`` and ``handoff_url`` are the RECEIPT: what
+    was asked for, what it drives at, what it costs the household, and where
+    they run it. Everything else is the resolved walk.
     """
     stops = resolve_request(request)
     return {
+        "program": request.program,
+        "candidates": sorted({stop.candidate_id for stop in request.stops} - {""}),
+        "price": walk_price(request),
+        "level": _level_block(level),
+        "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
         "polarity": request.polarity,
@@ -191,22 +346,15 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
+        "declared_geometry": request.declared_geometry_record(),
         "stops": [
             {
                 "index": stop.index,
                 "angle_deg": stop.angle_deg,
+                "elevation_deg": stop.elevation_deg,
                 "regime": stop.regime,
                 "program_phase": stop.program_phase,
                 "prompt": stop.prompt.text,
-                "banks_as": {
-                    # The pose, in the cm-primary units every shipped consumer
-                    # reads, plus the bearing read BACK off it -- the round trip
-                    # the seam asserts, printed so an operator can see it held.
-                    "offset_cm": round(float(stop.prompt.offset_cm), 3),
-                    "role": stop.prompt.role,
-                    "wide": bool(stop.prompt.wide),
-                    "position_angle_deg": position_angle_deg(stop.prompt),
-                },
                 "screen": dict(stop.screen),
             }
             for stop in stops
@@ -238,21 +386,18 @@ def _print_walk(payload: dict[str, Any]) -> None:
         )
     )
     for stop in payload["stops"]:
-        banks = stop["banks_as"]
         gate = stop["screen"].get("position_deg")
-        # The pose is printed as its cm magnitude AND as the bearing read back
-        # off it, because those are two different facts and only the second
-        # carries the side: ``offset_cm`` is a distance, so +7 and -7 are the
-        # same 12.28 cm, and a line that showed only the distance would look
-        # like a duplicated row for a walk that is nothing of the kind.
         print(
             f"  {stop['index']:>2}. {stop['angle_deg']:>+4d} deg  "
             f"{stop['regime']:<10}  plays {stop['program_phase']:<12} "
-            f"pose {banks['offset_cm']:>6.2f} cm "
-            f"({banks['position_angle_deg']:>+3d} deg back) "
-            f"{banks['role']}{' wide' if banks['wide'] else '    '}  "
             f"advance {stop['screen']['auto_advance']}"
             + (f"  gate {gate} deg" if gate is not None else "")
+            # Only when raised: ``offset_cm`` is horizontal, so a vertical pose
+            # would otherwise print as an on-axis row it is not.
+            + (
+                f"  el {stop['elevation_deg']:+d} deg"
+                if stop["elevation_deg"] else ""
+            )
         )
     if payload["polarity"] != POLARITY_NORMAL:
         # Printed only when it is not the ordinary walk, and printed even when
@@ -272,6 +417,14 @@ def _print_walk(payload: dict[str, Any]) -> None:
             f"  delay: {payload['delay_us']:g} us on "
             f"{payload['delayed_role']!r}"
         )
+    geometry = payload["declared_geometry"]
+    if geometry:
+        # Only when stated: a walk nobody was asked about must not print a
+        # room the household never measured.
+        print(
+            "  declared geometry (m): "
+            + ", ".join(f"{key} {value:g}" for key, value in geometry.items())
+        )
     announced = payload["announced_indexes"]
     print(
         "  prelude: "
@@ -280,6 +433,36 @@ def _print_walk(payload: dict[str, Any]) -> None:
             if announced
             else "none (this walk announces nothing on its own)"
         )
+    )
+    candidates = payload["candidates"]
+    if candidates:
+        # Only when stated: an ordinary walk measures the speaker as it stands
+        # and has no cycle to name.
+        print(f"  candidates: {', '.join(candidates)}")
+    price = payload["price"]
+    print(
+        f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
+        f"up to {price['ceiling_min']} min for the session that takes it"
+    )
+    level = payload["level"]
+    print(
+        "  level: "
+        + (
+            f"{level['target_db_spl']:.1f} dB SPL at the mic (anchor "
+            f"{level['anchor_db_spl']:.1f}; reference volume "
+            f"{level['reference_volume_db']:.1f} dB; "
+            f"mic {level['mic_serial']})"
+            if level["resolved"]
+            else f"unresolved -- {level['reason']}: {level['detail']}"
+        )
+    )
+    print(
+        f"  open {payload['handoff_url']} on the household's phone; the page "
+        "states the price before Start"
+    )
+    print(
+        "  done: jasper-crossover-prescriber status -- the walk's takes "
+        "appear under banked.walk"
     )
 
 
@@ -311,9 +494,15 @@ def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
 def _cmd_plan(args: argparse.Namespace) -> int:
     try:
         request = _build_request(args)
-    except CrossoverV2FlowError as exc:
+    except measurement_programs.UnknownProgramError as exc:
+        return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
+    except CandidateBankRefusal as exc:
+        return _refuse(exc, as_json=args.json, reason=exc.code)
+    except (CrossoverV2FlowError, GeometryFieldError) as exc:
         return _refuse(exc, as_json=args.json)
-    payload = _walk_payload(request)
+    # An unresolved level is PRINTED here and refused by ``stage``: the dry run
+    # exists to show an operator what is missing before they commit to it.
+    payload = _walk_payload(request, _resolved_level())
     if args.json:
         print(json.dumps({"ok": True, **payload}, indent=2))
     else:
@@ -324,9 +513,20 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 def _cmd_stage(args: argparse.Namespace) -> int:
     try:
         request = _build_request(args)
-    except CrossoverV2FlowError as exc:
+    except measurement_programs.UnknownProgramError as exc:
+        return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
+    except CandidateBankRefusal as exc:
+        return _refuse(exc, as_json=args.json, reason=exc.code)
+    except (CrossoverV2FlowError, GeometryFieldError) as exc:
         return _refuse(exc, as_json=args.json)
-    payload = _walk_payload(request)
+    # The methodology levels the seat before anything measures, so a level this
+    # door cannot resolve names the step the operator skipped rather than
+    # staging a walk whose captures nobody could read absolutely. It is not
+    # written to the spool -- nothing downstream reads a level yet.
+    level = _resolved_level()
+    if isinstance(level, LevelUnresolved):
+        return _refuse(level, as_json=args.json)
+    payload = _walk_payload(request, level)
     try:
         path = stage_angle_request(request)
     except AngleRequestRefused as exc:
@@ -368,22 +568,76 @@ def _cmd_withdraw(args: argparse.Namespace) -> int:
 
 
 def _add_request_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--angles",
-        required=True,
+    # Carried so ``_chosen_program`` can raise a USAGE error (exit 2, argparse's
+    # own wording) from the one place the request is built, rather than each
+    # verb repeating the cross-argument rules.
+    parser.set_defaults(parser=parser)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--program",
+        choices=PROGRAM_IDS,
         help=(
-            "comma-separated whole degrees off the design axis, negative LEFT "
-            "and positive RIGHT facing the speaker (e.g. 0,7,-7,22,-22)"
+            "the named measurement program to walk: baseline (the standard "
+            "pose table), tournament (the candidate cycle's few poses, "
+            "multiplied by --candidates), both sized by --size, or spot (one "
+            "pose, at --azimuth and --elevation). The program owns the geometry"
+        ),
+    )
+    source.add_argument(
+        "--angles",
+        help=(
+            "operator escape hatch: a free-form angle list; LLM drivers stage "
+            "a named program with --program. Comma-separated whole degrees off "
+            "the design axis, negative LEFT and positive RIGHT facing the "
+            "speaker (e.g. 0,7,-7,22,-22)"
+        ),
+    )
+    parser.add_argument(
+        "--size",
+        default="express",
+        # No argparse ``choices``: the registry owns the valid set, so an
+        # unknown size refuses in its own words and names the real pairs.
+        help=(
+            f"which tier of a named program, one of {_size_phrase()} for "
+            "baseline. Ignored by --program spot, which is one pose either way"
+        ),
+    )
+    parser.add_argument(
+        "--azimuth",
+        type=int,
+        help=(
+            "--program spot only: the signed whole-degree bearing off the "
+            "design axis, negative LEFT"
+        ),
+    )
+    parser.add_argument(
+        "--elevation",
+        type=int,
+        help=(
+            "--program spot only: the signed whole-degree bearing above mark "
+            "height, negative BELOW. Defaults to mark height"
+        ),
+    )
+    parser.add_argument(
+        "--candidates",
+        help=(
+            "--program only: comma-separated banked candidate fingerprints to "
+            "cycle at every pose, adjacent so the microphone moves once per "
+            "pose. Each is played as the ALIGNMENT it was minted with; a "
+            "candidate carrying linearization EQ, or minted against another "
+            "crossover corner, is refused. Omit to measure the speaker as it "
+            "stands"
         ),
     )
     parser.add_argument(
         "--regime",
-        default=REGIME_PER_DRIVER,
+        default=None,
         choices=sorted(_REGIME_STOPS),
         help=(
-            "what to play at each angle: per_driver (the forward model's "
-            "input), summed (the system response), or both (paired, so the "
-            "microphone moves once per angle)"
+            "--angles only: what to play at each angle -- per_driver (the "
+            "forward model's input, the default), summed (the system "
+            "response), or both (paired, so the microphone moves once per "
+            "angle). A program plays per_driver at every pose"
         ),
     )
     parser.add_argument(
@@ -449,6 +703,33 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "box with none refuses the walk rather than measuring unmatched"
         ),
     )
+    # The driving LLM asks the household these once, in metres, and passes
+    # them here; nothing in the session computes from them -- they ride onto
+    # the banked evidence for the offline toolbox step that does.
+    for flag, what in (
+        ("--speaker-height-m", "the driver acoustic centre off the floor"),
+        ("--mic-height-m", "the microphone capsule off the floor"),
+        ("--distance-m", "speaker to microphone, along the design axis"),
+    ):
+        parser.add_argument(
+            flag,
+            type=float,
+            help=(
+                f"declared room geometry in METRES: {what}. Ask the household "
+                "once with a tape measure and state all three together; the "
+                "banked session carries them for the offline reader. Omit all "
+                "three to use whatever `jasper-declare-geometry set` stored "
+                "on this box"
+            ),
+        )
+    parser.add_argument(
+        "--ceiling-height-m",
+        type=float,
+        help=(
+            "declared room geometry in METRES: floor to ceiling. Optional, "
+            "and only alongside the three distances above"
+        ),
+    )
     parser.add_argument(
         "--json", action="store_true", help="emit the result (or refusal) as JSON"
     )
@@ -472,8 +753,11 @@ def build_parser() -> argparse.ArgumentParser:
             "    pending one\n"
             "\n"
             "EXAMPLES\n"
-            "  jasper-angle-capture plan --angles 0,7,-7,22,-22\n"
-            "  jasper-angle-capture stage --angles 0,7,-7,22,-22 --mover human\n"
+            "  jasper-angle-capture plan --program baseline --size express\n"
+            "  jasper-angle-capture stage --program baseline --size express\n"
+            "  jasper-angle-capture stage --program spot --azimuth 22\n"
+            "  jasper-angle-capture stage --angles 0,7,-7 (operator escape\n"
+            "    hatch: a free-form list no program names)\n"
             "  jasper-angle-capture withdraw\n"
             "\n"
             "EXIT CODES\n"

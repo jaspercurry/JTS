@@ -18,14 +18,24 @@ pre-refactor emitter and live as fixtures under
 
 Regenerate (only after a *deliberate*, reviewed output change):
 
-    .venv/bin/python tests/test_sound_camilla_yaml_golden.py
+    .venv/bin/pytest tests/test_sound_camilla_yaml_golden.py --regenerate-goldens
 
-A plain ``pytest`` run never regenerates — it only compares.
+The run fails on purpose after writing, so a regeneration is never a green
+run; review ``git diff`` and re-run without the flag. A plain ``pytest`` run
+never regenerates — it only compares.
+
+Regeneration lives inside pytest and nowhere else: a ``python tests/<file>``
+run puts ``tests/`` first on ``sys.path`` and imports whichever ``jasper`` the
+venv's editable install points at — another checkout, on whatever branch it
+happens to be on — with none of conftest's isolation. pytest imports the tree's
+own package (``tests/__init__.py`` makes the repo root the import root).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from jasper.camilla_config_contract import PeqFilter
 from jasper.sound.camilla_yaml import emit_sound_config
@@ -129,23 +139,20 @@ def _emit(name: str) -> str:
     return emit_sound_config(profile, **kwargs)
 
 
-def test_emit_sound_config_byte_identical_goldens():
+def test_emit_sound_config_byte_identical_goldens(regenerate_goldens):
     """Full-output equality for every representative profile. A diff here
     means the refactor changed emitted bytes — investigate, do not
     regenerate blindly."""
+    if regenerate_goldens:
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        for name in GOLDEN_CASES:
+            (FIXTURE_DIR / f"{name}.yml").write_text(_emit(name), encoding="utf-8")
+        pytest.fail(
+            f"regenerated {len(GOLDEN_CASES)} goldens under {FIXTURE_DIR}; "
+            "review `git diff` and re-run without --regenerate-goldens"
+        )
     missing = [n for n in GOLDEN_CASES if not (FIXTURE_DIR / f"{n}.yml").exists()]
-    assert not missing, f"missing golden fixtures: {missing} (run the regenerator)"
+    assert not missing, f"missing golden fixtures: {missing} (regenerate)"
     for name in GOLDEN_CASES:
-        expected = (FIXTURE_DIR / f"{name}.yml").read_text()
+        expected = (FIXTURE_DIR / f"{name}.yml").read_text(encoding="utf-8")
         assert _emit(name) == expected, f"golden mismatch for {name!r}"
-
-
-def _regenerate() -> None:
-    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
-    for name in GOLDEN_CASES:
-        (FIXTURE_DIR / f"{name}.yml").write_text(_emit(name))
-        print(f"wrote {name}.yml")
-
-
-if __name__ == "__main__":
-    _regenerate()

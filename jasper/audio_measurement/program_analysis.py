@@ -52,7 +52,14 @@ from jasper.audio_measurement.timeline_slip import (
     fit_timeline_step,
     slip_rejects_capture,
 )
-from jasper.audio_measurement.alignment import cross_correlation_alignment
+from jasper.audio_measurement.alignment import (
+    GCC_UPSAMPLE,
+    _bandlimit,
+    _gcc_local_peak_snap,
+    cross_correlation_alignment,
+    gcc_phat,
+    parabolic_peak,
+)
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -270,8 +277,6 @@ _INTEGRITY_SWEEP_NOT_HEARD = (
     "is not evidence"
 )
 
-# GCC-PHAT sub-sample refinement (design §5.6.5).
-GCC_UPSAMPLE = 16
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
 
 # Gated local-peak snap radius, as a fraction of the crossover period at Fc
@@ -1677,34 +1682,6 @@ def _analytic_envelope(x: np.ndarray) -> np.ndarray:
     return gating.analytic_envelope(x)
 
 
-def _parabolic_peak(values: np.ndarray, idx: int) -> float:
-    """Sub-sample offset of a peak at integer ``idx`` via 3-point parabola.
-
-    The refinement is clamped to ±1 bin: a true local maximum refines within
-    ±0.5 bin, so a larger offset means the three points are near-degenerate
-    (tiny ``denom``) and the parabola vertex is an extrapolation artifact —
-    unclamped, a flat-topped correlation once "refined" a 96-bounded peak out
-    to 128 samples. In that case the integer peak is the honest answer.
-    """
-    if idx <= 0 or idx >= values.size - 1:
-        return float(idx)
-    y0, y1, y2 = float(values[idx - 1]), float(values[idx]), float(values[idx + 1])
-    denom = y0 - 2.0 * y1 + y2
-    if denom == 0.0:
-        return float(idx)
-    offset = 0.5 * (y0 - y2) / denom
-    if not -1.0 <= offset <= 1.0:
-        return float(idx)
-    return idx + offset
-
-
-def parabolic_peak(values: np.ndarray, idx: int) -> float:
-    """Public alias of :func:`_parabolic_peak` for external sub-bin peak
-    refinement (e.g. ``scripts/jasper-pipe-probe``'s FFT dominant-frequency
-    read). Behavior is unchanged -- see :func:`_parabolic_peak`."""
-    return _parabolic_peak(values, idx)
-
-
 def _subsample_separation(
     capture: np.ndarray,
     arrival_a: int,
@@ -1728,179 +1705,9 @@ def _subsample_separation(
     corr = correlate(b, a, mode="full", method="fft")
     env = _analytic_envelope(corr)
     peak = int(np.argmax(env))
-    refined = _parabolic_peak(env, peak)
+    refined = parabolic_peak(env, peak)
     lag = refined - (n - 1)  # b ≈ a shifted right by lag
     return float((arrival_b - arrival_a) + lag)
-
-
-def _bandlimit(ir: np.ndarray, sample_rate: int, lo_hz: float, hi_hz: float) -> np.ndarray:
-    """Zero-phase band-pass an IR by masking its spectrum to ``[lo, hi]``."""
-    n = ir.size
-    spectrum = np.fft.rfft(ir)
-    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
-    mask = (freqs >= lo_hz) & (freqs <= hi_hz)
-    spectrum = spectrum * mask
-    return np.fft.irfft(spectrum, n=n)
-
-
-def _gcc_correlation(
-    a: np.ndarray,
-    b: np.ndarray,
-    *,
-    sample_rate: int,
-    band_hz: tuple[float, float],
-    upsample: int,
-) -> tuple[np.ndarray, int]:
-    """Band-limited GCC-PHAT cross-correlation of ``a`` vs ``b``, ×``upsample``
-    FFT-interpolated.
-
-    Returns ``(cc, m)``: ``cc`` is the length-``m`` upsampled real
-    cross-correlation on the circular-lag axis (index ``i`` → lag ``i`` for
-    ``i <= m/2`` else ``i - m``; native lag = index / ``upsample``). The
-    cross-power is phase-transform weighted **only inside ``band_hz``**
-    (whitening the near-zero out-of-band bins otherwise piles a spurious peak
-    near zero lag). Shared core of :func:`_gcc_phat` (global-peak seed) and
-    :func:`_gcc_local_peak_snap` (anchor-gated fine snap), so both read one
-    correlation formula rather than two that could silently drift apart.
-    """
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    L = max(a.size, b.size)
-    n = 1
-    while n < 2 * L:
-        n *= 2
-    A = np.fft.rfft(a, n=n)
-    B = np.fft.rfft(b, n=n)
-    R = A * np.conj(B)
-    mag = np.abs(R)
-    mag[mag < 1e-12] = 1e-12
-    R_phat = R / mag
-    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
-    in_band = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
-    R_phat = R_phat * in_band
-    m = n * upsample
-    cc = np.fft.irfft(R_phat, n=m) * upsample
-    return cc, m
-
-
-def _gcc_phat(
-    a: np.ndarray,
-    b: np.ndarray,
-    *,
-    sample_rate: int,
-    band_hz: tuple[float, float],
-    upsample: int,
-    max_lag_samples: float,
-):
-    """Band-limited GCC-PHAT of ``a`` vs ``b``; ``a ≈ b`` shifted right by the lag.
-
-    Returns ``(lag_samples, polarity_sign, confidence, at_edge)``. The
-    correlation (see :func:`_gcc_correlation`) is ×``upsample`` FFT-interpolated
-    and parabolically refined. ``polarity_sign`` is the sign of the (signed)
-    correlation at the peak, and ``confidence`` mirrors
-    ``cross_correlation_alignment``'s primary-over-secondary margin.
-
-    ``at_edge`` is True when the peak lands within one native sample of the
-    ±``max_lag_samples`` search bound — the true peak is likely OUTSIDE the
-    window and the returned lag is a clamped artifact the caller must refuse.
-    """
-    cc, m = _gcc_correlation(
-        a, b, sample_rate=sample_rate, band_hz=band_hz, upsample=upsample,
-    )
-    # Circular-lag axis: index i → lag i for i<=m/2 else i-m; native = /upsample.
-    max_lag_up = int(round(max_lag_samples * upsample))
-    max_lag_up = max(1, min(max_lag_up, m // 2 - 1))
-    idxs = np.concatenate(
-        [np.arange(0, max_lag_up + 1), np.arange(m - max_lag_up, m)]
-    )
-    window = cc[idxs]
-    peak_local = int(np.argmax(np.abs(window)))
-    peak_idx = int(idxs[peak_local])
-    # Parabolic refine on |cc| around the (unwrapped) peak.
-    abs_cc = np.abs(cc)
-    refined = _parabolic_peak(abs_cc, peak_idx)
-    circ = refined if refined <= m / 2 else refined - m
-    lag_samples = circ / upsample
-    polarity_sign = 1 if cc[peak_idx] >= 0 else -1
-    primary = float(abs_cc[peak_idx])
-    # Secondary: strongest competitor outside the correlation main lobe. A
-    # band-limited correlation's main lobe is ~1/bandwidth wide, so a fixed
-    # 1-sample exclusion would sit on the main lobe and read a near-primary
-    # "secondary" (spuriously low confidence). Exclude one main-lobe half-width.
-    bandwidth = max(1.0, band_hz[1] - band_hz[0])
-    exclude = max(upsample, int(round(sample_rate / bandwidth * upsample)))
-    masked = abs_cc[idxs].copy()
-    for j, gi in enumerate(idxs):
-        if abs(gi - peak_idx) <= exclude or abs(gi - peak_idx) >= m - exclude:
-            masked[j] = 0.0
-    secondary = float(masked.max()) if masked.size else 0.0
-    confidence = max(0.0, (primary - secondary) / primary) if primary > 0 else 0.0
-    max_lag_native = max_lag_up / upsample
-    at_edge = abs(lag_samples) >= max_lag_native - 1.0
-    return lag_samples, polarity_sign, confidence, at_edge
-
-
-def _gcc_local_peak_snap(
-    a: np.ndarray,
-    b: np.ndarray,
-    *,
-    sample_rate: int,
-    band_hz: tuple[float, float],
-    upsample: int,
-    anchor_lag_samples: float,
-    radius_samples: float,
-) -> float | None:
-    """Snap ``anchor_lag_samples`` to the nearest local maximum of the
-    band-limited GCC-PHAT correlation of ``a`` vs ``b`` within ±``radius_samples``.
-
-    Reuses the exact upsampled phase-transform machinery of :func:`_gcc_phat`
-    (via the shared :func:`_gcc_correlation` core) and the same ±1-bin
-    :func:`_parabolic_peak` sub-sample refine. Returns the refined native lag of
-    the nearest genuine interior local maximum of the correlation MAGNITUDE — an
-    upsampled bin strictly greater than both its neighbours — whose bin lies
-    within the radius of the anchor (the parabolic refine may nudge the returned
-    lag by up to one upsampled bin past it); ``None`` when the radius contains no
-    such peak (the caller then keeps the bare anchor). "Nearest" = smallest
-    ``|lag − anchor|``.
-
-    Ianniello's gated correlator
-    (docs/crossover-measurement-reproducibility-plan.md §10): the
-    drift-corrected physical peak-gap anchor already owns comb-lobe selection,
-    so this refines it inside one λ/6 lobe instead of trusting the global
-    correlation peak, which can land on a neighbouring stable-but-wrong lobe.
-    """
-    cc, m = _gcc_correlation(
-        a, b, sample_rate=sample_rate, band_hz=band_hz, upsample=upsample,
-    )
-    abs_cc = np.abs(cc)
-    # Search the ±radius neighbourhood in UPSAMPLED-lag units around the anchor,
-    # reading the circular array modularly (upsampled lag ℓ → index ℓ % m). A
-    # local maximum is an upsampled bin strictly greater than both neighbours.
-    anchor_up = anchor_lag_samples * upsample
-    radius_up = abs(radius_samples) * upsample
-    lo = int(math.floor(anchor_up - radius_up))
-    hi = int(math.ceil(anchor_up + radius_up))
-    best_ell: int | None = None
-    best_dist = float("inf")
-    for ell in range(lo, hi + 1):
-        # The integer sweep brackets the fractional radius; keep only bins
-        # genuinely inside it. (The parabolic refine below can nudge the RETURNED
-        # lag by at most one upsampled bin past the radius — negligible against
-        # the comb-lobe spacing, so no lobe jump.)
-        if abs(ell - anchor_up) > radius_up:
-            continue
-        idx = ell % m
-        if abs_cc[idx] <= abs_cc[(idx - 1) % m] or abs_cc[idx] <= abs_cc[(idx + 1) % m]:
-            continue
-        dist = abs(ell - anchor_up)
-        if dist < best_dist:
-            best_dist = dist
-            best_ell = ell
-    if best_ell is None:
-        return None
-    refined = _parabolic_peak(abs_cc, best_ell % m)
-    circ = refined if refined <= m / 2 else refined - m
-    return float(circ / upsample)
 
 
 def _complex_tf(
@@ -2982,7 +2789,7 @@ def _radiated_band_hz(segment: Any) -> tuple[float, float] | None:
     """The band a sweep segment actually drove, for the gate's disclosure.
 
     A call-site seam, not policy: the band POLICY (intersecting this with
-    the gate's trusted floor) belongs to
+    the caller's gate floor) belongs to
     :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz`.
     This only reads what the excitation program already declares, and
     returns ``None`` for a segment that declares no sweep bounds so the
@@ -3321,15 +3128,19 @@ def branch_snr_band_hz(
 def crossover_region_band_hz(
     fc_hz: float,
     *,
-    trusted_floor_hz: float | None,
+    validity_floor_hz: float | None,
     radiated_band_hz: tuple[float, float] | None,
 ) -> tuple[float, float] | None:
     """The crossover region a SUMMED capture can be judged over, or ``None``.
 
     ``[Fc/ρ, Fc·ρ]`` intersected with
-    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` — this
-    capture's own gate-derived trusted floor and the band its stimulus actually
-    radiated, so the floor is always the evidence's own and never a literal.
+    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` over
+    this capture's own gate VALIDITY floor (``1/T``,
+    :func:`~jasper.audio_measurement.gating.f_valid_floor_hz`) and the band its
+    stimulus actually radiated, so the floor is always the evidence's own and
+    never a literal. Not the trusted floor (``2.5/T``): that one is disclosed
+    beside a verdict and never bounds this one
+    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
     ``None`` when that intersection is empty: no band this capture supports, so
     no number is invented for one.
 
@@ -3360,11 +3171,11 @@ def crossover_region_band_hz(
     """
     if not math.isfinite(fc_hz) or fc_hz <= 0.0:
         return None
-    trusted = gate_disclosure.evaluation_band_hz(trusted_floor_hz, radiated_band_hz)
-    if trusted is None:
+    band = gate_disclosure.evaluation_band_hz(validity_floor_hz, radiated_band_hz)
+    if band is None:
         return None
-    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, trusted[0])
-    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, trusted[1])
+    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, band[0])
+    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, band[1])
     return (lo, hi) if lo < hi else None
 
 
@@ -3404,7 +3215,7 @@ def _estimate_alignment(
     length = min(ir_w.size, ir_t.size)
     ir_w, ir_t = ir_w[:length], ir_t[:length]
 
-    lag_samples, polarity_sign, confidence, at_edge = _gcc_phat(
+    lag_samples, polarity_sign, confidence, at_edge = gcc_phat(
         ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
         upsample=GCC_UPSAMPLE, max_lag_samples=max_lag,
     )
@@ -6218,7 +6029,7 @@ def _verify_absolute_result(
         return {"not_evaluated": ABSOLUTE_NO_TARGET}
     band = crossover_region_band_hz(
         fc_hz,
-        trusted_floor_hz=summed.validity_floor_hz,
+        validity_floor_hz=summed.validity_floor_hz,
         radiated_band_hz=_radiated_band_hz(segment),
     )
     if band is None:

@@ -65,7 +65,12 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
+from jasper.audio_measurement.gating import (
+    ENTANGLEMENT_SOURCE_DECLARED,
+    ENTANGLEMENT_SOURCE_MEASURED,
+    TRUSTED_FLOOR_MULTIPLIER,
+    EntanglementFloor,
+)
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
@@ -135,6 +140,7 @@ __all__ = [
     "LateralPoseCurve",
     "assemble_cloud_group_result",
     "carve_outs_by_band",
+    "cloud_entanglement_floor_hz",
     "cloud_position_capture",
     "cloud_trusted_floor_hz",
     "cloud_validity_floor_hz",
@@ -665,6 +671,12 @@ class LateralPose:
     ("re-solve trim or delay independently at every pose" is forbidden), and it
     is structural rather than a convention: there is no field here for a second
     solution to be written to.
+
+    ``pose_id`` is the canonical key for a POSE on every surface — this record,
+    ``event=correction.crossover_v2_lateral_pose``, and the accepted capture's
+    verdict payload. ``position_id`` / ``position_index`` answer the other
+    question, WHICH SLOT OF A WALK, and are not synonyms for it: a consumer
+    joining takes on ``position_id`` silently mixes poses into the seat table.
     """
 
     pose_id: str
@@ -1101,6 +1113,8 @@ def cloud_position_record(
     gate_disclosure: str | None,
     gate_moved_rms_db: float | None,
     gate_reflection_delay_ms: float | None,
+    gate_entanglement_floor_hz: float | None,
+    gate_entanglement_floor_source: str,
     validity_floor_hz: float | None,
     gating_applied: bool,
     summed_ripple_db: float | None,
@@ -1149,6 +1163,22 @@ def cloud_position_record(
     block's absolute ``first_reflection_ms``: see
     :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
     for why the absolute time is meaningless to a reader.
+
+    ``gate_entanglement_floor_hz`` is the ROOM's floor at THIS seat and
+    ``gate_entanglement_floor_source`` is which of
+    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` it came
+    from — never one without the other, because the number is unreadable
+    without knowing whether a reflection timed it or the operator's tape
+    measure did (#3502).  It is banked per SEAT rather than once per rig
+    because it is derived at the seat's own ``mark_distance_m``, which is why
+    :func:`cloud_entanglement_floor_hz` pools the seats rather than reading one
+    rig fact — though every pose a round walks declares the same distance
+    today, so the pooled seats currently agree; see
+    :meth:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry.first_bounce_s`.
+    ``unknown`` with a null floor is the ordinary
+    state on a rig whose first bounce lands while the direct sound is still
+    decaying — the reflection finder structurally never fires there and no
+    geometry was declared.
 
     The identity half — phase, index, attempt, ``take_id``, ``session_id``, the
     ``wav_sha256`` verifier and the engine's own :class:`TakeClaim` fields — is
@@ -1207,6 +1237,8 @@ def cloud_position_record(
         "gate_disclosure": gate_disclosure,
         "gate_moved_rms_db": gate_moved_rms_db,
         "gate_reflection_delay_ms": gate_reflection_delay_ms,
+        "gate_entanglement_floor_hz": gate_entanglement_floor_hz,
+        "gate_entanglement_floor_source": gate_entanglement_floor_source,
         "validity_floor_hz": validity_floor_hz,
         "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,
@@ -1318,6 +1350,7 @@ def lateral_pose_record(
     pose: LateralPose,
     *,
     position_deg: int,
+    vertical_deg: int = 0,
     lateral_consumer: str,
     session_id: str,
     graph_fingerprint: str,
@@ -1346,9 +1379,14 @@ def lateral_pose_record(
     capture-retention ring.  :func:`take_kind` is that classification, and it
     is stamped on the record here rather than left for a reader to redo.
 
-    ``position_axis`` is horizontal by construction: the lateral walk states
-    every one of its poses as a sideways move at mark height.  Stated so a
-    reader of the bank does not have to know that to place the microphone.
+    ``position_axis`` is horizontal by construction, and stays so even for a
+    RAISED pose: :data:`POSITION_AXIS_VERTICAL` is the pose that commands NO
+    horizontal bearing (see :class:`PositionGeometry`), and every pose reaching
+    this builder commands one.
+
+    ``vertical_deg`` is the signed whole-degree ELEVATION above mark height,
+    negative BELOW, against the same :data:`MARK_DISTANCE_M` as
+    ``position_deg``.  0 is TRUE of a pose nobody raised.
 
     ``captured_at`` is minted at retention, not carried on the pose, for the
     reason :func:`entry_baseline_record` mints its own: a
@@ -1386,7 +1424,7 @@ def lateral_pose_record(
         "role": pose.role,
         "position_deg": int(position_deg),
         "position_axis": POSITION_AXIS_HORIZONTAL,
-        "vertical_deg": 0,
+        "vertical_deg": int(vertical_deg),
         "offset_cm": float(pose.offset_cm),
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
@@ -2707,6 +2745,48 @@ def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
     return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
+def cloud_entanglement_floor_hz(
+    per_position: Sequence[tuple[Any, Any]],
+) -> EntanglementFloor:
+    """The group's ROOM floor and its provenance — the WORST of its positions'.
+
+    :func:`cloud_trusted_floor_hz`'s "worst of the positions" argument, applied
+    to the floor no window choice can lower (#3495): the combined curve is a
+    power mean ACROSS these seats, so a bin below any one seat's entanglement
+    floor is room-entangled in the average. The MAX is the only floor under
+    which every marked bin is marked at every contributing capture.
+
+    **One position that does not know its floor un-knows the group's.** A max
+    over the seats that DID know would claim the silent seat is cleaner than
+    the others, which is the one thing nobody measured. Empty in, unknown out,
+    for the same reason.
+
+    **The source is the WEAKEST of the pooled provenances.** A group is
+    ``measured`` only when every seat's floor was timed off its own reflection;
+    a single declared seat makes the aggregate ``declared``, because that is
+    what the reader would have to assume about the pool. Anything outside
+    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` is unknown —
+    the vocabulary is closed here as it is at every other seam.
+
+    The floor and its provenance travel as one value:
+    :class:`~jasper.audio_measurement.gating.EntanglementFloor` holds the rule
+    binding them, and each seat is read through its lenient door because a
+    seat's pair comes off a persisted position row.
+    """
+    seats = [
+        EntanglementFloor.coerce(floor_hz, source) for floor_hz, source in per_position
+    ]
+    known = [seat.hz for seat in seats if seat.hz is not None]
+    if not seats or len(known) != len(seats):
+        return EntanglementFloor.unknown()
+    return EntanglementFloor(
+        max(known),
+        ENTANGLEMENT_SOURCE_MEASURED
+        if all(seat.source == ENTANGLEMENT_SOURCE_MEASURED for seat in seats)
+        else ENTANGLEMENT_SOURCE_DECLARED,
+    )
+
+
 @dataclass(frozen=True)
 class CloudGroupResult:
     """:func:`assemble_cloud_group_result`'s payload, plus the line a failure earns.
@@ -2947,10 +3027,25 @@ def assemble_cloud_group_result(
         # same caller: the spec may not grade above where the microphone is
         # trusted, which is also where the fitter was allowed to command and
         # the delta probe allowed to grade (#2649).
+        # The ROOM's floor rides beside the window's, pooled from the same
+        # seats the curve was pooled from (#3502). It CLAMPS NOTHING and
+        # changes no grade — it only lets every band say which of its bins no
+        # window could have separated from the room.
+        entanglement = cloud_entanglement_floor_hz(
+            [
+                (
+                    row.get("gate_entanglement_floor_hz"),
+                    row.get("gate_entanglement_floor_source"),
+                )
+                for row in position_records
+            ]
+        )
         spec_report = evaluate_flat_spec(
             combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
             trusted_floor_hz=trusted_floor_hz,
             trusted_ceiling_hz=trusted_ceiling_hz,
+            entanglement_floor_hz=entanglement.hz,
+            entanglement_floor_source=entanglement.source,
         )
         # #2291/#2160: hand the LIVE report to a caller that needs the object
         # rather than the serialized copy below. ``evaluate_spec`` reads

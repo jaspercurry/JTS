@@ -28,6 +28,7 @@ from jasper.output_topology import (
     HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     PAIRING_INTENTS,
+    OutputHardware,
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
@@ -35,7 +36,7 @@ from jasper.output_topology import (
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
-    hardware_from_env,
+    unknown_output_hardware,
     load_output_topology,
     load_output_topology_snapshot,
     load_output_topology_strict,
@@ -57,7 +58,7 @@ def _base_hardware() -> dict:
     }
 
 
-def _dual_apple_hardware(*, include_evidence: bool = True) -> dict:
+def _dual_apple_hardware() -> dict:
     hardware = {
         "device_id": DUAL_APPLE_ACTIVE_DEVICE_ID,
         "device_label": "Dual Apple USB-C DAC 4-channel pair",
@@ -85,26 +86,6 @@ def _dual_apple_hardware(*, include_evidence: bool = True) -> dict:
             },
         ],
     }
-    if include_evidence:
-        hardware["clock_domain_evidence"] = {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": -7,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": [
-                "DWH53530FHL2FN3AC",
-                "DWH53530FLL2FN3A3",
-            ],
-            "artifact_path": (
-                "/home/pi/jts/logs/"
-                "dual-apple-dac-lab-20260603T120839-0400"
-            ),
-        }
     return hardware
 
 
@@ -260,43 +241,61 @@ def test_passive_shape_predicates_separate_subless_from_with_sub() -> None:
     assert topology_is_subless_passive_mains(_topology(groups=[])) is False
 
 
-def test_hardware_from_env_reports_known_output_counts() -> None:
-    dac8x = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
-        "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
-    })
-    apple = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
-        "JASPER_AUDIO_DAC_CARD": "A",
-    })
-    dual_apple = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": DUAL_APPLE_ACTIVE_DEVICE_ID,
-    })
-    dac8x_studio = hardware_from_env({
-        "JASPER_AUDIO_DAC_ID": HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
-        "JASPER_AUDIO_DAC_CARD": "DAC8XStudio",
-    })
-    unknown = hardware_from_env({})
+def test_unknown_output_hardware_declares_no_outputs() -> None:
+    unknown = unknown_output_hardware()
 
-    assert dac8x.physical_output_count == 8
-    assert dac8x.outputs[4].human_label == "DAC output 5"
-    assert dac8x.clock_domain_id == "alsa:sndrpihifiberry"
-    assert apple.physical_output_count == 2
-    assert apple.clock_domain_label == "Single Apple USB audio device clock"
-    assert dual_apple.physical_output_count == 4
-    assert dual_apple.clock_domain_id == "profile:dual-apple-usb-c-dac-4ch"
-    assert dual_apple.device_label == "Dual Apple USB-C DAC 4-channel pair"
-    assert dac8x_studio.physical_output_count == 8
-    assert dac8x_studio.device_label == "HiFiBerry DAC8x Studio"
-    assert dac8x_studio.clock_domain_id == "alsa:DAC8XStudio"
+    assert unknown.device_id == "unknown"
     assert unknown.physical_output_count == 0
     assert unknown.outputs == ()
 
 
+@pytest.mark.parametrize(
+    "hardware,clock_domain_id",
+    [
+        (
+            {
+                "device_id": "hifiberry_dac8x",
+                "device_label": "HiFiBerry DAC8x",
+                "physical_output_count": 8,
+                "card_id": "sndrpihifiberry",
+            },
+            "alsa:sndrpihifiberry",
+        ),
+        (
+            {
+                "device_id": "dual_apple_usb_c_dac_4ch",
+                "device_label": "Dual Apple USB-C DAC 4-channel pair",
+                "physical_output_count": 4,
+            },
+            "profile:dual-apple-usb-c-dac-4ch",
+        ),
+    ],
+)
+def test_loaded_hardware_derives_clock_domain_and_output_labels(
+    hardware, clock_domain_id,
+) -> None:
+    loaded = OutputHardware.from_mapping(hardware)
+
+    assert loaded.clock_domain_id == clock_domain_id
+    assert [output.human_label for output in loaded.outputs] == [
+        f"DAC output {index + 1}" for index in range(hardware["physical_output_count"])
+    ]
+
+
+def test_topology_draft_reads_the_reconciler_record_never_the_env(monkeypatch) -> None:
+    """With no usable record the draft is unknown hardware, whatever the env
+    publication says — the env copy can outlive the DAC it names."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
+    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+
+    draft = new_topology_draft()
+
+    assert draft.hardware.device_id == "unknown"
+    assert draft.hardware.physical_output_count == 0
+
+
 def test_empty_topology_draft_is_honest_and_no_audio_allowed() -> None:
-    topology = new_topology_draft(
-        hardware=hardware_from_env({"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"})
-    )
+    topology = new_topology_draft(hardware=OutputHardware.from_mapping(_base_hardware()))
     payload = topology.to_dict(include_evaluation=True)
 
     assert payload["status"] == "draft"
@@ -540,40 +539,9 @@ def test_clock_domain_report_accepts_measured_dual_apple_composite(
     assert report["clock_domain_count"] == 2
     assert report["coherent_physical_output_count"] == 4
     assert report["multi_device_aggregate_supported"] is False
-    assert report["measured_composite_supported"] is True
-    assert report["issues"] == []
-    assert report["evidence"]["measurement_id"] == (
-        "scarlett-ticks-900s-repeat-buffered"
-    )
-    assert hardware_payload["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
-    assert hardware_payload["clock_domain_evidence"]["drift_ppm"] == 0
-
-
-def test_clock_domain_report_warns_on_missing_dual_apple_clock_evidence(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    _write_dual_apple_observation(monkeypatch, tmp_path)
-    topology = OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "dual_apple",
-        "name": "Dual Apple active pair",
-        "hardware": _dual_apple_hardware(include_evidence=False),
-        "speaker_groups": [],
-        "routing": {},
-    })
-
-    report = clock_domain_report(topology)
-
-    assert report["status"] == "dual_apple_composite_clock"
-    assert report["multi_device_aggregate_supported"] is False
     assert report["composite_clock_supported"] is True
-    assert report["measured_composite_supported"] is False
-    assert report["coherent_physical_output_count"] == 4
-    assert "clock_evidence_missing" in {
-        issue["code"] for issue in report["issues"]
-    }
+    assert report["issues"] == []
+    assert hardware_payload["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
 
 
 def test_clock_domain_report_blocks_wrong_observed_dual_apple_usb_bus(
@@ -618,49 +586,6 @@ def test_dual_apple_hardware_requires_exact_four_physical_outputs() -> None:
             "speaker_groups": [],
             "routing": {},
         })
-
-
-@pytest.mark.parametrize(
-    ("dac_serials", "expected_code"),
-    [
-        (None, "clock_evidence_serials_required"),
-        (["DWH53530FHL2FN3AC"], "clock_evidence_serials_required"),
-        (
-            ["DWH53530FHL2FN3AC", "DWH53530FHL2FN3AC"],
-            "clock_evidence_serials_not_unique",
-        ),
-        (
-            ["DWH53530FHL2FN3AC", "DWH53530F00000000"],
-            "clock_evidence_serial_mismatch",
-        ),
-    ],
-)
-def test_clock_domain_report_requires_exact_dual_apple_evidence_serials(
-    dac_serials: list[str] | None,
-    expected_code: str,
-) -> None:
-    hardware = _dual_apple_hardware()
-    evidence = hardware["clock_domain_evidence"]
-    if dac_serials is None:
-        evidence.pop("dac_serials")
-    else:
-        evidence["dac_serials"] = dac_serials
-    topology = OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "dual_apple",
-        "name": "Dual Apple active pair",
-        "hardware": hardware,
-        "speaker_groups": [],
-        "routing": {},
-    })
-
-    report = clock_domain_report(topology)
-
-    assert report["status"] == "dual_apple_composite_clock_blocked"
-    assert report["measured_composite_supported"] is False
-    assert report["coherent_physical_output_count"] == 0
-    assert expected_code in {issue["code"] for issue in report["issues"]}
 
 
 def test_clock_domain_report_requires_unique_pinned_dual_apple_child_serials() -> None:
@@ -835,9 +760,11 @@ def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
 
 def test_clock_domain_report_flags_unknown_output_clocking() -> None:
     topology = new_topology_draft(
-        hardware=hardware_from_env({
-            "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
-            "JASPER_AUDIO_DAC_CARD": "Mystery",
+        hardware=OutputHardware.from_mapping({
+            "device_id": "mystery_usb_audio",
+            "device_label": "Mystery USB audio",
+            "physical_output_count": 2,
+            "card_id": "Mystery",
         })
     )
 
@@ -1759,9 +1686,8 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
     The opposite of ``new_topology_draft``'s wipe: speaker groups, roles,
     driver styles, physical-output assignment, protection status, routing and
     the declaration-owned child fields all survive. Only the replaced unit's
-    observed identity is rewritten, only ITS lanes lose identity confirmation,
-    and the pair's drift evidence is dropped because it described crystals that
-    are no longer both here.
+    observed identity is rewritten, and only ITS lanes lose identity
+    confirmation.
     """
 
     before = _dual_apple_active_topology()
@@ -1781,7 +1707,6 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
         "DWH53530FHL2FN3AC",
         "NEW-DONGLE-SERIAL",
     ]
-    assert after.hardware.clock_domain_evidence is None
     # Preserved: everything keyed to physical output index, not to a serial.
     assert [child.child_id for child in after.hardware.child_devices] == [
         "left_dac",

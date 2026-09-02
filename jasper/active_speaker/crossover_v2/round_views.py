@@ -34,13 +34,18 @@ from the seam that already owns it:
 * :mod:`~jasper.active_speaker.crossover_v2.durable_state` reads the round's
   banked VERIFY curve (this module never parses ``verify_priors`` by hand).
 
+* :mod:`~jasper.active_speaker.crossover_v2.gate_sweep` reads one bin through
+  a ladder of gate windows over the same round's captures
+  (:func:`~jasper.active_speaker.crossover_v2.round_captures.discover_captures`);
+  :func:`spec_with_gate_sensitivity` stamps that answer onto the round's own
+  spec bands and computes none of it.
+
 **This module performs no DSP of its own.** It did, in one place: the VERIFY
 pose was the one curve a round did not carry pre-computed, so
 :func:`verify_pose_curve` deconvolved, gated, smoothed and resampled its raw
 dump-ring bytes. Ruling S3 banked the curve, so the re-derivation is gone and
-the only transform left anywhere here is the ``fraction=1`` residual
-:func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` call
-:func:`agreement_table` takes through the product's own seam.
+the only transform left anywhere here is the :func:`~.feature_optics.detrend`
+call :func:`agreement_table` takes through the shared optics seam.
 
 **Input shape**: a *banked round directory*, the tree
 ``scripts/bank-crossover-round.sh <dest-dir>`` produces —
@@ -52,6 +57,7 @@ the only transform left anywhere here is the ``fraction=1`` residual
       state.json                     crossover-v2 flow state (optional)
       design-draft.json              active-speaker design draft (optional)
       applied-profile.json           applied baseline profile SSOT (optional)
+      repeat-floor.json              banked repeat floor (optional)
 
 It comes in TWO shapes, because the two-stage flow banks one bundle per stage:
 a MEASURE round (per-driver solos, the entry baseline, the lateral walk; no
@@ -97,7 +103,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -105,6 +111,7 @@ import numpy as np
 
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import REFERENCE_BAND_HZ, FlatSpecReport, evaluate_flat_spec
+from jasper.audio_measurement.gating import ENTANGLEMENT_SOURCE_UNKNOWN
 from jasper.active_speaker.flat_spec_views import (
     PositionCurve,
     role_split_flatness,
@@ -112,25 +119,49 @@ from jasper.active_speaker.flat_spec_views import (
     _exclusion_mask,
     _pool,
 )
+from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
 from jasper.active_speaker.crossover_v2 import forward_model
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    _mapping,
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
 )
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
 )
+from jasper.active_speaker.crossover_v2.feature_optics import detrend
+from jasper.active_speaker.crossover_v2.gate_sweep import (
+    DEFAULT_RUNGS_MS,
+    GRID_HI_HZ,
+    GRID_LO_HZ,
+    REFUSE_SINGLE_POSE,
+    analysis_grid,
+    frame_descriptor,
+    sweep_features,
+)
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
-from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.active_speaker.crossover_v2.round_captures import (
+    RoundCapturesRefused,
+    discover_captures,
+)
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    RoundInputs,
+    RoundViewsError,
+    round_inputs,
+)
 from jasper.audio_measurement.olive_metrics import nbd_and_sm
 
 __all__ = [
     "AGREEMENT_DISSENT_MAX",
     "AGREEMENT_TESTIFY_MIN",
+    "NOT_SWEPT_BAND_NOT_EVALUABLE",
+    "NOT_SWEPT_BIN_OFF_ANALYSIS_GRID",
+    "NOT_SWEPT_CAPTURES_UNREADABLE",
+    "NOT_SWEPT_SINGLE_POSE",
     "AgreementFeature",
     "AudibilityCoMetrics",
     "AudibilityMetrics",
@@ -142,6 +173,7 @@ __all__ = [
     "PooledWindowResult",
     "RepeatabilityMetric",
     "RepeatabilityResult",
+    "RoundInputs",
     "RoundViewsError",
     "SeatCurve",
     "VerifyPoseResult",
@@ -154,7 +186,9 @@ __all__ = [
     "load_banked_round",
     "per_seat_curves",
     "pooled_window_horizontal",
+    "repeat_floor_provenance",
     "repeatability_spread",
+    "spec_with_gate_sensitivity",
     "verify_pose_curve",
 ]
 
@@ -176,31 +210,16 @@ VERIFY_POSITION_ID = "verify"
 AGREEMENT_TESTIFY_MIN = 3
 AGREEMENT_DISSENT_MAX = 1
 
-#: The flow state file ``bank-crossover-round.sh`` drops beside the bundle.
-#: Spelled ONCE because two readers here now need it — :func:`load_banked_round`
-#: hands it to the packet builder, :func:`verify_pose_curve` reads its banked
-#: VERIFY curve — and this module has already paid, once (#2796), for a
-#: location fact it spelled in two places and then changed in one.
-_STATE_FILENAME = "state.json"
-
-#: The applied-baseline-profile SSOT the same script drops beside the bundle.
-#: It answers "what was the speaker playing when this round was banked", which
-#: the flow state cannot (see ``evidence_packet._incumbent_block``).
-_APPLIED_PROFILE_FILENAME = "applied-profile.json"
-
-
-class RoundViewsError(ValueError):
-    """A banked round directory could not be read into a comparable view."""
-
-
 # --------------------------------------------------------------------------- #
-# Loading one banked round
+# Loading one round
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
 class BankedRound:
-    """One banked round, read once, ready for every view below.
+    """One round — banked or still live on the box — read once, ready for
+    every view below. :attr:`inputs` says which of the two it was and where
+    its three non-bundle inputs came from.
 
     ``report`` carries the round's own grading frame (trusted floor,
     published exclusion intervals, and the full per-band evaluation, needed
@@ -219,11 +238,16 @@ class BankedRound:
     """
 
     round_dir: Path
-    session_dir: Path
+    inputs: RoundInputs
     positions: tuple[PositionCurve, ...]
     curve_grid_hz: np.ndarray
     report: FlatSpecReport | None
     packet: Mapping[str, Any] = field(repr=False)
+
+    @property
+    def session_dir(self) -> Path:
+        """The commissioning bundle this round's evidence was read from."""
+        return self.inputs.session_dir
 
     @property
     def graded_report(self) -> FlatSpecReport:
@@ -259,18 +283,6 @@ class BankedRound:
         )
 
 
-def _bundle_session_dir(round_dir: Path) -> Path:
-    bundle_dir = round_dir / "bundle"
-    if not bundle_dir.is_dir():
-        raise RoundViewsError(f"{round_dir}: no bundle/ directory (did bank-crossover-round.sh run?)")
-    children = sorted(p for p in bundle_dir.iterdir() if p.is_dir())
-    if len(children) != 1:
-        raise RoundViewsError(
-            f"{bundle_dir}: expected exactly one session directory, found {len(children)}"
-        )
-    return children[0]
-
-
 def _row_degrees(row: Mapping[str, Any]) -> float | None:
     """One packet position row's banked bearing, or ``None`` for "not recorded".
 
@@ -290,12 +302,18 @@ def _row_degrees(row: Mapping[str, Any]) -> float | None:
 
 
 def load_banked_round(round_dir: Path) -> BankedRound:
-    """Read one ``bank-crossover-round.sh`` output directory into a
+    """Read one round — banked tree or LIVE session bundle — into a
     :class:`BankedRound`.
 
-    Raises :class:`RoundViewsError` when the directory is not a banked round
-    at all — no bundle, more than one session in it, or no readable evidence
-    packet.
+    Which of the two it is, and therefore where the flow state, design draft
+    and applied profile come from, is :func:`~.round_inputs.round_inputs`'
+    answer; it rides on :attr:`BankedRound.inputs` so the views that reach for
+    the flow state read the same file this packet was built from rather than
+    re-deriving a location from :attr:`BankedRound.round_dir`.
+
+    Raises :class:`RoundViewsError` when the directory is neither shape, when
+    a banked tree holds more than one session, or when the bundle carries no
+    readable evidence packet.
 
     **It does NOT judge what the round banked** — a loader-level "positions
     and a graded spec, or nothing" refusal blocked the two views that need
@@ -304,16 +322,14 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     :attr:`BankedRound.graded_positions`.
     """
     round_dir = Path(round_dir)
-    session_dir = _bundle_session_dir(round_dir)
-    state_path = round_dir / _STATE_FILENAME
-    draft_path = round_dir / "design-draft.json"
-    applied_path = round_dir / _APPLIED_PROFILE_FILENAME
+    inputs = round_inputs(round_dir)
     try:
         packet = build_crossover_evidence_packet(
-            session_dir,
-            state_path=state_path if state_path.is_file() else None,
-            driver_draft_path=draft_path if draft_path.is_file() else None,
-            applied_profile_path=applied_path if applied_path.is_file() else None,
+            inputs.session_dir,
+            state_path=inputs.state_path,
+            driver_draft_path=inputs.design_draft_path,
+            applied_profile_path=inputs.applied_profile_path,
+            repeat_floor_path=inputs.repeat_floor_path,
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
@@ -347,11 +363,178 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     report = FlatSpecReport.from_dict(spec_block) if spec_block.get("bands") else None
     return BankedRound(
         round_dir=round_dir,
-        session_dir=session_dir,
+        inputs=inputs,
         positions=positions,
         curve_grid_hz=grid,
         report=report,
         packet=packet,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The room/speaker read, stamped onto the round's own spec verdict
+# --------------------------------------------------------------------------- #
+
+
+#: Why a band carries no gate sensitivity when the LADDER NEVER RAN on it.
+#: The ``not_swept_`` prefix is what tells these apart from the sweep's own
+#: refusals (``gate_sweep.NULL_*``), which mean the ladder ran and then
+#: declined to publish; both land in the one
+#: :attr:`~jasper.active_speaker.flat_spec.BandResult.gate_sensitivity_note`
+#: field, and conflating "not measured" with "measured, inconclusive" is the
+#: read this vocabulary exists to prevent.
+NOT_SWEPT_SINGLE_POSE = "not_swept_single_pose"
+NOT_SWEPT_BAND_NOT_EVALUABLE = "not_swept_band_not_evaluable"
+#: Every ``RoundCapturesRefused`` the ladder can raise EXCEPT the single-pose
+#: one: no captures, no programs, a capture that will not bind to its bytes, a
+#: missing radiated band, and a radiated band that does not reach the sweep's
+#: reference band. They are one word here because the answer is the same —
+#: this round's captures did not become curves — and the refusal itself
+#: carries the detail.
+NOT_SWEPT_CAPTURES_UNREADABLE = "not_swept_captures_unreadable"
+NOT_SWEPT_BIN_OFF_ANALYSIS_GRID = "not_swept_bin_outside_analysis_grid"
+
+
+def _stamped_band(
+    band: flat_spec.BandResult,
+    feature: Mapping[str, Any] | None,
+    note: str | None,
+    detail: dict[str, Any] | None,
+) -> flat_spec.BandResult:
+    """One band plus the ladder's read at its own worst bin, or the reason why not.
+
+    ``n_valid_rungs`` and ``gate_window_verdict`` are stamped whenever the
+    ladder RAN, including on a null: the former is the denominator behind the
+    two numbers beside it, and the latter is ``"unresolved"`` rather than
+    absent -- a reader weighing ``insufficient_valid_rungs`` needs to see how
+    few rungs, and a reader checking room-vs-speaker needs to see that the
+    ladder ran and still could not call it, not mistake silence for "never
+    swept".
+
+    ``detail`` carries only beside a capture-refusal note -- the two
+    ``RoundCapturesRefused`` buckets -- and is ``None`` for every other note,
+    swept or not.
+    """
+    if feature is None:
+        return replace(band, gate_sensitivity_note=note, gate_sensitivity_detail=detail)
+    sensitivity = feature.get("sensitivity")
+    return replace(
+        band,
+        gate_sensitivity_db=(
+            None if sensitivity is None else float(sensitivity["corrected_delta_db"])
+        ),
+        sigma_growth_ratio=(
+            None if sensitivity is None else float(sensitivity["sigma_growth_ratio"])
+        ),
+        n_valid_rungs=int(feature["n_valid_rungs"]),
+        gate_sensitivity_note=feature.get("sensitivity_null_reason"),
+        gate_window_verdict=feature["window_verdict"],
+        gate_window_verdict_reasons=tuple(feature["window_verdict_reasons"]),
+    )
+
+
+def spec_with_gate_sensitivity(
+    banked: BankedRound, *, rungs_ms: Sequence[float] = DEFAULT_RUNGS_MS,
+) -> FlatSpecReport:
+    """The round's graded spec, with "room or speaker" answered at every band's
+    own worst bin.
+
+    The spec verdict names the bin; :mod:`.gate_sweep` says whether that bin
+    moves with the analysis window. Before this the two lived one
+    ``jasper-gate-sweep --at-hz <bin>`` apart and a reader had to remember to
+    cross them, so the answer travelled only as far as whoever ran the second
+    command. Now each :class:`~jasper.active_speaker.flat_spec.BandResult`
+    carries the ladder's headline — including its ``window_verdict``, as
+    ``gate_window_verdict`` — at its own ``max_deviation_hz``, and the report
+    carries the frame those numbers are stated in. **Disclosure only: no
+    grade moves** — every field the evaluator set comes back untouched.
+
+    **Why this reads a BANKED round rather than the live combine.** The cloud
+    pipeline's seam (``spatial.assemble_cloud_group_result``) has the graded
+    curve but not the impulse responses: ``CombinedResponse`` keeps each
+    position's magnitude and echo diagnostic and drops the ``ir`` that
+    ``detect_echo`` consumed. Reaching one there means the IR behind
+    ``DriverResponse.complex_tf``, and that IR has ALREADY been through
+    ``deconv.direct_arrival_window`` and the adaptive reflection gate, whose
+    search stops at ``gating.SEARCH_T_MAX_MS`` — 7 ms. The ladder's 9, 12 and
+    20 ms rungs would then read a window that was closed before they got
+    there, and ``sigma_growth_ratio`` would come back at ~1.0 by
+    construction: "it is the speaker", fabricated, on every band. A banked
+    round's ``summed_*.wav`` is the raw capture, deconvolved here against its
+    own program (:func:`~.round_captures.discover_captures`), and only that
+    IR can answer what a longer window admits.
+
+    Cost is one ladder pass over the round's captures: the round door's own
+    ``discover_captures`` decode/deconvolve, then ONE
+    :func:`~.gate_sweep.sweep_features` call at up to three bins. A band with
+    no ``max_deviation_hz`` to name is skipped rather than swept, and a report
+    that names none at all costs nothing — the captures are never read.
+
+    Every way there can be no number is named in
+    ``gate_sensitivity_note`` and none of them raises: a round whose
+    captures cannot be read is a round with an ungraded window, not an
+    ungraded spec. A capture refusal additionally stamps
+    ``gate_sensitivity_detail`` with the specific input that was missing —
+    the note names the bucket, the detail names the evidence.
+    """
+    report = banked.graded_report
+    targets: list[tuple[int, float]] = []
+    notes: dict[int, str] = {}
+    for index, band in enumerate(report.bands):
+        worst_hz = band.max_deviation_hz
+        if worst_hz is None:
+            notes[index] = NOT_SWEPT_BAND_NOT_EVALUABLE
+        elif not GRID_LO_HZ <= float(worst_hz) <= GRID_HI_HZ:
+            # Named per band rather than allowed to raise: ``sweep_features``
+            # rejects the whole CALL on one off-grid bin, which would cost
+            # every other band its answer.
+            notes[index] = NOT_SWEPT_BIN_OFF_ANALYSIS_GRID
+        else:
+            targets.append((index, float(worst_hz)))
+
+    features: dict[int, Mapping[str, Any]] = {}
+    details: dict[int, dict[str, Any]] = {}
+    frame: dict[str, Any] | None = None
+    if targets:
+        rungs = tuple(sorted(float(rung) for rung in rungs_ms))
+        try:
+            swept = sweep_features(
+                discover_captures(banked.round_dir),
+                rungs_ms=rungs,
+                at_hz=[hz for _index, hz in targets],
+            )
+        except RoundCapturesRefused as exc:
+            # The engine's own bar, echoed rather than re-judged: it refuses
+            # fewer than two captures, and this names that refusal apart from
+            # a round whose captures would not read at all.
+            refused = (
+                NOT_SWEPT_SINGLE_POSE
+                if exc.reason == REFUSE_SINGLE_POSE
+                else NOT_SWEPT_CAPTURES_UNREADABLE
+            )
+            notes.update({index: refused for index, _hz in targets})
+            # The bucket slug names only the shape; what was actually missing
+            # rides on the exception the engine already raised, so a reader
+            # of this ONE band need not go re-run the ladder to see it.
+            details.update(
+                {index: {"reason": exc.reason, **exc.detail} for index, _hz in targets}
+            )
+        else:
+            # Positional, never keyed by frequency: two bands asking about one
+            # bin is a coincidence, not a reason to share an answer.
+            features = {
+                index: feature
+                for (index, _hz), feature in zip(targets, swept, strict=True)
+            }
+            frame = frame_descriptor(rungs, analysis_grid())
+
+    return replace(
+        report,
+        bands=tuple(
+            _stamped_band(band, features.get(index), notes.get(index), details.get(index))
+            for index, band in enumerate(report.bands)
+        ),
+        gate_sweep_frame=frame,
     )
 
 
@@ -467,10 +650,10 @@ class EntryStateGrade:
         }
 
 
-def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
-    """``(round_ordinal, round_ordinal_epoch)`` off the banked flow state.
+def _banked_series_position(state_path: Path | None) -> tuple[int | None, int | None]:
+    """``(round_ordinal, round_ordinal_epoch)`` off the round's flow state.
 
-    ``(None, None)`` for a directory with no readable ``state.json``, and
+    ``(None, None)`` when the round names no readable flow state, and
     ``None`` for either field the record does not carry — "not recorded",
     never zero, on :attr:`PositionCurve.degrees`' rule. Read here rather than
     off the evidence packet because the packet's ``round_receipt`` block
@@ -485,8 +668,7 @@ def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
             return None
         return value
 
-    state_path = round_dir / _STATE_FILENAME
-    if not state_path.is_file():
+    if state_path is None or not state_path.is_file():
         return None, None
     try:
         state = json.loads(state_path.read_text())
@@ -499,10 +681,9 @@ def _banked_series_position(round_dir: Path) -> tuple[int | None, int | None]:
     return ordinal, _count(state.get("round_ordinal_epoch"))
 
 
-def _entry_frame(report: FlatSpecReport | None) -> tuple[int, float | None, float | None]:
-    """``(smoothing_fraction, trusted_floor_hz, trusted_ceiling_hz)`` for an
-    entry baseline — the round's own when it graded one, nothing when it did
-    not.
+def _entry_frame(report: FlatSpecReport | None) -> tuple[int, dict[str, Any]]:
+    """``(smoothing_fraction, frame_kwargs)`` for an entry baseline — the
+    round's own when it graded one, nothing when it did not.
 
     The frame is the ROUND's so a before and an after are stated over one span
     (:class:`EntryStateGrade`). A round that banked no cloud group graded no
@@ -512,11 +693,19 @@ def _entry_frame(report: FlatSpecReport | None) -> tuple[int, float | None, floa
     ``0``). Nothing is inferred and nothing is defaulted to a literal; the
     emitted report echoes both clamps as ``None`` on its face, which is
     :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`'s own "not
-    stated", so the grade discloses which of the two frames produced it.
+    stated", so the grade discloses which of the two frames produced it. The
+    room's floor rides with them under the same rule and is READ BACK rather
+    than re-derived: this grades an entry baseline in the ROUND's frame, and
+    a floor recomputed here would be a second opinion about one room.
     """
     if report is None:
-        return 0, None, None
-    return report.smoothing_fraction, report.trusted_floor_hz, report.trusted_ceiling_hz
+        return 0, {
+            "trusted_floor_hz": None,
+            "trusted_ceiling_hz": None,
+            "entanglement_floor_hz": None,
+            "entanglement_floor_source": ENTANGLEMENT_SOURCE_UNKNOWN,
+        }
+    return report.smoothing_fraction, report.frame_kwargs
 
 
 def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
@@ -546,7 +735,7 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
 
     from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
-    ordinal, epoch = _banked_series_position(banked.round_dir)
+    ordinal, epoch = _banked_series_position(banked.inputs.state_path)
     block = banked.packet["entry_baseline"]
     if not block.get("available"):
         return EntryStateGrade.unavailable(
@@ -559,14 +748,13 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
             ENTRY_STATE_UNREADABLE,
             round_ordinal=ordinal, round_ordinal_epoch=epoch,
         )
-    smoothing_fraction, trusted_floor_hz, trusted_ceiling_hz = _entry_frame(banked.report)
+    smoothing_fraction, frame_kwargs = _entry_frame(banked.report)
     report = evaluate_flat_spec(
         np.asarray(baseline.curve.hz, dtype=float),
         np.asarray(baseline.curve.db, dtype=float),
         np.asarray(baseline.excluded, dtype=bool),
         smoothing_fraction=smoothing_fraction,
-        trusted_floor_hz=trusted_floor_hz,
-        trusted_ceiling_hz=trusted_ceiling_hz,
+        **frame_kwargs,
     )
     return EntryStateGrade(
         available=True,
@@ -595,8 +783,7 @@ def _own_reference_db(position: PositionCurve, report: FlatSpecReport) -> float:
         np.asarray(position.magnitude_db, dtype=float),
         _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
         smoothing_fraction=position.smoothing_fraction,
-        trusted_floor_hz=report.trusted_floor_hz,
-        trusted_ceiling_hz=report.trusted_ceiling_hz,
+        **report.frame_kwargs,
     )
     return float(graded.reference_db)
 
@@ -724,9 +911,9 @@ class VerifyPoseResult:
 
 
 def _banked_verify_curve(
-    round_dir: Path,
+    inputs: RoundInputs,
 ) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
-    """``((freqs_hz, measured_db), "")`` off the round's banked flow state, or
+    """``((freqs_hz, measured_db), "")`` off the round's flow state, or
     ``(None, reason)``.
 
     The ONE reader of ``verify_priors.verify_measured`` on this side of the
@@ -739,15 +926,20 @@ def _banked_verify_curve(
     parse itself is :func:`~.durable_state.verify_measured_curve_from_state`,
     the product's own reader for the key.
     """
-    state_path = round_dir / _STATE_FILENAME
-    if not state_path.is_file():
-        return None, f"no {_STATE_FILENAME} banked beside the bundle"
+    state_path = inputs.state_path
+    if state_path is None or not state_path.is_file():
+        # The resolver's code when it HAS one: "the speaker's state belongs to
+        # another session" is a different answer from "no state was banked",
+        # and only it names a round the operator could point at instead.
+        return None, (
+            inputs.state_reason or "the round names no readable flow state file"
+        )
     try:
         state = json.loads(state_path.read_text())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}"
+        return None, f"{state_path.name} is unreadable: {type(exc).__name__}"
     if not isinstance(state, Mapping):
-        return None, f"{_STATE_FILENAME} is not a JSON object"
+        return None, f"{state_path.name} is not a JSON object"
     triple = verify_measured_curve_from_state(state)
     if triple is None:
         return None, "the round's state banked no verify_priors.verify_measured curve"
@@ -785,7 +977,7 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     :func:`forward_model_verify_delta` therefore reads the same source
     verbatim rather than coming through here.
     """
-    banked_curve, reason = _banked_verify_curve(banked.round_dir)
+    banked_curve, reason = _banked_verify_curve(banked.inputs)
     if banked_curve is None:
         return VerifyPoseResult(None, reason)
     freqs_hz, measured_db = banked_curve
@@ -885,7 +1077,7 @@ def forward_model_verify_delta(
         "basis_round_dir": str(basis.round_dir),
         "measured_round_dir": str(measured.round_dir),
     }
-    verify_curve, reason = _banked_verify_curve(measured.round_dir)
+    verify_curve, reason = _banked_verify_curve(measured.inputs)
     if verify_curve is None:
         return ForwardModelDeltaResult(None, reason, **dirs)
     measured_freqs_hz, measured_db = verify_curve
@@ -1123,7 +1315,7 @@ def repeatability_spread(
             linear_pooled[label] = float(residual.rms_db)
 
     labels = tuple(label for label, _banked in rounds)
-    metrics = [RepeatabilityMetric("shipped_linear_pool_db", dict(linear_pooled))]
+    metrics = [RepeatabilityMetric(SHIPPED_POOL_METRIC, dict(linear_pooled))]
     for role in sorted(role_pooled):
         metrics.append(RepeatabilityMetric(f"{role}_linear_pooled_db", dict(role_pooled[role])))
     for role in sorted(log_role_pooled):
@@ -1137,8 +1329,23 @@ def repeatability_spread(
     )
 
 
+def repeat_floor_provenance(label: str, banked: BankedRound) -> dict[str, Any]:
+    """One record row naming what produced a repeat — the packet fields a
+    floor cites. Basename only: the record leaves this laptop and a local
+    path is nobody's provenance."""
+    session = _mapping(banked.packet.get("session"))
+    identity = _mapping(banked.packet.get("identity"))
+    return {
+        "label": Path(label).name,
+        "bundle_session_id": session.get("bundle_session_id"),
+        "graph_fingerprint": identity.get("graph_fingerprint"),
+        "mic_calibration_id": _mapping(identity.get("mic")).get("calibration_id"),
+        "started_at": session.get("started_at"),
+    }
+
+
 # --------------------------------------------------------------------------- #
-# Agreement — per-seat sign/magnitude testimony for every feature
+# View 5 — Agreement: per-seat sign/magnitude testimony for every feature
 # --------------------------------------------------------------------------- #
 
 
@@ -1177,32 +1384,6 @@ class AgreementFeature:
             "ratio": self.ratio,
             "common_mode": self.common_mode,
         }
-
-
-def _detrend(grid: np.ndarray, curve_db: np.ndarray) -> np.ndarray:
-    """Each seat expressed against its own local ~1-octave background.
-
-    A feature is a local excursion, not the gross tilt no narrow biquad can
-    or should chase — the campaign's own ``agreement.py`` made the same call,
-    subtracting a per-bin ``[fc*2**-0.5, fc*2**0.5)`` window average from
-    each curve before hunting for features.
-
-    **This is the same QUESTION, not the same ARITHMETIC.** The campaign's
-    detrend is a plain arithmetic mean of dB values over a half-open window;
-    ``smooth_fractional_octave(..., fraction=1)`` is the product seam's
-    POWER-mean (linear-energy average) over a very slightly different,
-    inclusive-topped window. The two track each other closely for the small
-    ripple this function is built to isolate, but they are NOT byte-
-    identical — this module's numbers will not reproduce the campaign's own
-    published detrend tables bin-for-bin, and a caller comparing the two
-    should compare verdicts (which feature, which sign, roughly what size),
-    never subtract one table's cell from the other's. Reusing the product
-    seam here — rather than porting the campaign's exact arithmetic — is the
-    deliberate choice: taking "1-octave window average" from the seam that
-    owns it beats a second, bespoke implementation of the same idea that
-    could drift from it. This is now the only call to it in the module.
-    """
-    return curve_db - smooth_fractional_octave(grid, curve_db, fraction=1)
 
 
 def _local_features(
@@ -1301,7 +1482,9 @@ def agreement_table(
     grid = np.asarray(grid, dtype=float)
     if not seats:
         raise RoundViewsError("agreement_table: no seats supplied")
-    detrended = np.vstack([_detrend(grid, seat.normalized_db) for seat in seats])
+    # Power-mean, unlike the campaign's dB mean: compare its published
+    # tables by verdict, never cell for cell.
+    detrended = np.vstack([detrend(seat.normalized_db, grid) for seat in seats])
     pooled = detrended.mean(axis=0)
     features = []
     n_seats = len(seats)
@@ -1336,7 +1519,7 @@ def agreement_table(
 
 
 # --------------------------------------------------------------------------- #
-# View 4 — audibility-weighted co-metrics: NBD + SM (Olive 2004 /
+# View 6 — audibility-weighted co-metrics: NBD + SM (Olive 2004 /
 # US 8,311,232 B2), ADR-0202, ticket 6.13
 # --------------------------------------------------------------------------- #
 
@@ -1433,7 +1616,15 @@ def pooled_window_horizontal(
     grid = np.asarray(grid_hz, dtype=float)
     by_bearing: dict[float, list[np.ndarray]] = {}
     for curve in load_round_pose_curves(Path(bundle_dir)):
-        if curve.role != _SUMMED_CURVE_ROLE or curve.position_deg is None:
+        # A raised pose is SKIPPED rather than given its own bucket: this
+        # pool is the lateral walk's horizontal window, and an elevated seat
+        # sharing a bearing with a mark-height one is a different measurement,
+        # not a repeat visit to the same stop.
+        if (
+            curve.role != _SUMMED_CURVE_ROLE
+            or curve.position_deg is None
+            or curve.vertical_deg
+        ):
             continue
         resampled_db = np.interp(grid, curve.freqs_hz, curve.magnitude_db)
         in_band = (grid >= curve.band_hz[0]) & (grid <= curve.band_hz[1])

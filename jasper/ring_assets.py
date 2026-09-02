@@ -15,10 +15,10 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
   probe (also open-probes the PCMs; that lives in the doctor because it needs
   ``arecord``/``aplay``).
 - ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**: the
-  reconciler refuses to ARM the ring coupling when an asset is missing and
-  fail-safes to loopback, so a half-installed ring platform can never strand the
-  realtime path (the ioplug would fail to resolve and CamillaDSP would crash-loop
-  on its statefile). Presence-only here — an open-probe from the reconciler could
+  reconciler refuses to ARM the ring coupling when an asset is missing, so a
+  half-installed ring platform can never strand the realtime path (the ioplug
+  would fail to resolve and CamillaDSP would crash-loop on its statefile).
+  Presence-only here — an open-probe from the reconciler could
   disturb a live arm, and the doctor already owns the deep probe.
 - ``jasper.cli.audio_config render-ring-conf-wire`` — the per-box conf.d
   **renderer** the output-hardware reconciler shells into. It reuses this
@@ -499,7 +499,7 @@ def ring_ioplug_wire_supported(
 # value — jts4 reached the ring that way on 2026-08-14, before its profile
 # declared a floor), CamillaDSP's ring open would fail and the arm would
 # roll back with a confusing daemon-level error — so the coupling reconciler
-# PREFLIGHTs the match and fail-closes to loopback with a crisp reason. The fix
+# PREFLIGHTs the match and refuses to arm, with a crisp reason instead. The fix
 # is always to bring the OUTPUTD period to the slot, never to raise this file.
 #
 # :func:`render_ring_conf_wire`'s PERIOD axis therefore has exactly one live

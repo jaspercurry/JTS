@@ -12,7 +12,8 @@
 #   - audio_backend_latency_offset_in_seconds derived from the active
 #     CamillaDSP config's samplerate/chunksize/target_level, Ring A
 #     (fan-in -> CamillaDSP) and Ring B (CamillaDSP -> outputd), and
-#     jasper-outputd's live DAC delay (else JASPER_OUTPUTD_DAC_BUFFER_FRAMES);
+#     jasper-outputd's live DAC delay (else the JASPER_OUTPUTD_DAC_BUFFER_FRAMES
+#     its own env layers resolve, else the packaged default);
 #     AND, only while this speaker is an active bonded leader, the Snapcast
 #     round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
 #     written by jasper-grouping-reconcile). Absent on solo/follower
@@ -111,6 +112,11 @@ GROUPING_AIRPLAY_ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/g
 RENDERER_LANES_FILE="${JASPER_RENDERER_LANES_ENV:-/var/lib/jasper/renderer_lanes.env}"
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
+# jasper-outputd's compile-time DAC-buffer default, reached when neither env
+# layer names the key. Python-free, like the ring defaults below, because this
+# tier is what answers when the venv is the broken thing;
+# test_airplay_default_dac_buffer_matches_the_runtime_plan pins it equal to
+# jasper.audio_runtime_plan's copy so a retune cannot desync lip-sync silently.
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # Ring A/B slot-geometry LAST-TIER fallback, reached only when both live
 # STATUS and the jasper.ring_assets parse (see ring_conf_parsed_frames) are
@@ -213,13 +219,20 @@ env_file_value() {
         $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
             sub(/^[^=]*=[[:space:]]*/, "")
             sub(/[[:space:]]*(#.*)?$/, "")
-            print
-            exit
+            value = $0
+            found = 1
         }
+        END { if (found) print value }
     ' "$file"
 }
 
-# Both callers below strip surrounding whitespace/quotes, then a leading
+env_file_has_key() {
+    local file="$1"
+    local key="$2"
+    [[ -r "$file" ]] && grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$file"
+}
+
+# The caller below strips surrounding whitespace/quotes, then a leading
 # zero run (bash's own `$(( ))` misreads a leading-zero numeral as octal —
 # "008" is a parse error, "010" silently means 8, not ten — and every
 # resolved value here eventually crosses a bash arithmetic multiply), then
@@ -237,17 +250,6 @@ _strip_and_bound_int() {
         value="${BASH_REMATCH[1]}"
     fi
     printf '%s\n' "$value"
-}
-
-positive_int_or_default() {
-    local value default
-    value="$(_strip_and_bound_int "$1")"
-    default="$2"
-    if [[ "$value" =~ ^[0-9]{1,6}$ && "$value" -gt 0 ]]; then
-        printf '%s\n' "$value"
-    else
-        printf '%s\n' "$default"
-    fi
 }
 
 nonnegative_int_or_empty() {
@@ -382,10 +384,25 @@ print(period * slots)
 PY
 }
 
+# What jasper-outputd resolves JASPER_OUTPUTD_DAC_BUFFER_FRAMES to, walking
+# the unit's EnvironmentFile layers highest-precedence first: the
+# reconciler-owned outputd.env, then /etc/jasper/jasper.env, then the daemon's
+# compile-time default. jasper-outputd.service pins NO `Environment=` for this
+# key precisely so that order holds. A key that is PRESENT but empty or
+# non-numeric is terminal, as it is for systemd: the daemon then sees that
+# value, not a lower layer's, and falls to its own default.
 outputd_dac_buffer_frames() {
-    local value
-    value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)"
-    positive_int_or_default "$value" "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
+    local file value
+    for file in "$OUTPUTD_ENV_FILE" "$JASPER_ENV_FILE"; do
+        env_file_has_key "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || continue
+        value="$(nonnegative_int_or_empty \
+            "$(env_file_value "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)")"
+        if [[ -n "$value" && "$value" -gt 0 ]]; then
+            printf '%s\n' "$value"
+        fi
+        break
+    done
+    printf '%s\n' "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
 }
 
 # Ring A (fan-in -> CamillaDSP, pcm.jts_ring_capture / program.ring).
@@ -650,15 +667,6 @@ fi
 # back to shairport_substream, the shipped snd-aloop lane. Reading the
 # RESOLVED value (never the armed set) keeps the armed→device rule stated
 # once, in jasper/renderer_lanes.py.
-#
-# Known precedence divergence, accepted: env_file_value takes the FIRST
-# matching assignment (awk `print; exit`), while the map's Python reader
-# (jasper.renderer_lanes._env_file_value) and systemd's EnvironmentFile=
-# both take the LAST. Unreachable through the supported path — the map's
-# single writer (render_renderer_lanes_env) emits each key exactly once —
-# so only a hand-edited duplicate line could split the readers, and the
-# doctor's "shairport-sync.conf: output_device" coherence check names the
-# resulting armed-vs-rendered disagreement rather than leaving it silent.
 renderer_device="$(env_file_value "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
 if [[ -z "$renderer_device" ]]; then
     renderer_device="shairport_substream"

@@ -41,7 +41,6 @@ updates:
       - "/rust/jasper-fanin"
       - "/rust/jasper-outputd"
       - "/rust/jasper-host-clock"
-      - "/rust/jasper-dual-dac-lab"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5

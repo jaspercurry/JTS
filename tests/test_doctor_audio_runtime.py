@@ -32,6 +32,7 @@ from jasper.fanin_coupling import (
 )
 from jasper.output_topology import OutputTopologyError
 
+from .doctor_test_support import record_active_dac
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
     PASSIVE_ONLY_DAC_LABEL,
@@ -73,7 +74,7 @@ pcm.librespot_substream {
         pcm "hw:Loopback,0,0"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 pcm.shairport_substream {
@@ -82,7 +83,7 @@ pcm.shairport_substream {
         pcm "hw:Loopback,0,1"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 pcm.bluealsa_substream {
@@ -91,7 +92,7 @@ pcm.bluealsa_substream {
         pcm "hw:Loopback,0,2"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 pcm.correction_substream {
@@ -100,7 +101,7 @@ pcm.correction_substream {
         pcm "hw:Loopback,0,4"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 """
@@ -1282,6 +1283,43 @@ def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
     assert "one knob has two homes" in r.detail
 
 
+def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
+    monkeypatch, tmp_path
+):
+    """The line carries BOTH numbers, and a difference is not a finding.
+
+    Reporting policy alone printed a chunk no config on the box carried while
+    jts4 crash-looped on 1024. The difference is expected on a clamped box and
+    on the ACTIVE ring; the `camilla ring chunk` check owns the failure.
+    """
+    config = tmp_path / "sound_current.yml"
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 256\n"
+        "  target_level: 1536\n"
+    )
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        outputd_env={
+            "JASPER_CAMILLA_CHUNKSIZE": "1024",
+            "JASPER_CAMILLA_TARGET_LEVEL": "2048",
+        },
+        route_mode="solo",
+        correction_config_path=str(config),
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "ok"
+    assert "camilla_policy=1024/2048" in r.detail
+    assert "camilla_emitted=256/1536" in r.detail
+
+
 def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
     # The route is unsupported only when the bond actually reads outputd's
     # dac_content lane, so the plan carries that fact alongside the route mode.
@@ -1847,7 +1885,7 @@ def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
     _patch_asound_conf(
         monkeypatch,
         _FANIN_ASOUND.replace(
-            'slave {\n        pcm "hw:Loopback,0,1"\n        rate 48000\n        channels 2\n        format S16_LE\n    }',
+            'slave {\n        pcm "hw:Loopback,0,1"\n        rate 48000\n        channels 2\n        format S32_LE\n    }',
             'slave.pcm "hw:Loopback,0,1"',
         ),
         tmp_path,
@@ -1855,6 +1893,27 @@ def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
     r = doctor.check_fanin_asound_wiring()
     assert r.status == "fail"
     assert "shairport_substream" in r.detail
+
+
+def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
+    monkeypatch, tmp_path
+):
+    """The renderer aliases are the PLAYBACK half of fan-in's aloop cables, and
+    snd-aloop pins both halves to one format. A box pinned narrow through the
+    rollback lever whose /etc/asound.conf still declares the wide wire cannot
+    have both ends open, so the deployed file is judged against the wire the box
+    actually resolves rather than a literal."""
+    _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
+    monkeypatch.setattr(
+        doctor.audio_runtime, "read_declared_ring_wire_format", lambda: "S16_LE"
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "S16_LE" in r.detail
+    # A width shear is reported as a width shear: the lanes are wired correctly
+    # and only their width disagrees, so calling them wrong slaves would send an
+    # operator after the wrong fault.
+    assert "wrong slave" not in r.detail
 
 
 def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path):
@@ -2988,28 +3047,19 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
     out of `jasper-doctor` without knowing which module printed it, so the class
     is only closed when the whole package is judged.
 
-    DERIVED FROM BOTH VOCABULARIES, never from a list here. The tokens to judge
-    are the coupling names `jasper.fanin_coupling` still spells (so the RETIRED
-    one is judged, which is the whole point, and a future token is judged the
-    day it is added); the verdict is the reconciler's OWN argparse. English that
-    merely names the command in a sentence carries no coupling token and is not
-    judged.
+    DERIVED FROM THE PRINTED TEXT, never from a list here: every word the doctor
+    prints after this command name is judged, and the verdict is the
+    reconciler's OWN argparse. Deriving the candidates from a coupling
+    vocabulary instead stopped judging the retired token the day that token was
+    deleted — exactly when a stale remedy naming it would be hardest to see. The
+    rule that makes this safe is one the doctor already keeps: the word after
+    this command name is always its ARGUMENT, never English prose.
     """
     import re
     from pathlib import Path
 
-    import jasper.fanin_coupling as fc
     import jasper.fanin.coupling_reconcile as cr
     from jasper.cli import doctor as doctor_pkg
-
-    couplings = {
-        value
-        for name, value in vars(fc).items()
-        if name.startswith("COUPLING_") and isinstance(value, str)
-    }
-    assert "loopback" in couplings, (
-        "the retired token stopped being spelled — this pin no longer judges it"
-    )
 
     modules = sorted(Path(doctor_pkg.__file__).parent.glob("*.py"))
     assert len(modules) > 1, "the doctor package glob found nothing to judge"
@@ -3021,7 +3071,8 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
         for m in re.finditer(
             r"jasper-fanin-coupling-reconcile[^\S\n]+([A-Za-z_][\w-]*)", source
         )
-    } & couplings
+    }
+    assert named, "the doctor stopped printing this remedy at all"
 
     for token in sorted(named):
         accepted = True
@@ -3113,16 +3164,44 @@ assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
 )
 
 
-def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None):
+def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None, status="ready"):
     conf = tmp_path / "60-jts-ring.conf"
     if conf_text is None:
         conf.write_bytes(SHIPPED_RING_CONF.read_bytes())
     else:
         conf.write_text(conf_text, encoding="utf-8")
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
-    monkeypatch.setattr(
-        audio_runtime, "_active_audio_dac_id", lambda: dac_id)
+    record_active_dac(dac_id, status=status)
     return conf
+
+
+def test_skips_when_no_active_dac_is_recorded(monkeypatch, tmp_path):
+    """The env's JASPER_AUDIO_DAC_ID is not consulted: with no record there is
+    no declared floor to render (the missing record is another check's warn)."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "60-jts-ring.conf"))
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "names no active DAC" in result.detail
+
+
+def test_skips_when_the_recorded_dac_is_only_partially_present(
+    monkeypatch, tmp_path
+):
+    """A partial single-DAC record is not ACTIVE (the reconciler does not
+    drive it), so this renders the same ok/skipped branch as no record at
+    all — the conf.d floor is never read for a DAC the reconciler only
+    observed, even though the conf.d file itself exists on disk."""
+    _stage_floor_conf(
+        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", status="partial"
+    )
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "names no active DAC" in result.detail
 
 
 def _conf_text(period_frames):
@@ -3136,8 +3215,6 @@ def _conf_text(period_frames):
 
 def _synthetic_floor(period_frames):
     return LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=period_frames,
         outputd_dac_buffer_frames=4 * period_frames,
     )
@@ -3240,8 +3317,7 @@ def test_warns_when_the_conf_period_is_indeterminate(
 
 def test_warns_when_the_conf_is_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
-    monkeypatch.setattr(
-        audio_runtime, "_active_audio_dac_id", lambda: "apple_usb_c_dongle")
+    record_active_dac("apple_usb_c_dongle")
 
     result = audio_runtime.check_ring_conf_floor_render()
 

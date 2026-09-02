@@ -54,19 +54,47 @@ def _sound_route_failure_calls() -> list[ast.Call]:
 
 
 def _route_failure_event_name(call: ast.Call) -> str:
-    (name,) = [
+    """The call site's own event name, or ``""`` when a table supplies it."""
+    names = [
         keyword.value.value
         for keyword in call.keywords
         if keyword.arg == "event"
         and isinstance(keyword.value, ast.Constant)
         and isinstance(keyword.value.value, str)
     ]
-    return name
+    return names[0] if names else ""
+
+
+def _dispatch_route_events() -> list[str]:
+    """Event names the shared read-route dispatch owns.
+
+    ``_GET_JSON_ROUTES`` collapsed the identical per-route try/except blocks
+    into one call site, so those names live in a table instead of at a call
+    site. They are read from the table for exactly the reason the call sites
+    were walked: a route dropped from it is a retired event.
+    """
+    return [
+        element.elts[1].value
+        for node in ast.walk(ast.parse(Path(sound_setup.__file__).read_text()))
+        if isinstance(node, ast.Dict)
+        for element in node.values
+        if isinstance(element, ast.Tuple)
+        and len(element.elts) == 2
+        and isinstance(element.elts[1], ast.Constant)
+        and isinstance(element.elts[1].value, str)
+        and element.elts[1].value.startswith("sound.")
+    ]
 
 
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
     route_failures = _sound_route_failure_calls()
+    dispatch_events = _dispatch_route_events()
+    # The identical read routes share ONE route-failure call site, whose event
+    # comes from _GET_JSON_ROUTES; every other site still names its own. Exactly
+    # one table-fed site, so a second dynamic one cannot hide behind this.
+    named_failures = [call for call in route_failures if _route_failure_event_name(call)]
+    assert len(route_failures) - len(named_failures) == 1
 
     # 96 / 41. The topology transaction contributes one INFO completion event
     # under the existing sound.output_topology_reset name, and the same-shape
@@ -85,13 +113,17 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # INFO under the existing sound.active_speaker_commission name, so the
     # distinct-name count is unchanged.
     #
+    # The 42nd name is the tuning handoff card's mint (#2883), which adds the
+    # usual INFO/route-failure pair.
+    #
     # The route-failure half of the vocabulary is emitted by the shared
     # send_route_failure owner rather than rendered here; the totals span both
     # so converging a call site can never quietly retire its event.
-    assert len(calls) + len(route_failures) == 97
+    assert len(calls) + len(named_failures) + len(dispatch_events) == 99
     names = {call.args[1].value for call in calls}
-    names |= {_route_failure_event_name(call) for call in route_failures}
-    assert len(names) == 41
+    names |= {_route_failure_event_name(call) for call in named_failures}
+    names |= set(dispatch_events)
+    assert len(names) == 42
 
     # The delegated half of the vocabulary: an event this file no longer emits
     # itself but still NAMES, handed to the shared owner. Without this the
@@ -108,7 +140,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     assert "sound.active_speaker_summed_test" in delegated
 
     levels: Counter[str] = Counter()
-    levels["ERROR"] += len(route_failures)
+    levels["ERROR"] += len(named_failures) + len(dispatch_events)
     for call in calls:
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
         level = keywords.get("level")
@@ -128,11 +160,11 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The reset and re-pin completions are the INFO calls of the topology
     # transaction; each also owns one ERROR branch in the POST dispatcher.
     # The warning count stays fixed.
-    assert levels == {"INFO": 57, "WARNING": 11, "ERROR": 29}
+    assert levels == {"INFO": 58, "WARNING": 11, "ERROR": 30}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 127 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 130 affected parent `%s` positions, not hand-picked examples.
 
     This includes the topology transaction wrappers and #2603's
     ``safety_profile_evaluation`` design-draft field.
@@ -166,11 +198,13 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # was not. The reset and re-pin completions add a final pair: each gains
     # a `reconcile_converging` field alongside its existing `reconcile_ok`,
     # extending the save path's still-running-past-the-wait-budget distinction
-    # (#3094) to the two siblings that share `trigger_reconcile`.
+    # (#3094) to the two siblings that share `trigger_reconcile`. The tuning
+    # handoff mint (#2883) adds three: its status, its optional not-ready
+    # reason, and the declaration revision the prompt was bound to.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 127
+    assert len(wrapped_fields) == 130
     assert hashlib.sha256(signature).hexdigest() == (
-        "973fb96d13ef22c6de61ffa8e9f770689cecdceed3829803c57fa4fa74cfcbaf"
+        "76935a3d2040d4bae94526f39bae7b5f020be28c20c2ed61ed8757679bb7bd82"
     )
 
 

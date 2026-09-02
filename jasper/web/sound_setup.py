@@ -21,6 +21,7 @@ URL surface (after nginx strips either public prefix):
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/measurements saved driver and summed validation evidence
   GET  /active-speaker/baseline-profile active baseline compile/apply state
+  GET  /active-speaker/tuning-handoff copyable AI-operator handoff prompt
   POST /preview  preview a draft profile's response without touching live audio
   POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
@@ -77,6 +78,7 @@ import logging
 import math
 import os
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -105,6 +107,7 @@ from jasper.audio_hardware.usb_port_role import (
     write_i2s_hat_intent,
 )
 from jasper.dsp_apply import same_config_file
+from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputHardware,
@@ -495,10 +498,15 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     it, so the wizard must not accept it in the first place.
     """
 
-    from jasper.active_speaker.playback_route import active_lane_capability_gap
+    from jasper.active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
 
     gap = active_lane_capability_gap(topology)
-    if gap is None:
+    # An unrecognized DAC profile is not proof the layout is undrivable — see
+    # active_lane_capability_gap's docstring — so it must not block the save.
+    if not isinstance(gap, ActiveLaneCapabilityGap):
         return
     log_event(
         logger,
@@ -1994,26 +2002,18 @@ async def audition_profile(
 
 
 async def _live_edit_plan(cam: Any, wanted_yaml: str) -> "LiveEditPlan":
-    """How this edit should reach the DSP: a parameter write, or a swap.
+    """Whether this edit must duck: a swap, a quiet parameter write, or nothing.
 
     Both graphs are read back in CamillaDSP's OWN normalization before they are
     compared — the running config, and the wanted one through ``ReadConfig``,
     which parses and default-fills without applying. Comparing the emitter's
     raw text against the running readback would differ on every edit (the
-    readback is a default-filled superset) and quietly never patch.
-
-    A controller that cannot do all three calls gets the swap, so a
-    test double or an older controller keeps today's behaviour.
+    readback is a default-filled superset) and quietly duck every one.
     """
-    from jasper.sound.live_edit import LiveEditPlan, plan_live_edit
+    from jasper.sound.live_edit import plan_live_edit
 
-    read_active = getattr(cam, "get_active_config_raw", None)
-    normalize = getattr(cam, "normalize_config_raw", None)
-    patcher = getattr(cam, "patch_config", None)
-    if read_active is None or normalize is None or patcher is None:
-        return LiveEditPlan(None, "controller_cannot_patch")
-    running = await read_active(best_effort=True)
-    wanted = await normalize(wanted_yaml, best_effort=True)
+    running = await cam.get_active_config_raw(best_effort=True)
+    wanted = await cam.normalize_config_raw(wanted_yaml, best_effort=True)
     return plan_live_edit(running, wanted)
 
 
@@ -2021,7 +2021,6 @@ async def _live_draft_profile(
     profile: SoundProfile,
     *,
     expected_dsp_write_epoch: str,
-    library_path: str | Path | None = None,
     config_dir: str | Path,
     profile_path: str | Path | None = None,
     camilla_factory: Callable[[], Any] = _camilla,
@@ -2032,6 +2031,10 @@ async def _live_draft_profile(
     config-file pointer change, and no shared apply-state mutation. The
     durable Save/Apply path remains `_apply_profile`, which writes a
     validated YAML file and records rollback state.
+
+    Returns only `live_status` and `dsp_write_epoch` — the browser reads
+    nothing else from this response (`runLiveDraft` in
+    `deploy/assets/sound-profile/js/main.js`).
     """
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
@@ -2043,12 +2046,9 @@ async def _live_draft_profile(
     # The trim is derived from the SAVED profile, never from the draft, so an
     # edit cannot move it. Match-loudness makes the trim a function of the
     # profile's own EQ, so a draft-derived trim would fold into
-    # `active_baseline_headroom`'s VALUE and be written by PatchConfig — an
-    # instant, un-ducked, full-spectrum level step mid-drag — while its stereo
-    # twin `sound_preamp` is emitted only when the trim is positive, so it
-    # would add and remove a FILTER and force the ducked swap this path exists
-    # to avoid. The durable save realises any change across a swap that ducks
-    # anyway.
+    # `active_baseline_headroom`'s VALUE and be written in place — an
+    # instant, un-ducked, full-spectrum level step mid-drag. The durable save
+    # realises any change across a swap that ducks anyway.
     #
     # NOT frozen for the session, which would be the stronger claim: `settings`
     # is re-read above, so changing headroom_trim_db or match_loudness from the
@@ -2066,62 +2066,19 @@ async def _live_draft_profile(
     except AttributeError:
         loader = None
 
-    def _live_payload(
-        *,
-        status: str,
-        method: str,
-        current_epoch: str,
-        room_peq_count: int = 0,
-        active_config_path: str | None = None,
-    ) -> dict[str, Any]:
-        payload = _state_payload(
-            profile,
-            library_path=library_path,
-            include_library=library_path is not None,
-        )
-        payload.update(
-            {
-                "live_status": status,
-                "live_method": method,
-                "dsp_write_epoch": current_epoch,
-                "active_config_path": active_config_path,
-                "preserved_room_peqs": room_peq_count,
-                "sound_filter_count": sound_filter_count,
-            }
-        )
-        if status == "live":
-            payload.update(
-                {
-                    "audition_mode": "draft",
-                    "audition_profile": profile.to_dict(),
-                }
-            )
-        return payload
+    def _live_payload(*, status: str, current_epoch: str) -> dict[str, Any]:
+        return {"live_status": status, "dsp_write_epoch": current_epoch}
 
-    def _unavailable(
-        reason: str,
-        *,
-        current_epoch: str,
-        error: Exception | None = None,
-    ) -> dict[str, Any]:
+    if loader is None:
+        current_epoch = dsp_write_epoch()
         _log_live_draft_unavailable(
-            reason=reason,
+            reason="active_config_raw_unavailable",
             output_trim_db=output_trim_db,
             room_peq_count=0,
             sound_filter_count=sound_filter_count,
-            error=error,
+            error=None,
         )
-        return _live_payload(
-            status="unavailable",
-            method=reason,
-            current_epoch=current_epoch,
-        )
-
-    if loader is None:
-        return _unavailable(
-            "active_config_raw_unavailable",
-            current_epoch=dsp_write_epoch(),
-        )
+        return _live_payload(status="unavailable", current_epoch=current_epoch)
 
     async with dsp_writer_lock(config_path, source="sound_live_draft"):
         current_epoch = dsp_write_epoch()
@@ -2133,11 +2090,7 @@ async def _live_draft_profile(
                 expected_epoch=str(expected_dsp_write_epoch),
                 current_epoch=str(current_epoch),
             )
-            return _live_payload(
-                status="stale",
-                method="skipped_stale_epoch",
-                current_epoch=current_epoch,
-            )
+            return _live_payload(status="stale", current_epoch=current_epoch)
 
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
@@ -2155,12 +2108,10 @@ async def _live_draft_profile(
         method = plan.method
 
         try:
-            if plan.patch is None:
-                await loader(yaml, best_effort=False)
-            elif plan.patch:
-                await cam.patch_config(plan.patch, best_effort=False)
-            # else: the running graph already IS the wanted one. Writing it
-            # again would buy nothing and cost a ducked swap.
+            # Duck-or-not is decided in jasper.sound.live_edit; an unchanged
+            # graph is not written at all.
+            if method != "unchanged":
+                await loader(yaml, best_effort=False, duck=plan.duck)
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
                 reason=f"{method}_failed",
@@ -2169,13 +2120,7 @@ async def _live_draft_profile(
                 sound_filter_count=sound_filter_count,
                 error=e,
             )
-            return _live_payload(
-                status="unavailable",
-                method=f"{method}_failed",
-                current_epoch=current_epoch,
-                room_peq_count=result.room_peq_count,
-                active_config_path=current_path,
-            )
+            return _live_payload(status="unavailable", current_epoch=current_epoch)
 
         log_event(
             logger,
@@ -2192,13 +2137,7 @@ async def _live_draft_profile(
             active_anchor=str(current_path),
             epoch=str(current_epoch),
         )
-        return _live_payload(
-            status="live",
-            method=method,
-            current_epoch=current_epoch,
-            room_peq_count=result.room_peq_count,
-            active_config_path=current_path,
-        )
+        return _live_payload(status="live", current_epoch=current_epoch)
 
 
 async def _load_profile_config(
@@ -2645,6 +2584,37 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
         status=str(payload["state"].get("status")),
         preflight=str(payload["preflight"].get("status")),
         rollback_available=str(bool(payload["state"].get("rollback_available"))),
+    )
+    return payload
+
+
+def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
+    """Mint the AI-operator handoff prompt and the binding it was minted for.
+
+    Read-only and audio-free. Readiness comes from the baseline-profile
+    payload the page renders its active-profile card from, so the route can
+    never offer a handoff the card beside it hides.
+    """
+
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.tuning_handoff import build_tuning_handoff
+
+    design_draft = load_design_draft()
+    payload = build_tuning_handoff(
+        # Recompiled on the click rather than read off the page: a tab left
+        # open since before a declaration edit must not mint a handoff for a
+        # baseline that no longer stands.
+        baseline_profile=_active_speaker_baseline_profile_payload(
+            design_draft=design_draft
+        ),
+        design_draft=design_draft,
+    )
+    log_event(
+        logger,
+        "sound.active_speaker_tuning_handoff",
+        status=str(payload["status"]),
+        reason=str(payload["reason"]),
+        design_draft_revision=str(payload["binding"]["design_draft_revision"]),
     )
     return payload
 
@@ -4934,13 +4904,6 @@ def _active_speaker_transient_summed_level(
         clamp_test_level_dbfs,
     )
 
-    def _finite(value: Any) -> float | None:
-        try:
-            out = float(value)
-        except (TypeError, ValueError):
-            return None
-        return out if math.isfinite(out) else None
-
     current = _finite(
         (calibration_level.get("test_signal") or {}).get("requested_level_dbfs")
     )
@@ -5241,8 +5204,13 @@ def _active_speaker_summed_validation_active_conflict(
 def _active_speaker_baseline_profile_payload(
     *,
     write: bool = False,
+    design_draft: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return or compile the active-speaker baseline profile candidate."""
+    """Return or compile the active-speaker baseline profile candidate.
+
+    ``design_draft`` lets a caller that has already read the draft hand it in
+    rather than pay for a second read of the same file.
+    """
 
     from jasper.active_speaker.baseline_profile import (
         build_baseline_profile_candidate,
@@ -5252,7 +5220,8 @@ def _active_speaker_baseline_profile_payload(
     from jasper.active_speaker.measurement import load_measurement_state
 
     topology = load_output_topology()
-    design_draft = load_design_draft()
+    if design_draft is None:
+        design_draft = load_design_draft()
     preview = load_crossover_preview(current_design_draft=design_draft)
     measurements = load_measurement_state(topology)
     payload = build_baseline_profile_candidate(
@@ -5446,6 +5415,74 @@ async def _active_speaker_finish_commissioning_payload(
     return payload
 
 
+#: Read-only GET routes whose entire handler is "send this payload, or
+#: answer 502 under this event name". One dispatch in :func:`_make_handler`
+#: rather than one copy of the same try/except per route; a route that needs
+#: the handler's own state (the two commissioning views close over
+#: ``camilla_factory``) stays spelled out there. The event strings live HERE
+#: now, and the log-event drift pin reads them here. The builder is named,
+#: not captured: this module owns its payload builders, and a table holding
+#: the objects it had at import time would answer with a builder the module
+#: no longer has.
+_GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
+    "/output-topology": ("_output_topology_payload", "sound.output_topology"),
+    "/active-speaker/design-draft": (
+        "_active_speaker_design_draft_payload",
+        "sound.active_speaker_design_draft",
+    ),
+    "/active-speaker/crossover-preview": (
+        "_active_speaker_crossover_preview_payload",
+        "sound.active_speaker_crossover_preview",
+    ),
+    "/active-speaker/measurements": (
+        "_active_speaker_measurements_payload",
+        "sound.active_speaker_measurements",
+    ),
+    "/active-speaker/baseline-profile": (
+        "_active_speaker_baseline_profile_payload",
+        "sound.active_speaker_baseline_profile",
+    ),
+    "/active-speaker/tuning-handoff": (
+        "_active_speaker_tuning_handoff_payload",
+        "sound.active_speaker_tuning_handoff",
+    ),
+    "/active-speaker/environment": (
+        "_active_speaker_environment_payload",
+        "sound.active_speaker_environment",
+    ),
+    "/active-speaker/safe-playback": (
+        "_active_speaker_safe_playback_payload",
+        "sound.active_speaker_safe_playback",
+    ),
+    "/active-speaker/calibration-level": (
+        "_active_speaker_calibration_level_payload",
+        "sound.active_speaker_calibration_level",
+    ),
+    "/active-speaker/bringup-preflight": (
+        "_active_speaker_bringup_preflight_payload",
+        "sound.active_speaker_bringup_preflight",
+    ),
+    "/active-speaker/startup-load": (
+        "_active_speaker_startup_load_payload",
+        "sound.active_speaker_startup_load",
+    ),
+    "/active-speaker/staged-config": (
+        "_active_speaker_staged_config_payload",
+        "sound.active_speaker_staged_config",
+    ),
+    "/active-speaker/channel-identity": (
+        "_active_speaker_channel_identity_payload",
+        "sound.active_speaker_channel_identity",
+    ),
+}
+
+
+def _json_route_payload(builder: str) -> dict[str, Any]:
+    """Call one :data:`_GET_JSON_ROUTES` builder, resolved at call time."""
+    fn: Callable[[], dict[str, Any]] = getattr(sys.modules[__name__], builder)
+    return fn()
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -5477,6 +5514,7 @@ def _make_handler(
                 "/active-speaker/crossover-preview",
                 "/active-speaker/measurements",
                 "/active-speaker/baseline-profile",
+                "/active-speaker/tuning-handoff",
                 "/active-speaker/environment",
                 "/active-speaker/safe-playback",
                 "/active-speaker/calibration-level",
@@ -5509,94 +5547,14 @@ def _make_handler(
                     )
                 )
                 return
-            if path == "/output-topology":
+            json_route = _GET_JSON_ROUTES.get(path)
+            if json_route is not None:
+                builder, event = json_route
                 try:
-                    self._send_json(_output_topology_payload())
+                    self._send_json(_json_route_payload(builder))
                 except Exception as e:  # noqa: BLE001
                     send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.output_topology",
-                    )
-                return
-            if path == "/active-speaker/design-draft":
-                try:
-                    self._send_json(_active_speaker_design_draft_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_design_draft",
-                    )
-                return
-            if path == "/active-speaker/crossover-preview":
-                try:
-                    self._send_json(_active_speaker_crossover_preview_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_crossover_preview",
-                    )
-                return
-            if path == "/active-speaker/measurements":
-                try:
-                    self._send_json(_active_speaker_measurements_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_measurements",
-                    )
-                return
-            if path == "/active-speaker/baseline-profile":
-                try:
-                    self._send_json(_active_speaker_baseline_profile_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_baseline_profile",
-                    )
-                return
-            if path == "/active-speaker/environment":
-                try:
-                    self._send_json(_active_speaker_environment_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_environment",
-                    )
-                return
-            if path == "/active-speaker/safe-playback":
-                try:
-                    self._send_json(_active_speaker_safe_playback_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_safe_playback",
-                    )
-                return
-            if path == "/active-speaker/calibration-level":
-                try:
-                    self._send_json(_active_speaker_calibration_level_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_calibration_level",
-                    )
-                return
-            if path == "/active-speaker/bringup-preflight":
-                try:
-                    self._send_json(_active_speaker_bringup_preflight_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_bringup_preflight",
-                    )
-                return
-            if path == "/active-speaker/startup-load":
-                try:
-                    self._send_json(_active_speaker_startup_load_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_startup_load",
+                        self._send_json, e, logger=logger, event=event,
                     )
                 return
             if path == "/active-speaker/commission-state":
@@ -5627,24 +5585,6 @@ def _make_handler(
                     send_route_failure(
                         self._send_json, e, logger=logger,
                         event="sound.active_speaker_commissioning_view",
-                    )
-                return
-            if path == "/active-speaker/staged-config":
-                try:
-                    self._send_json(_active_speaker_staged_config_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_staged_config",
-                    )
-                return
-            if path == "/active-speaker/channel-identity":
-                try:
-                    self._send_json(_active_speaker_channel_identity_payload())
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_channel_identity",
                     )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -6231,7 +6171,6 @@ def _make_handler(
                             _live_draft_profile(
                                 profile,
                                 expected_dsp_write_epoch=expected_epoch,
-                                library_path=library_path,
                                 config_dir=config_dir,
                                 profile_path=profile_path,
                                 camilla_factory=camilla_factory,

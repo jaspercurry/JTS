@@ -231,6 +231,9 @@ typedef struct {
     // alsa-lib's rw loop (which only poll-waits at avail == 0) is paced instead
     // of spinning an RT thread into the RLIMIT_RTTIME SIGKILL. Should stay 0.
     uint64_t transfer_starved_naps;
+    // Prepare-time mmap-area scrubs that failed (see jts_ring_scrub_mmap_area);
+    // logged at the first one per PCM. Should stay 0.
+    uint64_t scrub_failures;
     // Wall-clock pacing for the writer-dead silence: a new period is armed only
     // after one period of REAL time has elapsed since the last (CLOCK_MONOTONIC),
     // so silence flows at ~48 kHz instead of as-fast-as-the-app-asks. Without this
@@ -323,6 +326,47 @@ static void pace_log_edges(jts_ring_pcm_t *p, uint64_t now_ns) {
 
 // ---- ioplug callbacks ----
 
+// Zero alsa-lib's emulated mmap area. With mmap_rw=0 it is alsa-lib's own
+// malloc, never zeroed at allocation or prepare, and a rate-converting plug
+// chain commits whole slave periods with an unwritten head (rate_samplerate.c
+// right-aligns a short conversion). After the first prepare that head is
+// uninitialised process heap; after a flush's re-prepare it is the previous
+// session's samples. See #3443.
+//
+// The PREPARED assertion is load-bearing on EVERY prepare, not just the first:
+// snd_pcm_mmap_begin gates on P_STATE_RUNNABLE, ioplug carries OPEN into the
+// first prepare and SETUP after every drop/drain (a flush is drop+prepare), and
+// only assigns PREPARED once this callback has returned. Without it the scrub
+// returns -EBADFD on every non-XRUN prepare and the leak is back.
+static void jts_ring_scrub_mmap_area(snd_pcm_ioplug_t *io) {
+    // Only MMAP access has an alsa-lib-authored area: with RW access and
+    // mmap_rw=0 alsa-lib never maps one, so there is nothing to scrub and
+    // nothing that can leak.
+    if (io->access != SND_PCM_ACCESS_MMAP_INTERLEAVED)
+        return;
+    snd_pcm_ioplug_set_state(io, SND_PCM_STATE_PREPARED);
+    const snd_pcm_channel_area_t *areas;
+    snd_pcm_uframes_t offset;
+    snd_pcm_uframes_t frames = io->buffer_size;
+    // Re-entering alsa-lib from our own prepare: safe because ioplug unlocks
+    // the pcm around the callback and its mutex is recursive. Do NOT precede
+    // this with snd_pcm_avail_update — that runs our pointer callback before
+    // ptr_state is reset for the new session.
+    int rc = snd_pcm_mmap_begin(io->pcm, &areas, &offset, &frames);
+    if (rc == 0) {
+        snd_pcm_areas_silence(areas, offset, io->channels, frames, io->format);
+        return;
+    }
+    // A failed scrub must not fail the prepare (that is a silent session), but
+    // it must not be silent either: this is the path the #3443 leak lives on.
+    jts_ring_pcm_t *p = io->private_data;
+    if (++p->scrub_failures == 1) {
+        SNDERR("jts_ring: playback mmap-area scrub failed rc=%d on %s — "
+               "pre-audio heap leak (#3443) is unguarded on this lane",
+               rc, p->path);
+    }
+}
+
 static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
     if (!p->opened) {
@@ -352,6 +396,9 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     // can transfer while still PREPARED, and an unarmed bucket does not pace it.
     p->stage_frames = 0;
     p->appl_frames = 0;
+    // A converting plug chain re-primes on every prepare (a flush is
+    // drop+prepare); zero the area before its first commit.
+    jts_ring_scrub_mmap_area(io);
     jts_ring_pointer_prepare(&p->ptr_state, p->pace_nominal,
                              io->stream == SND_PCM_STREAM_PLAYBACK,
                              jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
@@ -1006,11 +1053,15 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     snd_pcm_ioplug_t *io = &p->io;
     int rc;
 
-    // Access modes. PLAYBACK advertises RW + MMAP: the emulated mmap area a
-    // playback app writes into is APP-authored, so alsa-lib's mmap-commit path
-    // only ever hands our `transfer` the frames the app itself wrote — no stale
-    // bytes can reach the ring. CAPTURE advertises RW ONLY. With mmap_rw=0 the
-    // capture mmap area is filled by OUR `transfer`, and this transfer legitimately
+    // Access modes. PLAYBACK advertises RW + MMAP, and MMAP must stay: a rate
+    // converter demands an mmap-capable slave (pcm_rate.c forces
+    // SND_PCM_ACCBIT_MMAP), so withdrawing it either fails hw_params (a client
+    // that pins RW and converts) or makes `plug` insert mmap_emul, whose own
+    // unzeroed buffer reaches the ring over writei where no scrub can see it —
+    // the leak would move, not close. The stale bytes the emulated area can
+    // carry are handled at prepare — see jts_ring_scrub_mmap_area (#3443).
+    // CAPTURE advertises RW ONLY. With mmap_rw=0 the capture mmap area is
+    // filled by OUR `transfer`, and this transfer legitimately
     // returns SHORT (delivered < requested) on the writer-alive-empty pacing block.
     // alsa-lib's ioplug mmap-capture avail/commit accounting can expose the mmap
     // region beyond `delivered` — stale/uninitialised bytes camilla would read as

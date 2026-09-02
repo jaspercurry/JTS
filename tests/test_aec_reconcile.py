@@ -1173,7 +1173,8 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
 
     That path leaves JASPER_MIC_DEVICE on the AEC bridge's udp: transport while
     stop_disable_aec has just stopped the bridge. Starting voice there binds an
-    unfed UDP socket and watchdog-restarts into StartLimitAction=reboot.
+    unfed UDP socket and watchdog-restarts forever (park_managed_xvf owns why
+    that loop never escalates to a reboot).
 
     Reached here through the kept park — no eligible capture device at all, not
     a firmware or DAC disposition, which now disclose and keep hearing.
@@ -2712,31 +2713,119 @@ def test_live_commission_marker_arm_reason_pass_arms_reference_vector_only(
     ]
 
 
-def test_reconcile_marks_voice_input_absent_when_no_mic(tmp_path: Path) -> None:
-    # No card present at all + a stale udp device -> the no-candidate-mic
-    # park path. Voice must be gated off so it can't boot-start and
-    # crash-loop into StartLimitAction=reboot.
-    _write_env(tmp_path, "udp:9876")
-    _write_mode(tmp_path)
-
-    result = _run_reconcile(tmp_path, "--reason", "test")
-
-    assert result.returncode == 0, result.stderr
-    assert _marker(tmp_path).exists(), result.stderr
-    assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
-
-
-def test_reconcile_marks_voice_input_absent_when_aec_disabled_no_mic(
+def _stage_route(
     tmp_path: Path,
+    *,
+    mic: str = "udp:9876",
+    mode: str | None = "auto",
+    profile: str | None = None,
+    channels: int | None = None,
+    bonded: bool = False,
 ) -> None:
-    # The AEC-disabled branch has its own no-mic stop path; it must mark too.
-    _write_env(tmp_path, "udp:9876")
-    _write_mode(tmp_path, mode="disabled")
+    """Put tmp_path into the pass-start state one reconciler route reads."""
+    _write_env(tmp_path, mic)
+    if mode is not None:
+        _write_mode(tmp_path, mode=mode)
+    if profile is not None:
+        _write_profile_mode(tmp_path, profile)
+    if channels is not None:
+        _write_card(tmp_path, channels=channels)
+    if bonded:
+        (tmp_path / "grouping-voice.env").write_text(
+            f"{VOICE_PARK_ENV}=1\n", encoding="utf-8"
+        )
 
-    result = _run_reconcile(tmp_path, "--reason", "test")
+
+# Every route that can take jasper-aec-bridge down, with the pass-start state
+# that reaches it and whether it ends with voice gated off.
+_BRIDGE_STOP_ROUTES: dict[str, tuple[dict[str, object], dict[str, str], bool]] = {
+    "no_local_mic": ({}, {}, True),
+    "aec_disabled_no_mic": ({"mode": "disabled"}, {}, True),
+    "custom_mic": ({"mic": "hw:9,0"}, {}, False),  # not an owned value
+    "bonded_follower": ({"channels": 6, "bonded": True}, {}, False),
+    # No interpreter for the mic-profile resolver, so no eligible capture
+    # device can be named: managed_xvf_policy_applies with a park reason.
+    "unresolvable_managed_xvf": (
+        {"mode": None, "profile": "xvf_chip_aec"},
+        {"JASPER_MIC_PROFILE_PYTHON": "/nonexistent/python3"},
+        True,
+    ),
+    "two_channel_xvf": ({"channels": 2}, {}, False),
+    "six_channel_xvf": ({"mic": "Array", "channels": 6}, {}, False),
+}
+
+
+@pytest.mark.parametrize("route", list(_BRIDGE_STOP_ROUTES), ids=str)
+def test_no_route_stops_the_bridge_before_it_gates_voice(
+    tmp_path: Path, route: str
+) -> None:
+    """One pin for every route that can take jasper-aec-bridge down.
+
+    Stopping the bridge kills the udp: carrier JASPER_MIC_DEVICE may still
+    name, and an unfed udp: socket opens fine — so the daemon's exit-66 park
+    never fires and only the ConditionPathExists marker keeps voice from
+    starting into a watchdog restart loop. Any pass that writes the marker at
+    all must therefore have written it by the time the first bridge stop goes
+    out. Routes that never write it (a usable mic, or a role park that is not
+    a mic decision) are exempt by construction, not by ordering.
+    """
+    staging, extra_env, parks = _BRIDGE_STOP_ROUTES[route]
+    _stage_route(tmp_path, **staging)  # type: ignore[arg-type]
+    witness, log = _fake_systemctl(
+        tmp_path, name="witness", witness="JASPER_VOICE_INPUT_ABSENT_MARKER"
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SYSTEMCTL": str(witness),
+            "JASPER_SYSTEMCTL_LOG": str(log),
+            **extra_env,
+        },
+    )
 
     assert result.returncode == 0, result.stderr
-    assert _marker(tmp_path).exists(), result.stderr
+    assert _marker(tmp_path).exists() is parks, result.stderr
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    gated = [i for i, line in enumerate(lines) if line.startswith("present=1 ")]
+    bridge_stops = [
+        i
+        for i, line in enumerate(lines)
+        if line.split()[1:2] == ["stop"]
+        and "jasper-aec-bridge.service" in line.split()[2:]
+    ]
+    # Every route in the table reaches a bridge stop; a staging change that
+    # stopped reaching one would otherwise pass this test vacuously.
+    assert bridge_stops, lines
+    if parks:
+        assert gated and gated[0] <= bridge_stops[0], lines
+    elif gated:
+        # A route that marks only for the length of its own rebuild (and
+        # clears again before it ends) owes the same ordering.
+        assert gated[0] <= bridge_stops[0], lines
+
+
+def test_a_failed_marker_write_still_parks_voice(tmp_path: Path) -> None:
+    """The gate's own failure mode may not fall back to a guard that cannot
+    fire: with the marker unwritable, the unit is disabled instead."""
+    _stage_route(tmp_path)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_VOICE_INPUT_ABSENT_MARKER": str(
+                tmp_path / "absent-dir" / "voice-input-absent"
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _systemctl_log(tmp_path).splitlines()
+    assert "disable jasper-voice.service" in commands
 
 
 def test_reconcile_clears_marker_when_6ch_present(tmp_path: Path) -> None:
@@ -2758,6 +2847,8 @@ def test_reconcile_clears_marker_for_custom_mic(tmp_path: Path) -> None:
     # Custom JASPER_MIC_DEVICE: the reconciler leaves voice config alone and
     # must NOT gate the operator's device — clear any stale marker so voice
     # can start and try it (the daemon's exit-66 park is the safety net).
+    # This route never restarts voice, so it is also where the `enable` half
+    # of the gate has to be, to lift a `disable` an earlier failed mark left.
     _write_env(tmp_path, "hw:9,0")  # not an owned value
     _write_mode(tmp_path)
     _marker(tmp_path).write_text("reason=stale\n")
@@ -2765,8 +2856,8 @@ def test_reconcile_clears_marker_for_custom_mic(tmp_path: Path) -> None:
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "leaving voice config untouched" in result.stderr
     assert not _marker(tmp_path).exists(), result.stderr
+    assert "enable jasper-voice.service" in _systemctl_log(tmp_path).splitlines()
 
 
 def test_reconcile_check_only_does_not_touch_marker(tmp_path: Path) -> None:

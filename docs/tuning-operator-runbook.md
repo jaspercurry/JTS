@@ -67,11 +67,14 @@ while the result is still getting flatter.
   `crossover_envelope.build_crossover_envelope_logged`.
 - **Nothing applies inside a capture session.** A session produces a proposal;
   the household applies it from the `review` screen.
-- **One candidate per round, today.** A round measures and grades a *single*
-  staged candidate — the runner has no `--candidates` flag. The N-candidate
-  tournament is the plan's Wave 3 (tickets 3.4, 3.5). Until it lands a bake-off
-  is N sequential rounds, and republish is how you get a past candidate back
-  without re-measuring it.
+- **The candidate cycle is a round.** `jasper-angle-capture stage --program
+  tournament --size express|full --candidates <fingerprints>` cycles N banked
+  candidates at each held pose as adjacent stops, so one mic move per pose
+  answers all of them. Only the alignment axes a candidate implies (polarity,
+  delay, level match) play through the per-driver MEASURE graph; a candidate
+  carrying linearization EQ refuses `walk_candidate_not_measurable`. The
+  evidence packet's `candidates` block reports which candidates were measured
+  at which poses; ranking them is not built.
 - **A crossover corner is declared and executed, never measured-searched**
   (invariant 2). `crossover_v2/{search,objective,candidate_space}.py`,
   `fc_sweep`'s sweep half and `active_speaker/fc_selector.py` were cancelled
@@ -125,12 +128,24 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
    single-slot mailbox at
    `/var/lib/jasper/active_speaker_crossover_v2_prescription.json`, consumed on
    take. One slot, last write wins, logged.
-6. **Measure.** `scripts/run-crossover-round.py` runs one round end to end
-   (stage · walk · open · await · bank). Hand the human the measurement URL,
-   hostname-derived; they move the mic pose to pose.
+6. **Measure.** *(laptop)* `scripts/run-crossover-round.py` runs one round end
+   to end (stage · walk · open · await · bank). Hand the human the measurement
+   URL, hostname-derived; they move the mic pose to pose.
+   *(on the box)* `jasper-round open --tier <tier>` then `jasper-round wait` —
+   the same two wizard verbs, over the same transport, for when there is no
+   laptop on the network. It stages no walk (that stays `jasper-angle-capture`)
+   and banks nothing: `jasper-round-bank <session-dir>` banks the finished
+   session into the campaign home
+   (`/var/lib/jasper/active_speaker/campaigns/<round-id>/`), where it outlives
+   session retention and `jasper-round-views` reads it. That home is
+   operator-pruned — nothing evicts a banked round; `jasper-doctor` discloses
+   the two stores' size.
 7. **Grade.** Read the round's grading and compose the final prescription.
-8. **Apply.** `scripts/run-crossover-round.py --apply <fingerprint>` — a
-   *second* invocation. A measurement run never applies.
+8. **Apply.** *(laptop)* `scripts/run-crossover-round.py --apply <fingerprint>`
+   — a *second* invocation. A measurement run never applies.
+   *(on the box)* `jasper-round apply --expected-fingerprint <fingerprint>`,
+   the same gate: a fingerprint that is not the live one is refused before
+   anything is sent.
 9. **Verify.** A verify round, then check the stopping rule (plan, "Measurement
    program constants"). Done, or iterate.
 
@@ -448,13 +463,18 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-arm-walk` | Serve a crossover-v2 measurement session's position gate with the lab turntable arm: poll, move, settle, report the microphone in place. Parks the arm at 0 deg on every exit. | measured | `jasper/cli/arm_walk.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|spec-sweep\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, the gate sweep read onto the spec verdict, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
 | `jasper-forward-model predict\|verify-delta` | Predict a candidate's summed response from banked per-driver solos. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/forward_model.py` |
+| `jasper-gate-sweep` | Sweep a banked round's gate window and report, per spec band and declared pose, what moves with the window. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/gate_sweep.py` |
+| `jasper-close-reference distance\|compare` | Correct a close capture to the far distance and say, band by band, how much of the far read was the room. Computes only; plays nothing and opens no device. | advisory (plays nothing) | `jasper/cli/close_reference.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
+| `jasper-declare-geometry set\|show` | Declare measurement rig geometry (speaker/mic heights, distance, optional ceiling) so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires -- see issue #3502. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
 <!-- END GENERATED TOOL MENU -->
 
 Regenerate after touching a tuning CLI's `prog`, `description`, subcommands,
@@ -482,23 +502,30 @@ surfaces every tuning tool sits beside:
 | `jasper-doctor` | health and config drift, including correction / audio-runtime / active-speaker checks | advisory | `--json` for a parseable report; no per-check selector |
 | `GET :8780/state` | cross-daemon snapshot: voice, volume, sources, `audio_graph`, `active_speaker_setup`, `sound_profile.last_dsp_apply` | advisory | per-section fail-soft; **no round section** — round evidence is file-based |
 
-**The program menu is two live pieces, not a named menu.** The **walk**
+**The program menu is three live pieces.** The **walk**
 (`jasper-angle-capture plan | stage | withdraw` declares one angle walk and banks
 it for the next session; `plan` resolves and prints without writing, `stage`
-writes, `withdraw` clears) and the **poses**
+writes, `withdraw` clears), the **poses**
 (`scripts/run-crossover-round.py --per-position N` takes N captures at one pose,
 so one mic movement answers more questions than one capture can;
 which pose each take was measured at is derived from the bank into
-`position_cycle.json`). Multiple DSP *configs* per position has a door but no
+`position_cycle.json`), and the **programs** — `jasper-angle-capture
+stage --program baseline --size express|full` (or `--program tournament
+--size express|full --candidates fp1,fp2`, or `--program spot --azimuth N
+[--elevation M]`) walks a named pose table from
+[`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py)
+rather than geometry you invented; `--angles` remains the operator escape hatch.
+The price is `price.mic_moves` — distinct poses, i.e. how many times somebody
+moves the microphone — printed beside the capture count and the session
+ceiling. Multiple DSP *configs* per position has a door but no
 wiring: republish-then-apply reaches a named prior config between takes, and
 the open part is sequencing — holding a pose's next capture until the apply has
 landed. That is a design to write, not a refusal to remove, and the
 `awaiting_apply` hold is explicitly not the seam for it (its own vocabulary says
 "no new design may depend on it"). **Verify** is a stage of the round runner,
 hitting
-`POST /crossover/v2/verify`. Where it is headed: named, versioned pose lists as
-data (`baseline` / `tournament` / `verify` / `spot`), selected through a staged
-request with bounded parameters — never free-form geometry you invent. Pose
+`POST /crossover/v2/verify`, not a row in the programs registry above.
+Still ahead: versioning these pose lists. Pose
 counts, anchor-relative drive level, escalation, the distance rule, the boost
 probe and the stopping rule all live in the plan's **"Measurement program
 constants"** section, their single source of truth; ticket 3.7 turns them into
@@ -641,6 +668,11 @@ own numbering, so resolve a code against the tool that produced it.
 | `jasper-arm-walk` | `0`, `3`–`15`, plus `129` / `130` / `143` (parked by SIGHUP / SIGINT / SIGTERM) | `EXIT_NAMES` in `jasper/active_speaker/arm_walk.py` |
 | `jasper-crossover-prescriber` | `0`–`3` | `EXIT_OK` / `EXIT_EVIDENCE_UNREADABLE` / `EXIT_REFUSED` / `EXIT_STAGE_FAILED` |
 | `scripts/bank-crossover-round.sh` | `0`, `3`, `4` | its own header block |
+| `jasper-gate-sweep` | `0`–`2` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_INPUT` in `jasper/cli/gate_sweep.py` |
+| `jasper-close-reference` | `0`–`2` | same three names in `jasper/cli/close_reference.py` |
+| `jasper-declare-geometry` | `0`–`3` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_NOT_FOUND` / `EXIT_WRITE_FAILED` in `jasper/cli/declare_geometry.py` |
+| `jasper-classify-features` | `0`–`3` (`1`/`2` inverted vs. the other tools here) | `EXIT_OK` / `EXIT_ROUND_UNREADABLE` / `EXIT_REFUSED` / `EXIT_WRITE_FAILED` in `jasper/cli/classify_features.py` |
+| `jasper-round-views` | `0`, `1` | `EXIT_OK` / `EXIT_ERROR` in `jasper/cli/round_views.py` |
 
 Three traps worth knowing before you branch on a number:
 
@@ -788,19 +820,40 @@ Four outcomes, in this exact precedence:
 |---|---|
 | `egd_verdict = NON-MIN-PHASE` | `interference-barred` |
 | else `gate_verdict = MOVED` | `room` |
-| else `egd_verdict = MIN-PHASE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
+| else `egd_verdict = MIN-PHASE` **and** `gate_verdict = STABLE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
 | else | `ambiguous` |
 
-`room` is decided by the **gate ladder**, not by moving the microphone. And
-`GATE_MOVED` has **two independent routes** — either one alone sets it, at any
-gate in the ladder: **excess retention loss below slack**
-(`excess_loss_vs_null < -slack`, slack being
-`max(RETENTION_SLACK, 3 × standard error)`, with **no resolved-gate guard**, so
-it fires even at a gate that could not resolve the feature) and **centre shift**
-(`|centre_shift_oct| > CENTRE_SHIFT_OCT`, 1/24 octave, **at a gate that resolved
-it**). So a `room` verdict sitting beside a small centre shift is not the
-classifier contradicting itself — the retention route fired. A loss between
-`-0.5 × slack` and `-slack` sets `tension` instead, which does not classify.
+**Both tests must have answered before a filter is vouched for.** A
+`gate_verdict` of `ambiguous` means the window ladder did not run — the round
+had one capture, or its sidecars bank no radiated band — and that is not
+`STABLE`, which is a finding. `gate_notes` names the reason.
+
+`room` is decided by the **window ladder**, not by moving the microphone, and
+the ladder is the gate-sweep engine's — verdict included. The row's
+`gate_verdict` is that engine's `window_verdict` translated into this table's
+words, and `gate_sensitivity.window_verdict_reasons` names which route fired
+("Reading a gate sweep" below is the engine's own guide, bars and all —
+#3557). `MOVED` has **three independent routes**, any one alone:
+
+- **across-pose sigma that GROWS** with the window, between the shortest and
+  longest resolution-valid rung (why growth and not size:
+  [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)). The
+  ratio is **not read at all** below the sigma floor — repeat takes at one pose
+  have no across-pose disagreement, and the ratio there is their own capture
+  noise; `sigma_growth_readable` says so.
+- **a corrected depth change**, published per row as `excess_loss_vs_null`
+  against `gate_slack`. It is the depth change across the ladder with the
+  WINDOW's own share subtracted (the fitted notch is synthesized, injected
+  into a real capture IR and re-read through the same rungs), so it is a
+  smaller quantity than a raw swing and not comparable with one. A delta over
+  half the slack that does not reach it sets `tension` instead, which does not
+  classify.
+- **a centre that WALKS** between the two rungs. This is the one the other two
+  are blind to: a window that re-makes a feature at a different frequency has
+  moved it even when the depth it reads there barely changes.
+
+So a `room` verdict beside a flat sigma ratio is not the classifier
+contradicting itself — read `window_verdict_reasons` for which route fired.
 
 **Discriminator 2 — position invariance across the capture cloud**
 ([`interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py),
@@ -916,6 +969,47 @@ nothing on its own; what is published is its distance from the direct arrival. I
 is `null` — never `0.0` — on a capture whose window was capped at the search
 ceiling.
 
+**`entanglement_floor_hz` is the ROOM's floor, and it is not the trusted
+floor.** Both ride the same disclosure; what makes them two different numbers
+is "There are TWO floors, and the lower one is the room's" in
+[`tuning-methodology.md`](tuning-methodology.md).
+
+**Read `entanglement_floor_source` FIRST, and read `unknown` as unknown.**
+`measured_reflection` means the gate's own reflection timed the bounce.
+`declared_geometry` means an operator handed over the rig's dimensions — a
+number that is only as good as the tape measure, and never a measurement.
+`unknown` means neither was available and `entanglement_floor_hz` is `null`;
+it is the answer you should expect on a rig whose first bounce lands while the
+direct sound is still decaying (#3502). Where the floor IS known, each spec
+band publishes `room_entangled_below_hz` — the top of its own
+entangled sub-span, `null` when the band sits wholly above the floor. The band
+still grades and still passes or fails exactly as it did; what the field adds is
+the reservation on how far up that verdict is a claim about the speaker.
+
+**Room or speaker, at the band's own worst bin.** Run
+
+```
+jasper-round-views spec-sweep <round-dir>
+```
+
+and the round's own graded verdict comes back with seven more fields per band
+and one on the report itself, written to
+`<round-dir>/spec_gate_sensitivity.json` (`--rungs-ms` sets the ladder, `--out`
+moves the file, `-` prints it). All eight are disclosure — no grade moves — and
+every one is `null` on a report nothing stamped.
+
+| Field | What it says |
+|---|---|
+| `sigma_growth_ratio`, `gate_sensitivity_db` | same discriminator as `jasper-gate-sweep`'s `sensitivity` block — see "Reading a gate sweep" below, not restated here. |
+| `n_valid_rungs` | how many ladder rungs were resolution-valid at that bin — the denominator behind the two above. Present even when they are `null`. |
+| `gate_sensitivity_note` | why there is no number. **Read this first.** A `not_swept_` prefix means the ladder never ran (`not_swept_single_pose`, `not_swept_band_not_evaluable`, `not_swept_captures_unreadable`, `not_swept_bin_outside_analysis_grid`); a bare slug is the ladder's own refusal after running (`insufficient_valid_rungs`, `short_rung_sigma_is_zero`). Not measured is not the same as measured and inconclusive. |
+| `gate_sensitivity_detail` | beside a `not_swept_single_pose` / `not_swept_captures_unreadable` note only: the `RoundCapturesRefused` this round hit — `reason` plus its own evidence — so what was actually missing survives the bucket slug. `null` otherwise, swept or not. |
+| `gate_window_verdict`, `gate_window_verdict_reasons` | this band's own `window_verdict` / `window_verdict_reasons`, stamped at the same worst bin — see "Reading a gate sweep" below, not restated here. |
+| `gate_sweep_frame` | *(on the report)* the window shape, ladder, smoothing, grid and resolution bars every number above is stated in. One capture and one feature read a different depth under each defensible frame, so a sensitivity quoted without this one is the frame's number, not the room's. |
+
+Only `jasper-gate-sweep --at-hz <bin>` still answers for a bin the verdict did
+not flag; the flagged one is already on the report.
+
 **The reflector path is the ladder's tau times the speed of sound.** The
 `reflections` block publishes `reflector_path_distance_m` alongside the
 `tau_ladder_us` it converted and the `speed_of_sound_m_s` it used, so the
@@ -932,9 +1026,211 @@ is `null_registry.ladder_arrival_gap`). An absent block refuses by name — no
 fitted ladder means `tau_ladder_us` is the 0.0 sentinel, and 0.0 metres would say
 the reflector is at the microphone. Do not read the absence as a near reflector.
 
+### Reading a gate sweep
+
+`jasper-gate-sweep <round_dir>` deconvolves every summed capture in a banked
+round, gates each one at a ladder of window lengths (`--rungs-ms`, default
+`3 4 5 7 9 12 20`), and publishes what moved with the window. It plays nothing
+and writes only its report — `<round_dir>/gate_sweep.json` unless `--out` says
+otherwise, so give `--out` a path of your own and a banked round stays
+untouched. Exit codes are the contract: `0` swept, `1` refused, `2` the round
+could not be read. Each stderr line ends with that row's `window_verdict` and
+the routes that produced it, so the headline is readable without opening the
+JSON. When to reach for it at all, and what its numbers license, are
+[`tuning-methodology.md`](tuning-methodology.md) §6a's.
+
+**Read `frame` before any number.** One capture and one feature read a
+materially different depth under each defensible frame, so the report states
+its own: window shape and taper, the rungs, the smoothing and detrend
+fractions, the analysis grid
+(200–20000 Hz, 1/48 octave), the FFT length, the resolution bars in cycles, and
+the `reference` policy. That reference is **one constant per capture** taken
+from 2500–8000 Hz at the 7 ms rung and applied to every rung, and it is
+deliberately not the feature classifier's own 400–8000 Hz per-rung median,
+which its primary window and every `depth_db` still use: a reference must not
+drift with the thing it is referencing. **A dB in this report is stated against
+that constant, so it is not a spec-table dB and not a classification row's
+`depth_db`.** What travels between instruments is a ratio. The one exception is
+a classification row's `gate_rungs` / `gate_sensitivity`, which ARE this
+report's numbers — the classifier runs this engine for its window verdict
+rather than a ladder of its own — so those two blocks share this frame exactly.
+
+| Block | What it holds |
+|---|---|
+| `poses[]` | one row per capture: `pose_key` (the full declared azimuth/elevation/distance triple, **never** a seat index — #3503), `capture_id`, `phase`, `program_sha256_12`, `direct_peak_ms`, `reference_const_db`, `radiated_band_hz` |
+| `bands[]` | one row per `SPEC_BANDS` band, read at that band's own worst bin |
+| `features[]` | one row per `--at-hz`, read the same way |
+| `sigma_map` | `grid_hz` plus `sigma_db_by_rung` — the whole across-pose σ surface, so any bin at any rung pair is a subtraction away without re-running |
+
+**Capture-to-program binding is by content hash**, which is what
+`program_sha256_12` records. The sidecar's declared stimulus phase is never
+consulted: it is mislabelled on five of six captures of the round this
+instrument was built from (#3504), and a sweep bound by it would be reading the
+wrong stimulus.
+
+A band row and a feature row carry the same reading fields:
+
+| Field | Meaning |
+|---|---|
+| `bin_hz` | the analysis-grid bin every number below was read at. On a band row it is published as `worst_bin_hz` — the band's **deepest** median-detrended bin at the longest rung, which is not in general its most window-divergent one |
+| `requested_hz` | features only: what you asked for, before snapping to `bin_hz` |
+| `band_hz` | features only: the spec band the snapped bin falls in, `null` outside the table |
+| `cycles_by_rung` | cycles of this bin inside the window, `bin_hz × rung_ms / 1000` — the currency the resolution bars are set in |
+| `resolution_by_rung` | `invalid` (< 2.5 cycles, the gate's own trusted floor read as cycles), `grey` (< 5), `ok`. Flags on the table; only `invalid` bounds the headline |
+| `sigma_db_by_rung` | across-pose σ at this bin, per rung — the discriminator's raw material |
+| `valid_rungs_ms` / `n_valid_rungs` | the rungs the headline may span. Under two, there is no headline |
+| `poses[]` | that bin's `value_db_by_rung` and `detrended_db_by_rung` per pose, labelled with `pose_key`. Who that pose IS does not vary with the bin, so it is in the report's own `poses[]` block, once — **in the same order**, which is the join: a round whose captures declare no pose has one `pose_key` on all of them |
+| `band_mean_sigma_db_by_rung` | bands only: mean σ over every graded bin at each rung, including bins below their own resolution floor at the short rungs. **No ratio is published for it** — a ratio over hundreds of bins is set by its smallest denominator, not by the room |
+| `window_verdict` | `stable`, `moved` or `unresolved` — the engine's own room/speaker call for this bin. `unresolved` is the ladder not answering, never a pass |
+| `window_verdict_reasons` | which routes fired (`sigma_growth`, `depth_delta`, `centre_shift`); empty on `stable`; the `sensitivity_null_reason` on `unresolved` |
+
+`sensitivity` is the headline, `null` with a named `sensitivity_null_reason`
+whenever it cannot be formed:
+
+| Field | Meaning |
+|---|---|
+| `shortest_valid_rung_ms` / `longest_valid_rung_ms` | the span the headline is over — **resolution-valid rungs only**, so it is often not 3→20 ms |
+| `sigma_growth_ratio` | σ at the longest valid rung over σ at the shortest. **≥ 2.0 is `moved`** (measured: the features the room owns read 3.6–5.5×, directivity 0.94–1.4×) |
+| `sigma_growth_readable` | whether the ratio was read at all. `false` below **0.2 dB** of σ at the long rung — repeat takes at one pose have no across-pose disagreement, and the ratio there is their own capture noise. The floor is on the LONG rung deliberately: a room feature is exactly a tiny short-rung σ that grows |
+| `raw_delta_db` | median detrended level at the long rung minus at the short one |
+| `bias_delta_db` | what the WINDOW alone does to a feature of this shape, from a notch fitted across poses, synthesized, injected into this round's own capture IR and re-read through the same two rungs |
+| `corrected_delta_db` | `raw_delta_db − bias_delta_db`. **This is the delta to read**; the raw one conflates the window with the room, and the window's bias is not small and never vanishes. **Past ±0.5 dB is `moved`** — a smaller quantity than a raw swing, and not comparable with one |
+| `centre_shift_oct` | `log2` of the long-rung fitted centre over the short-rung one, with both in `centre_hz_by_rung`. **Past ±1/24 octave is `moved`**: a window that re-makes the feature at a different frequency has moved it, which the two depth routes can miss entirely |
+| `bias_delta_synthetic_host_db` | the same bias through a bare-impulse host. It corrects nothing — it discloses whether the real host was still additive at this depth |
+| `bias_delta_narrow_q_db` | the same bias off a notch of the same depth at 1.5× the fitted Q. Also disclosure: how much of the correction the width fit is worth |
+| `null_model` | the fit behind the correction: `centre_hz`, `depth_db`, `q`, `host_capture_id`, and what the model read at each of the two rungs (`read_db_by_rung`, `synthetic_host_read_db_by_rung`) |
+| `null_model.per_pose_centre_hz` / `per_pose_depth_db` / `per_pose_q` | the same three numbers at every pose, in pose order — the median above is taken over exactly these. Disclosure only: nothing reads them back, and they are there so a median that hid a pose fitting a different feature is visible. Every centre lies inside the ±1/6-octave search span around the bin |
+
+| `sensitivity_null_reason` | What was missing |
+|---|---|
+| `insufficient_valid_rungs` | fewer than two rungs resolve this bin |
+| `short_rung_sigma_is_zero` | the ratio's denominator is 0.0 |
+| `band_outside_radiated_band` | bands only: the spec row and the radiated band do not intersect |
+| `graded_band_narrower_than_grid` | bands only: the graded span holds no grid bin, so nothing can be worst |
+
+Refusals print as JSON on stdout and one sentence on stderr, each naming the
+input that was missing: `gate_sweep_no_captures` and `gate_sweep_no_programs`
+(discovery found no `**/summed/summed_*.json` or no `**/*program*.wav` under the
+round), `gate_sweep_program_hash_unmatched` (a capture's declared stimulus hash
+matches no banked program), `gate_sweep_radiated_band_missing`,
+`gate_sweep_capture_unreadable`, `gate_sweep_reference_band_empty` (the
+2500–8000 Hz reference and this capture's radiated band do not overlap — there
+is no honest normalisation, so nothing is published rather than a curve
+referenced to something else), and `gate_sweep_single_pose` (across-pose σ needs
+at least two poses, so a one-pose round is refused rather than reported as
+window-invariant).
+
+**The across-pose σ here is a fourth spread and pools with none of the three
+below.** It is computed by this tool, on its own normalisation, its own grid and
+its own gate ladder; the packet's `per_bin_sigma_db` is computed elsewhere from
+the packet's own member curves. Compare the two as ratios across rungs or not at
+all.
+
+**Worked example, banked.** `jasper-gate-sweep` reproduces P1's hand analysis of
+the r9 and day-1 seat clouds to within the two grids' bin centres, and the
+banked run records where its headline ratio differs from P1's quoted 3→20 ms
+figure and why — including the 358 Hz row, whose valid rungs start where σ has
+already saturated. Read it at
+`captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md` rather
+than re-deriving it.
+
+### Reading a close-reference comparison
+
+`jasper-close-reference` corrects a capture taken close to the woofer back to
+the far distance and asks, band by band, how much of the far read was the room.
+Two verbs, both offline: `distance` sizes the capture, `compare` reads the pair.
+Neither opens a device. Exit codes: `0` done, `1` refused, `2` the round could
+not be read. When it is worth a capture, and what a verdict licenses, are
+[`tuning-methodology.md`](tuning-methodology.md) §6a's.
+
+**`distance` answers "where do I stand the mic".** It takes the driver diameter
+(`--driver-diameter-in` or `--driver-diameter-mm` — **mm wins if both are
+given**) and `--fc-hz` (argparse-required; the diameter is not, and its absence
+refuses `close_reference_no_driver_diameter` instead).
+`distance_m` / `distance_in` is the recommendation:
+the piston far-field term `2a²/λ` at `band_top_hz` (= `fc_hz/2`) plus
+`k_margin` = 2 driver diameters, and **the margin term dominates** — the
+recommendation is set by the driver's size far more than by the corner.
+`placement_tolerance_db` prices `placement_tolerance_m` (±0.5 in) through the
+1/r correction and `aim_tolerance_deg` is 5°, so the human prompt can say the
+placement is loose. `far_field_ceiling_hz` is where a mic that close goes
+near-field — a **ceiling**, because closing in costs you the top, not the
+bottom.
+
+**`compare` needs both rounds and the close distance you declared.**
+`--far-round` / `--close-round` take a banked round directory (the one holding
+`bundle/`) or the bundle itself; `--far-capture` / `--close-capture` name a take
+id or WAV stem, defaulting to the on-axis summed take. `--close-m` is
+**required and declared**: the sidecar's own `mark_distance_m` is published
+beside it and deliberately not used, because no pose carries a real close
+distance until #3498's close-reference program row exists. `--far-m` defaults to
+1.0. `--fc-hz` and a diameter cap the band; `--geometry` (default
+`/var/lib/jasper/measurement_geometry.json`) supplies the derived windows and is
+**not** a refusal when absent; `--far-gate-ms` / `--close-gate-ms` override
+them; `--out` also writes the report.
+
+**Read the validity band first — it is where the answer can exist at all.**
+
+| `validity` field | Meaning |
+|---|---|
+| `trusted_floor_far_hz` / `trusted_floor_close_hz` | each window's own `2.5/T`. The close window is longer, so its floor is lower — that is the whole point of the capture |
+| `far_field_ceiling_hz` | `c·d / 2a²` for mic distance `d` = `close_m` and radius `a`, `null` without a declared diameter |
+| `band_top_hz` | `fc_hz/2`, `null` without `--fc-hz` |
+| `comparison_band_hz` | what actually gets compared: bottom `max(300 Hz, trusted_floor_far_hz)`, top `min(16000 Hz, far_field_ceiling_hz, band_top_hz)` |
+
+Each `windows[]` entry (`far_window`, `close_window`) republishes its own
+`trusted_floor_hz` and `comparison_band_hz` beside `gate_ms` and `gate_source`
+(`caller`, `declared_geometry`, or `default`), so a band graded in one window
+and not the other is readable as such rather than as a disagreement.
+
+**Then read the alignment, before any verdict.** The subtraction is only as good
+as the time alignment under it.
+
+| `alignment` field | Meaning |
+|---|---|
+| `alignment_gate_ms` | the window BOTH segments were cut at — `min(far_gate_ms, close_gate_ms)` |
+| `measured_shift_us` / `geometric_delay_us` / `measured_minus_geometric_us` | what GCC-PHAT found, what the declared distances predicted, and the gap. A large gap is a declared distance that is wrong, not a discovery |
+| `residual_lag_us` / `residual_lag_floor_us` | leftover lag after the refine, and the floor the refine cannot resolve below. **A residual reading 0.0 means "under the floor", never "exact"** |
+| `confidence`, `at_search_edge`, `trusted` | `trusted` is `confidence ≥ 0.25 and not at_search_edge`, computed once and applied to every band |
+| `cancellation_budget_db` | the deepest cancellation the subtraction can reach at each edge of the comparison band, `20·log10(2·\|sin(π·f·Δt)\|)`, priced at `max(\|residual\|, floor)`. No residual in this report can go below it |
+
+**The verdict is three values, and the reasons are four.** One row per
+`SPEC_BANDS` band per window, carrying `nominal_band_hz`, `graded_band_hz`,
+`tolerance_db`, `points`, `worst_far_bin_hz` / `worst_far_deviation_db` (where
+the FAR read deviates most, and by how much), `delta_at_worst_db` (close minus
+far at that bin), `rms_delta_db` (RMS of close-minus-far over the band), and the
+two residuals — `residual_rel_direct_db` against the corrected close read and
+`residual_rel_far_db` against the far one.
+
+| `verdict` | Condition | What it licenses |
+|---|---|---|
+| `agreement` | `rms_delta_db ≤ tolerance_db` **and** `residual_rel_direct_db < −12 dB` | the far read was speaker-dominated in this band — the reservation the entanglement floor put on it lifts here. It is still a curve to judge under §6, not a filter |
+| `room_dominated` | `rms_delta_db > tolerance_db` **and** `residual_rel_direct_db ≥ −12 dB` | the difference estimates the room's share at the far position. It is an attribution, **not** a target: no filter follows from it |
+| `unresolved` | anything else | nothing. Read `unresolved_reason` for which input was missing |
+
+| `unresolved_reason` | What it says |
+|---|---|
+| `band_outside_validity` | fewer than 16 grid points survived the validity band here |
+| `alignment_confidence_below_floor` | `alignment.trusted` is false, so every band of this report is unresolved |
+| `agreement_without_cancellation` | the shapes agree but the subtraction never cancelled. The detrended delta is level-blind, so this is the signature of a **wrongly declared distance** — a finding about `--close-m`, not about the speaker |
+| `disagreement_without_residual` | over tolerance, yet the subtraction did cancel — the two readings do not compose, so the band is unanswered |
+
+Refusals name their missing input: `close_reference_no_capture` (a named take id
+or WAV stem matched nothing, or no capture declares azimuth 0 / elevation 0),
+`close_reference_rate_mismatch`, `close_reference_unreadable_round` (exit 2 —
+also how `0 < close_m < far_m` arrives), and the shared round-loader family
+`round_no_captures`, `round_no_programs`, `round_program_hash_unmatched`,
+`round_radiated_band_missing`, `round_capture_unreadable`. Two reading hazards
+worth holding: the report can carry bare `NaN` / `-Infinity` in ungraded rows,
+so a strict JSON parser will reject `--out`; and `geometry.sidecar_disagrees`
+tells you the declared `--close-m` and the sidecar's `mark_distance_m` are
+different numbers, which is expected today and is the thing
+`agreement_without_cancellation` fires on when the declared one is wrong.
+
 ### Reading σ honestly
 
-Three different spreads, three different meanings, and they must never pool:
+Three different spreads here, three different meanings, and they must never
+pool — nor with the gate sweep's own across-pose σ above:
 
 | Statistic | What it measures | Where |
 |---|---|---|
@@ -951,12 +1247,13 @@ name rather than publishing 0.0, which would claim the seats agreed.
 
 **The caveat that governs all three:** a position or seat spread is only as
 meaningful as the repeat spread it is measured against. If σ_repeat is 0.4 dB, a
-σ_position of 0.5 dB says almost nothing about the room. **Calibration experiment
-E2 — the study that would measure σ_repeat — has not been run** (its design is in
-the plan's "Calibration experiments" section). Until it has, every σ threshold
-here is an assumption, including `round_evidence.MEASURED_BENEFIT_MARGIN_DB` and
-`round_evidence.ITERATION_PLATEAU_DB`, both self-described as awaiting exactly
-that study.
+σ_position of 0.5 dB says almost nothing about the room. σ_repeat is measured by
+banking one — `jasper-round-views repeat-floor <N touched-nothing repeat rounds>`
+— and the packet's `accuracy_budget.components.in_capture_repeat_floor` says
+whether this rig has. On a rig that has not, every σ threshold here is an
+assumption, including `round_evidence.MEASURED_BENEFIT_MARGIN_DB` and
+`round_evidence.ITERATION_PLATEAU_DB`; the component's `thresholds.source` names
+which of the two you are reading.
 
 That caveat is why `per_bin_sigma_db` is published under
 `uncertainty.unseparated` rather than in the `fields` list beside a kind: it

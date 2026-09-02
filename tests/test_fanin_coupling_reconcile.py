@@ -1667,6 +1667,9 @@ def test_daemon_op_ceiling_counts_the_preamble_and_names_the_retry():
     from jasper.control import restart_broker
 
     assert cr._BROKER_SOCKET_MARGIN_SEC == restart_broker._CLIENT_SOCKET_MARGIN_SEC
+    # The preamble the arithmetic charges must be the bound reset_then_manage
+    # actually applies, or a legitimately slow pass reads as a wedge.
+    assert cr._RESET_FAILED_TIMEOUT_SEC == restart_broker._RESET_TIMEOUT_SEC
     # Broker alive: one attempt, plus the socket margin, plus any preamble.
     assert cr._daemon_op_ceiling_sec(10.0, reset_failed=False) == 15.0
     assert cr._daemon_op_ceiling_sec(10.0, reset_failed=True) == 25.0
@@ -1990,32 +1993,6 @@ def test_start_budget_reset_covers_only_crash_budget_daemon_starts(monkeypatch):
     # Why the oneshot is excluded rather than merely unnecessary.
     assert rb._unit_allowed_for_verb(cr.AUDIO_HARDWARE_RECONCILE_UNIT,
                                      "reset-failed") is False
-
-
-def test_start_budget_reset_is_best_effort_and_never_blocks_the_restart(
-    monkeypatch, caplog,
-):
-    """A denied or failed reset is logged and the restart still runs: the reset
-    is defence for the reboot budget, never a new gate in front of the audio
-    graph's recovery path."""
-    import jasper.fanin.coupling_reconcile as cr
-
-    calls: list[str] = []
-
-    def fake_manage(*units, verb="restart", reason="", no_block=True, timeout=5.0):
-        calls.append(verb)
-        if verb == "reset-failed":
-            return {"ok": False, "error": "denied"}
-        return {"ok": True}
-
-    monkeypatch.setattr("jasper.control.restart_broker.manage_units", fake_manage)
-
-    with caplog.at_level("WARNING"):
-        ok, detail = cr._restart_fanin(reason="t")
-
-    assert ok is True and detail == ""
-    assert calls == ["reset-failed", "restart"]
-    assert "result=start_budget_reset_failed" in caplog.text
 
 
 def test_crash_budget_units_are_broker_reset_failed_permitted():

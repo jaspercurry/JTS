@@ -34,8 +34,7 @@ from jasper.camilla_config_contract import (
     SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
     PeqFilter,
-    resolve_camilla_chunksize,
-    resolve_camilla_target_level,
+    resolve_camilla_latency_for_devices,
     total_positive_boost_db,
 )
 from jasper.camilla_emit import (
@@ -153,10 +152,9 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jts_ring_playback",
 )
 
-# CamillaDSP queue/rate-adjust defaults for the roleful ALSA-sink emitters.
-# The pair was TWELVE hardcoded literals across SIX emitters; TEN of them, across
-# FIVE emitters, are parameters now because an ACTIVE RING sink needs different
-# ones, and only different ones:
+# CamillaDSP queue/rate-adjust defaults for the roleful ALSA-sink emitters. They
+# are parameters rather than literals because an ACTIVE RING sink needs
+# different ones, and only different ones:
 #
 #   queuelimit 1 — the ring is a lock-step slot handshake, so a deeper queue is
 #   latency with no benefit; and
@@ -168,26 +166,19 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 #   is therefore what IS, stated rather than requested-and-ignored — and
 #   `capture_status.rate_adjust` echoes the REQUEST, so `true` would read
 #   plausible on the websocket while nothing moved.
-#     (The repo's snd-aloop rate-adjust OSCILLATION record is NOT the reason,
-#     though this comment used to cite it: that predicate fires only on an
-#     aloop capture carrying an ASYNC RESAMPLER — `snd_aloop_rate_adjust_
-#     oscillation_reason` returns None without one — and JTS emits no resampler
-#     on this path at all. The record neither argues for this setting nor
-#     against it.)
+#     (The repo's snd-aloop rate-adjust OSCILLATION record is NOT the reason:
+#     that predicate fires only on an aloop capture carrying an ASYNC
+#     RESAMPLER — `snd_aloop_rate_adjust_oscillation_reason` returns None
+#     without one — and JTS emits no resampler on this path at all.)
 #
-# The DEFAULTS are exactly the literals they replaced, so every non-ring emit is
-# byte-identical. The SIXTH emitter — the PARKED one — is excluded deliberately
-# rather than missed: its sink is a ``File``, so it can never target a ring and
-# has no reason to take the knobs, and its two literals stay literals.
+# The PARKED emitter is excluded deliberately rather than missed: its sink is a
+# ``File``, so it can never target a ring and has no reason to take the knobs.
 DEFAULT_ACTIVE_QUEUELIMIT = 4
 DEFAULT_ACTIVE_ENABLE_RATE_ADJUST = True
-# What the ACTIVE RING sink needs instead lives in ``jasper.fanin_coupling``
-# (``RING_CAMILLA_QUEUELIMIT`` / ``RING_CAMILLA_ENABLE_RATE_ADJUST``) with the
-# rest of the certified ring geometry, and :func:`active_emit_devices` reads it
-# from there. It was declared a second time here — same two numbers, same
-# reason, two places to move them — until the roleful re-emit needed the
-# chunk/target half of that same geometry and made the duplication a live
-# drift risk rather than a latent one.
+# What the ACTIVE RING sink needs instead is
+# ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY``, the one home for the whole
+# certified pairing, which :func:`active_emit_devices` fills its ring branch
+# from.
 
 # The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
 # It emits ONLY the program domain (Layer B room correction + Layer C preference
@@ -450,12 +441,11 @@ def active_emit_devices(
       ``captures/r7b-jts3-arm2-20260811T132227Z``). This adopts whatever the
       resolver answers, in both directions.
     - ``chunksize`` / ``target_level`` / ``queuelimit`` /
-      ``enable_rate_adjust`` — the certified ring geometry's
-      ``RING_CAMILLA_*`` constants in :mod:`jasper.fanin_coupling`, the same
-      home ``capture_kwargs_for_coupling`` composes for the STEREO ring. The
-      box's :class:`~jasper.audio_hardware.dac.LatencyFloor` describes its
-      LOOPBACK lane and does not apply here: jts3's floor target alone (1536)
-      is six times the whole 2-slot ring's 256-frame capacity.
+      ``enable_rate_adjust`` — :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`,
+      whole. This graph is built end-to-end on the ring and passes the certified
+      pairing EXPLICITLY. That is not the fallback an ordinary stereo graph
+      takes: those carry the box's own floor, clamped to the ring's capacity by
+      ``resolve_camilla_latency_for_devices``.
 
     A helper rather than emitter-internal derivation: the emitters keep taking
     the values as PARAMETERS (Q6), because a lab emit deliberately setting them
@@ -473,10 +463,7 @@ def active_emit_devices(
     (``_wire_channels_for_ring``) rather than to one number.
     """
     from jasper.fanin_coupling import (
-        RING_CAMILLA_CHUNKSIZE,
-        RING_CAMILLA_ENABLE_RATE_ADJUST,
-        RING_CAMILLA_QUEUELIMIT,
-        RING_CAMILLA_TARGET_LEVEL,
+        RING_CAMILLA_GEOMETRY,
         RING_PCM_DEVICES,
         resolve_ring_wire,
     )
@@ -496,10 +483,7 @@ def active_emit_devices(
         capture_device=capture_device_for_playback(playback_device),
         capture_format=wire_format,
         playback_format=wire_format,
-        chunksize=RING_CAMILLA_CHUNKSIZE,
-        target_level=RING_CAMILLA_TARGET_LEVEL,
-        queuelimit=RING_CAMILLA_QUEUELIMIT,
-        enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
+        **RING_CAMILLA_GEOMETRY,
     )
 
 
@@ -2416,13 +2400,14 @@ def emit_active_speaker_startup_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
-    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
-    # regeneration. Unset env → the literal defaults (byte-identical YAML).
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
+    # emitted devices decide the fallback.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -2616,12 +2601,15 @@ def emit_active_speaker_parked_config(
         )
     sample_rate = _positive_int(sample_rate, "sample_rate")
     output_count = _positive_int(output_count, "output_count")
-    # Same env-at-call-time resolution as the startup emitter, so a parked box
-    # carries the active DAC profile's CamillaDSP latency floor.
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # playback_device=None because this sink is a clockless /dev/null File: it
+    # declares no ALSA buffer, so the CAPTURE end is what the floor must fit
+    # through. See resolve_camilla_latency_for_devices.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=None,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -3037,13 +3025,14 @@ def emit_active_speaker_commissioning_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
-    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
-    # regeneration. Unset env → the literal defaults (byte-identical YAML).
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
+    # emitted devices decide the fallback.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -3738,10 +3727,12 @@ def emit_active_speaker_program_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -4066,13 +4057,14 @@ def emit_active_speaker_baseline_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
-    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
-    # regeneration. Unset env → the literal defaults (byte-identical YAML).
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
+    # emitted devices decide the fallback.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -4313,13 +4305,14 @@ def emit_active_speaker_driver_domain_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
-    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
-    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
-    # regeneration. Unset env → the literal defaults (byte-identical YAML).
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
+    # emitted devices decide the fallback.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        playback_device=playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")

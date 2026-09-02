@@ -8230,6 +8230,79 @@ async function testIssueListEscapesUntrustedVerdictMessages() {
   return { issueListEscapesUntrustedVerdictMessages: true };
 }
 
+// #2883: the handoff card appears only once a baseline is playing, mints its
+// prompt server-side on the copy, and the copy goes STALE — visibly — when the
+// declarations move past the revision it was minted against.
+async function testTuningHandoffCardMintsAndGoesStale() {
+  async function run(pageRevision, mintRevision) {
+    const mints = [];
+    const harness = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      "./active-speaker/design-draft": () => Promise.resolve(response({
+        status: "ready_for_review", revision: pageRevision, summary: {}, operator_inputs: {},
+      })),
+      "./active-speaker/baseline-profile": () => Promise.resolve(response({
+        status: "applied",
+        permissions: { may_compile: false, may_apply: false },
+        config: { basename: "active_speaker_baseline.yml" },
+        issues: [],
+      })),
+      "./active-speaker/tuning-handoff": (path) => {
+        mints.push(path);
+        return Promise.resolve(response({
+          kind: "jts_tuning_handoff",
+          status: "ready",
+          reason: null,
+          binding: { hostname: "jts3.local", design_draft_revision: mintRevision },
+          prompt: "MINTED HANDOFF PROMPT",
+        }));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    harness.dispatchClick({ "data-act": "copy-tuning-handoff" });
+    await harness.flush();
+    await harness.flush();
+    return { mints, harness };
+  }
+
+  const fresh = await run(3, 3);
+  if (fresh.mints.length !== 1) {
+    fail("the copy must mint the prompt from the box, once", { mints: fresh.mints });
+  }
+  const freshHtml = fresh.harness.elements.get("view-body").innerHTML;
+  if (!freshHtml.includes("MINTED HANDOFF PROMPT")) {
+    fail("the card must show the minted prompt, not a client-built one", { freshHtml });
+  }
+  if (freshHtml.includes("data-tuning-handoff-stale")) {
+    fail("a copy minted against the live revision is not stale", { freshHtml });
+  }
+
+  // The mint re-reads the draft, so it can be AHEAD of the page's cached copy.
+  // That is a lagging cache, not a declaration the operator changed.
+  const behind = await run(2, 3);
+  const behindHtml = behind.harness.elements.get("view-body").innerHTML;
+  if (behindHtml.includes("data-tuning-handoff-stale")) {
+    fail("a page cache behind the mint must not read as a stale copy", { behindHtml });
+  }
+
+  const drifted = await run(4, 3);
+  const driftedHtml = drifted.harness.elements.get("view-body").innerHTML;
+  if (!driftedHtml.includes("data-tuning-handoff-stale")) {
+    fail("a declaration edit after the copy must be disclosed as stale", { driftedHtml });
+  }
+
+  const noBaseline = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/tuning-handoff": () => fail("the card must not mint before a baseline plays"),
+  }));
+  await loadAndSetActiveState(noBaseline);
+  if (noBaseline.elements.get("view-body").innerHTML.includes('data-act="copy-tuning-handoff"')) {
+    fail("the handoff card must not render before the speaker plays a baseline");
+  }
+  return { tuningHandoffCardMintsAndGoesStale: true };
+}
+
+
 const results = [];
 // Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
 // subwoofer (the single-output Apple-dongle case). The card must keep the
@@ -8716,5 +8789,6 @@ results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
 results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
+results.push(await testTuningHandoffCardMintsAndGoesStale());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));

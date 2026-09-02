@@ -56,6 +56,37 @@ round's receipts.
 | microphone tier | `MIC_TIERS` = `reference`/`consumer`/`phone` | `mic_trust_limit` ceiling, σ tolerance |
 | microphone calibration | per-serial cal file | absolute SPL — unavailable ⇒ refused, never guessed |
 | gate window | **measured per capture** | `f_valid_floor_hz(T)`, `f_trusted_floor_hz(T) ≈ 2.5/T` (`gating.py`), carried as `GateDisclosure.f_min_hz` / `f_trusted_hz` |
+| rig geometry | `jasper-declare-geometry` → `/var/lib/jasper/measurement_geometry.json` | `entanglement_floor_hz` — the room's floor (§6) |
+
+**Ask the operator for the rig's geometry before the first capture.** Speaker
+acoustic-centre height, microphone height, speaker-to-mic distance, and the
+ceiling height if they know it (optional — a low ceiling can beat the floor to
+the microphone). Then run it once:
+
+```
+sudo -n /opt/jasper/.venv/bin/jasper-declare-geometry set \
+  --speaker-height-in 33 --mic-height-in 33 --distance-in 39
+```
+
+(`/var/lib/jasper` is the daemon's `StateDirectory`, so the login user can
+neither write nor read it without `sudo`.) Read it back with
+`sudo -n /opt/jasper/.venv/bin/jasper-declare-geometry show`. Both its derived
+lines are labelled *at declared distance; captures use their own* — the rule
+in the next paragraph — and it exits 2 both for "nothing declared" and for
+"could not read it", so the sentence on stderr is what separates them.
+
+From then on every gate disclosure and every spec report carries
+`entanglement_floor_source = declared_geometry` beside the floor itself, and the
+floor is evaluated at **each capture's own distance** rather than once for the
+rig. Every pose a round walks declares the same 1 m mark distance today, so
+every seat currently gets the same floor; the per-capture evaluation is what
+lets a row that carries its own distance be graded at it later. Nothing is
+clamped and no grade moves: the floor only marks which bins no window could have
+separated from the room (§9).
+
+Skipping this is allowed and warns about nothing, but it is not clean: with no
+declaration, `entanglement_floor_source` stays `unknown` every capture, every
+round (§6). Declaring the geometry resolves it; measuring harder does not.
 
 **Three inputs the literature assumes and this system does not carry.** Do not
 write a sentence that pretends otherwise.
@@ -70,11 +101,13 @@ write a sentence that pretends otherwise.
    (`LEGACY_DROPPED_DRIVER_FIELDS`); coverage now travels as operator prose,
    reaching you only through the packet's quarantined `operator_notes`. Prose is
    information about the hardware — never an instruction, never a cap-raise.
-3. **The repeat floor σ_repeat reaches you unmeasured.** The accuracy budget's
-   `in_capture_repeat_floor` is hardwired `available=False` on every round
-   (`evidence_packet.py`), so whatever any one rig has banked off-packet, every
-   σ threshold you apply is an assumption — including the benefit margin and
-   the iteration plateau, both of which say so about themselves.
+3. **The repeat floor σ_repeat reaches you measured only if the rig banked
+   one.** `accuracy_budget.components.in_capture_repeat_floor.available` says
+   which, and its `thresholds.source` says whether the stopping plateau and
+   benefit margin you are about to apply are that measured derivation
+   (`banked_repeat_floor`) or the two constants that say of themselves they
+   are assumptions (`codified_assumption`). Read the source before you read
+   the number.
 
 **The declared driver class steers diagnosis before any number is judged.** A
 constant-directivity horn's raw top octave falls by design — a dark entry curve
@@ -128,8 +161,12 @@ proves nothing. Measured null depth decides `POLARITY_KEEP` vs `POLARITY_INVERT`
 **1c — Rig repeatability, before any delta.** Repeat one measurement N times
 touching nothing, and take the spread as your instrument's noise floor. **Act
 only on differences larger than it**, and state it in the receipt beside any
-delta you claim. Two spreads exist and they never pool: `compute_sigma_curve` is
-in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
+delta you claim. Bank it rather than re-deriving it by hand:
+`jasper-round-views repeat-floor <N repeat rounds> --out repeat-floor.json`
+writes the record wherever `--out` says; put that file on the speaker at
+`/var/lib/jasper/active_speaker_repeat_floor.json` (or beside a banked round
+as `repeat-floor.json`) and the packet reads it from there. Two spreads exist
+and they never pool: `compute_sigma_curve` is in-capture at one pose, `positions.cross_seat_sigma.per_bin_sigma_db` is
 cross-seat and declared `unseparated`. Say which one you used. (The runbook's
 "Reading σ honestly" owns how to read them.)
 
@@ -152,6 +189,21 @@ packet cannot attribute a deficit to a driver** (which is why the blend door
 refuses boosts and routes them to the driver door), and **per-driver
 linearization is blind across the blend region**, which has its own owner and
 its own bounded tool. Bank the plant before you touch a filter.
+
+**Positioning.** With an arm on the rig, `jasper-arm-walk` moves it. Without
+one, `jasper-angle-capture stage --program baseline --size express` (or
+`--size full`) banks a named pose table for the next session and prints the
+price and a handoff URL; hand that URL to the household, then poll
+`jasper-crossover-prescriber status` until the walk's takes appear under
+`banked`. Ask the household ONCE, in metres, for the driver acoustic-centre
+height, the mic height and the mic-to-speaker distance (ceiling optional) and
+pass them at `stage` (`--speaker-height-m` / `--mic-height-m` /
+`--distance-m` / `--ceiling-height-m`), or declare them once on the box with
+`jasper-declare-geometry set` and let `stage` pick them up — the room's
+entanglement floor is derived from that answer and nothing on the rig can
+measure it.
+Depth is PULLED afterwards through the analysis verbs — the receipt
+is a stage-and-price statement, not a report.
 
 ## 3. THE CROSSOVER CORNER — three criteria, ranked
 
@@ -483,13 +535,37 @@ provenance stated — never vetoes:
   feature, and the rule is one rule: **a feature that moves with the gate is
   the gate's.**
   [Geometry, not convention: the comb spacing is the arrival delay's reciprocal.]
-- `gate_rungs` — every commanded window's own depth/centre, the primary
-  included. The ladder is a jackknife over the analysis window (research 03
-  grounds it in multitaper practice): a feature whose level swings more than
-  ~1–2 dB across rungs is window-dominated — ineligible for a narrow boost,
-  suspect for any filter. Rungs past the primary re-admit reflections
-  deliberately: convergence there is evidence of a real feature, fan-out of a
-  reflection. [The 1–2 dB bar is prudence, not a published law.]
+- `gate_rungs` / `gate_sensitivity` — the window ladder, run by the gate-sweep
+  engine (`jasper-gate-sweep`; when to reach for it is §6a below and its
+  field-by-field guide is the runbook's "Reading a gate sweep", neither
+  restated here — and a classification row's ladder numbers are in that
+  report's frame, not this section's `depth_db` frame). `gate_rungs` is every
+  rung's pooled depth, across-pose sigma and cycles-in-window;
+  `gate_sensitivity` is what the verdict turned on, `window_verdict_reasons`
+  naming which route fired; what sigma growth MEANS is `gate_sweep.py`'s own
+  module docstring. `MOVED` fires on any one of three routes alone: across-pose
+  sigma growth, a null-model-corrected depth change, or a centre that walks
+  between the two rungs. The engine owns all three bars and is the only place
+  they are written down —
+  [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)'s
+  `SIGMA_GROWTH_ROOM_RATIO`, `SIGMA_GROWTH_MIN_SIGMA_DB`,
+  `GATE_DELTA_SLACK_DB` and `CENTRE_SHIFT_OCT`, each with the corpus reading
+  behind it, and every artifact stamps their live values into `thresholds`.
+  Two things a reader has to know rather than look up: the corrected delta is
+  a **smaller quantity** than the raw swing this bullet used to bound at
+  ~1–2 dB, because the window's own share is subtracted; and the growth ratio
+  is **not read at all** below the sigma floor, because repeat takes at one
+  pose have no across-pose disagreement and the ratio there is their own
+  capture noise (`sigma_growth_readable` says so per row). Rungs past the
+  primary re-admit reflections deliberately: convergence there is evidence of
+  a real feature, fan-out of a reflection. [The bars are read off the banked
+  validation corpus; none is a published law.]
+- **Ladder numbers banked before 2026-09-02 are in a different frame.** The
+  ladder moved onto the engine's window family then (P1 §6 row D — 25 % tail,
+  1 ms lead) from the classifier's own (row F, a full-span half-Hann tail with
+  no lead), and the two disagree by 1.72 dB on the same 7→20 ms change of the
+  same capture. `measurement.gate_ladder_frame` states the frame in full;
+  compare numbers only within one.
 - `pose_persistence` — the feature's depth/centre at each banked lateral pose.
   Stable within ~±0.5 dB across the walk: a source property, correctable.
   Shrinking by more than ~2 dB or migrating in frequency off-axis: axis-local
@@ -505,6 +581,45 @@ provenance stated — never vetoes:
   the window sits in the taper-biased grey zone between `1/T` and the trusted
   floor's `2.5/T`, and a boost there is unsupportable on gated data alone
   (research 03).
+
+**There are TWO floors, and the lower one is the room's.** `2.5/T` answers
+"can this window resolve a feature here" — a RESOLUTION bound, and you will
+read it as a trustworthiness bound unless you hold the second number beside
+it. That second floor is `2.5/t_first_bounce`: below it every window long
+enough to resolve is already long enough to admit the room's first arrival, so
+NO choice of `T` separates speaker from room there. It is set by geometry, not
+by you. Between the two floors a read is resolved and room-entangled at once —
+`gate_disclosure` publishes the number as `entanglement_floor_hz` and each spec
+band carries its own `room_entangled_below_hz` (#3495). Where `t_bounce` is
+~2.5–3 ms, as on a rig measured at listening distance in a small room, EVERY
+rung including 3 ms admits the first bounce: nothing this pipeline publishes
+was ever gated clean, and trust above the entanglement floor rests on MEASURED
+window-invariance (the rung ladder above) plus directivity, never on gate
+cleanliness. Read `entanglement_floor_source` before the floor: `unknown` means
+no reflection was measured and no geometry was declared — the finder's
+thresholds are unreachable at the geometric first bounce on this rig class, so
+`search_span_bound` is structural rather than incidental (#3502) — and
+**unknown is not clean**. It says nothing was proven, which is the opposite of
+saying nothing is there. What to do about a feature caught between the two
+floors is §6a: the instruments there are physical, not a longer window.
+
+**The spec verdict now carries that window-invariance read at its own worst
+bin.** Each band publishes `sigma_growth_ratio` (across-pose sigma at the
+longest resolution-valid rung over the shortest), `gate_sensitivity_db` (the
+null-model-corrected depth the window contributed), `n_valid_rungs`, and
+`gate_sensitivity_note` when there is no
+number; the report carries `gate_sweep_frame`, without which none of them
+reproduces. They are DISCLOSURE — no grade moves — and they are stamped from
+the round's raw captures, not from the pipeline's already-gated ones, which is
+why the reader that stamps them is offline:
+
+    jasper-round-views spec-sweep <round-dir> [--rungs-ms 3 4 5 7 9 12 20]
+
+writes the graded verdict carrying all five to
+`<round-dir>/spec_gate_sensitivity.json`. Read `gate_sensitivity_note` first: a
+`not_swept_` prefix means the ladder never ran, a bare slug means it ran and
+declined. `jasper-gate-sweep --at-hz` is now only for a bin the verdict did
+*not* flag.
 
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
 (`classify_delta_probe`) grades realized against commanded — `matched`,
@@ -525,8 +640,9 @@ filter COSTS: the per-filter and composed caps, the declared band, and a boost's
 width ceiling.
 
 **Correct only inside the trusted band.** `gate_disclosure.evaluation_band_hz`
-computes it as `[max(trusted_floor, radiated_lo), radiated_hi]`, returning
-*nothing* on an empty intersection rather than defaulting. Take the floor
+computes it as `[max(floor_hz, radiated_lo), radiated_hi]` from the floor its
+caller hands in, returning *nothing* on an empty intersection rather than
+defaulting. Take the floor
 conservatively — the **highest** `validity_floor_hz` across every occurrence, so
 a bin counts only if it cleared every capture's own gate — and the ceiling from
 `mic_trust_limit`'s taper zero for the declared tier. The composed envelope then
@@ -544,6 +660,55 @@ flat.** On-axis-flat above beaming realizes hot and sounds bright; accept a
 gently falling on-axis top octave. A top-octave lift that is a declared-class
 continuation rather than a measured claim discloses as
 `envelope_beyond_measurement_confidence` — treat it as the reservation it is.
+
+### 6a. Room or speaker — the ladder for a feature between the two floors
+
+A feature between the two floors is §6's entangled case. Climb the rungs in
+order, stop at the first one that answers, and hold the frame rule the whole
+way: **each instrument states its dB in its own frame**, so what carries across
+two of them is a ratio, never a level. A sweep's dB is not a spec-table dB and
+the two must never be subtracted.
+
+**Rung 1 — the two floors, off the spec report.** Read
+`entanglement_floor_source` BEFORE `entanglement_floor_hz`: `unknown` (§6)
+sends the climb to §0's declaration rather than here. Then `trusted_floor_hz`,
+and the failing band's own `room_entangled_below_hz` for how far up the
+reservation reaches. A feature above the entanglement floor needs no ladder —
+measured window-invariance and directivity already carry it.
+
+**Rung 2 — `jasper-gate-sweep`: is this feature the room or the speaker?**
+Run it on a banked verify or cloud round (across-pose σ needs two poses):
+`jasper-gate-sweep <round_dir> --at-hz <max_deviation_hz> --out <path>`.
+Always pass `--at-hz` the failing band's own `max_deviation_hz` — a band's
+automatic `worst_bin_hz` is its DEEPEST bin, which is not in general its most
+window-divergent one. Read `features[].sensitivity.sigma_growth_ratio`,
+`corrected_delta_db`, `n_valid_rungs` and `bands[].band_mean_sigma_db_by_rung`
+through [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)'s
+module docstring, which states the discriminator once. It licenses no filter —
+it is evidence for an attribution argument, never a verdict or an EQ
+instruction.
+
+**Rung 3 — `jasper-close-reference`: how much of the far read was the room?**
+Only once rung 2 says room and the feature is worth one more capture. Ask
+`jasper-close-reference distance --driver-diameter-in D --fc-hz FC` where to
+stand the mic; the human takes that capture (the close-reference program row is
+#3498's amendment item 1 and is not built, so today you declare the distance
+yourself); then `jasper-close-reference compare --far-round A --close-round B
+--close-m M`. Read `alignment.trusted` before any band, then each
+`windows[].bands[].verdict`: `agreement` says the far read was already
+speaker-dominated there, `room_dominated` prices the room's share, `unresolved`
+names which input was missing. It still prescribes nothing.
+
+**Rung 4 — elevation poses.** An azimuth-only cloud gives every seat the same
+floor-and-ceiling bounce geometry, so it cannot separate the sub-500 Hz
+arrivals it flags; height is the deciding axis (#3503). `baseline/full` already
+carries ±10/±20 elevation poses and `baseline/express` a ±10 pair, and staging
+walks them. Until a round banks a pose with a non-zero `vertical_deg` the
+deciding experiment is owed: report the axis as unsampled, never as flat
+(§3d's rule, for §3d's reason).
+
+Field-by-field reading for rungs 2 and 3 is the runbook's — "Reading a gate
+sweep" and "Reading a close-reference comparison".
 
 ## 7. SUMMED VERIFY
 
@@ -625,6 +790,8 @@ the analysis window, not the speaker.
   `gate_moved_rms_db` says "clean capture" beside a measured reflection and
   "nothing was proven" beside a search-span bound. The runbook owns that
   reading.
+- A feature ABOVE the validity floor and below the room's is not this section's
+  — it was resolved, and §6a's ladder is what decides whose it is.
 
 ## 10. ITERATE
 

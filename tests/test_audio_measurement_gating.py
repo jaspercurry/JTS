@@ -987,6 +987,110 @@ def test_f_trusted_floor_guards_nonpositive_and_nonfinite_like_its_sibling():
 
 
 @pytest.mark.parametrize(
+    ("t_first_bounce_s", "expected_hz"), [(0.0025, 1000.0), (0.003, 2500.0 / 3.0)]
+)
+def test_f_entanglement_floor_divides_the_multiplier_by_the_bounce_time(
+    t_first_bounce_s, expected_hz
+):
+    """#3495's second floor: the same 2.5 over the ROOM's first arrival rather
+    than over the window. At this rig class's 2.5-3 ms the floor lands near
+    1 kHz, above every rung the ladder can offer."""
+    assert gating.f_entanglement_floor_hz(t_first_bounce_s) == pytest.approx(expected_hz)
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.001, float("nan"), float("inf")])
+def test_f_entanglement_floor_refuses_rather_than_returning_a_floor(bad):
+    """Deliberately NOT its siblings' ``+inf``. A window that cannot resolve
+    has a pessimistic floor; a bounce time that is absent or non-physical has
+    no floor at all, and the caller must reach for
+    :data:`gating.ENTANGLEMENT_SOURCE_UNKNOWN` instead of a number."""
+    with pytest.raises(ValueError):
+        gating.f_entanglement_floor_hz(bad)
+
+
+def test_the_measured_entanglement_word_is_the_gate_bound_word():
+    """One vocabulary, not two: a floor timed off the gate's own reflection is
+    spelt with the source that named the bound, so a consumer comparing the
+    two fields never sees synonyms."""
+    assert gating.ENTANGLEMENT_SOURCE_MEASURED == gating.FLOOR_MEASURED
+    assert gating.ENTANGLEMENT_SOURCES == {
+        gating.ENTANGLEMENT_SOURCE_MEASURED,
+        gating.ENTANGLEMENT_SOURCE_DECLARED,
+        gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+    }
+    assert len(gating.ENTANGLEMENT_SOURCES) == 3
+
+
+# ---- the floor/provenance invariant, in its ONE home (#3522) --------------
+# Every pin on the RULE lives here now; each seam keeps only a pin that it
+# still reaches this rule.
+
+
+#: Pairs that cannot both be true. The test below checks both doors against
+#: every row here on purpose: the lenient one's contract IS "everything the
+#: strict one refuses", so pinning them from two different lists would let
+#: the two drift apart.
+_IMPOSSIBLE_PAIRS = [
+    # Outside the vocabulary: a fourth word no consumer can read.
+    (1000.0, "measured"),
+    (1000.0, ""),
+    (1000.0, 3),
+    (1000.0, ["unknown"]),
+    (1000.0, {"source": "declared_geometry"}),
+    (None, "declared"),
+    # Inside it, but the pair disagrees about whether a floor is known.
+    (1000.0, gating.ENTANGLEMENT_SOURCE_UNKNOWN),
+    (None, gating.ENTANGLEMENT_SOURCE_DECLARED),
+    (None, gating.ENTANGLEMENT_SOURCE_MEASURED),
+    # Named, but not a frequency: a floor at or below DC would read as a clamp
+    # at DC, and NaN compares false against every band edge.
+    (0.0, gating.ENTANGLEMENT_SOURCE_DECLARED),
+    (-1.0, gating.ENTANGLEMENT_SOURCE_DECLARED),
+    (float("nan"), gating.ENTANGLEMENT_SOURCE_MEASURED),
+    (float("inf"), gating.ENTANGLEMENT_SOURCE_MEASURED),
+]
+
+
+@pytest.mark.parametrize(
+    ("hz", "source"),
+    # Plus the two shapes only a document reaches: a floor that is not a
+    # number at all, and a source that is missing rather than wrong.
+    _IMPOSSIBLE_PAIRS
+    + [("not a number", gating.ENTANGLEMENT_SOURCE_DECLARED), (1000.0, None)],
+)
+def test_a_pair_that_cannot_be_true_raises_strictly_and_coerces_to_unknown(hz, source):
+    """See :class:`gating.EntanglementFloor`'s docstring for the invariant."""
+    with pytest.raises((TypeError, ValueError)):
+        gating.EntanglementFloor(hz, source)
+    assert gating.EntanglementFloor.coerce(hz, source) == gating.EntanglementFloor.unknown()
+
+
+def test_coerce_keeps_a_pair_that_agrees_and_types_the_number():
+    assert gating.EntanglementFloor.coerce(
+        "1000", gating.ENTANGLEMENT_SOURCE_DECLARED
+    ) == gating.EntanglementFloor(1000.0, gating.ENTANGLEMENT_SOURCE_DECLARED)
+
+
+def test_a_floor_derived_from_a_bounce_time_is_the_formula_and_never_unknown():
+    """``from_bounce_s`` is :func:`gating.f_entanglement_floor_hz` plus the
+    word for which bounce time it was. A time this precise came from
+    somewhere, so ``unknown`` beside it would be a lie about the number."""
+    floor = gating.EntanglementFloor.from_bounce_s(
+        0.0025, gating.ENTANGLEMENT_SOURCE_DECLARED
+    )
+    assert floor.hz == pytest.approx(gating.f_entanglement_floor_hz(0.0025))
+    assert floor.source == gating.ENTANGLEMENT_SOURCE_DECLARED
+    with pytest.raises(ValueError):
+        gating.EntanglementFloor.from_bounce_s(
+            0.0025, gating.ENTANGLEMENT_SOURCE_UNKNOWN
+        )
+    with pytest.raises(ValueError):
+        gating.EntanglementFloor.from_bounce_s(
+            0.0, gating.ENTANGLEMENT_SOURCE_MEASURED
+        )
+
+
+@pytest.mark.parametrize(
     "name", ["measured_4.0ms_-10dB", "fallback_bare_delta", "ungateable_silent"]
 )
 def test_disclosure_fields_are_present_on_every_bound_source(name):

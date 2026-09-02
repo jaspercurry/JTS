@@ -14,17 +14,14 @@ cannot serve parks under its own name
 
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
 the config emitters can resolve the ring without pulling in NumPy/SciPy.
-
-:data:`COUPLING_LOOPBACK` is the RETIRED route's token, kept only so the readers
-that still parse a migrating box's persisted value recognize it. It is not in
-:data:`VALID_COUPLINGS` and nothing in this repo writes it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -32,20 +29,13 @@ if TYPE_CHECKING:
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 
-# The RETIRED snd-aloop route's token (ADR-0100). Kept out of
-# :data:`VALID_COUPLINGS` so it reads as what it is — a value a migrating box's
-# ``fanin.env`` may still carry — while the readers that parse such a file keep
-# one spelling for it.
-COUPLING_LOOPBACK = "loopback"
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
 # contract v1 as Ring B; roles flipped. The Rust ``Coupling::ShmRing``
 # normalizer MUST agree with this token.
 COUPLING_SHM_RING = "shm_ring"
 # THE transport, spelled once. Public so other planners (e.g.
-# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token,
-# and so :func:`jasper.control.transport_park.ring_only_transport` can DERIVE
-# "the ring is the only route" rather than carry a second flag for it.
+# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token.
 # ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
 VALID_COUPLINGS = frozenset({COUPLING_SHM_RING})
 _VALID_COUPLINGS = VALID_COUPLINGS
@@ -73,10 +63,83 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 # Making the slot floor-derived across all four components is issue #2147.
 RING_SLOT_FRAMES = 128
 DEFAULT_FANIN_RING_SLOTS = 2
+
+
+def ring_capacity_frames() -> int:
+    """Frames the whole ring holds — the ALSA buffer size its ioplug reports.
+
+    The bound a CamillaDSP ``chunksize`` crossing the ring has to clear:
+    CamillaDSP sets ``avail_min`` to its chunk, and ALSA refuses an
+    ``avail_min`` larger than the device's buffer. It is a property of the
+    TRANSPORT, not of the fitted DAC — both factors are compile-time constants
+    shared by the fan-in writer (``rust/jasper-fanin/src/config.rs``) and the
+    ioplug (``c/jts-ring-ioplug``), so every box's ring is the same size.
+
+    Deliberately not env-derived. ``JASPER_FANIN_RING_SLOTS`` exists, but the
+    ioplug takes its slot count from the conf.d block instead, and a disagreeing
+    pair fails the attach outright rather than resizing anything.
+
+    THIS FUNCTION IS ISSUE #2147's SEAM. That issue makes the slot size derive
+    from the DAC floor across all four components (fan-in, the ioplug, the
+    conf.d render, the Camilla emitter); the constant product below is what it
+    replaces with the box's real geometry. Landing it does not remove the
+    clamp in ``camilla_config_contract.resolve_camilla_latency_for_devices`` —
+    it makes the clamp stop biting, because a board that earns a bigger ring
+    would then report one here and its floor would fit.
+
+    The two are the same defect on different axes: #2147 is the PERIOD axis
+    (a DAC's declared ``outputd_period_frames`` cannot reach the ring), and the
+    clamp is the CHUNK axis (a DAC's declared ``camilla_chunksize`` reached the
+    ring when it could not fit). Note that #2147's stated mitigation — non-128
+    boxes "keep loopback coupling" — no longer exists: ADR-0100 left shm_ring
+    the only transport, which is why the chunk axis surfaced as a crash loop on
+    jts4 rather than as a fallback.
+    """
+
+    return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
+
+
 RING_CAMILLA_CHUNKSIZE = 128
 RING_CAMILLA_TARGET_LEVEL = 128
 RING_CAMILLA_QUEUELIMIT = 1
 RING_CAMILLA_ENABLE_RATE_ADJUST = False
+
+
+class RingCamillaGeometry(TypedDict):
+    """The four CamillaDSP latency fields :data:`RING_CAMILLA_GEOMETRY` fills."""
+
+    chunksize: int
+    target_level: int
+    queuelimit: int
+    enable_rate_adjust: bool
+
+
+# The geometry a graph built END-TO-END on the ring passes EXPLICITLY: the
+# ACTIVE ring's per-driver graph (``active_emit_devices``) and the flat boot
+# graph (``emit_flat_outputd_cutover_config``). Certified together — chunk 128
+# is one ring slot and queuelimit 1 makes the slot handshake blocking, which is
+# also why rate_adjust is off (nothing for the rate controller to steer).
+#
+# NOT the fallback for an ordinary sound/correction graph. Those carry the box's
+# own floor clamped to the ring's capacity
+# (``camilla_config_contract.resolve_camilla_latency_for_devices``) — jts.local
+# runs 256/1536 across this ring — so moving them onto this pair is a retune
+# with a listening test, not a refactor.
+#
+# ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
+# the cast is what keeps ``**RING_CAMILLA_GEOMETRY`` per-key typed at the two
+# emitters.
+RING_CAMILLA_GEOMETRY: Final[RingCamillaGeometry] = cast(
+    RingCamillaGeometry,
+    MappingProxyType(
+        {
+            "chunksize": RING_CAMILLA_CHUNKSIZE,
+            "target_level": RING_CAMILLA_TARGET_LEVEL,
+            "queuelimit": RING_CAMILLA_QUEUELIMIT,
+            "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
+        }
+    ),
+)
 
 # Ring A capture device. CamillaDSP captures it as an ALSA device named by the
 # ioplug conf.d block (``deploy/alsa/conf.d/60-jts-ring.conf``). Pinned here so
@@ -503,32 +566,23 @@ RING_PCM_DEVICES = (
 TRANSPORT_RING = "ring"
 
 
-def resolve_coupling(raw: str | None) -> str:
-    """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
+def resolve_coupling(raw: str | None) -> str | None:
+    """The transport a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value NAMES, if any.
 
-    Answers :data:`COUPLING_LOOPBACK` for unset, empty, or any value outside
-    :data:`VALID_COUPLINGS` — i.e. for a migrating box's file, which the
-    reconciler rewrites on its next pass. Case-insensitive; whitespace ignored.
-    For "is this file still on the retired route?" ask
-    :func:`coupling_value_removed`, which answers it directly.
+    :data:`COUPLING_SHM_RING` for the ring token (case-insensitive, whitespace
+    ignored); ``None`` for everything else — unset, empty, or a value outside
+    :data:`VALID_COUPLINGS`. ``None`` is "this file names no transport", NOT a
+    second transport: since ADR-0100 there is only one, and a caller that needs
+    to tell an absent key from a retired token asks
+    :func:`coupling_value_removed`.
 
     THIS IS NOT THE DAEMON'S RULE, and nothing may derive a runtime expectation
-    from it. Since ADR-0100 the Rust daemon serves exactly ``None`` / ``""`` /
-    ``shm_ring`` — it has no loopback arm to take — and refuses anything else as
-    a config-class fault (exit 78, the unit parks). So a running fan-in is
-    always on the ring, whatever this returns. The ``COUPLING_LOOPBACK`` answer
-    for an unset key describes only the persisted FILE's legacy default, which
-    is what the ``--auto`` reconciler and :func:`coupling_value_removed` read it
-    for; the doctor no longer derives its expected transport from it (that
-    mapping FAILed a healthy box whose key had not been written yet, since
-    coupling-auto runs ``After=jasper-fanin.service``).
+    from it. The Rust daemon serves ``None`` / ``""`` / ``shm_ring`` alike and
+    refuses anything else as a config-class fault (exit 78, the unit parks), so
+    a running fan-in is on the ring whatever this returns.
     """
-    if raw is None:
-        return COUPLING_LOOPBACK
-    value = raw.strip().lower()
-    if value in _VALID_COUPLINGS:
-        return value
-    return COUPLING_LOOPBACK
+    value = (raw or "").strip().lower()
+    return value if value in _VALID_COUPLINGS else None
 
 
 def coupling_value_removed(raw: str | None) -> bool:
@@ -696,10 +750,14 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
     of four. (outputd widens a narrow consumed slot onto its own i32 program
     spine after the copy, on its side of the ring.) The resolution is taken with
     NO topology — the shipped geometry — because nothing this function emits is
-    per-topology: the devices are fixed and the format is one per box. The ring
-    graph carries its own low-latency CamillaDSP geometry: chunk 128 / target
-    128 / queue 1 / rate_adjust off, coupled to the 2-slot Ring A default (chunk
-    256 would span the whole buffer).
+    per-topology: the devices are fixed and the format is one per box.
+
+    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is not a fact about the
+    transport devices: it is resolved per graph by
+    ``camilla_config_contract.resolve_camilla_latency_for_devices`` (the box's
+    floor, clamped to :func:`ring_capacity_frames` at a ring end), and only a
+    graph built end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY`
+    instead.
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its
@@ -717,10 +775,6 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
         "capture_format": wire.sample_format,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": wire.sample_format,
-        "chunksize": RING_CAMILLA_CHUNKSIZE,
-        "target_level": RING_CAMILLA_TARGET_LEVEL,
-        "queuelimit": RING_CAMILLA_QUEUELIMIT,
-        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
 
 
@@ -796,10 +850,14 @@ def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool
     True therefore means the SINK is already owned, so the callers that branch on
     it drop the coupling's PLAYBACK half ONLY: the capture half is still threaded
     through :func:`capture_half`, or a bonded leader's live camilla#1 re-emits
-    onto the tap an armed ring took fan-in off. The solo defaults return False →
-    both halves apply. Mirrors ``jasper.multiroom.member_config``'s
-    leader-vs-solo distinction without importing it (this module stays
-    import-cheap for the socket-activated emitters).
+    onto the tap an armed ring took fan-in off. The SOLO defaults also return
+    True — they carry ``enable_rate_adjust=False`` for their own reason (Ring B
+    is an ioplug CamillaDSP cannot actuate rate_adjust on) — and the sink they
+    drop is the one they would have emitted: ``emit_sound_config`` defaults
+    ``playback_device`` to :data:`RING_PLAYBACK_DEVICE` already. Mirrors
+    ``jasper.multiroom.member_config``'s leader-vs-solo distinction without
+    importing it (this module stays import-cheap for the socket-activated
+    emitters).
     """
     if not member_kwargs:
         return False

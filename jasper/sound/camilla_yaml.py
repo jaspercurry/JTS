@@ -31,8 +31,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
-    resolve_camilla_chunksize,
-    resolve_camilla_target_level,
+    resolve_camilla_latency_for_devices,
 )
 from jasper.camilla_emit import (
     MONO_SUM_GAIN_DB,
@@ -452,15 +451,16 @@ def emit_sound_config(
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
     width = _normalize_width(width)
-    # CamillaDSP latency knobs (G7): None → env-or-default, resolved at call
-    # time so a JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} systemd override applies
-    # on the next regeneration. Unset env → the literal defaults (1024/2048), so
-    # the emitted YAML is byte-identical absent an opt-in. An explicit caller
-    # value still wins.
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
+    # G7 latency knobs; see resolve_camilla_latency_for_devices for why the
+    # emitted devices decide the fallback.
+    chunksize, target_level = resolve_camilla_latency_for_devices(
+        capture_device=capture_device,
+        # `is not None`, the same predicate the File-sink branch below decides
+        # on, so the sink this resolves against is the sink that gets emitted.
+        playback_device=None if playback_pipe_path is not None else playback_device,
+        chunksize=chunksize,
+        target_level=target_level,
+    )
     if channel_delays_ms is not None:
         if len(channel_delays_ms) != 2:
             raise ValueError("channel_delays_ms must be a (left_ms, right_ms) pair")
@@ -851,18 +851,13 @@ def emit_flat_outputd_cutover_config(
     a wide graph from it rather than counting live channels it cannot place.
     """
 
-    from jasper.fanin_coupling import (
-        RING_CAMILLA_CHUNKSIZE,
-        RING_CAMILLA_ENABLE_RATE_ADJUST,
-        RING_CAMILLA_QUEUELIMIT,
-        RING_CAMILLA_TARGET_LEVEL,
-        resolve_ring_wire,
-    )
+    from jasper.fanin_coupling import RING_CAMILLA_GEOMETRY, resolve_ring_wire
 
     # BOTH HALVES ARE THE RING (ADR-0100) — capture is Ring A and playback is
-    # Ring B, both off the module defaults — so the geometry is the ring's own
-    # hardware-validated low-latency set. The ioplug pins the ring's period bytes
-    # min==max, so a 1024-frame chunk cannot negotiate either ring.
+    # Ring B, both off the module defaults — so this graph passes the certified
+    # ring geometry explicitly rather than resolving a box floor. The ioplug pins
+    # the ring's period bytes min==max, so a 1024-frame chunk cannot negotiate
+    # either ring.
     #
     # The wire comes from the same resolver `capture_kwargs_for_coupling` reads,
     # so the seeded startup graph and a live `/sound/` re-emit cannot declare
@@ -879,10 +874,7 @@ def emit_flat_outputd_cutover_config(
         SoundProfile(enabled=False),
         capture_format=wire.sample_format,
         playback_format=wire.sample_format,
-        chunksize=RING_CAMILLA_CHUNKSIZE,
-        target_level=RING_CAMILLA_TARGET_LEVEL,
-        queuelimit=RING_CAMILLA_QUEUELIMIT,
-        enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
+        **RING_CAMILLA_GEOMETRY,
         muted_outputs=plan.muted_outputs,
         mono_fold_output=plan.mono_fold_output,
         program_dest_map=plan.program_dest_map,

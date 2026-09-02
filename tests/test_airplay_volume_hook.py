@@ -153,11 +153,14 @@ def test_hook_ignores_a_missing_runtime_directory(tmp_path):
 
 class _Recorder(BaseHTTPRequestHandler):
     posts: list[tuple[str, dict]] = []
+    # One arrival time per post, same index — how a pin says "immediately".
+    times: list[float] = []
     statuses: list[int] = []
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8")
+        type(self).times.append(time.monotonic())
         type(self).posts.append((self.path, json.loads(body)))
         status = type(self).statuses.pop(0) if type(self).statuses else 200
         payload = b'{"percent": 0}'
@@ -179,6 +182,7 @@ def control_stub():
     past the end of that list answers 200.
     """
     _Recorder.posts = []
+    _Recorder.times = []
     _Recorder.statuses = []
     server = HTTPServer(("127.0.0.1", 0), _Recorder)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -209,10 +213,10 @@ def test_session_start_marks_only_the_first_observation_as_initial(
     control_stub, tmp_path,
 ):
     """shairport fires `run_this_before_play_begins` ahead of the connect-time
-    volume push. That one write carries `observation_initial`, which the
-    coordinator defers while a mute is latched — so connecting a sender no
-    longer clears a mute asserted at the speaker. A later nudge must NOT carry
-    it, or volume-up-while-muted would do nothing."""
+    volume push. The session's opening write carries `observation_initial`,
+    which the coordinator defers while a mute is latched — so connecting a
+    sender no longer clears a mute asserted at the speaker. A later nudge must
+    NOT carry it, or volume-up-while-muted would do nothing."""
     _run_hook("--session-start", runtime_dir=tmp_path)
     _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
     _run_hook("-15.000000", runtime_dir=tmp_path, port=control_stub.server_port)
@@ -262,6 +266,34 @@ def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
     assert [body["percent"] for _, body in _Recorder.posts] == [0, 100]
 
 
+def _db_for(percent: float) -> str:
+    """The dB shairport hands the hook for a sender slider at `percent`."""
+    db = AIRPLAY_DB_MIN + (AIRPLAY_DB_MAX - AIRPLAY_DB_MIN) * percent / 100
+    return f"{db:.6f}"
+
+
+def _fire_burst(
+    percents, *, runtime_dir: Path, port: int, spacing: float,
+) -> None:
+    """Fire one hook invocation per volume message, the way shairport does.
+
+    Messages are scheduled against an absolute clock, so Popen's own cost
+    doesn't stretch the burst the assertions are written about.
+    """
+    env = _hook_env(runtime_dir, port)
+    started = time.monotonic()
+    running = []
+    for index, percent in enumerate(percents):
+        delay = started + index * spacing - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        running.append(
+            subprocess.Popen(["sh", str(HOOK), _db_for(percent)], env=env)
+        )
+    for process in running:
+        assert process.wait(timeout=60) == 0
+
+
 @requires_flock
 def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     control_stub, tmp_path,
@@ -275,20 +307,115 @@ def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
     harder (fewer posts), and the holder re-reads the published value after
     releasing the lock, so the last post is the last value either way.
     """
-    messages = [f"{-30.0 + 30.0 * i / 20.0:.6f}" for i in range(21)]
-    env = _hook_env(tmp_path, control_stub.server_port)
+    messages = list(range(0, 101, 5))
 
-    running = []
-    for db in messages:
-        running.append(subprocess.Popen(["sh", str(HOOK), db], env=env))
-        time.sleep(0.05)
-    for process in running:
-        assert process.wait(timeout=60) == 0
+    _fire_burst(
+        messages,
+        runtime_dir=tmp_path,
+        port=control_stub.server_port,
+        spacing=0.05,
+    )
 
     percents = [body["percent"] for _, body in _Recorder.posts]
     assert percents, "the drag produced no volume write at all"
     assert len(percents) < len(messages)
     assert percents[-1] == 100
+    assert percents == sorted(percents)
+
+
+# The connect animation macOS plays at every AirPlay session start, measured
+# on jts3: ten volume messages 200 ms apart walking the sender's slider up
+# from the bottom of its scale to where the user actually left it (63 %).
+CONNECT_FADE_UP = [6, 13, 19, 25, 31, 38, 44, 50, 57, 63]
+FADE_SPACING_S = 0.2
+
+
+@requires_flock
+def test_a_session_start_fade_up_is_adopted_once_at_its_settled_level(
+    control_stub, tmp_path,
+):
+    """A session start is not a drag. Replaying the connect animation took the
+    master down ~28 dB and swelled it back over two seconds — audible on every
+    connect. The speaker adopts the level the animation settles on, once, and
+    that write still carries `observation_initial`.
+
+    This is a first-ever session, so there is no remembered level to restore
+    ahead of the animation and the settled write is the whole story. The pin
+    below covers the session that has one.
+    """
+    _run_hook("--session-start", runtime_dir=tmp_path)
+
+    _fire_burst(
+        CONNECT_FADE_UP,
+        runtime_dir=tmp_path,
+        port=control_stub.server_port,
+        spacing=FADE_SPACING_S,
+    )
+
+    assert [body["percent"] for _, body in _Recorder.posts] == [
+        CONNECT_FADE_UP[-1],
+    ]
+    assert _Recorder.posts[0][1].get("observation_initial") is True
+
+
+@requires_flock
+def test_a_reconnect_restores_the_remembered_level_before_the_animation(
+    control_stub, tmp_path,
+):
+    """Holding the animation is only half the fix. The Mac sends the mute
+    sentinel when the owner disconnects, so the speaker sits at 0 % between
+    sessions; on the next connect shairport starts the audio while the fade-up
+    is still animating, and waiting for it to settle left ~2 s of silence over
+    live content. So the session's first act is to restore the level the owner
+    last listened at — before the hold, not after it — and the animation the
+    hold swallows never reaches the speaker.
+    """
+    level = CONNECT_FADE_UP[-1]
+    port = control_stub.server_port
+    _run_hook(_db_for(level), runtime_dir=tmp_path, port=port)
+    _run_hook("-144.000000", runtime_dir=tmp_path, port=port)
+    assert [body["percent"] for _, body in _Recorder.posts] == [level, 0]
+    opened = len(_Recorder.posts)
+
+    _run_hook("--session-start", runtime_dir=tmp_path)
+    started = time.monotonic()
+    _fire_burst(
+        CONNECT_FADE_UP,
+        runtime_dir=tmp_path,
+        port=port,
+        spacing=FADE_SPACING_S,
+    )
+
+    session = _Recorder.posts[opened:]
+    # One write: the restore. The settled level is the same value, so the
+    # post that used to be the session's only one is skipped as delivered.
+    assert [body["percent"] for _, body in session] == [level]
+    # Still the session's opening write, so a mute latched at the speaker is
+    # still left alone (ADR-0206).
+    assert session[0][1].get("observation_initial") is True
+    # Inside the animation's first few steps — where the settle-only hook
+    # posted nothing at all until the animation had run its ~2 s course.
+    assert _Recorder.times[opened] - started < FADE_SPACING_S * 4
+
+
+@requires_flock
+def test_the_same_ramp_without_a_session_start_still_tracks_the_slider(
+    control_stub, tmp_path,
+):
+    """Unmuting at the sender replays the same ramp shape with no marker in
+    front of it. That is a live volume change, not a connect snapshot, so it
+    must keep following the slider from where the ramp starts."""
+    _fire_burst(
+        CONNECT_FADE_UP,
+        runtime_dir=tmp_path,
+        port=control_stub.server_port,
+        spacing=FADE_SPACING_S,
+    )
+
+    percents = [body["percent"] for _, body in _Recorder.posts]
+    assert len(percents) > 1
+    assert percents[0] < percents[-1]
+    assert percents[-1] == CONNECT_FADE_UP[-1]
     assert percents == sorted(percents)
 
 

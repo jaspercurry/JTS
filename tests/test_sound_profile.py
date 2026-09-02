@@ -119,8 +119,8 @@ def test_build_filters_uses_curve_then_simple_then_advanced():
     names = [spec.name for spec in build_sound_filters(profile)]
 
     assert names == [
-        "sound_curve_harman_bass",
-        "sound_curve_harman_tilt",
+        "sound_curve_bass",
+        "sound_curve_tilt",
         "sound_simple_bass",
         "sound_simple_treble",
         "sound_advanced_1",

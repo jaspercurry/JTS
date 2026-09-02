@@ -17,7 +17,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/_lib.sh
-. "${SCRIPT_DIR}/_lib.sh"
+JTS_LIB_TARGET_OPTIONAL=1 . "${SCRIPT_DIR}/_lib.sh"  # analyses a local corpus; never targets a speaker
 
 PY="$(resolve_repo_python)"
 

@@ -572,60 +572,6 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
     ]
 
 
-def test_usb_mic_leg_restart_runs_even_when_reset_failed_fails(
-    monkeypatch,
-    server_with_coordinator,
-):
-    """A reset-failed that cannot run must not swallow the bridge restart.
-
-    `jasper-aec-bridge` is long-running and normally stays loaded, so this is
-    the consistency half of #3237's oneshot fault rather than a live one --
-    but the endpoint reported `usb_mic_leg_restart_failed` for a restart it
-    had never attempted.
-    """
-    base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
-
-    state = {"leg": "primary"}
-    calls = []
-    choices = [
-        {"value": "primary", "label": "Same as JTS voice"},
-        {"value": "chip_aec_210", "label": "Rear hardware beam"},
-    ]
-    final_status = {
-        "usb_mic": {
-            "source_selection": {
-                "requested": "chip_aec_210",
-                "applied": {"value": "chip_aec_210"},
-            },
-        },
-    }
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
-    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
-    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
-    monkeypatch.setattr(
-        srv_mod,
-        "write_usb_mic_leg",
-        lambda leg: state.__setitem__("leg", leg),
-    )
-
-    def manage(unit, **kwargs):
-        calls.append((unit, kwargs["verb"]))
-        return {"ok": kwargs["verb"] != "reset-failed"}
-
-    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", manage)
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
-
-    status, body = _post(f"{base}/aec/usb-mic-leg", {"leg": "chip_aec_210"})
-
-    assert status == 200
-    assert body == final_status
-    assert calls == [
-        ("jasper-aec-bridge.service", "reset-failed"),
-        ("jasper-aec-bridge.service", "restart"),
-    ]
-
-
 def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
     monkeypatch,
     server_with_coordinator,

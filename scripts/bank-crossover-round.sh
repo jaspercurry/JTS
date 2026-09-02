@@ -39,6 +39,10 @@
 #   applied-profile.json    the applied baseline profile — what the speaker is
 #                           PLAYING, which the flow state cannot say
 #                           (/var/lib/jasper/active_speaker_baseline_profile.json)
+#   repeat-floor.json       the banked repeat floor — this rig's measured
+#                           touched-nothing repeat spread, which the evidence
+#                           packet's in_capture_repeat_floor reads
+#                           (/var/lib/jasper/active_speaker_repeat_floor.json)
 #   journal/<unit>.log      journal window for the units that speak during a
 #                           round, plus journal/combined.log
 #   power.txt               vcgencmd get_throttled + under-voltage grep counts
@@ -89,7 +93,8 @@ fi
 mkdir -p "$DEST"
 
 # B1: provenance manifest, written before any Pi round-trip so a banked
-# tree always names its own source even if every pull below fails.
+# tree always names its own source even if every pull below fails. The key set
+# a banked round carries is owned by jasper/active_speaker/round_bank.py.
 UTC_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SCRIPT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if [[ "$SCRIPT_SHA" != "unknown" ]] && ! git -C "$REPO_ROOT" diff-index --quiet HEAD -- 2>/dev/null; then
@@ -149,19 +154,26 @@ else
     echo "state: FAILED or not present" >&2
 fi
 
+# Pull one optional on-Pi artifact into $DEST/<name>; reported, never gated.
+# Prints the status line the summary shows.
+pull_optional() {  # <label> <remote-path> <local-name>
+    local label="$1" src="$2" name="$3" bytes
+    if remote "sudo cat $src 2>/dev/null" > "$DEST/$name" && [[ -s "$DEST/$name" ]]; then
+        bytes="$(wc -c < "$DEST/$name")"
+        echo "$label -> $DEST/$name ($bytes bytes)" >&2
+        echo "ok ($bytes bytes)"
+    else
+        rm -f "$DEST/$name"
+        echo "$label: FAILED or not present" >&2
+        echo "FAILED or not present"
+    fi
+}
+
 # --------------------------------------------------------------------- #
 # 3. Active-speaker design draft — the confirmed driver-safety profile.
 #    NOT part of the round's identity — reported, not gated.
 # --------------------------------------------------------------------- #
-design_draft_status="FAILED or not present"
-if remote "sudo cat /var/lib/jasper/active_speaker_design_draft.json 2>/dev/null" \
-        > "$DEST/design-draft.json" && [[ -s "$DEST/design-draft.json" ]]; then
-    design_draft_status="ok ($(wc -c < "$DEST/design-draft.json") bytes)"
-    echo "design-draft -> $DEST/design-draft.json ($(wc -c < "$DEST/design-draft.json") bytes)" >&2
-else
-    rm -f "$DEST/design-draft.json"
-    echo "design-draft: FAILED or not present" >&2
-fi
+design_draft_status="$(pull_optional design-draft /var/lib/jasper/active_speaker_design_draft.json design-draft.json)"
 
 # --------------------------------------------------------------------- #
 # 3b. Applied baseline profile — what the speaker is PLAYING. The flow
@@ -169,15 +181,15 @@ fi
 #     stash, one apply behind. NOT part of the round's identity —
 #     reported, not gated.
 # --------------------------------------------------------------------- #
-applied_profile_status="FAILED or not present"
-if remote "sudo cat /var/lib/jasper/active_speaker_baseline_profile.json 2>/dev/null" \
-        > "$DEST/applied-profile.json" && [[ -s "$DEST/applied-profile.json" ]]; then
-    applied_profile_status="ok ($(wc -c < "$DEST/applied-profile.json") bytes)"
-    echo "applied-profile -> $DEST/applied-profile.json ($(wc -c < "$DEST/applied-profile.json") bytes)" >&2
-else
-    rm -f "$DEST/applied-profile.json"
-    echo "applied-profile: FAILED or not present" >&2
-fi
+applied_profile_status="$(pull_optional applied-profile /var/lib/jasper/active_speaker_baseline_profile.json applied-profile.json)"
+
+# --------------------------------------------------------------------- #
+# 3c. Banked repeat floor — the rig's measured touched-nothing repeat
+#     spread, which the packet's in_capture_repeat_floor reads and derives
+#     the stopping plateau/benefit margin from. NOT part of the round's
+#     identity — reported, not gated.
+# --------------------------------------------------------------------- #
+repeat_floor_status="$(pull_optional repeat-floor /var/lib/jasper/active_speaker_repeat_floor.json repeat-floor.json)"
 
 # --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.
@@ -232,6 +244,7 @@ echo "  bundle:          $bundle_status" >&2
 echo "  state:           $state_status" >&2
 echo "  design-draft:    $design_draft_status" >&2
 echo "  applied-profile: $applied_profile_status" >&2
+echo "  repeat-floor:    $repeat_floor_status" >&2
 echo "  journal:         $journal_status" >&2
 
 if (( bundle_ok == 0 )) || (( state_ok == 0 )); then

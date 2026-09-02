@@ -60,6 +60,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
 )
 
 from ._logging import configure_verbose_logging
+from ._refusal import refused
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -109,14 +110,7 @@ compares its curve to nothing and says `{ACCEPTANCE_NOT_RUN}`, while
 
 
 def _refused(reason: str, detail: str) -> int:
-    print(
-        json.dumps(
-            {"status": "refused", "reason": reason, "detail": detail},
-            indent=2, sort_keys=True,
-        )
-    )
-    print(f"refused ({reason}): {detail}", file=sys.stderr)
-    return EXIT_REFUSED
+    return refused(reason, detail, exit_code=EXIT_REFUSED)
 
 
 def _candidate(args: argparse.Namespace) -> SummationCandidate:

@@ -25,8 +25,10 @@ from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
+    resolve_camilla_chunksize,
 )
 from ...config import Config
+from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ... import ring_assets
 from ...mics import xvf3800
 from ...output_hardware import (
@@ -39,10 +41,8 @@ from ...mic_presence import MicPresence, read_mic_presence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _active_audio_dac_env,
     _group_writable_dir,
     _parked_as_bonded_follower,
-    _active_audio_dac_id,
     _run,
 )
 from .correction import _active_camilla_config_path
@@ -671,10 +671,12 @@ def _output_hardware_state_or_none() -> OutputHardwareState | None:
         return None
 
 
-def _effective_output_dac_id(state: OutputHardwareState | None = None) -> str:
-    if state is not None and state.profile_id not in {"", "unknown"}:
-        return state.profile_id
-    return _active_audio_dac_id()
+def _observed_output_dac_id(state: OutputHardwareState | None) -> str:
+    """The DAC the reconciler last SAW, or ``unknown`` — never an env or Apple
+    default. Hardware diagnostics ask this, not whether the box drives it
+    (:attr:`OutputHardwareState.active_profile_id`) — a record the reconciler
+    parked still names the hardware it observed."""
+    return (state.observed_profile_id if state is not None else None) or "unknown"
 
 
 def _apple_output_profile_active(profile_id: str) -> bool:
@@ -785,7 +787,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
         )
 
     state = _output_hardware_state_or_none()
-    dac_id = _effective_output_dac_id(state)
+    dac_id = _observed_output_dac_id(state)
     if state is None:
         return CheckResult(
             "DAC USB sync mode", "warn",
@@ -847,35 +849,58 @@ def check_dac_usb_sync_mode() -> CheckResult:
 @doctor_check(order=21, group="audio")
 def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its
-    USB Audio class interfaces when something is plugged into the
-    analog 3.5mm jack. With no analog load, lsusb sees the chip but
-    aplay -l shows no card "A" — and CamillaDSP fails to open the
-    DAC with "Cannot get card index for A".
+    USB Audio class interface when something is plugged into the analog
+    3.5mm jack. With no analog load lsusb sees the chip but no audio card
+    enumerates, so the reconciler's record names no DAC at all.
 
-    This check distinguishes three states so the operator gets a
-    clear signal instead of a generic ALSA error:
+    States, so the operator gets a clear signal instead of a generic
+    ALSA error:
 
-      - dongle absent: USB device not detected → fail
-      - dongle USB-only: idVendor=05ac, idProduct=110a present but
-        no `aplay -l` card with USB Audio class → warn with the
-        actionable message (plug in speakers/headphones)
-      - dongle audio active: card visible → ok
+      - the record names an Apple profile but lsusb shows fewer adapters
+        than that profile needs → fail
+      - the record names an Apple profile and every card it needs → ok,
+        whatever the record's status (this reads observed hardware, not
+        whether the reconciler is driving it)
+      - the record names an Apple profile short of a card (a parked
+        dual-Apple pair) → warn
+      - the record names no DAC and the chip is on USB → warn (plug in
+        speakers/headphones)
+      - the record names no DAC and no chip is on USB, or names another
+        DAC → ok, skipped
     """
     state = _output_hardware_state_or_none()
-    dac_id = _effective_output_dac_id(state)
-    if not _apple_output_profile_active(dac_id):
+    dac_id = _observed_output_dac_id(state)
+    if dac_id != "unknown" and not _apple_output_profile_active(dac_id):
         return CheckResult(
             "Apple dongle", "ok",
             f"skipped — active output DAC is {dac_id}",
         )
 
-    p = _run(["lsusb"])
-    profile = _dac_profile_for(dac_id)
+    # With nothing in its 3.5mm jack the dongle enumerates no audio card, so a
+    # record naming no DAC cannot see it; the USB bus can.
+    profile = _dac_profile_for(
+        APPLE_USB_C_DONGLE_DEVICE_ID if dac_id == "unknown" else dac_id
+    )
     usb_ids = profile.usb_ids if profile is not None else ()
+    p = _run(["lsusb"])
     usb_count = sum(
         len(re.findall(re.escape(usb_id), p.stdout, re.IGNORECASE))
         for usb_id in usb_ids
     )
+    if dac_id == "unknown":
+        if usb_count == 0:
+            return CheckResult(
+                "Apple dongle", "ok",
+                "skipped — no active output DAC and no Apple dongle on USB",
+            )
+        return CheckResult(
+            "Apple dongle", "warn",
+            f"{usb_count} Apple USB-C adapter(s) on USB but the output-hardware "
+            "record names no audio card for them. Plug speakers/headphones into "
+            "the dongle's 3.5mm jack — the chip stays in low-power mode without "
+            "an analog load — then run "
+            "`sudo systemctl start jasper-audio-hardware-reconcile`.",
+        )
     expected_count = 2 if dac_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID else 1
     if usb_count < expected_count:
         return CheckResult(
@@ -890,28 +915,11 @@ def check_apple_dongle_audio() -> CheckResult:
             "ok",
             f"USB + audio interfaces present ({','.join(cards)})",
         )
-    if state is not None:
-        return CheckResult(
-            "Apple dongle",
-            "warn",
-            f"USB present but only {len(cards)} Apple audio card(s) enumerated; "
-            "check analog loads on the 3.5mm jack(s).",
-        )
-    p = _run(["aplay", "-l"])
-    audio_count = len(
-        re.findall(
-            r"(?:USB Audio.*USB Audio|Apple USB-C to 3\.5mm|Apple.*USB)",
-            p.stdout,
-            re.IGNORECASE,
-        )
-    )
-    if audio_count >= expected_count:
-        return CheckResult("Apple dongle", "ok", "USB + audio interfaces present")
     return CheckResult(
-        "Apple dongle", "warn",
-        "USB present but audio interfaces not enumerated. "
-        "Plug speakers/headphones into the dongle's 3.5mm jack — "
-        "the chip stays in low-power mode without an analog load.",
+        "Apple dongle",
+        "warn",
+        f"USB present but only {len(cards)} Apple audio card(s) enumerated; "
+        "check analog loads on the 3.5mm jack(s).",
     )
 
 @doctor_check(order=22, group="audio", exclusive_group="audio-probe")
@@ -927,8 +935,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
     setting and is what triggered the audible-loudness gap that led to
     this check existing."""
     state = _output_hardware_state_or_none()
-    dac = _active_audio_dac_env()
-    dac_id = _effective_output_dac_id(state)
+    dac_id = _observed_output_dac_id(state)
     control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
     if not _apple_output_profile_active(dac_id) or not control_groups:
         return CheckResult(
@@ -950,7 +957,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
         )
 
     target_pct = int(control.target_percent or 100)
-    cards = _apple_dongle_cards_from_state(state) or [dac["card"]]
+    cards = _apple_dongle_cards_from_state(state)
     low_cards: list[str] = []
     for card_id in cards:
         p = _run(["amixer", "-c", card_id, "sget", control.name])
@@ -1083,6 +1090,101 @@ def check_camilla_volume_limit() -> CheckResult:
         "CamillaDSP volume_limit", "ok",
         f"{config_path} devices.volume_limit={limit:.1f} dB",
     )
+
+@doctor_check(order=28.2, group="audio")
+def check_camilla_ring_chunk_fits() -> CheckResult:
+    """Verify a ring-crossing Camilla config asks for a chunk the ring can hold.
+
+    CamillaDSP sets ``avail_min`` to its chunksize and ALSA refuses an
+    ``avail_min`` above the device's buffer, so a config naming a ring PCM with
+    a chunk over the ring's capacity does not degrade — CamillaDSP exits at open
+    and systemd restart-loops it, and the speaker emits nothing at all.
+
+    The emitters cannot land that config any more
+    (``resolve_camilla_latency_for_devices`` clamps the resolved chunk), so this
+    is the standing surface for the case the clamp cannot reach: a config
+    written by an OLDER build and still on disk. That is not hypothetical — it
+    is jts4 on 2026-09-01, whose InnoMaker floor put chunk 1024 on
+    ``jts_ring_playback`` and took the box silent through ten restarts while
+    every other check stayed green.
+
+    Removal condition: delete this check once no supported upgrade path can
+    still carry a pre-clamp config onto a box.
+    """
+    label = "camilla ring chunk"
+    statefile, config_path = _active_camilla_config_path()
+    if config_path is None:
+        return CheckResult(label, "warn", f"could not read config_path from {statefile}")
+    path = Path(config_path)
+    if not path.exists():
+        return CheckResult(
+            label, "fail", f"statefile points at missing config {config_path}"
+        )
+    try:
+        devices = parse_camilla_devices_config(path.read_text())
+    except (OSError, ValueError) as e:
+        return CheckResult(label, "fail", f"could not read {config_path}: {e}")
+
+    ring_ends = [
+        name
+        for name in (devices.get("capture_device"), devices.get("playback_device"))
+        if name in RING_PCM_DEVICES
+    ]
+    chunksize = devices.get("chunksize")
+    if not ring_ends or chunksize is None:
+        return CheckResult(
+            label, "ok",
+            f"{config_path} names no ring end (chunksize={chunksize})",
+        )
+    # CamillaDSP's own ceiling on the pair, measured against 4.1.3 on jts4 and
+    # exact across chunk 128/256/512 and queuelimit 1/2/4. Checked here because
+    # a config can carry a chunk that fits the ring and STILL be refused: that
+    # is exactly the state jts4 landed in on 2026-09-01 (256 / 4096), where the
+    # ring half of this check passed while the box crash-looped. If a future
+    # CamillaDSP moves this formula, this line reports a wrong number loudly
+    # rather than going quiet.
+    queuelimit = devices.get("queuelimit")
+    target_level = devices.get("target_level")
+    if queuelimit is not None and target_level is not None:
+        ceiling = int(chunksize) * (int(queuelimit) + 4)
+        if int(target_level) > ceiling:
+            return CheckResult(
+                label, "fail",
+                f"{config_path} sets devices.target_level={target_level} with "
+                f"chunksize={chunksize} and queuelimit={queuelimit}; CamillaDSP "
+                f"refuses a target above {ceiling} and will restart-loop. "
+                "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
+                speaker_silent=True,
+            )
+
+    capacity = ring_capacity_frames()
+    if int(chunksize) > capacity:
+        return CheckResult(
+            label, "fail",
+            f"{config_path} sets devices.chunksize={chunksize} on "
+            f"{'/'.join(ring_ends)}, above the ring's {capacity}-frame capacity. "
+            "CamillaDSP cannot open the ring with it and will restart-loop. "
+            "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
+            speaker_silent=True,
+        )
+    # Say so when the clamp is what put this number here. Otherwise the box runs
+    # a chunk its own DacProfile does not declare, with the only explanation in
+    # source comments — the reading gap that let this bug live. Asked of the
+    # SAME resolver the emitters fall back to, never of a second derivation of
+    # "which DAC is active": disagreeing answers to that question are the whole
+    # bug, and a disclosure that re-derived it could name a floor no emitter used.
+    unclamped = resolve_camilla_chunksize()
+    clamped = (
+        f", clamped from the {unclamped} this box resolves to"
+        if unclamped > capacity
+        else ""
+    )
+    return CheckResult(
+        label, "ok",
+        f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
+        f"({'/'.join(ring_ends)}){clamped}",
+    )
+
 
 @doctor_check(order=28.5, group="audio")
 def check_active_speaker_runtime_graph() -> CheckResult:

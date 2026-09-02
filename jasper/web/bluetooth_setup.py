@@ -55,6 +55,7 @@ from ._common import (
     JsonBodyError,
     begin_request,
     bonded_follower_active,
+    bonded_follower_park_reason,
     canonical_header,
     canonical_page,
     guard_mutating_request,
@@ -209,6 +210,29 @@ def _effective_bluetooth_state(
     return effective, "; ".join(reasons)
 
 
+def _annotate_pairing_readiness(
+    payload: dict[str, Any],
+    unit_snapshot: UnitSnapshot,
+) -> None:
+    """Stamp one structured pairing-readiness verdict onto a state payload.
+
+    Only a registered agent can answer a pairing authorization, so
+    `advertise_units` is the narrow set that gates a NEW bond; scanning and
+    reconnecting need none of it. A field of its own because the UI gates on
+    a value, never on `degradedReason` prose.
+
+    Two cases carry no verdict: parked (a parked snapshot must not probe
+    source units at all) and a failed probe, where `active` cannot tell
+    "stopped" from "absent from the output".
+    """
+    if payload.get("parked") or unit_snapshot.error:
+        return
+    payload["pairingReady"] = all(
+        unit_snapshot.active(unit)
+        for unit in _BLUETOOTH_LIFECYCLE.advertise_units
+    )
+
+
 def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     """Return one desired/effective snapshot and its HTTP status.
 
@@ -230,7 +254,8 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             "discovering": False,
         }, HTTPStatus.BAD_GATEWAY)
 
-    parked = bonded_follower_active()
+    park_reason = bonded_follower_park_reason()
+    parked = bool(park_reason)
     unit_snapshot = probe_unit_snapshot(_STATE_UNITS)
     availability = probe_bluetooth_availability(unit_snapshot.available)
     try:
@@ -262,6 +287,8 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             payload["degradedReason"] = degraded_reason
         if not availability.available:
             payload["unavailableReason"] = bluetooth_unavailable_reason(availability)
+        if parked:
+            payload["parkReason"] = park_reason
         return payload, HTTPStatus.OK
 
     state = dict(raw)
@@ -285,6 +312,11 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
         state["degradedReason"] = degraded_reason
     else:
         state.pop("degradedReason", None)
+    if parked:
+        state["parkReason"] = park_reason
+    else:
+        state.pop("parkReason", None)
+    _annotate_pairing_readiness(state, unit_snapshot)
     return state, HTTPStatus.OK
 
 

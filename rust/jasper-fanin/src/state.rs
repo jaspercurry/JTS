@@ -385,6 +385,10 @@ impl StateServer {
                 let label = cmd.trim_start_matches("TRIM ").trim();
                 self.trim_command(Some(label))
             }
+            cmd if cmd.starts_with("DECAY_SNAP ") => {
+                let label = cmd.trim_start_matches("DECAY_SNAP ").trim();
+                self.decay_snap_command(label)
+            }
             "TAP_DISARM" => self.tap_disarm_command(),
             cmd if cmd.starts_with("TAP_ARM ") => {
                 // Everything after the verb is the arm JSON body (rest of line).
@@ -431,10 +435,11 @@ impl StateServer {
 
     /// Handle a `MUTE <label>` (`muted=true`) / `UNMUTE <label>` (`muted=false`)
     /// control command. Sets the target lane's shared `muted` flag; the mixer
-    /// work loop reads it at the SUM stage and drops the lane's contribution
-    /// while set (`lane_mix_contributes`), WITHOUT touching the lane's `frames_read`
-    /// / `rms_dbfs_x100` telemetry — so mux still sees a muted-but-streaming host
-    /// as active (the combo-arbitration invariant).
+    /// work loop reads it at the SUM stage (`lane_mix_contributes`) and fades the
+    /// lane's contribution out over `mixer::lane_fade`'s 10 ms window — a mute
+    /// lands within a period or two, not within a sample — WITHOUT touching the
+    /// lane's `frames_read` / `rms_dbfs_x100` telemetry, so mux still sees a
+    /// muted-but-streaming host as active (the combo-arbitration invariant).
     ///
     /// Idempotent: re-issuing the same state is a no-op store; the transition is
     /// logged ONCE (only when the flag actually flips), so mux's per-tick
@@ -557,6 +562,43 @@ impl StateServer {
             dropped,
         );
         format!("OK trimmed={}", dropped)
+    }
+
+    /// Handle `DECAY_SNAP <label>` — force one still-locked cushion snap-back on
+    /// that lane, the only way to provoke a refill window on demand (ADR-0214).
+    /// Same control→work-loop handshake as `TRIM`: set the flag, wait bounded for
+    /// the loop to consume it, then report the window it actually opened. Reply
+    /// is plaintext, `OK refilling=<bool>` or `ERR <reason>`; `refilling=false`
+    /// is a legitimate no-op (decay off, or the target already at the ceiling).
+    fn decay_snap_command(&self, label: &str) -> String {
+        let target = match self.inputs.iter().find(|inp| inp.label == label) {
+            Some(inp) => inp,
+            None if label.is_empty() => return "ERR missing input label".to_string(),
+            None => return format!("ERR unknown input label {}", label),
+        };
+        target
+            .trim
+            .decay_snap_pending
+            .store(true, Ordering::Release);
+        let deadline = Instant::now() + TRIM_WAIT_TIMEOUT;
+        while target.trim.decay_snap_pending.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(TRIM_WAIT_POLL);
+        }
+        if target.trim.decay_snap_pending.load(Ordering::Acquire) {
+            return format!(
+                "ERR decay snap not serviced within {}ms (mixer loop idle?)",
+                TRIM_WAIT_TIMEOUT.as_millis(),
+            );
+        }
+        let refilling = target
+            .resampler
+            .as_ref()
+            .is_some_and(|r| r.decay_refilling.load(Ordering::Relaxed));
+        info!(
+            "event=fanin.decay_snap.request result=ok label={} refilling={}",
+            label, refilling,
+        );
+        format!("OK refilling={}", refilling)
     }
 
     /// Handle `TAP_ARM {json}` (C4). Parses the remainder of the line with the
@@ -893,11 +935,22 @@ impl StateServer {
                 // subtracted from the host-clock observable, #3466);
                 // floor = the configured decay floor;
                 // frozen_reason = why decay is paused ("" while actively decaying,
-                // else unlocked / not_l0 / cascade / warmup / at_floor).
+                // else unlocked / not_l0 / cascade / warmup / at_floor);
+                // refilling = the declared refill window (ADR-0214) — while it is
+                // true a railed ratio_ppm and a growing clamp_count are expected;
+                // refill_force_clears = windows the hard cap ended.
                 buf.push_str(r#""decay":{"#);
                 push_kv_bool(buf, "enabled", r.decay_enabled);
                 buf.push(',');
                 push_kv_bool(buf, "active", r.decay_active.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_bool(buf, "refilling", r.decay_refilling.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "refill_force_clears",
+                    r.decay_refill_force_clears.load(Ordering::Relaxed),
+                );
                 buf.push(',');
                 let demand_ppm = r.decay_demand_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0;
                 push_kv_f64(buf, "demand_ppm", demand_ppm, 2);
@@ -1448,6 +1501,8 @@ mod tests {
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                         decay_demand_milli_ppm: Arc::new(AtomicI64::new(0)),
+                        decay_refilling: Arc::new(AtomicBool::new(false)),
+                        decay_refill_force_clears: Arc::new(AtomicU64::new(0)),
                     }),
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
@@ -1524,6 +1579,9 @@ mod tests {
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                         decay_demand_milli_ppm: Arc::new(AtomicI64::new(125_330)),
+                        // Mid-descent, ring at the setpoint: NOT refilling.
+                        decay_refilling: Arc::new(AtomicBool::new(false)),
+                        decay_refill_force_clears: Arc::new(AtomicU64::new(0)),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                     // The USB DIRECT (combo) lane starts unmuted; the mute-path
@@ -1727,7 +1785,7 @@ mod tests {
         // frozen_reason.
         assert!(
             j.contains(
-                r#""decay":{"enabled":false,"active":false,"demand_ppm":0.00,"floor_frames":0,"frozen_reason":""}"#
+                r#""decay":{"enabled":false,"active":false,"refilling":false,"refill_force_clears":0,"demand_ppm":0.00,"floor_frames":0,"frozen_reason":""}"#
             ),
             "missing inactive decay block on the airplay fixture: {j}"
         );
@@ -1746,7 +1804,7 @@ mod tests {
         // an operator can see the decontamination magnitude on /state.
         assert!(
             j.contains(
-                r#""decay":{"enabled":true,"active":true,"demand_ppm":125.33,"floor_frames":544,"frozen_reason":""}"#
+                r#""decay":{"enabled":true,"active":true,"refilling":false,"refill_force_clears":0,"demand_ppm":125.33,"floor_frames":544,"frozen_reason":""}"#
             ),
             "missing active decay block (with live demand) on the direct fixture: {j}"
         );
@@ -2242,6 +2300,46 @@ mod tests {
             "got: {resp}"
         );
         assert!(resp.contains("dropped_so_far=0"), "got: {resp}");
+    }
+
+    /// `DECAY_SNAP <label>` is the hardware lever for the refill window
+    /// (ADR-0214): it arms the lane's request flag and reports what the work loop
+    /// did, never claiming success on an unserviced request. Same
+    /// control→work-loop handshake as TRIM, so the same three shapes are pinned.
+    #[test]
+    fn decay_snap_command_arms_the_lane_and_reports_the_serviced_window() {
+        let server = make_test_server();
+        assert_eq!(
+            server.decay_snap_command("nope"),
+            "ERR unknown input label nope"
+        );
+        // Serviced by a stand-in work loop: the reply carries the lane's live
+        // window flag, not "the request was queued".
+        let usbsink = server
+            .inputs
+            .iter()
+            .find(|i| i.label == "usbsink")
+            .expect("usbsink fixture");
+        let trim = Arc::clone(&usbsink.trim);
+        let refilling = Arc::clone(
+            &usbsink
+                .resampler
+                .as_ref()
+                .expect("armed resampler")
+                .decay_refilling,
+        );
+        std::thread::spawn(move || {
+            while !trim.decay_snap_pending.load(Ordering::Acquire) {
+                std::thread::sleep(TRIM_WAIT_POLL);
+            }
+            refilling.store(true, Ordering::Relaxed);
+            trim.decay_snap_pending.store(false, Ordering::Release);
+        });
+        assert_eq!(server.decay_snap_command("usbsink"), "OK refilling=true");
+        // Nothing servicing it: honest timeout, not a claimed snap.
+        assert!(server
+            .decay_snap_command("spotify")
+            .starts_with("ERR decay snap not serviced within"));
     }
 
     #[test]

@@ -49,7 +49,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
-from jasper.audio_measurement import program
+from jasper.audio_measurement import gating, program
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_FAIL,
     CaptureIntegrity,
@@ -376,6 +376,8 @@ def _cloud_record(**overrides):
         "captured_at": 1.0, "session_id": "sess", "gate_window_ms": 12.0,
         "gate_floor_source": "reflection", "gate_disclosure": "a wall",
         "gate_moved_rms_db": 2.59, "gate_reflection_delay_ms": 5.33,
+        "gate_entanglement_floor_hz": 1000.0,
+        "gate_entanglement_floor_source": gating.ENTANGLEMENT_SOURCE_MEASURED,
         "validity_floor_hz": 100.0, "gating_applied": True,
         "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
     }
@@ -803,6 +805,29 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
 
     assert [c["role"] for c in record["curves"]] == ["woofer", "tweeter"]
     assert all("phase_deg" in c for c in record["curves"])
+
+
+@pytest.mark.parametrize("vertical_deg", [0, 20, -20])
+def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
+    vertical_deg,
+):
+    """A COMPOUND pose states both numbers, and the axis word does not move.
+
+    ``position_axis`` names the plane a pose's stated BEARING lies in, and
+    every pose reaching this builder commands one — ``vertical`` is reserved
+    for a pose that commands NO bearing (``PositionGeometry``). So a pose swung
+    AND raised stays ``horizontal`` and carries the rise beside the bearing;
+    flipping the axis word instead would delete the bearing from the record.
+
+    0 is the honest default rather than an unstated fact: a pose nobody raised
+    IS at mark height, which is why the field needs no ``None``.
+    """
+    record = _pose_record(vertical_deg=vertical_deg)
+
+    assert record["vertical_deg"] == vertical_deg
+    assert record["position_deg"] == -22
+    assert record["position_axis"] == spatial.POSITION_AXIS_HORIZONTAL
+    assert _pose_record()["vertical_deg"] == 0
 
 
 def _sweep_program(*segments):

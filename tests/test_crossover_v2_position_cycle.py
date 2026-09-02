@@ -23,10 +23,12 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     expand_angle_spec,
     position_cycle_document,
     read_entry_baseline_take,
+    read_pose_curve_pair,
     read_position_cycle,
     staged_stops,
     takes_by_position,
 )
+from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.spatial import (
     LATERAL_POSE_REGIME,
     LateralPose,
@@ -99,7 +101,9 @@ def test_staged_stops_counts_what_the_walk_will_serve():
 # --------------------------------------------------------------------------- #
 
 
-def _record(index: int, position_deg: int, *, attempt: int = 1) -> dict:
+def _record(
+    index: int, position_deg: int, *, attempt: int = 1, vertical_deg: int = 0,
+) -> dict:
     """One take, built by the SPEAKER's own producer.
 
     Not a hand-written dict: ``lateral_pose_record`` is the thing whose fields
@@ -117,7 +121,8 @@ def _record(index: int, position_deg: int, *, attempt: int = 1) -> dict:
         curves=(),
     )
     return lateral_pose_record(
-        pose, position_deg=position_deg, lateral_consumer="forward_model",
+        pose, position_deg=position_deg, vertical_deg=vertical_deg,
+        lateral_consumer="forward_model",
         session_id="sess-1", graph_fingerprint="fp-applied",
         captured_at="2026-08-26T00:00:00Z",
         wav_sha256=f"sha-{index}-{attempt}",
@@ -173,12 +178,46 @@ def test_the_index_projects_the_speakers_own_take_records(tmp_path):
     ]
     assert document["takes"] == [
         {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "position_deg": 0,
-         "role": "onax", "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-1-1"},
+         "vertical_deg": 0, "role": "onax", "regime": LATERAL_POSE_REGIME,
+         "wav_sha256": "sha-1-1"},
         {"index": 2, "attempt": 1, "take_id": "lateral_02_a01", "position_deg": 7,
-         "role": "offax", "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-2-1"},
+         "vertical_deg": 0, "role": "offax", "regime": LATERAL_POSE_REGIME,
+         "wav_sha256": "sha-2-1"},
         {"index": 3, "attempt": 1, "take_id": "lateral_03_a01", "position_deg": -7,
-         "role": "offax", "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-3-1"},
+         "vertical_deg": 0, "role": "offax", "regime": LATERAL_POSE_REGIME,
+         "wav_sha256": "sha-3-1"},
     ]
+
+
+@pytest.mark.parametrize("vertical_deg", [0, 20, -20])
+def test_a_raised_pose_carries_its_elevation_into_the_index(
+    tmp_path, vertical_deg
+):
+    """The projection carries BOTH bearings — a two-axis walk indexed on one
+    would read as a walk taken entirely at mark height."""
+    _bank(tmp_path, [_record(1, 22, vertical_deg=vertical_deg)])
+
+    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
+
+    assert take["vertical_deg"] == vertical_deg
+    assert take["position_deg"] == 22
+
+
+def test_a_take_banked_before_elevation_existed_indexes_as_mark_height(tmp_path):
+    """History reads, and reads HONESTLY: absent is 0, never ``None``.
+
+    Asserted against a record with the key REMOVED, not one written 0 — a walk
+    that could not state a rise did not take one, so the two are the same fact
+    and a reader must not have to tell a missing number from an unstated one.
+    Refusing the round instead would trade a whole banked walk for one number
+    it never had.
+    """
+    legacy = {k: v for k, v in _record(1, 7).items() if k != "vertical_deg"}
+    _bank(tmp_path, [legacy])
+
+    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
+
+    assert take["vertical_deg"] == 0
 
 
 def test_every_indexed_value_is_present_in_the_banked_record(tmp_path):
@@ -598,6 +637,23 @@ def test_a_take_carrying_an_extra_field_is_refused(tmp_path, document):
         read_position_cycle(_written(tmp_path, document))
 
 
+def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document):
+    """The strict reader's one exemption, at the MISSING end only.
+
+    Strictness exists so a NEWER document is never read as an older one, and
+    the test above keeps that: an unknown key still refuses. What this exempts
+    is the opposite direction — a document written before a defaulted field
+    existed, which a newer reader understands completely. Refusing it would
+    throw away a banked round to gain one number the round never had.
+    """
+    document["takes"] = [
+        {k: v for k, v in take.items() if k != "vertical_deg"}
+        for take in document["takes"]
+    ]
+
+    assert read_position_cycle(_written(tmp_path, document)) == document
+
+
 def test_an_unreadable_file_is_this_modules_error_not_an_oserror(tmp_path):
     with pytest.raises(PositionCycleError):
         read_position_cycle(tmp_path / "absent.json")
@@ -622,8 +678,8 @@ def test_the_takes_that_share_one_pose_are_grouped_in_walk_order(tmp_path):
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
     ) == {
-        0: ("lateral_01_a01", "lateral_02_a01", "lateral_03_a01"),
-        7: ("lateral_04_a01", "lateral_05_a01", "lateral_06_a01"),
+        (0, 0): ("lateral_01_a01", "lateral_02_a01", "lateral_03_a01"),
+        (7, 0): ("lateral_04_a01", "lateral_05_a01", "lateral_06_a01"),
     }
 
 
@@ -632,7 +688,7 @@ def test_an_uncycled_walk_groups_to_one_take_per_pose(tmp_path):
 
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {0: ("lateral_01_a01",), 7: ("lateral_02_a01",)}
+    ) == {(0, 0): ("lateral_01_a01",), (7, 0): ("lateral_02_a01",)}
 
 
 def test_a_pose_revisited_later_in_the_walk_keeps_both_visits(tmp_path):
@@ -642,4 +698,85 @@ def test_a_pose_revisited_later_in_the_walk_keeps_both_visits(tmp_path):
 
     assert takes_by_position(
         position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {0: ("lateral_01_a01", "lateral_03_a01"), 7: ("lateral_02_a01",)}
+    ) == {(0, 0): ("lateral_01_a01", "lateral_03_a01"), (7, 0): ("lateral_02_a01",)}
+
+
+def test_a_raised_pose_is_its_own_group_at_the_same_bearing(tmp_path):
+    """0/0 and 0/+10 are two poses, not one bearing measured twice."""
+    _bank(tmp_path, [_record(1, 0), _record(2, 0, vertical_deg=10)])
+
+    assert takes_by_position(
+        position_cycle_document(tmp_path, derived_at=STAMP)
+    ) == {(0, 0): ("lateral_01_a01",), (0, 10): ("lateral_02_a01",)}
+
+
+
+# --------------------------------------------------------------------------- #
+# the pose key: a bearing AND a height
+# --------------------------------------------------------------------------- #
+
+
+_BOTH_ROLES = [{"role": "woofer"}, {"role": "tweeter"}]
+
+
+def _pose_bank(tmp_path: Path) -> Path:
+    """One walk at 0 deg: a mark-height take, then a NEWER raised one.
+
+    The mark-height record carries no ``vertical_deg`` KEY AT ALL — the shape
+    every round banked before elevated walks shipped — so selecting it at
+    ``vertical_deg=0`` also pins that absence reading as mark height rather
+    than as "unknown height".
+    """
+    mark = {k: v for k, v in _record(1, 0).items() if k != "vertical_deg"}
+    _bank(tmp_path, [
+        {**mark, "curves": _BOTH_ROLES},
+        {**_record(2, 0), "vertical_deg": 10, "curves": _BOTH_ROLES},
+    ])
+    return tmp_path / "bundle" / "sess-1"
+
+
+def _pair_take(bundle_dir: Path, **pose) -> list[str]:
+    found = read_pose_curve_pair(
+        bundle_dir, phase=PHASE_LATERAL, roles=("woofer", "tweeter"), **pose
+    )
+    return [] if found is None else [found[2]]
+
+
+def _indexed(bundle_dir: Path, **filters) -> list[str]:
+    return [row.path for row in bundle_measurements(bundle_dir, **filters)]
+
+
+@pytest.mark.parametrize(
+    ("select", "expected"),
+    [
+        pytest.param(
+            lambda d: _pair_take(d, position_deg=0),
+            ["lateral_01_a01"],
+            id="the_design_axis_pair_is_the_mark_height_take",
+        ),
+        pytest.param(
+            lambda d: _pair_take(d, position_deg=0, vertical_deg=10),
+            ["lateral_02_a01"],
+            id="the_raised_pose_answers_only_when_its_height_is_named",
+        ),
+        pytest.param(
+            lambda d: _indexed(d, vertical_deg=10),
+            ["lateral_02_a01"],
+            id="the_index_selects_the_raised_take_alone",
+        ),
+        pytest.param(
+            lambda d: _indexed(d, vertical_deg=0),
+            ["lateral_01_a01"],
+            id="a_record_lacking_the_key_indexes_as_mark_height",
+        ),
+    ],
+)
+def test_a_pose_is_selected_by_its_bearing_AND_its_height(tmp_path, select, expected):
+    """A raised seat and a mark-height one share a bearing and are NOT the
+    same pose.
+
+    "Latest attempt wins" walks the takes at a pose newest-first, so a bearing-
+    only key hands the newer raised take to the forward model and the delay
+    landscape as their design-axis basis — the wrong measurement, silently.
+    """
+    assert [Path(path).stem for path in select(_pose_bank(tmp_path))] == expected

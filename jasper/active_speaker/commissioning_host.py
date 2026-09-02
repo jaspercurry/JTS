@@ -17,10 +17,9 @@ import logging
 import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
-from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.null_walk import (
     NullWalkSpec,
@@ -30,12 +29,8 @@ from jasper.output_topology import OutputTopology
 from .baseline_profile import topology_config_fingerprint
 from .commissioning_evidence import (
     CompleteCommissioningEvidence,
-    EvidenceKind,
     RegionEvidencePlan,
-    RegionEvidenceTarget,
     RegionGeometryAttestation,
-    delay_point_target_fingerprint,
-    evidence_attempt_target_id,
 )
 from .commissioning_evidence_store import (
     CommissioningEvidenceStore,
@@ -44,7 +39,6 @@ from .commissioning_evidence_store import (
     complete_relative_path,
 )
 from .commissioning_run import (
-    CommissioningAttemptHandle,
     CommissioningLiveMutation,
     CommissioningRunHandle,
     CommissioningRunStore,
@@ -76,23 +70,6 @@ def _sha256(value: Any, *, field_name: str) -> str:
             "host_input_invalid", f"{field_name} must be a lowercase SHA-256"
         )
     return value
-
-
-def _attempt_payload(attempt: CommissioningAttemptHandle) -> dict[str, Any]:
-    run = attempt.run
-    return {
-        "run": {
-            "session_id": run.session_id,
-            "session_fingerprint": run.session_fingerprint,
-            "run_id": run.run_id,
-            "owner_id": run.owner_id,
-            "owner_generation": run.owner_generation,
-        },
-        "attempt_id": attempt.attempt_id,
-        "attempt_number": attempt.attempt_number,
-        "target_id": attempt.target_id,
-        "target_fingerprint": attempt.target_fingerprint,
-    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,161 +143,6 @@ class CommissioningHostAuthoritySnapshot:
 
 
 CurrentAuthorityLoader: TypeAlias = Callable[[], CommissioningHostAuthoritySnapshot]
-
-
-@dataclass(frozen=True, slots=True)
-class RegionCaptureOperation:
-    """The only summed capture operation a production adapter may execute."""
-
-    plan_fingerprint: str
-    target: RegionEvidenceTarget
-    attempt: CommissioningAttemptHandle
-    evidence_kind: EvidenceKind
-    placement_fingerprint: str
-    driver_target_fingerprints: tuple[str, str]
-    lower_channels: tuple[int, ...]
-    upper_channels: tuple[int, ...]
-    capture_ordinal: int
-    required_capture_count: int
-    relative_delay_us: float | None = None
-    null_walk_spec: NullWalkSpec | None = None
-    issuance_id: str | None = None
-    fingerprint: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "plan_fingerprint",
-            _sha256(self.plan_fingerprint, field_name="plan_fingerprint"),
-        )
-        if not isinstance(self.target, RegionEvidenceTarget):
-            raise CommissioningHostError(
-                "operation_invalid", "operation target must be RegionEvidenceTarget"
-            )
-        if not isinstance(self.attempt, CommissioningAttemptHandle):
-            raise CommissioningHostError(
-                "operation_invalid", "operation attempt must be durable"
-            )
-        if self.evidence_kind not in {"normal", "reverse", "delay_null"}:
-            raise CommissioningHostError(
-                "operation_invalid", "operation evidence kind is unsupported"
-            )
-        object.__setattr__(
-            self,
-            "placement_fingerprint",
-            _sha256(self.placement_fingerprint, field_name="placement_fingerprint"),
-        )
-        if (
-            type(self.driver_target_fingerprints) is not tuple
-            or len(self.driver_target_fingerprints) != 2
-            or len(set(self.driver_target_fingerprints)) != 2
-        ):
-            raise CommissioningHostError(
-                "operation_invalid",
-                "operation requires two distinct driver target fingerprints",
-            )
-        for item in self.driver_target_fingerprints:
-            _sha256(item, field_name="driver_target_fingerprints[]")
-        for name in ("lower_channels", "upper_channels"):
-            channels = getattr(self, name)
-            if (
-                type(channels) is not tuple
-                or not channels
-                or any(type(item) is not int or item < 0 for item in channels)
-            ):
-                raise CommissioningHostError(
-                    "operation_invalid", f"{name} must contain physical channels"
-                )
-        if set(self.lower_channels) & set(self.upper_channels):
-            raise CommissioningHostError(
-                "operation_invalid", "adjacent region channels must be disjoint"
-            )
-        if (
-            type(self.capture_ordinal) is not int
-            or type(self.required_capture_count) is not int
-            or not 0 <= self.capture_ordinal < self.required_capture_count
-        ):
-            raise CommissioningHostError(
-                "operation_invalid", "operation capture ordinal is outside its set"
-            )
-        if self.evidence_kind == "delay_null":
-            if not isinstance(self.null_walk_spec, NullWalkSpec):
-                raise CommissioningHostError(
-                    "operation_invalid", "delay operation requires an exact walk spec"
-                )
-            if isinstance(self.relative_delay_us, bool) or not isinstance(
-                self.relative_delay_us, (int, float)
-            ):
-                raise CommissioningHostError(
-                    "operation_invalid", "delay operation requires a coordinate"
-                )
-            coordinate = float(self.relative_delay_us)
-            if not math.isfinite(coordinate):
-                raise CommissioningHostError(
-                    "operation_invalid", "delay coordinate must be finite"
-                )
-            self.null_walk_spec.dsp_candidate(coordinate)
-            object.__setattr__(self, "relative_delay_us", coordinate)
-            expected_target = delay_point_target_fingerprint(
-                self.target, self.null_walk_spec, coordinate
-            )
-        else:
-            if self.relative_delay_us is not None or self.null_walk_spec is not None:
-                raise CommissioningHostError(
-                    "operation_invalid",
-                    "stationary operation cannot carry delay-only fields",
-                )
-            expected_target = self.target.target_fingerprint_for(self.evidence_kind)
-        if self.issuance_id is not None and (
-            len(self.issuance_id) != 32
-            or any(
-                character not in "0123456789abcdef"
-                for character in self.issuance_id
-            )
-        ):
-            raise CommissioningHostError(
-                "operation_invalid",
-                "operation issuance must be a lowercase UUID hex id",
-            )
-        if (
-            self.attempt.target_fingerprint != expected_target
-            or self.attempt.target_id
-            != evidence_attempt_target_id(self.evidence_kind, expected_target)
-        ):
-            raise CommissioningHostError(
-                "operation_invalid", "operation does not equal its durable attempt"
-            )
-        object.__setattr__(self, "fingerprint", json_fingerprint(self._core()))
-
-    @property
-    def graph_kind(self) -> CommissioningGraphKind:
-        return "delay" if self.evidence_kind == "delay_null" else self.evidence_kind
-
-    @property
-    def target_fingerprint(self) -> str:
-        return self.attempt.target_fingerprint
-
-    def _core(self) -> dict[str, Any]:
-        return {
-            "schema_version": 1,
-            "kind": "jts_active_region_capture_operation",
-            "plan_fingerprint": self.plan_fingerprint,
-            "target_fingerprint": self.target.fingerprint,
-            "attempt": _attempt_payload(self.attempt),
-            "evidence_kind": self.evidence_kind,
-            "placement_fingerprint": self.placement_fingerprint,
-            "driver_target_fingerprints": list(self.driver_target_fingerprints),
-            "lower_channels": list(self.lower_channels),
-            "upper_channels": list(self.upper_channels),
-            "capture_ordinal": self.capture_ordinal,
-            "required_capture_count": self.required_capture_count,
-            "relative_delay_us": self.relative_delay_us,
-            "null_walk_spec_fingerprint": (
-                self.null_walk_spec.fingerprint
-                if self.null_walk_spec is not None
-                else None
-            ),
-        }
 
 
 def commissioning_program_key(plan: RegionEvidencePlan) -> tuple[Any, ...]:

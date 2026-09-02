@@ -33,7 +33,7 @@ _FULL = "abc1234deadbeefcafe5678" + "0" * 17  # 40-ish chars, shape only
 
 _HARNESS = r"""
 set -o pipefail
-source "@LIB@"
+JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 # Extract the real verify_manifest_advanced() — def line through the first
 # column-0 '}'. eval defines it; nothing else in the deploy script runs.
 eval "$(awk '/^verify_manifest_advanced\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"

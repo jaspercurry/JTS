@@ -138,11 +138,13 @@ from jasper.audio_measurement.evidence_identity import (
 # constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.json_fields import finite_float
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from .contracts import POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
-from .record_index import bundle_measurements
+from .record_index import Measurement, bundle_measurements
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
 # resolving it through the module on every call is what makes that ownership
 # real rather than a copy taken once at import. A gate round proved the
@@ -165,14 +167,17 @@ from .feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
-    finite_number,
     read_feature_verdicts,
 )
 from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
+from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
+    "DECLARED_GEOMETRY_ARTIFACT",
+    "DECLARED_GEOMETRY_KIND",
     "HARMONICS_ARTIFACT",
+    "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
     "OPERATOR_NOTES_BLOCK",
     "PACKET_KIND",
@@ -264,6 +269,10 @@ _POSITION_FIELDS = (
     # usable without parsing English.
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
+    # The ROOM's floor at this seat and where it came from — always as a pair,
+    # because the number is unreadable without its provenance (#3502).
+    "gate_entanglement_floor_hz",
+    "gate_entanglement_floor_source",
     "gate_window_ms",
     "gating_applied",
     "glitch_detected",
@@ -315,6 +324,21 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: the artifacts it reads; :mod:`.feature_classifier` takes the same direction.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
+#: The household's own tape measure (#3498), banked by the session that took
+#: the walk it was stated on. Optional and reported absent: the reflection
+#: finder is structurally blind on this rig class, so this human answer is the
+#: only source for the room's entanglement floor -- but most sessions never
+#: asked. Named here on the same rule as the two above: the packet owns the
+#: names of the artifacts it reads, and ``correction_crossover_v2`` writes it.
+DECLARED_GEOMETRY_ARTIFACT = "declared_geometry.json"
+
+DECLARED_GEOMETRY_KIND = "jts_active_speaker_declared_geometry"
+
+#: What that artifact carries ABOUT ITSELF rather than about the room.
+#: Subtracted rather than allow-listing the measurements, so a distance the
+#: writer later adds reaches the reader without a second edit here.
+DECLARED_GEOMETRY_ENVELOPE_FIELDS = frozenset({"schema_version", "kind"})
+
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns.
 #:
@@ -351,9 +375,13 @@ _POSITIONS_SUBDIR = "positions"
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 #: What :func:`_capture_snr_block` reads off one banked take: the two
-#: identities the packet's other take rows already carry, the phase that says
-#: which capture it was, and the analysis block the SNR columns live in.
-_TAKE_DIAGNOSTIC_FIELDS = ("take_id", "wav_sha256", "phase", "diagnostic")
+#: identities the packet's other take rows already carry, the digest of the
+#: stimulus that was PLAYED (a different quantity from ``wav_sha256``, which
+#: is the captured audio's), the phase that says which capture it was, and the
+#: analysis block the SNR columns live in.
+_TAKE_DIAGNOSTIC_FIELDS = (
+    "take_id", "wav_sha256", "stimulus_wav_sha256", "phase", "diagnostic",
+)
 
 #: The substring that identifies a signal-to-noise field in a banked take's
 #: flat ``diagnostic`` block.
@@ -562,6 +590,22 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _declared_geometry_block(raw: Any, reason: str) -> dict[str, Any]:
+    """The banked room, in metres, or WHICH absence this is.
+
+    An artifact that never arrived (nobody was asked, which is most sessions),
+    one this install could not read, and one carrying nothing but its own
+    envelope are three different facts about the round. Collapsing them to a
+    single ``None`` is the reading defect :func:`_absence` exists to fix, so
+    the reason travels here on exactly the terms the sibling blocks state it.
+    """
+    room = {
+        key: value for key, value in _mapping(raw).items()
+        if key not in DECLARED_GEOMETRY_ENVELOPE_FIELDS
+    }
+    return room or _absence(reason, False, DECLARED_GEOMETRY_ARTIFACT)
+
+
 def _ordinal(value: Any) -> int:
     """A sort key from an identity field, or ``0`` when it is not a number."""
     try:
@@ -628,7 +672,7 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
     (``clean``, ``is_dip``, ``controls_ok``, ``gain_plan_snr_floor_ok``) falls
     through to the passthrough already — unlike in
-    :func:`~.feature_classification.finite_number`, which needs one because its
+    :func:`~jasper.json_fields.finite_float`, which needs one because its
     check includes ``int``.
 
     Scoped to the two blocks whose sources are written with a plain
@@ -766,8 +810,9 @@ _CROSS_SEAT_SIGMA_UNCERTAINTY: dict[str, dict[str, str]] = {
             "curve carries, which averaging repeats into each member would. "
             "Which of the two dominates cannot be read off this round — "
             "separating them needs a repeat spread "
-            "measured at a FIXED pose, which is calibration experiment E2 and "
-            "has not been run. So it is published as a spread whose kind is not "
+            "measured at a FIXED pose, which is the banked repeat floor "
+            "(accuracy_budget.in_capture_repeat_floor), available on a rig "
+            "that banked one. So it is published as a spread whose kind is not "
             "yet separable, never as a random or a systematic one: calling it "
             "either would be exactly the pooling these labels exist to prevent"
         ),
@@ -814,7 +859,7 @@ def _member_curve(values: Any, n_bins: int) -> list[float] | None:
     was actually taken over in every bin. Refusing the whole row keeps one n for
     the whole curve — and the row is counted, never dropped silently.
 
-    :func:`~.feature_classification.finite_number` does the per-sample work
+    :func:`~jasper.json_fields.finite_float` does the per-sample work
     rather than a second copy of its three traps (``bool`` is an ``int``,
     ``float("1037")`` succeeds, an arbitrary-precision ``int`` raises on
     ``float()``).
@@ -823,7 +868,7 @@ def _member_curve(values: Any, n_bins: int) -> list[float] | None:
         return None
     curve: list[float] = []
     for value in values:
-        number = finite_number(value)
+        number = finite_float(value)
         if number is None:
             return None
         curve.append(number)
@@ -986,8 +1031,8 @@ def _cross_seat_sigma_block(
                 "answer: the two kinds are never pooled into one number, and "
                 "where a measurement can only yield a pooled one it says so and "
                 "names what would separate it — here, a repeat spread at a "
-                "fixed pose (calibration experiment E2), which has not been "
-                "measured"
+                "fixed pose, which is the banked repeat floor "
+                "(accuracy_budget.in_capture_repeat_floor)"
             ),
         },
         "note": (
@@ -1134,15 +1179,15 @@ def _read_take_diagnostic(path: Path) -> dict[str, Any] | None:
 
 def _banked_takes(
     session_dir: Path,
+    rows: Sequence[Measurement],
     phase: str | None,
     read: Callable[[Path], dict[str, Any] | None],
 ) -> list[dict[str, Any]]:
     """Every banked take of one ``phase``, narrowed by its own accept rule.
 
-    Selected out of the bundle's measurement index rather than by globbing a
-    directory: the index rescans the take files on every read (see
-    :func:`~.record_index.bundle_measurements`), so it names the same set a
-    glob would and names it in the one place the store also writes.
+    ``rows`` is the bundle's measurement index, scanned ONCE per packet
+    (:func:`~.record_index.bundle_measurements` rescans the take files on every
+    call) and narrowed here rather than re-selected per block.
 
     ``phase`` of ``None`` takes every take the round banked.
 
@@ -1154,12 +1199,26 @@ def _banked_takes(
     artifacts = session_dir / EVIDENCE_ROOT / "artifacts"
     takes = [
         read(artifacts / row.path)
-        for row in bundle_measurements(session_dir, phase=phase)
+        for row in rows
+        if phase is None or row.phase == phase
     ]
     return [take for take in takes if take is not None]
 
 
-def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
+def _distinct_degrees(takes: list[Any], field: str) -> list[int]:
+    """The sorted whole degrees ``field`` carries across ``takes``."""
+
+    values = set()
+    for take in takes:
+        value = take.get(field)
+        if isinstance(value, int) and not isinstance(value, bool):
+            values.add(value)
+    return sorted(values)
+
+
+def _lateral_poses_block(
+    session_dir: Path, rows: Sequence[Measurement],
+) -> dict[str, Any]:
     """The signed bearings a lateral walk banked, one row per accepted take.
 
     Read from the round's own ``positions/{take_id}.json`` sidecars through
@@ -1186,7 +1245,7 @@ def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
     opinion about which take counted.
     """
     takes = _banked_takes(
-        session_dir, PHASE_LATERAL, position_cycle.read_lateral_take,
+        session_dir, rows, PHASE_LATERAL, position_cycle.read_lateral_take,
     )
     if not takes:
         return {
@@ -1209,13 +1268,10 @@ def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
         "available": True,
         "n_takes": len(takes),
         "takes": takes,
-        # ``bool`` subclasses ``int``, so a ``true`` in this field would
-        # otherwise publish 1 as a bearing.
-        "angles_deg": sorted({
-            take["position_deg"] for take in takes
-            if isinstance(take.get("position_deg"), int)
-            and not isinstance(take.get("position_deg"), bool)
-        }),
+        # ``bool`` subclasses ``int``, so a ``true`` in either field would
+        # otherwise publish 1 as a degree.
+        "angles_deg": _distinct_degrees(takes, "position_deg"),
+        "elevations_deg": _distinct_degrees(takes, "vertical_deg"),
         "source": f"{_POSITIONS_SUBDIR}/<take_id>.json",
         "note": (
             "position_deg is signed whole degrees, negative LEFT of the design "
@@ -1229,7 +1285,67 @@ def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
     }
 
 
-def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
+#: Why there is no block at all: no banked take names a candidate. The
+#: ``jasper-measure`` door refuses to bank a variant take without one, so this
+#: is a round that cycled no candidates rather than one that lost their labels.
+NO_CANDIDATE_TAKES = "no_candidate_takes"
+
+
+def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
+    """Which candidates this round played, and at which poses.
+
+    Selected on the take index's ``candidate_id`` column across EVERY phase:
+    the engine's own capture record (``session._record``) carries a candidate
+    id and no phase at all, so a phase-narrowed selection would miss exactly
+    the takes a candidate cycle banks.
+
+    An INVENTORY, not a verdict: which candidate is ADOPTED stays
+    :func:`~.verification.decide_adoption`'s question over the round's own axes.
+    """
+    labelled = [row for row in rows if row.candidate_id]
+    if not labelled:
+        return {
+            "available": False,
+            **_absence(NO_CANDIDATE_TAKES, False, "banked takes' candidate_id"),
+        }
+    by_candidate: dict[str, list[Measurement]] = {}
+    for row in labelled:
+        by_candidate.setdefault(row.candidate_id, []).append(row)
+    candidates = []
+    for candidate_id in sorted(by_candidate):
+        takes = by_candidate[candidate_id]
+        poses = sorted(
+            {(row.position_deg, row.vertical_deg) for row in takes},
+            # A take with no commanded bearing sorts last rather than raising
+            # against the ints beside it.
+            key=lambda pose: (pose[0] is None, pose[0] or 0, pose[1]),
+        )
+        candidates.append({
+            "candidate_id": candidate_id,
+            "n_takes": len(takes),
+            "poses": [
+                {"position_deg": position_deg, "vertical_deg": vertical_deg}
+                for position_deg, vertical_deg in poses
+            ],
+        })
+    return {
+        "available": True,
+        "candidates": candidates,
+        "source": (
+            f"{_POSITIONS_SUBDIR}/<take_id>.json candidate_id, selected through "
+            "record_index.bundle_measurements"
+        ),
+        "note": (
+            "two candidates measured at different poses are not comparable on "
+            "these takes alone; the candidate cycle holds one pose and swaps "
+            "the graph under it"
+        ),
+    }
+
+
+def _entry_baseline_block(
+    session_dir: Path, rows: Sequence[Measurement],
+) -> dict[str, Any]:
     """The round's measured "before", read from the take that banked it.
 
     The receipt already names this capture — ``n_bins``, ``n_excluded``, the
@@ -1252,7 +1368,7 @@ def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
     costs the household a retake, so a missing take is not a defect here.
     """
     takes = _banked_takes(
-        session_dir, PHASE_ENTRY_BASELINE,
+        session_dir, rows, PHASE_ENTRY_BASELINE,
         position_cycle.read_entry_baseline_take,
     )
     if not takes:
@@ -1286,7 +1402,9 @@ def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
     }
 
 
-def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
+def _capture_snr_block(
+    session_dir: Path, rows: Sequence[Measurement],
+) -> dict[str, Any]:
     """Per-capture signal-to-noise, off the round's own banked takes.
 
     Every accepted take carries the analysis's flat ``diagnostic`` block —
@@ -1316,7 +1434,7 @@ def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
     undeclared: set[str] = set()
     declared_as: dict[str, str] = {}
     seen = 0
-    for take in _banked_takes(session_dir, None, _read_take_diagnostic):
+    for take in _banked_takes(session_dir, rows, None, _read_take_diagnostic):
         seen += 1
         diagnostic = _mapping(take.get("diagnostic"))
         if not diagnostic:
@@ -1337,6 +1455,7 @@ def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
         captures.append({
             "take_id": take.get("take_id"),
             "wav_sha256": take.get("wav_sha256"),
+            "stimulus_wav_sha256": take.get("stimulus_wav_sha256"),
             "phase": take.get("phase"),
             "snr": snr,
         })
@@ -1737,6 +1856,12 @@ _SPEED_OF_SOUND_AIR_TEMPERATURE_C = 20.0
 #: :func:`_gate_numbers_reason` can ask whether a round's records carry the
 #: fields at all — which is a different question from whether their values are
 #: null, and the two send a reader to different places.
+#:
+#: ``gate_entanglement_floor_hz`` is deliberately NOT here (#3502). This set is
+#: what the accuracy budget's ``gate_leakage.available`` is decided on, and
+#: that component's subject is what the gate DID to the spectrum. The room's
+#: floor survives a capture that gated nothing at all, so counting it would let
+#: ``gate_leakage`` report available on a round carrying no leakage reading.
 _POSITION_GATE_NUMBER_FIELDS = frozenset({
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
@@ -1770,7 +1895,7 @@ _REFLECTOR_PATH_SOURCE = "cloud_verify.json -> null_registry.tau_ladder_us"
 _REFLECTOR_PATH_DECIMALS = 3
 
 #: Everything the ``reflections`` block publishes, and why none of it is an
-#: uncertainty — including the four per-capture gate numbers, which live on the
+#: uncertainty — including the six per-capture gate numbers, which live on the
 #: ``positions`` rows and inside ``verify.gate`` and are declared HERE because
 #: this is the block that owns the subject. A field published in one place and
 #: declared in none is exactly what the enrichment rule forbids, and giving the
@@ -1843,6 +1968,29 @@ _REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
         "path is NOT converted here: it is a different tau, from a different "
         "instrument, at one pose rather than fitted across the cloud"
     ),
+    "positions[].gate_entanglement_floor_hz": (
+        "the ROOM's floor at that seat, in Hz — below it no gate window, "
+        "however long, separates the speaker from the room, so nothing there "
+        "is a speaker measurement. A DERIVED reading, and one that must be "
+        "read beside positions[].gate_entanglement_floor_source, which names "
+        "which of three things produced it: a measured reflection timed it, "
+        "the operator's declared rig geometry gives it, or it is unknown. "
+        "Declared is not measured and never prints as if it were. Null with "
+        "an unknown source is the ordinary state on a rig whose first bounce "
+        "arrives while the direct sound is still decaying — the reflection "
+        "finder structurally never fires there — and is resolved by declaring "
+        "the geometry, not by measuring harder. Banked per SEAT because it is "
+        "derived at that seat's own mark distance, though every pose a round "
+        "walks declares the same distance today, so these rows currently carry "
+        "one number (DeclaredGeometry.first_bounce_s)"
+    ),
+    "verify.gate.entanglement_floor_hz": (
+        "the same derivation as positions[].gate_entanglement_floor_hz, for "
+        "the VERIFY capture rather than a cloud seat, and read beside its own "
+        "verify.gate.entanglement_floor_source. It survives an ungateable "
+        "capture, unlike every other number in this block: the geometry that "
+        "sets it is the rig's, not the window's"
+    ),
     "verify.gate.moved_rms_db": (
         "the same reading as positions[].gate_moved_rms_db, for the VERIFY "
         "capture rather than a cloud seat. Read it beside "
@@ -1877,10 +2025,12 @@ def _reflections_uncertainty() -> dict[str, Any]:
             "the assumed speed of sound is a systematic worth 0.18 % per "
             "Kelvin, and the fitted tau's own error is bounded — not "
             "quantified — by null_registry.ladder_arrival_gap and each rung's "
-            "rung_error_spacings, both already banked. The four per-capture "
+            "rung_error_spacings, both already banked. The six per-capture "
             "gate numbers are declared here with their full paths because they "
             "are published on the positions rows and inside verify.gate, "
-            "beside the sentence that used to be their only copy"
+            "beside the sentence that used to be their only copy. The room's "
+            "own floor is among them, and it is the one number here that a "
+            "capture can carry without having gated anything"
         ),
     }
 
@@ -1985,7 +2135,7 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
             f"(null_registry.reason={registry.get('reason')!r}), so its "
             "tau_ladder_us is the no-ladder sentinel rather than a delay"
         )
-    tau_us = finite_number(registry.get("tau_ladder_us")) if not refusal else None
+    tau_us = finite_float(registry.get("tau_ladder_us")) if not refusal else None
     if not refusal and (tau_us is None or tau_us <= 0.0):
         refusal = (
             "the interference-null registry reported no usable fitted ladder "
@@ -2044,6 +2194,102 @@ def _read_candidate(round_dir: Path) -> dict[str, Any]:
     return _mapping(raw)
 
 
+def _unmeasured_repeat_floor(absence: str, reason: str) -> dict[str, Any]:
+    """The shared shape for every absence — thresholds falling back to the two
+    ``round_evidence`` constants that self-describe as assumptions. ``absence``
+    is the closed vocabulary a reader keys on; ``reason`` is for a human."""
+    return {
+        "kind": UNCERTAINTY_RANDOM,
+        "available": False,
+        "absence": absence,
+        "reason": reason,
+        "thresholds": {
+            "source": "codified_assumption",
+            "margin_db": MEASURED_BENEFIT_MARGIN_DB,
+            "plateau_db": ITERATION_PLATEAU_DB,
+            "note": (
+                "both self-described assumptions in round_evidence.py, "
+                "awaiting exactly this measurement"
+            ),
+        },
+    }
+
+
+#: Why the repeat floor is not available: never measured, a file that is not
+#: a readable record, or a record whose aggregate row cannot yield thresholds.
+#: Three different errands (run E2 / re-copy the file / re-bank it), so the
+#: packet names which rather than one shared reason.
+REPEAT_FLOOR_UNMEASURED = "unmeasured"
+REPEAT_FLOOR_UNREADABLE = "unreadable"
+REPEAT_FLOOR_UNUSABLE = "unusable"
+
+
+def _repeat_floor_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
+    """The banked floor, or why there is none — ``source_absent`` when no file
+    was there to read, the read failure otherwise (same rule as
+    :func:`_applied_profile_source`)."""
+    if path is None:
+        return None, "source_absent"
+    record = load_repeat_floor(state_path=path)
+    if record is not None:
+        return record, ""
+    _, reason = _read_json(path)
+    return None, reason or f"not a {REPEAT_FLOOR_KIND} record"
+
+
+def _repeat_floor_component(
+    record: dict[str, Any] | None, read_reason: str
+) -> dict[str, Any]:
+    """The RANDOM repeat floor as banked, or one of three honest absences."""
+    if record is None and read_reason == "source_absent":
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNMEASURED,
+            "unmeasured -- no banked repeat floor; calibration experiment "
+            "E2 (N touched-nothing fixed-pose repeat rounds through "
+            "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
+            "Calibration experiments)",
+        )
+    if record is None:
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNREADABLE,
+            f"banked repeat floor could not be read ({read_reason}); re-copy "
+            "it, or re-bank it with jasper-round-views repeat-floor",
+        )
+    thresholds = stopping_thresholds(record)
+    if thresholds is None:
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNUSABLE,
+            f"banked repeat floor carries no usable {record.get('aggregate_metric')} "
+            "row (a finite, positive pairwise_abs_delta_p95_db and a finite "
+            "pairwise_abs_delta_median_db); re-bank it with "
+            "jasper-round-views repeat-floor",
+        )
+    rows = [row for row in record.get("rounds") or [] if isinstance(row, Mapping)]
+    return {
+        "kind": UNCERTAINTY_RANDOM,
+        "available": True,
+        "absence": None,
+        "source": (
+            "repeat-floor.json (jts_active_speaker_repeat_floor, written by "
+            "jasper-round-views repeat-floor)"
+        ),
+        "n_repeats": record.get("n_repeats"),
+        "measured_at": record.get("measured_at"),
+        "bundle_session_ids": [row.get("bundle_session_id") for row in rows],
+        "graph_fingerprints": sorted(
+            {
+                str(row["graph_fingerprint"])
+                for row in rows
+                if row.get("graph_fingerprint") is not None
+            }
+        ),
+        "aggregate_metric": record.get("aggregate_metric"),
+        "metrics": record.get("metrics"),
+        "thresholds": {"source": "banked_repeat_floor", **thresholds},
+        "reason": "",
+    }
+
+
 #: Ticket 6.5's own bound: the components this block juxtaposes, and why
 #: neither of the two policy constants below is restated as a new table.
 #: :mod:`~jasper.active_speaker.linearization_envelope` is the ONE place the
@@ -2060,6 +2306,8 @@ def _accuracy_budget_block(
     reflections: dict[str, Any],
     verify: dict[str, Any],
     round_dir: Path | None,
+    repeat_floor: dict[str, Any] | None,
+    repeat_floor_reason: str,
 ) -> dict[str, Any]:
     """Random beside systematic (ADR-0202) — juxtaposed, never pooled.
 
@@ -2077,12 +2325,12 @@ def _accuracy_budget_block(
     * ``cross_seat_position_spread`` — UNSEPARATED. Points at
       ``positions.cross_seat_sigma`` rather than re-embedding its per-bin
       array (this block adds no second copy of a figure already published).
-    * ``in_capture_repeat_floor`` — RANDOM, and always ``available=False``
-      today: this round's own repeat-sweep magnitude sigma is not banked
-      anywhere the packet reads (the flat campaign's 0.04 dB median is a
-      one-off comparison of two independent VERIFY rounds, not a durable
-      field), and the master plan's own calibration experiment for it
-      (E2) has not run. Unmeasured, never defaulted to 0.0.
+    * ``in_capture_repeat_floor`` — RANDOM, read from the banked repeat
+      floor (:mod:`jasper.active_speaker.repeat_floor`) when the rig has one
+      and honestly ``available=False`` when it has not. Its ``thresholds``
+      name their own source: the floor's own derivation, or the two
+      ``round_evidence`` constants that self-describe as assumptions.
+      Unmeasured, never defaulted to 0.0.
     * ``gate_leakage`` — SYSTEMATIC (a bias a single capture's window bakes
       in; more captures at the SAME pose do not shrink it). Points at the
       reflections/positions/verify gate-disclosure numbers ticket 1.5
@@ -2149,14 +2397,9 @@ def _accuracy_budget_block(
                     "duplicated here"
                 ),
             },
-            "in_capture_repeat_floor": {
-                "kind": UNCERTAINTY_RANDOM,
-                "available": False,
-                "reason": (
-                    "unmeasured -- experiment E2 pending "
-                    "(docs/tuning-master-plan.md, Calibration experiments)"
-                ),
-            },
+            "in_capture_repeat_floor": _repeat_floor_component(
+                repeat_floor, repeat_floor_reason
+            ),
             "gate_leakage": {
                 "kind": UNCERTAINTY_SYSTEMATIC,
                 "available": gate_available,
@@ -2254,14 +2497,14 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
                 for role, value in _mapping(
                     candidate.get("role_attenuations_db")
                 ).items()
-                if finite_number(value) is not None
+                if finite_float(value) is not None
             },
             {
                 str(role): bool(_mapping(entry).get("trim_pinned") is True)
                 for role, entry in linearization.items()
             },
         ),
-        "delay_us": (finite_number(alignment.get("delay_us")), None),
+        "delay_us": (finite_float(alignment.get("delay_us")), None),
         "polarity": (
             polarity if isinstance(polarity, str) and polarity else None,
             (
@@ -2271,7 +2514,7 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
             ),
         ),
         "crossover_fc_hz": (
-            finite_number(_mapping(region).get("fc_hz")), None,
+            finite_float(_mapping(region).get("fc_hz")), None,
         ),
     }
     return {
@@ -2745,8 +2988,8 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     ``uncertainty`` labels every spread the rows publish. Each is ``random`` or
     ``systematic`` and says what it is a spread of, and the two columns that
     merely LOOK like uncertainties say why they are not — ``gate_slack`` most of
-    all, since it is the larger of a fixed floor and a random 3-sigma and would
-    pool the two kinds in one figure if it were read as one.
+    all, since it is a dB figure sitting beside a dB reading and is the bar that
+    reading is tested against, not an error bar on it.
     """
     absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:
@@ -2816,6 +3059,7 @@ def _not_evaluated(
     classification_available: bool,
     drivers_available: bool,
     lateral_poses_available: bool,
+    candidates_available: bool,
     capture_snr_reason: str,
     cross_seat_sigma_reason: str,
     harmonics_reason: str,
@@ -2881,6 +3125,15 @@ def _not_evaluated(
                 "carries a numeric bearing. Whether its CLOUD seats do is a "
                 "separate question with its own answer — see "
                 "positions.angle_deg"
+            ),
+        })
+    if not candidates_available:
+        entries.append({
+            "field": "candidates",
+            "reason": (
+                "no take this round banked names a candidate, so nothing here "
+                "says which configurations were played against each other; a "
+                "round that cycled no candidates measured one graph"
             ),
         })
     if gate_numbers_reason:
@@ -2989,6 +3242,7 @@ def build_crossover_evidence_packet(
     state_path: Path | None = None,
     driver_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
+    repeat_floor_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -3019,6 +3273,13 @@ def build_crossover_evidence_packet(
     cannot say where each driver's own band starts and ends, so the per-driver
     prescription class has no bound to be checked against and refuses by name.
 
+    ``repeat_floor_path`` is the banked repeat floor
+    (``active_speaker_repeat_floor.json``), the measured random noise the
+    accuracy budget's ``in_capture_repeat_floor`` reports and derives the
+    stopping plateau/benefit margin from. Same posture, same reason: OPTIONAL,
+    absence reported. A packet without it says the floor is unmeasured and
+    falls back to the two codified assumptions, naming which it used.
+
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
     unreadable artifact is reported inside the packet, because a partially
@@ -3036,6 +3297,9 @@ def build_crossover_evidence_packet(
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
+    geometry_raw, geometry_reason = _read_json(
+        round_dir / DECLARED_GEOMETRY_ARTIFACT
+    )
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
     findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
     classification_raw, classification_reason = _read_json(
@@ -3057,6 +3321,7 @@ def build_crossover_evidence_packet(
     applied_profile, applied_profile_reason = _applied_profile_source(
         applied_profile_path
     )
+    repeat_floor, repeat_floor_reason = _repeat_floor_source(repeat_floor_path)
 
     draft_raw: Any = None
     draft_reason = "no driver design draft was supplied"
@@ -3067,10 +3332,14 @@ def build_crossover_evidence_packet(
     operator_notes = _operator_notes_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)
     harmonics = _harmonics_block(harmonics_raw, harmonics_reason)
-    lateral_poses = _lateral_poses_block(session_dir)
-    entry_baseline = _entry_baseline_block(session_dir)
+    # ONE scan of the bundle's take files, narrowed per block below: every
+    # ``bundle_measurements`` call reopens all of them.
+    take_rows = bundle_measurements(session_dir)
+    lateral_poses = _lateral_poses_block(session_dir, take_rows)
+    candidates = _candidates_block(take_rows)
+    entry_baseline = _entry_baseline_block(session_dir, take_rows)
 
-    capture_snr = _capture_snr_block(session_dir)
+    capture_snr = _capture_snr_block(session_dir, take_rows)
 
     identity, identity_withheld = _copy_allowed(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
@@ -3113,6 +3382,12 @@ def build_crossover_evidence_packet(
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
+            # The household's own tape measure, in metres, or an ``_absence``
+            # naming why there is none. The envelope keys are dropped: what a
+            # reader wants is the room, not the wrapper it arrived in.
+            "declared_geometry": _declared_geometry_block(
+                geometry_raw, geometry_reason
+            ),
             "note": (
                 "bundle_session_id and relay_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"
@@ -3155,6 +3430,10 @@ def build_crossover_evidence_packet(
         # pose and a cloud position are different captures that share only a
         # take-id convention.
         "lateral_poses": lateral_poses,
+        # WHICH configuration each of those takes measured, when a round
+        # cycled more than one at a pose. Beside the poses rather than inside
+        # them: a pose is where the mic stood, a candidate is what played.
+        "candidates": candidates,
         # The round's measured "before", beside the after rather than inside the
         # receipt: the receipt carries identities, this carries the curve.
         "entry_baseline": entry_baseline,
@@ -3201,6 +3480,8 @@ def build_crossover_evidence_packet(
             reflections=reflections,
             verify=verify,
             round_dir=round_dir,
+            repeat_floor=repeat_floor,
+            repeat_floor_reason=repeat_floor_reason,
         ),
         # Ticket 6.6, widened by #3484: every structural axis's recent
         # per-round history, so a monotonic walk (a re-solved trim drifting
@@ -3229,6 +3510,7 @@ def build_crossover_evidence_packet(
             classification_available=bool(classification.get("available")),
             drivers_available=bool(drivers.get("available")),
             lateral_poses_available=bool(lateral_poses.get("available")),
+            candidates_available=bool(candidates.get("available")),
             capture_snr_reason=str(capture_snr.get("reason") or ""),
             cross_seat_sigma_reason=str(cross_seat_sigma.get("reason") or ""),
             harmonics_reason=str(harmonics.get("reason") or ""),

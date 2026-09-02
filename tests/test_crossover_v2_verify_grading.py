@@ -634,6 +634,30 @@ def test_the_verify_outcome_always_carries_the_code_that_produced_it():
         assert verdict["accepted"] is (outcome == "pass")
 
 
+def test_an_inconclusive_capture_reads_its_gate_record_once(monkeypatch):
+    """The gate record is derived once per consume, then read, never rebuilt."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    calls = []
+    real = flow._declared_first_bounce_s
+    monkeypatch.setattr(
+        flow,
+        "_declared_first_bounce_s",
+        lambda distance_m: (calls.append(distance_m), real(distance_m))[1],
+    )
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["code"] == "verify_inconclusive"
+    assert len(calls) == 1
+    assert c.verify_gate is not None
+    assert verdict["reflection_measured"] == c.verify_gate["reflection_measured"]
+
+
 def test_a_level_shift_records_its_own_code_not_the_gates():
     """The second road to "inconclusive". Before #1974 both roads produced the
     same household sentence, which blamed a room reflection — on a verdict
@@ -746,6 +770,120 @@ def test_the_gate_record_banks_each_number_its_sentence_narrates_or_a_null(
     # The screen's two facts, beside the numbers.
     assert record["reflection_measured"] is reflection_measured
     assert record["disclosure"] == gd.describe_gate(block)
+
+
+def _declared(tmp_path, **over):
+    """One declared rig, written where only this test can see it (#3502).
+
+    Never :data:`~jasper.audio_measurement.measurement_geometry.DEFAULT_PATH`:
+    the production file is the operator's and a test must not read or write it.
+    """
+    from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
+
+    path = tmp_path / "measurement_geometry.json"
+    DeclaredGeometry(**{
+        "speaker_height_m": 0.84, "mic_height_m": 0.5, "distance_m": 1.0, **over,
+    }).save(path)
+    return path
+
+
+def test_a_gate_record_carries_the_declared_room_floor_and_says_it_is_declared(
+    tmp_path,
+):
+    """#3502 — the whole point of declaring a rig: the floor stops being unknown.
+
+    The 2026-07-30 rig class never fires the measured reflection finder, so
+    without a declaration every capture publishes ``unknown`` forever. With one,
+    the same capture publishes a floor AND the word that says the operator's
+    tape measure produced it — never a word that would let it read as measured.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.audio_measurement import gating
+    from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    block = _gate_block(floor_source=gating.FLOOR_SEARCH_BOUND)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+    bounce_s = declared_first_bounce_s(1.0, path=_declared(tmp_path))
+
+    declared = _gate_record(response, declared_first_bounce_s=bounce_s)
+    undeclared = _gate_record(response)
+
+    assert declared is not None and undeclared is not None
+    assert declared["entanglement_floor_hz"] == pytest.approx(
+        gating.f_entanglement_floor_hz(bounce_s)
+    )
+    assert declared["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_DECLARED
+    assert undeclared["entanglement_floor_hz"] is None
+    assert undeclared["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    # Declaring a rig changes the floor and NOTHING else about the record.
+    assert {k: v for k, v in declared.items() if "entanglement" not in k} == {
+        k: v for k, v in undeclared.items()
+        if "entanglement" not in k and k != "disclosure"
+    } | {"disclosure": declared["disclosure"]}
+
+
+def test_two_seats_of_one_rig_publish_different_floors_for_their_distances(tmp_path):
+    """The floor is evaluated per CAPTURE, not once per rig.
+
+    Same declared heights, two capture distances: the nearer seat's bounce
+    arrives LATER relative to its direct sound, so its floor is lower. One
+    number on both rows would hide that the seats are not equally trustworthy
+    down low.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.audio_measurement import gating
+    from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    path = _declared(tmp_path)
+    block = _gate_block(floor_source=gating.FLOOR_SEARCH_BOUND)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+
+    near = _gate_record(
+        response, declared_first_bounce_s=declared_first_bounce_s(0.3, path=path)
+    )
+    far = _gate_record(
+        response, declared_first_bounce_s=declared_first_bounce_s(1.0, path=path)
+    )
+
+    assert near is not None and far is not None
+    assert near["entanglement_floor_hz"] < far["entanglement_floor_hz"]
+    assert (
+        near["entanglement_floor_source"]
+        == far["entanglement_floor_source"]
+        == gating.ENTANGLEMENT_SOURCE_DECLARED
+    )
+
+
+def test_a_hand_edited_geometry_file_reads_as_unknown_instead_of_ending_the_round(
+    tmp_path, monkeypatch
+):
+    """#3502 — a malformed declaration costs a floor, never the round.
+
+    The reader raises on a file that exists and does not parse, deliberately,
+    so ``jasper-declare-geometry show`` can report it. On the capture path the
+    same exception would abort every VERIFY attempt and every seat of the round
+    over a fact that clamps nothing, so the flow reads it as undeclared.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from jasper.audio_measurement import gating
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    path = tmp_path / "measurement_geometry.json"
+    path.write_text('{"speaker_height_m": 0.84}', encoding="utf-8")
+    monkeypatch.setattr(flow, "DECLARED_GEOMETRY_PATH", path)
+
+    block = _gate_block(floor_source=gating.FLOOR_SEARCH_BOUND)
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+
+    assert flow._declared_first_bounce_s(1.0) is None
+    record = flow._gate_record(
+        response, declared_first_bounce_s=flow._declared_first_bounce_s(1.0)
+    )
+    assert record is not None
+    assert record["entanglement_floor_hz"] is None
+    assert record["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
 
 @pytest.mark.parametrize(

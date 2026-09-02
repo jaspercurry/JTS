@@ -45,6 +45,7 @@ from ._shared import (
     _run,
     _sha256_file,
 )
+from ...output_hardware import published_dac_id
 
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
@@ -168,7 +169,7 @@ def _audio_profile_status_for_doctor(
         == PROFILE_XVF_CHIP_AEC_TESTING
     )
     gate = gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
-        env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+        published_dac_id(env),
         testing_requested=testing_requested,
     )
     status = build_audio_profile_status(
@@ -555,16 +556,6 @@ _AEC_MIC_MUSIC_THRESHOLD = 1500  # RMS
 # music is 1000+ RMS.
 _AEC_REF_SILENT_THRESHOLD = 50
 
-# Drift warning rate that flags as abnormal. The check reads a 90-second
-# journal window (see "Use a 90-second window, not 5 minutes" below), not
-# 5 minutes. Both figures behind this threshold date from the era when the
-# bridge logged the drift signature: the 2026-05-15 dsnoop rate-lock state
-# produced ~190 drift warnings/min — hundreds in any 90 s slice — against
-# ~5 per 90 s in healthy operation. The bridge no longer emits that line at
-# all; see the provenance note at the `drift_count` branch in
-# `_assess_aec_bridge_output`.
-_AEC_DRIFT_WARN_THRESHOLD = 30  # in 90 s
-
 # The bridge rewrites its stats snapshot every 0.5 s. A snapshot older than
 # this belongs to a stopped/wedged writer and retains the journal fallback used
 # by older bridge revisions.
@@ -828,8 +819,7 @@ def _assess_aec_bridge_output(
     output. Split out from `check_aec_bridge_output_health` so the
     parser can be unit-tested without mocking subprocess.
 
-    Counts four quantities across the journal window:
-      - drift_count: "drained N stale ref frames (drift)" warnings
+    Counts three quantities across the journal window:
       - silent_ref_count: windows with mic-loud (>threshold) + ref-silent
       - healthy_ref_windows: windows where ref ≥ silent-threshold (any signal)
       - healthy_windows: windows with mic-loud + meaningful attenuation
@@ -857,16 +847,12 @@ def _assess_aec_bridge_output(
     None preserves the old behavior (used by tests that want to
     exercise the journal parser in isolation).
     """
-    drift_count = 0
     silent_ref_count = 0
     healthy_ref_windows = 0
     healthy_windows = 0
     total_windows = 0
 
     for line in journal_text.split("\n"):
-        if "stale ref frames" in line and "drift" in line:
-            drift_count += 1
-            continue
         m = _AEC_RMS_RE.search(line)
         if not m:
             continue
@@ -918,7 +904,7 @@ def _assess_aec_bridge_output(
                 f"unexplained; check outputd's reference publisher. The "
                 f"reference itself is outputd's speaker monitor, so program "
                 f"audio on ANY transport exercises the ref path; only this "
-                f"gate is snd-aloop-scoped. drift={drift_count}",
+                f"gate is snd-aloop-scoped.",
             )
         return CheckResult(
             "AEC bridge output", "fail",
@@ -933,34 +919,6 @@ def _assess_aec_bridge_output(
                 now=time.time() if now is None else now,
                 trusted_reference_identity=trusted_reference_identity,
             ),
-        )
-
-    # Failure mode 2 — continuous drift warnings = severe clock skew between
-    # the mic capture and the reference the bridge receives from
-    # jasper-outputd's UDP speaker monitor. U4/P7-1 retired the ALSA
-    # reference, so the bridge opens no snd-aloop PCM and no hw_params file
-    # describes its reference any more.
-    #
-    # Provenance, so a `drift=0` below is not mistaken for evidence: the
-    # bridge stopped emitting the "drained N stale ref frames (drift)" line
-    # in PR #157 (2026-05-19), which replaced drain-newest with in-order
-    # single-frame consumption. Nothing in the tree logs that signature
-    # today, so this branch does not fire and every `drift=N` reported here
-    # is structurally 0. Left in place rather than deleted: the same
-    # signature is also counted by
-    # `jasper.audio_validation._measured_drift_delay_check`, so retiring it
-    # is a decision for the arc owner, not a side effect of a prose re-point.
-    if drift_count > _AEC_DRIFT_WARN_THRESHOLD:
-        return CheckResult(
-            "AEC bridge output", "warn",
-            f"{drift_count} ref-drift warnings in last 90 s. The ref "
-            f"capture is producing samples faster than the mic capture is "
-            f"consuming them — a clock skew between jasper-outputd's "
-            f"48 kHz reference publisher and the mic device. Check "
-            f"`reference_outputs` in jasper-outputd's STATUS and "
-            f"`counters.queue_drops.ref` in "
-            f"/run/jasper/aec_bridge_stats.json; AEC effectiveness "
-            f"degrades when drift is severe.",
         )
 
     # No log windows = bridge restarted within the last 90 s OR
@@ -984,8 +942,7 @@ def _assess_aec_bridge_output(
             f"{silent_ref_count} mic-loud windows have ref<{_AEC_REF_SILENT_THRESHOLD} "
             f"(likely room voice or ambient noise — sound the speaker never "
             f"played is absent from the reference by design); ref path proven "
-            f"healthy in {healthy_ref_windows}/{total_windows} windows; "
-            f"drift={drift_count}",
+            f"healthy in {healthy_ref_windows}/{total_windows} windows",
         )
 
     # All windows quiet — speaker has been idle, nothing to assess.
@@ -998,8 +955,7 @@ def _assess_aec_bridge_output(
 
     summary = (
         f"{healthy_windows}/{total_windows} recent windows show real AEC "
-        f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB); "
-        f"drift={drift_count}"
+        f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB)"
     )
     if silent_ref_count:
         # Non-zero silent_ref without hitting the FAIL threshold —
@@ -1012,26 +968,24 @@ def _assess_aec_bridge_output(
 def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
-    the bridge can be running and STILL be in a degraded state:
-    1) the AEC reference path is delivering silence (the May 2026
-       dsnoop rate-lock incident, which went undetected for 4 days
-       because doctor only checked service liveness), or 2) the
-       ref/mic clocks have drifted apart so far that the bridge
-       drains stale ref frames continuously. Both modes leave the
-       wake detector consuming an un-cancelled mic with music
-       blasting through it, but `systemctl is-active` says ok.
+    the bridge can be running and STILL be in a degraded state: the
+    AEC reference path is delivering silence (the May 2026 dsnoop
+    rate-lock incident, which went undetected for 4 days because
+    doctor only checked service liveness). That leaves the wake
+    detector consuming an un-cancelled mic with music blasting
+    through it, but `systemctl is-active` says ok.
 
     Exact schema-v4 monotonic stats are authoritative for current
     outputd-UDP receiver progress: a freshness failure returns before
     RMS or the USB-blind loopback heuristic can hide it. A freshness
     success proves only transport/queue admission, so journal content
-    and drift assessment still runs. Missing, older, unknown-future,
-    and unreadable schemas retain the bridge's last 90 s of `rms over`
-    lines + drift warnings as a rolling-deploy fallback; malformed or
-    stale declared-v4 stats fail closed. 90 s rides past the transient
-    that install.sh produces during an older-bridge deploy without
-    missing a sustained outage. Both assessment paths are pure
-    functions so they can be unit-tested without subprocess mocks."""
+    is still assessed. Missing, older, unknown-future, and unreadable
+    schemas retain the bridge's last 90 s of `rms over` lines as a
+    rolling-deploy fallback; malformed or stale declared-v4 stats fail
+    closed. 90 s rides past the transient that install.sh produces
+    during an older-bridge deploy without missing a sustained outage.
+    Both assessment paths are pure functions so they can be
+    unit-tested without subprocess mocks."""
     if _parked_as_bonded_follower():
         return CheckResult(
             "AEC bridge output", "ok",

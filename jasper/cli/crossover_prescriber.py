@@ -32,10 +32,11 @@ runs the first and then the second.
 intended flow: run ``packet`` on the box, hand the file to whoever writes the
 prescription, then run ``propose``/``stage`` against the same file. Rebuilding
 the packet a second time is what used to make staging a fingerprint dance — a
-rebuild on another machine resolves ``--drivers`` and ``--applied-profile``
-against whatever THAT machine has, so it fingerprints differently and the
-document written against the first one is refused against the second, leaving an
-operator to paste a fingerprint across by hand. Nothing here re-stamps a
+rebuild on another machine resolves ``--drivers``, ``--applied-profile`` and
+``--repeat-floor`` against whatever THAT machine has, so it fingerprints
+differently and the document written against the first one is refused
+against the second, leaving an operator to paste a fingerprint across by
+hand. Nothing here re-stamps a
 fingerprint and nothing ever will: the echo is provenance, and a tool that
 rewrote it would make every accepted prescription unprovable. What ``--packet``
 removes is the second packet, so the echo matches by construction.
@@ -67,9 +68,6 @@ from typing import Any
 
 from ._logging import CLI_LOG_FORMAT
 
-from jasper.active_speaker.baseline_profile import (
-    DEFAULT_STATE_PATH as _APPLIED_PROFILE_DEFAULT_PATH,
-)
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -103,8 +101,11 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
     stage_prescription,
     staged_prescription_pending,
 )
-from jasper.active_speaker.design_draft import (
-    DEFAULT_DESIGN_DRAFT_PATH as _DRIVERS_DEFAULT_PATH,
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    APPLIED_PROFILE_DEFAULT_PATH,
+    DRIVERS_DEFAULT_PATH,
+    REPEAT_FLOOR_DEFAULT_PATH,
+    round_inputs,
 )
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TARGET_DB_SPL,
@@ -114,7 +115,12 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
 )
-from jasper.identity import read_identity
+from jasper.identity import (
+    CROSSOVER_PAGE_PATH,
+    SOUND_SETUP_PAGE_PATH,
+    read_identity,
+    speaker_url,
+)
 
 EXIT_OK = 0
 EXIT_EVIDENCE_UNREADABLE = 1
@@ -126,16 +132,6 @@ EXIT_STAGE_FAILED = 3
 #: one owner: the generator reads this rather than the runbook restating it.
 #: Three of the four verbs only read; `stage` is the one that writes.
 AUTHORITY_TIER = "advisory (`stage` mutates)"
-
-#: Where a human goes to run, apply, or undo a crossover round.
-CROSSOVER_PAGE_PATH = "/sound/crossover/"
-
-#: Where a human DECLARES the speaker — drivers, their safety profile, the
-#: corner. A second page rather than a second spelling of the first: the
-#: per-driver bound comes from the design draft that page writes, and an
-#: operator whose speaker has never been commissioned cannot satisfy
-#: ``--drivers`` by pointing harder at a file that does not exist yet.
-SOUND_SETUP_PAGE_PATH = "/sound/setup/"
 
 #: What happens to a document sitting in the spool, said once. ``stage`` says it
 #: at the moment of banking and ``status`` says it to an operator who arrived
@@ -151,40 +147,17 @@ STAGED_LIFECYCLE_NOTE = (
 SPOOL_UNREADABLE_REASON = "permission_denied"
 
 
-def _speaker_url(path: str) -> str:
-    """A handoff URL for THIS speaker, from the hostname it is configured with.
-
-    Through :func:`jasper.identity.read_identity` — the repository's single
-    speaker-identity reader, which exists (its own words) "so consumers ...
-    stop reconstructing identity ad-hoc and drifting from each other" — rather
-    than an ``os.environ`` read of ``JASPER_HOSTNAME`` spelled a second time
-    here. It is TOTAL and never raises, which is what a status verb needs:
-    a speaker whose identity files are unreadable still gets a URL, at the
-    documented default.
-
-    Deliberately NOT ``Config.from_env``, whose ``hostname`` field says the
-    same thing: that constructor refuses outright when no voice provider is
-    configured and validates two dozen unrelated knobs on the way past, so an
-    orientation verb built on it would fail on a bench speaker that has never
-    been given an API key.
-
-    Why this exists at all: speakers are ``jts1.local``, ``jts3.local``, …, and
-    a printed ``http://jts.local/...`` sends its reader to a different box —
-    silently, because that name usually resolves to something.
-    """
-    return f"http://{read_identity().hostname}{path}"
-
-
 def _read_packet_file(path: Path) -> dict[str, Any]:
     """One already-emitted packet, read as the evidence rather than rebuilt.
 
     The whole point of the flag: a packet emitted on the speaker and a packet
     rebuilt on a laptop fingerprint differently, because the rebuild resolves
-    ``--drivers``/``--applied-profile`` against whatever that machine has. So
-    the answer to a packet was either re-fingerprinted by hand — provenance
-    laundering, and the one thing the echo exists to prevent — or judged against
-    evidence it was not written for. Reading the FILE removes the second packet
-    entirely; the fingerprint then matches by construction.
+    ``--drivers``/``--applied-profile``/``--repeat-floor`` against whatever
+    that machine has. So the answer to a packet was either re-fingerprinted
+    by hand — provenance laundering, and the one thing the echo exists to
+    prevent — or judged against evidence it was not written for. Reading the
+    FILE removes the second packet entirely; the fingerprint then matches by
+    construction.
 
     Every ``packet_*`` reader the gate uses takes the packet as a VALUE and
     tolerates any shape, so a file that parses is a usable evidence source and
@@ -217,18 +190,37 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 
     ``--packet`` short-circuits the build: the two sources are exclusive, and
     :func:`_evidence_source_error` has already refused an invocation that named
-    both. The on-speaker defaults are resolved HERE rather than at the argparse
+    both. Which SHAPE the positional is, and where the design draft and the
+    applied profile therefore live, is
+    :func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs`'
+    answer — the same resolver ``jasper-round-views`` reads a round through, so
+    a live session directory and a banked round tree mean the same thing to
+    both tools. Those defaults are resolved THERE rather than at the argparse
     default, so "the operator passed this flag" stays answerable — which is
-    what that refusal is decided on.
+    what that refusal is decided on, and which is why an explicit flag is
+    applied here rather than folded into the resolver.
     """
     if args.packet:
         return _read_packet_file(Path(args.packet))
+    inputs = round_inputs(Path(args.session_dir))
     return build_crossover_evidence_packet(
-        Path(args.session_dir),
+        inputs.session_dir,
+        # No default for the flow state, unlike the two below: the web host
+        # rewrites it as a round runs, and a rebuild fingerprints what it read
+        # — so a defaulted state would move a packet's fingerprint between
+        # `packet` and the `propose`/`stage` that judges against it minutes
+        # later, which is the mismatch `--packet` exists to remove.
         state_path=Path(args.state) if args.state else None,
-        driver_draft_path=Path(args.drivers or _DRIVERS_DEFAULT_PATH),
-        applied_profile_path=Path(
-            args.applied_profile or _APPLIED_PROFILE_DEFAULT_PATH
+        driver_draft_path=(
+            Path(args.drivers) if args.drivers else inputs.design_draft_path
+        ),
+        applied_profile_path=(
+            Path(args.applied_profile)
+            if args.applied_profile
+            else inputs.applied_profile_path
+        ),
+        repeat_floor_path=(
+            Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path
         ),
     )
 
@@ -239,6 +231,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 _REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("--drivers", "drivers"),
     ("--applied-profile", "applied_profile"),
+    ("--repeat-floor", "repeat_floor"),
 )
 
 
@@ -840,6 +833,13 @@ def _declared_section(
     }
 
 
+def _degree_list(block: dict[str, Any], key: str) -> list[int]:
+    """One of the packet's whole-degree lists, or empty when it published none."""
+
+    value = block.get(key)
+    return list(value) if isinstance(value, list) else []
+
+
 def _banked_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
@@ -849,6 +849,14 @@ def _banked_section(
     per-driver filter must be shown to be aimed at, so both ride inside the
     banked section rather than beside it: they are facts about this round's
     evidence, and they are absent for the same reasons the round is.
+
+    ``walk`` is the exception to "absent for the same reasons": the packet's
+    ``lateral_poses`` block is filled by ACCEPTED takes, while ``available``
+    above needs a ``round_receipt.json``, which is only written once a graded
+    post-apply VERIFY completes. A measurement-only angle walk therefore banks
+    poses and no receipt, and without this sub-block the operator who staged it
+    — or the driver polling this verb for it — would read the round's silence
+    as the walk's.
     """
     region = packet_region_band_hz(packet)
     verdicts = packet_feature_classifications(packet)
@@ -870,6 +878,20 @@ def _banked_section(
             else _reason(_block(packet, "feature_classification"), packet_error)
         ),
     }
+    lateral = _block(packet, "lateral_poses")
+    walk: dict[str, Any] = {
+        "available": bool(lateral.get("available")),
+        "n_takes": lateral.get("n_takes") or 0,
+        "angles_deg": _degree_list(lateral, "angles_deg"),
+        "elevations_deg": _degree_list(lateral, "elevations_deg"),
+        "reason": (
+            None if lateral.get("available")
+            else _reason(lateral, packet_error)
+        ),
+    }
+    # A walk at mark height reads exactly the sentence it read before elevation
+    # was sayable: "0 deg" is not a raise worth a clause.
+    raised = [deg for deg in walk["elevations_deg"] if deg]
     round_block = _block(packet, "round")
     session = _block(packet, "session")
     available = bool(round_block.get("available"))
@@ -891,6 +913,17 @@ def _banked_section(
         )
         if available
         else f"no round receipt ({reason})"
+    ) + (
+        f"; {walk['n_takes']} walk take(s) at "
+        f"{', '.join(str(deg) for deg in walk['angles_deg'])} deg"
+        + (
+            f", elevations {', '.join(str(deg) for deg in walk['elevations_deg'])}"
+            " deg"
+            if raised
+            else ""
+        )
+        if walk["available"]
+        else f"; no walk takes ({walk['reason']})"
     )
     return {
         "available": available,
@@ -899,6 +932,7 @@ def _banked_section(
         "round_id": session.get("round_id"),
         "region": region_state,
         "classification": classification,
+        "walk": walk,
         "summary": summary,
     }
 
@@ -1216,8 +1250,8 @@ def status_document(
     truthfully regardless. A prescription waiting for the next round is a fact
     about this speaker whichever directory the operator happened to name.
     """
-    crossover_url = _speaker_url(CROSSOVER_PAGE_PATH)
-    declaration_url = _speaker_url(SOUND_SETUP_PAGE_PATH)
+    crossover_url = speaker_url(CROSSOVER_PAGE_PATH)
+    declaration_url = speaker_url(SOUND_SETUP_PAGE_PATH)
     sections = _status_sections(packet, packet_error)
     return {
         "speaker": {
@@ -1288,8 +1322,8 @@ _STATE_HELP = (
     "the crossover-v2 flow state JSON, banked separately from the bundle"
 )
 _STATE_HELP_OPTIONAL = (
-    f"{_STATE_HELP}. Optional; without it the packet cannot carry the "
-    "per-claim verify verdicts or the Fc selection, and says so"
+    f"{_STATE_HELP}. Optional and NOT defaulted; without it the packet cannot "
+    "carry the per-claim verify verdicts or the Fc selection, and says so"
 )
 _STATE_HELP_REQUIRED = (
     f"{_STATE_HELP}. REQUIRED for this verb: the round a prescription becomes "
@@ -1301,14 +1335,14 @@ _STATE_HELP_REQUIRED = (
 #: What ``--drivers`` is, and where it points when not given. A blend
 #: prescription never needs it, and a per-driver one is refused by name
 #: without a readable file here — which is the packet's own honesty rule
-#: applied to a second evidence source. Defaulted to the on-speaker path
-#: (rather than left ``None``) so an operator running this CLI on the speaker
-#: itself does not have to name a file that is already sitting there; a
-#: laptop or a speaker that was never commissioned reads it as unavailable,
-#: same as before.
+#: applied to a second evidence source. Defaulted (rather than left ``None``)
+#: so an operator running this CLI on the speaker itself does not have to name
+#: a file that is already sitting there; a laptop or a speaker that was never
+#: commissioned reads it as unavailable, same as before.
 _DRIVERS_HELP = (
     "the active-speaker design draft JSON, which carries the confirmed "
-    f"driver-safety profile. Defaults to {_DRIVERS_DEFAULT_PATH}. Without a "
+    "driver-safety profile. Defaults to the round's own banked copy, or "
+    f"{DRIVERS_DEFAULT_PATH} for a live session directory. Without a "
     "readable file there, the packet cannot say where each driver's own band "
     "starts and ends, and a per-driver prescription has no bound to be "
     "checked against"
@@ -1322,29 +1356,42 @@ _DRIVERS_HELP = (
 #: never touches v2 state.
 _APPLIED_PROFILE_HELP = (
     "the applied baseline profile JSON — this speaker's record of what it is "
-    f"PLAYING. Defaults to {_APPLIED_PROFILE_DEFAULT_PATH}. Without a "
+    "PLAYING. Defaults to the round's own banked copy, or "
+    f"{APPLIED_PROFILE_DEFAULT_PATH} for a live session directory. Without a "
     "readable file there, the packet cannot name the correction the graph "
     "already carries, so a per-driver prescription's displacement is "
     "reported unknown rather than guessed"
 )
 
 
+#: What ``--repeat-floor`` is, defaulted on the same terms as the two above.
+#: Without it the accuracy budget reports the repeat floor unmeasured and the
+#: stopping thresholds fall back to the codified assumptions, saying so.
+_REPEAT_FLOOR_HELP = (
+    "the banked repeat floor JSON — this rig's measured touched-nothing "
+    "repeat spread. Defaults to the round's own banked copy, or "
+    f"{REPEAT_FLOOR_DEFAULT_PATH} for a live session directory. Without a "
+    "readable file there, the packet's in_capture_repeat_floor reads "
+    "unavailable and its plateau/margin are the codified assumptions"
+)
+
+
 #: What ``--packet`` is, and why it exists. The packet a laptop rebuilds is not
-#: the packet the speaker emitted — the rebuild resolves ``--drivers`` and
-#: ``--applied-profile`` against whatever THAT machine has — so the two
-#: fingerprint differently and a document answering one is refused against the
-#: other. Emitting once and judging against the file removes the second packet
-#: rather than teaching anything to re-stamp a fingerprint, which would make the
-#: echo worthless as provenance.
+#: the packet the speaker emitted — the rebuild resolves ``--drivers``,
+#: ``--applied-profile`` and ``--repeat-floor`` against whatever THAT machine
+#: has — so the two fingerprint differently and a document answering one is
+#: refused against the other. Emitting once and judging against the file
+#: removes the second packet rather than teaching anything to re-stamp a
+#: fingerprint, which would make the echo worthless as provenance.
 _PACKET_HELP = (
     "an evidence packet JSON file (what `packet` emitted), used AS this "
     "round's evidence instead of rebuilding one. Emit the packet ONCE on the "
     "speaker, hand that file to whoever writes the prescription, then judge "
     "the answer against the SAME file: the fingerprint the document echoes "
     "matches by construction and nobody copies one by hand. The rebuild inputs "
-    "(the session_dir positional, --drivers, --applied-profile) are refused "
-    "beside it; `stage` still takes --state, which it reads for the round "
-    "ordinal rather than as evidence"
+    "(the session_dir positional, --drivers, --applied-profile, "
+    "--repeat-floor) are refused beside it; `stage` still takes --state, "
+    "which it reads for the round ordinal rather than as evidence"
 )
 
 
@@ -1361,7 +1408,8 @@ def _add_evidence_args(
         nargs="?" if optional_positional else None,
         help=(
             "a commissioning bundle directory (the one holding info.json and "
-            "evidence/v1/artifacts/crossover_v2/<relay-session-id>/)"
+            "evidence/v1/artifacts/crossover_v2/<relay-session-id>/), or a "
+            "banked round tree holding one"
             + (
                 ". Omit on a virgin speaker with no session yet -- status "
                 "reports what it can (declared state lives at --drivers / "
@@ -1387,6 +1435,7 @@ def _add_evidence_args(
     # named the flag from one who did not.
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
     parser.add_argument("--applied-profile", default=None, help=_APPLIED_PROFILE_HELP)
+    parser.add_argument("--repeat-floor", default=None, help=_REPEAT_FLOOR_HELP)
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
     else:
@@ -1422,15 +1471,17 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "  The fingerprint the document echoes is the file's, so it\n"
             "  matches by construction. Rebuilding the packet on another\n"
-            "  machine resolves --drivers/--applied-profile against THAT\n"
-            "  machine and fingerprints differently, which is what used to\n"
-            "  send an operator copying a fingerprint across by hand.\n"
+            "  machine resolves --drivers/--applied-profile/--repeat-floor\n"
+            "  against THAT machine and fingerprints differently, which is\n"
+            "  what used to send an operator copying a fingerprint across\n"
+            "  by hand.\n"
             "\n"
             "EXIT CODES\n"
             "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
             "     read the evidence, even a partial one\n"
             "  1  EXIT_EVIDENCE_UNREADABLE -- the bundle, --state,\n"
-            "     --drivers, or --applied-profile could not be read\n"
+            "     --drivers, --applied-profile, or --repeat-floor could not\n"
+            "     be read\n"
             "  2  EXIT_REFUSED -- propose's or stage's gate refused the\n"
             "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
             "     and as JSON with --json\n"

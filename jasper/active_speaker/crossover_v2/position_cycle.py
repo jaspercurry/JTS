@@ -223,9 +223,10 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` — the identity, the
-    pose, and the verifier. The banked record stays the place to go for the
-    rest.
+    Returns the record narrowed to :data:`_TAKE_FIELDS` plus ``vertical_deg``
+    — the identity, the pose, and the verifier. The banked record stays the
+    place to go for the rest. A take banked before ``vertical_deg`` existed
+    reads back as 0, the elevation a walk that could not state a rise took.
     """
     try:
         raw = json.loads(path.read_text())
@@ -237,7 +238,9 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
         return None
     if raw.get("phase") != PHASE_LATERAL:
         return None
-    return {field: raw.get(field) for field in _TAKE_FIELDS}
+    take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
+    take["vertical_deg"] = raw.get("vertical_deg") or 0
+    return take
 
 
 def read_take_curves(path: Path, *, phase: str) -> list[Mapping[str, Any]] | None:
@@ -319,6 +322,7 @@ def read_pose_curve_pair(
     *,
     phase: str,
     position_deg: int,
+    vertical_deg: int = 0,
     roles: tuple[str, str],
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
     """The latest banked take carrying BOTH roles, and the take it came from.
@@ -339,13 +343,24 @@ def read_pose_curve_pair(
     newest-first and the first match returned, which is the retake rather than
     what it replaced.
 
+    **A pose is a bearing AND a height.** ``vertical_deg`` is the signed
+    whole-degree elevation above mark height, defaulting to the mark: a
+    design-axis consumer asking for 0 deg gets the take measured at the mark,
+    never a raised one banked later in the same walk. Without it "latest
+    attempt wins" would walk right past the pose it was asked for.
+
     ``None`` when no take at this pose carries both roles, never a raise: a
     round that measured one driver is an ordinary shape.
     """
 
     artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
     for row in reversed(
-        bundle_measurements(bundle_dir, phase=phase, position_deg=position_deg)
+        bundle_measurements(
+            bundle_dir,
+            phase=phase,
+            position_deg=position_deg,
+            vertical_deg=vertical_deg,
+        )
     ):
         curves = read_take_curves(artifacts / row.path, phase=phase)
         if curves is None:
@@ -534,18 +549,29 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        if not isinstance(take, Mapping) or set(take) != set(_TAKE_FIELDS):
+        # ``vertical_deg`` is exempted at the MISSING end only: a document
+        # written before it existed reads, a document inventing a key does not.
+        if not isinstance(take, Mapping) or not (
+            set(_TAKE_FIELDS) <= set(take) <= set(_TAKE_FIELDS) | {"vertical_deg"}
+        ):
             raise PositionCycleError(
                 f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}"
+                f"{sorted(_TAKE_FIELDS)}, optionally with ['vertical_deg']"
             )
     return dict(raw)
 
 
-def takes_by_position(document: Mapping[str, Any]) -> dict[int, tuple[str, ...]]:
-    """``{position_deg: (take_id, …)}`` — the takes that share one pose.
+def takes_by_position(
+    document: Mapping[str, Any],
+) -> dict[tuple[int, int], tuple[str, ...]]:
+    """``{(position_deg, vertical_deg): (take_id, …)}`` — one pose's takes.
 
-    The split a comparison reads: every take measured at one bearing, in walk
+    The key is the POSE PAIR, not the bearing alone: a walk that raises the
+    microphone measures a different pose at the same bearing, and folding the
+    two together would put curves from two poses in one comparison.
+    ``vertical_deg`` reads 0 when the take predates it.
+
+    The split a comparison reads: every take measured at one pose, in walk
     order, so per-take curves at that pose can be put beside each other. What
     DISTINGUISHES those takes — a different applied graph, or nothing at all —
     is the take's own banked ``graph_fingerprint`` — WHICH CANDIDATE WAS
@@ -554,7 +580,8 @@ def takes_by_position(document: Mapping[str, Any]) -> dict[int, tuple[str, ...]]
     transient routing graph, whose running hash is identical before and after
     an apply.
     """
-    grouped: dict[int, list[str]] = {}
+    grouped: dict[tuple[int, int], list[str]] = {}
     for take in document["takes"]:
-        grouped.setdefault(int(take["position_deg"]), []).append(str(take["take_id"]))
-    return {degrees: tuple(ids) for degrees, ids in sorted(grouped.items())}
+        pose = (int(take["position_deg"]), int(take.get("vertical_deg") or 0))
+        grouped.setdefault(pose, []).append(str(take["take_id"]))
+    return {pose: tuple(ids) for pose, ids in sorted(grouped.items())}

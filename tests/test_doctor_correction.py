@@ -514,6 +514,119 @@ def test_check_camilla_volume_limit_ok(monkeypatch, tmp_path):
     assert "volume_limit=0.0" in r.detail
 
 
+def _stage_ring_config(tmp_path, monkeypatch, chunksize: int) -> None:
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    config = tmp_path / "ring.yml"
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        f"  chunksize: {chunksize}\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_CAPTURE_DEVICE}"\n'
+        "  playback:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_PLAYBACK_DEVICE}"\n'
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+
+def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
+    """jts4's shape: a chunk the ring cannot open, so the box is silent."""
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames() * 4)
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.speaker_silent is True
+
+
+def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
+    """jts.local's shape: a floor that exactly fills the ring is fine."""
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "ok"
+
+
+def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
+    monkeypatch, tmp_path
+):
+    """The state jts4 actually landed in: chunk fits the ring, box still dead.
+
+    256/4096 passes the ring-capacity half and is still refused by CamillaDSP
+    (ceiling is chunk x (queuelimit + 4) = 2048), so the box crash-loops with
+    the ring half of this check green. Observed on hardware 2026-09-01.
+    """
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    config = tmp_path / "ring.yml"
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 256\n"
+        "  queuelimit: 4\n"
+        "  target_level: 4096\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_CAPTURE_DEVICE}"\n'
+        "  playback:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_PLAYBACK_DEVICE}"\n'
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.speaker_silent is True
+
+
+def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
+    """A clamped box says so, so the running chunk is never unexplained.
+
+    A floorless HiFiBerry DAC8x Studio resolves the 1024 default and runs 256.
+    Without this line the only account of the difference is a source comment,
+    which is how the bug this check exists for stayed invisible.
+
+    Not the InnoMaker: since #3542 it declares the already-clamped 256/1024
+    outright, so it no longer takes this path (see
+    test_camilla_config_contract.py::test_a_floor_that_already_fits_the_ring_is_not_clamped).
+    """
+    from jasper.fanin_coupling import ring_capacity_frames
+    from jasper.output_hardware import OutputHardwareState, write_state
+
+    state_path = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
+    write_state(
+        OutputHardwareState(
+            profile_id="hifiberry_dac8x_studio",
+            profile_label="HiFiBerry DAC8x Studio",
+            status="ready",
+            physical_output_count=2,
+            selected_card_id="hifiberry_dac8x_studio",
+        ),
+        state_path,
+    )
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "ok"
+    assert "clamped from" in r.detail
+
+
 def test_check_camilla_volume_limit_fails_when_missing(monkeypatch, tmp_path):
     config = tmp_path / "v1.yml"
     config.write_text("devices:\n  samplerate: 48000\n")

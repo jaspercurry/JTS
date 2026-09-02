@@ -44,6 +44,12 @@ from jasper.audio_measurement import (
     program_analysis,
     snr_policy,
 )
+from jasper.audio_measurement.alignment import (
+    GCC_UPSAMPLE,
+    _gcc_correlation,
+    _gcc_local_peak_snap,
+    gcc_phat,
+)
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.frame_fit import fit_frame
@@ -81,7 +87,6 @@ from jasper.audio_measurement.program_analysis import (
     CAPTURE_BOUND_MARGIN_S,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
     GCC_SNAP_RADIUS_PERIODS,
-    GCC_UPSAMPLE,
     IR_POST_MS,
     IR_PRE_MS,
     ConfiguredPathConditioningError,
@@ -116,9 +121,6 @@ from jasper.audio_measurement.program_analysis import (
     _compose_configured_path_ir,
     _deconvolve_window,
     _gate_floor_hz,
-    _gcc_correlation,
-    _gcc_local_peak_snap,
-    _gcc_phat,
     _global_offset,
     _locate_segments,
     _n_fft_for,
@@ -1979,12 +1981,12 @@ def test_locator_robust_to_large_global_offset():
 # --------------------------------------------------------------------------- #
 
 
-def test_gcc_phat_sign_convention():
+def testgcc_phat_sign_convention():
     # A ≈ B shifted right by +lag: build st = sw delayed by 30 samples.
     base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
     sw = base
     st = np.roll(base, 30)  # tweeter LATER by 30 samples
-    lag, sign, conf, at_edge = _gcc_phat(
+    lag, sign, conf, at_edge = gcc_phat(
         st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -1992,7 +1994,7 @@ def test_gcc_phat_sign_convention():
     assert sign == 1
     assert not at_edge
     # Inverting the tweeter flips the correlation sign.
-    lag2, sign2, _conf2, _edge2 = _gcc_phat(
+    lag2, sign2, _conf2, _edge2 = gcc_phat(
         -st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -2003,7 +2005,7 @@ def test_gcc_phat_sign_convention():
 def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
     """Two NaN blocks, pinned — a downstream gate's equivalence rests on them.
 
-    ``_gcc_phat``'s confidence flows into ``ProgramAnalysis.alignment.confidence``,
+    ``gcc_phat``'s confidence flows into ``ProgramAnalysis.alignment.confidence``,
     which MEASURE screens with ``alignment_confidence_ok`` (``crossover_v2_flow``:
     ``confidence >= ALIGNMENT_CONFIDENCE_TRUST_FLOOR``). That phrasing and its
     negation are only interchangeable while the value is a real number: ``NaN``
@@ -2029,7 +2031,7 @@ def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
     assert cc.size == m
     assert np.all(np.isfinite(cc)), "the magnitude clamp is what keeps this finite"
 
-    _lag, _sign, conf, _at_edge = _gcc_phat(
+    _lag, _sign, conf, _at_edge = gcc_phat(
         silence, silence, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -2039,7 +2041,7 @@ def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
     # And on a real capture the same expression stays inside [0, 1], so the
     # comparison against the trust floor is total in both directions.
     base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
-    _l, _s, real_conf, _e = _gcc_phat(
+    _l, _s, real_conf, _e = gcc_phat(
         np.roll(base, 30), base, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
@@ -2130,7 +2132,7 @@ def test_gcc_local_peak_snap_stays_near_anchor_despite_taller_far_peak():
     radius = SR / fc_hz * GCC_SNAP_RADIUS_PERIODS
 
     # The GLOBAL correlation peak sits on the taller far feature...
-    global_lag, _sign, _conf, _edge = _gcc_phat(
+    global_lag, _sign, _conf, _edge = gcc_phat(
         tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
         upsample=GCC_UPSAMPLE, max_lag_samples=200,
     )
@@ -7911,31 +7913,57 @@ def test_crossover_region_band_reaches_below_the_tweeter_sweep_floor():
     assert old == R18_OLD_TRACKING_BAND_HZ
 
     new = crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
+        R18_FC_HZ, validity_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
     )
     assert new == (1000.0, 4000.0)
     assert new[0] < old[0]
 
 
+def test_verify_absolute_grades_from_the_validity_floor_not_the_trusted_one():
+    """The verdict band's lower edge is this capture's ``1/T`` floor.
+
+    ``2.5/T`` is disclosed beside a verdict and never bounds one
+    (``gating.TRUSTED_FLOOR_MULTIPLIER``). A 0.9 ms reflection shortens the
+    gate until the floor — not ``Fc/2``, not the radiated band — is what binds
+    the lower edge, so the two floors would give visibly different bands.
+    """
+    _freqs, ir, _db = _r18_system()
+    echo_samples = int(round(0.9e-3 * SR))
+    reflected = ir.copy()
+    reflected[echo_samples:] += 0.5 * reflected[: reflected.size - echo_samples]
+    prog, cap = _r18_capture(reflected)
+    result = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=R18_FC_HZ,
+            configured_crossover_response_by_role=_r18_transfers(),
+            configured_polarity_sign_by_role={"woofer": 1, "tweeter": 1},
+        ),
+    )
+    summed = result.summed_response
+    lo, hi = result.verify_absolute["band_hz"]
+    assert lo == pytest.approx(summed.validity_floor_hz)
+    assert lo == pytest.approx(summed.gating["f_valid_floor_hz"])
+    # The floor binds, and the trusted floor would have moved this edge.
+    assert R18_FC_HZ / 2.0 < lo < summed.gating["f_trusted_hz"] < hi
+
+
 def test_crossover_region_band_is_bounded_by_the_captures_own_evidence():
-    """Never a frequency literal: a short gate window raises the floor, and an
-    unradiated band or empty intersection yields ``None``, never a span."""
-    assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=1200.0, radiated_band_hz=(150.0, 20_000.0),
-    ) == (1200.0, 4000.0)
+    """Never a frequency literal: an unradiated band or an empty intersection
+    yields ``None``, never a span."""
     # Gate floor above the whole region ⇒ nothing this capture supports.
     assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=9000.0, radiated_band_hz=(150.0, 20_000.0),
+        R18_FC_HZ, validity_floor_hz=9000.0, radiated_band_hz=(150.0, 20_000.0),
     ) is None
     # An absent floor or band is "the record does not say", never a default.
     assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=None, radiated_band_hz=(150.0, 20_000.0),
+        R18_FC_HZ, validity_floor_hz=None, radiated_band_hz=(150.0, 20_000.0),
     ) is None
     assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=357.0, radiated_band_hz=None,
+        R18_FC_HZ, validity_floor_hz=357.0, radiated_band_hz=None,
     ) is None
     assert crossover_region_band_hz(
-        0.0, trusted_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
+        0.0, validity_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
     ) is None
 
 

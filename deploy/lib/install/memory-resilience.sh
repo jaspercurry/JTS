@@ -31,6 +31,52 @@ _mem_log() {
 }
 
 
+# --- Reboot-required marker (issue #2110) ---
+#
+# The zram and cgroup-memory migrations below change boot-only state
+# (kernel cmdline args, zram device sizing) that only takes effect after
+# a reboot. Rather than leave callers (onboard.sh, deploy-to-pi.sh)
+# parsing this file's log prose for "REBOOT REQUIRED", each migration
+# records its own reason line here — one canonical, machine-readable
+# marker. /run is tmpfs, so an actual reboot clears it on its own (same
+# idiom as jasper.active_speaker.startup_hold's /run marker); no
+# separate cleanup step is needed.
+REBOOT_REQUIRED_MARKER="${JTS_REBOOT_REQUIRED_MARKER:-/run/jasper-install/reboot_required}"
+
+# Set (non-empty reason) or clear (empty reason) this step's line in the
+# marker, identified by `key`. Each migration calls this unconditionally
+# on every run — clearing when its own condition is no longer true — so
+# the file always reflects only what THIS run still needs a reboot for,
+# regardless of the other migration's call order.
+_set_reboot_required_reason() {
+    local key="$1" reason="$2"
+    local dir tmp
+    dir="$(dirname "${REBOOT_REQUIRED_MARKER}")"
+    install -d -m 0755 "${dir}"
+    tmp="${REBOOT_REQUIRED_MARKER}.tmp.$$"
+    { [[ -f "${REBOOT_REQUIRED_MARKER}" ]] \
+        && grep -v "^${key}=" "${REBOOT_REQUIRED_MARKER}" || true; } > "${tmp}"
+    if [[ -n "${reason}" ]]; then
+        printf '%s=%s\n' "${key}" "${reason}" >> "${tmp}"
+    fi
+    if [[ -s "${tmp}" ]]; then
+        chmod 0644 "${tmp}"
+        mv "${tmp}" "${REBOOT_REQUIRED_MARKER}"
+    else
+        rm -f "${tmp}" "${REBOOT_REQUIRED_MARKER}"
+    fi
+}
+
+# The one line that surfaces the marker, printed once per install.sh run
+# after both Stage 1 (zram) and Stage 2 (cgroup) migrations have had a
+# chance to write to it.
+_print_reboot_required_marker() {
+    if [[ -s "${REBOOT_REQUIRED_MARKER}" ]]; then
+        echo "  REBOOT REQUIRED (${REBOOT_REQUIRED_MARKER}): $(paste -sd';' "${REBOOT_REQUIRED_MARKER}")"
+    fi
+}
+
+
 # Compute vm.min_free_kbytes from MemTotal_kB.
 # Formula: clamp(0.02 × memtotal_kb, 8192, 262144) — 2% of total RAM,
 # with an 8 MB floor (Pi Foundation default; never reduce below) and
@@ -133,6 +179,9 @@ _compute_target_zram_bytes() {
 }
 
 _apply_jts_zram_dropin() {
+    # Recomputed fresh every run below — clearing first means an early
+    # return (skip, install failure) leaves no stale reason behind.
+    _set_reboot_required_reason zram ""
     if [[ ! -d /etc/rpi ]]; then
         _mem_log "zram.skip" \
             "/etc/rpi not present (rpi-swap not installed) — skipped zram sizing"
@@ -160,8 +209,9 @@ _apply_jts_zram_dropin() {
         _mem_log "zram.already_sized" \
             "zram drop-in installed; live size already ~50% RAM"
     else
-        _mem_log "zram.reboot_required" \
-            "zram drop-in installed; REBOOT REQUIRED to resize (current: $((cur_zram_bytes / 1024 / 1024)) MB → target: ~${target_zram_mb} MB)"
+        local reason="zram drop-in installed; resize pending (current: $((cur_zram_bytes / 1024 / 1024)) MB → target: ~${target_zram_mb} MB)"
+        _mem_log "zram.reboot_required" "${reason}"
+        _set_reboot_required_reason zram "${reason}"
     fi
     return 0
 }
@@ -256,12 +306,17 @@ migrate_memory_resilience() {
 # IDEMPOTENT: existing non-conflicting cmdline.txt values are preserved
 # unchanged. Operator-added tokens (custom kernel flags, etc.) survive.
 #
-# REBOOT REQUIRED: kernel command line only re-reads at boot.
-# Function surfaces this loudly so the operator knows.
+# Kernel command line only re-reads at boot — a change here is recorded
+# in REBOOT_REQUIRED_MARKER (see _set_reboot_required_reason above) and
+# surfaced by the single _print_reboot_required_marker line at the end of
+# this function, called from every return path so it reflects both this
+# migration and _apply_jts_zram_dropin's (called first by every caller).
 migrate_cgroup_memory_enabled() {
     local cmdline_file="${JTS_BOOT_CMDLINE_FILE:-/boot/firmware/cmdline.txt}"
+    _set_reboot_required_reason cgroup_memory ""
     if [[ ! -f "${cmdline_file}" ]]; then
         echo "  cgroup_memory: WARN — ${cmdline_file} missing (not RPi OS?); skipped"
+        _print_reboot_required_marker
         return 0
     fi
     local current
@@ -292,6 +347,7 @@ migrate_cgroup_memory_enabled() {
     done
     if (( changed == 0 )); then
         echo "  cgroup_memory: cmdline.txt already configured"
+        _print_reboot_required_marker
         return 0
     fi
     # cmdline.txt is a SINGLE line — preserve that. Append the new
@@ -307,12 +363,16 @@ migrate_cgroup_memory_enabled() {
     chmod 0644 "${cmdline_file}"
     local added="${to_add[*]}"
     [[ -n "${added}" ]] || added="none"
+    local reason
     if (( removed_disable == 1 )); then
         echo "  cgroup_memory: cmdline.txt updated; removed: cgroup_disable=memory; added: ${added}"
+        reason="cmdline.txt updated; removed: cgroup_disable=memory; added: ${added}"
     else
         echo "  cgroup_memory: cmdline.txt updated; added: ${added}"
+        reason="cmdline.txt updated; added: ${added}"
     fi
-    echo "  cgroup_memory: REBOOT REQUIRED for kernel to honor the new boot args"
     logger -t jasper-install -- "event=cgroup_memory.cmdline_updated removed_disable=${removed_disable} added=${added}" 2>/dev/null || true
+    _set_reboot_required_reason cgroup_memory "${reason} — kernel cmdline only re-reads at boot"
+    _print_reboot_required_marker
     return 0
 }

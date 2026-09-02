@@ -147,6 +147,7 @@ heal_shared_state_modes() {
         # had already made them with a bare mkdir — root:root 0700 (its
         # UMask=0077), leaving the dropped writer unable to even traverse in.
         "d:2770:${STATE_DIR}/active_speaker"
+        "d:2770:${STATE_DIR}/active_speaker/campaigns"
         "d:2770:${STATE_DIR}/active_speaker/sessions"
         "d:2770:${STATE_DIR}/active_speaker_captures"
         "d:2770:${STATE_DIR}/active_speaker_sweeps"

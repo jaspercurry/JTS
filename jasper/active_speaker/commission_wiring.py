@@ -21,6 +21,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from ._common import finite_float
+
 PathLoader = Callable[[str], Awaitable[bool]]
 RunningConfigReader = Callable[[], Awaitable[str | None]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
@@ -115,6 +117,23 @@ def resolve_capture_preset(topology: Any) -> Any:
         preset=preset,
         crossover_preview=crossover_preview,
     )
+
+
+def commissioning_spl_ceiling_db(topology: Any) -> float:
+    """The commissioning SPL hard stop this box declares, in dB SPL at the mic.
+
+    The one reader of ``safety.max_commissioning_level_db_spl``: the ceiling is
+    on the doctrine's closed list, so every surface that bounds a level against
+    it must get the same number from the same resolution. ``ValueError`` when
+    no finite ceiling resolves — the same type ``resolve_capture_preset``
+    already raises when no preset does.
+    """
+
+    preset = resolve_capture_preset(topology)
+    ceiling = finite_float(preset.safety.max_commissioning_level_db_spl)
+    if ceiling is None:
+        raise ValueError("the preset declares no finite max_commissioning_level_db_spl")
+    return ceiling
 
 
 def resolve_commission_preset(

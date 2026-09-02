@@ -52,7 +52,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from jasper.active_speaker.arm_walk import WizardClient
+from jasper.active_speaker.wizard_client import WizardClient
 from jasper.active_speaker.baseline_profile import (
     baseline_profile_state_path,
     load_applied_baseline_profile_state,
@@ -125,15 +125,14 @@ def _door(
     still points at, so the next daemon restart would play a graph nobody
     applied -- which is why nothing here POSTs except the apply itself.
     """
-    status, raw = wizard.post(path, body) if body is not None else wizard.open(path)
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        payload = None
+    status, payload = (
+        wizard.post_json(path, body) if body is not None else wizard.get_json(path)
+    )
     if status != 200 or not isinstance(payload, dict):
         raise _DoorUnreachable(
             path,
-            f"{f'HTTP {status}' if status else 'no response'}: {raw.strip()[:200]}",
+            f"{f'HTTP {status}' if status else 'no response'}: "
+            f"{str(payload).strip()[:200]}",
         )
     return payload
 

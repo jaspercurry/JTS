@@ -18,13 +18,13 @@ import re
 from pathlib import Path
 
 from jasper import renderer_lanes as rl
+from jasper.fanin_coupling import resolve_ring_wire_format
 from tests.install_surface import installer_text
 from tests.shairport_template_helpers import (
     SHAIRPORT_TEMPLATE,
     template_string_value,
     template_value,
 )
-
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -85,7 +85,10 @@ def test_asoundrc_declares_private_renderer_lanes():
         assert f'pcm "{expected_slave}"' in block
         assert "rate 48000" in block
         assert "channels 2" in block
-        assert "format S16_LE" in block
+        # snd-aloop pins both halves of a cable to one format, and the reader
+        # half opens at the box's resolved wire — so these slaves declare the
+        # width an UNDECLARED box resolves, not a literal of their own.
+        assert f"format {resolve_ring_wire_format(None)}" in block
         assert "slave.pcm" not in block
         assert expected_slave not in seen, f"duplicate lane {expected_slave}"
         seen.add(expected_slave)

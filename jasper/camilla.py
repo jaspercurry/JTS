@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import logging
 import math
 import os
@@ -54,14 +55,16 @@ _WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
 # that so the fade has finished.
 MAIN_VOLUME_RAMP_SETTLE_S = 0.45
 
-# How far a graph mutation ducks the main fader before swapping. Deep enough
-# that `volume_coordinator.RECONCILE_DUCK_SKIP_DB` (10 dB) reads it as
-# somebody's duck and leaves it alone — the 1 Hz reconciler is cross-process
-# and does not take the DSP writer lock, so riding that carve-out is what
-# keeps it from writing the fader back up mid-swap. Also deeper than the
-# largest headroom charge a swap has been measured to carry (22.5 dB), so the
-# graph changes under something already inaudible.
-GRAPH_SWAP_DUCK_DB = 40.0
+# How far a graph mutation ducks the main fader before swapping. The reload
+# discontinuity itself is not what sizes this: an un-ducked swap measured
+# 7-8 dB below the ambient floor's own sample-to-sample delta
+# (docs/cutover-briefs-acceptance.md §4). What the duck covers is the
+# broadband gain step between two DIFFERENT graphs, whose size is the
+# headroom charge the outgoing graph carried — 22.5 dB is the largest a
+# shipped profile has been measured to hold. 25 dB clears that, and is the
+# shipped `JASPER_DUCK_DB`, so out of the box a swap and a cue duck by the
+# same amount. See ADR-0213.
+GRAPH_SWAP_DUCK_DB = 25.0
 
 _T = TypeVar("_T")
 
@@ -756,6 +759,41 @@ class CamillaController:
                 return None
             raise
 
+    def graph_mutation_in_progress(self) -> bool | None:
+        """Is a DSP writer holding the graph-mutation lock right now?
+
+        Observes the flock every writer already takes
+        (:func:`jasper.dsp_apply.camilla_graph_mutation`); ``None`` means
+        "cannot say". See ADR-0213.
+
+        Read-only and creating nothing, which is load-bearing rather than
+        tidy: jasper-voice runs under ``ProtectSystem=strict`` with
+        ``/var/lib/camilladsp`` outside its ``ReadWritePaths``, so the
+        writers' own ``O_RDWR|O_CREAT`` open would raise there and every
+        probe would answer "cannot say". ``flock`` needs no write access, and
+        a missing lock file means no writer has ever taken it. Shared rather
+        than exclusive so two probes never exclude each other; the close
+        drops it again within the same call. It does conflict with a writer's
+        ``LOCK_EX``, so a writer whose first non-blocking acquire lands in
+        that window logs one spurious ``result=waiting`` and retries a poll
+        interval later.
+        """
+        try:
+            fd = os.open(self._graph_mutation_lock_path, os.O_RDONLY)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+        return False
+
     @contextlib.asynccontextmanager
     async def _graph_mutation(self, source: str, *, duck: bool = True):
         """Admit one CamillaDSP graph mutation, ducked across the swap.
@@ -769,24 +807,18 @@ class CamillaController:
         that survives the reload.
 
         The duck deliberately rides ``main_volume`` rather than ``main_mute``:
-        a mute reads to `VolumeCoordinator.maybe_reconcile_camilla` as mute
-        drift, which bypasses both of its skip paths, so its 1 Hz tick would
-        clear the bracket mid-swap. A drop this deep reads as somebody's duck
-        and is left alone. It also keeps the two existing ``main_mute``
-        writers — the coordinator and the floor-tone audition — the only ones.
+        the release algebra above is stated in dB and a mute has none, and it
+        keeps the two existing ``main_mute`` writers — the coordinator and the
+        floor-tone audition — the only ones. What keeps the 1 Hz reconciler
+        off the fader for the length of this bracket is the writer lock it
+        probes (`CamillaController.graph_mutation_in_progress`), not the
+        depth of the drop (ADR-0213).
 
         ``duck=False`` keeps the writer-lock serialization and drops the fader
-        bracket. Two callers take it, for two different reasons:
-
-        * :meth:`patch_config` changes ONE declared parameter of a running
-          filter rather than replacing the pipeline, so there is no new graph
-          whose headroom could step. Its safety is a property of ITS CALLERS'
-          bounded edits, not of ``PatchConfig`` itself — a patch that rewrote a
-          whole filter chain would step like any swap.
-        * the measurement session graph, through
-          :meth:`set_active_config_raw`, installs once into a session that
-          already holds the fader and the measurement window, so nothing is
-          playing for a step to be loud against.
+        bracket: a parameter write into running filters has no new graph whose
+        headroom could step, and the measurement session graph, through
+        :meth:`set_active_config_raw`, installs into a session that already
+        holds the fader, so nothing is playing for a step to be loud against.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 
@@ -812,9 +844,9 @@ class CamillaController:
                 await asyncio.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
                 yield
             finally:
-                # Shielded because an interrupted release leaves the speaker
-                # ducked — quiet, but the reconciler reads that as somebody's
-                # duck and will not undo it.
+                # Shielded because an interrupted release leaves the
+                # speaker ducked, and the reconciler is not guaranteed to
+                # walk a drop this deep back (ADR-0213).
                 await asyncio.shield(self._release_graph_swap_duck(before_db))
 
     async def _release_graph_swap_duck(self, before_db: float) -> None:
@@ -874,13 +906,15 @@ class CamillaController:
         loader so validation, state recording, and rollback stay
         boring and inspectable.
 
-        ``duck=False`` skips the fader bracket and keeps the writer lock. The
-        measurement session graph takes it: its graph is installed ONCE into a
+        ``duck=False`` skips the fader bracket and keeps the writer lock. Taken
+        by the measurement session graph, whose graph is installed ONCE into a
         session that has already claimed the fader and paused voice, so there
-        is no household programme for a gain step to be loud against — and the
-        0.94 s of ramp the bracket cost was being paid inside a measurement
-        window with nothing playing. Every other caller replaces the pipeline
-        under live audio and keeps ducking.
+        is no household programme for a gain step to be loud against; and by
+        the live preference-EQ edit, once
+        :func:`jasper.sound.live_edit.plan_live_edit` has established that
+        CamillaDSP will update the running filters in place rather than
+        rebuild the pipeline, so there is no gain step to hide. Every other
+        caller keeps ducking.
         """
         if not isinstance(config, str) or not config.strip():
             if best_effort:
@@ -990,29 +1024,10 @@ class CamillaController:
         with it. A patch does not replace anything: it writes declared
         parameters of filters that are already running.
 
-        **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
-        A patch that rewrote a whole filter chain would step like any swap.
-        All three shipped callers are bounded, and differently:
-
-    * ``jasper.web.sound_setup._live_draft_profile`` — the live preference-EQ
-      draft, the largest of them: it can rewrite every filter in the editing
-      graph in one patch. Bounded by the profile schema, which clamps a band to
-      ±``ADVANCED_GAIN_LIMIT_DB``, 20 Hz–20 kHz and Q 0.2–10, and by
-      ``jasper.sound.live_edit.plan_live_edit``, which refuses to patch at all
-      unless the running and wanted graphs differ ONLY in finite numbers inside
-      filters that already exist — anything structural falls back to the ducked
-      swap.
-
-        * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
-          balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,
-          attenuation only). Paying a 40 dB fade and
-          ``MAIN_VOLUME_RAMP_SETTLE_S`` for it muted the speaker for half a
-          second per slider nudge.
-        * ``bass_extension.bench.activation.temporary_bass_activation``,
-          reached from the shipped ``jasper-bass-extension-bench`` console
-          script — one limiter ``clip_limit``, and it has already faded to
-          floor and proved it (``to_floor`` + ``assert_at_floor``) before it
-          patches, so the duck was redundant there rather than protective.
+        **That safety is a property of the CALLERS, not of ``PatchConfig``.**
+        A patch that rewrote a whole filter chain would step like any swap, so
+        every caller must bound what it patches (a clamped trim, one limiter
+        value) and stay off this method for anything structural.
 
         The writer lock stays: a patch still mutates the running graph and must
         serialize against every other DSP writer.

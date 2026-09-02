@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+from jasper.fanin_coupling import (
+    RING_CAPTURE_DEVICE,
+    RING_PCM_DEVICES,
+    RING_PLAYBACK_DEVICE,
+    ring_capacity_frames,
+)
 
 
 # Capture is Ring A, aliased rather than respelled so the emitters' no-kwargs
@@ -131,6 +136,42 @@ DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
 
 
+@dataclass(frozen=True)
+class CamillaFloor:
+    """The lowest CamillaDSP ``(chunksize, target_level)`` a box runs xrun-free.
+
+    Declared per DacProfile because a box is identified by its DAC, but the
+    numbers are CamillaDSP's own buffering, not the DAC's: since ADR-0100 the
+    chunk crosses the SHM ring, whose capacity is a transport constant, so a
+    chunk the ring cannot open is refused at declaration rather than clamped at
+    emit time. ``target_level`` is the resampler's steady-state fill: it must be
+    >= 4x ``chunksize`` so the adjuster has headroom, and the ring's capacity
+    does not bound it.
+    """
+
+    chunksize: int
+    target_level: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("chunksize", self.chunksize),
+            ("target_level", self.target_level),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be > 0, got {value}")
+        if self.target_level < 4 * self.chunksize:
+            raise ValueError(
+                f"target_level must be >= 4 x chunksize ({4 * self.chunksize}), "
+                f"got {self.target_level}"
+            )
+        capacity = ring_capacity_frames()
+        if self.chunksize > capacity:
+            raise ValueError(
+                f"chunksize {self.chunksize} exceeds the ring's {capacity}-frame "
+                "capacity; CamillaDSP could not open the ring with it"
+            )
+
+
 # Sentinel distinguishing "caller did not pass profile_floor → auto-resolve the
 # active DAC's codified floor" from an explicit ``profile_floor=None`` ("no
 # floor, keep the global default" — the byte-identical contract path the
@@ -147,36 +188,26 @@ _UNSET = _Unset()
 
 
 def _active_camilla_floor(field: str) -> int | None:
-    """Resolve the active output DAC profile's codified CamillaDSP floor field.
+    """The active output DAC's declared ``CamillaFloor.<field>``, or None.
 
-    Reads the resolved output-hardware state the audio-hardware reconciler
-    writes (``/run/jasper-output-hardware/output_hardware.json``, overridable
-    via ``JASPER_OUTPUT_HARDWARE_STATE_PATH``) — the SAME profile resolution
-    ``jasper.output_hardware`` / the reconciler use to pick a profile id — and
-    returns that profile's ``LatencyFloor.<field>`` (``camilla_chunksize`` or
-    ``camilla_target_level``), or ``None`` when the state is unreadable, the
-    profile is unknown, or the DAC declares no floor. Best-effort and
-    env-independent on purpose: a fresh box reproduces the tuned floor with no
-    per-user config, and a box whose state file is not yet written simply keeps
-    the global default rather than failing config generation. Import of the
-    hardware modules is deferred so this contract module stays import-cheap for
-    the socket-activated web surfaces that never call it.
+    None when the reconciler has resolved no DAC, the profile is unknown, or
+    the DAC declares no floor — the caller then keeps the global default, so
+    a box whose record is not yet written still generates a config. The
+    hardware modules are imported lazily so this contract module stays
+    import-cheap for the socket-activated web surfaces that never call it.
     """
     try:
-        from jasper.audio_hardware.dac import latency_floor_for
-        from jasper.output_hardware import load_state
+        from jasper.audio_hardware.dac import camilla_floor_for
+        from jasper.output_hardware import active_dac_profile_id
     except ImportError:
         return None
-    # load_state is itself fail-soft (OSError / JSONDecodeError → None); it does
-    # not raise for a missing or malformed state file. No floor when the state is
-    # unreadable or the profile is unknown / declares no floor.
-    state = load_state()
-    if state is None or not state.profile_id:
+    profile_id = active_dac_profile_id()
+    if profile_id is None:
         return None
-    floor = latency_floor_for(state.profile_id)
+    floor = camilla_floor_for(profile_id)
     if floor is None:
         return None
-    return getattr(floor, field, None)
+    return int(getattr(floor, field))
 
 
 def _lab_override_allows_below_floor(
@@ -266,7 +297,7 @@ def resolve_camilla_chunksize(
     and by the pre-#27 explicit-literal call. See :func:`_resolve_camilla_int`.
     """
     if isinstance(profile_floor, _Unset):
-        profile_floor = _active_camilla_floor("camilla_chunksize")
+        profile_floor = _active_camilla_floor("chunksize")
     return _resolve_camilla_int(
         "JASPER_CAMILLA_CHUNKSIZE", DEFAULT_CHUNKSIZE,
         os.environ if env is None else env,
@@ -287,12 +318,93 @@ def resolve_camilla_target_level(
     path. See :func:`resolve_camilla_chunksize` and :func:`_resolve_camilla_int`.
     """
     if isinstance(profile_floor, _Unset):
-        profile_floor = _active_camilla_floor("camilla_target_level")
+        profile_floor = _active_camilla_floor("target_level")
     return _resolve_camilla_int(
         "JASPER_CAMILLA_TARGET_LEVEL", DEFAULT_TARGET_LEVEL,
         os.environ if env is None else env,
         profile_floor,
     )
+
+
+def resolve_camilla_latency_for_devices(
+    *,
+    capture_device: str,
+    playback_device: str | None,
+    chunksize: int | None = None,
+    target_level: int | None = None,
+) -> tuple[int, int]:
+    """The ``(chunksize, target_level)`` a graph between these devices needs.
+
+    A caller value passed here is returned untouched — the lab seam every
+    emitter already offers, and the half a caller leaves ``None`` is the only
+    half resolved. Filling both halves here rather than at each emitter keeps
+    "an explicit value wins" spelled once.
+
+    WHY A DEVICE DECIDES THIS. The DacProfile ``LatencyFloor`` sizes the DAC's
+    OWN buffer, and jasper-outputd is what feeds that buffer. CamillaDSP does
+    not: since ADR-0100 its chunk crosses THE RING, whose capacity is
+    ``RING_SLOT_FRAMES x DEFAULT_FANIN_RING_SLOTS`` frames — a compile-time
+    constant of the fan-in writer and the ioplug, identical on every box and
+    unrelated to which DAC is fitted. A chunk larger than that cannot be
+    negotiated at all: CamillaDSP exits with "Trying to set avail_min to N, must
+    be smaller than or equal to device buffer size of 256" and systemd
+    restart-loops it, which is silent deafness (AGENTS.md #6).
+
+    So a ring end CLAMPS the resolved chunk to what the ring can carry. It does
+    not replace the box's floor with the ring's certified geometry: jts.local
+    runs the Apple floor's 256 across this same ring healthily, so a floor that
+    already fits is the box's own tuning and is passed through untouched. Only a
+    floor the transport physically cannot serve is brought down — the InnoMaker
+    floor's 1024, which is what crash-looped jts4. Whether every ring graph
+    should instead run the certified ``RING_CAMILLA_*`` pair is a deliberate
+    retune of healthy boxes, not this clamp; the armed active path and the
+    fresh-install boot graph already pass that pair explicitly.
+
+    ``target_level`` is not bounded by the ring's capacity — jts.local carries
+    1536 over a 256-frame ring with no complaint — but it IS bounded by
+    CamillaDSP relative to the chunk, so a clamped chunk drags its ceiling down
+    with it and the pair scales together. See the comment at the clamp.
+
+    ``playback_device=None`` is a CLOCKLESS sink (a ``File`` — the bonded
+    leader's snapserver FIFO, the parked graph's ``/dev/null``). It declares no
+    ALSA buffer, so a ring capture is then the only ALSA end and it governs.
+
+    A non-ring ALSA playback device keeps the box's floor whole even when
+    capture is Ring A, because that sink's own hardware buffer is what the
+    process must feed (pinned by the ALSA-lane control in
+    ``test_ring_reemit_carries_the_certified_ring_chunk_and_target``).
+    """
+
+    resolved_target = target_level is None
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+        governing_device = (
+            capture_device if playback_device is None else playback_device
+        )
+        if governing_device in RING_PCM_DEVICES:
+            capacity = ring_capacity_frames()
+            if chunksize > capacity:
+                # THE PAIR SCALES TOGETHER. CamillaDSP bounds target_level at
+                # `chunksize x (queuelimit + 4)` — measured against 4.1.3 on
+                # jts4, exact across chunk 128/256/512 and queuelimit 1/2/4 —
+                # so the ceiling falls with the chunk. Clamping the chunk alone
+                # pushed jts4's floor-declared target of 4096 over the new
+                # 2048 ceiling and swapped one fatal config for another
+                # ("target_level cannot be larger than 2048", same crash loop).
+                #
+                # Scaling by the same ratio keeps the pair valid without
+                # encoding CamillaDSP's formula here: the bound is proportional
+                # to chunksize, so a pair that fit before fits after. It also
+                # preserves the RELATIONSHIP the DacProfile declared rather
+                # than substituting a number of our own.
+                if resolved_target:
+                    target_level = max(1, target_level * capacity // chunksize)
+                chunksize = capacity
+    return chunksize, target_level
+
+
 # CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
 # JTS treats 0 dB as the hard software ceiling; source/headroom logic
 # should attenuate below this, never boost above full scale.

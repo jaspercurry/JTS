@@ -430,17 +430,6 @@ def _playback_id(raw: Mapping[str, Any]) -> str | None:
     return str(value).strip() if value else None
 
 
-def _summed_test_id(raw: Mapping[str, Any]) -> str | None:
-    playback = _mapping_value(raw.get("playback"))
-    value = (
-        raw.get("summed_test_id")
-        or raw.get("playback_id")
-        or playback.get("summed_test_id")
-        or playback.get("playback_id")
-    )
-    return str(value).strip() if value else None
-
-
 def _driver_capture_geometry(
     placement_proof: Mapping[str, Any] | None,
     active_comparison_set: Mapping[str, Any] | None = None,
@@ -458,25 +447,6 @@ def _driver_capture_geometry(
         active_comparison_set,
         speaker_group_id=speaker_group_id,
         role=role,
-        target_fingerprint=target_fingerprint,
-    )
-
-
-def _summed_capture_geometry(
-    placement_proof: Mapping[str, Any] | None,
-    active_comparison_set: Mapping[str, Any] | None = None,
-    *,
-    speaker_group_id: str = "",
-    target_fingerprint: str = "",
-) -> str:
-    """Return summed geometry bound by the server-owned placement proof."""
-
-    from jasper.active_speaker.capture_geometry import summed_capture_geometry
-
-    return summed_capture_geometry(
-        placement_proof,
-        active_comparison_set,
-        speaker_group_id=speaker_group_id,
         target_fingerprint=target_fingerprint,
     )
 
@@ -592,15 +562,6 @@ def _driver_target_fingerprint(
     for target in active_driver_targets(topology):
         if target.get("target_id") == target_id:
             return str(target.get("target_fingerprint") or "")
-    return ""
-
-
-def _summed_target_fingerprint(topology: Any, *, group_id: str) -> str:
-    from jasper.active_speaker.measurement import active_summed_targets
-
-    for target in active_summed_targets(topology):
-        if target.get("speaker_group_id") == group_id:
-            return str(target.get("group_fingerprint") or "")
     return ""
 
 
@@ -855,99 +816,6 @@ def _finalize_driver_repeat_set(
             failure_type=str(terminal_failure_type)[:80],
         )
     return payload
-
-
-def finalize_driver_repeats_after_terminal_failure(
-    *,
-    comparison_set: Mapping[str, Any],
-    speaker_group_id: str,
-    role: str,
-    target_fingerprint: str,
-    capture_geometry: str,
-    reservation: Mapping[str, Any],
-    failure_type: str,
-    repeat_store: Any,
-) -> dict[str, Any] | None:
-    """Finalize a near-field set from its existing accepted repeats once the
-    audible measurement budget is spent (a transport failure hit the last
-    admissible audio attempt)."""
-
-    from jasper.active_speaker import repeat_admission
-    from jasper.active_speaker.commissioning_capture import (
-        DEFAULT_REPEAT_TARGET,
-        aggregate_driver_repeats,
-    )
-
-    if capture_geometry == "reference_axis":
-        # Fixed-axis admitted captures feed strict commissioning authority,
-        # whose load-bearing contract is three fresh accepted repetitions.
-        # The caller will terminally refuse this attempt rather than publishing
-        # a legacy completion that strict status cannot promote.
-        return None
-    from jasper.active_speaker.capture_geometry import driver_repeat_binding
-
-    repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
-        speaker_group_id=speaker_group_id,
-        role=role,
-        target_fingerprint=target_fingerprint,
-        capture_geometry=capture_geometry,
-    )
-    key = repeat_store.repeat_session_key(
-        str(comparison_set.get("comparison_set_id") or ""),
-        repeat_target_fingerprint,
-    )
-    repeats = repeat_store.driver_repeats(key)
-    # Salvage only once the audible measurement budget is genuinely spent: a
-    # transport/infra failure that never played a tone is refunded and does not
-    # exhaust it, so a set that could still earn its third accept is never
-    # prematurely completed from two. Every stored repeat is an audio-emitting
-    # capture (transport failures never reach the store), so
-    # measurement_attempts == len(repeats).
-    if repeat_admission.measurement_attempts(repeats) < repeat_admission.MAX_ATTEMPTS:
-        return None
-    preview = aggregate_driver_repeats(repeats, target=DEFAULT_REPEAT_TARGET)
-    if preview["accepted"] < 2:
-        return None
-    topology = load_output_topology()
-    if _driver_target_fingerprint(
-        topology,
-        group_id=speaker_group_id,
-        role=role,
-    ) != target_fingerprint:
-        raise ValueError("the driver target changed before repeat finalization")
-    from jasper.active_speaker.measurement import load_measurement_state
-
-    current_comparison = load_measurement_state(topology).get(
-        "active_comparison_set"
-    )
-    if not isinstance(current_comparison, Mapping) or any(
-        current_comparison.get(key) != comparison_set.get(key)
-        for key in ("comparison_set_id", "fingerprint")
-    ):
-        raise ValueError("the comparison set changed before repeat finalization")
-    return _finalize_driver_repeat_set(
-        topology=topology,
-        comparison_set=comparison_set,
-        speaker_group_id=speaker_group_id,
-        role=role,
-        topology_target_fingerprint=target_fingerprint,
-        repeat_target_id=repeat_target_id,
-        repeat_target_fingerprint=repeat_target_fingerprint,
-        reservation=reservation,
-        admission_result={
-            "accepted": False,
-            "reject_reason": "capture_failed",
-            "failure_type": str(failure_type)[:80],
-            "phase": "transport",
-            # A transport/infra failure provably played no tone, so it is
-            # refunded from the audible measurement budget (see
-            # repeat_admission.measurement_attempts).
-            "audio_emitted": False,
-        },
-        repeats=repeats,
-        repeat_store=repeat_store,
-        terminal_failure_type=failure_type,
-    )
 
 
 def _record_authoritative_driver_capture(

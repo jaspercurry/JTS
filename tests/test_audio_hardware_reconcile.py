@@ -1177,6 +1177,8 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
         "desired=peripheral active=peripheral gadget_available=true "
         "management_transport_available=true reason=available"
     ) in result.stderr
+    _assert_publications_agree(tmp_path)
+
 
 
 def _dual_apple_active_topology(tmp_path: Path) -> Path:
@@ -1214,18 +1216,6 @@ def _dual_apple_active_topology(tmp_path: Path) -> Path:
                 "physical_output_indexes": [2, 3],
             },
         ],
-        "clock_domain_evidence": {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "unit-test-dual-apple-sync",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": 0,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": ["left", "right"],
-        },
     }
     topology_path.write_text(
         json.dumps(topology),
@@ -1371,9 +1361,11 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     # `output_parked` sees WHY, not only `recognized=0`.
     assert (
         "event=audio_hardware_reconcile.output_parked reason=test "
-        "output_dac_id=A output_dac_card=A recognized=0 "
+        "output_dac_id=unknown output_dac_card=A recognized=0 "
         "observed_blockers=saved_composite_partially_present"
     ) in result.stderr
+    _assert_publications_agree(tmp_path)
+
 
 
 def test_reconcile_unparks_when_the_missing_composite_child_returns(
@@ -2160,7 +2152,7 @@ def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
-    assert "JASPER_AUDIO_DAC_ID=A" in env_text
+    assert "JASPER_AUDIO_DAC_ID=unknown" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     _assert_parked_outputd_dac_template(template)
@@ -3117,8 +3109,6 @@ def _synthetic_floor(period_frames: int):
     from jasper.audio_hardware.dac import LatencyFloor
 
     return LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=period_frames,
         outputd_dac_buffer_frames=8 * period_frames,
     )
@@ -3748,18 +3738,6 @@ def test_reconcile_leaves_the_composite_edge_format_alone_when_the_registry_prob
                 "physical_output_indexes": [2, 3],
             },
         ],
-        "clock_domain_evidence": {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "unit-test-dual-apple-composite-skip",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": 0,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": ["left", "right"],
-        },
     }
     topology_path.write_text(
         json.dumps(topology),
@@ -4028,3 +4006,59 @@ def test_the_coupling_kick_never_blocks(tmp_path: Path):
 
     assert start_lines, body
     assert all("--no-block" in line for line in start_lines), start_lines
+
+
+def _assert_publications_agree(tmp_path: Path) -> None:
+    """After one reconcile pass, JASPER_AUDIO_DAC_ID names what the record's
+    ``active_profile_id`` names — the one contract between the two."""
+    from jasper.env_load import parse_env_file
+    from jasper.output_hardware import active_dac_profile_id, published_dac_id
+
+    env = parse_env_file(str(tmp_path / "jasper.env"))
+    recorded = active_dac_profile_id(tmp_path / "output_hardware.json")
+    assert published_dac_id(env) == (recorded or "unknown")
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [APPLE_LISTING, DUAL_APPLE_LISTING, INNOMAKER_LISTING, DAC8X_STUDIO_LISTING, ""],
+)
+def test_env_publication_names_the_dac_the_record_names(tmp_path: Path, listing: str):
+    """One reconcile pass, two publications, one answer.
+
+    JASPER_AUDIO_DAC_ID exists for consumers that can only read env. A Python
+    reader that took it instead of the record could only answer differently
+    if the two publications could differ — so they may not, recognized or not.
+    """
+    result = _run_reconcile(tmp_path, listing, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    _assert_publications_agree(tmp_path)
+
+
+def test_env_publication_agrees_on_a_classify_time_partial_dual_apple_record(
+    tmp_path: Path,
+):
+    """The composite counts as ACTIVE as soon as it is named, parked or not —
+    unlike a single DAC. Pin that for a pair the classifier itself marks
+    ``partial`` (here: one child's USB endpoint is not synchronous), not just
+    the ready/parked-for-missing-active-graph shape the other dual tests
+    cover, since that is a different park (bash's active-graph gate, not
+    ``OutputHardwareState.status``).
+    """
+    extra_env = _dual_apple_cards(tmp_path)
+    (tmp_path / "proc" / "asound" / "card2" / "stream0").write_text(
+        "Playback:\n  Endpoint: 0x01 (ASYNC)\n", encoding="utf-8",
+    )
+
+    result = _run_reconcile(
+        tmp_path, DUAL_APPLE_LISTING, "--reason", "test", extra_env=extra_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    record = _output_hardware_record(tmp_path)
+    assert record["status"] == "partial"
+    assert [
+        issue["code"] for issue in record["issues"] if issue["severity"] == "blocker"
+    ] == ["dual_apple_endpoint_not_synchronous"]
+    _assert_publications_agree(tmp_path)

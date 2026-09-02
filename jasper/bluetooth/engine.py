@@ -6,14 +6,16 @@
 
 One generic flow regardless of device class:
 
-  trust → pair → connect → handler
+  pair → trust → connect → handler
 
 Async generator yielding StatusEvent dicts; the web layer streams them
 over SSE. Per-class behaviour is dispatched through `handlers.pick()`.
 
 Designed to be run inside one long-lived `BluetoothEngine` instance
 on the daemon. Each `pair(mac)` call is independent. Pairing
-authorization is owned by the always-on JTS no-code default agent.
+authorization is owned by the JTS no-code default agent, which is not
+always running — a low-memory deploy parks bt-agent.service for the
+length of its build.
 """
 
 from __future__ import annotations
@@ -85,6 +87,53 @@ def _stop_discovery_already_idle(err: DBusError) -> bool:
             "not discovering",
         )
     )
+
+
+@contextlib.asynccontextmanager
+async def _bondable_for_pair(adapter: str):
+    """Raise the adapter's bondable flag for one pairing request.
+
+    BlueZ reads `Pairable` when it builds the SMP pairing request, and with
+    it low the request carries "No bonding": the pair succeeds, no long-term
+    key is stored, and the bond dies on the next disconnect. Restored
+    afterwards so a pair does not leave the speaker admitting inbound
+    pairings outside its own window.
+
+    Best-effort on both edges. A speaker that cannot raise the flag should
+    still attempt the pair -- unbonded is how it behaved before this existed,
+    and `untrust_unbonded` keeps that from stranding the device.
+    """
+    from .adapter import set_pairable, state as adapter_state
+
+    # Tri-state on purpose. `False` and "could not read" are different
+    # answers: treating an unreadable adapter as "was off" makes the restore
+    # lower Pairable under a pairing window the user opened, leaving
+    # Discoverable=yes with Pairable=no -- which the floor watch never heals,
+    # because it only closes a window that is still pairable.
+    was_pairable: bool | None = None
+    try:
+        was_pairable = bool((await adapter_state(adapter)).get("pairable"))
+        await set_pairable(True, adapter)
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger,
+            "bluetooth.bondable_raise_failed",
+            err=repr(exc),
+            level=logging.WARNING,
+        )
+    try:
+        yield
+    finally:
+        if was_pairable is False:
+            try:
+                await set_pairable(False, adapter)
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    logger,
+                    "bluetooth.bondable_restore_failed",
+                    err=repr(exc),
+                    level=logging.WARNING,
+                )
 
 
 class BluetoothEngine:
@@ -421,9 +470,9 @@ class BluetoothEngine:
 
         Events:
           {"stage": "starting"}
-          {"stage": "trusting"}
           {"stage": "pairing"}
           {"stage": "paired"}
+          {"stage": "trusting"}
           {"stage": "connecting"}
           {"stage": "wiring", "detail": ...}    (handler-specific)
           {"stage": "ready", "detail": ...}     (terminal — success)
@@ -455,28 +504,17 @@ class BluetoothEngine:
 
         yield {"stage": "starting", "name": dev.name, "address": dev.address}
 
-        # Trust early so a successful pair stays trusted even if the user closes
-        # the browser tab before the connect/handler stages finish. Doesn't
-        # grant Connect — that's a separate call below.
-        yield {"stage": "trusting"}
         dev_intro = await bus.introspect(BLUEZ_BUS, dev.path)
         dev_obj = bus.get_proxy_object(BLUEZ_BUS, dev.path, dev_intro)
         dev_iface = dev_obj.get_interface("org.bluez.Device1")
         dev_props = dev_obj.get_interface(
             "org.freedesktop.DBus.Properties",
         )
-        try:
-            await dev_props.call_set(
-                "org.bluez.Device1",
-                "Trusted",
-                Variant("b", True),
-            )
-        except DBusError as e:
-            logger.warning("Trust set failed (continuing): %s", e)
 
         yield {"stage": "pairing"}
         try:
-            await self._call_pair_with_timeout(dev_iface, timeout_s)
+            async with _bondable_for_pair(self._adapter):
+                await self._call_pair_with_timeout(dev_iface, timeout_s)
         except asyncio.CancelledError:
             yield {"stage": "error", "message": "pair operation was cancelled"}
             return
@@ -485,6 +523,21 @@ class BluetoothEngine:
             return
 
         yield {"stage": "paired", "address": dev.address}
+
+        # Only a bonded device may be trusted — why:
+        # `NoCodeAgent._trust_device`. Here the bond is guaranteed by
+        # position: Pair() has returned successfully. Set before the
+        # connect/handler stages so trust survives the user closing the
+        # browser tab mid-flow. Doesn't grant Connect — separate call below.
+        yield {"stage": "trusting"}
+        try:
+            await dev_props.call_set(
+                "org.bluez.Device1",
+                "Trusted",
+                Variant("b", True),
+            )
+        except DBusError as e:
+            logger.warning("Trust set failed (continuing): %s", e)
 
         # Re-fetch device props post-pair so connection / uuid lists
         # reflect post-pairing state.

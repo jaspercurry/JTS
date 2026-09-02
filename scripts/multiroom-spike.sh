@@ -116,7 +116,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-. "${SCRIPT_DIR}/_lib.sh"
+JTS_LIB_TARGET_OPTIONAL=1 . "${SCRIPT_DIR}/_lib.sh"  # --help must not need a target
 
 # -----------------------------------------------------------------------------
 # Spike-wide constants. All under dedicated jts-spike namespaces so nothing
@@ -158,7 +158,7 @@ RESULTS_DIR="${REPO_ROOT}/multiroom-spike"
 # -----------------------------------------------------------------------------
 # Host config. LEADER = PI_HOST (from .env.local). FOLLOWER/SUB via flags/env.
 # -----------------------------------------------------------------------------
-LEADER_HOST="${PI_HOST}"
+LEADER_HOST="${PI_HOST:-}"
 LEADER_USER="${PI_USER}"
 FOLLOWER_HOST="${JTS_SPIKE_FOLLOWER:-}"
 SUB_HOST="${JTS_SPIKE_SUB:-}"
@@ -419,7 +419,6 @@ poll_cell() {
 # Subcommands
 # =============================================================================
 do_setup() {
-    [[ -z "$LEADER_HOST" ]] && die "no leader host (PI_HOST unset and --leader not given)"
     mkdir -p "$RESULTS_DIR"
     log "SETUP: leader=${LEADER_HOST} follower=${FOLLOWER_HOST:-<none>} sub=${SUB_HOST:-<none>}"
     # Idempotent: clear any prior spike state before standing up fresh.
@@ -551,6 +550,9 @@ if [[ "$REFERENCE_ETHERNET" == "1" ]]; then
 fi
 
 [[ -z "$ACTION" ]] && { usage; exit 2; }
+# A run needs a leader, and nothing else here reads PI_HOST — so an explicit
+# --leader IS the target, and only its absence falls back to the checkout's.
+[[ -n "$LEADER_HOST" ]] || jts_lib_require_target
 
 case "$ACTION" in
     setup)        do_setup ;;

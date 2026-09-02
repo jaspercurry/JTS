@@ -4,6 +4,8 @@
 
 """One capture-preset resolution contract feeds web analysis surfaces."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from jasper.active_speaker import commission_wiring
@@ -96,3 +98,36 @@ def test_capture_preset_uses_configured_fallback(monkeypatch) -> None:
 
     assert commission_wiring.resolve_capture_preset(object()) is fallback
     assert calls == ["/tmp/custom.json"]
+
+
+def _preset_declaring(ceiling: object) -> object:
+    return SimpleNamespace(
+        safety=SimpleNamespace(max_commissioning_level_db_spl=ceiling)
+    )
+
+
+def test_commissioning_ceiling_is_the_presets_own_finite_declaration(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        commission_wiring,
+        "resolve_capture_preset",
+        lambda _topology: _preset_declaring(82.5),
+    )
+
+    assert commission_wiring.commissioning_spl_ceiling_db(object()) == 82.5
+
+
+@pytest.mark.parametrize("declared", [float("nan"), float("inf"), None, "loud"])
+def test_commissioning_ceiling_refuses_a_declaration_that_is_not_finite(
+    monkeypatch, declared
+) -> None:
+    """The stop is a hard one: no ceiling at all rather than a bogus number."""
+    monkeypatch.setattr(
+        commission_wiring,
+        "resolve_capture_preset",
+        lambda _topology: _preset_declaring(declared),
+    )
+
+    with pytest.raises(ValueError):
+        commission_wiring.commissioning_spl_ceiling_db(object())

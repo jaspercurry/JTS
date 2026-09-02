@@ -404,7 +404,8 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
       streambox keeps a disabled gate owner while we keep running.
       ``systemctl start`` on a disabled-but-installed unit *succeeds* —
       ``disable`` only drops the ``WantedBy`` symlink — and the gate owner's
-      ``restart_voice`` runs ``systemctl enable jasper-voice.service``, which
+      ``clear_voice_input_absent`` (run by ``restart_voice``) runs
+      ``systemctl enable jasper-voice.service``, which
       would persistently re-arm the voice brain on a Zero-class box whose whole
       profile exists to keep it off. Never start a parked owner. (Read from
       ``deploy/lib/install/systemd-units.sh``; not yet observed on a box.)

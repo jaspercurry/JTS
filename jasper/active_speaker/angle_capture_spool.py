@@ -35,9 +35,11 @@ about because it is about the BOX rather than the request: a walk may not be
 staged while a measurement session already holds the speaker (see
 :func:`live_measurement_session`).
 
-**What "taking" means, and why reading and consuming are one call.**  There is
-no way to read a staged request without consuming it.
-:func:`take_staged_angle_request` moves the document out of the pending slot
+**What "taking" means.**  :func:`take_staged_angle_request` is the only way to
+GET a staged walk -- :func:`peek_staged_angle_request` reads the same document
+through the same reader so the page can state its price, and leaves the slot
+filled, so the session open is still the one and only take.  The take moves the
+document out of the pending slot
 BEFORE it validates it, so "consumed on the session starting, never reused" is a
 property of the function rather than of a caller remembering to clean up -- and
 a refused document is consumed too, because a document that was wrong for this
@@ -59,9 +61,13 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Mapping, NoReturn
+from typing import Any, Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_measurement.measurement_geometry import (
+    DeclaredGeometry,
+    GeometryFieldError,
+)
 from jasper.log_event import log_event
 
 from .angle_capture import AngleCaptureRequest, AngleStop
@@ -83,6 +89,7 @@ __all__ = [
     "AngleRequestRefused",
     "angle_request_spool_path",
     "live_measurement_session",
+    "peek_staged_angle_request",
     "set_angle_request_spool_path_for_tests",
     "stage_angle_request",
     "staged_angle_request_pending",
@@ -264,12 +271,22 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
+        "program": request.program,
+        # The household's tape measure, or null when nobody was asked. Written
+        # unconditionally and read back defaulted, on the same additive terms
+        # as the keys above, so the schema version does not move.
+        "declared_geometry": request.declared_geometry_record(),
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a
         # sorted-by-angle rewrite here would silently re-plan the walk.
         "stops": [
-            {"angle_deg": stop.angle_deg, "regime": stop.regime}
+            {
+                "angle_deg": stop.angle_deg,
+                "regime": stop.regime,
+                "elevation_deg": stop.elevation_deg,
+                "candidate_id": stop.candidate_id,
+            }
             for stop in request.stops
         ],
         "staged_at": time.time(),
@@ -285,12 +302,14 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         logger, "angle_capture.request_staged",
         stops=len(request.stops),
         mover=request.mover,
+        program=request.program,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
         polarity=request.polarity,
         inverted_role=request.inverted_role,
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
         level_matched=request.level_matched,
+        declared_geometry=request.declared_geometry is not None,
         replaced=replaced,
     )
     return path
@@ -309,8 +328,8 @@ def staged_angle_request_pending() -> bool:
     line can state what happened instead of asserting it.
 
     It answers what a stat answers and no more: anything that wants the request
-    itself goes through :func:`take_staged_angle_request`, which is the only
-    reader and always consumes what it could read.
+    itself goes through :func:`take_staged_angle_request` (which consumes what
+    it could read) or :func:`peek_staged_angle_request` (which does not).
     """
     return angle_request_spool_path().is_file()
 
@@ -341,6 +360,32 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
     deletes it by hand. The one exception -- a slot that cannot be READ at all,
     where there is no document to consume -- is argued at its own arm below.
     """
+    raw = _read_staged(consume=True)
+    return None if raw is None else _validate(raw)
+
+
+def peek_staged_angle_request() -> AngleCaptureRequest | None:
+    """The same request :func:`take_staged_angle_request` would take, unconsumed.
+
+    For a caller that must STATE what is staged without running it -- the tier
+    chooser prices the walk on the page before the household presses Start.
+    Same read, same :func:`_validate`, same refusals; the only difference is
+    that the slot is left filled, so the session open is still the one and only
+    take.
+
+    A caller that wants to run the walk must not use this: the take is what
+    makes single-use a property of this module rather than of a caller's memory.
+    """
+    raw = _read_staged(consume=False)
+    return None if raw is None else _validate(raw)
+
+
+def _read_staged(*, consume: bool) -> bytes | None:
+    """The staged document's bytes, or ``None`` when the slot is empty.
+
+    ONE reader behind both doors above, so the size ceiling, the refusal slugs
+    and the consume order cannot drift between reading a walk and pricing it.
+    """
     pending = angle_request_spool_path()
     try:
         stat = pending.stat()
@@ -356,8 +401,10 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
         # full precisely when the system can least afford it. The size reported
         # is ``st_size`` because that is the number this arm actually judged.
         # Consumed first, for the reason every other document refusal here is:
-        # it has had its session.
-        _consume(pending)
+        # it has had its session. A peek consumes nothing at all -- it has not
+        # had its session yet.
+        if consume:
+            _consume(pending)
         _refuse(
             SPOOL_TOO_LARGE,
             f"the staged walk is {stat.st_size} bytes, over the "
@@ -381,7 +428,8 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
         # the operator with a walk that never ran and no file to look at. So
         # these refuse loudly and repeatedly until the permissions are fixed.
         _refuse(SPOOL_MALFORMED, f"the staged walk could not be read: {exc}")
-    _consume(pending)
+    if consume:
+        _consume(pending)
     if len(raw) > SPOOL_MAX_BYTES:
         # The stat above is what stops a huge file being LOADED; this is what
         # makes the cap a property of the BYTES. A file that grew between the
@@ -393,7 +441,7 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
             f"the staged walk is {len(raw)} bytes, over the "
             f"{SPOOL_MAX_BYTES}-byte ceiling",
         )
-    return _validate(raw)
+    return raw
 
 
 def _consume(pending: Path) -> None:
@@ -445,6 +493,33 @@ def _consume(pending: Path) -> None:
     )
 
 
+def _coerced_delay_us(raw: Any) -> float:
+    """``delay_us`` as a number, or the spool's own refusal naming the field."""
+    try:
+        return float(raw or 0.0)
+    except (TypeError, ValueError):
+        _refuse(
+            SPOOL_MALFORMED,
+            f"the staged walk's delay_us is not a number: {raw!r}",
+        )
+def _declared_geometry(block: object) -> DeclaredGeometry | None:
+    """The banked geometry, or ``None`` when the walk carries none.
+
+    A block that is PRESENT and unusable refuses rather than reading as
+    absent: an operator who stated the room's heights and got a session that
+    silently banked no geometry would find out only when the offline reader
+    had nothing to compute the entanglement floor from.
+    """
+    if block is None:
+        return None
+    if not isinstance(block, Mapping):
+        _refuse(SPOOL_MALFORMED, "declared_geometry is not a JSON object")
+    try:
+        return DeclaredGeometry.from_dict(block)
+    except GeometryFieldError as exc:
+        _refuse(SPOOL_MALFORMED, f"declared_geometry is unusable: {exc}")
+
+
 def _validate(raw: bytes) -> AngleCaptureRequest:
     """Rebuild the request from the banked fields, through its own constructors.
 
@@ -464,6 +539,14 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     **R-1's two pairs are ADDITIVE and defaulted** — the delay coordinate reads
     back exactly as the polarity pair does, so a document spooled before either
     existed still reads as a normal, undelayed walk. Neither is judged here.
+
+    **A value this function COERCES refuses in this vocabulary**, never as a
+    bare ``ValueError``: ``delay_us`` is the one field read through ``float``,
+    and a hand-edited ``"12us"`` must reach every reader as
+    :data:`SPOOL_MALFORMED` naming the field. The peek behind the page's price
+    (``_staged_walk_request``) catches only ``CrossoverV2FlowError``, so an
+    uncaught coercion there would take the whole chooser down on every poll
+    rather than costing it one offer.
 
     ``level_matched`` reads back on the same terms and is a BOOLEAN, never
     numbers: an absent (or false) key is a walk whose graph carries no level
@@ -509,7 +592,15 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         if not isinstance(entry, Mapping):
             _refuse(SPOOL_MALFORMED, "a staged stop is not a JSON object")
         stops.append(
-            AngleStop(entry.get("angle_deg"), str(entry.get("regime")))  # type: ignore[arg-type]
+            AngleStop(
+                entry.get("angle_deg"),  # type: ignore[arg-type]
+                str(entry.get("regime")),
+                # A document staged before either key existed is a walk at
+                # mark height measuring the speaker as it stands, so the schema
+                # version does not move for them.
+                entry.get("elevation_deg", 0),  # type: ignore[arg-type]
+                str(entry.get("candidate_id") or ""),
+            )
         )
     return AngleCaptureRequest(
         stops=tuple(stops),
@@ -517,8 +608,10 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         polarity=str(doc.get("polarity") or POLARITY_NORMAL),
         inverted_role=str(doc.get("inverted_role") or ""),
         delayed_role=str(doc.get("delayed_role") or ""),
-        delay_us=float(doc.get("delay_us") or 0.0),
+        delay_us=_coerced_delay_us(doc.get("delay_us")),
         level_matched=bool(doc.get("level_matched")),
+        program=str(doc.get("program") or ""),
+        declared_geometry=_declared_geometry(doc.get("declared_geometry")),
     )
 
 

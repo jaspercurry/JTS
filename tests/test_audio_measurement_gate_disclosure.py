@@ -22,41 +22,24 @@ against the corpus out of band; see the PR body for the transcript.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
-from scipy.signal import firwin, lfilter
 
 from jasper.audio_measurement import gate_disclosure, gating
+from tests.test_audio_measurement_gating import _band_limited_ir
 
 SR = 48000
 
 
-def _bandlimited_ir(
-    lo_hz: float,
-    hi_hz: float,
-    *,
-    reflection_offset_ms: float | None = None,
-    reflection_db: float = -11.6,
-    noise_db: float = -50.0,
-    seed: int = 1966,
-) -> np.ndarray:
-    """A physically realizable IR: a band-limited arrival on a noise floor.
+def _bandlimited_ir(lo_hz: float, hi_hz: float, **kwargs: Any) -> np.ndarray:
+    """The gating suite's own band-limited IR, at THIS suite's floor and seed.
 
-    Band-limited on purpose. A bare delta has infinite bandwidth and no
-    passband, so it cannot exhibit the "evaluated where the DUT does not
-    radiate" failure these tests are about.
+    Both are load-bearing: the numbers below were reproduced against the jts3
+    corpus on this noise realization, so a different one re-banks them.
     """
-    rng = np.random.default_rng(seed)
-    n = int(0.030 * SR)
-    x = np.zeros(n)
-    x[500] = 1.0
-    if reflection_offset_ms is not None:
-        x[500 + int(round(reflection_offset_ms * 1e-3 * SR))] = 10 ** (
-            reflection_db / 20
-        )
-    taps = firwin(511, [lo_hz / (SR / 2), hi_hz / (SR / 2)], pass_zero=False)
-    ir = lfilter(taps, 1.0, x)
-    return ir / np.abs(ir).max() + rng.normal(0, 10 ** (noise_db / 20), n)
+    return _band_limited_ir(lo_hz, hi_hz, noise_db=-50.0, seed=1966, **kwargs)
 
 
 # ---------- evaluation band: the E5 intersection --------------------------
@@ -213,7 +196,7 @@ def test_build_gate_disclosure_never_raises_and_never_fabricates():
     diagnostic paths, so a missing or malformed field is ``None`` —
     "unknown" — never a substituted value."""
     for block in (None, {}, {"window_ms": "seven"}, {"floor_source": 12},
-                  {"pre_post_gate_delta": "nope"},
+                  {"window_ms": 10**400}, {"pre_post_gate_delta": "nope"},
                   {"internal_reflection_ledger": "nope"}):
         d = gate_disclosure.build_gate_disclosure(block)
         assert d.gate_ms is None
@@ -241,6 +224,116 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
     assert d.f_trusted_hz is None
     assert d.internal_reflection_count == 0
     assert d.ledger_count == 0
+
+
+# ---------- the second floor: the room's, not the window's ----------------
+
+
+@pytest.mark.parametrize(
+    ("block", "declared_first_bounce_s", "expected_source", "expected_t_s"),
+    [
+        # A measured reflection times the bounce AND proves it exists, so it
+        # wins over the operator's declared geometry.
+        (
+            {"floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 10.0, "first_reflection_ms": 12.5},
+            0.010,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
+            0.0025,
+        ),
+        # Nothing found to time (this rig class, always): the declared
+        # geometry is the floor, labelled as declared.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND, "window_ms": 7.0},
+            0.0025,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.0025,
+        ),
+        # A measured bound whose arrival did not survive into the record has
+        # nothing to divide, so it falls through rather than inventing one.
+        (
+            {"floor_source": gating.FLOOR_MEASURED, "direct_peak_ms": 10.0},
+            0.005,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.005,
+        ),
+        # The same measured block stamped with the schema that reports an
+        # arrival: the version is read, not assumed.
+        (
+            {"schema_version": 2, "floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 10.0, "first_reflection_ms": 12.5},
+            None,
+            gating.ENTANGLEMENT_SOURCE_MEASURED,
+            0.0025,
+        ),
+        # Schema 1 put the reflection's ONSET in ``first_reflection_ms``, an
+        # earlier time than the arrival the floor divides by. It times
+        # nothing, so a v1 block falls through to the declared geometry...
+        (
+            {"schema_version": 1, "direct_peak_ms": 10.4,
+             "first_reflection_ms": 10.9, "window_ms": 4.0,
+             "f_valid_floor_hz": 250.0, "floor_source": gating.FLOOR_MEASURED},
+            0.005,
+            gating.ENTANGLEMENT_SOURCE_DECLARED,
+            0.005,
+        ),
+        # ... and to unknown when there is none, never to measured.
+        (
+            {"schema_version": 1, "direct_peak_ms": 10.4,
+             "first_reflection_ms": 10.9, "window_ms": 4.0,
+             "f_valid_floor_hz": 250.0, "floor_source": gating.FLOOR_MEASURED},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # Neither source: unknown, and no number stands in for one.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # A non-physical declared bounce is not a floor either.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            0.0,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # A measured arrival so early it's a subnormal float: it survives
+        # ``_finite``'s screen but the formula's quotient overflows past a
+        # finite float, so this must fall through rather than raise.
+        (
+            {"schema_version": 2, "floor_source": gating.FLOOR_MEASURED,
+             "direct_peak_ms": 0.0, "first_reflection_ms": 1e-317},
+            None,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+        # Same overflow, reached through the declared fallback instead.
+        (
+            {"floor_source": gating.FLOOR_SEARCH_BOUND},
+            1e-309,
+            gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+            None,
+        ),
+    ],
+)
+def test_entanglement_floor_prefers_measured_then_declared_then_unknown(
+    block, declared_first_bounce_s, expected_source, expected_t_s
+):
+    """The floor is ``TRUSTED_FLOOR_MULTIPLIER / t_first_bounce`` off whichever
+    source is available, and the source is always said out loud (#3502)."""
+    d = gate_disclosure.build_gate_disclosure(
+        block, declared_first_bounce_s=declared_first_bounce_s
+    )
+    assert d.entanglement_floor_source == expected_source
+    if expected_t_s is None:
+        assert d.entanglement_floor_hz is None
+    else:
+        assert d.entanglement_floor_hz == pytest.approx(
+            gating.TRUSTED_FLOOR_MULTIPLIER / expected_t_s
+        )
 
 
 # ---------- the copy: #1966's fix at the surface --------------------------
@@ -285,6 +378,23 @@ def test_describe_gate_distinguishes_ungateable_and_exempt_from_a_clean_gate():
     for text in (ungateable, exempt):
         assert "reflection measured" not in text
         assert "no reflection found" not in text
+    # A near-field capture sits a few centimetres from the driver, so it has
+    # no room floor worth stating; a capture the gate merely could not use
+    # still does.
+    assert "entanglement" not in exempt
+
+
+def test_a_capture_the_gate_could_not_use_still_discloses_the_rooms_floor():
+    block = {"floor_source": None}
+    d = gate_disclosure.build_gate_disclosure(
+        block, declared_first_bounce_s=0.0025
+    )
+    assert d.source_of_bound is None
+    assert d.entanglement_floor_hz == pytest.approx(1000.0)
+    assert d.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_DECLARED
+    text = gate_disclosure.describe_gate(block, declared_first_bounce_s=0.0025)
+    assert "could not be gated" in text
+    assert "1000 Hz" in text
 
 
 def test_describe_gate_discloses_both_floors_and_never_confuses_them():
@@ -293,6 +403,32 @@ def test_describe_gate_discloses_both_floors_and_never_confuses_them():
     text = gate_disclosure.describe_gate(fragment)
     assert "valid above 143 Hz" in text
     assert "trusted above 357 Hz" in text
+
+
+def test_describe_gate_says_all_three_floors_and_never_one_instead_of_another():
+    """#3495 at the surface: the window's two floors stay published whether or
+    not the room's is known, and the room's is a THIRD field beside them."""
+    ir = _bandlimited_ir(2500.0, 18000.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    unknown = gate_disclosure.build_gate_disclosure(fragment)
+    declared = gate_disclosure.build_gate_disclosure(
+        fragment, declared_first_bounce_s=0.0025
+    )
+    for d in (unknown, declared):
+        assert d.f_min_hz is not None
+        assert d.f_trusted_hz is not None
+    assert unknown.entanglement_floor_hz is None
+    assert unknown.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    assert declared.entanglement_floor_hz == pytest.approx(1000.0)
+    assert declared.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_DECLARED
+    assert declared.entanglement_floor_hz != declared.f_trusted_hz
+
+    declared_text = gate_disclosure.describe_gate(
+        fragment, declared_first_bounce_s=0.0025
+    )
+    unknown_text = gate_disclosure.describe_gate(fragment)
+    assert "declared geometry" in declared_text
+    assert unknown_text and unknown_text != declared_text
 
 
 def test_a_small_delta_reads_differently_depending_on_the_bound():
@@ -332,29 +468,37 @@ def test_a_large_delta_gets_no_smallness_gloss_either_way():
     assert "genuinely little to remove" not in text
 
 
-def test_describe_gate_names_the_internal_ledger_when_the_guard_caught_one():
-    """The asymmetric-cost guard is disclosed, not silent: a reader must be
-    able to see that a real early feature was found and deliberately NOT
-    gated (the jts3 horn's ~291 us feature)."""
+@pytest.mark.parametrize(
+    ("classification", "expected", "unexpected"),
+    [
+        # The asymmetric-cost guard is disclosed, not silent: a reader must
+        # be able to see that a real early feature was found and
+        # deliberately NOT gated (the jts3 horn's ~291 us feature).
+        (
+            gating.CLASS_DUT_INTERNAL,
+            ("1 early feature arriving before the search window opens",
+             "deliberately not gated"),
+            (),
+        ),
+        # A gateable-only ledger is a different statement -- the guard
+        # stays silent about it.
+        (
+            gating.CLASS_GATEABLE,
+            (),
+            ("loudspeaker-internal",),
+        ),
+    ],
+)
+def test_describe_gate_and_the_internal_reflection_ledger(classification, expected, unexpected):
     text = gate_disclosure.describe_gate({
         "floor_source": gating.FLOOR_SEARCH_BOUND,
         "window_ms": 7.0,
         "internal_reflection_ledger": [
             {"tau_us": 291.7, "level_db": -11.2,
-             "classification": gating.CLASS_DUT_INTERNAL},
+             "classification": classification},
         ],
     })
-    assert "1 early feature arriving before the search window opens" in text
-    assert "deliberately not gated" in text
-
-
-def test_describe_gate_is_silent_about_a_ledger_of_only_gateable_candidates():
-    text = gate_disclosure.describe_gate({
-        "floor_source": gating.FLOOR_SEARCH_BOUND,
-        "window_ms": 7.0,
-        "internal_reflection_ledger": [
-            {"tau_us": 645.8, "level_db": -19.8,
-             "classification": gating.CLASS_GATEABLE},
-        ],
-    })
-    assert "loudspeaker-internal" not in text
+    for substring in expected:
+        assert substring in text
+    for substring in unexpected:
+        assert substring not in text

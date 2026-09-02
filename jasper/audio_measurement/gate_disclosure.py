@@ -13,8 +13,9 @@ not and should not have.
 
 It owns three things:
 
-* :func:`evaluation_band_hz` — the band the pre/post-gate comparison is
-  honest over. This is the module's band policy and its single owner.
+* :func:`evaluation_band_hz` — the band a gated capture can be read over,
+  from the caller's floor. This is the module's band policy and its single
+  owner.
 * :func:`pre_post_gate_delta` — how much the gate moved the spectrum's
   SHAPE, over that band.
 * :class:`GateDisclosure` / :func:`build_gate_disclosure` — the typed
@@ -55,6 +56,18 @@ discriminator is the delta **together with** ``floor_source``:
 
 Those are opposite epistemic states and they print the same number, which is
 why :func:`describe_gate` never renders one without the other.
+
+Two floors, not one (#3495)
+---------------------------
+
+Beside the window's floors this module publishes the ROOM's, with its
+provenance — the identity is
+:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`'s and what
+a reader does with it is `docs/tuning-methodology.md`'s. On the rig class
+whose first bounce lands while the direct sound is still decaying the
+reflection finder structurally never fires (#3502), so the source published
+here is routinely
+:data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCE_UNKNOWN`.
 """
 
 from __future__ import annotations
@@ -67,6 +80,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement import gating
+from jasper.json_fields import finite_float as _finite
 
 #: Transform length for the pre/post-gate magnitude comparison, and the
 #: ceiling of the "literal" (un-intersected) evaluation band. Both are the
@@ -84,30 +98,34 @@ SMALL_DELTA_RMS_DB = 1.0
 
 
 def evaluation_band_hz(
-    trusted_floor_hz: float | None,
+    floor_hz: float | None,
     radiated_band_hz: tuple[float, float] | None,
 ) -> tuple[float, float] | None:
-    """The band a pre/post-gate comparison is honest over, in Hz.
+    """The band a gated capture can be read over, in Hz.
 
-    ``[max(2.5/T, radiated_lo), radiated_hi]`` — the intersection of the
-    gate's own trusted validity range with the band the DUT actually
-    radiates. Returns ``None`` when the intersection is empty or either
-    input is unusable, which is itself the finding: there is no band over
-    which this gate can be priced, so no number should be invented for one.
+    ``[max(floor_hz, radiated_lo), radiated_hi]`` — the CALLER'S floor
+    intersected with the band the DUT actually radiates. Which floor is the
+    caller's: :func:`pre_post_gate_delta` prices the gate over the trusted
+    floor (``2.5/T``), while
+    :func:`jasper.audio_measurement.program_analysis.crossover_region_band_hz`
+    grades over the validity floor (``1/T``), the trusted floor bounding only
+    the flat spec's own bands
+    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
+    An empty intersection or an unusable input yields ``None``, itself the
+    finding: no band, so no number invented for one.
 
     ``radiated_band_hz`` is the caller's; this module does not guess it.
     Falling back to :data:`DELTA_CEILING_HZ` when it is absent would
     reproduce exactly the over-report E5 measured, so an absent band yields
     ``None`` rather than a default.
     """
-    if radiated_band_hz is None or trusted_floor_hz is None:
+    if radiated_band_hz is None or floor_hz is None:
         return None
     lo_r, hi_r = float(radiated_band_hz[0]), float(radiated_band_hz[1])
-    trusted = float(trusted_floor_hz)
-    if not all(math.isfinite(v) for v in (lo_r, hi_r, trusted)):
+    floor = float(floor_hz)
+    if not all(math.isfinite(v) for v in (lo_r, hi_r, floor)):
         return None
-    lo = max(trusted, lo_r)
-    return (lo, hi_r) if lo < hi_r else None
+    return gating.intersect_bands((floor, hi_r), (lo_r, hi_r))
 
 
 def _magnitude_db(ir: np.ndarray, sample_rate: float, n_fft: int) -> tuple[np.ndarray, np.ndarray]:
@@ -240,8 +258,9 @@ class GateDisclosure:
     a gating decision; it exists so a record cannot report a window without
     reporting why the window is that long and what it bought.
 
-    Units: ``gate_ms`` milliseconds; ``f_min_hz`` / ``f_trusted_hz`` hertz;
-    ``delta_rms_db`` decibels. ``source_of_bound`` carries
+    Units: ``gate_ms`` milliseconds; ``f_min_hz`` / ``f_trusted_hz`` /
+    ``entanglement_floor_hz`` hertz; ``delta_rms_db`` decibels.
+    ``source_of_bound`` carries
     :mod:`~jasper.audio_measurement.gating`'s vocabulary verbatim
     (``measured_reflection`` / ``search_span_bound`` / ``None``) — the
     gating contract's ``source_of_bound`` and that module's ``floor_source``
@@ -266,6 +285,18 @@ class GateDisclosure:
     #: Every ledger entry, internal or not. Beside the count above so a
     #: reader can see that some candidates were classified the other way.
     ledger_count: int
+    #: The room's floor in Hz —
+    #: :func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`.
+    #: ``None`` is unknown.
+    entanglement_floor_hz: float | None = None
+    #: Which of :mod:`~jasper.audio_measurement.gating`'s three
+    #: ``ENTANGLEMENT_SOURCE_*`` words the floor came from.
+    #: A declared geometry never masquerades as a measurement (#3502).
+    #: The two fields are one
+    #: :class:`~jasper.audio_measurement.gating.EntanglementFloor`, flattened
+    #: for the readers that take a single field; that type holds the rule
+    #: binding them.
+    entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
     @property
     def gated_anything(self) -> bool:
@@ -286,19 +317,73 @@ class GateDisclosure:
         reader; the delay between them is the physical quantity. ``None``
         when either side is unknown.
         """
-        if self.reflection_toa_ms is None or self.direct_peak_ms is None:
-            return None
-        return self.reflection_toa_ms - self.direct_peak_ms
+        return _relative_delay_ms(self.reflection_toa_ms, self.direct_peak_ms)
 
 
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+def _relative_delay_ms(
+    reflection_toa_ms: float | None, direct_peak_ms: float | None
+) -> float | None:
+    if reflection_toa_ms is None or direct_peak_ms is None:
         return None
-    f = float(value)
-    return f if math.isfinite(f) else None
+    return reflection_toa_ms - direct_peak_ms
 
 
-def build_gate_disclosure(block: Mapping[str, Any] | None) -> GateDisclosure:
+def _entanglement_floor(
+    source_of_bound: str | None,
+    reflection_delay_ms: float | None,
+    declared_first_bounce_s: float | None,
+    *,
+    schema_version: Any,
+) -> gating.EntanglementFloor:
+    """The room's floor — measured beats declared beats unknown.
+
+    A measured reflection is the only source that also proves the bounce it
+    times exists; a declared geometry is the operator's tape measure. Neither
+    available is where this rig class lives (#3502). A block whose schema
+    predates :data:`~jasper.audio_measurement.gating.ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION`
+    reports no arrival and has nothing to time, so it falls through to
+    declared however its window was bound.
+
+    The formula and the floor/provenance invariant are
+    :class:`~jasper.audio_measurement.gating.EntanglementFloor`'s; what this
+    adds is the reader's contract — a missing or non-physical bounce time is
+    UNKNOWN here, not an exception, since this runs on records written by
+    builds that never wrote the field.
+    """
+    version = _finite(schema_version)
+    reports_arrival = (
+        version is None or version >= gating.ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION
+    )
+    measured_s = _finite(
+        reflection_delay_ms / 1000.0 if reflection_delay_ms is not None else None
+    )
+    if (
+        reports_arrival
+        and source_of_bound == gating.FLOOR_MEASURED
+        and measured_s is not None
+    ):
+        try:
+            return gating.EntanglementFloor.from_bounce_s(
+                measured_s, gating.ENTANGLEMENT_SOURCE_MEASURED
+            )
+        except (TypeError, ValueError):
+            pass
+    declared_s = _finite(declared_first_bounce_s)
+    if declared_s is not None:
+        try:
+            return gating.EntanglementFloor.from_bounce_s(
+                declared_s, gating.ENTANGLEMENT_SOURCE_DECLARED
+            )
+        except (TypeError, ValueError):
+            pass
+    return gating.EntanglementFloor.unknown()
+
+
+def build_gate_disclosure(
+    block: Mapping[str, Any] | None,
+    *,
+    declared_first_bounce_s: float | None = None,
+) -> GateDisclosure:
     """THE single reader of a persisted gating block into a typed record.
 
     Defensive by contract: this runs on records written by older builds and
@@ -306,7 +391,13 @@ def build_gate_disclosure(block: Mapping[str, Any] | None) -> GateDisclosure:
     validated rather than trusted, and a missing or malformed one becomes
     ``None`` — "unknown", never a fabricated value. A schema-1 block (whose
     ``first_reflection_ms`` is an ONSET, not an arrival) reads cleanly; its
-    absent fields simply come back ``None``.
+    absent fields come back ``None`` and its onset never times the
+    entanglement floor (:func:`_entanglement_floor`).
+
+    ``declared_first_bounce_s`` is the operator's geometry, in seconds, and
+    is the entanglement floor's fallback source — used only when the gating
+    block measured no reflection to time (#3502). It is not persisted in the
+    block because it is not the block's fact.
     """
     b: Mapping[str, Any] = block if isinstance(block, Mapping) else {}
     source = b.get("floor_source")
@@ -318,14 +409,23 @@ def build_gate_disclosure(block: Mapping[str, Any] | None) -> GateDisclosure:
     entries = [e for e in ledger if isinstance(e, Mapping)] if isinstance(
         ledger, (list, tuple)
     ) else []
+    floor_source = source if isinstance(source, str) else None
+    direct_peak_ms = _finite(b.get("direct_peak_ms"))
+    reflection_toa_ms = _finite(b.get("first_reflection_ms"))
+    entanglement = _entanglement_floor(
+        floor_source,
+        _relative_delay_ms(reflection_toa_ms, direct_peak_ms),
+        declared_first_bounce_s,
+        schema_version=b.get("schema_version"),
+    )
     return GateDisclosure(
         gate_ms=_finite(b.get("window_ms")),
-        source_of_bound=source if isinstance(source, str) else None,
+        source_of_bound=floor_source,
         exempt_reason=exempt if isinstance(exempt, str) else None,
         f_min_hz=_finite(b.get("f_valid_floor_hz")),
         f_trusted_hz=_finite(b.get("f_trusted_hz")),
-        direct_peak_ms=_finite(b.get("direct_peak_ms")),
-        reflection_toa_ms=_finite(b.get("first_reflection_ms")),
+        direct_peak_ms=direct_peak_ms,
+        reflection_toa_ms=reflection_toa_ms,
         delta_rms_db=_finite(delta.get("rms_db")),
         delta_band_hz=(
             (float(band[0]), float(band[1]))
@@ -339,11 +439,31 @@ def build_gate_disclosure(block: Mapping[str, Any] | None) -> GateDisclosure:
             1 for e in entries if e.get("classification") == gating.CLASS_DUT_INTERNAL
         ),
         ledger_count=len(entries),
+        entanglement_floor_hz=entanglement.hz,
+        entanglement_floor_source=entanglement.source,
     )
 
 
-def describe_gate(block: Mapping[str, Any] | None) -> str:
-    """The one honest sentence about a gating block. THE single writer of it.
+def describe_gate(
+    block: Mapping[str, Any] | None,
+    *,
+    declared_first_bounce_s: float | None = None,
+) -> str:
+    """:func:`build_gate_disclosure` then :func:`render_gate`, for a caller
+    holding a block rather than a typed record.
+
+    ``declared_first_bounce_s`` reaches :func:`build_gate_disclosure`
+    unchanged. A caller that already built the record must call
+    :func:`render_gate` instead: building it twice from one block is two
+    readings of one fact, and only the second one is rendered.
+    """
+    return render_gate(
+        build_gate_disclosure(block, declared_first_bounce_s=declared_first_bounce_s)
+    )
+
+
+def render_gate(d: GateDisclosure) -> str:
+    """The one honest sentence about a gate. THE single writer of it.
 
     This is the #1966 fix at the surface: a record that prints
     ``gate_window_ms = 7.0`` and nothing else reads as "reflections
@@ -355,17 +475,20 @@ def describe_gate(block: Mapping[str, Any] | None) -> str:
     Consumers render this verbatim. They do not re-phrase the fields —
     re-phrasing is how the two states started printing identically.
     """
-    d = build_gate_disclosure(block)
     if d.exempt_reason:
         return (
             f"gating not applicable ({d.exempt_reason}); no reflection "
             "search ran and no validity floor was established"
         )
     if d.source_of_bound is None:
+        # The room's floor is the operator's geometry here, and it survives a
+        # capture the gate could not use at all — the exempt branch above is
+        # the one case with no room floor worth stating (a near-field capture
+        # taken a few centimetres from the driver).
         return (
             "this capture could not be gated; no reflection search ran and "
             "no validity floor was established"
-        )
+        ) + _entanglement_clause(d)
 
     floors = ""
     if d.f_min_hz is not None:
@@ -393,7 +516,29 @@ def describe_gate(block: Mapping[str, Any] | None) -> str:
             f"ceiling, so nothing was gated out{floors}"
         )
 
-    return head + _ledger_clause(d) + _delta_clause(d)
+    return head + _entanglement_clause(d) + _ledger_clause(d) + _delta_clause(d)
+
+
+def _entanglement_clause(d: GateDisclosure) -> str:
+    """The room's floor, appended beside the window's two — never instead of
+    them, and never collapsed into one phrase with them.
+
+    The unknown branch names the action that resolves it, because a reader
+    told only that a number is missing has no way to stop it being missing.
+    """
+    floor = d.entanglement_floor_hz
+    if floor is None:
+        return (
+            "; the room's entanglement floor is unknown (declare the rig's "
+            "geometry with jasper-declare-geometry to resolve it) — no bin between the "
+            "trusted floor and the room's floor is proven clean"
+        )
+    provenance = (
+        "the measured reflection"
+        if d.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_MEASURED
+        else "declared geometry"
+    )
+    return f"; room-entangled below {floor:.0f} Hz (floor from {provenance})"
 
 
 def _ledger_clause(d: GateDisclosure) -> str:

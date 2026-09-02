@@ -250,12 +250,21 @@ def _record_dsp_epoch(path: Path, op_id: str) -> None:
 
 
 class FakeCamilla:
+    """Enough of CamillaDSP 4.1 to tell a parameter write from a pipeline
+    replace: it keeps the graph it is running, hands it back the way
+    CamillaDSP's readback does, and normalizes a candidate through the same
+    round-trip so the two are comparable — which is the property
+    ``_live_edit_plan`` depends on.
+    """
+
     def __init__(self, current_path: str, *, fail_set: bool = False) -> None:
         self.current_path = current_path
         self.loaded_path: str | None = None
         self.set_calls: list[str] = []
         self.active_raw_values: list[str] = []
+        self.ducks: list[bool] = []
         self.fail_set = fail_set
+        self.running: str | None = None
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
         return self.loaded_path or self.current_path
@@ -267,29 +276,6 @@ class FakeCamilla:
             raise RuntimeError("reload failed")
         return True
 
-    async def set_active_config_raw(
-        self, config: str, *, best_effort: bool = False,
-    ) -> bool:
-        self.active_raw_values.append(config)
-        if self.fail_set and not best_effort:
-            raise RuntimeError("live update failed")
-        return True
-
-
-class FakePatchableCamilla(FakeCamilla):
-    """A controller that can do what CamillaDSP 4.1 actually does.
-
-    Enough of one to tell a parameter write from a pipeline replace: it keeps
-    the graph it is running, hands it back the way CamillaDSP's readback does,
-    and normalizes a candidate through the same round-trip so the two are
-    comparable — which is the property ``_live_edit_plan`` depends on.
-    """
-
-    def __init__(self, current_path: str, **kwargs) -> None:
-        super().__init__(current_path, **kwargs)
-        self.running: str | None = None
-        self.patches: list[dict] = []
-
     @staticmethod
     def _normalized(text: str) -> str:
         import yaml as _yaml
@@ -300,7 +286,11 @@ class FakePatchableCamilla(FakeCamilla):
         self, config: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
         self.running = self._normalized(config)
-        return await super().set_active_config_raw(config, best_effort=best_effort)
+        self.active_raw_values.append(config)
+        self.ducks.append(duck)
+        if self.fail_set and not best_effort:
+            raise RuntimeError("live update failed")
+        return True
 
     async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
         return self.running
@@ -309,16 +299,6 @@ class FakePatchableCamilla(FakeCamilla):
         self, config: str, *, best_effort: bool = False,
     ) -> str | None:
         return self._normalized(config)
-
-    async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
-        import yaml as _yaml
-
-        self.patches.append(patch)
-        running = _yaml.safe_load(self.running or "")
-        for name, definition in (patch.get("filters") or {}).items():
-            running["filters"][name] = definition
-        self.running = str(_yaml.safe_dump(running))
-        return True
 
 
 class FakeCamillaWithoutLiveRaw:
@@ -3343,6 +3323,24 @@ def test_active_speaker_stage_config_route_requires_current_preview(
     }
 
 
+def _record_dac8x() -> None:
+    """The reconciler's record for a ready DAC8x, at the path conftest isolates."""
+    write_output_hardware_state(
+        OutputHardwareState(
+            profile_id="hifiberry_dac8x",
+            profile_label="HiFiBerry DAC8x",
+            status="ready",
+            physical_output_count=8,
+            selected_card_id="sndrpihifiberry",
+            selected_pcm="hw:CARD=sndrpihifiberry,DEV=0",
+            child_devices=(
+                OutputCardFact(card_id="sndrpihifiberry", device_id="hifiberry_dac8x"),
+            ),
+        ),
+        os.environ["JASPER_OUTPUT_HARDWARE_STATE_PATH"],
+    )
+
+
 def test_sound_output_topology_payload_is_no_audio_draft(
     monkeypatch,
     tmp_path: Path,
@@ -3351,8 +3349,7 @@ def test_sound_output_topology_payload_is_no_audio_draft(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
-    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
-    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+    _record_dac8x()
 
     envelope = sound_setup._output_topology_payload()
     payload = envelope["output_topology"]
@@ -4028,21 +4025,6 @@ def _dual_apple_hardware() -> dict:
                 "physical_output_indexes": [2, 3],
             },
         ],
-        "clock_domain_evidence": {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": -7,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": [
-                "DWH53530FHL2FN3AC",
-                "DWH53530FLL2FN3A3",
-            ],
-        },
     }
 
 
@@ -4091,10 +4073,6 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
     assert payload["hardware"]["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
     assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock"
     assert envelope["clock_domain"]["composite_clock_supported"] is True
-    assert envelope["clock_domain"]["measured_composite_supported"] is False
-    assert "clock_evidence_missing" in {
-        issue["code"] for issue in envelope["clock_domain"]["issues"]
-    }
     assert payload["safety"]["sound_tests_allowed"] is False
 
 
@@ -4368,7 +4346,7 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     assert topology["status"] == "verified"
     assert topology["hardware"]["physical_output_count"] == 4
     assert payload["clock_domain"]["status"] == "dual_apple_composite_clock"
-    assert payload["clock_domain"]["measured_composite_supported"] is True
+    assert payload["clock_domain"]["composite_clock_supported"] is True
     assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["channel_identity"]["verified_channel_count"] == 4
     assert topology["safety"]["sound_tests_allowed"] is False
@@ -5176,8 +5154,7 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
-    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
-    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+    _record_dac8x()
     try:
         server, base = _start_sound_server(tmp_path)
     except PermissionError:
@@ -6328,6 +6305,9 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     assert {
         "driverResearchImportPreservesOperatorInstalledConfiguration": True
     } in out["results"]
+    # #2883: the handoff card renders only once a baseline plays, mints its
+    # prompt server-side, and discloses a copy the declarations moved past.
+    assert {"tuningHandoffCardMintsAndGoesStale": True} in out["results"]
 
 
 def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
@@ -6608,7 +6588,7 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
     generated = Path(fake.loaded_path).read_text()
     assert Path(fake.loaded_path).name == "sound_current.yml"
     assert "room_peq_1:" in generated
-    assert "sound_curve_bk_bass:" in generated
+    assert "sound_curve_bass:" in generated
     assert payload["preserved_room_peqs"] == 1
     assert payload["dsp_write_epoch"] == payload["last_dsp_apply"]["op_id"]
     assert load_profile(profile_path).curve_id == "bk"
@@ -7485,7 +7465,7 @@ async def test_audition_profile_loads_draft_without_persisting(
     assert fake.loaded_path is not None
     assert Path(fake.loaded_path).name == "sound_audition.yml"
     generated = Path(fake.loaded_path).read_text()
-    assert "sound_curve_harman_bass:" in generated
+    assert "sound_curve_bass:" in generated
     assert "sound_advanced_1:" in generated
     assert "sound_preamp:" in generated  # match-loudness trim applied
     assert payload["audition_profile"]["curve_id"] == "harman"
@@ -7519,17 +7499,15 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
 
     assert fake.set_calls == []
     assert len(fake.active_raw_values) == 1
-    assert "sound_curve_harman_bass:" in fake.active_raw_values[0]
+    assert "sound_curve_bass:" in fake.active_raw_values[0]
     assert "room_peq_1:" in fake.active_raw_values[0]
     # Default settings -> no output trim, so boosts boost. The preamp is
     # always DEFINED (its presence must not depend on a value) and inert.
     assert "  sound_preamp:" in fake.active_raw_values[0]
     assert "gain: 0.0000" in fake.active_raw_values[0]
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "active_config_raw"
+    assert fake.ducks[-1] is True
     assert payload["dsp_write_epoch"] == "epoch-1"
-    assert payload["preserved_room_peqs"] == 1
-    assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
 
 
@@ -7551,7 +7529,7 @@ def _eq_box(monkeypatch, tmp_path):
     config_dir.mkdir()
     current = config_dir / "sound_current.yml"
     current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    return config_dir, FakePatchableCamilla(str(current))
+    return config_dir, FakeCamilla(str(current))
 
 
 @pytest.mark.parametrize(
@@ -7587,13 +7565,13 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
     ))
     await _live(fake, start, config_dir)
     swaps_after_install = len(fake.active_raw_values)
+    assert fake.ducks[0] is True
 
     payload = await _live(fake, moved, config_dir)
 
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "patch_config"
-    assert len(fake.patches) == 1
-    assert len(fake.active_raw_values) == swaps_after_install
+    assert fake.ducks[-1] is False
+    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 @pytest.mark.parametrize(
@@ -7616,16 +7594,23 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
             )),
             id="gain_dragged_to_exactly_flat",
         ),
+        pytest.param(
+            SoundProfile(curve_id="harman", parametric_bands=(
+                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+            )),
+            id="curve_preset_changed",
+        ),
     ],
 )
 async def test_the_live_graphs_slots_keep_the_pipeline_still(
     tmp_path: Path, monkeypatch, changed,
 ):
-    """Adding, removing, or flattening a band writes numbers, not a pipeline.
+    """Adding, removing or flattening a band, or switching the curve preset,
+    writes numbers, not a pipeline.
 
-    The live draft carries a slot per band, so none of these changes which
-    filters exist — which is what would otherwise rebuild CamillaDSP's filter
-    group and reset every filter's state.
+    The live draft carries a slot per band and one fixed pair of curve shelves,
+    so none of these changes which filters exist — which is what would
+    otherwise rebuild CamillaDSP's filter group and reset every filter's state.
     """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
@@ -7636,8 +7621,9 @@ async def test_the_live_graphs_slots_keep_the_pipeline_still(
 
     payload = await _live(fake, changed, config_dir)
 
-    assert payload["live_method"] == "patch_config"
-    assert len(fake.active_raw_values) == swaps_after_install
+    assert payload["live_status"] == "live"
+    assert fake.ducks[-1] is False
+    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
@@ -7647,11 +7633,9 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
 
     The trim is a function of the profile's own EQ when match-loudness is on.
     Derived from the DRAFT it would fold into ``active_baseline_headroom``'s
-    value and be written by PatchConfig — an instant, un-ducked, full-spectrum
-    level step — and its stereo twin ``sound_preamp`` is emitted only when the
-    trim is positive, so it would add and remove a FILTER and force the very
-    swap this path exists to avoid. Derived from the SAVED profile it is one
-    number for the whole session.
+    value and be written in place — an instant, un-ducked, full-spectrum
+    level step. Derived from the SAVED profile it is one number for the whole
+    session.
     """
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     settings_path = tmp_path / "settings.json"
@@ -7693,16 +7677,15 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     assert set(_yaml.safe_load(after_quiet)["filters"]) == set(
         _yaml.safe_load(after_loud)["filters"]
     )
-    assert second["live_method"] == "patch_config"
+    assert second["live_status"] == "live"
+    assert fake.ducks[-1] is False
+    assert len(fake.active_raw_values) == 2
 
 
-async def test_retyping_a_band_still_swaps(tmp_path: Path, monkeypatch):
-    """A different biquad recipe is a different filter, and that ducks.
-
-    A gainless type carries no gain to neutralise, so "off" and "Highpass"
-    cannot be spelled as values in a Peaking slot. Honest, and a dropdown
-    rather than a gesture.
-    """
+async def test_retyping_a_band_writes_parameters_without_ducking(
+    tmp_path: Path, monkeypatch,
+):
+    """A biquad's type lives in its parameters; CamillaDSP recomputes coefficients in place."""
     config_dir, fake = _eq_box(monkeypatch, tmp_path)
     one = SoundProfile(parametric_bands=(
         ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
@@ -7715,8 +7698,8 @@ async def test_retyping_a_band_still_swaps(tmp_path: Path, monkeypatch):
 
     payload = await _live(fake, retyped, config_dir)
 
-    assert payload["live_method"] == "active_config_raw"
-    assert fake.patches == []
+    assert payload["live_status"] == "live"
+    assert fake.ducks[-1] is False
     assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
@@ -7732,8 +7715,6 @@ async def test_a_redraw_that_changed_nothing_writes_nothing(
     payload = await _live(fake, draft, config_dir)
 
     assert payload["live_status"] == "live"
-    assert payload["live_method"] == "unchanged"
-    assert fake.patches == []
     assert len(fake.active_raw_values) == 1
 
 
@@ -7764,7 +7745,6 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
     assert fake.active_raw_values == []
     assert fake.set_calls == []
     assert payload["live_status"] == "stale"
-    assert payload["live_method"] == "skipped_stale_epoch"
     assert payload["dsp_write_epoch"] == "newer-apply"
 
 
@@ -7792,7 +7772,6 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     assert fake.loaded_path is None
     assert fake.set_calls == []
     assert payload["live_status"] == "unavailable"
-    assert payload["live_method"] == "active_config_raw_unavailable"
 
 
 async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
@@ -8381,7 +8360,6 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
         "DWH53530FHL2FN3AC",
         "NEW-DONGLE",
     ]
-    assert saved.hardware.clock_domain_evidence is None
     assert {
         (group.id, channel.role): channel.identity_verified
         for group in saved.speaker_groups
@@ -8700,3 +8678,113 @@ def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
         "speaker_group_id": "left", "role": "full_range", "identity_verified": False,
     })
     assert park_kwargs == {}
+
+
+@pytest.mark.parametrize(
+    "baseline_profile, expected_status, expected_reason, has_prompt",
+    [
+        ({"applied_profile_stands": True}, "ready", None, True),
+        ({"applied_profile_stands": False}, "not_ready", "no_applied_baseline", False),
+        (
+            {
+                "applied_profile_stands": False,
+                "revalidation": {"required": True, "status": "required"},
+            },
+            "not_ready",
+            "revalidation_pending",
+            False,
+        ),
+    ],
+)
+def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
+    monkeypatch, baseline_profile, expected_status, expected_reason, has_prompt
+):
+    """One verdict, read where the page reads it (ADR-0195).
+
+    No tuning flow may be a prerequisite for USING the speaker (#2883), so a
+    speaker with nothing to hand over is a named not-ready, never a failure —
+    and a profile awaiting revalidation says so rather than borrowing the
+    "never applied" slug.
+    """
+    from jasper.active_speaker import tuning_handoff
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    payload = tuning_handoff.build_tuning_handoff(
+        baseline_profile=baseline_profile, design_draft={"revision": 5}
+    )
+
+    assert payload["status"] == expected_status
+    assert payload["reason"] == expected_reason
+    assert bool(payload["prompt"]) is has_prompt
+    # The binding is minted either way: the card names the speaker while it is
+    # still holding the prompt back.
+    assert payload["binding"]["hostname"] == "jts7.local"
+    assert payload["binding"]["design_draft_revision"] == 5
+    assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/setup/"
+
+
+def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
+    monkeypatch,
+):
+    """Hostname-derived, revision-stamped, and closed against credentials.
+
+    A prompt is minted to be pasted into a third-party chat session, so every
+    field in it is disclosed by construction (non-negotiable 3) — hence a
+    closed key set, not a scan for words. The default ``jts.local`` must never
+    leak either: it resolves to *a* box, so a printed one sends its reader to
+    the wrong speaker silently.
+    """
+    from jasper.active_speaker import tuning_handoff
+    from jasper.identity import DEFAULT_HOSTNAME
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    payload = tuning_handoff.build_tuning_handoff(
+        baseline_profile={"applied_profile_stands": True},
+        design_draft={"revision": 5},
+    )
+    prompt = payload["prompt"]
+
+    assert set(payload["binding"]) == {
+        "speaker_name",
+        "hostname",
+        "declaration_url",
+        "crossover_url",
+        "design_draft_revision",
+    }
+    assert "jts7.local" in prompt
+    assert DEFAULT_HOSTNAME not in prompt
+    assert str(payload["binding"]["design_draft_revision"]) in prompt
+    # The pointer targets: the orientation verb and the program door, by their
+    # installed paths. Their behaviour is theirs to own; the prompt only names
+    # them, and must keep naming ones that exist.
+    assert tuning_handoff.ORIENTATION_COMMAND in prompt
+    assert tuning_handoff.PROGRAM_DOOR_COMMAND in prompt
+
+
+def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
+    from jasper.active_speaker import tuning_handoff
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_payload",
+        lambda *a, **k: {"applied_profile_stands": True},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda *a, **k: {"status": "ready_for_review", "revision": 2},
+    )
+    server, base = _start_sound_server(tmp_path)
+    try:
+        with urllib.request.urlopen(base + "/active-speaker/tuning-handoff") as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert payload["status"] == "ready"
+    assert payload["binding"]["design_draft_revision"] == 2
+    assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
+        payload["binding"]
+    )

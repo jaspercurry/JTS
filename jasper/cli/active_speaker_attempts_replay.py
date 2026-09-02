@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import shlex
 import sys
 from pathlib import Path
@@ -61,6 +60,7 @@ from jasper.active_speaker.attempts_loop import (
     LoopDecision,
     first_stop_index,
     material_improvement_db,
+    percentile,
     replay,
     summarize,
 )
@@ -84,35 +84,6 @@ _REPEAT_BANK_SITTING_ID = "repeat-floor-20260731"
 
 class ReplayError(Exception):
     """A bank could not be read as the shape this driver replays."""
-
-
-# --------------------------------------------------------------------------
-# Small statistics, spelled out
-# --------------------------------------------------------------------------
-
-
-def percentile(values: Sequence[float], q: float) -> float:
-    """Linear-interpolated percentile — NumPy's default method, in ten lines.
-
-    Spelled out rather than imported so the floor's provenance is auditable
-    without pinning a NumPy version: the claim floor is the product's most
-    consequential decimal, and it should be reproducible by reading. The
-    equivalence to the banked study's own summary is pinned by
-    ``tests/test_active_speaker_attempts_replay.py``.
-    """
-
-    ordered = sorted(float(value) for value in values)
-    if not ordered:
-        raise ValueError("percentile of an empty sample")
-    if len(ordered) == 1:
-        return ordered[0]
-    position = (q / 100.0) * (len(ordered) - 1)
-    low = math.floor(position)
-    high = math.ceil(position)
-    if low == high:
-        return ordered[int(low)]
-    weight = position - low
-    return ordered[int(low)] + weight * (ordered[int(high)] - ordered[int(low)])
 
 
 # --------------------------------------------------------------------------

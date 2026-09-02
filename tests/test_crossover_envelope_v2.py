@@ -22,6 +22,8 @@ disclosure, the way back to the previous tuning beside the forward actions.
 """
 from __future__ import annotations
 
+import json
+import math
 import time
 from typing import Mapping
 
@@ -135,6 +137,13 @@ def _status(**v2) -> dict:
         # Fixtures that pass their own `post_apply_grade` are describing a
         # state file some OTHER build wrote, and keep it verbatim.
         v2 = {**v2, "post_apply_grade": _post_apply_grade(v2)}
+    if "updated_at" not in v2:
+        # #1947: the durable state now carries the session's own clock, and
+        # only a live session renders its phase screen. Every fixture below is
+        # describing the screen a household is looking at right now, so the
+        # helper stamps it live — which keeps those tests pinning the LIVE path
+        # they were written for. The dead and undated cases say so out loud.
+        v2 = {**v2, "updated_at": time.time()}
     return {
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -342,6 +351,74 @@ def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
     # post-apply cloud actually samples.
     assert "confirm the result at the mark" in express["description"]
     assert "re-check the result at several spots around the mark" in full["description"]
+
+
+def test_check_phase_states_a_staged_walks_price_before_start(tmp_path, monkeypatch):
+    """WP2b (#3498): the session open takes a staged walk whichever tier is
+    pressed, so the chooser is the last screen that can say what it costs.
+
+    Both cards carry the same document, each priced against ITS OWN tier: the
+    walk belongs to the session, and ``ceiling_min`` is that whole session's
+    ceiling, so the card cannot quote 4 min for a 46-minute sitting. An empty
+    slot adds nothing at all, and a slot the spool refuses to read costs the
+    chooser its offer rather than the screen.
+    """
+    from jasper.active_speaker import angle_capture as ac
+    from jasper.active_speaker import angle_capture_spool as spool
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from jasper.active_speaker import measurement_programs as mp
+
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
+        tmp_path / "session_volume.json",
+    )
+    try:
+        idle = build_crossover_envelope_v2(_status(phase="check"))
+        express = mp.program("baseline", "express")
+        spool.stage_angle_request(ac.request_for_program(express))
+        offered = build_crossover_envelope_v2(_status(phase="check"))
+        # A peek, not a take: the session open is still the only take.
+        assert spool.staged_angle_request_pending() is True
+        # A field the document cannot coerce refuses in the spool's own
+        # vocabulary (``tests/test_angle_capture_take.py``), which this screen
+        # already catches — so the chooser renders, minus the offer.
+        path = spool.angle_request_spool_path()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["delay_us"] = "12us"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        unreadable = build_crossover_envelope_v2(_status(phase="check"))
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+    for env in (idle, unreadable):
+        for action in [env["next_action"], *env["alternate_actions"]]:
+            assert "staged_walk" not in action
+
+    for action in [offered["next_action"], *offered["alternate_actions"]]:
+        # Built through the SAME tier → shape resolution the chooser prices
+        # with, so this pins that the ceiling follows the tier rather than a
+        # figure written down twice.
+        ceiling_min = math.ceil(
+            flow.wall_clock_ceiling_s(
+                flow.stage1_base_entries(
+                    flow.resolve_plan_shape(action["body"]["tier"])
+                )
+                + express.capture_count
+            ) / 60
+        )
+        assert action["staged_walk"] == {
+            "program": "baseline/express",
+            "mic_moves": express.mic_move_count,
+            "captures": express.capture_count,
+            "ceiling_min": ceiling_min,
+        }
+        # The price is on the description too, because that is the only field
+        # the page renders (``wrapChoice`` in crossover/js/main.js).
+        assert "baseline/express" in action["description"]
+        assert str(express.mic_move_count) in action["description"]
+        assert str(express.capture_count) in action["description"]
+        assert str(ceiling_min) in action["description"]
 
 
 def test_check_phase_recommends_full_on_a_first_commission():
@@ -4706,14 +4783,14 @@ def test_fresh_failure_still_renders_todays_terminal_screen_exactly():
 def test_freshness_boundary_is_the_declared_window():
     """The window is a stated contract, not an accident of rounding: just
     inside it is the live screen, just outside it is history."""
-    from jasper.active_speaker.crossover_envelope_v2 import FAILURE_FRESH_WINDOW_S
+    from jasper.active_speaker.crossover_envelope_v2 import SESSION_FRESH_WINDOW_S
 
     inside = build_crossover_envelope_v2(_aged_status(
-        REASON_VERIFY_OUT_OF_TOLERANCE, age_s=FAILURE_FRESH_WINDOW_S - 30,
+        REASON_VERIFY_OUT_OF_TOLERANCE, age_s=SESSION_FRESH_WINDOW_S - 30,
         phase="verify", applied=True,
     ))
     outside = build_crossover_envelope_v2(_aged_status(
-        REASON_VERIFY_OUT_OF_TOLERANCE, age_s=FAILURE_FRESH_WINDOW_S + 30,
+        REASON_VERIFY_OUT_OF_TOLERANCE, age_s=SESSION_FRESH_WINDOW_S + 30,
         phase="verify", applied=True,
     ))
     assert inside["screen"] == "verify_fail"
@@ -4728,6 +4805,181 @@ def test_a_clock_that_stepped_backward_reads_as_fresh():
         REASON_VERIFY_OUT_OF_TOLERANCE, age_s=-_DAY_S, phase="verify", applied=True,
     ))
     assert env["screen"] == "verify_fail"
+
+
+# --- #1947: a session, not just a failure, has a lifetime ------------------------
+#
+# #1942 gave the FAILURE record a clock. A session can end — walked away from,
+# browser closed, Pi rebooted — without ever persisting one, and those states
+# replayed the dead session's screen, its live imperative ("put the microphone
+# back… follow the measurement page") and its numbers on the next plain GET.
+
+
+def _dead_session_status(phase: str, **v2) -> dict:
+    """A durable session that last did something a day ago, and left no
+    failure record — the household that closed the browser and came back."""
+    return _status(
+        phase=phase, session_id="cap_dead_session",
+        updated_at=time.time() - _DAY_S,
+        verify=_PRIOR_SESSION_EVIDENCE, cloud=_PRIOR_SESSION_CLOUD,
+        cloud_chart=_PRIOR_SESSION_CLOUD_CHART, tier="full", **v2,
+    )
+
+
+@pytest.mark.parametrize("phase,applied", [
+    ("check", False),
+    ("measure", False),
+    ("cloud_measure", False),
+    ("lateral", False),
+    ("closing", False),
+    # The one that files the issue: post-apply the stale state resolves to
+    # PHASE_VERIFY, whose screen tells the household to go stand in front of
+    # the speaker and confirm yesterday's result.
+    ("verify", True),
+    ("cloud_verify", True),
+])
+def test_dead_session_phase_screen_becomes_the_dated_entry_screen(phase, applied):
+    """The aged marker on every phase whose session is over, and no live
+    imperative: the only offer is one that OPENS a session, never one that
+    continues the dead one, and none of its numbers survive."""
+    env = build_crossover_envelope_v2(_dead_session_status(phase, applied=applied))
+    assert env["screen"] == "microphone_check"
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/session"
+    assert [a.get("endpoint") for a in env["alternate_actions"]] == [
+        "/correction/crossover/v2/session",
+    ]
+    assert (env["cloud"], env["cloud_chart"], env["tier"]) == (None, None, None)
+    assert env["expert_details"] == []
+    assert _history_note(env).startswith("Your last measurement ended yesterday")
+
+
+@pytest.mark.parametrize("phase,screen", [
+    ("check", "microphone_check"),
+    ("measure", "measure"),
+    ("verify", "verify"),
+    ("cloud_verify", "verify"),
+])
+def test_live_session_phase_screen_is_untouched(phase, screen):
+    """No regression to the live path: a session the household is inside
+    renders the screen it renders today, numbers and all."""
+    env = build_crossover_envelope_v2(_status(
+        phase=phase, session_id="cap_live", applied=phase.endswith("verify"),
+        cloud=_PRIOR_SESSION_CLOUD, tier="full",
+    ))
+    assert env["screen"] == screen
+    assert env["cloud"] == _PRIOR_SESSION_CLOUD
+    assert env["nudges"] == []
+
+
+def test_dead_post_apply_session_never_offers_the_confirm_prompt():
+    """The hazard the aged branch exists to avoid: PHASE_VERIFY's own screen
+    invites the household to confirm a result measured a day ago."""
+    live = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True, session_id="cap_live", tier="full",
+    ))
+    assert live["next_action"]["id"] == "verify_start"
+    dead = build_crossover_envelope_v2(_dead_session_status("verify", applied=True))
+    assert dead["next_action"]["id"] != "verify_start"
+    assert "verify_start" not in [a["id"] for a in dead["alternate_actions"]]
+
+
+@pytest.mark.parametrize("phase,screen", [
+    # A receipt about what the speaker is playing NOW.
+    ("done", "done"),
+    # Untimed by construction (D3.5): the entry screen has no route back to a
+    # pending candidate, so aging this out would strand the whole commission.
+    ("review", "review"),
+])
+def test_durable_phases_are_exempt_from_the_session_clock(phase, screen):
+    env = build_crossover_envelope_v2(_dead_session_status(
+        phase, applied=phase == "done", candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == screen
+
+
+@pytest.mark.parametrize("relay_status,screen", [
+    # The wizard still holds the slot: the session cannot be over, whatever
+    # the clock says. An unknown status reads as in flight for the same
+    # reason ``SESSION_ENDED_STATUSES`` does.
+    ("awaiting_phone", "verify"),
+    ("committing", "verify"),
+    ("some_future_status", "verify"),
+    ("complete", "microphone_check"),
+    ("stopped", "microphone_check"),
+    ("failed", "microphone_check"),
+])
+def test_a_live_relay_outranks_the_clock(relay_status, screen):
+    """A commission's own wall-clock ceiling is 3600 s and the closing screen's
+    confirm waits on a human, so an in-flight session can idle past the
+    freshness window — and a slot the wizard still holds proves it is not
+    over."""
+    status = _dead_session_status("verify", applied=True)
+    status["relay"] = {"status": relay_status}
+    assert build_crossover_envelope_v2(status)["screen"] == screen
+
+
+def test_session_without_a_timestamp_reads_as_not_current():
+    """Migration, fail-honest, and without a schema bump: a state file this
+    build cannot date is one whose currency it cannot assert."""
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "verify", "applied": True, "session_id": "cap_undated",
+            "verify": _PRIOR_SESSION_EVIDENCE,
+        },
+    })
+    assert env["screen"] == "microphone_check"
+    assert _history_note(env) == (
+        "Your last measurement ended earlier, with the tuning it found "
+        "already applied to your speaker."
+    )
+
+
+def test_a_speaker_that_never_measured_is_not_greeted_with_history():
+    """The opposite dishonesty: no state file means no session to be dead, and
+    the clock reads absent for the same reason a stale one does."""
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {"phase": "check"},
+    })
+    assert env["screen"] == "microphone_check"
+    assert env["nudges"] == []
+
+
+# --- #2100: a failed walk names what it banked ----------------------------------
+
+
+def test_failed_post_apply_walk_names_what_survived():
+    """The failed Full stage 2 kept an applied tuning and a passing check at
+    the mark, and the terminal screen said only that the measurement ended —
+    so the honest complete re-walk read as losing everything."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True, tier="full", session_id="cap_live",
+        verify={"outcome": "pass"},
+        failure={"code": REASON_RELAY_TIMEOUT},
+    ))
+    banked = [n for n in env["nudges"] if n["code"] == "crossover_v2_banked_progress"]
+    assert len(banked) == 1
+    assert banked[0]["severity"] == "info"
+
+
+@pytest.mark.parametrize("v2", [
+    # Nothing applied — there is no banked tuning to name.
+    {"applied": False, "tier": "full"},
+    # Express has no cross-position post-apply walk to be missing.
+    {"applied": True, "tier": "express"},
+    # The walk closed: nothing about it is outstanding.
+    {"applied": True, "tier": "full", "cloud": {"cloud_verify": {"geometry": {}}}},
+])
+def test_banked_progress_line_is_silent_when_state_cannot_support_it(v2):
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", session_id="cap_live",
+        failure={"code": REASON_RELAY_TIMEOUT}, **v2,
+    ))
+    assert [n for n in env["nudges"]
+            if n["code"] == "crossover_v2_banked_progress"] == []
 
 
 # --- W6.1 Finding D: the v2 relay slot is visible in the envelope ----------------

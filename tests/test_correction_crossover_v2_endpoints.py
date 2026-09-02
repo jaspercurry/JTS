@@ -2662,6 +2662,7 @@ def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
         session_volume_db=-20.0,
         graph_fingerprint="fp-at-play",
         stimulus_program_id="prog-entry",
+        stimulus_wav_sha256="c" * 64,
     ))
 
     seams.analyze(
@@ -2685,6 +2686,11 @@ def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
     assert carried["main_volume_db"] == -20.0
     assert carried["session_volume_db"] == -20.0
     assert carried["stimulus"]["program_id"] == "prog-entry"
+    # The PLAYED program's digest is lifted to its own top-level column, so a
+    # reader joining takes by stimulus need not open the provenance block —
+    # and it never displaces ``wav_sha256``, which is the CAPTURED audio's.
+    assert banked["stimulus_wav_sha256"] == "c" * 64
+    assert banked["wav_sha256"] != banked["stimulus_wav_sha256"]
 
 
 def test_a_capture_that_observed_nothing_never_inherits_the_last_one_s_graph(

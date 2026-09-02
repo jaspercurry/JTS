@@ -35,8 +35,11 @@ needs no flag to be split correctly.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
 classified and filed, ``1`` the round could not be read, ``2`` the instrument
-refused (its controls failed, the captures are the wrong shape, or nothing
-stood above the round's own scatter), ``3`` the verdict could not be written.
+refused (the captures are the wrong shape, or nothing stood above the round's
+own scatter), ``3`` the verdict could not be written. A round whose
+known-answer controls failed exits ``0`` with an artifact: it costs the phase
+class, not the round, so every row reads ``egd=ambiguous`` and the summary
+carries the artifact's own ``controls_disclosure`` line.
 ``2`` and ``3`` are separate because they send an operator to different places:
 ``2`` means fix the round, ``3`` means fix the filesystem. A refusal is the
 instrument working — ``--json`` prints its named ``reason`` and the evidence
@@ -51,8 +54,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
-
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
     NO_ROUND_ARTIFACTS_REASON,
@@ -62,12 +63,13 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
-    GATE_LADDER_MS,
     FeatureClassificationRefused,
     classify_round,
     load_round_captures,
     load_round_pose_curves,
 )
+from jasper.cli._report import write_report
+from jasper.cli.gate_sweep import add_rungs_ms_argument
 
 EXIT_OK = 0
 EXIT_ROUND_UNREADABLE = 1
@@ -152,19 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GATE_MS,
         help=f"primary analysis window (default {DEFAULT_GATE_MS:g})",
     )
-    parser.add_argument(
-        "--gates-ms",
-        type=float,
-        action="append",
-        default=None,
-        metavar="MS",
-        help=(
-            "add this gate to the invariance ladder, repeatable. Rungs above "
-            "the primary window are legal -- they re-admit reflections, so "
-            "convergence vs fan-out across the ladder is readable. Omitted, "
-            f"the shipped ladder is used ({', '.join(f'{g:g}' for g in GATE_LADDER_MS)} ms)"
-        ),
-    )
+    add_rungs_ms_argument(parser, flag="--gates-ms", repeatable=True)
     parser.add_argument(
         "--out",
         type=Path,
@@ -242,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             captures,
             at=args.at,
             gate_ms=args.gate_ms,
-            gates_ms=tuple(args.gates_ms) if args.gates_ms else GATE_LADDER_MS,
+            gates_ms=tuple(args.gates_ms) if args.gates_ms else None,
             pose_curves=pose_curves,
         )
     except FeatureClassificationRefused as refusal:
@@ -276,9 +266,7 @@ def main(argv: list[str] | None = None) -> int:
 
     destination = args.out or (round_dir / CLASSIFICATION_ARTIFACT)
     try:
-        # Atomic: this file is durable evidence a later round reads, and a
-        # torn write would be read as a verdict rather than as a broken file.
-        atomic_write_text(destination, json.dumps(artifact, indent=1))
+        write_report(artifact, None, destination, make_parents=True)
     except OSError as exc:
         return _fail(
             f"classified, but could not write {destination}: {exc}",
@@ -293,6 +281,9 @@ def main(argv: list[str] | None = None) -> int:
         f"-> {destination}",
         file=sys.stderr,
     )
+    # An exit-0 round whose controls failed must not read as a clean one.
+    if artifact["controls_disclosure"] is not None:
+        print(f"  controls: {artifact['controls_disclosure']}", file=sys.stderr)
     for row in rows:
         print(
             f"  {row['hz']:8.0f} Hz  {row['classification']:<34} "

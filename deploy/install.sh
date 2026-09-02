@@ -965,7 +965,7 @@ install_camilladsp() {
     # The active_speaker* paths below are the same capture/sweep/tone trees
     # /sound/ and /correction/ share; this list must stay in sync with
     # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
-    # the same six paths on every deploy for boxes that pre-date this line.
+    # the same seven paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
         /var/lib/jasper/correction \
         /var/lib/jasper/correction/sweeps \
@@ -974,6 +974,7 @@ install_camilladsp() {
         /var/lib/jasper/correction/calibration_mics \
         /var/lib/jasper/correction/tones \
         /var/lib/jasper/active_speaker \
+        /var/lib/jasper/active_speaker/campaigns \
         /var/lib/jasper/active_speaker/sessions \
         /var/lib/jasper/active_speaker_captures \
         /var/lib/jasper/active_speaker_sweeps \

@@ -32,6 +32,8 @@ from jasper.multiroom.balance import (
 )
 from jasper.web import balance_flow
 
+from ._async_wait import wait_until_sync
+
 LEADER_G = {
     "enabled": True, "role": "leader", "channel": "left",
     "bond_id": "bond-x", "leader_addr": "", "buffer_ms": 400,
@@ -477,16 +479,10 @@ def test_full_walkthrough_computes_trims(pair_env):
     assert rec["delta_db"] == pytest.approx(6.0, abs=0.1)
     assert rec["left_trim_db"] == pytest.approx(-6.0, abs=0.1)
     assert rec["right_trim_db"] == 0.0
-    deadline = time.monotonic() + 2.0
-    while (pair_env["window_closed"] != 1
-           and time.monotonic() < deadline):
-        time.sleep(0.02)
+    wait_until_sync(lambda: pair_env["window_closed"] == 1, interval=0.02)
     assert pair_env["window_closed"] == 1  # renderers restored
     assert balance_flow.active_phase() is None  # analyzed ≠ active
-    deadline = time.monotonic() + 2.0
-    while (pair_env["volume_restored"] != 1
-           and time.monotonic() < deadline):
-        time.sleep(0.02)
+    wait_until_sync(lambda: pair_env["volume_restored"] == 1, interval=0.02)
     assert pair_env["volume_restored"] == 1
 
 
@@ -520,12 +516,12 @@ def test_ramp_ending_unheard_marks_channel(pair_env):
     start_ok(pair_env)
     ramp_ok(pair_env, "left")
     pair_env["procs"][0].finish()  # WAV ended, nobody locked
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        st = balance_flow.handle_status()
-        if st["locks"].get("left", {}).get("not_heard"):
-            break
-        time.sleep(0.02)
+    wait_until_sync(
+        lambda: balance_flow.handle_status()["locks"]
+        .get("left", {})
+        .get("not_heard"),
+        interval=0.02,
+    )
     st = balance_flow.handle_status()
     assert st["locks"]["left"] == {"not_heard": True}
     assert st["ramping"] == ""
@@ -598,10 +594,7 @@ def test_inactivity_releases_the_window(pair_env, monkeypatch):
     an abandoned phone tab can't hold the speaker paused indefinitely."""
     monkeypatch.setattr(balance_flow, "IDLE_TIMEOUT_S", 0.2)
     start_ok(pair_env)
-    deadline = time.monotonic() + 3.0
-    while (pair_env["window_closed"] != 1
-           and time.monotonic() < deadline):
-        time.sleep(0.02)
+    wait_until_sync(lambda: pair_env["window_closed"] == 1, interval=0.02)
     assert pair_env["window_closed"] == 1
     st = balance_flow.handle_status()
     assert st["phase"] == "idle"

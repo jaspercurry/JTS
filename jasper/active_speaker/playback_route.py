@@ -51,6 +51,7 @@ __all__ = [
     "OUTPUTD_ACTIVE_LANE_SOURCE",
     "ActiveLaneCapabilityGap",
     "ActivePlaybackRouteCapability",
+    "UnrecognizedDacProfile",
     "active_lane_capability_gap",
     "active_playback_route_capability",
     "resolve_active_playback_device",
@@ -111,9 +112,29 @@ class ActiveLaneCapabilityGap:
         return {"device_id": self.device_id, "device_label": self.device_label}
 
 
+@dataclass(frozen=True)
+class UnrecognizedDacProfile:
+    """A saved layout needs the active outputd lane, but ``device_id`` has no
+    registered :class:`~jasper.audio_hardware.dac.DacProfile` to read that
+    capability off.
+
+    Distinct from :class:`ActiveLaneCapabilityGap` on purpose: a gap is proof
+    the DAC cannot drive the layout; this is the absence of proof either way.
+    Treating it as a gap would block a save on hardware the registry has
+    simply never met (see :func:`active_lane_capability_gap`'s docstring) —
+    every caller except doctor's remedy keeps ignoring it exactly as it did
+    ignore the old two-valued ``None``.
+    """
+
+    device_id: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"device_id": self.device_id}
+
+
 def active_lane_capability_gap(
     topology: OutputTopology,
-) -> ActiveLaneCapabilityGap | None:
+) -> ActiveLaneCapabilityGap | UnrecognizedDacProfile | None:
     """Return why ``topology`` can never reach hardware on this DAC, or None.
 
     The one predicate for a permanently-undrivable pairing: the layout needs a
@@ -128,9 +149,12 @@ def active_lane_capability_gap(
     remedy, the ``/sound/setup/`` save guard) resolves it here and phrases its
     own sentence; the predicate itself has one owner.
 
-    Strict on purpose: an unrecognized ``device_id`` has no profile to read a
-    capability off, so it returns ``None`` rather than guessing a gap that
-    would block a save on hardware the registry simply has not met.
+    Three-valued on purpose: an unrecognized ``device_id`` has no profile to
+    read a capability off, so it returns :class:`UnrecognizedDacProfile`
+    rather than either guessing a gap that would block a save on hardware the
+    registry simply has not met, or collapsing into the same ``None`` a
+    genuinely capable DAC returns — a caller that only wants the definite gap
+    should narrow with ``isinstance(gap, ActiveLaneCapabilityGap)``.
     """
 
     from jasper.active_speaker.runtime_contract import (
@@ -141,7 +165,9 @@ def active_lane_capability_gap(
         return None
     device_id = topology.hardware.device_id
     profile = _dac_by_id(device_id)
-    if profile is None or profile.supports_active_outputd_lane:
+    if profile is None:
+        return UnrecognizedDacProfile(device_id=device_id)
+    if profile.supports_active_outputd_lane:
         return None
     return ActiveLaneCapabilityGap(
         device_id=device_id,

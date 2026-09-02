@@ -58,13 +58,18 @@ TUNING_TOOL_MODULES: tuple[str, ...] = (
     "jasper.cli.arm_walk",
     "jasper.cli.measure",
     "jasper.cli.crossover_prescriber",
+    "jasper.cli.round",
     "jasper.cli.round_views",
+    "jasper.cli.round_bank",
     "jasper.cli.classify_features",
     "jasper.cli.read_distortion",
     "jasper.cli.delay_sweep",
     "jasper.cli.forward_model",
+    "jasper.cli.gate_sweep",
+    "jasper.cli.close_reference",
     "jasper.cli.null_door",
     "jasper.cli.audition",
+    "jasper.cli.declare_geometry",
 )
 
 

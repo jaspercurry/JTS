@@ -31,6 +31,8 @@ from pathlib import Path
 import pytest
 
 from jasper import renderer_lanes as rl
+from jasper import ring_assets
+from jasper.fanin_coupling import resolve_ring_wire_format
 from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
 
 REPO = Path(__file__).resolve().parent.parent
@@ -259,13 +261,18 @@ def test_the_confd_ring_geometry_matches_the_shipped_fanin_geometry():
 
 @pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
 def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire(label):
-    """EVERY lane's `plug:` wrapper is pinned at the lane wire — 48 kHz
-    S16_LE, 2ch, converting through `defaults.pcm.rate_converter` (the knob
-    whose fallback to ALSA's linear resampler cost ~12 dB of 4-8 kHz in the
-    2026-05 AEC investigation). Each renderer's native emit differs
-    (librespot 44.1 kHz S24_3, shairport 44.1 kHz S32, Bluetooth
-    codec-dependent, correction WAV-dependent); the wire they convert TO is
-    one boundary and must not drift per lane.
+    """EVERY lane's `plug:` wrapper is pinned at the lane wire — 48 kHz, 2ch,
+    converting through `defaults.pcm.rate_converter` (the knob whose fallback
+    to ALSA's linear resampler cost ~12 dB of 4-8 kHz in the 2026-05 AEC
+    investigation). Each renderer's native emit differs (librespot 44.1 kHz
+    S24_3, shairport 44.1 kHz S32, Bluetooth codec-dependent, correction
+    WAV-dependent); the wire they convert TO is one boundary and must not
+    drift per lane.
+
+    The WIDTH is declared exactly once per lane, on the ring PCM — the box's
+    one resolved wire, which fan-in builds the same lane's attach geometry
+    from. A `format` on the plug slave would be a second declaration that
+    could shear from it, so its absence is pinned too.
 
     Was a librespot-only test from P6a through P6d's build — the same
     "every ring-writing renderer" generalization gap `_unit_text`'s
@@ -284,8 +291,21 @@ def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire(label):
     assert "type plug" in body, f"{label}: wrapper must be type plug"
     assert f'pcm "{rl.ring_conf_pcm_name(label)}"' in body
     assert "rate 48000" in body, f"{label}: plug slave must pin rate 48000"
-    assert "format S16_LE" in body, f"{label}: plug slave must pin S16_LE"
     assert "channels 2" in body, f"{label}: plug slave must pin 2 channels"
+    assert "format" not in body, (
+        f"{label}: the plug slave must not declare a width — the ring PCM owns it"
+    )
+
+    ring = re.search(
+        rf"pcm\.{re.escape(rl.ring_conf_pcm_name(label))}\s*\{{(.*?)\n\}}",
+        conf,
+        re.S,
+    )
+    assert ring, f"no ring block for {label}"
+    assert f"format {resolve_ring_wire_format(None)}" in ring.group(1), (
+        f"{label}'s ring must declare the width an undeclared box resolves; "
+        "fan-in attaches at that wire and refuses a sheared header"
+    )
 
 
 def test_the_airplay_plug_conversion_story_matches_the_template():
@@ -1106,18 +1126,6 @@ def test_the_ring_lane_reader_never_calls_the_aloop_catchup_drain():
     assert "drain_input_excess" not in code
 
 
-def test_the_ring_lane_holds_no_spine_scale_buffer():
-    """U3 moves the transport, not the width: a renderer lane is S16 at its wire
-    and the boundary table's pins are unchanged."""
-    rs = RING_CAPTURE_RS.read_text()
-    assert "read_buf_wide: Vec::new()" in rs
-    assert "SAMPLE_FORMAT_S16LE" in rs
-    assert "SAMPLE_FORMAT_S32LE" not in rs, (
-        "a renderer ring lane must not declare a wide wire without its own "
-        "evidence"
-    )
-
-
 # --- Arm preconditions: each must actually refuse ------------------------
 #
 # Everything here would otherwise produce SILENCE rather than an error the
@@ -1211,21 +1219,34 @@ def test_the_python_slot_derivation_mirrors_the_rust_bounds():
 # --- Stale-ring self-heal -------------------------------------------------
 
 
-def _write_ring_header(path, *, n_slots, period_frames, channels=2, fmt=1):
+def _shipped_ring_format_id() -> int:
+    """The header ``sample_format`` id an UNDECLARED box's lanes carry — the
+    same wire the conf.d declares and fan-in attaches at."""
+    token = resolve_ring_wire_format(None)
+    return next(
+        i for i, name in ring_assets.RING_SAMPLE_FORMAT_NAMES.items() if name == token
+    )
+
+
+def _write_ring_header(path, *, n_slots, period_frames, channels=2, fmt=None):
     """A minimal valid jts_ring header, so the coherence comparator has
     something real to judge. Field offsets come from
     rust/jasper-ring/src/layout.rs."""
     import struct
 
+    if fmt is None:
+        fmt = _shipped_ring_format_id()
+    sample_bytes = 2 if fmt == ring_assets.RING_SAMPLE_FORMAT_S16LE else 4
     header = bytearray(128)
     header[0:4] = struct.pack("<I", 0x4A52_494E)   # MAGIC 'JRIN'
     header[4:8] = struct.pack("<I", 1)             # VERSION
     header[8:12] = struct.pack("<I", 48000)        # rate
     header[12:16] = struct.pack("<I", channels)
-    header[16:20] = struct.pack("<I", fmt)         # SAMPLE_FORMAT_S16LE
+    header[16:20] = struct.pack("<I", fmt)
     header[20:24] = struct.pack("<I", period_frames)
     header[24:28] = struct.pack("<I", n_slots)
-    pathlib.Path(path).write_bytes(bytes(header) + b"\0" * (n_slots * period_frames * channels * 2))
+    payload = n_slots * period_frames * channels * sample_bytes
+    pathlib.Path(path).write_bytes(bytes(header) + b"\0" * payload)
 
 
 def test_a_geometry_mismatched_ring_is_deleted(tmp_path, monkeypatch):
@@ -1451,15 +1472,15 @@ def test_the_arm_refuses_a_period_128_box_by_default(tmp_path):
 
 
 def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
-    """The probe's timeout MUST exceed the ring's writer-lock wait.
+    """The probe's kill guard MUST exceed BOTH of the ring's lock waits.
 
-    `_probe_open_as_user` treats a timeout-kill (exit 124) as SUCCESS. Probing
-    an ARMED lane whose renderer is PLAYING blocks inside `snd_pcm_prepare` for
-    the whole lock wait and only then returns EBUSY — so a probe killed first
-    exits 124, `_alsa_busy()` never sees the EBUSY, and
-    `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) is
-    unreachable in exactly the contended case it exists for. The probe would
-    report a healthy lane it never opened.
+    A contended open spends both waits inside `snd_pcm_prepare` before it
+    either wins the lock or is refused. Killing it first exits 124, which
+    `_classify_probe` reads as FAILED — correctly, since nothing finished, but
+    the box is healthy: an open that wins the race at the end of those waits
+    would be reported as a broken device, and one that is refused would never
+    reach `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) in
+    exactly the contended case that proof exists for.
 
     Pinned cross-language for the same reason `OFF_WRITER_PID` is: the two
     values live in different languages and either could be changed alone.
@@ -1476,12 +1497,13 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     assert m, "_PROBE_TIMEOUT_SEC moved or changed shape"
     probe_sec = float(m.group(1))
 
-    assert probe_sec > lock_wait_sec, (
-        f"the doctor probe runs for {probe_sec}s but a contended ring writer "
-        f"lock waits {lock_wait_sec}s before returning EBUSY. A probe that is "
-        f"killed first exits 124, which the probe counts as SUCCESS — so the "
-        f"ownership check never runs on a busy lane. Raise the probe timeout, "
-        f"or lower the lock wait; do not leave them crossed"
+    assert probe_sec > 2 * lock_wait_sec, (
+        f"the doctor probe runs for {probe_sec}s but a fully contended open "
+        f"spends BOTH lock waits ({lock_wait_sec}s each; they add rather than "
+        f"overlap) inside snd_pcm_prepare before it wins the lock or is "
+        f"refused. A probe killed first exits 124 = FAILED, so a healthy box "
+        f"reports a broken device. Raise the probe timeout, or lower the lock "
+        f"wait; do not leave them crossed"
     )
     # And the dependency is named at BOTH ends, so neither reads as arbitrary.
     assert "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS" in src, (
@@ -1489,15 +1511,6 @@ def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
     )
     assert "_PROBE_TIMEOUT_SEC" in header, (
         "the C constant must name the doctor probe as a dependent"
-    )
-
-
-def test_the_probe_timeout_is_used_by_the_probe():
-    """The constant is load-bearing only if the command actually uses it."""
-    src = (REPO / "jasper" / "cli" / "doctor" / "renderers.py").read_text()
-    assert '"timeout", _PROBE_TIMEOUT_SEC,' in src, (
-        "the probe must build its command from _PROBE_TIMEOUT_SEC, not a "
-        "literal that the cross-language pin cannot see"
     )
 
 
@@ -1652,18 +1665,26 @@ def test_every_lane_has_a_distinct_ring_path_device_and_key(label):
 
 @pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
 def test_every_registered_label_is_a_real_fanin_lane(label):
-    """A label fan-in does not know is refused at config (ConfigClassError →
-    park). Catching it here is the difference between a failed test and a
-    speaker that will not start."""
+    """A label absent from fan-in's compiled-in default input_renderers is
+    refused at config (ConfigClassError -> park) UNLESS
+    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
+    the compiled-in default, not the guaranteed runtime outcome."""
     rs = FANIN_CONFIG_RS.read_text()
     m = re.search(
         r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S
     )
-    assert m, "fan-in's input_renderers default moved"
-    fanin_labels = re.findall(r'"([a-z0-9_]+)"', m.group(1))
+    assert m, f"input_renderers default array not found in {FANIN_CONFIG_RS}"
+    # Resolve bare identifiers (named constants) as well as quoted literals —
+    # a scrape that only matched `"..."` would silently miss a label spelled
+    # via a `pub const NAME: &str = "...";` reference (issue #3461).
+    consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', rs))
+    raw_items = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
+    fanin_labels = [consts.get(item, item) for item in raw_items]
     assert label in fanin_labels, (
-        f"lane label {label!r} is not one of fan-in's lanes {fanin_labels}; "
-        "fan-in would refuse the arm with a config-class park"
+        f"lane label {label!r} is missing from fan-in's compiled-in default "
+        f"input_renderers {fanin_labels} (scraped from {FANIN_CONFIG_RS.name}); "
+        "unless JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed "
+        "env, fan-in will not recognize this lane"
     )
 
 

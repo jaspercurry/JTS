@@ -101,9 +101,17 @@ def test_mutation_gate_stays_closed_until_preexisting_state_get_drains():
 
 def test_pairing_mode_and_scan_controls_remain_gated_by_adapter_power():
     js = _MODULE_JS.read_text()
-    assert "sd.disabled = busy || parked || (!state.discoverable" in js
-    assert "&& (unavailable || !state.desired || !state.powered));" in js
-    assert "btn.disabled = busy || parked || (!scanning" in js
+    # Whole gate, not a shared tail: the scan gate below ends in the same
+    # clause, so a partial match silently drifts onto it when this one grows.
+    assert (
+        "  sd.disabled = busy || parked || (!state.discoverable\n"
+        "    && (unavailable || !state.desired || !state.powered\n"
+        "      || state.pairingReady === false));"
+    ) in js
+    assert (
+        "  btn.disabled = busy || parked || (!scanning\n"
+        "    && (unavailable || !state.desired || !state.powered));"
+    ) in js
 
 
 def test_unavailable_state_allows_pairing_mode_off_and_scan_stop_only():

@@ -193,6 +193,9 @@ class CouplingResult:
 # are START_ONLY_UNITS in the broker, which would deny ``reset-failed`` anyway.
 _START_BUDGET_VERBS = frozenset({"start", "restart", "try-restart"})
 _CRASH_BUDGET_UNITS = frozenset({FANIN_UNIT, OUTPUTD_UNIT, CAMILLA_UNIT})
+# Mirrors restart_broker._RESET_TIMEOUT_SEC (which owns the bound
+# reset_then_manage actually applies); only the ceiling arithmetic below reads
+# it, so it is spelled here rather than paid for as an import.
 _RESET_FAILED_TIMEOUT_SEC = 5.0
 
 
@@ -209,36 +212,23 @@ def _restart_unit(
     "wait for fan-in up" step the camilla coordination below relies on. Pass True
     for a kick whose completion the caller does not wait on.
 
-    A start-consuming verb on a crash-budget daemon is preceded by a best-effort
-    ``reset-failed`` so this deliberate apply cannot walk the target into
-    StartLimitAction=reboot (see the block comment above); the reset never gates
-    the action it precedes. Guarded lazy import: a missing/broken control package
-    degrades to a reported failure, never an exception out of the reconcile that
-    would defeat the fail-safe ladder.
+    A start-consuming verb on a crash-budget daemon goes through
+    :func:`restart_broker.reset_then_manage`, so this deliberate apply cannot
+    walk the target into StartLimitAction=reboot (see the block comment above).
+    Guarded lazy import: a missing/broken control package degrades to a reported
+    failure, never an exception out of the reconcile that would defeat the
+    fail-safe ladder.
     """
     try:
         from jasper.control import restart_broker
     except ImportError as e:  # pragma: no cover - control pkg always present in prod
         return False, f"restart_broker unavailable: {e}"
-    if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS:
-        reset = restart_broker.manage_units(
-            unit,
-            verb="reset-failed",
-            reason=reason,
-            no_block=False,
-            timeout=_RESET_FAILED_TIMEOUT_SEC,
-        )
-        if not reset.get("ok"):
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result="start_budget_reset_failed",
-                unit=unit,
-                reason=reason,
-                detail=str(reset.get("error") or f"rc={reset.get('rc')}"),
-                level=logging.WARNING,
-            )
-    resp = restart_broker.manage_units(
+    drive = (
+        restart_broker.reset_then_manage
+        if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS
+        else restart_broker.manage_units
+    )
+    resp = drive(
         unit,
         verb=verb,
         reason=reason,
@@ -319,7 +309,11 @@ def _assistant_width_token(env_path: str | Path) -> str:
         )
         wide = assistant_wire_is_wide(
             wire_format=wire_format,
-            coupling=read_persisted_coupling(env_path),
+            # `or ""` keeps this half AUTHORITATIVE: `assistant_wire_is_wide`
+            # reads `None` as "not supplied" and would fall back to the default
+            # fanin.env, discarding the caller's env_path. A file naming no
+            # transport resolves narrow either way.
+            coupling=read_persisted_coupling(env_path) or "",
         )
     except (OSError, ValueError):
         # An unreadable/typo'd declaration is fan-in's fault to report (it parks
@@ -641,8 +635,8 @@ def _reconcile_camilla(
     mid-commission roleful box boots from the all-muted staged startup anchor,
     which the carrier correctly refuses to host EQ on
     (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`) — so every arm of the
-    fleet-typical composite failed here, with the reconciler keeping loopback
-    (jts.local, 2026-08-15). :func:`ring_endpoint_anchor_converged` proves from
+    fleet-typical composite failed here, with the graph left unchanged.
+    :func:`ring_endpoint_anchor_converged` proves from
     the artifacts on disk that the graph IS that anchor and IS already at the
     ring endpoint at the box's wire; only then is the step converged, with its
     own detail so the outcome is never confused with a re-emit. Every other

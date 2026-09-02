@@ -44,7 +44,7 @@
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
 | Grade the state a round STARTED from (a fresh box's declarations-derived config, which no round grades), grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {entry,frozen,per-seat,repeat,agreement}` |
-| See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
+| See exactly what a per-driver or summed capture walk at stated angles resolves to — bearing, program, advance policy — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Ask the next session for R-1's reverse-null — the design-axis MEASURE capture with one named driver branch riding sign-flipped | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage --polarity inverted --inverted-role <role>` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
@@ -55,7 +55,6 @@
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Find out whether this speaker ships a MEASURED per-driver level or the one its datasheet claimed on somebody else's cabinet | [Measured driver base trim](#measured-driver-base-trim) — banked by the apply, no verb to run |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
-| Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
 | Drive a crossover-measurement v2 lab round from a Mac with no browser and no phone | [E0 headless capture client](#e0-headless-capture-client) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
@@ -1013,7 +1012,7 @@ Live Pi state without modifying anything:
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, volume routing, wake/turn boundaries) |
 | [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. |
-| [`scripts/jasper-pipe-probe`](../scripts/jasper-pipe-probe) | Renderer clock-integrity acceptance instrument: `gen-wav`/`gen-click` write the probe/marker WAVs, `capture` pulls outputd's post-DSP `:9891` reference tap (pushes a stdlib-only sniffer to a session-unique `/tmp/tapsniff-<id>.py` every run, strictly pairs and drops the loopback double-capture laptop-side), `analyze` reports per-second dominant frequency / THD+N / phase-glitch count / pitch-offset ppm (a meter — always exits 0), and `latency` measures one lane's launch-to-tap delay (median/min/max over N repeats; the number includes aplay's own process-start cost but not this tool's own ssh/READY-wait overhead — for before/after comparison, not an absolute number). Cleans up its own session-scoped temp files on exit. |
+| [`scripts/jasper-pipe-probe`](../scripts/jasper-pipe-probe) | Renderer clock-integrity acceptance instrument: `gen-wav`/`gen-click` write the probe/marker WAVs, `capture` pulls outputd's post-DSP `:9891` reference tap (pushes a stdlib-only sniffer to a session-unique `/tmp/tapsniff-<id>.py` every run; it records only real UDP datagrams to the port, takes the tap period from outputd's own `STATUS`, excises anything that is not one period, then strictly pairs and drops the loopback double-capture laptop-side). It writes a sidecar `OUT.raw.json` manifest — tap geometry, both reject tallies, `all_zero`, and `START_MONOTONIC_NS` so the capture lines up against `journalctl -o short-monotonic` — and exits **3** when the instrument was blind (no tap datagram, or outputd could not say what one looks like); an all-zero tap is reported, not failed, since an idle box is validly silent. `analyze` reads that manifest back and prints the provenance alongside per-second dominant frequency / THD+N / phase-glitch count / pitch-offset ppm (a meter — always exits 0), and `latency` measures one lane's launch-to-tap delay (median/min/max over N repeats; the number includes aplay's own process-start cost but not this tool's own ssh/READY-wait overhead — for before/after comparison, not an absolute number). Cleans up its own session-scoped temp files on exit. |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |
 | `jasper-correction-bundle inspect <session> --recompute` | Validate a copied room-correction bundle, summarize confidence/runtime evidence, and replay raw captures into derived curves |
 | `jasper-correction-bundle export <session> --output <dir>` | Write REW-friendly `.frd` / `.txt` curves and impulse-response WAVs from a room-correction bundle |
@@ -1030,7 +1029,6 @@ Live Pi state without modifying anything:
 | `jasper-active-speaker commission-ramp status [--topology <file.json>] [--json]` | Read-only: print the commission-load, ramp, and per-driver floor state. `--topology` merges durable confirmed-role evidence for the armed group; the handler reads it on every box that has ever armed a driver, because the armed target outlives a rollback (#2667). |
 | `jasper-active-speaker commission-ramp abort [--json]` | Re-mute mid-ramp: roll back to the all-muted staged config and reset the ramp state. Stops the tone and ends the safe-playback session. |
 | `/sound/active-speaker/{environment,safe-playback,commissioning-view,design-draft,channel-identity,calibration-level,stop,commission-state,commission-load,commission-rollback,commission-ramp-step,commission-ramp-ack,commission-ramp-abort,summed-test,summed-validation,baseline-profile,baseline-profile/apply}` | Web active-speaker status/session/design/identity/level/test/commissioning surface. `environment`, `safe-playback`, `commissioning-view`, `design-draft`, `channel-identity`, `calibration-level`, `commission-state`, `baseline-profile`, and related status routes are read-only GETs where exposed; `design-draft`, `stop`, `channel-identity`, `calibration-level`, the `commission-*`, summed validation, and baseline apply routes are CSRF-protected POSTs from `/sound/`. Active 2/3-way groups use `commission-load` + `commission-ramp-step`/`ack`/`abort`; each ramp step loads the protected one-driver graph, injects a bounded tone through the commissioning lane, and rolls back on tone failure. Passive/full-range groups have no separate active driver test in the product UI. `design-draft` persists operator driver names, notes, bounded research JSON, and a saved topology snapshot as non-authoritative evidence; it does not load CamillaDSP, apply filters, authorize playback, or emit sound. Generic `aplay` tone playback has no production route at all: `enabled_audio_backend`, the one function that turned `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` + `JASPER_AUDIO_LAB_TEST_PCM` into a live backend, never had a caller and was deleted, so those env vars now report a `tone_backend_not_wired` blocker rather than enabling audio. Product outputd/CamillaDSP lanes are forbidden as direct test writers, and `AplayTonePlaybackBackend` — which only tests construct now — still enforces that in its constructor. The list is owned by `FORBIDDEN_TEST_PCM_TOKENS` in `jasper/active_speaker/playback.py` — a case-insensitive substring test covering every outputd program/content lane, `jasper_out`, `outputd_dac`, and all three central ring PCMs, the ACTIVE ring included (it needs its own entry because `jts_ring_playback` is not a substring of `jts_ring_active_playback`). The renderer-lane rings and the grouping-ingress ring are deliberately absent on the consequence asymmetry the tuple's own comment states — they are ingress into fan-in / CamillaDSP, not a sink past the crossover. Read the tuple rather than a restatement here. `outputd_active_content_playback`/`outputd_active_content_capture` no longer resolve to a real PCM since P9-C deleted their `asoundrc.jasper` definitions, but the ban holds for a re-introduction or a rolled-back box that still names them. No endpoint changes normal listening volume. |
-| `rust/jasper-dual-dac-lab/target/release/jasper-dual-dac-lab probe` / `run` | Lab-only dual Apple USB-C DAC validator. `probe` is passive. `run` opens two serial-pinned direct `hw:` PCMs, writes silence first, caps level, and aborts both outputs on xrun/suspend/disconnect/delay divergence. Not installed as a product daemon. |
 
 ## Correction capture diagnostic
 
@@ -1629,34 +1627,6 @@ whole question and needs the on-device run.
 
 ---
 
-## Dual Apple DAC lab runner
-
-[`rust/jasper-dual-dac-lab`](../rust/jasper-dual-dac-lab) is a
-lab-only Rust binary for the experimental "one Apple USB-C DAC per
-speaker" topology. It is intentionally outside the product output path:
-no systemd unit, no install hook, and no CamillaDSP/ALSA aggregate
-device.
-
-Use it only from the Pi checkout after an explicit build:
-
-```sh
-cd /home/pi/jts/rust/jasper-dual-dac-lab
-cargo build --release --locked
-./target/release/jasper-dual-dac-lab probe
-```
-
-The `run` command is sound-capable and must follow
-[`dual-apple-dac-lab.md`](dual-apple-dac-lab.md): product audio owners
-stopped, serial-pinned Apple PCMs, dummy loads or capture inputs, no
-tweeters, explicit stop path, low level, and an evidence directory for
-stdout JSONL, ALSA/USB descriptors, kernel logs, and capture WAVs. The
-2026-06-03 evidence bundle shows a clean 15-minute low-level non-silence
-software stability pass and a Scarlett common-clock drift pass for one
-analog channel from each DAC. Right-channel identity, replug/reboot
-repeatability, and product-stack startup/reload safety remain unproven.
-
----
-
 ## USB turntable experiment
 
 [`experiments/usb-turntable/jts_turntable.py`](../experiments/usb-turntable/jts_turntable.py)
@@ -2137,22 +2107,26 @@ this round by the bundle's own `session_id` (a sidecar stamps it into
 split correctly.
 
 The round directory's own `<phase>_program.wav` files are resolved from
-either shape automatically, by structure rather than a flag: this
+either shape automatically, by structure rather than a flag (and a capture is
+bound to one of them by the content hash its sidecar banked, never by the
+file's phase name): this
 instrument's original campaign-receipts shape banks them beside the JSON
 receipts, and the shape the tar above actually produces banks them in a
 sibling `crossover_v2/<relay>/` directory instead — so the composition above
 just works.
 
+Known answers are pushed through the identical pipeline on the round's own IR
+before anything is reported: a minimum-phase peaking filter that must read
+flat, an all-pass that must recover its own group delay, a quiet delayed copy
+that must ALSO read flat (`|g| < 1` puts every zero inside the unit circle, so
+it is minimum phase), and a loud one that must not. All four calibrate the
+excess-group-delay scale, so failing one costs the PHASE class and nothing
+else: the round still classifies, every row reads `egd_verdict: ambiguous`
+beside `controls_ok: false`, no row can reach a `defect-*` verdict, and
+`controls_disclosure` at the top of the artifact says all of that in words.
+
 **It refuses more often than it reports, and each refusal has a name.**
 
-- `classification_controls_failed` — known answers are pushed through the
-  identical pipeline on the round's own IR before anything is reported: a
-  minimum-phase peaking filter that must read flat, an all-pass that must
-  recover its own group delay, a quiet delayed copy that must ALSO read flat
-  (`|g| < 1` puts every zero inside the unit circle, so it is minimum phase),
-  and a loud one that must not. Fail any of them and no verdict is written at
-  all — a reading from an instrument that just failed its own check is a
-  number, not evidence.
 - `classification_lateral_capture_shape` — a `lateral` capture replays the
   per-driver MEASURE program one driver at a time, so it carries no
   summed-system response for a feature verdict to be about. A hard refusal
@@ -2163,10 +2137,11 @@ just works.
   about (a MEASURE-only ring is this by construction).
 - `classification_captures_unreadable` — this round banked a capture of an
   admissible shape and the ring cannot hand it over: the WAV is not beside
-  its sidecar, or the dump name lost the microsecond stamp the take's timing
-  is bound to. The round shape is right, so a different round is the one
-  move that cannot help — the remedy is the ring or the bank step that
-  filled it.
+  its sidecar, the dump name lost the microsecond stamp the take's timing
+  is bound to, or the sidecar banks no `provenance.stimulus.wav_sha256` for
+  the program it heard to be matched by. The round shape is right, so a
+  different round is the one move that cannot help — the remedy is the ring
+  or the bank step that filled it.
 - `classification_no_admissible_captures` — narrowed by the split above:
   nothing of this round reached the instrument at all (an empty ring, every
   sidecar belonging to another session, or every sidecar unparseable).
@@ -2219,14 +2194,26 @@ tournament's "dominance decides" rule was actually judged on (issue #2769).
 `captures/` is gitignored; those originals never entered the repo, so there is
 nothing to `git rm` — this tool is the one copy going forward.
 
-Every subcommand reads a *banked round directory*, the tree
-`scripts/bank-crossover-round.sh <dest-dir>` produces (see
-["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
+Every subcommand reads a round directory in either of the two shapes a round
+comes in, told apart by
+[`round_inputs`](../jasper/active_speaker/crossover_v2/round_inputs.py): a
+*banked round directory*, the tree `scripts/bank-crossover-round.sh
+<dest-dir>` produces (see
+["Crossover-v2 round banking"](#crossover-v2-round-banking) above) — a
 `bundle/<session>/` evidence bundle and optional `state.json` /
-`design-draft.json` / `applied-profile.json`. `jasper-round-views` reads no
-`dumps/` tree: the ring is
-gone and the packet it builds takes no path into one. No file is globbed or
-re-parsed by hand — positions and the graded spec come from
+`design-draft.json` / `applied-profile.json` — or a *live session bundle*
+still on the speaker (`/var/lib/jasper/active_speaker/sessions/<id>`), whose
+three non-bundle inputs come from their on-Pi SSOT paths instead, so a round
+can be graded before it is banked. `per-seat` and `agreement` say which shape
+was read in their `banked` field. A live bundle borrows the speaker's one flow
+state only when that state names the same session the bundle filed its round
+artifacts under — a dozen session directories are retained against one state
+file, so an older one grades with no state rather than with the current
+round's. Views land in a banked round's own tree, and beside the caller for a
+live one (the session directory is the daemon's). `jasper-round-views` reads
+no `dumps/` tree: the ring is gone and the packet it builds takes no path into
+one. No file is globbed or re-parsed by hand — positions and the graded spec
+come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
 grading comes from
 [`flat_spec.evaluate_flat_spec`](../jasper/active_speaker/flat_spec.py) and
@@ -2237,9 +2224,9 @@ dump-ring bytes; ruling S3 banked the curve instead, so it is now READ —
 [`durable_state.verify_measured_curve_from_state`](../jasper/active_speaker/crossover_v2/durable_state.py)
 reads `verify_priors.verify_measured` out of the round's banked `state.json`,
 and the result is `np.interp`-ed onto the round's shared grid. The only
-transform left anywhere in the module is the `fraction=1` residual
-`smooth_fractional_octave` call `agreement_table`'s `_detrend` takes through
-the same product seam.
+transform left anywhere in the module is the residual
+[`feature_optics.detrend`](../jasper/active_speaker/crossover_v2/feature_optics.py)
+call `agreement_table` takes through the shared optics seam.
 
 **A round can bank no VERIFY curve at all** — no `state.json`, one that
 doesn't read back as a JSON object, or one banked with no
@@ -2376,26 +2363,61 @@ what it resolves to before anything plays. It is the door onto the #2732 seam
 way for anybody to state a request.
 
 ```sh
-# the read side: resolve a walk and print it. Writes nothing, plays nothing.
-jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
+# THE DOOR: a named program owns the geometry. Prints the price, the handoff
+# URL, and how to tell the walk landed.
+jasper-angle-capture stage --program baseline --size express
+jasper-angle-capture plan  --program baseline --size full     # dry run
+jasper-angle-capture stage --program spot --azimuth 22 --elevation 10
 
-# the door: same resolution, and the request is left for the next session
+# THE CANDIDATE CYCLE: the same poses, once per banked candidate, adjacent so
+# the microphone moves once per pose. Each plays the ALIGNMENT it was minted
+# with; a candidate carrying linearization EQ, or another crossover corner, is
+# refused rather than measured as something it is not.
+jasper-angle-capture stage --program tournament --size full --candidates fp1,fp2
+
+# THE OPERATOR ESCAPE HATCH: a free-form angle list no program names.
+jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
 jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 
 # R-1's reverse-null: the same walk, with this session's design-axis MEASURE
 # capture riding the tweeter branch sign-flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
 
+# THE ROOM the household measured, asked once and banked with the session
+jasper-angle-capture stage --program baseline --size express \
+  --speaker-height-m 0.92 --mic-height-m 1.0 --distance-m 1.0 \
+  --ceiling-height-m 2.44
+
 # withdraw the staged walk
 jasper-angle-capture withdraw
 ```
 
+`--program` and `--angles` are mutually exclusive and one is required.
+`--program` names a row of
+[`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py),
+which is the only owner of the poses; `--regime` belongs to `--angles` alone,
+because a program plays `per_driver` at every pose. Both forms print the same
+receipt: `program` (empty for a free-form walk), `price`
+(`mic_moves` / `captures` / `ceiling_min`), `level` and `handoff_url`.
+
+`level` is the walk's drive level resolved to **absolute dB SPL at the
+microphone** by
+[`seat_level_reference.py`](../jasper/active_speaker/seat_level_reference.py):
+the banked seat-level anchor's own SPL, with the mic's parsed sensitivity
+resolved live and the preset's `max_commissioning_level_db_spl` as a hard
+ceiling. It never falls back to a relative number — `plan` prints the missing
+input, `stage` refuses with it as the `reason`: `seat_anchor_unusable` (no
+banked anchor, no stored calibration for the mic the anchor names, or that mic
+resolving at a different sens factor than the anchor was measured with — the
+`detail` names which, and the remedy), `level_over_ceiling` (the anchor sits
+above what the preset permits), or `preset_unavailable`.
+
 `plan` is the **dry run of** `stage` — the same constructors, the same
 refusals, the same resolved walk — exactly as `propose` is the dry run of the
 prescriber's `stage` above. Its output names, per stop, the capture index, the
-signed bearing, the pose in the centimetres every shipped consumer reads, the
-program that stop plays, the advance policy the mover implies, and (for an arm)
-the `position_deg` the position gate will wait for.
+signed bearing, the pose prompt, the program that stop plays, the advance
+policy the mover implies, and (for an arm) the `position_deg` the position gate
+will wait for.
 
 **Angles are stated in whole degrees, negative LEFT and positive RIGHT facing
 the speaker, and nothing is coerced.** `7.5`, `0.4` and `+7 deg` are all
@@ -2404,6 +2426,23 @@ would silently turn a just-off-axis request into an **on-axis** capture. There
 is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
 the regime vocabulary and the mover vocabulary are all
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
+
+`--speaker-height-m` / `--mic-height-m` / `--distance-m` are the
+household's own tape measure in **metres** (`--ceiling-height-m` optional), and
+are stated together or not at all; omit all three and `stage` falls back to
+whatever `jasper-declare-geometry set` stored on the box, which is the same
+[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) the
+flags build. The driving LLM asks once, in-session; the
+walk carries them to the session, which banks them as
+`crossover_v2/<relay_session_id>/declared_geometry.json` and reports them at
+`session.declared_geometry` in the evidence packet — an absence block naming
+its reason when there is no room to report, so "nobody was asked" and "the
+banked file could not be read" never read alike. The declaration rides the
+durable state into the grading stage, which re-banks it in its own bundle.
+Nothing in the session computes from them — the room's entanglement floor
+(`2.5 / t_first_bounce`) is an offline toolbox step, and this human answer is
+its only viable source because the reflection finder is structurally blind on
+this rig class.
 
 **`--polarity` / `--inverted-role` are WALK-level, not per angle**, because the
 reverse-null is one act at one place: the pair names what this session's
@@ -2443,6 +2482,12 @@ single-use and last-wins, logged as `event=angle_capture.request_staged`. Owner:
 that session's lateral group. Every accepted pose banks its raw WAV plus a
 sidecar carrying `position_deg`, `offset_cm`, `at_mark`, `regime` and
 `lateral_consumer`.
+
+**The price is stated before Start.** While a walk is staged, the
+`microphone_check` tier chooser names it and prices it (`staged_walk`:
+`program` / `mic_moves` / `captures`) on both tiers, read through
+`peek_staged_angle_request` — a peek, so the session open is still the only
+take.
 
 **A taken walk is EVIDENCE: its last pose adjudicates nothing — and as of
 2026-08-22, no lateral walk's close ever does.** The stage-1 selector walk
