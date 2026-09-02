@@ -173,7 +173,6 @@ from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
 from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
 __all__ = [
-    "CANDIDATE_GRADINGS_UNAVAILABLE",
     "CLASSIFICATION_ARTIFACT",
     "DECLARED_GEOMETRY_ARTIFACT",
     "DECLARED_GEOMETRY_KIND",
@@ -1286,12 +1285,6 @@ def _lateral_poses_block(
     }
 
 
-#: Why the block carries no comparison: a round banks ONE delta probe — the
-#: applied correction's — and never one per candidate, so the gradings
-#: :func:`~.candidate_comparator.compare_candidates` ranks do not exist in the
-#: corpus yet (#3498 WP4). The take inventory is reported either way.
-CANDIDATE_GRADINGS_UNAVAILABLE = "gradings_unavailable"
-
 #: Why there is no block at all: no banked take names a candidate. The
 #: ``jasper-measure`` door refuses to bank a variant take without one, so this
 #: is a round that cycled no candidates rather than one that lost their labels.
@@ -1337,11 +1330,7 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
         })
     return {
         "available": True,
-        "n_candidates": len(candidates),
         "candidates": candidates,
-        "comparison": _absence(
-            CANDIDATE_GRADINGS_UNAVAILABLE, False, "candidates[].delta_probe"
-        ),
         "source": (
             f"{_POSITIONS_SUBDIR}/<take_id>.json candidate_id, selected through "
             "record_index.bundle_measurements"
