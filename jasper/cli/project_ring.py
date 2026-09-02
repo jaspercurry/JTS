@@ -25,8 +25,8 @@ through
 which already knows the two shapes they are written in.
 
 **Exit codes are the contract**, matching the two consumers this feeds: ``0``
-projected, ``1`` the bundle could not be read, ``2`` the instrument refused
-(the bundle is readable and holds no take that can be projected), ``3`` the
+projected, ``1`` the instrument refused (the bundle is readable and holds no
+take that can be projected), ``2`` the bundle could not be read, ``3`` the
 ring could not be written. ``2`` and ``3`` send an operator to different
 places: ``2`` means fix the round, ``3`` means fix the filesystem.
 """
@@ -45,8 +45,8 @@ from jasper.active_speaker.crossover_v2.ring_projection import (
 )
 
 EXIT_OK = 0
-EXIT_BUNDLE_UNREADABLE = 1
-EXIT_REFUSED = 2
+EXIT_REFUSED = 1
+EXIT_BUNDLE_UNREADABLE = 2
 EXIT_WRITE_FAILED = 3
 
 

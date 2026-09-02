@@ -2195,8 +2195,8 @@ geometry is disclosed in one place, the evidence packet's `not_evaluated` block
 as `vertical_plane_response`; the remote tier and the unwired crossover-search
 modules carry their own disclosures about their own artifacts.
 
-**Exit codes are the contract**: `0` classified and filed, `1` the round could
-not be read, `2` refused, `3` the verdict could not be written. `--json` prints
+**Exit codes are the contract**: `0` classified and filed, `1` refused, `2` the
+round could not be read, `3` the verdict could not be written. `--json` prints
 the named `reason` and the evidence behind it.
 
 The 2026-08-19 lab harness this was promoted from
@@ -2362,9 +2362,9 @@ Each subcommand writes its JSON result into the round directory by default
 (`per_seat.json`, `frozen_reference.json`, `agreement.json` under the graded
 round's own dir; `repeatability.json` under the first round dir for `repeat`)
 — `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
-success, `1` when a round directory could not be read into a comparable view
-(an unreadable evidence document, a bundle with no graded spec, or any of the
-round's other documented failure shapes).
+success, and on failure the stage that failed — `1` the view declined, `2` the
+round could not be read, `3` the result could not be written — with the same
+record on stdout as JSON (see the runbook's "Exit codes").
 
 Hardware-free coverage — including a golden fixture whose `spec` block is a
 REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite

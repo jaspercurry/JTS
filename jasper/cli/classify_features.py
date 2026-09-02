@@ -14,7 +14,7 @@ beside ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``. The round
 directory inside it is found by the SAME rule the packet reader uses
 (:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`),
 so the artifact cannot land where the reader does not look, and a bundle
-carrying more than one round is refused rather than guessed at.
+carrying more than one round exits ``2`` rather than being guessed at.
 
 That round directory's ``<phase>_program.wav`` files are then read from
 either of two places, resolved by
@@ -34,9 +34,9 @@ stamps that id into ``jts_session_identity``, so a ring holding several rounds
 needs no flag to be split correctly.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
-classified and filed, ``1`` the round could not be read, ``2`` the instrument
-refused (the captures are the wrong shape, or nothing stood above the round's
-own scatter), ``3`` the verdict could not be written. A round whose
+classified and filed, ``1`` the instrument refused (the captures are the wrong
+shape, or nothing stood above the round's own scatter), ``2`` the round could
+not be read, ``3`` the verdict could not be written. A round whose
 known-answer controls failed exits ``0`` with an artifact: it costs the phase
 class, not the round, so every row reads ``egd=ambiguous`` and the summary
 carries the artifact's own ``controls_disclosure`` line.
@@ -72,8 +72,8 @@ from jasper.cli._report import write_report
 from jasper.cli.gate_sweep import add_rungs_ms_argument
 
 EXIT_OK = 0
-EXIT_ROUND_UNREADABLE = 1
-EXIT_REFUSED = 2
+EXIT_REFUSED = 1
+EXIT_ROUND_UNREADABLE = 2
 EXIT_WRITE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index
@@ -104,13 +104,13 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  classified; the verdict is filed and a summary printed\n"
-            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or the\n"
+            "  1  EXIT_REFUSED -- classification itself was refused (e.g.\n"
+            "     no captures to classify); \"refused: <reason> (...)\" on\n"
+            "     stderr, and as JSON with --json\n"
+            "  2  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or the\n"
             "     round shape itself could not be read -- the message names\n"
             "     which, and for the commonest cause (no admissible round\n"
             "     shape) names the two directory shapes this tool accepts\n"
-            "  2  EXIT_REFUSED -- classification itself was refused (e.g.\n"
-            "     no captures to classify); \"refused: <reason> (...)\" on\n"
-            "     stderr, and as JSON with --json\n"
             "  3  EXIT_WRITE_FAILED -- classified, but the verdict could\n"
             "     not be written to --out or the default artifact path"
         ),
@@ -183,9 +183,11 @@ def main(argv: list[str] | None = None) -> int:
 
     round_dir, why = round_artifact_dir(args.bundle_dir)
     if round_dir is None:
+        # 2, not 1, for "bundle carries more than one round" too: the fix is
+        # to point at one round, and that is an input fix, not a named refusal.
         message = f"cannot read the round: {why}"
         if why == NO_ROUND_ARTIFACTS_REASON:
-            # Only on THIS reason: a bundle refused for carrying more than
+            # Only on THIS reason: a bundle stopped for carrying more than
             # one round has the right structure already, and telling that
             # operator to check for a second accepted shape is misleading —
             # the fix there is naming which round, not where programs live.

@@ -6,6 +6,10 @@
 rig geometry that :mod:`jasper.audio_measurement.measurement_geometry` derives
 an ``entanglement_floor_hz`` from. See issue #3502 for why: the measured
 reflection-finder structurally never fires on this rig class.
+
+Human-only output, unlike its report-tool siblings: this is a ``set``/``show``
+config door the person holding the tape measure runs under sudo, not a document
+a script reads.
 """
 from __future__ import annotations
 

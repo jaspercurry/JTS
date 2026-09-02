@@ -14,15 +14,21 @@ import json
 import sys
 
 
-def refused(reason: str, detail: str, *, exit_code: int) -> int:
-    """Print the refusal on both streams and hand back ``exit_code``."""
+def refused(reason: str, detail: str, *, exit_code: int, status: str = "refused") -> int:
+    """Print the outcome on both streams and hand back ``exit_code``.
+
+    ``status`` names the KIND on both streams. A round that could not be read,
+    or a view that could not be written, is not the instrument declining, and
+    stamping ``refused`` on it sends a reader after a refusal reason no tool
+    ever named.
+    """
 
     print(
         json.dumps(
-            {"status": "refused", "reason": reason, "detail": detail},
+            {"status": status, "reason": reason, "detail": detail},
             indent=2,
             sort_keys=True,
         )
     )
-    print(f"refused ({reason}): {detail}", file=sys.stderr)
+    print(f"{status} ({reason}): {detail}", file=sys.stderr)
     return exit_code

@@ -29,9 +29,9 @@ bands and a wrong pair simply fails the program-id proof rather than producing a
 wrong reading.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
-read and filed, ``1`` the round could not be read, ``2`` the instrument refused
-(the program did not reproduce, no MEASURE capture was banked, or every capture
-failed a fidelity gate), ``3`` the reading could not be written. ``2`` and ``3``
+read and filed, ``1`` the instrument refused (the program did not reproduce, no
+MEASURE capture was banked, or every capture failed a fidelity gate), ``2`` the
+round could not be read, ``3`` the reading could not be written. ``2`` and ``3``
 are separate because they send an operator to different places: ``2`` means fix
 the round, ``3`` means fix the filesystem. A refusal is the instrument working —
 ``--json`` prints its named ``reason`` and the evidence behind it.
@@ -59,8 +59,8 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
 )
 
 EXIT_OK = 0
-EXIT_ROUND_UNREADABLE = 1
-EXIT_REFUSED = 2
+EXIT_REFUSED = 1
+EXIT_ROUND_UNREADABLE = 2
 EXIT_WRITE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index
@@ -117,12 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  read; the reading is filed and a summary printed\n"
-            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or\n"
-            "     --state could not be read\n"
-            "  2  EXIT_REFUSED -- the reading itself was refused (e.g. no\n"
+            "  1  EXIT_REFUSED -- the reading itself was refused (e.g. no\n"
             "     --applied-profile, or it named a corner this round did\n"
             "     not measure through); \"refused: <reason>\" on stderr,\n"
             "     and as JSON with --json\n"
+            "  2  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or\n"
+            "     --state could not be read\n"
             "  3  EXIT_WRITE_FAILED -- read, but the reading could not be\n"
             "     written"
         ),

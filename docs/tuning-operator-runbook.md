@@ -671,8 +671,10 @@ own numbering, so resolve a code against the tool that produced it.
 | `jasper-gate-sweep` | `0`–`2` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_INPUT` in `jasper/cli/gate_sweep.py` |
 | `jasper-close-reference` | `0`–`2` | same three names in `jasper/cli/close_reference.py` |
 | `jasper-declare-geometry` | `0`–`3` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_NOT_FOUND` / `EXIT_WRITE_FAILED` in `jasper/cli/declare_geometry.py` |
-| `jasper-classify-features` | `0`–`3` (`1`/`2` inverted vs. the other tools here) | `EXIT_OK` / `EXIT_ROUND_UNREADABLE` / `EXIT_REFUSED` / `EXIT_WRITE_FAILED` in `jasper/cli/classify_features.py` |
-| `jasper-round-views` | `0`, `1` | `EXIT_OK` / `EXIT_ERROR` in `jasper/cli/round_views.py` |
+| `jasper-classify-features` | `0`–`3` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_ROUND_UNREADABLE` / `EXIT_WRITE_FAILED` in `jasper/cli/classify_features.py` |
+| `jasper-round-views` | `0`–`3` | same four names in `jasper/cli/round_views.py` |
+| `jasper-read-distortion` | `0`–`3` | same four names in `jasper/cli/read_distortion.py` |
+| `jasper-project-ring` | `0`–`3` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_BUNDLE_UNREADABLE` / `EXIT_WRITE_FAILED` in `jasper/cli/project_ring.py` |
 
 Three traps worth knowing before you branch on a number:
 
