@@ -21,7 +21,6 @@ const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 /// What the write loop does after one recovery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum XrunAction {
-    /// Stay in the period and write again.
     Continue,
     /// The budget is spent — bail, which takes the unit's ordinary exit-1
     /// restart ladder.
@@ -29,26 +28,13 @@ enum XrunAction {
 }
 
 /// **The one recovery budget, shared by the coherent single sink and the
-/// composite.** One function so the two write paths cannot drift into
-/// different answers to "how many times may one period recover?".
+/// composite**, so the two write paths cannot answer "how many times may one
+/// period recover?" differently.
 ///
-/// The parameter name carries the calling convention, because the off-by-one
-/// it prevents is the whole bug class: the caller has ALREADY attempted the
-/// recovery and ALREADY incremented, so `1` means "one recovery has happened".
-/// A `>` against `MAX_RECOVERIES_PER_PERIOD` therefore permits exactly
-/// `MAX_RECOVERIES_PER_PERIOD` recoveries and no further write past them:
-///
-/// | `recoveries_so_far_including_this_one` | Action |
-/// |---|---|
-/// | 1 | `Continue` |
-/// | 2 | `Continue` |
-/// | 3 | `Continue` |
-/// | 4 | `GiveUp` |
-///
-/// Written check-AFTER-increment rather than check-before, which is what the
-/// single path shipped and what a fresh reading of "budget of 3" would get
-/// wrong in the permissive direction (a fourth `writei` on a device that has
-/// already failed four times).
+/// Calling convention, which is the whole off-by-one bug class: the caller has
+/// ALREADY attempted the recovery and ALREADY incremented, so `1` means "one
+/// recovery has happened" and this check-AFTER-increment `>` permits exactly
+/// `MAX_RECOVERIES_PER_PERIOD` recoveries with no further write past them.
 fn xrun_policy(recoveries_so_far_including_this_one: u32) -> XrunAction {
     if recoveries_so_far_including_this_one > MAX_RECOVERIES_PER_PERIOD {
         XrunAction::GiveUp
@@ -70,8 +56,7 @@ fn xrun_policy(recoveries_so_far_including_this_one: u32) -> XrunAction {
 ///
 /// Used by BOTH the startup prime (`main.rs`) and the composite's post-recovery
 /// re-prime, from here, so the depth that makes the startup path safe is the
-/// same number the recovery path re-establishes alignment with. Pinned by
-/// `prime_periods_leave_one_period_of_buffer_headroom`.
+/// same number the recovery path re-establishes alignment with.
 pub fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
     if period_frames == 0 {
         return 1;
@@ -79,7 +64,7 @@ pub fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
     ((buffer_frames / period_frames).saturating_sub(1)).max(1)
 }
 
-/// The steady-state pairwise-divergence arithmetic, lifted out of
+/// The steady-state pairwise-divergence arithmetic, out of
 /// [`PairedCompositeSink::check_delay_delta`] so it can be tested without two
 /// live USB DACs.
 ///
@@ -106,8 +91,6 @@ fn delay_delta_check(delta: i64, baseline: i64, max_error_frames: i64) -> DelayD
 /// Verdict on re-latching the pairwise delay baseline after a group recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BaselineRelatch {
-    /// The re-primed pair landed within tolerance of where it was before the
-    /// fault — bless the new offset as the zero.
     Accept,
     /// The re-primed pair is somewhere else. Refuse, and let the sink fail
     /// closed rather than laundering the fault the divergence guard exists to
@@ -124,11 +107,10 @@ enum BaselineRelatch {
 /// unbounded at count = 1.
 ///
 /// `max_delta_frames` is `dual_max_delay_delta_frames` — the SAME constant the
-/// steady-state divergence guard enforces, one meaning in both places. Note the
-/// arithmetic that makes it the right number: at the default 48 frames
-/// (~1.0 ms), a full-period skew is ~2.7x the tolerance, i.e. the steady-state
-/// guard would already catch it if the baseline were not re-latched. This bound
-/// is precisely what stops the re-latch from hiding that.
+/// steady-state divergence guard enforces, one meaning in both places. At the
+/// default 48 frames (~1.0 ms) a full-period skew is ~2.7x the tolerance, i.e.
+/// the steady-state guard would already catch it if the baseline were not
+/// re-latched, and this bound is what stops the re-latch from hiding it.
 ///
 /// `pre_fault_baseline == None` accepts: the fault arrived before the pair ever
 /// latched a steady-state zero, so there is no prior alignment to violate and
@@ -150,12 +132,8 @@ fn baseline_relatch_decision(
     }
 }
 
-/// The single mapping from outputd's format vocabulary into ALSA's own.
-///
-/// Everything else in the crate speaks [`SampleFormat`]; this is the one place
-/// that knows what ALSA calls it. `S16Le` maps to the same `Format::S16LE` the
-/// retired module-level `FORMAT` const held, so an S16 edge asks ALSA for
-/// exactly what it always asked for.
+/// The single mapping from outputd's format vocabulary into ALSA's own —
+/// everything else in the crate speaks [`SampleFormat`].
 ///
 /// `S24_3Le` maps to `Format::S243LE` — alsa-rs's spelling of
 /// `SND_PCM_FORMAT_S24_3LE`, 24 bits in three packed bytes. **Not**
@@ -197,8 +175,8 @@ pub struct CompositeStatus {
     pub delay_delta_error_frames: Option<i64>,
     pub max_delay_delta_frames: i64,
     /// Per-child xrun attribution and the group's recovery bookkeeping. Only
-    /// ever rendered inside the already-conditional `dual_apple` block, so a
-    /// single-DAC box's `/state` does not change by a byte.
+    /// ever rendered inside the already-conditional `dual_apple` block of
+    /// `/state`.
     pub dac_a_xruns: u64,
     pub dac_b_xruns: u64,
     pub group_recoveries: u64,
@@ -216,50 +194,37 @@ pub struct AlsaBackend {
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
     /// Runtime DAC/content width carried as data — a coherent single DAC reads
-    /// and writes this many channels end-to-end. `2` is byte-identical to the
-    /// previous compile-time `CHANNELS`; the reconciler emits wider values
-    /// (DAC8x = 8) via `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The reference/chip-ref
-    /// width stays `CHANNELS=2` (the published reference is always stereo).
+    /// and writes this many channels end-to-end. The reconciler supplies it via
+    /// `JASPER_OUTPUTD_ACTIVE_CHANNELS` (DAC8x = 8). The reference/chip-ref
+    /// width stays `CHANNELS=2`: the published reference is always stereo.
     channels: u16,
     /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
     /// registry declaration and checked against the installed `hw_params` by
-    /// `configure_pcm`'s dac readback, so this is what outputd is running, not
-    /// an intention. On a raw `hw:` device it is also the hardware edge;
-    /// through a `plug` it is not (see that readback's comment). It selects the
-    /// write path in `write_dac_period` and is what `/state` reports as
-    /// `dac.format`.
+    /// `configure_pcm`'s final-edge readback, so this is what outputd is
+    /// running, not an intention. On a raw `hw:` device it is also the hardware
+    /// edge; through a `plug` it is not (see that readback's comment). `/state`
+    /// reports it as `dac.format`.
     dac_format: SampleFormat,
     /// Reused NARROWING staging for an `S16Le` edge — allocated once, at open,
     /// and never on the audio path. Empty (zero bytes) on an `S32Le` edge, which
     /// takes the program spine straight through with no staging at all, and on an
     /// `S24_3Le` edge, which stages into [`Self::dac_pack_buf`] instead.
-    ///
-    /// Only the mismatched edge pays: the program spine is wide, so the S16 edge
-    /// is the one that converts.
     dac_narrow_buf: Vec<i16>,
     /// Reused PACKING staging for an `S24_3Le` edge: one period as packed
-    /// little-endian 24-bit BYTES, allocated once at open. Empty (zero bytes) at
-    /// every other edge width, so a box that does not declare `S24_3LE` pays
-    /// nothing for this field's existence — the same conditional-allocation rule
-    /// [`ChildPeriods`] follows, and the reason this is a second buffer rather
-    /// than a widened `dac_narrow_buf`.
+    /// little-endian 24-bit BYTES, allocated once at open. Empty at every other
+    /// edge width, so exactly one of the two stagings is non-empty on any box.
     ///
-    /// A separate field from `dac_narrow_buf` rather than one buffer reinterpreted,
-    /// because the element TYPE is what makes the two edges different: an i16
-    /// staging can be handed to `io_i16()` and a byte staging cannot. Keeping them
-    /// distinct means an edge can only ever be handed the buffer its own arm
-    /// filled. Exactly one of the two is non-empty on any box.
-    ///
-    /// **Non-empty on every single-Apple-dongle box** — that profile declares an
-    /// `S24_3Le` edge, so this holds one period there and `dac_narrow_buf` is the
-    /// empty one instead. It stays `Vec::new()` at the `S16Le` and `S32Le` edges.
+    /// A separate field from `dac_narrow_buf` rather than one buffer
+    /// reinterpreted, because the element TYPE is what makes the two edges
+    /// different: an i16 staging can be handed to `io_i16()` and a byte staging
+    /// cannot, so an edge can only ever be handed the buffer its own arm filled.
     dac_pack_buf: Vec<u8>,
 }
 
 /// Paired-composite transport: two clock-independent child DACs driven as one
-/// 4-channel sink (the dual-Apple shape). Renamed from `DualAppleBackend` — the
-/// transport dispatches on the composite SHAPE, not the DAC's identity. Stays
-/// exactly two children (a pairwise drift guard cannot be half-vectorized).
+/// 4-channel sink (the dual-Apple shape). Dispatch is on the composite SHAPE,
+/// not the DAC's identity. Stays exactly two children — a pairwise drift guard
+/// cannot be half-vectorized.
 pub struct PairedCompositeSink {
     dac_a: PCM,
     dac_b: PCM,
@@ -272,10 +237,9 @@ pub struct PairedCompositeSink {
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
     linked: bool,
-    /// Per-child cumulative xrun counts. The sink-level `dac_xrun_count` in
-    /// `counters` stays exactly what it was (the doctor's existing consumer);
-    /// these two are the attribution that says WHICH dongle is burping, which
-    /// on a two-dongle-on-one-bus box is the difference between "replace a
+    /// Per-child cumulative xrun counts, beside the sink-level `dac_xrun_count`
+    /// in `counters` (the doctor's consumer). These say WHICH dongle is burping,
+    /// which on a two-dongle-on-one-bus box is the difference between "replace a
     /// cable" and "replace a hub".
     dac_a_xrun_count: u64,
     dac_b_xrun_count: u64,
@@ -288,10 +252,9 @@ pub struct PairedCompositeSink {
     /// [`baseline_relatch_decision`]'s magnitude test.
     delay_baseline_relatches: u64,
     /// How many re-latches were REFUSED because the re-primed pair landed
-    /// outside `max_delay_delta_frames` of its pre-fault baseline. This is the
-    /// number that says "this pair is losing alignment on every burp" — each
-    /// one is also a fail-closed stop, so a nonzero value here is always paired
-    /// with a restart.
+    /// outside `max_delay_delta_frames` of its pre-fault baseline. Each one is
+    /// also a fail-closed stop, so a nonzero value here is always paired with a
+    /// restart.
     reprime_alignment_failures: u64,
     delay_delta_baseline: Option<i64>,
     last_delay_delta: Option<i64>,
@@ -308,12 +271,12 @@ pub struct PairedCompositeSink {
 /// program spine that produces it.
 ///
 /// A CLOSED trait — exactly two implementations, both in this module — rather
-/// than a conversion closure passed in by the caller. The difference matters:
-/// with a closure, a call site could hand the split loop
-/// `jasper_resampler::s32_high_word_to_s16` (UAC2 *capture* truncation) and put
-/// a half-LSB downward bias on every sample at the speaker edge, and nothing
-/// about the split would look wrong. Here the conversion is a property of the
-/// output type, so the wrong one is unreachable rather than merely untested.
+/// than a conversion closure passed in by the caller. With a closure, a call
+/// site could hand the split loop `jasper_resampler::s32_high_word_to_s16`
+/// (UAC2 *capture* truncation) and put a half-LSB downward bias on every sample
+/// at the speaker edge, and nothing about the split would look wrong. Here the
+/// conversion is a property of the output type, so the wrong one is unreachable
+/// rather than merely untested.
 trait ChildEdgeSample: Copy {
     fn from_program(sample: ProgramSample) -> Self;
 }
@@ -329,8 +292,7 @@ impl ChildEdgeSample for i16 {
 
 impl ChildEdgeSample for ProgramSample {
     /// An `S32Le` child IS the spine's own width, so there is nothing to
-    /// convert — the identity, exactly as the coherent sink's `S32Le` edge
-    /// writes the spine straight through.
+    /// convert.
     fn from_program(sample: ProgramSample) -> Self {
         sample
     }
@@ -347,13 +309,11 @@ impl ChildEdgeSample for ProgramSample {
 /// variant, and [`Self::format`] reads it back off the same value the buffers
 /// live in, so `/state` cannot report a width the buffers are not.
 ///
-/// Both variants are allocated once, at open, and reused — the audio path fills
-/// them in the split and then hands them to the child writes, never resizing or
-/// replacing them. Unlike the coherent sink's `dac_narrow_buf` — EMPTY on the
-/// edge that converts nothing — a composite always needs a scratch pair whatever
-/// the width, because the 4-channel program period has to be SPLIT into two
-/// stereo periods before either child can be written. Only the element type
-/// moves.
+/// Both variants are allocated once, at open, and reused — never resized or
+/// replaced on the audio path. Unlike the coherent sink's `dac_narrow_buf`, a
+/// composite needs a scratch pair at EVERY width, because the 4-channel program
+/// period has to be split into two stereo periods before either child can be
+/// written.
 enum ChildPeriods {
     S16 {
         a: Vec<i16>,
@@ -382,11 +342,11 @@ impl ChildPeriods {
     /// let a composite declare it.
     ///
     /// Refuse rather than fall back to `S16`, which is what a `_ =>` arm would
-    /// have done: outputd would then have asked BOTH children for `S24_3LE` at
-    /// open (`configure_pcm` reads the same declaration), passed their readbacks,
-    /// and written i16 half-samples into a 3-byte wire — full-scale garbage at two
-    /// speakers, with `/state` reporting `S24_3LE` because
-    /// [`Self::format`] reads the buffers. Loud beats plausible.
+    /// do: `configure_pcm` reads the same declaration, so both children would
+    /// have been asked for `S24_3LE` at open and passed their readbacks, and the
+    /// write path would then put i16 half-samples on a 3-byte wire — full-scale
+    /// garbage at two speakers, with `/state` reporting `S24_3LE` because
+    /// [`Self::format`] reads the buffers.
     fn new(format: SampleFormat, period_frames: u32) -> Result<Self> {
         let samples = (period_frames as usize) * (CHANNELS as usize);
         Ok(match format {
@@ -408,7 +368,8 @@ impl ChildPeriods {
         })
     }
 
-    /// The children's edge width, read off the buffers themselves.
+    /// The children's edge width, read off the buffers themselves — never a
+    /// second copy that could disagree with what the write path writes.
     fn format(&self) -> SampleFormat {
         match self {
             Self::S16 { .. } => SampleFormat::S16Le,
@@ -419,11 +380,8 @@ impl ChildPeriods {
     /// Split one 4-channel program period into the two child buffers, at
     /// whichever width this pair negotiated.
     ///
-    /// The width arm lives here, next to the buffers, so the split and the
-    /// buffers it fills can only ever be the same width — the reason this is an
-    /// enum at all. Re-run on every retry of a period rather than cached,
-    /// because a recovery overwrites these buffers with silence for the
-    /// re-prime.
+    /// Re-run on every retry of a period rather than cached, because a recovery
+    /// overwrites these buffers with silence for the re-prime.
     fn deinterleave(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
         match self {
             Self::S16 { a, b } => deinterleave_4ch_to_dual_stereo(samples_4ch, a, b),
@@ -441,12 +399,13 @@ impl ChildPeriods {
         samples / (CHANNELS as usize)
     }
 
-    /// Overwrite both child buffers with silence, in place.
+    /// Overwrite both child buffers with silence, in place — the post-recovery
+    /// re-prime's payload.
     ///
-    /// The post-recovery re-prime's payload. In place rather than a fresh
-    /// buffer because the re-prime runs on the SCHED_FIFO playout thread, where
-    /// an allocation is a priority-inversion path — and because a re-prime that
-    /// wrote anything but this pair's own buffers could write the wrong width.
+    /// In place rather than a fresh buffer because the re-prime runs on the
+    /// SCHED_FIFO playout thread, where an allocation is a priority-inversion
+    /// path — and because a re-prime that wrote anything but this pair's own
+    /// buffers could write the wrong width.
     fn fill_silence(&mut self) {
         match self {
             Self::S16 { a, b } => {
@@ -464,12 +423,11 @@ impl ChildPeriods {
 /// Marker for a startup fault that a restart cannot repair, attached via
 /// `anyhow::Context` and downcast by `main` into the EX_CONFIG 78 park.
 ///
-/// Named for its first user — a final sink that could not be opened or
-/// negotiate outputd's geometry, where a restart cannot change the PCM alias or
-/// its hardware capabilities. A box that declared no ring carries it for the
-/// same reason (`main`'s run loop): the declaration is what it is on every
-/// restart, so the unit must park where an operator can see it instead of
-/// restart-looping into `StartLimitAction=reboot`.
+/// Carried by a final sink that could not be opened or negotiate outputd's
+/// geometry (a restart cannot change the PCM alias or its hardware
+/// capabilities) and by a box that declared no ring (`main`'s run loop). Both
+/// answer identically on every start, so the unit must park where an operator
+/// can see it instead of restart-looping into `StartLimitAction=reboot`.
 #[derive(Debug)]
 pub struct FinalSinkStartupConfigError;
 
@@ -531,21 +489,9 @@ impl AlsaBackend {
             .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm)),
         )?;
 
-        // `format` is what outputd's OWN CLIENT EDGE negotiated: what
-        // `configure_pcm` asked ALSA for (the registry declaration), checked
-        // against the installed hw_params. That equals the hardware edge on a
-        // raw `hw:` device, not through a `plug` — see the dac readback's
-        // comment. It also selects the write path: outputd's internal program is
-        // `ProgramSample` (i32), so an `S32Le` edge takes the spine STRAIGHT
-        // THROUGH and converts nothing, while an `S16Le` edge is where the one
-        // output-path quantization happens (`write_dac_period`).
-        //
-        // `format=` is the DAC edge and keeps its bare name. Not because
-        // anything would break: no machine consumer parses this line today (the
-        // only reference is prose — docs/AEC-DIAG-01-baseline.md). It stays
-        // by convention, because operators and journal-grep recipes read it and
-        // a stable key costs nothing. `content_format=` names the OTHER hop —
-        // the ring's wire — so one line still names both.
+        // `format=` is the DAC edge, `content_format=` the ring's wire, so one
+        // line names both hops. Operators and journal-grep recipes read these
+        // keys; keep them stable.
         eprintln!(
             "event=outputd.alsa.opened content_source=shm_ring content_format={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_format.as_str(),
@@ -566,17 +512,16 @@ impl AlsaBackend {
             dac_negotiated,
             counters: IoCounters::default(),
             channels: config.content_channels,
-            // `configure_pcm`'s dac readback checked the installed client-side
-            // format against this requested one, so storing the request stores
-            // what outputd is running — it never reached here otherwise.
+            // `configure_pcm`'s final-edge readback checked the installed
+            // client-side format against this requested one, so storing the
+            // request stores what outputd is running — it never reached here
+            // otherwise.
             dac_format: config.declared_dac_format,
             dac_narrow_buf: s16_staging(
                 config.declared_dac_format,
                 config.period_frames,
                 config.content_channels,
             ),
-            // The `S24_3Le` twin of the line above, and mutually exclusive with
-            // it: at most one of the two edge stagings is ever non-empty.
             dac_pack_buf: i24_packed_staging(
                 config.declared_dac_format,
                 config.period_frames,
@@ -612,15 +557,11 @@ impl AlsaBackend {
         let channels = self.channels as usize;
         let frames_total = samples.len() / channels;
         match self.dac_format {
-            // DEFAULT PATH — every S16_LE edge, which is every box whose DAC
-            // profile declares no wider one (the dual-Apple composite, DAC8x
-            // Studio, and any unrecognized card, which resolves to this
-            // default). The one place on the output path where resolution is
-            // deliberately given up, and it is given up ONCE: round-to-nearest,
-            // not the truncating capture conversion. For content that arrived as
-            // S16 at unity gain this is bit-identical to the pre-spine path (see
-            // `jasper_resampler::s16_widened_then_narrowed_is_bit_identical` and
-            // `core::the_content_path_is_bit_transparent_from_spine_ingress_to_sink`).
+            // The one place on the output path where resolution is deliberately
+            // given up, and it is given up ONCE: round-to-nearest, not the
+            // truncating capture conversion. For content that arrived as S16 at
+            // unity gain this is bit-identical to the wide spine (see
+            // `jasper_resampler::s16_widened_then_narrowed_is_bit_identical`).
             SampleFormat::S16Le => {
                 if self.dac_narrow_buf.len() != samples.len() {
                     // Steady state never resizes: `new` sized this for the run
@@ -643,9 +584,8 @@ impl AlsaBackend {
                     &mut self.counters.dac_xrun_count,
                 )?;
             }
-            // THE PACKED EDGE — live wherever a single Apple USB-C dongle is the
-            // armed DAC. Quantize to 24 significant bits and pack three
-            // little-endian bytes per sample, then hand ALSA the BYTES.
+            // THE PACKED EDGE: quantize to 24 significant bits, pack three
+            // little-endian bytes per sample, hand ALSA the BYTES.
             //
             // `io_bytes()` is alsa-rs's documented mechanism for exactly this
             // case: "Call this if you have an unusual format, not supported by the
@@ -653,25 +593,20 @@ impl AlsaBackend {
             // returns `IO<'_, u8>`, and `IO::writei` computes its frame count via
             // `snd_pcm_bytes_to_frames` on the slice's BYTE length — so on a PCM
             // whose installed format is `S24_3LE` the frame arithmetic is
-            // alsa-lib's own, and the shared writer's xrun accounting, recovery
-            // budget and `event=outputd.xrun` line are byte-for-byte the ones the
-            // S16 and S32 edges get.
+            // alsa-lib's own.
             //
-            // Two honest differences from the typed handles, both deliberate:
+            // Two differences from the typed handles, both deliberate:
             //
             // * `io_bytes()` does NOT verify the installed format (the typed
-            //   `io_i16`/`io_i32` do, via `io_checked`). That per-period check is
-            //   not what this path relies on and never was the real proof: the
-            //   OPEN-time `verify_dac_format` readback compares the installed
-            //   `hw_params` format against the request, names both, and parks at
-            //   EX_CONFIG 78 — strictly stronger than an opaque per-period
-            //   `unsupported io_xx`. An `S24_3LE` box cannot reach this arm without
-            //   having passed that readback.
+            //   `io_i16`/`io_i32` do, via `io_checked`). The OPEN-time
+            //   `verify_dac_format` readback is what this path relies on instead:
+            //   it compares the installed `hw_params` format against the request,
+            //   names both, and parks at EX_CONFIG 78. An `S24_3LE` box cannot
+            //   reach this arm without having passed it.
             // * The writer advances by ELEMENTS, and one element here is a byte,
-            //   not a sample — so it is handed `channels * 3`, not `channels`. That
-            //   is the whole reason `write_dac_frames`'s parameter is named
-            //   `elements_per_frame`; passing `channels` would advance the slice at
-            //   a third of the right rate and re-send most of every period.
+            //   not a sample — so it is handed `channels * 3`, not `channels`.
+            //   Passing `channels` would advance the slice at a third of the right
+            //   rate and re-send most of every period.
             SampleFormat::S24_3Le => {
                 let packed_len = samples.len() * jasper_resampler::I24_LE_BYTES_PER_SAMPLE;
                 if self.dac_pack_buf.len() != packed_len {
@@ -733,12 +668,10 @@ impl PairedCompositeSink {
             .context("dual Apple sink missing DAC B PCM")?
             .clone();
 
-        // The children's period buffers are built FIRST, before any PCM is
-        // opened, because building them is also the check that this transport can
-        // drive the declared child width at all (see `ChildPeriods::new`). A width
-        // it cannot drive is a permanent registry/transport disagreement, so it
-        // parks at EX_CONFIG 78 — and it does so without first opening two USB
-        // DACs for a configuration that was never going to run. It reads
+        // Built FIRST, before any PCM is opened: building them is also the check
+        // that this transport can drive the declared child width at all (see
+        // `ChildPeriods::new`), and a width it cannot drive must park at
+        // EX_CONFIG 78 without first opening two USB DACs. It reads
         // `config.period_frames`, not a negotiated value, so nothing here
         // depends on the opens below.
         let periods = final_sink_startup(ChildPeriods::new(
@@ -764,28 +697,20 @@ impl PairedCompositeSink {
                 // BOTH children request the registry-declared edge format, the
                 // same declaration the coherent single DAC reads. Per-child
                 // divergence is deliberately not modelled: the one registered
-                // composite profile pairs two of the SAME dongle
-                // (`child_profile_ids = (apple_usb_c_dongle, apple_usb_c_dongle)`),
-                // so one declaration describes both edges, and
-                // `configure_pcm`'s final-edge readback proves each child
-                // installed it.
+                // composite profile pairs two of the SAME dongle, so one
+                // declaration describes both edges.
                 //
-                // A future composite of unlike children needs a per-child
-                // declaration in the registry first, and the thing that would
-                // catch its absence is the PER-CHILD READBACK — one child
-                // installing a width other than the requested one parks at exit
-                // 78 naming that child. NOT the `dac_a_negotiated !=
-                // dac_b_negotiated` check below: `NegotiatedPcm` carries
+                // A composite of unlike children would need a per-child
+                // declaration in the registry first, and the thing that catches
+                // its absence is the PER-CHILD READBACK — one child installing a
+                // width other than the requested one parks at exit 78 naming
+                // that child. NOT the `dac_a_negotiated != dac_b_negotiated`
+                // check below: `NegotiatedPcm` carries
                 // sample_rate/period_frames/buffer_frames and no format at all,
                 // so two children running different widths compare equal there.
                 // The registry-side guards are
                 // tests/test_dac_profiles.py::test_a_composite_never_declares_a_width_its_transport_refuses
-                // and ::test_a_composite_may_diverge_from_its_child_only_at_that_capability_gap,
-                // which fail at build time instead of on a household's speaker.
-                // They no longer require a composite to match its child profile:
-                // the Apple dongle declares `S24_3LE` for its own single-DAC
-                // case while this composite stays `S16_LE`, because the emitted
-                // format is resolved from the ARMED profile's id.
+                // and ::test_a_composite_may_diverge_from_its_child_only_at_that_capability_gap.
                 format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
@@ -837,19 +762,14 @@ impl PairedCompositeSink {
         // (group prepare, group re-prime, one atomic group start). Without it
         // the pair's post-recovery A/B skew is unbounded and unverifiable, and
         // on an active 2-way that skew IS the woofer/tweeter time alignment.
-        //
-        // It used to gate only the RING ARM, because an unlinked pair could
-        // stay on the snd-aloop transport instead. Under one audio transport
-        // (ADR-0100) there is no other transport to keep, so the gate is
-        // unconditional and the box parks rather than running a recovery model
-        // that does not hold.
+        // Under one audio transport (ADR-0100) there is no other transport to
+        // fall back to, so the gate is unconditional.
         //
         // PARK-class (EX_CONFIG 78), like every other refusal in this
         // constructor: whether two devices will link is a property of the
         // devices and their drivers, so it answers identically on every restart.
         // Walking the restart ladder would only spend the box's start budget on
-        // its way to `StartLimitAction=reboot`. Parking puts it where an
-        // operator — and jasper-doctor — can see it.
+        // its way to `StartLimitAction=reboot`.
         if !linked {
             eprintln!("event=outputd.dual_apple.unlinked_pair_refused reason=link_required");
             return final_sink_startup(Err(anyhow::anyhow!(
@@ -862,10 +782,8 @@ impl PairedCompositeSink {
 
         // `content_source=`, `content_format=` and `format=` spelled exactly as
         // the single sink's `event=outputd.alsa.opened` line spells them, so one
-        // grep recipe reads both hops and a half-flipped box is visible at open
-        // rather than only in STATUS. `format=` is the CHILDREN's edge (both
-        // children, one declaration); it is bare for the same reason it is bare
-        // over there — operators and journal recipes read that key.
+        // grep recipe reads both sinks. `format=` is the CHILDREN's edge — both
+        // children, one declaration.
         eprintln!(
             "event=outputd.dual_apple.opened content_source=shm_ring content_format={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={} format={}",
             config.content_format.as_str(),
@@ -900,9 +818,8 @@ impl PairedCompositeSink {
             max_delay_delta_frames: config.dual_max_delay_delta_frames,
             // `configure_pcm`'s final-edge readback checked the installed
             // client-side format on BOTH children against this requested one, so
-            // buffers built at the request are buffers at what outputd is running
-            // — neither child reached here otherwise. Built at the top of this
-            // function (see there for why it happens before the opens).
+            // buffers built at the request are buffers at what outputd is
+            // running — neither child reached here otherwise.
             periods,
         })
     }
@@ -911,14 +828,12 @@ impl PairedCompositeSink {
         self.counters
     }
 
-    /// The format BOTH children's edges negotiated (readback-checked at open by
-    /// `configure_pcm`'s final-edge readback, per child).
+    /// The format BOTH children's edges negotiated (readback-checked per child
+    /// at open) and what `/state` reports as `dac.format` for this transport.
     ///
-    /// The composite twin of [`AlsaBackend::dac_format`], and what `/state`
-    /// reports as `dac.format` for this transport. One value for the pair: both
-    /// children request one declaration, and their buffers are one
-    /// [`ChildPeriods`] — so there is no per-child answer to give, and no second
-    /// place this could disagree with what the write path actually writes.
+    /// One value for the pair: both children request one declaration and their
+    /// buffers are one [`ChildPeriods`], so there is no second place this could
+    /// disagree with what the write path actually writes.
     pub fn dac_format(&self) -> SampleFormat {
         self.periods.format()
     }
@@ -983,34 +898,27 @@ impl PairedCompositeSink {
     /// at open.
     ///
     /// **Every exit from this period is either the write completing or a bail**
-    /// (#2255) — there is no arm that returns `Ok` having silently given up, and
-    /// no arm that retries without spending budget. An xrun is the one fault
-    /// that gets a bounded second chance: the recovery ladder is
-    /// recover → re-prime → group start → re-latch, and it bails at any rung it
-    /// cannot complete (budget exhausted, an unlinked pair, an xrun on the
-    /// just-prepared pair, a group start that does not reach Running, a
-    /// re-latch outside the magnitude bound) as well as on the steady-state
-    /// divergence guard. Every other error — a non-`EPIPE` `writei`, an IO
-    /// handle, a `snd_pcm_delay` read — propagates as it always did.
+    /// — there is no arm that returns `Ok` having silently given up, and no arm
+    /// that retries without spending budget. An xrun is the one fault that gets
+    /// a bounded second chance: the recovery ladder is recover → re-prime →
+    /// group start → re-latch, and it bails at any rung it cannot complete
+    /// (budget exhausted, an unlinked pair, an xrun on the just-prepared pair, a
+    /// group start that does not reach Running, a re-latch outside the magnitude
+    /// bound) as well as on the steady-state divergence guard. Every other error
+    /// — a non-`EPIPE` `writei`, an IO handle, a `snd_pcm_delay` read —
+    /// propagates.
     ///
-    /// What it does NOT do is bail on the FIRST xrun, which is what used to
-    /// exit 1 and ride `Restart=on-failure` → `StartLimitBurst=5` →
-    /// `StartLimitAction=reboot` on a USB dongle burp.
+    /// What it must NOT do is bail on the FIRST xrun: that is exit 1, and
+    /// `Restart=on-failure` → `StartLimitBurst=5` → `StartLimitAction=reboot`
+    /// turns a USB dongle burp into a reboot.
     ///
     /// **The loop is bounded by the budget, and the budget is declared here,
     /// outside it, on purpose.** Each recovery spends one unit, and the
     /// re-prime's own writes spend from the same unit — so a child that xruns
     /// forever bails after `MAX_RECOVERIES_PER_PERIOD` instead of spinning on
     /// outputd's SCHED_FIFO playout thread. Moving the declaration inside the
-    /// loop re-zeroes it every pass and makes the recovery unbounded; the
-    /// position is pinned by
-    /// `test_the_composite_recovery_budget_is_per_period_not_per_attempt`.
+    /// loop re-zeroes it every pass and makes the recovery unbounded.
     pub fn write_dual_period(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
-        // ONE budget per period, shared by both children and by the re-prime —
-        // the same shape the coherent single sink's per-period `recoveries` has,
-        // through the same `xrun_policy`. A pair that burps four times inside
-        // one period is not recovering, it is failing, and the bail is what puts
-        // that on the restart ladder rather than in an unbounded loop.
         let mut recoveries = 0u32;
         loop {
             self.periods.deinterleave(samples_4ch)?;
@@ -1035,22 +943,17 @@ impl PairedCompositeSink {
     /// Write the two child period buffers — whatever they hold at this point —
     /// to A, then B.
     ///
-    /// The per-period write body, and the reason it is its own function: the
-    /// re-prime needs the identical A-then-B interleave over a silent payload,
-    /// and a second copy of this is exactly where "prime A fully, then prime B"
-    /// would creep back in — which is the skew hazard the whole recovery model
-    /// exists to avoid.
-    ///
-    /// The width arm is chosen by [`ChildPeriods`], which is the children's
-    /// negotiated width. Every buffer either arm touches was sized at open.
+    /// Its own function because the re-prime needs the identical A-then-B
+    /// interleave over a silent payload, and a second copy of this is exactly
+    /// where "prime A fully, then prime B" would creep back in — the skew hazard
+    /// the whole recovery model exists to avoid.
     ///
     /// The `.context(...)` strings are `&'static str` rather than `format!`-ed
-    /// PCM names, exactly as `AlsaBackend::write_dac_period`'s io-handle context
-    /// is: this body is period-hot and
-    /// `test_outputd_period_hot_functions_do_not_allocate` covers it. Both
-    /// children are named literally so the message still says which one failed;
-    /// the PCM aliases are on the open-time `event=outputd.dual_apple.opened`
-    /// line, in STATUS, and on each child's `event=outputd.xrun` line.
+    /// PCM names: this body is period-hot on the SCHED_FIFO playout thread and
+    /// must not allocate. Both children are named literally so the message still
+    /// says which one failed; the PCM aliases are on the open-time
+    /// `event=outputd.dual_apple.opened` line, in STATUS, and on each child's
+    /// `event=outputd.xrun` line.
     fn write_children(&mut self, recoveries: &mut u32) -> Result<ChildWriteOutcome> {
         let linked = self.linked;
         match &mut self.periods {
@@ -1158,24 +1061,21 @@ impl PairedCompositeSink {
     /// full-buffer refill would do: `manual_start` sets
     /// `start_threshold = buffer_frames`, so filling the buffer AUTO-STARTS the
     /// linked group the moment child A's buffer fills — before child B has been
-    /// primed at all — baking in up to a full period of PERMANENT skew. That is
-    /// the exact hazard the re-prime exists to remove, so it must not be
-    /// re-created by the removal.
+    /// primed at all — baking in up to a full period of PERMANENT skew.
     ///
-    /// Hence the shipped startup path, reused verbatim rather than re-derived:
-    /// prime to [`prime_periods`] depth (one period of buffer headroom,
-    /// deliberately BELOW `start_threshold`, so nothing auto-starts), fill those
-    /// periods through the same A-then-B [`Self::write_children`] the run loop
-    /// uses (so the two children's fill states are equal at the moment of
-    /// start), and only THEN call [`Self::start_dacs`], which on a linked pair
-    /// starts both atomically and already asserts both reach Running.
+    /// Hence the startup path, reused rather than re-derived: prime to
+    /// [`prime_periods`] depth (one period of buffer headroom, deliberately
+    /// BELOW `start_threshold`, so nothing auto-starts), fill those periods
+    /// through the same A-then-B [`Self::write_children`] the run loop uses (so
+    /// the two children's fill states are equal at the moment of start), and
+    /// only THEN call [`Self::start_dacs`], which on a linked pair starts both
+    /// atomically and already asserts both reach Running.
     ///
     /// An xrun DURING the re-prime fails closed rather than recursing. A
     /// prepared, un-started stream has no playback position to underrun from, so
     /// an EPIPE here means the pair is not in the state the recovery just put it
-    /// in — and a second recovery layered on an unexplained one would be
-    /// blessing a state nobody has verified. It is also what keeps this bounded:
-    /// one recovery, one re-prime, no nesting.
+    /// in. It is also what keeps this bounded: one recovery, one re-prime, no
+    /// nesting.
     fn reprime_after_group_recovery(&mut self, recoveries: &mut u32) -> Result<()> {
         let pre_fault_baseline = self.delay_delta_baseline;
         let depth = prime_periods(
@@ -1194,11 +1094,9 @@ impl PairedCompositeSink {
                      been re-established"
                 );
             }
-            // These frames really were handed to the children, so they count —
-            // the STARTUP prime's identical silence already does (it goes
-            // through `write_dual_period` from the run loop), and one counter
-            // that means "frames written to the DACs" beats one that means it
-            // except during recovery.
+            // These frames really were handed to the children, so they count:
+            // `dac_frames_written` means "frames written to the DACs", not
+            // "frames written except during recovery".
             self.counters.dac_frames_written += period_frames;
         }
         self.start_dacs()
@@ -1364,9 +1262,7 @@ struct PcmConfig<'a> {
     /// registry-declared edge (`Config::declared_dac_format`), and the `content`
     /// / `active_content` lanes take `Config::content_format`. Both default to
     /// `S16Le`. The one remaining role, `chip_ref`, passes `S16Le` explicitly by
-    /// contract (16 kHz/2ch/S16, `validate_chip_ref_geometry` exact), which is
-    /// byte-identical to the retired module-level `FORMAT` const it used to
-    /// inherit.
+    /// contract (16 kHz/2ch/S16, `validate_chip_ref_geometry` exact).
     format: SampleFormat,
     buffer_frames: u32,
     manual_start: bool,
@@ -1419,8 +1315,8 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     }
     if is_final_edge_role(role) {
         // Prove what OUTPUTD'S OWN CLIENT EDGE ended up at, and fail closed if
-        // it is not what was requested. Read the scope of that claim honestly,
-        // because it depends on what sits between outputd and the card:
+        // it is not what was requested. The scope of that claim depends on what
+        // sits between outputd and the card:
         //
         // `hw_params_current` returns the CLIENT-side params of the PCM outputd
         // opened. On a raw `hw:` device the client edge IS the hardware edge, so
@@ -1429,14 +1325,10 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // on the slave side, so the readback would agree BY CONSTRUCTION and
         // could never see what the DAC is really doing.
         //
-        // Post-plug truth: every registered single DAC profile opens its
-        // `outputd_dac` PCM as a raw `hw:` device now, InnoMaker included —
-        // deploy/lib/jasper-asound-render.sh's per-profile plug was deleted in
-        // PR-4 (format-foundation), so there is no conversion layer left
-        // anywhere in front of this role's PCM. This readback therefore fully
-        // participates in the hardware-edge proof for every DAC, where before
-        // it was narrower than it looked. What keeps a plug from returning is a
-        // Python-side structural test, not this Rust check:
+        // Every registered single DAC profile opens its `outputd_dac` PCM as a
+        // raw `hw:` device, so there is no conversion layer in front of this
+        // role's PCM. What keeps a plug from returning is a Python-side
+        // structural test, not this Rust check:
         // tests/test_outputd_wiring.py::test_every_single_dac_profile_renders_raw_hw_with_no_plug
         // drives the render script for every registered single DAC profile and
         // asserts a raw `type hw` block with no `plug` in the output.
@@ -1444,8 +1336,7 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // The COMPOSITE CHILDREN reach here on the same terms and with the same
         // scope: `jasper.output_hardware` hands the reconciler each child as a
         // raw `hw:CARD=<card>,DEV=<n>` alias, so a child's client edge is its
-        // hardware edge too, and each child is checked rather than trusted to
-        // have honoured the S16 it asked for.
+        // hardware edge too.
         let current = pcm
             .hw_params_current()
             .context("reading installed outputd DAC HwParams")?;
@@ -1499,12 +1390,10 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
 /// each child of a paired composite.
 ///
 /// A named predicate rather than an inline `matches!` inside `configure_pcm`,
-/// because `configure_pcm` cannot be called without a live PCM and so cannot be
-/// unit-tested at all — pulling the role set out here makes "which roles get the
-/// edge readback" a pure function a test can pin, which is the whole content of
-/// the branch. Deliberately an ALLOWLIST: a future role that is an edge has to
-/// be added here on purpose, and one that is not (the content lanes, `chip_ref`)
-/// cannot fall in by resembling a name.
+/// which cannot be called without a live PCM and so cannot be unit-tested at
+/// all. Deliberately an ALLOWLIST: a future role that is an edge has to be added
+/// here on purpose, and one that is not (the content lanes, `chip_ref`) cannot
+/// fall in by resembling a name.
 fn is_final_edge_role(role: &str) -> bool {
     matches!(role, "dac" | "dual_dac_a" | "dual_dac_b")
 }
@@ -1512,13 +1401,11 @@ fn is_final_edge_role(role: &str) -> bool {
 /// Fail closed unless the format ALSA installed on OUTPUTD'S OWN CLIENT EDGE
 /// is exactly the one requested.
 ///
-/// Scope: the client edge equals the hardware edge only on a raw `hw:` device
-/// — true for every registered single DAC today, InnoMaker included, since
-/// PR-4 (format-foundation) deleted the last per-profile `plug`, and true for
-/// both composite children, which the reconciler passes as raw `hw:CARD=…`
-/// aliases. See `configure_pcm`'s dac readback comment for why a `plug` would
-/// defeat this check, and for the regression test that keeps one from coming
-/// back.
+/// Scope: the client edge equals the hardware edge only on a raw `hw:` device —
+/// true for every registered single DAC, and for both composite children, which
+/// the reconciler passes as raw `hw:CARD=…` aliases. See `configure_pcm`'s
+/// final-edge readback comment for why a `plug` would defeat this check, and for
+/// the regression test that keeps one from coming back.
 ///
 /// Separate from `validate_negotiated` because the failure is a different kind:
 /// a rate or period mismatch means the device could not serve outputd's
@@ -1527,11 +1414,8 @@ fn is_final_edge_role(role: &str) -> bool {
 /// `configure_pcm`'s final-edge roles ([`is_final_edge_role`]), every one of
 /// whose callers wraps it in `final_sink_startup` — so a mismatch parks the unit
 /// at EX_CONFIG 78 rather than restart-looping against hardware that cannot
-/// change.
-///
-/// `role` is a parameter, not the constant `"dac"` it was before the composite
-/// children joined: with three edges in play, "which edge moved" is only
-/// answerable if the message says which one it was.
+/// change. With three edges in play, `role` is a parameter because "which edge
+/// moved" is only answerable if the message says which one it was.
 ///
 /// It is NOT redundant with `alsa`'s own `io_i16`/`io_i32` format check. That
 /// one runs per period, deep on the audio path, and reports an opaque
@@ -1574,9 +1458,7 @@ fn verify_installed_format(
 /// samples and holds an EMPTY vec — zero bytes. So does an `S24_3Le` hop, whose
 /// staging is BYTES, not i16 — [`i24_packed_staging`] owns that one.
 ///
-/// One function for both directions because the shape is identical (period ×
-/// channels of i16) and because a second copy would be a twin that drifts. It is
-/// called once per hop, at open, never on the audio path.
+/// Called once per hop, at open, never on the audio path.
 fn s16_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i16> {
     match format {
         SampleFormat::S16Le => vec![0i16; (period_frames as usize) * (channels as usize)],
@@ -1587,11 +1469,8 @@ fn s16_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i
 /// The PACKED-BYTE staging one period needs at `format`: `period × channels × 3`
 /// bytes at an `S24_3Le` edge, an EMPTY vec at every other width.
 ///
-/// The byte-shaped sibling of [`s16_staging`], and separate from it for the same
-/// reason the two backend fields are separate — the element type is the whole
-/// difference, and a single function cannot return both. Same discipline
-/// otherwise: called once, at open, never on the audio path, and it reserves
-/// nothing at a width that does not use it.
+/// The byte-shaped sibling of [`s16_staging`]: called once, at open, never on
+/// the audio path, and it reserves nothing at a width that does not use it.
 ///
 /// The 3 comes from `jasper_resampler::I24_LE_BYTES_PER_SAMPLE`, the same
 /// constant the packing primitive's length contract reads, so the staging and the
@@ -1661,21 +1540,19 @@ fn validate_negotiated(
 /// Split one 4-channel program period into the composite's two stereo child
 /// periods, at the children's declared edge width.
 ///
-/// **This is where the composite meets its children's width — the composite
-/// sink's counterpart to `AlsaBackend::write_dac_period`, and its ONLY
-/// conversion site.** The width is chosen by the output slices' element type,
-/// through the closed [`ChildEdgeSample`] trait: `i16` children quantize here,
-/// round-to-nearest and saturating, the same primitive the coherent sink's
-/// `S16Le` edge narrows through; `i32` children are already the spine's own
-/// width and are copied unconverted.
+/// **The composite's ONLY conversion site.** The width is chosen by the output
+/// slices' element type, through the closed [`ChildEdgeSample`] trait: `i16`
+/// children quantize here, round-to-nearest and saturating, the same primitive
+/// the coherent sink's `S16Le` edge narrows through; `i32` children are already
+/// the spine's own width and are copied unconverted.
 ///
 /// ONE loop over both widths, not one loop each: the frame arithmetic and the
 /// two bounds checks are the fail-closed part (a short scratch would write a
 /// partial period to a live DAC), and a second copy of them would be a twin that
-/// drifts. Only the per-sample conversion varies, and it varies by type.
+/// drifts.
 ///
-/// The channel map is width-independent and unchanged: child A takes program
-/// channels 0/1, child B takes 2/3.
+/// The channel map is width-independent: child A takes program channels 0/1,
+/// child B takes 2/3.
 fn deinterleave_4ch_to_dual_stereo<T: ChildEdgeSample>(
     samples_4ch: &[ProgramSample],
     out_a: &mut [T],
@@ -1705,23 +1582,17 @@ fn deinterleave_4ch_to_dual_stereo<T: ChildEdgeSample>(
 /// One loop, not one per format: the xrun accounting, the bounded recovery
 /// budget, and the `event=outputd.xrun` line are the audio path's fail-closed
 /// behaviour and must not be able to drift between an S16, an S24_3LE and an S32
-/// edge. Monomorphised for `i16` this is instruction-for-instruction the
-/// pre-native-format writer.
+/// edge.
 ///
 /// `elements_per_frame` is the stride of ONE FRAME in units of `S`, and it is
 /// deliberately not called `channels`:
 ///
 /// * At a TYPED edge (`IO<i16>`, `IO<i32>`) one element is one sample, so the
-///   stride IS the channel count — every existing caller passes exactly that and
-///   is unchanged.
+///   stride IS the channel count.
 /// * At the PACKED `S24_3LE` edge the handle is `IO<u8>` and one element is one
 ///   BYTE, so the stride is `channels * 3`. Passing `channels` there would slice
 ///   forward at a third of the right rate and re-send most of every period as the
 ///   loop chased `frames_total`.
-///
-/// The parameter carries the difference so the loop body does not have to know
-/// which kind of edge it is serving — which is what keeps ONE xrun policy for all
-/// three widths.
 fn write_dac_frames<S: Copy>(
     io: &IO<'_, S>,
     pcm: &PCM,
@@ -1776,7 +1647,6 @@ fn write_dac_frames<S: Copy>(
 /// What one composite child's period write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChildWriteOutcome {
-    /// The whole period reached the child.
     Complete,
     /// An xrun was recovered. On a linked pair `snd_pcm_recover` is a GROUP
     /// prepare, so BOTH children are now prepared and empty — the caller owes
@@ -1786,9 +1656,7 @@ enum ChildWriteOutcome {
 }
 
 /// Everything one composite child write needs to know about the child it is
-/// writing. A struct rather than four more parameters, because clippy's
-/// argument-count lint is the honest signal here: the loop below takes a
-/// buffer, an identity and a ledger, and those are three things.
+/// writing.
 struct ChildWrite<'a> {
     pcm: &'a PCM,
     pcm_name: &'a str,
@@ -1806,9 +1674,9 @@ struct ChildWriteLedger<'a> {
     /// Per-PERIOD recovery budget, shared with the `Ok(0)` arm exactly as the
     /// coherent single sink shares it. Reset by the caller once per period.
     recoveries: &'a mut u32,
-    /// The sink-level cumulative xrun count — the existing doctor consumer,
-    /// unchanged, and what `count=` on the event line reports (same meaning as
-    /// the single path's `count=`).
+    /// The sink-level cumulative xrun count — the doctor's consumer, and what
+    /// `count=` on the event line reports (same meaning as the single path's
+    /// `count=`).
     xrun_count: &'a mut u64,
     /// This child's own cumulative xrun count, reported in `/state` only.
     child_xrun_count: &'a mut u64,
@@ -1826,8 +1694,8 @@ struct ChildWriteLedger<'a> {
 /// xrun policy is, it must not be able to DIFFER between an S16 and an S32
 /// child. The caller fetches the IO handle (`io_i16`/`io_i32` per its
 /// `ChildPeriods` arm) rather than this function taking the `PCM` and choosing,
-/// which is what makes the width the caller's single decision — and lets the
-/// caller use `&'static str` contexts on the period-hot path.
+/// which makes the width the caller's single decision — and lets the caller use
+/// `&'static str` contexts on the period-hot path.
 ///
 /// **The recovery is the GROUP's, and this function does exactly its own half of
 /// it.** It attributes the xrun to the reporting child, calls `try_recover`
@@ -1838,19 +1706,15 @@ struct ChildWriteLedger<'a> {
 /// re-priming means writing to BOTH children interleaved, and this function
 /// holds one.
 ///
-/// **An UNLINKED pair keeps the pre-change bail, deliberately.** With
-/// `linked=false` there is no atomic group restart to re-establish alignment
-/// with, so a recovered pair's A/B skew is unbounded and unverifiable — a
-/// recovery that cannot be made safe is not a recovery, and the honest answer is
-/// the one this path already gave. That is also why `link=ok` is a precondition
-/// this sink refuses to start without ([`PairedCompositeSink::new`]); the
-/// unlinked composite is not made worse than it was, it is simply not given a
-/// recovery it cannot make safe.
+/// **An UNLINKED pair bails instead.** With `linked=false` there is no atomic
+/// group restart to re-establish alignment with, so a recovered pair's A/B skew
+/// is unbounded and unverifiable. That is also why `link=ok` is a precondition
+/// this sink refuses to start without ([`PairedCompositeSink::new`]).
 ///
-/// `Ok(0)` now rides the same budget the coherent single sink gives it instead
-/// of bailing on the first occurrence: a spurious zero-frame return is not an
-/// xrun, moves no stream position, and needs no group action — leaving it a hard
-/// bail kept it on the restart ladder this whole change exists to get off.
+/// `Ok(0)` rides the same budget the coherent single sink gives it rather than
+/// bailing on the first occurrence: a spurious zero-frame return is not an xrun,
+/// moves no stream position, and needs no group action, so a hard bail there
+/// would only put the box back on the restart ladder.
 fn write_dac_fail_closed<S: Copy>(
     io: &IO<'_, S>,
     child: ChildWrite<'_>,
@@ -1932,9 +1796,8 @@ mod tests {
     ///
     /// Fixtures that feed a spine-width parameter MUST go through this. A bare
     /// integer literal type-infers happily into `[ProgramSample]` and then means
-    /// something ~65536x quieter than the author intended — which is how
-    /// `deinterleaves_active_4ch_to_one_stereo_period_per_dac` compiled green
-    /// locally while asserting the wrong audio.
+    /// something ~65536x quieter than the author intended, which compiles green
+    /// while asserting the wrong audio.
     fn w(sample: i16) -> ProgramSample {
         jasper_resampler::widen_i16_to_i32(sample)
     }
@@ -2000,9 +1863,8 @@ mod tests {
 
     #[test]
     fn alsa_format_maps_s16_to_the_constant_the_default_path_always_used() {
-        // The retired module-level `const FORMAT: Format = Format::S16LE` is
-        // now one arm of this mapping. If it ever stops being S16LE, every
-        // S16 box silently changes its electrical edge — so pin the literal.
+        // If the S16 arm ever stops being S16LE, every S16 box silently changes
+        // its electrical edge — so pin the literal.
         assert_eq!(alsa_format(SampleFormat::S16Le), Format::S16LE);
         assert_eq!(alsa_format(SampleFormat::S32Le), Format::S32LE);
         // `S243LE` is 24 bits in THREE PACKED BYTES. `S24LE` — one character
@@ -2016,12 +1878,11 @@ mod tests {
 
     #[test]
     fn only_the_s16_hop_stages_i16_and_it_stages_one_whole_period() {
-        // The INVERSE of what this asserted before the i32 program spine, and
-        // that inversion is the payoff: an `S32Le` hop moves the spine's own
-        // samples, so it stages nothing at all, while an `S16Le` hop is the one
-        // that converts and therefore the one that pays. Sized once at open so
-        // the audio path never allocates. Applies to both directions — an S16
-        // DAC edge narrows into this shape, an S16 content lane reads into it.
+        // An `S32Le` hop moves the spine's own samples, so it stages nothing at
+        // all, while an `S16Le` hop is the one that converts and therefore the
+        // one that pays. Sized once at open so the audio path never allocates.
+        // Applies to both directions — an S16 DAC edge narrows into this shape,
+        // an S16 content lane reads into it.
         let wide = s16_staging(SampleFormat::S32Le, 1024, 2);
         assert!(wide.is_empty(), "a wide hop needs no conversion buffer");
         assert_eq!(wide.capacity(), 0, "and must not reserve bytes for one");
@@ -2043,8 +1904,8 @@ mod tests {
 
     #[test]
     fn only_the_packed_24_edge_stages_bytes_and_it_stages_three_per_sample() {
-        // The byte-staging twin of the test above, and the size is the point: the
-        // packed period is `frames x channels x 3`. At the 4-byte `S24_LE` stride
+        // The size is the point: the packed period is `frames x channels x 3`.
+        // At the 4-byte `S24_LE` stride
         // it would be 4/3 too long and ALSA would be handed a third of a period
         // more than the frame count claims; at a 2-byte stride it would be a
         // partial period every time.
@@ -2110,7 +1971,7 @@ mod tests {
         // A device that installed something other than the request AND reported
         // it honestly. This is NOT the plug shape: a plug installs the client's
         // own request client-side, so a plug can never produce this
-        // disagreement (see `configure_pcm`'s dac readback comment). Both
+        // disagreement (see `configure_pcm`'s final-edge readback comment). Both
         // formats must be named — the operator needs to know which end moved.
         let err = verify_dac_format("dac", "outputd_dac", SampleFormat::S32Le, Format::S16LE)
             .unwrap_err();
@@ -2143,11 +2004,10 @@ mod tests {
 
     #[test]
     fn dac_format_readback_accepts_a_packed_24_edge_that_installed_what_it_asked_for() {
-        // The readback round-trips the new variant: `alsa_format` maps it to
-        // `Format::S243LE`, and an honest device reporting that must pass. This is
-        // the only format proof the packed write path has — `io_bytes()` does no
-        // per-period verification, unlike the typed `io_i16`/`io_i32` handles — so
-        // it has to hold for both the single DAC and both composite children.
+        // This is the only format proof the packed write path has —
+        // `io_bytes()` does no per-period verification, unlike the typed
+        // `io_i16`/`io_i32` handles — so it has to hold for the single DAC and
+        // for both composite children.
         for role in ["dac", "dual_dac_a", "dual_dac_b"] {
             verify_dac_format(
                 role,
@@ -2161,8 +2021,8 @@ mod tests {
 
     #[test]
     fn dac_format_mismatch_parks_the_unit_instead_of_restart_looping() {
-        // configure_pcm's dac call is wrapped in `final_sink_startup`, so a
-        // readback mismatch must carry the configuration marker main() turns
+        // `configure_pcm`'s dac call is wrapped in `final_sink_startup`, so a
+        // readback mismatch must carry the configuration marker `main` turns
         // into EX_CONFIG 78. A restart cannot change what the device installs.
         let error = final_sink_startup(verify_dac_format(
             "dac",
@@ -2179,11 +2039,10 @@ mod tests {
 
     #[test]
     fn the_final_edge_readback_covers_the_single_dac_and_both_composite_children() {
-        // The role set `configure_pcm`'s edge readback branches on. Before this
-        // PR the branch was a bare `role == "dac"`, so BOTH composite children
-        // opened with no format proof at all — they asked for S16 and believed
-        // it. Every role that requests a declared HARDWARE width has to be in
-        // here, and nothing else may be.
+        // The role set `configure_pcm`'s edge readback branches on. Every role
+        // that requests a declared HARDWARE width has to be in here — a bare
+        // `role == "dac"` would let both composite children open with no format
+        // proof at all — and nothing else may be.
         for role in ["dac", "dual_dac_a", "dual_dac_b"] {
             assert!(is_final_edge_role(role), "{role} is a final hardware edge");
         }
@@ -2211,10 +2070,9 @@ mod tests {
         // operator cannot act on "a DAC installed the wrong format".
         //
         // The role assertion matches the SENTENCE POSITION, not the bare
-        // substring — the same trap PR-3's content readback test recorded: the
-        // child PCM alias could itself contain the role token, and
-        // `text.contains(role)` would then be satisfied by the PCM name alone
-        // and stay green with the role hardcoded to the wrong child.
+        // substring: the child PCM alias could itself contain the role token,
+        // and `text.contains(role)` would then be satisfied by the PCM name
+        // alone and stay green with the role hardcoded to the wrong child.
         for (role, pcm) in [
             ("dual_dac_a", "hw:CARD=A,DEV=0"),
             ("dual_dac_b", "hw:CARD=B,DEV=0"),
@@ -2233,11 +2091,11 @@ mod tests {
 
     #[test]
     fn a_child_format_mismatch_parks_the_unit_instead_of_restart_looping() {
-        // Both children's `configure_pcm` calls are already wrapped in
-        // `final_sink_startup` (they were, for negotiation faults), so the new
-        // readback inherits the park class: a dongle that installs a width other
-        // than the one requested will install it again on the next start, and
-        // this unit's restart loop escalates to StartLimitAction=reboot.
+        // Both children's `configure_pcm` calls are wrapped in
+        // `final_sink_startup`, so the readback inherits the park class: a
+        // dongle that installs a width other than the one requested will install
+        // it again on the next start, and this unit's restart loop escalates to
+        // StartLimitAction=reboot.
         for role in ["dual_dac_a", "dual_dac_b"] {
             let error = final_sink_startup(verify_dac_format(
                 role,
@@ -2291,9 +2149,8 @@ mod tests {
     /// vectors that could quietly differ.
     ///
     /// The INPUT is a program period (i32 spine), so it has to be written at that
-    /// scale — bare `10` here is 10/65536 of an S16 LSB and narrows to silence.
-    /// CI caught exactly that once: type inference accepted the unwidened
-    /// literals, so the test compiled and asserted the wrong audio.
+    /// scale — bare `10` here is 10/65536 of an S16 LSB and narrows to silence,
+    /// and type inference accepts the unwidened literal without complaint.
     fn split_fixture() -> [ProgramSample; 8] {
         [w(10), w(11), w(20), w(21), w(12), w(13), w(22), w(23)]
     }
@@ -2301,9 +2158,8 @@ mod tests {
     #[test]
     fn deinterleaves_active_4ch_to_one_stereo_period_per_s16_child() {
         // THE TRANSPARENCY PROOF for every live composite box: `S16Le` children
-        // are what the registry declares today, so this arm must be exactly the
-        // pre-PR-5 path. Same fixture, same expected samples as before the split
-        // became width-dispatching.
+        // are what the registry declares today, so this is the arm every shipped
+        // composite runs.
         let mut a = vec![0i16; 4];
         let mut b = vec![0i16; 4];
 
@@ -2316,11 +2172,10 @@ mod tests {
 
     #[test]
     fn deinterleaves_active_4ch_to_one_stereo_period_per_s32_child() {
-        // The dormant arm (nothing in the tree declares an S32 composite yet).
-        // The channel map is identical — the SAME assertion as the S16 arm, at
-        // the spine's own scale — because only the element width moved. If the
-        // map ever diverged between arms, one child would play the other's audio
-        // on a wide box and no S16 test would notice.
+        // The dormant arm: nothing in the tree declares an S32 composite yet.
+        // The channel map is the SAME assertion as the S16 arm, at the spine's
+        // own scale. If the map ever diverged between arms, one child would play
+        // the other's audio on a wide box and no S16 test would notice.
         let mut a = vec![0 as ProgramSample; 4];
         let mut b = vec![0 as ProgramSample; 4];
 
@@ -2332,9 +2187,9 @@ mod tests {
 
     #[test]
     fn the_s16_child_edge_quantizes_by_rounding_and_saturates_at_the_rails() {
-        // The composite's own single quantization. It must be the SAME
-        // round-to-nearest the coherent sink's S16 edge uses, not a truncation —
-        // a widened fixture cannot tell those apart, so this off-grid vector is
+        // The composite's own single quantization must be the SAME
+        // round-to-nearest the coherent sink's S16 edge uses, not a truncation.
+        // A widened fixture cannot tell those apart, so this off-grid vector is
         // what pins it.
         let mut a = vec![0i16; 2];
         let mut b = vec![0i16; 2];
@@ -2376,11 +2231,9 @@ mod tests {
     /// carry THIS off-grid vector.
     #[test]
     fn an_s32_child_edge_converts_nothing_at_all() {
-        // The payoff, and the one thing that could silently be wrong on a wide
-        // composite: an `S32Le` child IS the spine's width, so the split must
-        // COPY. Fed the exact vector the S16 arm above rounds and saturates,
-        // every sample has to survive bit-for-bit — a stray narrow-then-widen
-        // here would cost 16 bits per sample and read as "quieter, grainier" with
+        // Fed the exact vector the S16 arm above rounds and saturates, every
+        // sample has to survive bit-for-bit: a stray narrow-then-widen here
+        // would cost 16 bits per sample and read as "quieter, grainier" with
         // nothing in any counter to show for it.
         let off_grid = [32_768, -32_768, ProgramSample::MAX, ProgramSample::MIN];
         let mut a = vec![0 as ProgramSample; 2];
@@ -2398,10 +2251,10 @@ mod tests {
 
     #[test]
     fn the_composite_edge_rejects_scratch_buffers_smaller_than_the_period() {
-        // Unchanged contract, asserted at BOTH child widths: a short scratch
-        // would otherwise write a partial period to a live DAC, and the bounds
-        // check lives in the shared generic body — so if one width ever skipped
-        // it, that would be a width-specific hole in a fail-closed guard.
+        // Asserted at BOTH child widths: a short scratch would otherwise write a
+        // partial period to a live DAC, and the bounds check lives in the shared
+        // generic body — so if one width ever skipped it, that would be a
+        // width-specific hole in a fail-closed guard.
         let mut a16 = vec![0i16; 2];
         let mut b16 = vec![0i16; 2];
         let mut a32 = vec![0 as ProgramSample; 2];
@@ -2457,9 +2310,7 @@ mod tests {
         // `PairedCompositeSink::dac_format` — and through it `/state.dac.format`
         // and the chip-AEC alignment identity — reads this. It has to be derived
         // from the buffers rather than stored beside them: a second copy of the
-        // width could disagree with what the write path writes, which is exactly
-        // the lie the old hardcoded `SampleFormat::S16Le` in
-        // `RuntimeAlsaSink::dac_format` was.
+        // width could disagree with what the write path writes.
         for format in [SampleFormat::S16Le, SampleFormat::S32Le] {
             assert_eq!(ChildPeriods::new(format, 64).unwrap().format(), format);
         }
@@ -2474,15 +2325,15 @@ mod tests {
         // ARMED profile's id; what must never reach here is a COMPOSITE
         // declaring it. jaspercurry/JTS#2257 is the unlock.
         //
-        // What a `_ => Self::S16 {..}` fallback would have done instead is the
-        // whole reason this is fallible: `configure_pcm` reads the SAME
-        // declaration, so both children would have been asked for `S24_3LE` and
-        // passed their readbacks, and then the write path would have handed a
-        // 3-byte wire i16 half-samples — full-scale garbage at two speakers, while
-        // `/state` reported `S24_3LE` because `format()` reads the buffers.
+        // What a `_ => Self::S16 {..}` fallback would do instead is the whole
+        // reason this is fallible: `configure_pcm` reads the SAME declaration,
+        // so both children would be asked for `S24_3LE` and pass their
+        // readbacks, and the write path would then put i16 half-samples on a
+        // 3-byte wire — full-scale garbage at two speakers, while `/state`
+        // reported `S24_3LE` because `format()` reads the buffers.
+        //
         // `match` rather than `unwrap_err()`: `ChildPeriods` deliberately has no
-        // `Debug` (it holds two whole period buffers), and adding one just so a
-        // test could print them is the tail wagging the dog.
+        // `Debug` — it holds two whole period buffers.
         let err = match ChildPeriods::new(SampleFormat::S24_3Le, 1024) {
             Ok(_) => panic!("a packed-24 child edge must be refused, not built"),
             Err(err) => err,
@@ -2511,7 +2362,7 @@ mod tests {
             .is_some());
     }
 
-    // ---- #2255: the composite's bounded, linked-group xrun recovery ----
+    // ---- The composite's bounded, linked-group xrun recovery ----
 
     #[test]
     fn prime_periods_leave_one_period_of_buffer_headroom() {
@@ -2551,9 +2402,9 @@ mod tests {
 
     #[test]
     fn the_recovery_budget_is_increment_then_check_and_allows_exactly_three() {
-        // The table in `xrun_policy`'s doc IS the spec; this is that table.
-        // `1` means "one recovery has already happened", so a `GiveUp` at 4 is
-        // three recoveries followed by no fourth write.
+        // `xrun_policy`'s check-after-increment convention: `1` means "one
+        // recovery has already happened", so a `GiveUp` at 4 is three recoveries
+        // followed by no fourth write.
         assert_eq!(xrun_policy(0), XrunAction::Continue);
         assert_eq!(xrun_policy(1), XrunAction::Continue);
         assert_eq!(xrun_policy(2), XrunAction::Continue);
@@ -2572,9 +2423,8 @@ mod tests {
 
     #[test]
     fn the_divergence_check_measures_drift_from_the_baseline_not_the_raw_offset() {
-        // A pair sitting at a large but STABLE offset is aligned, not diverged
-        // — the baseline is the zero. This arithmetic had no test at all before
-        // #2255 (only the `/state` wire shape was pinned).
+        // A pair sitting at a large but STABLE offset is aligned, not diverged —
+        // the baseline is the zero.
         let check = delay_delta_check(500, 500, 48);
         assert_eq!(check.error_frames, 0);
         assert!(!check.diverged);
@@ -2604,8 +2454,8 @@ mod tests {
     #[test]
     fn a_within_tolerance_reprime_relatches_the_baseline() {
         // The recovery reset both children's stream positions, so the offset
-        // legitimately steps. Within tolerance the new offset becomes the zero
-        // — without this the very next steady-state check would bail with
+        // legitimately steps. Within tolerance the new offset becomes the zero;
+        // without this the very next steady-state check would bail with
         // `delay_diverged` on the period after the xrun.
         assert_eq!(
             baseline_relatch_decision(Some(500), 500, 48),
