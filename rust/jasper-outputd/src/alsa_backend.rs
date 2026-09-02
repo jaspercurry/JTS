@@ -542,8 +542,7 @@ impl AlsaBackend {
         //
         // `format=` is the DAC edge and keeps its bare name. Not because
         // anything would break: no machine consumer parses this line today (the
-        // only references are prose — docs/AEC-DIAG-01-baseline.md,
-        // docs/CHIP-AEC-EXPERIMENT.md). It stays
+        // only reference is prose — docs/AEC-DIAG-01-baseline.md). It stays
         // by convention, because operators and journal-grep recipes read it and
         // a stable key costs nothing. `content_format=` names the OTHER hop —
         // the ring's wire — so one line still names both.
