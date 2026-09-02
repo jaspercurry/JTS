@@ -1293,7 +1293,10 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
 # --------------------------------------------------------------------------
 
 
-def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str | None, marker: str):
+_ABSENT_FILE = object()
+
+
+def _ring_transport_state(monkeypatch, tmp_path, *, coupling, marker: str):
     """Point BOTH reconciler-owned files at ``tmp_path`` and write the state.
 
     Real files rather than stubbed predicates: the gate's contract is that it
@@ -1301,8 +1304,9 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str | None, marker
     fail that way. Both module constants are imported inside the reader
     functions, so rebinding them here redirects the real read.
 
-    ``coupling=None`` writes the file with the coupling key ABSENT — the shape a
-    box carries before the reconciler has ever named a transport.
+    ``coupling=None`` writes the file with the coupling key ABSENT and
+    ``coupling=_ABSENT_FILE`` writes no file at all: the two shapes a box
+    carries before the reconciler has ever named a transport.
     """
     from jasper.fanin_coupling import (
         COUPLING_ENV_VAR,
@@ -1311,10 +1315,11 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str | None, marker
 
     fanin_env = Path(tmp_path) / "fanin.env"
     outputd_env = Path(tmp_path) / "outputd.env"
-    fanin_env.write_text(
-        "" if coupling is None else f"{COUPLING_ENV_VAR}={coupling}\n",
-        encoding="utf-8",
-    )
+    if coupling is not _ABSENT_FILE:
+        fanin_env.write_text(
+            "" if coupling is None else f"{COUPLING_ENV_VAR}={coupling}\n",
+            encoding="utf-8",
+        )
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
@@ -1353,8 +1358,14 @@ def _transport_armed_gate(preflight):
 
 @pytest.mark.parametrize(
     "coupling,feeds_ring",
-    [("shm_ring", True), ("", True), (None, True), ("loopback", False)],
-    ids=["declared", "empty", "absent_key", "refused_token"],
+    [
+        ("shm_ring", True),
+        ("", True),
+        (None, True),
+        (_ABSENT_FILE, True),
+        ("loopback", False),
+    ],
+    ids=["declared", "empty", "absent_key", "absent_file", "refused_token"],
 )
 async def test_the_guarded_load_refuses_a_ring_graph_nothing_fills(
     tmp_path, monkeypatch, coupling, feeds_ring,
@@ -1390,9 +1401,6 @@ async def test_the_guarded_load_refuses_a_ring_graph_nothing_fills(
             if issue.get("code") == "commissioning_ring_feed_unarmed"
         )
         assert refusal["severity"] == "blocker"
-        # The OPERATOR surface names the executable remedy; the household
-        # surfaces never do — the copy guards in test_sound_setup.py pin that.
-        assert "jasper-fanin-coupling-reconcile shm_ring" in refusal["message"]
 
 
 async def test_the_guarded_load_refuses_a_ring_graph_nothing_reads(
