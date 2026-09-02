@@ -10,11 +10,12 @@ publish the matching ``JASPER_MANUAL_MIC_SOURCES`` entry and run that adapter
 unit; otherwise keep both voice and the adapter idle. That keeps rare hardware
 from imposing resident cost on every speaker.
 
-It owns the *accessory* fact and nothing else. It does NOT write the
-voice-input gate marker (``jasper-aec-reconcile`` is that marker's single
-writer, and the marker is the AND of "no local mic" and "no accessory mic").
-When this half moves, ``refresh_voice_input`` hands the decision back to that
-owner rather than deciding here — see its docstring.
+Where wake detection runs, it owns the *accessory* fact alone: the voice-input
+gate marker is the AND of "no local mic" and "no accessory mic", so moving this
+half hands the decision to that marker's single writer, ``jasper-aec-reconcile``
+(see ``refresh_voice_input``). Where the assistant is granted WITHOUT wake
+detection no such owner is installed and the remote is the only microphone, so
+this reconciler runs ``jasper-voice`` itself — see ``voice_follows_accessory_mic``.
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ from dbus_next.errors import DBusError  # type: ignore
 from jasper.atomic_io import atomic_write_text
 from jasper.install_profile import (
     install_profile_allows_local_sources,
+    install_profile_allows_voice_brain,
+    install_profile_supports_wake_detection,
     read_install_profile,
 )
 from jasper.local_sources.guard import local_sources_allowed
@@ -52,10 +55,10 @@ logger = logging.getLogger(__name__)
 BLUEZ_BUS = "org.bluez"
 DEVICE_IFACE = "org.bluez.Device1"
 VOICE_UNIT = "jasper-voice.service"
-# jasper-aec-reconcile owns the voice-input gate marker and the voice
-# start/park decision. Publishing or withdrawing an accessory mic moves one
-# half of that decision, so we hand it back to its owner rather than deciding
-# here — see refresh_voice_input.
+# Where wake detection runs, jasper-aec-reconcile owns the voice-input gate
+# marker and the voice start/park decision; we hand our half back to it rather
+# than deciding here — see refresh_voice_input. Where it is not installed, see
+# voice_follows_accessory_mic.
 VOICE_INPUT_GATE_UNIT = "jasper-aec-reconcile.service"
 SYSTEMCTL_TIMEOUT_SEC = 10.0
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
@@ -63,8 +66,9 @@ _ADAPTER_SYSTEMCTL_CALLS = 3
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
 )
-# show the gate owner's state, then exactly one of: start it, or try-restart
-# voice. See refresh_voice_input — both branches cost two calls.
+# One show probe, then exactly one verb — for the handoff (show the gate owner,
+# then start it or try-restart voice) and for direct ownership (show voice, then
+# start/restart/stop it) alike. See refresh_voice_input, converge_voice_unit.
 _VOICE_REFRESH_SYSTEMCTL_CALLS = 2
 _VOICE_REFRESH_TIMEOUT_BUDGET_SEC = (
     _VOICE_REFRESH_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
@@ -298,6 +302,25 @@ def _invoke_systemctl(
     return result
 
 
+def _result_detail(result: subprocess.CompletedProcess) -> str:
+    return str(
+        getattr(result, "stderr", "")
+        or getattr(result, "stdout", "")
+        or f"rc={result.returncode}"
+    ).strip()
+
+
+def _show_properties(result: subprocess.CompletedProcess) -> dict[str, str]:
+    """Parse ``systemctl show`` ``Key=value`` output, values lowercased."""
+
+    properties: dict[str, str] = {}
+    for line in str(getattr(result, "stdout", "") or "").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            properties[key.strip()] = value.strip().lower()
+    return properties
+
+
 def _apply_adapter_service(
     service: str,
     *,
@@ -351,13 +374,9 @@ def _apply_adapter_service(
             )
             continue
         if result.returncode != 0:
-            detail = str(
-                getattr(result, "stderr", "")
-                or getattr(result, "stdout", "")
-                or f"rc={result.returncode}"
-            ).strip()
             failures.append(
-                f"{service}: systemctl {' '.join(command)} failed: {detail}"
+                f"{service}: systemctl {' '.join(command)} failed: "
+                f"{_result_detail(result)}"
             )
 
     show_command = (
@@ -377,19 +396,12 @@ def _apply_adapter_service(
         failures.append(f"{service}: systemctl show raised {exc}")
         return tuple(failures)
     if result.returncode != 0:
-        detail = str(
-            getattr(result, "stderr", "")
-            or getattr(result, "stdout", "")
-            or f"rc={result.returncode}"
-        ).strip()
-        failures.append(f"{service}: systemctl show failed: {detail}")
+        failures.append(
+            f"{service}: systemctl show failed: {_result_detail(result)}"
+        )
         return tuple(failures)
 
-    properties: dict[str, str] = {}
-    for line in str(getattr(result, "stdout", "") or "").splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            properties[key.strip()] = value.strip().lower()
+    properties = _show_properties(result)
     for label, property_name, expected in (
         ("is-enabled", "UnitFileState", expected_enabled),
         ("is-active", "ActiveState", expected_active),
@@ -451,18 +463,12 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
       start), separate state because the remediation is not: masking is a
       deliberate operator act, and telling them "not installed" sends them to
       re-run the installer instead of to ``systemctl unmask``.
-    * **parked** — the unit file is installed but ``UnitFileState`` is not
-      enabled. ``park_streambox_brain_units`` runs ``systemctl disable --now``
-      on ``jasper-aec-reconcile`` and names *this* reconciler nowhere, and no
-      install path removes either unit file, so a full speaker converted to a
-      streambox keeps a disabled gate owner while we keep running.
-      ``systemctl start`` on a disabled-but-installed unit *succeeds* —
-      ``disable`` only drops the ``WantedBy`` symlink — and the gate owner's
-      ``clear_voice_input_absent`` (run by ``restart_voice``) runs
-      ``systemctl enable jasper-voice.service``, which
-      would persistently re-arm the voice brain on a Zero-class box whose whole
-      profile exists to keep it off. Never start a parked owner. (Read from
-      ``deploy/lib/install/systemd-units.sh``; not yet observed on a box.)
+    * **parked** — installed but ``UnitFileState`` is not enabled, which a
+      full speaker converted to a streambox leaves behind. ``systemctl start``
+      on such a unit *succeeds*, so never start one: its
+      ``clear_voice_input_absent`` runs ``systemctl enable
+      jasper-voice.service``, and a box whose voice follows the accessory mic
+      owns that unit with start/stop only (ADR-0214).
 
     Reads ``LoadState``/``UnitFileState`` rather than branching on an exit code,
     matching ``jasper/source_intent.py``. Any unexpected failure answers
@@ -477,11 +483,7 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
         return "absent"
     if result.returncode != 0:
         return "absent"
-    properties: dict[str, str] = {}
-    for line in str(getattr(result, "stdout", "") or "").splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            properties[key.strip()] = value.strip().lower()
+    properties = _show_properties(result)
     load_state = properties.get("LoadState")
     if load_state == "masked":
         return "masked"
@@ -547,6 +549,95 @@ def refresh_voice_input(*, systemctl: Systemctl = _systemctl) -> str:
         systemctl=systemctl,
     )
     return "voice_try_restart" if restarted.returncode == 0 else "none"
+
+
+def voice_follows_accessory_mic() -> bool:
+    """Whether this box's voice brain lives and dies with the accessory mic.
+
+    True exactly when the install profile grants the assistant WITHOUT wake
+    detection. Nothing installs ``jasper-aec-reconcile`` there, so no gate
+    owner exists to hand the decision back to and the paired remote is the only
+    microphone: this reconciler owns ``jasper-voice.service`` outright. See
+    docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+
+    An unreadable install role answers False, which keeps the gate-owner
+    handoff — the conservative direction, since that path never starts a
+    stopped voice daemon.
+    """
+
+    try:
+        profile = read_install_profile()
+    except (OSError, RuntimeError, ValueError) as exc:
+        log_event(
+            logger,
+            "accessory_mic.role_probe_failed",
+            error=str(exc),
+            level=logging.WARNING,
+        )
+        return False
+    return (
+        install_profile_allows_voice_brain(profile)
+        and not install_profile_supports_wake_detection(profile)
+    )
+
+
+def _voice_unit_active(*, systemctl: Systemctl) -> bool:
+    try:
+        result = systemctl(("show", VOICE_UNIT, "--property=ActiveState"))
+    except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return _show_properties(result).get("ActiveState") == "active"
+
+
+def converge_voice_unit(
+    *,
+    wanted: bool,
+    env_changed: bool,
+    systemctl: Systemctl = _systemctl,
+) -> tuple[str, tuple[str, ...]]:
+    """Run jasper-voice for exactly as long as an accessory mic is published.
+
+    Start and stop only, never enable or disable: unit enablement belongs to
+    the installer, and re-arming ``WantedBy`` here would make a box that boots
+    with no remote paired start a voice daemon with no microphone.
+
+    ``restart`` only when published sources changed under a live daemon — the
+    one case a plain ``start`` cannot converge, because the daemon reads its
+    sources from the env file at startup. Bounded at
+    ``_VOICE_REFRESH_SYSTEMCTL_CALLS``.
+
+    Returns the action taken plus any systemctl failures, which join the
+    adapter's in the caller's failure list.
+    """
+
+    action: str
+    command: tuple[str, ...]
+    if not wanted:
+        action, command = "stop", ("stop", VOICE_UNIT)
+    elif env_changed and _voice_unit_active(systemctl=systemctl):
+        action, command = "restart", ("--no-block", "restart", VOICE_UNIT)
+    else:
+        action, command = "start", ("--no-block", "start", VOICE_UNIT)
+
+    try:
+        result = _invoke_systemctl(command, systemctl=systemctl)
+    except (
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        subprocess.SubprocessError,
+    ) as exc:
+        return "none", (
+            f"{VOICE_UNIT}: systemctl {' '.join(command)} raised {exc}",
+        )
+    if result.returncode != 0:
+        return "none", (
+            f"{VOICE_UNIT}: systemctl {' '.join(command)} failed: "
+            f"{_result_detail(result)}",
+        )
+    return action, ()
 
 
 async def bluez_managed_objects() -> Mapping[str, Mapping[str, Mapping[str, object]]]:
@@ -630,9 +721,15 @@ async def reconcile_once(
         # the adapter even if cleaning up the env file subsequently fails.
         adapter_failures = apply_adapter_services((), systemctl=systemctl)
         env_changed = write_manual_mic_env({}, path=env_file)
-    voice_refresh = (
-        refresh_voice_input(systemctl=systemctl) if env_changed else "none"
-    )
+    if voice_follows_accessory_mic():
+        voice, voice_failures = converge_voice_unit(
+            wanted=bool(plan.sources),
+            env_changed=env_changed,
+            systemctl=systemctl,
+        )
+        adapter_failures += voice_failures
+    else:
+        voice = refresh_voice_input(systemctl=systemctl) if env_changed else "none"
     if intent_error is not None:
         log_event(
             logger,
@@ -640,7 +737,7 @@ async def reconcile_once(
             reason=reason,
             action="parked",
             env_changed=int(env_changed),
-            voice_refresh=voice_refresh,
+            voice=voice,
             err=str(intent_error),
             level=logging.ERROR,
         )
@@ -655,7 +752,7 @@ async def reconcile_once(
             reason=reason,
             failures=" | ".join(adapter_failures),
             env_changed=int(env_changed),
-            voice_refresh=voice_refresh,
+            voice=voice,
             level=logging.ERROR,
         )
     if intent_error is not None:
@@ -682,7 +779,7 @@ async def reconcile_once(
         sources=",".join(plan.sources) or "(none)",
         services=",".join(plan.adapter_services) or "(none)",
         env_changed=int(env_changed),
-        voice_refresh=voice_refresh,
+        voice=voice,
     )
     return plan
 

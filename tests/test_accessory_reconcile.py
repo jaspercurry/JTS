@@ -19,14 +19,12 @@ def _variant(value):
     return SimpleNamespace(value=value)
 
 
-def _parked_systemctl(calls, *, voice_active: bool = True):
+def _parked_systemctl(calls):
     """Return a fake whose adapter terminal state is disabled + inactive."""
 
     def fake_systemctl(args):
         command = tuple(args)
         calls.append(command)
-        if command[:2] == ("is-active", "--quiet"):
-            return SimpleNamespace(returncode=0 if voice_active else 3)
         if command[0] == "show":
             return SimpleNamespace(
                 returncode=0,
@@ -34,6 +32,39 @@ def _parked_systemctl(calls, *, voice_active: bool = True):
                 stderr="",
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return fake_systemctl
+
+
+def _voice_owner_systemctl(
+    calls,
+    *,
+    adapter_active: bool = False,
+    voice_active: bool = False,
+):
+    """Fake that answers `show` for jasper-voice, the adapter, and no gate owner."""
+
+    def fake_systemctl(args):
+        command = tuple(args)
+        calls.append(command)
+        if command[0] != "show":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[1] == reconcile.VOICE_UNIT:
+            state = "active" if voice_active else "inactive"
+            return SimpleNamespace(
+                returncode=0, stdout=f"ActiveState={state}\n", stderr="",
+            )
+        if "--property=LoadState" in command:
+            return SimpleNamespace(
+                returncode=0, stdout="LoadState=not-found\n", stderr="",
+            )
+        enabled = "enabled" if adapter_active else "disabled"
+        active = "active" if adapter_active else "inactive"
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"UnitFileState={enabled}\nActiveState={active}\n",
+            stderr="",
+        )
 
     return fake_systemctl
 
@@ -196,7 +227,7 @@ def test_no_change_boot_reconcile_does_not_restart_active_adapter(
     assert ("enable", "jasper-wiim-remote-mic.service") in calls
     assert ("start", "jasper-wiim-remote-mic.service") in calls
     assert ("restart", "jasper-wiim-remote-mic.service") not in calls
-    assert ("is-active", "--quiet", "jasper-voice.service") not in calls
+    assert not any(reconcile.VOICE_UNIT in command for command in calls)
 
 
 def test_bluez_discovery_timeout_is_bounded_and_observable(
@@ -984,6 +1015,169 @@ def test_refresh_voice_input_stays_within_its_declared_systemctl_budget():
         )
         reconcile.refresh_voice_input(systemctl=systemctl)
         assert len(calls) <= reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS, calls
+
+
+@pytest.mark.parametrize(
+    ("wanted", "env_changed", "voice_active", "action", "command"),
+    [
+        (True, False, True, "start", ("--no-block", "start")),
+        (True, True, True, "restart", ("--no-block", "restart")),
+        (True, True, False, "start", ("--no-block", "start")),
+        (False, True, True, "stop", ("stop",)),
+    ],
+)
+def test_converge_voice_unit_runs_voice_for_as_long_as_a_mic_is_published(
+    wanted, env_changed, voice_active, action, command,
+):
+    calls = []
+    systemctl = _voice_owner_systemctl(calls, voice_active=voice_active)
+
+    assert reconcile.converge_voice_unit(
+        wanted=wanted,
+        env_changed=env_changed,
+        systemctl=systemctl,
+    ) == (action, ())
+
+    assert (*command, reconcile.VOICE_UNIT) in calls
+    assert not any(
+        verb in entry and reconcile.VOICE_UNIT in entry
+        for entry in calls
+        for verb in ("enable", "disable")
+    )
+    assert len(calls) <= reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS, calls
+
+
+def test_converge_voice_unit_reports_a_refused_start_as_a_failure():
+    def refusing_systemctl(args):
+        if tuple(args)[0] == "show":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="Access denied")
+
+    action, failures = reconcile.converge_voice_unit(
+        wanted=True, env_changed=False, systemctl=refusing_systemctl,
+    )
+
+    assert action == "none"
+    assert failures == (
+        f"{reconcile.VOICE_UNIT}: systemctl --no-block start "
+        f"{reconcile.VOICE_UNIT} failed: Access denied",
+    )
+
+
+@pytest.mark.parametrize(
+    ("device_name", "voice_command"),
+    [
+        ("WiiM Remote 2", ("--no-block", "start")),
+        (None, ("stop",)),
+        ("Anticater VK-01", ("stop",)),
+    ],
+)
+def test_reconciler_owns_voice_where_it_follows_the_accessory_mic(
+    monkeypatch,
+    tmp_path: Path,
+    device_name,
+    voice_command,
+):
+    env_file = tmp_path / "accessory-mics.env"
+    calls = []
+    managed = (
+        {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device(name=device_name)}
+        if device_name
+        else {}
+    )
+
+    async def fake_bluez():
+        return managed
+
+    monkeypatch.setattr(reconcile, "read_install_profile", lambda: "streambox")
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
+    monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+
+    asyncio.run(
+        reconcile.reconcile_once(
+            env_file=str(env_file),
+            systemctl=_voice_owner_systemctl(
+                calls, adapter_active=bool(device_name == "WiiM Remote 2"),
+            ),
+            reason="pair",
+        ),
+    )
+
+    assert (*voice_command, reconcile.VOICE_UNIT) in calls
+    assert not any(
+        verb in entry and reconcile.VOICE_UNIT in entry
+        for entry in calls
+        for verb in ("enable", "disable", "try-restart")
+    )
+    assert ("--no-block", "start", reconcile.VOICE_INPUT_GATE_UNIT) not in calls
+
+
+def test_owned_voice_restarts_when_published_sources_change_under_it(
+    monkeypatch,
+    tmp_path: Path,
+):
+    env_file = tmp_path / "accessory-mics.env"
+    env_file.write_text(
+        "JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:Stale\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    async def fake_bluez():
+        return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
+
+    monkeypatch.setattr(reconcile, "read_install_profile", lambda: "streambox")
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
+    monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+
+    asyncio.run(
+        reconcile.reconcile_once(
+            env_file=str(env_file),
+            systemctl=_voice_owner_systemctl(
+                calls, adapter_active=True, voice_active=True,
+            ),
+            reason="pair",
+        ),
+    )
+
+    assert env_file.read_text(encoding="utf-8") == (
+        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n"
+    )
+    assert ("--no-block", "restart", reconcile.VOICE_UNIT) in calls
+    assert ("--no-block", "start", reconcile.VOICE_UNIT) not in calls
+
+
+def test_wake_detection_profile_keeps_handing_voice_to_its_gate_owner(
+    monkeypatch,
+    tmp_path: Path,
+):
+    env_file = tmp_path / "accessory-mics.env"
+    calls = []
+
+    async def fake_bluez():
+        return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
+
+    monkeypatch.setattr(reconcile, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
+    monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+
+    asyncio.run(
+        reconcile.reconcile_once(
+            env_file=str(env_file),
+            systemctl=_voice_owner_systemctl(calls, adapter_active=True),
+            reason="pair",
+        ),
+    )
+
+    assert ("--no-block", "try-restart", reconcile.VOICE_UNIT) in calls
+    assert not any(
+        command[-1] == reconcile.VOICE_UNIT
+        and command[-2] in ("start", "restart", "stop")
+        for command in calls
+    )
 
 
 def test_adapter_service_systemctl_failures_are_observable(caplog):

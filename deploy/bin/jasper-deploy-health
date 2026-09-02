@@ -35,9 +35,14 @@ INSTALL_PROFILE_FILE = Path("/var/lib/jasper/install_profile")
 SOURCE_INTENT_FILE = Path("/var/lib/jasper/source_intent.env")
 SOURCE_RECONCILE_STATUS_FILE = Path("/run/jasper-source-intent/status.json")
 GROUPING_ENV_FILE = Path("/var/lib/jasper/grouping.env")
+# Written by jasper-accessory-reconcile; jasper/accessories/mic_env.py owns the
+# path and the key format.
+ACCESSORY_MIC_ENV_FILE = Path("/var/lib/jasper/accessory-mics.env")
+MANUAL_MIC_SOURCES_KEY = "JASPER_MANUAL_MIC_SOURCES"
 FULL_INSTALL_PROFILE = "full"
 STREAMBOX_INSTALL_PROFILE = "streambox"
 LEGACY_STREAMBOX_INSTALL_PROFILES = frozenset({"endpoint", "satellite"})
+VOICE_UNIT = "jasper-voice.service"
 AIRPLAY_UNIT = "shairport-sync.service"
 AIRPLAY_INTENT_KEY = "JASPER_SOURCE_INTENT_SHAIRPORT_SYNC_SERVICE"
 SPOTIFY_UNIT = "librespot.service"
@@ -110,11 +115,11 @@ REQUIRED_ACTIVE_SOCKETS = (
 
 OBSERVED_OPTIONAL_UNITS_BY_PROFILE = {
     FULL_INSTALL_PROFILE: (
-        "jasper-voice.service",
+        VOICE_UNIT,
         "jasper-aec-bridge.service",
     ),
-    # Voice and AEC are intentionally disabled by park_streambox_brain_units.
-    # Do not manufacture warnings for units this install profile cannot run.
+    # A streambox has no AEC stack at all, and its voice daemon runs only while
+    # a mic-bearing remote is paired — see _observed_optional_units.
     STREAMBOX_INSTALL_PROFILE: (),
 }
 
@@ -150,6 +155,40 @@ def _read_install_profile(path: Path | None = None) -> str:
     raise RuntimeError(
         f"invalid install profile {raw!r} in {marker}; expected full or streambox"
     )
+
+
+def _accessory_mic_published() -> bool:
+    """Whether jasper-accessory-reconcile currently publishes a mic source.
+
+    The writer deletes the file when nothing is paired, so absent and
+    empty-valued both mean "no accessory microphone". Unreadable answers the
+    same: this probe never invents an expectation it cannot evidence.
+    """
+
+    try:
+        body = ACCESSORY_MIC_ENV_FILE.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    value = ""
+    for line in body.splitlines():
+        key, separator, raw = line.strip().partition("=")
+        if separator and key == MANUAL_MIC_SOURCES_KEY:
+            # Last assignment wins, mirroring systemd EnvironmentFile=.
+            value = raw.strip().strip("'\"").strip()
+    return bool(value)
+
+
+def _observed_optional_units(profile: str) -> tuple[str, ...]:
+    """Units worth a WARN when inactive, for the state this box is actually in.
+
+    A streambox runs the voice daemon only while a remote mic is published, so
+    expecting it on a bare box would manufacture a permanent warning.
+    """
+
+    units = OBSERVED_OPTIONAL_UNITS_BY_PROFILE[profile]
+    if profile == STREAMBOX_INSTALL_PROFILE and _accessory_mic_published():
+        return units + (VOICE_UNIT,)
+    return units
 
 
 def _systemctl_is_active(unit: str) -> str:
@@ -716,7 +755,7 @@ def main() -> int:
             failures += 1
             _line("FAIL", socket_unit, state)
 
-    for unit in OBSERVED_OPTIONAL_UNITS_BY_PROFILE[profile]:
+    for unit in _observed_optional_units(profile):
         state = _systemctl_is_active(unit)
         if state == "active":
             _line("OK", unit, state)
