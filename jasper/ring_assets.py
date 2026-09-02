@@ -2,28 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where the ``jts_ring`` transport platform assets live, and are they present.
+"""The ``jts_ring`` transport platform's asset vocabulary: names, paths, conf.d.
 
-The single source of truth for the three ring-platform assets every box ships:
-the compiled ioplug ``.so``, the conf.d PCM definitions
-(:data:`RING_CONF_PCMS`), and the
-``/dev/shm/jts-ring`` tmpfs directory. Three consumers share this SSOT so the
-"which files must exist" contract never drifts:
+Single source of truth for the three ring-platform assets every box ships — the
+compiled ioplug ``.so``, the conf.d PCM definitions (:data:`RING_CONF_PCMS`) and
+the ``/dev/shm/jts-ring`` tmpfs directory — shared by three consumers:
 
 - ``jasper.cli.doctor.audio_runtime.check_ring_platform_assets`` — the
-  deploy-time health
-  probe (also open-probes the PCMs; that lives in the doctor because it needs
-  ``arecord``/``aplay``).
-- ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**: the
-  reconciler refuses to ARM the ring coupling when an asset is missing, so a
-  half-installed ring platform can never strand the realtime path (the ioplug
+  deploy-time health probe. It also open-probes the PCMs, which needs
+  ``arecord``/``aplay`` and so lives in the doctor.
+- ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**:
+  the reconciler refuses to ARM the ring coupling when an asset is missing, so
+  a half-installed ring platform cannot strand the realtime path (the ioplug
   would fail to resolve and CamillaDSP would crash-loop on its statefile).
-  Presence-only here — an open-probe from the reconciler could
-  disturb a live arm, and the doctor already owns the deep probe.
+  Presence only — an open-probe from the reconciler could disturb a live arm.
 - ``jasper.cli.audio_config render-ring-conf-wire`` — the per-box conf.d
-  **renderer** the output-hardware reconciler shells into. It reuses this
-  module's own regexes to REWRITE the values it also parses, so the reader and
-  the writer of the conf.d format cannot drift.
+  **renderer** the output-hardware reconciler shells into. It rewrites the
+  values through this module's own regexes, so the reader and the writer of the
+  conf.d format cannot drift.
 
 Import-cheap (stdlib, plus the import-free ``jasper.fanin_coupling`` constants)
 so the reconciler and the socket-activated web surfaces can resolve asset
@@ -42,41 +38,38 @@ from jasper.fanin_coupling import (
     RingWire,
 )
 
-# The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
-# This is the shared canonical home for the value — do not re-duplicate it as
-# a literal elsewhere. The build/install path is
-# ``deploy/lib/install/ring-platform.sh``.
+# The aarch64 ALSA plugin dir the ioplug ``.so`` installs into. Canonical home
+# for the value — do not re-spell it as a literal elsewhere. Build and install
+# path: ``deploy/lib/install/ring-platform.sh``.
 RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
 RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"
 RING_CONF_D = "/etc/alsa/conf.d/60-jts-ring.conf"
-# The tmpfs directory the ring files live in (shipped by
-# ``deploy/tmpfiles/jts-ring.conf``, mode 3775 root:jts-ring — sticky +
-# setgid + group-write; see that file for what each bit buys).
+# The tmpfs directory the ring files live in (``deploy/tmpfiles/jts-ring.conf``,
+# mode 3775 root:jts-ring — sticky + setgid + group-write).
 RING_SHM_DIR = "/dev/shm/jts-ring"
 # Ring A (fan-in -> CamillaDSP program) and Ring B (CamillaDSP -> outputd content)
 # on-disk ring files under RING_SHM_DIR. Basenames match the conf.d ``path``
 # values (``jts_ring_capture`` -> program.ring, ``jts_ring_playback`` ->
 # content.ring) and the Rust defaults. Ring A is the one whose slot geometry the
 # fan-in ``JASPER_FANIN_RING_SLOTS`` env and the conf.d ``jts_ring_capture``
-# ``n_slots`` must agree on (the defect-A coherence axis).
+# ``n_slots`` must agree on.
 RING_A_PROGRAM_FILE = os.path.join(RING_SHM_DIR, "program.ring")
 RING_B_CONTENT_FILE = os.path.join(RING_SHM_DIR, "content.ring")
 # The ACTIVE ring's on-disk file — the roleful box's post-crossover per-driver
-# hop (ring v2 R7b). A THIRD file beside the two above, never a re-use of Ring
-# B's: the two rings coexist on an armed roleful box and carry different
-# programs at different widths.
+# hop. A THIRD file beside the two above, never a re-use of Ring B's: the two
+# rings coexist on an armed roleful box and carry different programs at
+# different widths.
 RING_ACTIVE_CONTENT_FILE = os.path.join(RING_SHM_DIR, "active-content.ring")
 # The adjacent lock file whose EXCLUSIVE ``flock`` a C ioplug WRITER holds for
 # the life of its mapping — ``JTS_RING_WRITER_LOCK_SUFFIX`` in
-# ``c/jts-ring-ioplug/jts_ring_shm.h``, spelled here because Python is now a
-# reader of that lock too (the grouping reconciler's active-content release
-# barrier, and the doctor's writer-exclusivity guard). Pinned against the C
-# header by ``tests/test_ring_slot_ceiling_pin.py`` so the two spellings cannot
-# drift.
+# ``c/jts-ring-ioplug/jts_ring_shm.h``, pinned against that header by
+# ``tests/test_ring_slot_ceiling_pin.py`` so the two spellings cannot drift.
+# Python is a reader of this lock (the grouping reconciler's active-content
+# release barrier, and the doctor's writer-exclusivity guard).
 #
 # DISTINCT from ``.open.lock`` (``JTS_RING_OPEN_LOCK_SUFFIX``), which is a
 # TRANSACTION lock released as soon as create-or-attach completes. Only the
-# writer lock answers "does a live writer own this ring": this crate's Rust
+# writer lock answers "does a live writer own this ring": the Rust
 # ``RingWriter`` and ``RingReader`` take the ``.open.lock`` and never this one
 # (``rust/jasper-ring/src/lib.rs`` ``OpenTransactionLock``), so an fd on a
 # ``.writer.lock`` is a C writer and nothing else.
@@ -107,19 +100,19 @@ RING_CONF_PCMS = (RING_A_CONF_PCM, RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 
 # What a conf.d PCM block declares when it omits ``format`` / ``channels``.
 # Mirrors the C ioplug's ``JTS_RING_DEFAULT_FORMAT`` / ``JTS_RING_DEFAULT_CHANNELS``
-# (``c/jts-ring-ioplug/pcm_jts_ring.c``), which reproduce the pre-ring-v2 pinned
-# wire exactly. The renderer writes a key only where the resolved wire differs
-# from these, so a block whose value equals one never gains a line.
+# (``c/jts-ring-ioplug/pcm_jts_ring.c``). The renderer writes a key only where
+# the resolved wire differs from these, so a block whose value equals one never
+# gains a line.
 #
 # ``RING_CONF_DEFAULT_FORMAT`` MIRRORS THE C IOPLUG AND DOES NOT FOLLOW THE
-# RESOLVER. The ring wire's resolver now defaults WIDE
+# RESOLVER. The ring wire's resolver defaults WIDE
 # (``jasper.fanin_coupling.resolve_ring_wire_format``) while the compiled-in
-# ioplug default stayed ``S16_LE``, and moving this constant to match the
-# resolver would make Python believe a stale ``.so`` parses a ``format`` field it
-# cannot — precisely the walk :func:`ring_ioplug_wire_supported` exists to catch.
-# The disagreement is the point: it is what makes the capability gate live.
-# ``deploy/alsa/conf.d/60-jts-ring.conf`` therefore DECLARES ``format S32_LE``
-# explicitly rather than relying on an omitted key.
+# ioplug default is ``S16_LE``, and moving this constant to match the resolver
+# would make Python believe a stale ``.so`` parses a ``format`` field it cannot
+# — precisely what :func:`ring_ioplug_wire_supported` exists to catch. The
+# disagreement is what keeps that capability gate live, and it is why
+# ``deploy/alsa/conf.d/60-jts-ring.conf`` DECLARES ``format S32_LE`` explicitly
+# rather than relying on an omitted key.
 RING_CONF_DEFAULT_FORMAT = "S16_LE"
 RING_CONF_DEFAULT_CHANNELS = 2
 
@@ -128,11 +121,9 @@ def ring_ioplug_so_path(*, plugin_dir: str | None = None) -> str:
     """Absolute path of the installed ioplug ``.so``.
 
     ``plugin_dir=None`` resolves :data:`RING_ALSA_PLUGIN_DIR` at CALL time, not
-    as a bound default — the rule this module already documents on
-    :func:`ring_conf_n_slots`, and the one the provenance readers were fixed to
-    follow. A def-time binding makes a caller that repoints the module constant
-    (a test, or any future per-arch resolution) silently read the original path
-    while every message still names the constant: one fact, two answers.
+    as a bound default, so a caller that repoints the module constant is honored
+    instead of silently reading the original path. Every ``None`` default in
+    this module follows that rule.
     """
     return os.path.join(
         RING_ALSA_PLUGIN_DIR if plugin_dir is None else plugin_dir, RING_IOPLUG_SO
@@ -171,11 +162,7 @@ def ring_asset_presence(
 ) -> RingAssetPresence:
     """Snapshot which of the three ring-platform assets are present on disk.
 
-    Pure filesystem stat — no ALSA open, no subprocess, leaves no residue. Args
-    are injectable so tests can repoint the paths at a tmpdir, and each ``None``
-    resolves its module constant at CALL time (the same rule as
-    :func:`ring_ioplug_so_path` and :func:`ring_conf_n_slots`) so repointing the
-    constant works too.
+    Pure filesystem stat — no ALSA open, no subprocess, leaves no residue.
     """
     return RingAssetPresence(
         so_present=os.path.exists(ring_ioplug_so_path(plugin_dir=plugin_dir)),
@@ -188,31 +175,30 @@ def ring_asset_presence(
 # ioplug PROVENANCE — what the .so that is INSTALLED can actually parse.
 #
 # Presence is not capability. The ioplug build is deliberately DEGRADE-TO-WARN
-# (``deploy/lib/install/ring-platform.sh``): when the compile fails, the install
+# (``deploy/lib/install/ring-platform.sh``): when the compile fails the install
 # continues and the PREVIOUS ``.so`` stays in place beside freshly-installed Rust
 # daemons. Presence-only checks — and the doctor's open-probe, which a stale but
-# structurally-valid ioplug passes — cannot see that. The failure that record
-# closes is specific: a conf.d rendered with a ``format`` / ``channels`` key that
-# the old ``.so`` does not know is refused at ``open()`` with ``-EINVAL``
+# structurally-valid ioplug passes — cannot see that. The failure this record
+# closes is specific: a conf.d rendered with a ``format`` / ``channels`` key the
+# old ``.so`` does not know is refused at ``open()`` with ``-EINVAL``
 # ("jts_ring: unknown field %s"), so CamillaDSP cannot start against the ring.
 #
-# So the installer records what it installed, and the reconciler COMPARES
-# records — it never opens a PCM to find out (an open-probe against a live ring
-# hits the ioplug's SPSC guard, and probing from the arm path is exactly the
-# disturbance the doctor's armed-skip exists to avoid).
+# So the installer records what it installed and the reconciler COMPARES
+# records; it never opens a PCM to find out, because an open-probe against a
+# live ring hits the ioplug's SPSC guard and probing from the arm path is the
+# disturbance the doctor's armed-skip exists to avoid.
 RING_IOPLUG_PROVENANCE = "/var/lib/jasper/ring-ioplug.provenance"
 
 # The capability VOCABULARY: one token per conf.d field the ioplug must parse
-# for a wire that declares it to be openable. These are not version numbers —
-# a pre-ring-v2 ``.so`` refuses BOTH fields, and each was added independently,
-# so the record names what is supported rather than when it was built.
+# for a wire that declares it to be openable. Not version numbers — the record
+# names what is supported rather than when it was built.
 RING_CAP_WIRE_FORMAT = "wire_format"
 RING_CAP_WIRE_CHANNELS = "wire_channels"
-#: ``pace_nominal`` — the grouping ring's playback rate limiter. Registered in the
-#: vocabulary for the same reason as the two above: a conf.d that declares the
-#: field against an older ``.so`` is refused at ``open()`` with ``-EINVAL``, so the
-#: record has to be able to name it. No ``RingWire`` implies it (the grouping ring
-#: is its own conf.d, not part of the ring_a/ring_b/ring_active wire), so
+#: ``pace_nominal`` — the grouping ring's playback rate limiter. In the vocabulary
+#: for the same reason as the two above: a conf.d declaring the field against an
+#: older ``.so`` is refused at ``open()`` with ``-EINVAL``, so the record has to be
+#: able to name it. No ``RingWire`` implies it (the grouping ring is its own
+#: conf.d, not part of the ring_a/ring_b/ring_active wire), so
 #: :func:`ring_wire_capabilities` never asks for it — the record simply carries it.
 RING_CAP_PACE_NOMINAL = "pace_nominal"
 RING_IOPLUG_CAPS = (RING_CAP_WIRE_FORMAT, RING_CAP_WIRE_CHANNELS, RING_CAP_PACE_NOMINAL)
@@ -227,12 +213,10 @@ RING_PROVENANCE_CAPS_KEY = "JTS_RING_IOPLUG_CAPS"
 class RingIoplugProvenance:
     """What the installer recorded about the ioplug ``.so`` it installed.
 
-    ``recorded`` is False when the file is absent or carries no usable sha —
-    which is the state of every box that has not run an installer carrying this
-    feature, and of every box whose ioplug build failed before a record was ever
-    written. That is NOT an error condition by itself: a wire that needs no
-    capability beyond the ioplug's own defaults never consults this record at
-    all (see :func:`ring_ioplug_wire_supported`).
+    ``recorded`` is False when the file is absent or carries no usable sha. That
+    is not an error condition by itself: a wire needing no capability beyond the
+    ioplug's own defaults never consults this record at all (see
+    :func:`ring_ioplug_wire_supported`).
     """
 
     recorded: bool
@@ -248,14 +232,6 @@ def read_ring_ioplug_provenance(
     Unparseable / absent / sha-less content answers ``recorded=False`` rather
     than a partial record: a record that cannot name WHICH ``.so`` it describes
     cannot vouch for the one on disk, so there is nothing to trust.
-
-    ``path=None`` resolves :data:`RING_IOPLUG_PROVENANCE` at CALL time, not as a
-    bound default — the same rule :func:`ring_conf_n_slots` follows, and for the
-    same reason: a default bound at import captures the constant forever, so a
-    caller (or a test) that repoints the module attribute is silently ignored
-    and the read lands on the real path. That silence had a live cost here — the
-    doctor's check named ``RING_IOPLUG_PROVENANCE`` in its own message while
-    reading a path nothing could redirect, which is one fact with two answers.
     """
     path = RING_IOPLUG_PROVENANCE if path is None else path
     try:
@@ -287,12 +263,8 @@ def read_ring_ioplug_provenance(
 def ring_ioplug_so_sha256(*, plugin_dir: str | None = None) -> str | None:
     """SHA-256 of the installed ioplug ``.so``, or ``None`` if unreadable.
 
-    Chunked read (the ``.so`` is small, but streaming keeps the reconciler's
-    memory bounded on a 1 GB box regardless of what ships there later).
-
-    ``plugin_dir=None`` resolves :data:`RING_ALSA_PLUGIN_DIR` at CALL time — the
-    rule :func:`ring_ioplug_so_path` states and this signature used to break by
-    binding the constant as a default at import.
+    Chunked read: the ``.so`` is small, but streaming keeps the reconciler's
+    memory bounded on a 1 GB box regardless of what ships there later.
     """
     import hashlib
 
@@ -312,14 +284,11 @@ def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
     The conf.d renderer writes a ``format`` / ``channels`` key only where the
     resolved wire differs from :data:`RING_CONF_DEFAULT_FORMAT` /
     :data:`RING_CONF_DEFAULT_CHANNELS` (see :func:`render_ring_conf_wire`), and
-    an omitted key is what a pre-ring-v2 ioplug expects. So the capability a wire
-    needs is the set of keys it forces onto the conf.d — and it is now NON-EMPTY
-    on every box that has not pinned itself narrow, because the ring wire's
-    resolver defaults WIDE (``jasper.fanin_coupling.resolve_ring_wire_format``)
-    while :data:`RING_CONF_DEFAULT_FORMAT` stays the C ioplug's own ``S16_LE``.
-    This gate was dormant while those two agreed; it is live fleet-wide now, and
-    a box whose ioplug build failed is refused the arm rather than crashing
-    CamillaDSP at ``open()``.
+    an omitted key is what an older ioplug expects. So the capability a wire
+    needs is the set of keys it forces onto the conf.d — non-empty on every box
+    that has not pinned itself narrow, because the wire resolver defaults WIDE
+    (``jasper.fanin_coupling.resolve_ring_wire_format``) while
+    :data:`RING_CONF_DEFAULT_FORMAT` stays the C ioplug's own ``S16_LE``.
 
     THREE AXES, one per conf.d key the renderer can write:
 
@@ -328,25 +297,21 @@ def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
     * ``channels`` on Ring A / Ring B — the full-range stereo pair;
     * ``channels`` on the ACTIVE block — the post-crossover per-driver width, a
       SEPARATE axis because :func:`render_ring_conf_wire` writes that block from
-      ``ring_active_channels`` and a roleful box's Ring A/B stay structurally 2.
-      Without it the predicate was blind on exactly the boxes with the widest
-      ACTIVE ring: a roleful box driving 4+ channels renders ``channels 4`` into
-      a block this function never read, so a pre-ring-v2 ioplug that cannot parse
-      ``channels`` at all was admitted. The coercion mirrors the renderer's own
+      ``ring_active_channels`` while a roleful box's Ring A/B stay structurally
+      2, so a roleful box driving 4+ channels forces the key through this block
+      alone. The coercion mirrors the renderer's own
       (``ring_active_channels or RING_CONF_DEFAULT_CHANNELS``) so "which boxes
       force the key" has one answer, not two.
 
-    WHAT THIS DOES NOT WEIGH, so it does not over-promise: the axes above answer
-    "which keys does this WIRE force onto the conf.d", not "which keys does the
-    conf.d on disk DECLARE". Since the shipped conf.d now spells ``format``
-    explicitly, a box pinned narrow by an operator resolves an empty format axis
-    while its rendered conf.d still carries a ``format`` line — so a pre-ring-v2
-    ioplug would refuse it at ``open()`` with this predicate reporting nothing
-    needed. That shape predates this flip (any box rolled back from a declared
-    wide wire had it), it needs an operator pin AND an unvouched plugin to bite,
-    and closing it means keying the predicate on the FILE rather than the wire —
-    a contract change to a safety-adjacent gate, so it is issue #2597 rather
-    than a silent widening here.
+    WHAT THIS DOES NOT WEIGH: the axes above answer "which keys does this WIRE
+    force onto the conf.d", not "which keys does the conf.d on disk DECLARE".
+    Since the shipped conf.d spells ``format`` explicitly, a box an operator has
+    pinned narrow resolves an empty format axis while its rendered conf.d still
+    carries a ``format`` line — an older ioplug would refuse it at ``open()``
+    with this predicate reporting nothing needed. It needs an operator pin AND
+    an unvouched plugin to bite, and closing it means keying the predicate on
+    the FILE rather than the wire — a contract change to a safety-adjacent gate,
+    so it is issue #2597 rather than a silent widening here.
     """
     needed: set[str] = set()
     if wire.sample_format != RING_CONF_DEFAULT_FORMAT:
@@ -389,14 +354,10 @@ def ring_ioplug_wire_supported(
     - **missing capability** — the record describes this ``.so`` and says it
       cannot parse a field the wire needs.
 
-    Short-circuits to ``ok`` when the wire needs nothing (:func:`ring_wire_capabilities`
-    is empty) — no file is read and no hash is computed on that path. Since the
-    wire resolver's default went wide that arm is reached only by a box an
-    operator has pinned narrow; on every other box this is a live record compare.
-
-    ``provenance_path=None`` and ``plugin_dir=None`` resolve their module
-    constants at CALL time — see :func:`read_ring_ioplug_provenance` for why a
-    bound default is wrong here.
+    Short-circuits to ``ok`` when the wire needs nothing
+    (:func:`ring_wire_capabilities` is empty) — no file is read and no hash is
+    computed on that path. That arm is reached only by a box an operator has
+    pinned narrow; on every other box this is a live record compare.
     """
     provenance_path = (
         RING_IOPLUG_PROVENANCE if provenance_path is None else provenance_path
@@ -489,18 +450,16 @@ def ring_ioplug_wire_supported(
 # ``jts_ring_playback`` ioplug opens Ring B with the conf.d's ``period_frames``,
 # and jasper-outputd's ``ShmRingSource`` attaches with
 # ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per DAC period — see
-# rust/jasper-outputd/src/config.rs "the ring's period_frames is always
-# outputd's period_frames"). A geometry mismatch against an existing ring is a
-# hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
-# existing ring is an open() error"). On a box whose resolved outputd period is
-# not 128 (the packaged default is 1024; a DAC declaring a 128-frame latency
-# floor lowers it, and so does an operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` in
-# ``/etc/jasper/jasper.env``, which outranks the reconciler's floor-derived
-# value — jts4 reached the ring that way on 2026-08-14, before its profile
-# declared a floor), CamillaDSP's ring open would fail and the arm would
-# roll back with a confusing daemon-level error — so the coupling reconciler
-# PREFLIGHTs the match and refuses to arm, with a crisp reason instead. The fix
-# is always to bring the OUTPUTD period to the slot, never to raise this file.
+# rust/jasper-outputd/src/config.rs). A geometry mismatch against an existing
+# ring is a hard ``open()`` error in the C ioplug. On a box whose resolved
+# outputd period is not 128 (the packaged default is 1024; a DAC declaring a
+# 128-frame latency floor lowers it, and so does an operator
+# ``JASPER_OUTPUTD_PERIOD_FRAMES`` in ``/etc/jasper/jasper.env``, which outranks
+# the reconciler's floor-derived value), CamillaDSP's ring open would fail and
+# the arm would roll back with a confusing daemon-level error — so the coupling
+# reconciler PREFLIGHTs the match and refuses to arm with a crisp reason
+# instead. The fix is always to bring the OUTPUTD period to the slot, never to
+# raise this file.
 #
 # :func:`render_ring_conf_wire`'s PERIOD axis therefore has exactly one live
 # job: converging a conf.d that has drifted OFF ``RING_SLOT_FRAMES`` (a hand
@@ -524,9 +483,7 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
     ring shares one slot geometry). ``None`` when the file is absent,
     unreadable, has no ``period_frames`` line, or declares *inconsistent* values
     across the blocks (a torn conf.d — the caller treats that as a mismatch, not
-    a silent pick). Pure text parse, no ALSA. ``conf_d=None`` resolves
-    :data:`RING_CONF_D` at CALL time (not a bound default) so a test / caller that
-    repoints the module constant is honored.
+    a silent pick). Pure text parse, no ALSA.
     """
     path = RING_CONF_D if conf_d is None else conf_d
     try:
@@ -541,38 +498,34 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
     return next(iter(values))
 
 
-# --- Ring A slot-count coherence (defect A) --------------------------------
+# --- Ring A slot-count coherence -------------------------------------------
 #
 # The ring's ``n_slots`` is a SECOND geometry axis independent of period_frames.
 # fan-in creates Ring A with ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots
 # (default 2); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (2 in
 # the shipped file); the on-disk ring header records the ``n_slots`` the writer
 # actually created. A mismatch on ANY of the three axes is a hard failure:
-#   - fan-in env vs conf.d: fan-in creates an old 8-slot ring but CamillaDSP's
-#     ioplug attaches expecting 2 → hw_params EINVAL + ioplug attach_fatal
-#     ("ring header does not match expected geometry") → CamillaDSP crash-loop →
-#     start-limit-hit.
-#     (The 2026-07-06 default migration class: old 8-slot ring state must converge
-#     to the new 2-slot production default.)
-#   - on-disk vs expected: a stale ring file left over from a prior geometry (e.g.
-#     an old 8-slot file from before this 2-slot default) is a create-or-ATTACH
-#     open() error for the writer, because
-#     ``jasper_ring::RingWriter::create_or_attach`` validates the existing header's
-#     geometry against the requested one.
+#   - fan-in env vs conf.d: fan-in creates a ring at one slot count while
+#     CamillaDSP's ioplug attaches expecting another → hw_params EINVAL + ioplug
+#     attach_fatal ("ring header does not match expected geometry") →
+#     CamillaDSP crash-loop → start-limit-hit.
+#   - on-disk vs expected: a stale ring file left over from a prior geometry is
+#     a create-or-ATTACH open() error for the writer, because
+#     ``jasper_ring::RingWriter::create_or_attach`` validates the existing
+#     header's geometry against the requested one.
 #
 # Per-block field parsing. The conf.d has one PCM block per ring
-# (:data:`RING_CONF_PCMS`), and since ring v2 they can declare DIFFERENT
-# geometry: Ring A's ``channels`` is always the stereo program, Ring B's follows
-# the box's output topology, and the ACTIVE ring's is the post-crossover
-# per-driver width. So every field parser here is scoped to one named block; a
-# whole-file scan would collapse legitimately different values into "torn".
+# (:data:`RING_CONF_PCMS`) and they can declare DIFFERENT geometry: Ring A's
+# ``channels`` is always the stereo program, Ring B's follows the box's output
+# topology, and the ACTIVE ring's is the post-crossover per-driver width. So
+# every field parser here is scoped to one named block; a whole-file scan would
+# collapse legitimately different values into "torn".
 #
 # ``_ring_conf_block_body`` finds that block by MATCHING BRACES rather than by
-# regex. A `[^}]*` body (what this used before the per-block fields landed)
-# terminates at the FIRST `}`, so any nested block — ALSA's own ``hint { … }``
-# convention is the obvious one — would truncate the body and hide every field
-# after it. Quoted values are skipped so a brace inside ``path "…"`` cannot
-# unbalance the scan.
+# regex. A `[^}]*` body terminates at the FIRST `}`, so any nested block —
+# ALSA's own ``hint { … }`` convention is the obvious one — would truncate the
+# body and hide every field after it. Quoted values are skipped so a brace
+# inside ``path "…"`` cannot unbalance the scan.
 _RING_CONF_BLOCK_OPEN_RE_TEMPLATE = r"pcm\.{name}[^\S\n]*\{{"
 
 
@@ -663,8 +616,7 @@ def _single_block_value(
     ``n_slots``/``period_frames``, where nothing supplies a value if the conf.d
     does not. Pass a string for a key whose omission the C ioplug fills in with
     a documented default — an omitted ``format``/``channels`` genuinely declares
-    that wire, and reporting "indeterminate" for the shipped file would fail
-    every guard on every box.
+    that wire.
     """
     text = _read_conf_text(conf_d)
     if text is None:
@@ -687,9 +639,7 @@ def ring_conf_n_slots(pcm_name: str, conf_d: str | None = None) -> int | None:
     Returns the single ``n_slots`` value that block declares, or ``None`` when
     the file is absent/unreadable, the block is missing, or the block declares no
     single ``n_slots`` (a torn conf.d — the caller treats that as a mismatch, not
-    a silent pick). Pure text parse, no ALSA. ``conf_d=None`` resolves
-    :data:`RING_CONF_D` at CALL time (not a bound default) so a test/caller that
-    repoints the module constant is honored.
+    a silent pick). Pure text parse, no ALSA.
     """
     raw = _single_block_value(_RING_CONF_N_SLOTS_RE, pcm_name, conf_d)
     return None if raw is None else int(raw)
@@ -722,11 +672,11 @@ def ring_conf_format(pcm_name: str, conf_d: str | None = None) -> str | None:
     declares a complete wire.
 
     The SHIPPED conf.d does not rely on that for this key — it spells
-    ``format S32_LE`` in every block, because the resolver's default went wide
-    while the plugin's compiled-in default stayed narrow, so silence here would
-    declare the opposite of what every other end resolves. The absent-key branch
-    remains live for a hand-edited or foreign file, and for ``channels``, which
-    the shipped file does still omit.
+    ``format S32_LE`` in every block, because the resolver defaults wide while
+    the plugin's compiled-in default is narrow, so silence here would declare
+    the opposite of what every other end resolves. The absent-key branch remains
+    live for a hand-edited or foreign file, and for ``channels``, which the
+    shipped file does still omit.
     """
     return _single_block_value(
         _RING_CONF_FORMAT_RE, pcm_name, conf_d, absent=RING_CONF_DEFAULT_FORMAT
@@ -737,11 +687,8 @@ def ring_conf_format(pcm_name: str, conf_d: str | None = None) -> str | None:
 class RingConfWireRender:
     """The outcome of rendering the ring conf.d wire for one box.
 
-    ``changed`` is False for the no-write outcome — the conf already declares the
-    target wire, which is the golden case on a box running the shipped geometry
-    (a box whose declared floor equals the shipped 128, on the shipped
-    ``S32_LE`` / 2-channel wire the conf.d spells and an undeclared box
-    resolves).
+    ``changed`` is False for the no-write outcome: the conf already declares the
+    target wire.
 
     ``previous_period_frames`` is ``None`` for a TORN conf.d whose PCM blocks
     disagreed, because there was no single previous value to report.
@@ -784,8 +731,7 @@ def _render_block_field(
       anchor.
 
     A present key is never DELETED when it returns to the default: rewriting it
-    to the explicit default converges just as exactly, and a substitution cannot
-    disturb a line the deletion path would have to find the boundaries of.
+    to the explicit default converges just as exactly.
     """
     if pattern.search(body):
         return pattern.sub(lambda m: f"{m.group('indent')}{key} {value}", body)
@@ -814,19 +760,18 @@ def render_ring_conf_wire(
     ``wire`` is a :class:`~jasper.fanin_coupling.RingWire` — the ONE per-box
     resolution of the ring's geometry. Taking the resolved object rather than
     four loose scalars is deliberate: the four ends of the ring must declare the
-    same tuple, and a call site that could pass a format from one resolution and
-    a channel count from another is exactly the shear this rung exists to close.
+    same tuple, so a call site cannot pass a format from one resolution and a
+    channel count from another.
 
     What lands where:
 
     - ``period_frames`` — every block, one shared value (the ring slot IS one
-      outputd DAC period). This is the per-box render the conf.d's own header
-      calls for; the CALLER decides whether a render is warranted (the rule is
-      "only from a DECLARED :class:`~jasper.audio_hardware.dac.LatencyFloor`"),
-      so this function never consults the DAC registry itself.
+      outputd DAC period). The CALLER decides whether a render is warranted (the
+      rule is "only from a DECLARED
+      :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this function never
+      consults the DAC registry itself.
     - ``format`` — every block, one shared value. The rings carry one wire
-      format; a box with two would need every emitter, gate and doctor surface
-      to carry two forever.
+      format.
     - ``channels`` — PER BLOCK. ``jts_ring_capture`` (Ring A) declares
       ``ring_a_channels``: everything upstream of CamillaDSP is a stereo
       program, and fan-in's mixer is stereo. ``jts_ring_playback`` (Ring B)
@@ -847,16 +792,14 @@ def render_ring_conf_wire(
     ("ring header does not match expected geometry") that CRASHES shm_ring at
     arm rather than refusing it. Asking for a different period is therefore a
     caller bug and raises; making the slot floor-derived across fan-in, the
-    ioplug, the CamillaDSP emitter, and the negotiation model is issue #2147.
+    ioplug, the CamillaDSP emitter and the negotiation model is issue #2147.
     This guard is defence in depth behind the caller's own floor gate.
 
     **Write-on-change only.** When the conf already declares exactly this wire
-    the file is left GENUINELY untouched — no rewrite, no mtime churn — so a box
-    that renders to the shipped values is byte-identical to one that never
-    rendered. A box on the shipped wire never gains a line either, by two
-    different routes: the shipped ``format`` line is already the resolved token
-    so it is SUBSTITUTED in place with the same value, and an omitted
-    ``channels`` key already declares
+    the file is left GENUINELY untouched — no rewrite, no mtime churn. A box on
+    the shipped wire never gains a line either, by two routes: the shipped
+    ``format`` line is already the resolved token so it is SUBSTITUTED in place
+    with the same value, and an omitted ``channels`` key already declares
     :data:`RING_CONF_DEFAULT_CHANNELS` so nothing is inserted. Otherwise the
     whole file is published through
     :func:`jasper.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
@@ -878,8 +821,8 @@ def render_ring_conf_wire(
     ring_b_channels = wire.ring_b_channels
     # A box with no active ring (every non-roleful topology, and any roleful one
     # whose driven width is indeterminate) declares the ioplug's own default in
-    # that block, which is what the SHIPPED file already says — so the block is
-    # left byte-identical rather than rendered to an invented width.
+    # that block — what the SHIPPED file already says — so the block is left
+    # byte-identical rather than rendered to an invented width.
     ring_active_channels = wire.ring_active_channels or RING_CONF_DEFAULT_CHANNELS
 
     if period_frames != RING_SLOT_FRAMES:
@@ -910,12 +853,12 @@ def render_ring_conf_wire(
     # What each block gets, keyed by name. The ACTIVE block is required only when
     # there is something to write into it: a conf.d predating the active ring (an
     # in-flight deploy, where the new Python is installed a step before the new
-    # conf.d) has no such block, and on the box that file describes there is also
-    # no active ring — so raising there would turn an ordinary upgrade ordering
-    # into a failed reconcile over a value that was never going to change. When
-    # the wire DOES resolve a real active width, the block's absence is a genuine
-    # fault and still raises: the ioplug attaches with what the block says, so
-    # silently skipping the write would ship a shear.
+    # conf.d) has no such block, and on that box there is no active ring either,
+    # so raising would turn an upgrade ordering into a failed reconcile over a
+    # value that was never going to change. When the wire DOES resolve a real
+    # active width the block's absence is a genuine fault and still raises: the
+    # ioplug attaches with what the block says, so skipping the write silently
+    # would ship a shear.
     #
     # The arm path does not rely on that leniency — ``active_ring_endpoint_proof``
     # independently refuses to arm unless the block declares the resolved width,
@@ -929,11 +872,9 @@ def render_ring_conf_wire(
         ),
     }
     # WALK :data:`RING_CONF_PCMS`, the one list of which blocks exist, rather than
-    # a second literal tuple here. The widths genuinely differ per block, so the
-    # walk is a lookup rather than a zip — and the lookup is what makes a fourth
-    # ring FAIL LOUD instead of being silently skipped: adding a name to
-    # RING_CONF_PCMS without deciding its width raises here, at render time, on
-    # every box, rather than shipping a block the renderer never touches.
+    # a second literal tuple. The lookup is what makes a fourth ring FAIL LOUD:
+    # adding a name to RING_CONF_PCMS without deciding its width raises here, at
+    # render time, rather than shipping a block the renderer never touches.
     undeclared = [name for name in RING_CONF_PCMS if name not in per_block]
     if undeclared:
         raise ValueError(
@@ -974,13 +915,11 @@ def render_ring_conf_wire(
         rendered = rendered[: span[0]] + body + rendered[span[1] :]
 
     if rendered == text:
-        # A no-op render (nothing anywhere in the file changed) can only happen
-        # when every period_frames line already read `period_frames`: the
-        # substitution below rewrites EVERY matched line to that one target
-        # value, so a torn `distinct` (2+ original values, or a single value
-        # that differs from the target) would always change at least one line.
-        # `distinct == {period_frames}` is therefore guaranteed here, not a
-        # second condition to re-check.
+        # A no-op render can only happen when every period_frames line already
+        # read `period_frames`: the substitution rewrites EVERY matched line to
+        # that one target, so a torn `distinct` (2+ values, or a single value
+        # differing from the target) would always change at least one line.
+        # `distinct == {period_frames}` is guaranteed here, not re-checked.
         return RingConfWireRender(
             changed=False,
             period_frames=period_frames,
@@ -992,11 +931,10 @@ def render_ring_conf_wire(
             conf_d=path,
         )
     # Function-local so the module keeps its stdlib-only import cost for the
-    # presence/parse callers (the coupling reconciler and the socket-activated
-    # web surfaces); only the renderer pays for atomic_io. preserve_target_stat
-    # carries the installed file's uid/gid/mode across the replace, so the 0644
-    # renderer-user resolvability the conf.d header depends on survives, and a
-    # root-run reconcile does not re-own a file it did not create.
+    # presence/parse callers; only the renderer pays for atomic_io.
+    # preserve_target_stat carries the installed file's uid/gid/mode across the
+    # replace, so the 0644 renderer-user resolvability the conf.d depends on
+    # survives and a root-run reconcile does not re-own a file it did not create.
     from jasper.atomic_io import atomic_write_text
 
     atomic_write_text(path, rendered, preserve_target_stat=True)
@@ -1018,11 +956,9 @@ def render_ring_conf_wire(
 # against it.
 #
 # ALL SIX declared geometry fields are read, not just the two the slot-count
-# guard needs. ``rate``/``channels``/``sample_format`` have been real header
-# fields since v1 and the Rust/C attach compares every one of them field-by-
-# field, so a Python guard that reads only ``period_frames``/``n_slots`` cannot
-# see a file that shears on the other three — it would report a coherent ring
-# where the ioplug attach will fail.
+# guard needs: the Rust/C attach compares every one of them field-by-field, so a
+# Python guard reading only ``period_frames``/``n_slots`` would report a
+# coherent ring where the ioplug attach will fail.
 _RING_MAGIC = 0x4A52_494E  # "JRIN" little-endian (layout.rs MAGIC)
 _RING_HEADER_BYTES = 128  # layout.rs HEADER_BYTES
 # The one layout version this parser's offsets describe (layout.rs VERSION).
@@ -1037,22 +973,20 @@ _RING_OFF_N_SLOTS = 24  # u32
 # The two RUNTIME liveness fields, both little-endian u64 CLOCK_MONOTONIC
 # nanoseconds (layout.rs OFF_WRITER_HEARTBEAT_NS / OFF_READER_HEARTBEAT_NS).
 # Unlike the six geometry fields above these change every period, so they answer
-# "is this ring moving", not "what shape is it". They cost no extra I/O — the
-# reader below already pulls all 128 header bytes.
+# "is this ring moving", not "what shape is it".
 _RING_OFF_WRITER_HEARTBEAT_NS = 64  # u64
 _RING_OFF_READER_HEARTBEAT_NS = 80  # u64
-# The remaining RUNTIME fields, all little-endian u64. Same zero extra I/O: they
-# are inside the 128 bytes already read. What each one buys an observer that the
-# two heartbeats above do not:
+# The remaining RUNTIME fields, all little-endian u64, inside the same 128 bytes.
+# What each one buys an observer that the two heartbeats above do not:
 #   - the two SEQUENCE cursors are the only cross-process trace of DROPS. When
 #     the writer demotes an absent reader it advances ``read_seq`` on that
 #     reader's behalf, one slot per dropped publish, so while nothing live is
 #     stamping ``reader_heartbeat_ns`` a rising ``read_seq`` IS the drop cursor.
 #     Their DIFFERENCE is the ring's occupancy.
 #   - ``reader_pid`` separates "no reader has ever attached" (0 with a zero
-#     heartbeat — a cold ring still priming) from "a reader attached and stopped
-#     beating" (a pid with a stale heartbeat). Both leave the reader not-live;
-#     only the second is a fault. ``ring_flow_state`` is what uses the split.
+#     heartbeat) from "a reader attached and stopped beating" (a pid with a
+#     stale heartbeat). Both leave the reader not-live; only the second is a
+#     fault. ``ring_flow_state`` uses the split.
 #   - ``writer_epoch`` counts writer REATTACHES, so a flapping writer is legible
 #     without differencing journal lines.
 _RING_OFF_WRITER_EPOCH = 32  # u64
@@ -1064,11 +998,11 @@ _RING_OFF_READER_PID = 72  # u64
 # The staleness window a heartbeat may fall behind before its stamper counts as
 # gone. NOT a number chosen here: it is the C ioplug's own
 # ``JTS_RING_WRITER_LIVENESS_TIMEOUT_NS`` (``jts_ring_shm.h``), the exact
-# threshold ``reader_is_live`` applies to ``reader_heartbeat_ns`` when it decides
-# whether to demote a reader and free-run. Spelling the same number means the
-# alarm and the mechanism it reports agree BY CONSTRUCTION rather than by
-# coincidence — an observer with its own threshold would eventually disagree with
-# the writer about who is alive. Pinned against the C header by
+# threshold ``reader_is_live`` applies to ``reader_heartbeat_ns`` when deciding
+# whether to demote a reader and free-run. Spelling the same number makes an
+# observer's verdict and the mechanism it reports agree by construction; an
+# observer with its own threshold would eventually disagree with the writer
+# about who is alive. Pinned against the C header by
 # ``tests/test_ring_stall_alarm.py``.
 RING_LIVENESS_TIMEOUT_NS = 2_000_000_000
 
@@ -1099,9 +1033,9 @@ class RingHeader:
     treats it as "no coherent ring present".
 
     The version gate is a PARSER property, not a policy one: these offsets are
-    the v1 layout's, so a file announcing another version may put entirely
-    different meanings at them and its "geometry" would be fiction. ``version``
-    is still reported so a caller can name what it saw.
+    the v1 layout's, so a file announcing another version may put different
+    meanings at them and its "geometry" would be fiction. ``version`` is still
+    reported so a caller can name what it saw.
     """
 
     valid: bool
@@ -1119,10 +1053,10 @@ class RingHeader:
     # single-sample read and needs no sampling window.
     writer_heartbeat_ns: int = 0
     reader_heartbeat_ns: int = 0
-    # RUNTIME, not geometry (see the offset block above for what each buys).
-    # ``write_seq``/``read_seq`` are monotonic slot cursors; ``writer_pid`` /
-    # ``reader_pid`` are 0 when that end is not attached; ``writer_epoch``
-    # increments on every writer reattach. All 0 on a never-used ring.
+    # RUNTIME, not geometry (see the offset block above). ``write_seq`` /
+    # ``read_seq`` are monotonic slot cursors; ``writer_pid`` / ``reader_pid``
+    # are 0 when that end is not attached; ``writer_epoch`` increments on every
+    # writer reattach. All 0 on a never-used ring.
     writer_epoch: int = 0
     write_seq: int = 0
     read_seq: int = 0
@@ -1193,27 +1127,26 @@ def read_ring_header(path: str) -> RingHeader:
 class RingStallVerdict:
     """Is this ring being WRITTEN but not READ? The independent-observer alarm.
 
-    A ring-local frozen dataclass, matching :class:`RingHeaderCoherence` and the
-    other verdicts in this module rather than the ``severity``/``code`` dict
-    shape ``jasper.output_topology`` uses. Those are TOPOLOGY-evaluation
-    warnings: they ride ``evaluate_output_topology``'s ``warnings`` list, which
+    A ring-local frozen dataclass rather than the ``severity``/``code`` dict
+    shape ``jasper.output_topology`` uses: those warnings ride
+    ``evaluate_output_topology``'s ``warnings`` list, which
     ``OutputTopology.to_dict`` embeds and three persisted fingerprints hash
-    (issue #2500). A stall is RUNTIME state that changes second to second —
-    putting it in that list would make a topology's fingerprint vary with
-    whether a daemon happened to be wedged when it was read.
+    (issue #2500). A stall is RUNTIME state that changes second to second, so
+    putting it there would make a topology's fingerprint vary with whether a
+    daemon happened to be wedged when it was read.
 
     ``present`` is False when there is no coherent ring file to judge, or when
     the ring exists but nothing has stamped a writer heartbeat yet (an armed but
     idle ring). ``stalled`` is only meaningful when ``present``.
 
-    WHAT IT DETECTS. The C ioplug (CamillaDSP's side of the ACTIVE ring) demotes
-    a reader whose heartbeat has gone stale and then FREE-RUNS, dropping the
-    oldest slot per publish so the ring stays bounded. Audio is being lost, and
-    nobody reports it: the ioplug's ``published_slots`` / ``drop_no_reader`` /
-    ``full_waits`` are process-local ``jts_ring_writer_t`` fields printed at
-    close, not shared-header fields, and outputd — the reader — is exactly the
-    process that is wedged, so its own STATUS is the least trustworthy witness.
-    Hence a THIRD observer that is blocked in neither end.
+    WHAT IT DETECTS. The C ioplug demotes a reader whose heartbeat has gone
+    stale and then FREE-RUNS, dropping the oldest slot per publish so the ring
+    stays bounded. Audio is being lost and nobody reports it: the ioplug's
+    ``published_slots`` / ``drop_no_reader`` / ``full_waits`` are process-local
+    ``jts_ring_writer_t`` fields printed at close, not shared-header fields, and
+    outputd — the reader — is exactly the process that is wedged, so its own
+    STATUS is the least trustworthy witness. Hence a THIRD observer blocked in
+    neither end.
 
     WHY THE READER'S HEARTBEAT AND NOT ``read_seq``. At demotion the writer
     advances ``read_seq`` on the absent reader's behalf, deliberately, so
@@ -1221,18 +1154,16 @@ class RingStallVerdict:
     not stick at 0 (``jts_ring_shm.c``, the ``atomic_store_explicit(&h->read_seq,
     rseq + 1, …)`` guarded by ``if (!reader_is_live(…))``; the Rust writer's
     ``free_run_drop_oldest`` does the same). A "``read_seq`` is flat" clause
-    therefore holds only inside the pre-demotion grace and **goes false exactly
-    when the drops begin** — an alarm that switches itself off at the onset of
-    the fault it exists to catch. ``reader_heartbeat_ns`` has no such inversion:
-    only a reader actually running its loop stamps it, it stays stale through and
-    after demotion, and it is *the same fact* ``reader_is_live`` uses to decide
-    to demote. Attach resync (``read_seq = write_seq``) is a third way the
-    sequence numbers lie; the heartbeat is unaffected by that too.
+    therefore holds only inside the pre-demotion grace and goes false exactly
+    when the drops begin — an alarm that switches itself off at the onset of the
+    fault it exists to catch. ``reader_heartbeat_ns`` has no such inversion:
+    only a reader running its loop stamps it, it stays stale through and after
+    demotion, and it is the same fact ``reader_is_live`` uses to demote. Attach
+    resync (``read_seq = write_seq``) is a third way the sequence numbers lie;
+    the heartbeat is unaffected by that too.
 
-    RESIDUAL, stated rather than hidden: there is still no live DROP COUNT for
-    this ring. The header has room (``reserved[92..128]``, 36 bytes) and adding
-    one is a scope call P8b declines, not a wall. This verdict says "the reader
-    is gone while the writer runs", which is the condition under which drops
+    RESIDUAL: there is no live DROP COUNT for this ring. This verdict says "the
+    reader is gone while the writer runs", the condition under which drops
     occur, not a count of them.
     """
 
@@ -1248,8 +1179,8 @@ def _heartbeat_age_ns(stamp: int, now_ns: int) -> int | None:
 
     Saturating because a heartbeat stamped AFTER the observer sampled ``now_ns``
     would make the subtraction underflow and read as enormously stale — an alarm
-    on a perfectly live ring. Shared by both judges below: the ARITHMETIC is one
-    rule even where the PREDICATES around it differ.
+    on a live ring. Shared by both judges below, so the arithmetic is one rule
+    even where the predicates around it differ.
     """
     if stamp == 0:
         return None
@@ -1261,15 +1192,12 @@ def _end_is_live(pid: int, heartbeat_ns: int, now_ns: int, timeout_ns: int) -> b
 
     ``reader_is_live`` / ``writer_is_live`` (``c/jts-ring-ioplug/jts_ring_shm.c``)
     both require **all three**: a non-zero pid, a non-zero heartbeat, and an age
-    inside the liveness window. The pid clause is the one an observer is tempted
-    to drop, and must not: ``jts_ring_reader_close`` clears ``reader_pid`` but
-    leaves the last heartbeat standing, so a cleanly-closed end stays
-    heartbeat-fresh for a full window after the writer has already begun
-    free-running and dropping. Judging on the heartbeat alone reports a ring as
-    healthy for those two seconds while audio is being lost.
-
-    Mirroring the writer's own predicate is what makes an observer's verdict and
-    the mechanism it reports agree by construction rather than by coincidence.
+    inside the liveness window. The pid clause must not be dropped:
+    ``jts_ring_reader_close`` clears ``reader_pid`` but leaves the last
+    heartbeat standing, so a cleanly-closed end stays heartbeat-fresh for a full
+    window after the writer has already begun free-running and dropping.
+    Judging on the heartbeat alone reports a ring as healthy for those two
+    seconds while audio is being lost.
     """
     if pid == 0 or heartbeat_ns == 0:
         return False
@@ -1290,18 +1218,14 @@ def ring_stall_verdict(
     ``monotonic_ns`` in ``jasper-ring``, ``clock_gettime(CLOCK_MONOTONIC)`` in
     CPython), so "advancing over a window" and "fresh right now" are the same
     predicate — and freshness needs one read where advancement would need two
-    plus a window the caller could get wrong.
-
-    Ages are saturating, mirroring the C ``reader_is_live`` comment verbatim in
-    intent: a heartbeat stamped AFTER this observer sampled ``now_ns`` would make
-    the subtraction underflow and read as enormously stale, spuriously alarming
-    on a perfectly live ring. A future heartbeat clamps to age 0.
+    plus a window the caller could get wrong. Ages are saturating
+    (:func:`_heartbeat_age_ns`): a future heartbeat clamps to age 0.
 
     ``present=False`` (never an alarm) for: an absent / torn / foreign / wrong
     version file; and a ring whose WRITER heartbeat is 0 or itself stale. That
-    last one is the load-bearing negative: a ring nobody is writing is idle, not
-    stalled, and alarming on it would fire on every unarmed box in the fleet.
-    The alarm is specifically "audio is flowing IN and not OUT".
+    last one is load-bearing: a ring nobody is writing is idle, not stalled, and
+    alarming on it would fire on every unarmed box. The alarm is specifically
+    "audio is flowing IN and not OUT".
     """
     import time
 
@@ -1319,12 +1243,11 @@ def ring_stall_verdict(
     # is dead to the writer instantly while its last heartbeat stays fresh for
     # one liveness window — during which this verdict still reads "both ends
     # live". :func:`ring_flow_state` applies the full pid-and-heartbeat
-    # predicate; this alarm was deliberately NOT re-scoped, because it judges
-    # four rings and the divergence costs it at most one window of late
-    # alarming on a ring whose reader left cleanly. If that ever matters, change
-    # it here for all four rings at once rather than letting the two drift
-    # silently — `test_the_two_judges_diverge_only_on_a_cleanly_closed_end`
-    # pins exactly where they disagree.
+    # predicate; this alarm judges four rings and the divergence costs it at
+    # most one window of late alarming on a ring whose reader left cleanly. If
+    # that ever matters, change it here for all four rings at once rather than
+    # letting the two drift; where they disagree is pinned by
+    # `test_the_two_judges_diverge_only_on_a_cleanly_closed_end`.
     writer_age = _age(header.writer_heartbeat_ns)
     reader_age = _age(header.reader_heartbeat_ns)
     if writer_age is None:
@@ -1374,10 +1297,11 @@ def ring_stall_verdict(
     )
 
 
-# The states :func:`ring_flow_state` classifies a ring into. Named constants
-# rather than bare literals because two daemons compare against them (the /state
-# projection in ``jasper.multiroom.state`` and jasper-doctor), and a misspelled
-# literal compares false silently.
+# The states :func:`ring_flow_state` classifies a ring into. They are published
+# verbatim as the ``state`` of ``/state``'s grouping ``ring`` block
+# (``jasper.multiroom.state``), so the vocabulary is consumed off the box.
+# Named constants rather than bare literals: a misspelled literal compares
+# false silently.
 RING_FLOW_ABSENT = "absent"
 RING_FLOW_UNREADABLE = "unreadable"
 RING_FLOW_IDLE = "idle"
@@ -1391,45 +1315,41 @@ class RingFlowState:
     """What is happening on one ring right now, in one word plus its evidence.
 
     :func:`ring_stall_verdict` answers one narrow question — is this ring being
-    written but not read — and answers it for the doctor's four-ring alarm. This
-    is the OPERATOR-FACING classification over the same 128 bytes, and it differs
-    from that alarm in two deliberate ways.
+    written but not read — for the doctor's four-ring alarm. This is the
+    OPERATOR-FACING classification over the same 128 bytes, and it differs from
+    that alarm in two deliberate ways.
 
     **It judges liveness by the writer's own rule.** Both ends are tested with
     :func:`_end_is_live`, i.e. pid AND heartbeat AND window — the same
     conjunction ``reader_is_live`` / ``writer_is_live`` apply in
     ``c/jts-ring-ioplug/jts_ring_shm.c``. The stall alarm tests the heartbeat
-    only, which is correct enough for a wedge but reports a cleanly-closed end as
-    live for one window after the writer has already started dropping. An
-    operator surface cannot afford that gap, so this one closes it; the alarm was
-    left alone because it judges four rings.
+    only, which reports a cleanly-closed end as live for one window after the
+    writer has already started dropping; an operator surface cannot afford that
+    gap.
 
     **The startup split.** A ring whose writer is live and whose reader has never
     stamped a heartbeat is the SAME instantaneous shape at second one of a cold
-    start and at hour three of a wedged reader. Before the S0 pacing governor
-    those two were told apart by sheer magnitude — the storm a stalled reader
-    provoked was orders of magnitude past anything a clean start produced
-    (``jts_ring_pace_apply`` in ``c/jts-ring-ioplug/jts_ring_shm.h`` records the
-    measured ratio it was built to bound). The governor holds the stalled case to
-    roughly nominal, which is the point of it and also the end of that signal, so
-    the classifier has to do the separating. It uses ``write_seq`` as the ring's
-    own age: below one liveness window's worth of slots the ring is still
+    start and at hour three of a wedged reader, because the pacing governor
+    (``jts_ring_pace_apply`` in ``c/jts-ring-ioplug/jts_ring_shm.h``) holds the
+    stalled case to roughly nominal rather than letting it storm. So the
+    classifier separates them by ``write_seq``, the ring's own age: below one
+    liveness window's worth of slots the ring is still
     :data:`RING_FLOW_PRIMING`, above it the reader is genuinely late and the
     state is :data:`RING_FLOW_READER_STALLED`. The budget is DERIVED from the
     header's own ``rate``/``period_frames`` and the ioplug's own demotion window,
-    so no threshold is invented here. Note this splits only the NEVER-ATTACHED
-    case: a ring that had a reader and lost it is never priming, however young.
+    so no threshold is invented here. This splits only the NEVER-ATTACHED case:
+    a ring that had a reader and lost it is never priming, however young.
 
-    **The drop cursor.** There is still no drop COUNT in the shared header (the
+    **The drop cursor.** There is no drop COUNT in the shared header (the
     writer's ``drop_no_reader`` is a process-local ``jts_ring_writer_t`` field —
     see :class:`RingStallVerdict`), and this module does not invent one: a
-    counter accumulated across polls would depend on who polled and how often,
-    which is a fact nobody owns. What it publishes instead is the pair the count
-    is derived FROM. While no reader is live the writer advances ``read_seq``
-    itself, one slot per dropped publish, so two reads of ``read_seq`` while
-    ``state`` is :data:`RING_FLOW_READER_STALLED` bound the drops between them
-    exactly — and ``reader_age_ns`` already says how long that has been true
-    without differencing anything.
+    counter accumulated across polls would depend on who polled and how often.
+    What it publishes instead is the pair the count is derived FROM. While no
+    reader is live the writer advances ``read_seq`` itself, one slot per dropped
+    publish, so two reads of ``read_seq`` while ``state`` is
+    :data:`RING_FLOW_READER_STALLED` bound the drops between them exactly, and
+    ``reader_age_ns`` says how long that has been true without differencing
+    anything.
 
     ``writer_age_ns`` / ``reader_age_ns`` are None when that end has never
     stamped a heartbeat. The sequence/epoch fields are None whenever the header
@@ -1453,10 +1373,10 @@ def _priming_slot_budget(header: RingHeader, timeout_ns: int) -> int:
     off the header and ``timeout_ns`` is the ioplug's own demotion window, so a
     ring with a different period or a different window gets a budget that tracks
     it. :func:`read_ring_header` gates on magic and version but NOT on the
-    geometry's range, so a zero in either field is reachable — on a torn read, or
-    on a foreign file that happens to carry the magic. That answers 0: no grace,
-    because a grace nobody can size must not be granted, and the cost of the
-    strict direction is one startup transient reported as a stall.
+    geometry's range, so a zero in either field is reachable (a torn read, or a
+    foreign file carrying the magic). That answers 0 — no grace, because a grace
+    nobody can size must not be granted; the cost of the strict direction is one
+    startup transient reported as a stall.
     """
     if header.rate <= 0 or header.period_frames <= 0:
         return 0
@@ -1473,17 +1393,16 @@ def ring_flow_state(
 
     ONE read of the first 128 header bytes, read-only, no mmap, no ALSA, no lock
     — so it can be called against a ring carrying live audio without perturbing
-    it. Bounded and non-blocking by construction: the ring lives on tmpfs and the
-    read is a fixed 128 bytes.
+    it. Bounded and non-blocking: the ring lives on tmpfs and the read is a fixed
+    128 bytes.
 
     Total: every failure resolves to a state, never an exception.
-    :data:`RING_FLOW_ABSENT` when no file is there (the fleet's normal state — a
-    ring file exists only once something opens the PCM), and
-    :data:`RING_FLOW_UNREADABLE` when a file IS there but this process cannot
-    read it or it carries no coherent v1 ``JRIN`` header. Those two are kept
-    apart deliberately: "nothing has opened this device" and "I am not allowed to
-    look" are different answers, and collapsing them would let a permission
-    problem read as an idle speaker.
+    :data:`RING_FLOW_ABSENT` when no file is there (a ring file exists only once
+    something opens the PCM), and :data:`RING_FLOW_UNREADABLE` when a file IS
+    there but this process cannot read it or it carries no coherent v1 ``JRIN``
+    header. Those two are kept apart deliberately: collapsing "nothing has opened
+    this device" into "I am not allowed to look" would let a permission problem
+    read as an idle speaker.
     """
     import os
     import time
@@ -1497,11 +1416,11 @@ def ring_flow_state(
             )
         if not os.access(path, os.R_OK):
             # The requirement, not a mode: ring files are group `jts-ring` by the
-            # setgid directory, but their MODE is the creating unit's umask
-            # (0660 under UMask=0007, 0640 under systemd's default — see
-            # deploy/tmpfiles/jts-ring.conf). Both grant the group read, which is
-            # all an observer needs, so naming a specific mode here would be a
-            # claim that is false on half the boxes.
+            # setgid directory (deploy/tmpfiles/jts-ring.conf), but their MODE is
+            # the creating unit's umask — 0660 under UMask=0007, 0640 under
+            # systemd's default. Both grant the group read, which is all an
+            # observer needs, so naming one mode here would be false on half the
+            # boxes.
             return RingFlowState(
                 state=RING_FLOW_UNREADABLE,
                 detail=(
@@ -1523,9 +1442,7 @@ def ring_flow_state(
     # (the writer lapped a wedged reader, or a torn read) and inverted are both
     # published as None rather than as a number: the C resolves an out-of-range
     # W - R by resyncing to the tip, so the raw difference is not an occupancy
-    # anybody would act on, and printing it as fact is how a dashboard ends up
-    # showing 900000 slots in a 16-slot ring. The raw cursors stay published, so
-    # nothing is hidden.
+    # anybody would act on. The raw cursors stay published, so nothing is hidden.
     raw_occupancy = header.write_seq - header.read_seq
     occupancy: int | None = (
         raw_occupancy if 0 <= raw_occupancy <= header.n_slots else None
@@ -1587,7 +1504,7 @@ def ring_flow_state(
     elif header.reader_pid == 0:
         # Reached the instant a reader closes cleanly, not only after it wedges:
         # the writer stops honouring a pid-less reader immediately, so the drops
-        # start immediately too. Worded to say what happened, not to imply a hang.
+        # start immediately too.
         why = "the reader closed the ring and has not come back"
     else:
         why = (
@@ -1632,14 +1549,10 @@ def ring_header_matches_conf(
 ) -> RingHeaderCoherence:
     """Compare an on-disk ring header against its conf.d block, ALL FOUR axes.
 
-    THE HOLE THIS CLOSES. The header has carried ``rate``/``channels``/
-    ``sample_format`` since v1 and the Rust and C attach paths compare every one
-    of them field-by-field — but every Python guard compared only ``n_slots``
-    and ``period_frames``. A ring file whose slots and period match while its
-    FORMAT or CHANNEL COUNT does not therefore passed every coherence check we
-    had, and the first thing to notice would have been the ioplug failing the
-    attach at arm. Comparing here is the difference between a shear that is
-    cleared before it can bite and one that crash-loops CamillaDSP.
+    All four, because the Rust and C attach paths compare every one of
+    ``n_slots``/``period_frames``/``sample_format``/``channels``
+    field-by-field. A guard reading only slots and period would call a file
+    coherent that the ioplug then refuses at arm.
 
     ONE COMPARATOR, three callers (the stale-file delete, the CONFIRM-path
     self-heal predicate, and the doctor's coherence check) so "coherent" cannot
