@@ -160,225 +160,79 @@ async def test_drain_handles_bounded_deque():
     assert turn.sends == [b"frame-4", b"frame-5", b"frame-6"]
 
 
-async def test_drain_with_vad_flags_sustained_speech():
-    """Fast-talker compensation: a run of ≥``min_consecutive_speech``
-    consecutive frames above the speech threshold should set
-    sustained_speech_detected=True. Caller uses this to pre-arm
-    its end-of-utterance silence detector so live frames see
-    "watch for silence" rather than "wait for speech to arm"
-    (which never happens if the user's whole question is in the
-    acquire window)."""
+@pytest.mark.parametrize(
+    ("scores", "peak_min", "expected_speech_seen"),
+    [
+        # Fast-talker: wake-tail silence then 3 consecutive speech
+        # frames clears the default min_consecutive_speech=3 gate.
+        pytest.param(
+            {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.95}, 0.0, True,
+            id="drain_with_vad_flags_sustained_speech",
+        ),
+        # No speech at all (walked away, or wake fired on background TV).
+        pytest.param(
+            {0: 0.05, 1: 0.05, 2: 0.05, 3: 0.05, 4: 0.05}, 0.0, False,
+            id="drain_with_vad_below_threshold_stays_unarmed",
+        ),
+        # Alternating speech/silence — never 2 consecutive frames.
+        pytest.param(
+            {0: 0.91, 1: 0.02, 2: 0.88, 3: 0.04}, 0.0, False,
+            id="drain_with_vad_requires_consecutive_frames",
+        ),
+        # 2026-05-23 broken-event regression: wake-word tail residual
+        # (cold-replay scores 0.43/0.52/0.38) clears the duration gate
+        # but peaks below peak_min=0.60 — must stay unarmed.
+        pytest.param(
+            {0: 0.43, 1: 0.52, 2: 0.38}, 0.60, False,
+            id="drain_with_peak_min_rejects_wake_tail_residual",
+        ),
+        # Real speech reliably peaks well above peak_min — must still arm.
+        pytest.param(
+            {0: 0.30, 1: 0.85, 2: 0.92}, 0.60, True,
+            id="drain_with_peak_min_passes_real_speech",
+        ),
+        # Peak tracker must reset on a sub-threshold frame: an early
+        # isolated high peak (0.91) must not carry into a later 3-frame
+        # run whose own max (0.30) is below peak_min.
+        pytest.param(
+            {0: 0.91, 1: 0.04, 2: 0.04, 3: 0.20, 4: 0.30, 5: 0.18, 6: 0.04},
+            0.60, False,
+            id="drain_with_peak_min_resets_across_silence_gap",
+        ),
+        # peak_min defaults to 0.0 (off): duration-only gate still arms.
+        pytest.param(
+            {0: 0.20, 1: 0.25, 2: 0.30}, 0.0, True,
+            id="drain_peak_min_default_is_off",
+        ),
+        # Regression: 2 consecutive speech frames (~160ms, the
+        # wake-tail + quiet music vocals signature) must NOT arm --
+        # only a >=3-frame run (>=240ms) does.
+        pytest.param(
+            {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.04}, 0.0, False,
+            id="drain_with_two_consecutive_speech_frames_stays_unarmed",
+        ),
+    ],
+)
+async def test_drain_with_vad(scores, peak_min, expected_speech_seen):
+    """VAD pre-arm gate: a sustained run of >=min_consecutive_speech
+    frames above speech_threshold sets sustained_speech_detected=True,
+    so the caller can pre-arm its end-of-utterance silence detector.
+    An optional peak_min floor additionally discriminates real speech
+    from wake-word tail residual, which can clear the duration gate
+    without ever peaking as high as real speech does."""
 
     buf: deque = deque()
-    for i in range(4):
+    for i in range(len(scores)):
         buf.append(_FakeFrame(i))
     turn = _FakeTurn()
-    # First frame is silence (wake-word tail) then 3 frames of
-    # speech — typical pattern when fast talker starts the question
-    # immediately after the wake word. 3 consecutive speech frames
-    # clears the default ``min_consecutive_speech=3`` gate.
-    scores = {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.95}
-    predict = lambda f: scores[f.tag]
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn, vad_predict=predict, speech_threshold=0.15,
-    )
-
-    assert count == 4
-    assert speech_seen is True
-
-
-async def test_drain_with_vad_below_threshold_stays_unarmed():
-    """Acquire window with no speech (user wake-fired but walked
-    away, or wake fired on background TV). Caller should NOT pre-arm
-    so the existing 5 s no-speech-abort still applies."""
-
-    buf: deque = deque()
-    for i in range(5):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    predict = lambda f: 0.05  # all sub-threshold
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn, vad_predict=predict, speech_threshold=0.15,
-    )
-
-    assert count == 5
-    assert speech_seen is False
-
-
-async def test_drain_with_vad_requires_consecutive_frames():
-    """A single high-score frame (e.g. a transient click registered
-    as speech by Silero) must NOT pre-arm. Only sustained
-    speech-above-threshold across `min_consecutive_speech` frames
-    counts. Defaults to 3 frames ≈ 240 ms which mirrors the
-    SUSTAINED_SPEECH_TO_ARM_SEC = 0.20 s threshold used on live
-    frames."""
-
-    buf: deque = deque()
-    for i in range(4):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    # Alternating: speech, silence, speech, silence — never 2 in a row.
-    scores = {0: 0.91, 1: 0.02, 2: 0.88, 3: 0.04}
-    predict = lambda f: scores[f.tag]
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn, vad_predict=predict, speech_threshold=0.15,
-    )
-
-    assert count == 4
-    assert speech_seen is False
-
-
-async def test_drain_with_peak_min_rejects_wake_tail_residual():
-    """Regression for the 2026-05-23 broken-event bug.
-
-    The live VAD's duration gate (200 ms continuous at silero ≥
-    0.15) was tripped by wake-word tail residual peaking at silero
-    ≈ 0.52 — high enough to look "speech-like" to Silero VAD, low
-    enough to NOT be real user speech (real speech reliably peaks
-    above 0.7). The 800 ms silence detector then fired and ended
-    the turn before the user started their actual question. Adding
-    a peak-confidence requirement (max silero in the arming run
-    must be ≥ ``peak_min``) discriminates real speech from
-    wake-tail residual cleanly.
-
-    Scenario here mirrors the broken event's cold-replay scores:
-    3 consecutive frames at silero 0.43 / 0.52 / 0.38. Duration
-    alone clears 3 frames at threshold 0.15, but max in run is
-    0.52 — below ``peak_min=0.60``. Must stay unarmed."""
-
-    buf: deque = deque()
-    for i in range(3):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    # The broken event's actual silero scores from cold-replay.
-    scores = {0: 0.43, 1: 0.52, 2: 0.38}
     predict = lambda f: scores[f.tag]
 
     count, speech_seen = await drain_acquire_buffer(
         buf, turn,
         vad_predict=predict,
         speech_threshold=0.15,
-        peak_min=0.60,
+        peak_min=peak_min,
     )
 
-    assert count == 3
-    assert speech_seen is False  # peak (0.52) < peak_min (0.60)
-
-
-async def test_drain_with_peak_min_passes_real_speech():
-    """Counterpart to the wake-tail rejection test: real user
-    speech reliably peaks well above 0.6 within the first few
-    frames. The gate must still arm on those, otherwise we've
-    traded one silent-failure mode for another (gate never arms →
-    5 s no-speech abort).
-
-    Scenario: 3 consecutive frames at silero 0.30 / 0.85 / 0.92.
-    Sustained ≥ 3 frames AND peak (0.92) >= peak_min (0.60)."""
-
-    buf: deque = deque()
-    for i in range(3):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    scores = {0: 0.30, 1: 0.85, 2: 0.92}
-    predict = lambda f: scores[f.tag]
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn,
-        vad_predict=predict,
-        speech_threshold=0.15,
-        peak_min=0.60,
-    )
-
-    assert count == 3
-    assert speech_seen is True
-
-
-async def test_drain_with_peak_min_resets_across_silence_gap():
-    """Peak tracker must reset on a sub-threshold frame, not
-    accumulate across silence gaps. Otherwise a sequence like
-    [0.91 silence 0.91 silence 0.91 0.20 0.20] could falsely
-    "remember" the 0.91 peak from the earlier broken runs and arm
-    on the new run.
-
-    Scenario: high-peak run, then silence, then a low-peak run
-    that's long enough sustained-wise but doesn't reach
-    ``peak_min``. Must NOT arm."""
-
-    buf: deque = deque()
-    for i in range(7):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    # Frame 0: high peak but isolated (no sustain). Frames 1-2:
-    # silence. Frames 3-5: 3-frame run, but all low silero (max
-    # 0.30, below peak_min=0.60). Frame 6: silence.
-    scores = {
-        0: 0.91, 1: 0.04, 2: 0.04,
-        3: 0.20, 4: 0.30, 5: 0.18,
-        6: 0.04,
-    }
-    predict = lambda f: scores[f.tag]
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn,
-        vad_predict=predict,
-        speech_threshold=0.15,
-        peak_min=0.60,
-    )
-
-    assert count == 7
-    assert speech_seen is False  # peak in 2nd run (0.30) < peak_min
-
-
-async def test_drain_peak_min_default_is_off():
-    """``peak_min`` defaults to 0.0 (off) — backward-compatible.
-    Existing tests using the duration-only gate continue to pass."""
-
-    buf: deque = deque()
-    for i in range(3):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    # All three frames clear threshold but max is only 0.30 (below
-    # the typical peak_min=0.6 a strict caller would pass). With
-    # peak_min defaulting to 0.0, the gate arms purely on duration.
-    scores = {0: 0.20, 1: 0.25, 2: 0.30}
-    predict = lambda f: scores[f.tag]
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn, vad_predict=predict, speech_threshold=0.15,
-    )
-
-    assert count == 3
-    assert speech_seen is True
-
-
-async def test_drain_with_two_consecutive_speech_frames_stays_unarmed():
-    """Regression: 2 consecutive speech frames (~160 ms) must NOT
-    arm. That length is the natural signature of the wake-word
-    tail + quiet music vocals when the user wakes the speaker
-    while music is playing — pre-arming on it ends the turn after
-    END_OF_UTTERANCE_SILENCE_SEC of "user thinking" silence,
-    before the user has time to start speaking. The model then
-    receives ~1 s of pre-roll + wake-tail audio and fabricates a
-    follow-up question from the prior turn's cached tool result.
-
-    The fix matches the acquire path's gate to the live path's
-    SUSTAINED_SPEECH_TO_ARM_SEC = 0.20 s; with 80 ms frames that's
-    a ≥3-frame run."""
-
-    buf: deque = deque()
-    for i in range(4):
-        buf.append(_FakeFrame(i))
-    turn = _FakeTurn()
-    # Silence + 2 consecutive speech (wake-word tail signature) + silence.
-    scores = {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.04}
-    predict = lambda f: scores[f.tag]
-
-    count, speech_seen = await drain_acquire_buffer(
-        buf, turn, vad_predict=predict, speech_threshold=0.15,
-    )
-
-    assert count == 4
-    assert speech_seen is False
+    assert count == len(scores)
+    assert speech_seen is expected_speech_seen
