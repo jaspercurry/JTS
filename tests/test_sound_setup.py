@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -147,6 +148,36 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         _commit_topology_runtime,
     )
+
+
+def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
+    """Stub the three audio sessions a topology mutation stops before parking.
+
+    Records ``"<summed|commission>:<reason>"`` per tone and ``"safe"`` for the
+    safe-playback session, in call order, so a test can pin the ordering.
+    """
+
+    recorded = [] if stops is None else stops
+
+    def stop_tone(kind: str):
+        def _stop(*, reason: str) -> dict:
+            recorded.append(f"{kind}:{reason}")
+            return {"status": "idle", "reason": reason}
+
+        return _stop
+
+    def stop_safe() -> dict:
+        recorded.append("safe")
+        return {"status": "idle"}
+
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
+    )
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_stop_commission_tone", stop_tone("commission")
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", stop_safe)
+    return recorded
 
 
 def _follower_post_status(base: str, path: str, session: dict) -> int:
@@ -481,16 +512,25 @@ def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
     assert payload["blocking_phase"] == "correction:sweeping"
 
 
-def _start_sound_server(tmp_path: Path):
-    server = sound_setup.make_server(
-        ("127.0.0.1", 0),
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=tmp_path / "configs",
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, f"http://127.0.0.1:{server.server_address[1]}"
+@contextmanager
+def sound_server(tmp_path: Path):
+    """Serve the real ``/sound/`` handler on loopback; yield its base URL."""
+
+    try:
+        server = sound_setup.make_server(
+            ("127.0.0.1", 0),
+            profile_path=tmp_path / "sound_profile.json",
+            library_path=tmp_path / "sound_profiles.json",
+            config_dir=tmp_path / "configs",
+        )
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 class _ReadTrackingBytesIO(io.BytesIO):
@@ -573,11 +613,7 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
         fail_abort,
     )
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         response = json_post_with_csrf(
             base,
             "/active-speaker/commission-ramp-abort",
@@ -586,9 +622,6 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
         )
         assert response.headers.get_content_type() == "application/json"
         payload = json.loads(response.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload == {"error": str(error)}
     records = [
@@ -644,11 +677,7 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
 
     monkeypatch.setattr(sound_setup, builder, fail)
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         if method == "GET":
             try:
                 urllib.request.urlopen(f"{base}{route}")
@@ -661,9 +690,6 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
             response = json_post_with_csrf(base, route, {}, expect_status=502)
         assert response.headers.get_content_type() == "application/json"
         payload = json.loads(response.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload == {"error": str(error)}
     messages = [
@@ -918,11 +944,7 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     with output_topology_mutation(topology_path) as mutation:
         mutation.save(mono_output_topology(card_id=None))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         refused = json_post_with_csrf(
             base,
             "/active-speaker/design-draft",
@@ -943,9 +965,6 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
             expect_status=400,
         )
         payload = json.loads(refused.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload["error"] == (
         "crossover_candidate.filter_type must be one of: Linkwitz-Riley"
@@ -1009,11 +1028,7 @@ def test_setup_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
 
 def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/settings",
@@ -1022,9 +1037,6 @@ def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Pa
         )
         payload = json.loads(resp.read().decode("utf-8"))
         assert "controlled on the pair leader" in payload["error"]
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_follower_block_set_is_content_dsp_only():
@@ -1051,11 +1063,7 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
     commissioning/crossover POST reaches its handler (never 404/409), while a
     content-DSP POST still 409s. Local driver work stays with the DAC owner."""
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         session = make_csrf_session(base, "/")
         # A content-DSP mutation is delegated to the leader.
         assert _follower_post_status(base, "/settings", session) == 409
@@ -1069,20 +1077,13 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
             base, "/active-speaker/stage-config", session,
         )
         assert active_status not in (404, 409), active_status
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path):
     """The live combined-test slider route must pass the route-before-CSRF gate."""
 
     monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/active-speaker/summed-test/level",
@@ -1091,9 +1092,6 @@ def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path)
         payload = json.loads(resp.read().decode("utf-8"))
         assert payload["status"] == "idle"
         assert payload["reason"] == "no_active_summed_test"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_index_html_embeds_csrf_meta_for_json_posts():
@@ -2639,17 +2637,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units", fake_manage_units
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2674,17 +2662,7 @@ def test_topology_save_reconcile_failure_reports_safe_attention_message(
     monkeypatch, tmp_path: Path,
 ):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": False, "error": "private backend detail"},
@@ -2709,17 +2687,7 @@ def test_topology_save_reconcile_still_converging_reports_distinct_status(
 ):
     """A reconcile past its own wait budget is not needs_attention (#3094)."""
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": False, "converging": True},
@@ -2762,17 +2730,7 @@ def test_topology_save_parks_before_replacing_saved_layout(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2827,21 +2785,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
         "_output_topology_payload",
         lambda: {"output_topology": {"status": "verified"}},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
     sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2884,23 +2828,8 @@ def test_topology_save_stops_audio_sessions_before_parking(
     monkeypatch, tmp_path: Path,
 ):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
-    events: list[str] = []
+    events = _stub_audio_stops(monkeypatch)
 
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: events.append(f"summed:{reason}") or {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: events.append(f"commission:{reason}") or {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: events.append("safe") or {"status": "idle"},
-    )
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         lambda _topology, commit, **_kwargs: (
@@ -2932,11 +2861,7 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/output-topology",
@@ -2953,9 +2878,6 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
         assert PASSIVE_ONLY_DAC_LABEL in payload["error"]
         assert "output_topology" not in payload
         assert not topo_path.exists()
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_subwoofer_crossover_fc_round_trips_through_topology_save(
@@ -3596,11 +3518,7 @@ def test_design_draft_http_conflict_returns_fresh_revision(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     with output_topology_mutation(topology_path) as mutation:
         mutation.save(mono_output_topology(card_id=None))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         first = json_post_with_csrf(
             base,
             "/active-speaker/design-draft",
@@ -3622,9 +3540,6 @@ def test_design_draft_http_conflict_returns_fresh_revision(
             expect_status=409,
         )
         fresh = json.loads(conflict.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert fresh["revision"] == 1
     assert fresh["operator_inputs"]["notes"] == "first"
@@ -5121,11 +5036,7 @@ def test_sound_channel_identity_http_route_rejects_non_boolean_evidence(
         "routing": {"main_left_group_id": "left"},
     })
 
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/active-speaker/channel-identity",
@@ -5141,9 +5052,6 @@ def test_sound_channel_identity_http_route_rejects_non_boolean_evidence(
 
         assert "identity_verified must be a boolean" in payload["error"]
         assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
@@ -5155,11 +5063,7 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         str(tmp_path / "output_topology.json"),
     )
     _record_dac8x()
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
         get_payload = json.loads(get_resp.read().decode("utf-8"))
         assert get_payload["output_topology"]["status"] == "draft"
@@ -5184,9 +5088,6 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
         assert post_payload["topology_revision"].startswith("sha256:")
         assert post_payload["active_playback_route"]["transport_channel_count"] == 8
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_output_topology_http_route_rejects_stale_browser_save(
@@ -5197,11 +5098,7 @@ def test_sound_output_topology_http_route_rejects_stale_browser_save(
 
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         old_payload = sound_setup._save_output_topology_payload(
             _active_speaker_mono_topology_payload(
                 protection_status="software_guard_requested"
@@ -5225,9 +5122,6 @@ def test_sound_output_topology_http_route_rejects_stale_browser_save(
         assert "changed in another session" in conflict["error"]
         assert conflict["output_topology"]["speaker_groups"] == []
         assert saved["speaker_groups"] == []
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_output_topology_reset_http_route_is_csrf_protected(
@@ -5240,19 +5134,12 @@ def test_sound_output_topology_reset_http_route_is_csrf_protected(
         "_reset_output_topology_payload",
         lambda raw: calls.append(raw) or {"output_topology": {"status": "draft"}},
     )
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(base, "/output-topology/reset", {})
         payload = json.loads(resp.read().decode("utf-8"))
 
         assert calls == [{}]
         assert payload["output_topology"]["status"] == "draft"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_reset_rejects_stale_topology_before_parking_or_cleanup(
@@ -5351,17 +5238,7 @@ def test_reset_revalidates_hardware_after_parking_before_deleting(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit,
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: pytest.fail("second-check conflict must not clear setup evidence"),
@@ -5419,17 +5296,7 @@ def test_reset_validation_and_empty_write_share_the_topology_transaction(
 
     monkeypatch.setattr(sound_setup, "_reset_request_hardware", checked)
     monkeypatch.setattr(OutputTopologyMutation, "save", save_under_same_lock)
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     def clear_under_same_lock():
         assert_transaction_held()
         events.append("setup-cleanup")
@@ -5456,14 +5323,7 @@ def test_reset_accepts_the_response_from_a_normal_save_without_reload(
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
     )
-    for name in (
-        "_active_speaker_stop_summed_test_tone",
-        "_active_speaker_stop_commission_tone",
-    ):
-        monkeypatch.setattr(
-            sound_setup, name, lambda *, reason: {"status": "idle", "reason": reason}
-        )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: {"status": "cleared", "removed": []},
@@ -5487,11 +5347,7 @@ def test_reset_http_requires_revision_and_hardware_identity(
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
     )
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base, "/output-topology/reset", {}, expect_status=400
         )
@@ -5508,9 +5364,6 @@ def test_reset_http_requires_revision_and_hardware_identity(
         )
         payload = json.loads(resp.read().decode("utf-8"))
         assert payload["error"] == "detected_hardware_identity is required"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_reset_http_reports_ambiguous_failure_with_current_topology(
@@ -5532,27 +5385,9 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: {"status": "cleared", "removed": []},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         response = json_post_with_csrf(
             base,
             "/output-topology/reset",
@@ -5563,9 +5398,6 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
             expect_status=502,
         )
         payload = json.loads(response.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert "not changed" not in payload["error"]
     assert payload["reset"]["status"] == "needs_attention"
@@ -5605,23 +5437,7 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    summed_stops = []
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: summed_stops.append(reason)
-        or {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    stops = _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         sound_setup,
         "_output_topology_payload",
@@ -5635,7 +5451,11 @@ def test_reset_output_topology_payload_clears_active_setup_state(
 
     assert payload["output_topology"]["status"] == "draft"
     assert payload["reset"]["status"] == "reset"
-    assert summed_stops == ["output_topology_reset"]
+    assert stops == [
+        "summed:output_topology_reset",
+        "commission:output_topology_reset",
+        "safe",
+    ]
     assert all(not path.exists() for path in paths)
 
 
@@ -5674,21 +5494,7 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
     payload = sound_setup._reset_output_topology_payload({
         "topology_revision": request["topology_revision"],
@@ -5727,21 +5533,7 @@ def test_reset_reports_converging_when_reconcile_is_still_activating(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": False, "converging": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
     payload = sound_setup._reset_output_topology_payload({
         "topology_revision": request["topology_revision"],
@@ -5784,21 +5576,7 @@ def test_reset_reconcile_failure_without_converging_still_needs_attention(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": False, "error": "grouping failed"},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
     payload = sound_setup._reset_output_topology_payload({
         "topology_revision": request["topology_revision"],
@@ -5820,11 +5598,7 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
         "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
     )
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         measurement_resp = urllib.request.urlopen(
             f"{base}/active-speaker/measurements"
         )
@@ -5837,9 +5611,6 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
         assert measurement_payload["permissions"]["may_not_play_audio"] is True
         assert profile_payload["kind"] == "jts_active_speaker_baseline_profile_candidate"
         assert profile_payload["permissions"]["may_apply"] is False
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
@@ -6157,11 +5928,7 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
     tmp_path: Path,
 ):
     _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         topology = {
             "artifact_schema_version": 1,
             "kind": OUTPUT_TOPOLOGY_KIND,
@@ -6247,9 +6014,6 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
         assert payload["status"] == "ready_for_protected_staging"
         assert payload["safety"]["no_audio"] is True
         assert payload["permissions"]["may_not_emit_camilla_yaml"] is True
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
@@ -8269,8 +8033,6 @@ def _write_repin_fixture(
 def _stub_repin_runtime(monkeypatch, park_kwargs: dict | None = None) -> list[str]:
     """Stand in for the audio-parking choreography a re-pin shares with save."""
 
-    stops: list[str] = []
-
     def park_and_commit(_topology, commit, **kwargs):
         if park_kwargs is not None:
             park_kwargs.update(kwargs)
@@ -8284,20 +8046,7 @@ def _stub_repin_runtime(monkeypatch, park_kwargs: dict | None = None) -> list[st
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: stops.append(reason) or {"status": "stopped"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"}
-    )
-    return stops
+    return _stub_audio_stops(monkeypatch)
 
 
 def test_output_topology_payload_offers_a_repin_only_for_a_swapped_dongle(
@@ -8347,7 +8096,11 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
 
     assert payload["repin"]["status"] == "repinned"
     assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
-    assert stops == ["output_topology_repin"]
+    assert stops == [
+        "summed:output_topology_repin",
+        "commission:output_topology_repin",
+        "safe",
+    ]
     # The card promises audio stays off until the outputs are re-confirmed. The
     # graph selector is identity-blind, so that promise is only true because
     # this endpoint keeps the runtime parked; see
@@ -8503,19 +8256,12 @@ def test_sound_output_topology_repin_http_route_is_csrf_protected(
         "_repin_output_topology_payload",
         lambda raw: calls.append(raw) or {"output_topology": {"status": "valid"}},
     )
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(base, "/output-topology/repin", {})
         payload = json.loads(resp.read().decode("utf-8"))
 
         assert calls == [{}]
         assert payload["output_topology"]["status"] == "valid"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def _save_topology(monkeypatch, tmp_path: Path, raw: dict) -> Path:
@@ -8774,14 +8520,10 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         "jasper.active_speaker.design_draft.load_design_draft",
         lambda *a, **k: {"status": "ready_for_review", "revision": 2},
     )
-    server, base = _start_sound_server(tmp_path)
-    try:
+    with sound_server(tmp_path) as base:
         with urllib.request.urlopen(base + "/active-speaker/tuning-handoff") as resp:
             assert resp.status == 200
             payload = json.loads(resp.read())
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
