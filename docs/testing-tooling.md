@@ -1008,7 +1008,6 @@ Live Pi state without modifying anything:
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + monotonic boot timelines + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks plus `log-noise-summary-latest.txt` for line counts and repeated-message fingerprints. |
 | [`scripts/journal-review.sh`](../scripts/journal-review.sh) | Read-only journal-health digest run ON the Pi for the last `--since` window (default `7 days ago`): journal disk usage + retention/truncation, per-unit auto-restart counts, warning+ volume by unit, top `event=<domain.action>` keys with a week-over-week DELTA + never-seen-before keys, OOM/watchdog fingerprints, and repeated-message fingerprints (reuses `fetch-pi-logs.sh`'s fingerprinter). `--json` for machine consumption. Bounded (windowed journalctl + awk, no full-journal scan); always exits 0; the only write is its own `/var/lib/jasper/journal-review.state.json` week-over-week baseline. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |
-| [`scripts/pi-system-soak.sh`](../scripts/pi-system-soak.sh) | Convenience wrapper for a bounded `jasper-system-soak` run on the active Pi; writes a versioned JSON resource artifact. |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, volume routing, wake/turn boundaries) |
 | [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. |
@@ -3379,18 +3378,15 @@ changes, outputd/fanin/voice STATUS drift, or journal volume. It is a
 diagnostic artifact generator, not a daemon and not part of normal
 production polling.
 
-From the laptop, prefer the bounded wrapper:
+From the laptop, run it through the bounded diagnostic lane:
 
 ```sh
-bash scripts/pi-system-soak.sh --duration 30m --profile idle
-bash scripts/pi-system-soak.sh --duration 30m --profile realistic --include-pss
+bash scripts/pi-run-diagnostic.sh -- /opt/jasper/.venv/bin/jasper-system-soak --duration 30m --profile idle
 ```
 
-The wrapper runs `/opt/jasper/.venv/bin/jasper-system-soak` through
-[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh), so
-systemd applies the usual diagnostic bounds (`MemoryHigh`,
-`MemoryMax`, `MemorySwapMax=0`, `RuntimeMaxSec`, positive
-`OOMScoreAdjust`). The command writes JSON under
+[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) applies
+the usual diagnostic bounds (`MemoryHigh`, `MemoryMax`, `MemorySwapMax=0`,
+`RuntimeMaxSec`, positive `OOMScoreAdjust`). The command writes JSON under
 `/var/lib/jasper/diagnostics/system-soak/` by default and prints the
 artifact path.
 
