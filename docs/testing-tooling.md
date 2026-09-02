@@ -44,7 +44,7 @@
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
 | Grade the state a round STARTED from (a fresh box's declarations-derived config, which no round grades), grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {entry,frozen,per-seat,repeat,agreement}` |
-| See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
+| See exactly what a per-driver or summed capture walk at stated angles resolves to — bearing, program, advance policy — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Ask the next session for R-1's reverse-null — the design-axis MEASURE capture with one named driver branch riding sign-flipped | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage --polarity inverted --inverted-role <role>` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
@@ -2446,9 +2446,9 @@ what the preset permits), or `preset_unavailable`.
 `plan` is the **dry run of** `stage` — the same constructors, the same
 refusals, the same resolved walk — exactly as `propose` is the dry run of the
 prescriber's `stage` above. Its output names, per stop, the capture index, the
-signed bearing, the pose in the centimetres every shipped consumer reads, the
-program that stop plays, the advance policy the mover implies, and (for an arm)
-the `position_deg` the position gate will wait for.
+signed bearing, the pose prompt, the program that stop plays, the advance
+policy the mover implies, and (for an arm) the `position_deg` the position gate
+will wait for.
 
 **Angles are stated in whole degrees, negative LEFT and positive RIGHT facing
 the speaker, and nothing is coerced.** `7.5`, `0.4` and `+7 deg` are all

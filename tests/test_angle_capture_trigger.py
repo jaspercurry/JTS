@@ -376,54 +376,8 @@ def test_plan_writes_nothing(slot):
 
 
 # --------------------------------------------------------------------------- #
-# 3. the receipt / banking shape
+# 3. the receipt
 # --------------------------------------------------------------------------- #
-
-
-def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
-    """The fields a stop determines are exactly the record's own fields.
-
-    ``cloud_position_record`` is the shipped per-position receipt. The planner
-    must not invent fields it has no evidence for, and must not misname the
-    ones it does have -- so this asserts membership against that function's real
-    signature rather than against a copied list.
-    """
-    import inspect
-
-    from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
-
-    record_fields = set(inspect.signature(cloud_position_record).parameters)
-    payload = cli._walk_payload(
-        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level()
-    )
-    banked = payload["stops"][0]["banks_as"]
-
-    # Every planned field is a real field of the record…
-    assert {"role", "wide"} <= set(banked) & record_fields
-    # …and the two that are NOT record fields are the pose's own geometry, which
-    # the record carries through ``prompt``/``wide`` rather than as numbers.
-    assert set(banked) - record_fields == {"offset_cm", "position_angle_deg"}
-    # Nothing MEASURED is claimed: a planner that printed a placeholder for a
-    # capture's own evidence would be inventing it.
-    for measured in (
-        "captured_at", "wav_sha256", "summed_ripple_db", "glitch_detected",
-        "gate_window_ms", "validity_floor_hz", "position_id", "take_id",
-    ):
-        assert measured not in banked
-
-
-def test_the_banked_pose_round_trips_the_commanded_bearing(slot):
-    payload = cli._walk_payload(
-        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level()
-    )
-    assert [s["banks_as"]["position_angle_deg"] for s in payload["stops"]] == (
-        CAMPAIGN_ANGLES
-    )
-    # …and the wide class is DERIVED from the distance, exactly as the shipped
-    # table assigns it: 22 deg off a 1 m mark is 40.4 cm, past the 30 cm edge.
-    assert [s["banks_as"]["wide"] for s in payload["stops"]] == (
-        [False, False, False, True, True]
-    )
 
 
 def test_the_staged_document_round_trips_the_whole_walk(slot):

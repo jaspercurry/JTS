@@ -83,7 +83,6 @@ from jasper.active_speaker.angle_capture import (
     AngleStop,
     announced_indexes,
     candidate_measure_axes,
-    position_angle_deg,
     request_for_program,
     resolve_request,
     walk_price,
@@ -357,19 +356,12 @@ def _walk_payload(
     """The resolved walk, as one JSON-able document.
 
     Everything here is READ off the seam -- ``resolve_request`` for the stops,
-    ``position_angle_deg`` for the round-tripped bearing, ``announced_indexes``
-    for the prelude -- so this function states nothing the session would not.
+    ``announced_indexes`` for the prelude -- so this function states nothing
+    the session would not.
 
     ``program``, ``price``, ``level`` and ``handoff_url`` are the RECEIPT: what
     was asked for, what it drives at, what it costs the household, and where
     they run it. Everything else is the resolved walk.
-
-    ``banks_as`` is the receipt shape each stop produces: the fields of
-    ``spatial.cloud_position_record`` this walk DETERMINES, and no others. The
-    rest of that record (``captured_at``, ``wav_sha256``, the gate disclosure,
-    the ripple) is measured, so a planner that printed placeholders for them
-    would be inventing evidence. ``position_id`` and ``take_id`` are likewise
-    absent: they are minted at consume time against the real attempt number.
     """
     stops = resolve_request(request)
     return {
@@ -394,15 +386,6 @@ def _walk_payload(
                 "regime": stop.regime,
                 "program_phase": stop.program_phase,
                 "prompt": stop.prompt.text,
-                "banks_as": {
-                    # The pose, in the cm-primary units every shipped consumer
-                    # reads, plus the bearing read BACK off it -- the round trip
-                    # the seam asserts, printed so an operator can see it held.
-                    "offset_cm": round(float(stop.prompt.offset_cm), 3),
-                    "role": stop.prompt.role,
-                    "wide": bool(stop.prompt.wide),
-                    "position_angle_deg": position_angle_deg(stop.prompt),
-                },
                 "screen": dict(stop.screen),
             }
             for stop in stops
@@ -434,19 +417,10 @@ def _print_walk(payload: dict[str, Any]) -> None:
         )
     )
     for stop in payload["stops"]:
-        banks = stop["banks_as"]
         gate = stop["screen"].get("position_deg")
-        # The pose is printed as its cm magnitude AND as the bearing read back
-        # off it, because those are two different facts and only the second
-        # carries the side: ``offset_cm`` is a distance, so +7 and -7 are the
-        # same 12.28 cm, and a line that showed only the distance would look
-        # like a duplicated row for a walk that is nothing of the kind.
         print(
             f"  {stop['index']:>2}. {stop['angle_deg']:>+4d} deg  "
             f"{stop['regime']:<10}  plays {stop['program_phase']:<12} "
-            f"pose {banks['offset_cm']:>6.2f} cm "
-            f"({banks['position_angle_deg']:>+3d} deg back) "
-            f"{banks['role']}{' wide' if banks['wide'] else '    '}  "
             f"advance {stop['screen']['auto_advance']}"
             + (f"  gate {gate} deg" if gate is not None else "")
             # Only when raised: ``offset_cm`` is horizontal, so a vertical pose
