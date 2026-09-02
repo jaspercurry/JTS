@@ -399,17 +399,9 @@ install_jts_ring_platform() {
     # knowledge to own it — on a box that has no ACTIVE ring the file does not
     # exist and `rm -f` is a no-op.
     #
-    # The renderer-ingress LANE rings (`lane-<label>.ring`, RENDERER_LANES in
-    # jasper/renderer_lanes.py) join for the parallel reason: their deleter
-    # `delete_stale_ring` runs only for labels in `set(desired) ^ set(current)`
-    # (jasper/cli/audio_config.py) — arm/disarm transitions, never a deploy
-    # that moves the sample FORMAT or width under an unchanged armed set.
-    # They are NOT on the reboot side of the asymmetry below: a stale lane ring
-    # detaches fan-in (`reason=geometry`) and fails the renderer's own
-    # `snd_pcm_open`. They are unlinked anyway because that outcome is SILENT
-    # and permanent — unlike `grouping.ring`, whose stale cost is a visible
-    # `failed` unit, a stale lane just plays nothing until someone runs `rm`.
-    # Globbed, so the installer needs no copy of the lane roster.
+    # Lane rings (`lane-<label>.ring`) are create-or-attach from both ends. A
+    # geometry change under an unchanged armed set never reaches the arm-path
+    # deleter, so a stale ring makes the writer's open fail (rc=-22) until unlinked.
     #
     # Safe because nothing needs the header to SURVIVE a deploy: the ring is
     # create-or-attach from BOTH ends (the ioplug's `ring_mapping_open` and
