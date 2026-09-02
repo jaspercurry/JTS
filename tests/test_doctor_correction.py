@@ -2194,9 +2194,10 @@ def test_an_express_mark_verified_line_discloses_an_inconclusive_result(
             "claims": {
                 "integration": {"status": "pass", "max_db": 0.7},
                 # The producer's own reason word for this shape
-                # (``crossover_v2_flow.ABSOLUTE_NO_SPEC_TOLERANCE``); only
-                # ``status`` is read here, but an invented reason string in a
-                # fixture teaches the next reader a word that does not exist.
+                # (``crossover_v2.verification.ABSOLUTE_NO_SPEC_TOLERANCE``);
+                # only ``status`` is read here, but an invented reason string
+                # in a fixture teaches the next reader a word that does not
+                # exist.
                 "absolute": {
                     "status": "not_evaluated",
                     "reason": "no_spec_tolerance_for_region",
