@@ -70,6 +70,89 @@ def test_audio_graph_state_aggregates_route_fanin_and_outputd(
     }
 
 
+@pytest.mark.parametrize(
+    ("service_states", "expected"),
+    [
+        # A cleanly stopped CamillaDSP: no other field in this block can see
+        # it, because fan-in free-run-drops on an absent ring reader and
+        # outputd zero-fills an absent writer.
+        (
+            {
+                "jasper-camilla.service": {
+                    "load_state": "loaded",
+                    "active_state": "inactive",
+                    "sub_state": "dead",
+                    "result": "success",
+                },
+            },
+            {
+                "unit": "jasper-camilla.service",
+                "load_state": "loaded",
+                "active_state": "inactive",
+                "sub_state": "dead",
+                "result": "success",
+            },
+        ),
+        # Nothing sampled yet -> "not observed", never a guessed "running".
+        (None, None),
+        ({}, None),
+    ],
+)
+def test_audio_graph_publishes_camilla_unit_state(
+    monkeypatch, service_states, expected
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        route_mode="solo",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    graph = state_aggregate._audio_graph_state(
+        fanin_status=None,
+        outputd_status=None,
+        service_states=service_states,
+    )
+
+    assert graph is not None
+    assert graph["camilla"] == expected
+
+
+def test_camilla_row_survives_an_unreadable_route_plan(monkeypatch):
+    """An absent DAC throws the plan read AND stops CamillaDSP — same cause."""
+    def _boom():
+        raise OSError("no output hardware")
+
+    monkeypatch.setattr(
+        audio_runtime_plan, "build_audio_runtime_plan_from_system", _boom,
+    )
+
+    graph = state_aggregate._audio_graph_state(
+        fanin_status=None,
+        outputd_status=None,
+        service_states={
+            "jasper-camilla.service": {
+                "load_state": "loaded",
+                "active_state": "inactive",
+                "sub_state": "dead",
+                "result": "success",
+            },
+        },
+    )
+
+    assert graph is not None
+    assert graph["route"]["status"] == "unavailable"
+    assert graph["camilla"]["active_state"] == "inactive"
+
+
 # --- /state.audio_graph.coupling (P2) ----------------------------------------
 
 

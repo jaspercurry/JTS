@@ -6,7 +6,24 @@ After=local-fs.target systemd-journald.socket
 Type=oneshot
 ExecStart=/usr/local/sbin/jasper-camilla-recover --reason start-limit
 # This is a recovery path, so fail open and keep boot/control reachable even
-# if evidence capture or the bounded restart attempt itself has a bug.
-TimeoutStartSec=45
+# if evidence capture or the bounded restart attempt itself has a bug. Sized so
+# the body finishes its own ladder and the EXIT trap stays the exception, from
+# constants in this tree: 3 captures x CAPTURE_TIMEOUT_SEC 5s = 15, + the stop
+# loop 140 (ten units at their own TimeoutStopSec=5s, plus
+# jasper-camilla-crossover.service, the only one with no override, at systemd's
+# 90s default), + the ladder 373 (fanin restart 5+90, camilla start 50 for the
+# Requires= jasper-audio-hardware-reconcile plus 90, 3s liveness wait, outputd
+# restart 5+90, renderers 2+30+2+2+2+2) = 528s, rounded up.
+# PROVISIONAL until measured on hardware: every 90s term is a systemd default
+# that no unit overrides, not an observed duration.
+TimeoutStartSec=600
+# The SIGTERM at TimeoutStartSec is where the handler's EXIT trap restores the
+# core graph, so this deadline — not the manager's DefaultTimeoutStopSec — is
+# the restore's budget. Under KillMode=control-group (the default) systemd
+# does not re-signal a PID its kill sweep already hit, so the trap runs until
+# the SIGKILL wave here. The trap re-runs the ladder only, so this is the
+# ladder's 373s term from the derivation above, rounded up; 120 was short of
+# it. Same PROVISIONAL caveat.
+TimeoutStopSec=400
 StandardOutput=journal
 StandardError=journal
