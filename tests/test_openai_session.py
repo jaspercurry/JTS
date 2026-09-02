@@ -1672,24 +1672,48 @@ async def test_repeated_failures_exhaust_bounded_schedule_to_failed():
         await conn.stop()
 
 
-async def test_non_transient_initial_connect_error_propagates():
-    """An auth failure on the first connect must NOT silently retry —
-    the daemon should surface FAILED so the user can fix the key."""
+async def test_terminal_initial_connect_stays_up_and_heals():
+    """A terminal first connect (403, account blocked) must not kill the
+    daemon — the reconnect path survives the same rejection, so start()
+    must too. It returns with the supervisor running, the outage visible
+    on the fields `/state` reads, the escalation cue announced once (the
+    daemon wires the cue player only after start()), and self-healing
+    once the provider accepts."""
     factory = _FakeConnectFactory()
 
-    class _AuthError(Exception):
-        status_code = 401
+    class _Blocked(Exception):
+        status_code = 403
 
-    factory.next_exceptions = [_AuthError("bad key")]
+    factory.next_exceptions = [_Blocked("team blocked")]
     conn = OpenAIRealtimeConnection(
         api_key="fake",
         connect_factory=factory,
         backoff_schedule=(0.0,),
     )
+    cue_calls: list[str] = []
+
+    async def cue_cb(slug: str) -> None:
+        cue_calls.append(slug)
+
     registry = ToolRegistry()
-    with pytest.raises(_AuthError):
-        await conn.start(registry, "")
-    assert conn._state is ConnectionState.FAILED
+    await conn.start(registry, "")
+    try:
+        # No await between start() and these — the supervisor task is
+        # scheduled but has not run, so the post-failure state is intact.
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
+        assert isinstance(conn.last_failure_detail(), str)
+
+        conn.set_failure_escalation_cb(cue_cb)
+        await _wait_until(lambda: cue_calls == [ESCALATION_CUE_SLUG])
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        assert not conn.is_paused()
+        assert conn.last_failure_detail() is None
+        assert cue_calls == [ESCALATION_CUE_SLUG]
+    finally:
+        await conn.stop()
 
 
 async def test_acquire_turn_blocks_then_raises_when_failed():
@@ -1935,13 +1959,10 @@ async def test_initial_connect_exhausts_budget_and_raises():
     assert len(factory.conns) == 0
 
 
-async def test_initial_connect_non_transient_error_raises_immediately():
+async def test_initial_connect_non_transient_error_skips_the_budget():
     """Auth errors (and other non-transient failures per
-    ``is_transient``) must NOT consume the budget — they propagate
-    on the first attempt, no sleep, no retry. Preserves the original
-    behaviour from before the budget refactor (was covered by
-    ``test_non_transient_initial_connect_error_propagates`` against
-    the old schedule-based path)."""
+    ``is_transient``) must NOT consume the initial-connect budget — the
+    first attempt ends the loop, no sleep, no retry."""
     class _AuthError(Exception):
         status_code = 401
 
@@ -1950,13 +1971,11 @@ async def test_initial_connect_non_transient_error_raises_immediately():
         fail_count=1,
         fail_exc=_AuthError("bad key"),
     )
-    registry = ToolRegistry()
     with pytest.raises(_AuthError):
-        await conn.start(registry, "")
+        await conn._open_session_with_retry(phase="initial-connect")
     # Critical: NO sleeps fired. A non-transient error must not
     # cost the user a backoff wait.
     assert clock.sleeps == []
-    assert conn._state is ConnectionState.FAILED
 
 
 async def test_initial_connect_records_the_provider_reason():
@@ -1981,12 +2000,15 @@ async def test_initial_connect_records_the_provider_reason():
     conn, _factory, _clock = _make_conn_with_clock(
         budget_sec=600.0, fail_count=1, fail_exc=_Rejected(),
     )
-    with pytest.raises(_Rejected):
-        await conn.start(ToolRegistry(), "")
-
+    await conn.start(ToolRegistry(), "")
+    # Read before any await: the supervisor task is scheduled but has
+    # not reconnected yet, so the outage detail still stands.
     detail = conn.last_failure_detail()
-    assert detail is not None
-    assert "used all available credits" in detail
+    try:
+        assert detail is not None
+        assert "used all available credits" in detail
+    finally:
+        await conn.stop()
 
 
 async def test_successful_connect_clears_the_failure_detail():

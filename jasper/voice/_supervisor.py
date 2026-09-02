@@ -114,11 +114,31 @@ class OutageTracker:
     def __init__(self) -> None:
         self.detail: str | None = None
         self._announced = False
+        self._held = False
         self._cb: CuePlayer | None = None
 
     def set_callback(self, cb: CuePlayer | None) -> None:
-        """None keeps the edge and its log line but plays nothing."""
+        """None keeps the edge and its log line but plays nothing.
+
+        The daemon can only wire this once the object that owns cue
+        playback exists, which is after the connection's ``start()`` —
+        so an outage that began on the very first connect has already
+        claimed its edge. Play what it held back."""
         self._cb = cb
+        if cb is not None and self._held:
+            self._announce()
+
+    def _announce(self) -> None:
+        if self._cb is None:
+            self._held = True
+            return
+        self._held = False
+        # Fire-and-forget: cue playback must not stall the reconnect
+        # cadence.
+        asyncio.create_task(
+            self._cb(ESCALATION_CUE_SLUG),
+            name="jasper-supervisor-escalation-cue",
+        )
 
     def on_failure(self, exc: BaseException) -> None:
         """Record a failed session open, announcing a terminal one once."""
@@ -133,19 +153,13 @@ class OutageTracker:
             exc=type(exc).__name__,
             level=logging.WARNING,
         )
-        if self._cb is None:
-            return
-        # Fire-and-forget: cue playback must not stall the reconnect
-        # cadence.
-        asyncio.create_task(
-            self._cb(ESCALATION_CUE_SLUG),
-            name="jasper-supervisor-escalation-cue",
-        )
+        self._announce()
 
     def on_recovery(self) -> None:
         """A session opened: clear the outage and re-arm, silently."""
         self.detail = None
         self._announced = False
+        self._held = False
 
 
 class DeferredReconnect:
