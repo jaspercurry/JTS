@@ -557,6 +557,41 @@ def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
     assert r.status == "ok"
 
 
+def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
+    monkeypatch, tmp_path
+):
+    """The state jts4 actually landed in: chunk fits the ring, box still dead.
+
+    256/4096 passes the ring-capacity half and is still refused by CamillaDSP
+    (ceiling is chunk x (queuelimit + 4) = 2048), so the box crash-loops with
+    the ring half of this check green. Observed on hardware 2026-09-01.
+    """
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    config = tmp_path / "ring.yml"
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 256\n"
+        "  queuelimit: 4\n"
+        "  target_level: 4096\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_CAPTURE_DEVICE}"\n'
+        "  playback:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_PLAYBACK_DEVICE}"\n'
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.speaker_silent is True
+
+
 def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
     """A clamped box says so, so the running chunk is never unexplained.
 

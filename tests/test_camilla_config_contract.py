@@ -400,6 +400,33 @@ def test_a_ring_end_never_emits_a_chunk_larger_than_the_ring(
     assert parsed["chunksize"] == ring_capacity_frames()
 
 
+def test_a_clamped_chunk_scales_its_target_with_it(monkeypatch, tmp_path):
+    """The (chunk, target) pair moves together, because its ceiling does.
+
+    CamillaDSP bounds target_level at ``chunksize x (queuelimit + 4)``
+    (measured against 4.1.3 on jts4; exact across chunk 128/256/512 and
+    queuelimit 1/2/4), so shrinking the chunk shrinks the ceiling. Clamping
+    the chunk alone put jts4's floor-declared 4096 over the new 2048 ceiling
+    and swapped one crash loop for another.
+
+    Scaling preserves the RATIO the DacProfile declared (InnoMaker's 4x)
+    rather than substituting a number of our own.
+    """
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+
+    parsed = _generated_sound_devices(
+        monkeypatch, tmp_path, "innomaker_hifi_amp_pro"
+    )
+
+    chunk, target = parsed["chunksize"], parsed["target_level"]
+    assert chunk == ring_capacity_frames()
+    # The declared 1024/4096 scaled by the same factor the chunk was.
+    assert target == 1024
+    # And inside CamillaDSP's ceiling for the emitted queuelimit.
+    assert target <= chunk * (parsed["queuelimit"] + 4)
+
+
 def test_a_floor_that_already_fits_the_ring_is_not_clamped(monkeypatch, tmp_path):
     """The clamp is a ceiling, not a retune.
 
