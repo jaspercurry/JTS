@@ -59,25 +59,22 @@ import json
 import logging
 import os
 import time as _time
-from collections import deque
-from typing import Awaitable, AsyncIterator, Callable
+from typing import AsyncIterator, Callable
 
 from jasper.backoff import reconnect_backoff_delay
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
-    ESCALATION_CUE_SLUG,
-    ESCALATION_RATE_LIMIT_SEC,
-    ESCALATION_REPEAT_THRESHOLD,
     DeferredReconnect,
-    FailureFingerprint,
-    failure_detail,
+    OutageTracker,
+    is_transient,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
     AudioOutChunk,
     ConnectionState,
+    CuePlayer,
     LiveTurn,
 )
 
@@ -855,7 +852,7 @@ class OpenAIRealtimeConnection:
         # Tests pass a small value (e.g. 0.5) for fast budget-exhaustion
         # assertions. Pass 0 for "single attempt, no retries"
         # (preserves the auth-error-propagates-immediately behaviour
-        # that ``_is_transient`` already encodes — non-transient errors
+        # that ``is_transient`` already encodes — non-transient errors
         # never retry regardless of budget).
         initial_connect_budget_sec: float | None = None,
         # Test seam: replace the SDK's connect call. The factory must be
@@ -952,16 +949,7 @@ class OpenAIRealtimeConnection:
         self._deferred_reconnect = DeferredReconnect()
         self._server_vad_active: bool = False
 
-        # Tight-retry-loop detection — same logic as Gemini, lifted into
-        # ``_supervisor.FailureFingerprint``.
-        self._recent_failure_fingerprints: deque[FailureFingerprint] = deque(
-            maxlen=ESCALATION_REPEAT_THRESHOLD,
-        )
-        self._last_escalation_at: float = float("-inf")
-        # Cause of the most recent reconnect failure, for /state. Cleared
-        # on a successful reconnect so it never outlives the outage.
-        self._last_failure_detail: str | None = None
-        self._failure_escalation_cb: Callable[[str], Awaitable[object]] | None = None
+        self._outage = OutageTracker()
 
     # ------------------------------------------------------------------
     # Public LiveConnection protocol
@@ -978,15 +966,10 @@ class OpenAIRealtimeConnection:
                 old.value, new_state.value,
             )
 
-    def set_failure_escalation_cb(
-        self, cb: Callable[[str], Awaitable[object]] | None,
-    ) -> None:
-        """Wire the supervisor's tight-retry-loop escalation cue.
-
-        Voice daemon calls this after both the connection and the
-        ``WakeLoop`` are constructed (the loop owns the cue manager and
-        knows how to suppress the cue mid-session)."""
-        self._failure_escalation_cb = cb
+    def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
+        """Wire the cue player for a terminal connection failure. The
+        daemon calls this once the ``WakeLoop`` exists."""
+        self._outage.set_callback(cb)
 
     def set_billable_activity_meter(self, meter) -> None:
         """Wire a ``BillableActivityMeter`` for time-billed providers.
@@ -1011,30 +994,6 @@ class OpenAIRealtimeConnection:
             return
         meter.mark_ended()
         self._billable_activity_interval_open = False
-
-    def _maybe_fire_escalation_cue(self) -> None:
-        if len(self._recent_failure_fingerprints) < ESCALATION_REPEAT_THRESHOLD:
-            return
-        first = self._recent_failure_fingerprints[0]
-        if not all(fp == first for fp in self._recent_failure_fingerprints):
-            return
-        now = asyncio.get_event_loop().time()
-        if now - self._last_escalation_at < ESCALATION_RATE_LIMIT_SEC:
-            return
-        if self._failure_escalation_cb is None:
-            return
-        self._last_escalation_at = now
-        logger.warning(
-            "openai connection: %d consecutive identical reconnect failures "
-            "(%s, code=%s, %r) — firing %s cue",
-            ESCALATION_REPEAT_THRESHOLD,
-            first.exc_type, first.close_code, first.reason[:60],
-            ESCALATION_CUE_SLUG,
-        )
-        asyncio.create_task(
-            self._failure_escalation_cb(ESCALATION_CUE_SLUG),
-            name="jasper-supervisor-escalation-cue",
-        )
 
     async def start(
         self,
@@ -1121,7 +1080,7 @@ class OpenAIRealtimeConnection:
         )
 
     def last_failure_detail(self) -> str | None:
-        return self._last_failure_detail
+        return self._outage.detail
 
     def supports_server_vad(self) -> bool:
         return True
@@ -1403,7 +1362,7 @@ class OpenAIRealtimeConnection:
         Behaviour:
           * Each attempt calls ``_open_session()``; on success returns.
           * Auth / local-validation errors (non-transient per
-            ``_is_transient``) propagate immediately — no retry, no
+            ``is_transient``) propagate immediately — no retry, no
             wait. Surfaces a bad API key or malformed config without
             burning 10 minutes pretending it's a network issue.
           * Transient errors (network blip, DNS failure, 5xx, WS
@@ -1454,14 +1413,14 @@ class OpenAIRealtimeConnection:
                     )
                 return
             except Exception as e:  # noqa: BLE001
-                if not _is_transient(e):
+                if not is_transient(e):
                     log_event(
                         logger,
                         "openai.initial_connect.fatal",
                         phase=phase,
                         attempt=attempt,
                         exc=type(e).__name__,
-                        reason=repr(self._last_failure_detail),
+                        reason=repr(self._outage.detail),
                         level=logging.WARNING,
                     )
                     raise
@@ -1476,7 +1435,7 @@ class OpenAIRealtimeConnection:
                         elapsed_sec=f"{elapsed:.1f}",
                         budget_sec=f"{budget_sec:.1f}",
                         exc=type(e).__name__,
-                        reason=repr(self._last_failure_detail),
+                        reason=repr(self._outage.detail),
                         level=logging.ERROR,
                     )
                     raise RuntimeError(
@@ -1501,7 +1460,7 @@ class OpenAIRealtimeConnection:
                     elapsed_sec=f"{elapsed:.1f}",
                     budget_sec=f"{budget_sec:.1f}",
                     exc=type(e).__name__,
-                    reason=repr(self._last_failure_detail),
+                    reason=repr(self._outage.detail),
                     level=logging.WARNING,
                 )
                 log_event(
@@ -1532,18 +1491,16 @@ class OpenAIRealtimeConnection:
         return lambda model: self._client.realtime.connect(model=model)
 
     async def _open_session(self) -> None:
-        """Open a session, recording the cause when it fails.
+        """Open a session, recording the outcome on the outage tracker.
 
-        Every retry loop funnels through here, so `_last_failure_detail`
-        tracks the live connection by construction — a later caller
-        cannot forget the bookkeeping and leave /state reporting a
-        stale outage."""
+        Every session open funnels through here, so the tracker follows
+        the live connection by construction."""
         try:
             await self._open_session_attempt()
         except Exception as e:  # noqa: BLE001
-            self._last_failure_detail = failure_detail(e)
+            self._outage.on_failure(e)
             raise
-        self._last_failure_detail = None
+        self._outage.on_recovery()
 
     async def _open_session_attempt(self) -> None:
         connect_call = self._resolve_connect_call()
@@ -1750,18 +1707,13 @@ class OpenAIRealtimeConnection:
                 return
             try:
                 await self._open_session()
-                self._recent_failure_fingerprints.clear()
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
                 logger.warning(
                     "openai connection: reconnect attempt %d failed (%s: %s)",
-                    attempt, type(e).__name__, self._last_failure_detail,
+                    attempt, type(e).__name__, self._outage.detail,
                 )
-                self._recent_failure_fingerprints.append(
-                    FailureFingerprint.from_exception(e),
-                )
-                self._maybe_fire_escalation_cue()
 
         if bounded and not self._stopping.is_set():
             async with self._state_lock:
@@ -2345,31 +2297,3 @@ def _read_initial_connect_budget_env() -> float:
         )
         return DEFAULT_INITIAL_CONNECT_BUDGET_SEC
     return value
-
-
-def _is_transient(exc: BaseException) -> bool:
-    """Decide whether an exception from ``__aenter__`` / ``send`` /
-    ``recv`` is worth retrying in the initial-connect path.
-
-    Transient: network errors, server 5xx, WebSocket resets, rate-limit
-    bursts, 409 (race against a recently-closed prior session). Non-
-    transient: auth failures (401/403), config errors (400, malformed
-    payloads), explicit ``ValueError`` from local validation. Non-
-    transient errors propagate out of ``start()`` so the daemon doesn't
-    keep retrying a fundamentally broken setup."""
-    # Local-validation errors — never retry.
-    if isinstance(exc, (TypeError, ValueError, ImportError, AttributeError)):
-        return False
-    # Anything HTTP-ish from the openai SDK or websockets:
-    status = (
-        getattr(exc, "status_code", None)
-        or getattr(getattr(exc, "response", None), "status_code", None)
-    )
-    if status is not None:
-        if status in (401, 403, 404):
-            return False
-        if 400 <= status < 500 and status != 429 and status != 409:
-            return False
-        return True
-    # No status — treat as transient (network blip, WS reset, etc.).
-    return True

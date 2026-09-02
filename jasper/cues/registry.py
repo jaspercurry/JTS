@@ -87,14 +87,15 @@ CUES: tuple[CueDef, ...] = (
             "{hostname}."
         ),
         description=(
-            "Proactive cue fired by the connection supervisor after "
-            "5 consecutive identical reconnect failures (~30 s of "
-            "sustained outage on the default backoff schedule). "
-            "Distinguished from cant_connect: that one is reactive "
-            "to a wake event during a paused window. This one fires "
-            "without a wake event so the user knows the speaker is "
-            "broken even when they haven't tried to use it. "
-            "Rate-limited to once per hour to avoid spamming."
+            "Proactive cue fired by the connection supervisor on the "
+            "first terminal failure of an outage — one retrying cannot "
+            "fix, such as the provider rejecting the key or the account "
+            "being out of credit. Transient failures retry in silence. "
+            "Spoken once per outage; a successful reconnect re-arms it "
+            "silently. Distinguished from cant_connect: that one is "
+            "reactive to a wake event during a paused window. This one "
+            "fires without a wake event so the user knows the speaker "
+            "is broken even when they haven't tried to use it."
         ),
     ),
     CueDef(

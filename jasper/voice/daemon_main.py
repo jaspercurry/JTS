@@ -1179,15 +1179,9 @@ async def run() -> None:
             registry.set_dispatch_observer(
                 wake_loop.record_tool_dispatch_stage,
             )
-            # Wire the supervisor's tight-retry-loop escalation cue to
-            # the wake loop's session-aware cue play. Done here (after
-            # both connection and wake loop exist) because the
-            # connection is constructed first by _make_connection but
-            # WakeLoop.play_supervisor_cue is the right callback target.
-            if hasattr(connection, "set_failure_escalation_cb"):
-                connection.set_failure_escalation_cb(
-                    wake_loop.play_supervisor_cue,
-                )
+            connection.set_failure_escalation_cb(
+                wake_loop.play_supervisor_cue,
+            )
             research_delivery_recorder_ref["fn"] = (
                 wake_loop.record_research_delivery
             )

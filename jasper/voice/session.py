@@ -6,7 +6,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Protocol,
+    runtime_checkable,
+)
 
 from ..tools import ToolRegistry
 
@@ -357,6 +364,10 @@ class ConversationMetadataTurn(Protocol):
         ...
 
 
+# ``WakeLoop.play_supervisor_cue`` in production: takes a cue slug.
+CuePlayer = Callable[[str], Coroutine[Any, Any, object]]
+
+
 @runtime_checkable
 class LiveConnection(Protocol):
     """Provider-agnostic interface for a long-lived voice connection.
@@ -412,6 +423,11 @@ class LiveConnection(Protocol):
         Provider-agnostic and already redacted — see
         ``_supervisor.failure_detail``. Surfaced at
         ``/state.voice.connection_error``."""
+        ...
+
+    def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
+        """Wire the cue player for a terminal connection failure. The
+        daemon calls this once the ``WakeLoop`` exists."""
         ...
 
     def supports_server_vad(self) -> bool:

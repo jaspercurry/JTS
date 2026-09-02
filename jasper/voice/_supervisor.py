@@ -7,34 +7,28 @@
 Each `LiveConnection` implementation runs its own reconnect supervisor
 because the recovery details differ (Gemini drops a resumption handle on
 1008; OpenAI just reopens the WebSocket). Voice-specific retry-loop
-primitives — tight-retry-loop escalation and failure-shape fingerprint
-comparison — live here so behaviour stays consistent across providers. The
-generic retry schedule lives in :mod:`jasper.backoff` so non-voice subsystems
-do not depend on this private module.
+primitives — transient/terminal exception classification and the
+once-per-outage escalation announcement — live here so behaviour stays
+consistent across providers. The generic retry schedule lives in
+:mod:`jasper.backoff` so non-voice subsystems do not depend on this
+private module.
 
-What's NOT here: the supervisor task itself, exception classification
-(409 / 1008 / etc.), and resumption-handle logic. Those are
-provider-specific and stay in `gemini_session.py` / `openai_session.py`.
+What's NOT here: the supervisor task itself, provider-specific close-code
+handling (Gemini's 409 / 1008) and resumption-handle logic. Those stay in
+`gemini_session.py` / `openai_session.py`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+import logging
 from typing import Callable
 
+from ..log_event import log_event
 from ..secret_redaction import redact_secrets
+from .session import CuePlayer
 
-# Tight-retry-loop escalation: when the supervisor reconnect loop keeps
-# producing the SAME failure (same exception type, same close code, same
-# reason text) in succession, that's a signal the user should know about
-# — the speaker is broken and silent retries won't fix it on their own.
-# Threshold of 5 was picked because the default backoff schedule is
-# (1, 2, 4, 8, 16, 32, 60, 60…) seconds — 5 attempts ≈ 30 s of sustained
-# identical failures before the cue. By that point we're well past
-# transient-blip territory (DNS hiccup, momentary WS reset, etc.) and
-# into real-outage territory. Rate-limited to once per hour to avoid
-# spamming during long outages.
-ESCALATION_REPEAT_THRESHOLD = 5
-ESCALATION_RATE_LIMIT_SEC = 3600.0
+logger = logging.getLogger(__name__)
+
 ESCALATION_CUE_SLUG = "cant_reach_cloud"
 
 # Cap on the cause string stored and logged. Comfortably fits a provider's
@@ -49,47 +43,6 @@ FAILURE_DETAIL_LIMIT = 300
 _SCAN_LIMIT = FAILURE_DETAIL_LIMIT * 4
 
 
-@dataclass(frozen=True)
-class FailureFingerprint:
-    """Identity of a reconnect failure, for tight-loop detection.
-
-    Two fingerprints compare equal iff they're the same shape of
-    failure: same exception type, same WebSocket close code (if any),
-    same reason text. Reason is truncated to 200 chars so jittery error
-    messages with timestamps or other unique content don't pollute the
-    "are these all identical?" check; the exception type + close code
-    do most of the work anyway."""
-    exc_type: str
-    close_code: int | None
-    reason: str
-
-    @classmethod
-    def from_exception(cls, exc: BaseException) -> "FailureFingerprint":
-        # WebSocket exceptions from the underlying `websockets` library
-        # carry the close frame on `.rcvd`. The `openai` SDK raises its
-        # own typed errors with `.code` / `.reason`. Other exception
-        # shapes (httpx errors, generic OSError) won't have either; fall
-        # back to str(exc) for the reason field.
-        rcvd = getattr(exc, "rcvd", None)
-        close_code = (
-            getattr(rcvd, "code", None)
-            if rcvd is not None
-            else getattr(exc, "code", None)
-        )
-        reason = (
-            getattr(rcvd, "reason", None)
-            if rcvd is not None
-            else getattr(exc, "reason", None)
-        )
-        if reason is None:
-            reason = str(exc)
-        return cls(
-            exc_type=type(exc).__name__,
-            close_code=close_code,
-            reason=str(reason)[:200],
-        )
-
-
 def failure_detail(exc: BaseException) -> str:
     """A one-line, secret-free cause for logs and ``/state``.
 
@@ -97,10 +50,6 @@ def failure_detail(exc: BaseException) -> str:
     refused handshake as a bare "server rejected WebSocket connection:
     HTTP 403" while ``.response.body`` holds the reason a household can
     act on. Prefer the body; fall back to ``str(exc)`` otherwise.
-
-    Never share this string with :class:`FailureFingerprint` — a body
-    carrying a request id would break its identity comparison, and with
-    it the tight-retry-loop detection.
 
     Redaction precedes truncation so a clipped tail cannot leave half a
     credential behind.
@@ -118,6 +67,85 @@ def failure_detail(exc: BaseException) -> str:
     if len(text) > FAILURE_DETAIL_LIMIT:
         text = text[:FAILURE_DETAIL_LIMIT - 3] + "..."
     return text
+
+
+def http_status(exc: BaseException) -> int | None:
+    """The HTTP status a rejected handshake carries, if any.
+
+    websockets puts it on ``.status_code``; httpx-style SDK errors on
+    ``.response.status_code``."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Whether retrying this failure can plausibly fix it.
+
+    Transient: network errors, server 5xx, WebSocket resets, rate-limit
+    bursts, 409 (race against a recently-closed prior session). Not
+    transient means terminal — no amount of retrying helps and a human
+    must act: a rejected key, an account out of credit, a missing model,
+    a locally malformed config. See ADR-0215."""
+    # Local-validation errors — never retry.
+    if isinstance(exc, (TypeError, ValueError, ImportError, AttributeError)):
+        return False
+    status = http_status(exc)
+    if status is not None:
+        if status in (401, 403, 404):
+            return False
+        if 400 <= status < 500 and status != 429 and status != 409:
+            return False
+        return True
+    # No status — treat as transient (network blip, WS reset, etc.).
+    return True
+
+
+class OutageTracker:
+    """Track the current outage for a connection.
+
+    Holds its redacted cause for logs and ``/state``, and whether it has
+    been announced. The announcement is edge-triggered: the cue fires on
+    the first terminal failure after the connection last worked, never on
+    a timer, and a recovery re-arms it silently. One instance per
+    connection. See ADR-0215."""
+
+    def __init__(self) -> None:
+        self.detail: str | None = None
+        self._announced = False
+        self._cb: CuePlayer | None = None
+
+    def set_callback(self, cb: CuePlayer | None) -> None:
+        """None keeps the edge and its log line but plays nothing."""
+        self._cb = cb
+
+    def on_failure(self, exc: BaseException) -> None:
+        """Record a failed session open, announcing a terminal one once."""
+        self.detail = failure_detail(exc)
+        if is_transient(exc) or self._announced:
+            return
+        self._announced = True
+        log_event(
+            logger,
+            "voice.connection.terminal_failure",
+            cue=ESCALATION_CUE_SLUG,
+            exc=type(exc).__name__,
+            level=logging.WARNING,
+        )
+        if self._cb is None:
+            return
+        # Fire-and-forget: cue playback must not stall the reconnect
+        # cadence.
+        asyncio.create_task(
+            self._cb(ESCALATION_CUE_SLUG),
+            name="jasper-supervisor-escalation-cue",
+        )
+
+    def on_recovery(self) -> None:
+        """A session opened: clear the outage and re-arm, silently."""
+        self.detail = None
+        self._announced = False
 
 
 class DeferredReconnect:

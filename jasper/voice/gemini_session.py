@@ -7,8 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
-from collections import deque
-from typing import Awaitable, AsyncIterator, Callable
+from typing import AsyncIterator, Callable
 
 from google import genai
 from google.genai import types
@@ -17,28 +16,20 @@ from jasper.backoff import reconnect_backoff_delay
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
-    ESCALATION_CUE_SLUG,
-    ESCALATION_RATE_LIMIT_SEC,
-    ESCALATION_REPEAT_THRESHOLD,
     DeferredReconnect,
-    FailureFingerprint,
-    failure_detail,
+    OutageTracker,
+    http_status,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
     AudioOutChunk,
     ConnectionState,
+    CuePlayer,
     LiveTurn,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# Back-compat aliases for tests that import the underscore-prefixed
-# names from this module. New code should import these directly from
-# `jasper.voice._supervisor`.
-_FailureFingerprint = FailureFingerprint
-_reconnect_backoff_delay = reconnect_backoff_delay
 
 # Keepalive period — Vertex Live API closes idle connections after 10
 # min (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting).
@@ -132,9 +123,7 @@ def _is_409_conflict(exc: Exception) -> tuple[bool, int | None]:
          forward-compat fallback if a future websockets / SDK release
          restructures the exception. Carries no detected status.
     """
-    status = getattr(exc, "status_code", None)
-    if status is None:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
+    status = http_status(exc)
     if status == 409:
         return True, status
     msg = str(exc)
@@ -536,7 +525,7 @@ class GeminiLiveConnection:
         context_reset_sec: float = 0.0,
         keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
         # Production: leave None → supervisor reconnects FOREVER with
-        # `_reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
+        # `reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
         # 60, …s with ±25% jitter). Tests pass a bounded tuple to make
         # exhaustion observable and runs fast.
         backoff_schedule: tuple[float, ...] | None = None,
@@ -617,27 +606,7 @@ class GeminiLiveConnection:
         # the daemon doesn't try to send audio into a half-open WS.
         self._connected_event: asyncio.Event = asyncio.Event()
 
-        # Tight-retry-loop detection. See module-level constants and
-        # _FailureFingerprint. Cleared on successful reconnect so the
-        # "consecutive failures" count resets after a recovery.
-        self._recent_failure_fingerprints: deque[_FailureFingerprint] = deque(
-            maxlen=ESCALATION_REPEAT_THRESHOLD,
-        )
-        # Sentinel: -inf means "never fired", so the rate-limit window
-        # check passes the first time. Using 0.0 would falsely block the
-        # first fire whenever asyncio.get_event_loop().time() < the
-        # rate-limit (1 hour) — which is the entire common case on a
-        # freshly-started daemon.
-        self._last_escalation_at: float = float("-inf")
-        # Cause of the most recent reconnect failure, for /state. Cleared
-        # on a successful reconnect so it never outlives the outage.
-        self._last_failure_detail: str | None = None
-        # Async callback invoked when the supervisor detects a tight
-        # retry loop. Wired by the daemon to WakeLoop.play_supervisor_cue
-        # after both the connection and wake loop are constructed.
-        # Signature: (slug: str) -> Awaitable[Any]. None disables
-        # escalation (used by tests + minimal harnesses).
-        self._failure_escalation_cb: Callable[[str], Awaitable[object]] | None = None
+        self._outage = OutageTracker()
 
     def _set_state(self, new_state: "ConnectionState") -> None:
         """Update connection state with structured logging.
@@ -658,57 +627,10 @@ class GeminiLiveConnection:
                 old.value, new_state.value,
             )
 
-    def set_failure_escalation_cb(
-        self, cb: Callable[[str], Awaitable[object]] | None,
-    ) -> None:
-        """Wire the supervisor's tight-retry-loop escalation cue.
-
-        Called by the voice daemon after both the connection and the
-        WakeLoop are constructed (chicken-and-egg: connection comes
-        first, but the cue manager + WakeLoop come later). `cb` should
-        be `WakeLoop.play_supervisor_cue` in production — it takes a
-        cue slug, ducks music, plays the WAV, and skips if a
-        user-driven turn is already active.
-
-        Pass None to disable. Tests do this to keep the supervisor
-        observable without a cue manager."""
-        self._failure_escalation_cb = cb
-
-    def _maybe_fire_escalation_cue(self) -> None:
-        """Inspect the recent-failure ring buffer; fire the escalation
-        cue if the last N failures are all the same shape AND the
-        rate-limit window has elapsed.
-
-        Called from `_reconnect_with_backoff` after each failure is
-        logged. Synchronous (the actual cue play happens in a fire-
-        and-forget background task so the supervisor's reconnect
-        cadence isn't blocked by audio playback)."""
-        if len(self._recent_failure_fingerprints) < ESCALATION_REPEAT_THRESHOLD:
-            return
-        first = self._recent_failure_fingerprints[0]
-        if not all(fp == first for fp in self._recent_failure_fingerprints):
-            return
-        now = asyncio.get_event_loop().time()
-        if now - self._last_escalation_at < ESCALATION_RATE_LIMIT_SEC:
-            return
-        if self._failure_escalation_cb is None:
-            return
-        self._last_escalation_at = now
-        logger.warning(
-            "live connection: %d consecutive identical reconnect failures "
-            "(%s, code=%s, %r) — firing %s cue",
-            ESCALATION_REPEAT_THRESHOLD,
-            first.exc_type, first.close_code, first.reason[:60],
-            ESCALATION_CUE_SLUG,
-        )
-        # Fire-and-forget so the audio playback doesn't block the
-        # supervisor's reconnect cadence. The callback (WakeLoop.
-        # play_supervisor_cue) handles its own errors and returns a
-        # status string; we don't need the result.
-        asyncio.create_task(
-            self._failure_escalation_cb(ESCALATION_CUE_SLUG),
-            name="jasper-supervisor-escalation-cue",
-        )
+    def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
+        """Wire the cue player for a terminal connection failure. The
+        daemon calls this once the ``WakeLoop`` exists."""
+        self._outage.set_callback(cb)
 
     # ------------------------------------------------------------------
     # LiveConnection protocol
@@ -834,7 +756,7 @@ class GeminiLiveConnection:
         )
 
     def last_failure_detail(self) -> str | None:
-        return self._last_failure_detail
+        return self._outage.detail
 
     def supports_server_vad(self) -> bool:
         return False
@@ -1124,7 +1046,7 @@ class GeminiLiveConnection:
                     "live connection: %s retry %d after %.1fs (last: %s: %s)",
                     phase, attempt, delay,
                     type(last_exc).__name__ if last_exc else "?",
-                    self._last_failure_detail if last_exc else "?",
+                    self._outage.detail if last_exc else "?",
                 )
                 await asyncio.sleep(delay)
             try:
@@ -1177,18 +1099,16 @@ class GeminiLiveConnection:
         )
 
     async def _open_session(self) -> None:
-        """Open a session, recording the cause when it fails.
+        """Open a session, recording the outcome on the outage tracker.
 
-        Every retry loop funnels through here, so `_last_failure_detail`
-        tracks the live connection by construction — a later caller
-        cannot forget the bookkeeping and leave /state reporting a
-        stale outage."""
+        Every session open funnels through here, so the tracker follows
+        the live connection by construction."""
         try:
             await self._open_session_attempt()
         except Exception as e:  # noqa: BLE001
-            self._last_failure_detail = failure_detail(e)
+            self._outage.on_failure(e)
             raise
-        self._last_failure_detail = None
+        self._outage.on_recovery()
 
     async def _open_session_attempt(self) -> None:
         """Open a fresh SDK session against the current config and start
@@ -1323,7 +1243,7 @@ class GeminiLiveConnection:
             delay = (
                 self._backoff_schedule[attempt - 1]
                 if bounded
-                else _reconnect_backoff_delay(attempt)
+                else reconnect_backoff_delay(attempt)
             )
             async with self._state_lock:
                 self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
@@ -1342,12 +1262,6 @@ class GeminiLiveConnection:
                         "after dropping stale resumption handle",
                         attempt,
                     )
-                # Successful reconnect resets the consecutive-identical-
-                # failure detector. Without this clear, a future tight
-                # loop could fire the escalation cue prematurely by
-                # combining new failures with stale ones from before
-                # the recovery.
-                self._recent_failure_fingerprints.clear()
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
@@ -1368,16 +1282,8 @@ class GeminiLiveConnection:
                         "live connection: reconnect attempt %d failed "
                         "(%s: %s, handle=%s)",
                         attempt, type(e).__name__,
-                        self._last_failure_detail, handle_short,
+                        self._outage.detail, handle_short,
                     )
-                # Tight-retry-loop detection: append the failure shape
-                # to the ring buffer and check for sustained identical
-                # failures. The cue (if it fires) is rate-limited to
-                # once per hour to avoid spamming during long outages.
-                self._recent_failure_fingerprints.append(
-                    _FailureFingerprint.from_exception(e),
-                )
-                self._maybe_fire_escalation_cue()
                 # Drop the cached resumption handle on the first failure
                 # of ANY kind. A server-invalidated handle that surfaces
                 # as anything other than a 409 (the killer: WebSocket
