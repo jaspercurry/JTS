@@ -538,26 +538,36 @@ def test_a_request_written_during_a_pass_survives_its_claim(tmp_path):
     assert reconcile.claim_reconcile_request(str(request)) == "bluetooth-forget"
 
 
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    (
+        (reconcile.AccessoryReconcileError("stop here"), 1),
+        (RuntimeError("transient"), 0),
+    ),
+)
 def test_main_prefers_a_claimed_reason_over_the_fallback_argument(
     monkeypatch,
     caplog,
     tmp_path,
+    failure: Exception,
+    code: int,
 ):
     """ExecStart carries `--reason boot` for the direct start; a request that is
-    waiting names its own requester and must win."""
+    waiting names its own requester and must win — on both failure branches,
+    since the soft one is the common outcome and the one that still exits 0."""
     request = tmp_path / "accessory-reconcile.request"
     reconcile.request_reconcile("bluetooth-forget", path=str(request))
 
     def fail_run(awaitable):
         awaitable.close()
-        raise reconcile.AccessoryReconcileError("stop here")
+        raise failure
 
     monkeypatch.setattr(reconcile.asyncio, "run", fail_run)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         assert reconcile.main(
             ["--reason", "boot", "--reason-file", str(request)],
-        ) == 1
+        ) == code
 
     assert "reason=bluetooth-forget" in caplog.text
     assert "reason=boot" not in caplog.text
