@@ -629,36 +629,6 @@ def _read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:
     return {str(leg) for leg in legs}
 
 
-def _recent_bridge_journal(timeout: float = 2.0) -> str | None:
-    try:
-        result = subprocess.run(
-            [
-                "journalctl",
-                "-u",
-                "jasper-aec-bridge.service",
-                "--since",
-                "-2min",
-                "-o",
-                "cat",
-                "--no-pager",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        log_event(
-            logger,
-            "audio_validation.bridge_journal_unavailable",
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    if result.returncode != 0 and not result.stdout:
-        return None
-    return result.stdout
-
-
 def _check(
     status: str,
     *,
@@ -1659,7 +1629,6 @@ def build_chip_aec_readiness_artifact(
     outputd_status: Mapping[str, Any] | None = None,
     bridge_stats: Mapping[str, Any] | None = None,
     voice_wake_legs: set[str] | None = None,
-    bridge_journal_text: str | None = None,
 ) -> ValidationArtifact:
     """Build a bounded schema-v1 chip-AEC readiness snapshot.
 
@@ -1692,10 +1661,6 @@ def build_chip_aec_readiness_artifact(
         bridge_stats = _read_bridge_stats()
     if voice_wake_legs is None:
         voice_wake_legs = _read_voice_wake_legs()
-    # bridge_journal_text is accepted for API stability (callers up the chain
-    # still thread it through) but unused: _measured_drift_delay_check no
-    # longer reads a journal, so filling a None default with a real
-    # `journalctl` fetch here would be pure waste.
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
@@ -1860,7 +1825,6 @@ def build_chip_aec_hardware_validation_artifact(
     outputd_status: Mapping[str, Any] | None = None,
     bridge_stats: Mapping[str, Any] | None = None,
     voice_wake_legs: set[str] | None = None,
-    bridge_journal_text: str | None = None,
     outputd_status_samples: list[Mapping[str, Any]] | None = None,
     bridge_stats_samples: list[Mapping[str, Any]] | None = None,
     chip_readback: Mapping[str, Any] | None = None,
@@ -1911,7 +1875,6 @@ def build_chip_aec_hardware_validation_artifact(
         outputd_status=outputd_status,
         bridge_stats=bridge_stats,
         voice_wake_legs=voice_wake_legs,
-        bridge_journal_text=bridge_journal_text,
     )
     checks: dict[str, Mapping[str, Any]] = {
         key: value
@@ -2402,7 +2365,6 @@ def run_audio_hardware_validation(
     first_outputd = _query_outputd_status(outputd_socket)
     first_bridge = _read_bridge_stats()
     voice_wake_legs = _read_voice_wake_legs()
-    bridge_journal_text = _recent_bridge_journal()
 
     readiness = build_chip_aec_readiness_artifact(
         now=now,
@@ -2414,7 +2376,6 @@ def run_audio_hardware_validation(
         outputd_status=first_outputd,
         bridge_stats=first_bridge,
         voice_wake_legs=voice_wake_legs,
-        bridge_journal_text=bridge_journal_text,
     )
     refusal_reason = _chip_runtime_refusal_reason(readiness)
     if refusal_reason and not force:
@@ -2459,7 +2420,6 @@ def run_audio_hardware_validation(
         outputd_status=first_outputd,
         bridge_stats=first_bridge,
         voice_wake_legs=voice_wake_legs,
-        bridge_journal_text=bridge_journal_text,
         outputd_status_samples=outputd_samples,
         bridge_stats_samples=bridge_samples,
         duration_seconds=duration_seconds,
@@ -2516,7 +2476,6 @@ def run_audio_hardware_validation(
         outputd_status=first_outputd,
         bridge_stats=first_bridge,
         voice_wake_legs=voice_wake_legs,
-        bridge_journal_text=bridge_journal_text,
         outputd_status_samples=outputd_samples,
         bridge_stats_samples=bridge_samples,
         chip_readback=chip_readback,
