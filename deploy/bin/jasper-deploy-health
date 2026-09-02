@@ -92,13 +92,11 @@ FULL_REQUIRED_ACTIVE_UNITS = (
     "jasper-input.service",
 )
 
-STREAMBOX_REQUIRED_ACTIVE_UNITS = tuple(
-    unit for unit in FULL_REQUIRED_ACTIVE_UNITS if unit != "jasper-input.service"
-)
-
+# Both profiles require the same units: jasper-input is an HID accessory
+# bridge over jasper-control, which runs on either.
 REQUIRED_ACTIVE_UNITS_BY_PROFILE = {
     FULL_INSTALL_PROFILE: FULL_REQUIRED_ACTIVE_UNITS,
-    STREAMBOX_INSTALL_PROFILE: STREAMBOX_REQUIRED_ACTIVE_UNITS,
+    STREAMBOX_INSTALL_PROFILE: FULL_REQUIRED_ACTIVE_UNITS,
 }
 
 REQUIRED_ACTIVE_SOCKETS = (
