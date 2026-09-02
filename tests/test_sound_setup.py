@@ -254,7 +254,7 @@ class FakeCamilla:
     replace: it keeps the graph it is running, hands it back the way
     CamillaDSP's readback does, and normalizes a candidate through the same
     round-trip so the two are comparable — which is the property
-    ``_live_edit_plan`` depends on.
+    ``jasper.sound.live_edit.plan_live_edit_for`` depends on.
     """
 
     def __init__(self, current_path: str, *, fail_set: bool = False) -> None:
