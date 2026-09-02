@@ -7913,31 +7913,57 @@ def test_crossover_region_band_reaches_below_the_tweeter_sweep_floor():
     assert old == R18_OLD_TRACKING_BAND_HZ
 
     new = crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
+        R18_FC_HZ, validity_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
     )
     assert new == (1000.0, 4000.0)
     assert new[0] < old[0]
 
 
+def test_verify_absolute_grades_from_the_validity_floor_not_the_trusted_one():
+    """The verdict band's lower edge is this capture's ``1/T`` floor.
+
+    ``2.5/T`` is disclosed beside a verdict and never bounds one
+    (``gating.TRUSTED_FLOOR_MULTIPLIER``). A 0.9 ms reflection shortens the
+    gate until the floor — not ``Fc/2``, not the radiated band — is what binds
+    the lower edge, so the two floors would give visibly different bands.
+    """
+    _freqs, ir, _db = _r18_system()
+    echo_samples = int(round(0.9e-3 * SR))
+    reflected = ir.copy()
+    reflected[echo_samples:] += 0.5 * reflected[: reflected.size - echo_samples]
+    prog, cap = _r18_capture(reflected)
+    result = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=R18_FC_HZ,
+            configured_crossover_response_by_role=_r18_transfers(),
+            configured_polarity_sign_by_role={"woofer": 1, "tweeter": 1},
+        ),
+    )
+    summed = result.summed_response
+    lo, hi = result.verify_absolute["band_hz"]
+    assert lo == pytest.approx(summed.validity_floor_hz)
+    assert lo == pytest.approx(summed.gating["f_valid_floor_hz"])
+    # The floor binds, and the trusted floor would have moved this edge.
+    assert R18_FC_HZ / 2.0 < lo < summed.gating["f_trusted_hz"] < hi
+
+
 def test_crossover_region_band_is_bounded_by_the_captures_own_evidence():
-    """Never a frequency literal: a short gate window raises the floor, and an
-    unradiated band or empty intersection yields ``None``, never a span."""
-    assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=1200.0, radiated_band_hz=(150.0, 20_000.0),
-    ) == (1200.0, 4000.0)
+    """Never a frequency literal: an unradiated band or an empty intersection
+    yields ``None``, never a span."""
     # Gate floor above the whole region ⇒ nothing this capture supports.
     assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=9000.0, radiated_band_hz=(150.0, 20_000.0),
+        R18_FC_HZ, validity_floor_hz=9000.0, radiated_band_hz=(150.0, 20_000.0),
     ) is None
     # An absent floor or band is "the record does not say", never a default.
     assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=None, radiated_band_hz=(150.0, 20_000.0),
+        R18_FC_HZ, validity_floor_hz=None, radiated_band_hz=(150.0, 20_000.0),
     ) is None
     assert crossover_region_band_hz(
-        R18_FC_HZ, trusted_floor_hz=357.0, radiated_band_hz=None,
+        R18_FC_HZ, validity_floor_hz=357.0, radiated_band_hz=None,
     ) is None
     assert crossover_region_band_hz(
-        0.0, trusted_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
+        0.0, validity_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
     ) is None
 
 

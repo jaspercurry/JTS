@@ -635,12 +635,13 @@ def _gate_trusted_band_hz(response: Any) -> tuple[float, float] | None:
     """The band this capture's own gate says it can be judged over (#2521).
 
     Read, never derived here: the band POLICY has one owner,
-    ``jasper.audio_measurement.gate_disclosure.evaluation_band_hz`` — the
-    capture's gate-derived trusted floor intersected with the band its
-    stimulus actually radiated — and ``build_gate_disclosure`` is the single
-    typed reader of the block that owner writes into. This function only
-    picks that pair off the typed record, so no consumer can recompute a
-    second opinion about which bins a capture supports.
+    ``jasper.audio_measurement.gate_disclosure.evaluation_band_hz``, which
+    the pre/post-gate delta calls with this capture's TRUSTED floor
+    (``2.5/T``) and the band its stimulus actually radiated;
+    ``build_gate_disclosure`` is the single typed reader of the block that
+    delta writes into. This function only picks that pair off the typed
+    record, so no consumer can recompute a second opinion about which bins a
+    capture supports.
 
     ``None`` for an ungateable capture, a capture whose program declared no
     sweep bounds, or an empty intersection: there is no band this capture can

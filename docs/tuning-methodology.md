@@ -646,8 +646,9 @@ filter COSTS: the per-filter and composed caps, the declared band, and a boost's
 width ceiling.
 
 **Correct only inside the trusted band.** `gate_disclosure.evaluation_band_hz`
-computes it as `[max(trusted_floor, radiated_lo), radiated_hi]`, returning
-*nothing* on an empty intersection rather than defaulting. Take the floor
+computes it as `[max(floor_hz, radiated_lo), radiated_hi]` from the floor its
+caller hands in, returning *nothing* on an empty intersection rather than
+defaulting. Take the floor
 conservatively — the **highest** `validity_floor_hz` across every occurrence, so
 a bin counts only if it cleared every capture's own gate — and the ceiling from
 `mic_trust_limit`'s taper zero for the declared tier. The composed envelope then

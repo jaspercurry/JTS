@@ -13,8 +13,9 @@ not and should not have.
 
 It owns three things:
 
-* :func:`evaluation_band_hz` — the band the pre/post-gate comparison is
-  honest over. This is the module's band policy and its single owner.
+* :func:`evaluation_band_hz` — the band a gated capture can be read over,
+  from the caller's floor. This is the module's band policy and its single
+  owner.
 * :func:`pre_post_gate_delta` — how much the gate moved the spectrum's
   SHAPE, over that band.
 * :class:`GateDisclosure` / :func:`build_gate_disclosure` — the typed
@@ -96,29 +97,34 @@ SMALL_DELTA_RMS_DB = 1.0
 
 
 def evaluation_band_hz(
-    trusted_floor_hz: float | None,
+    floor_hz: float | None,
     radiated_band_hz: tuple[float, float] | None,
 ) -> tuple[float, float] | None:
-    """The band a pre/post-gate comparison is honest over, in Hz.
+    """The band a gated capture can be read over, in Hz.
 
-    ``[max(2.5/T, radiated_lo), radiated_hi]`` — the intersection of the
-    gate's own trusted validity range with the band the DUT actually
-    radiates. Returns ``None`` when the intersection is empty or either
-    input is unusable, which is itself the finding: there is no band over
-    which this gate can be priced, so no number should be invented for one.
+    ``[max(floor_hz, radiated_lo), radiated_hi]`` — the CALLER'S floor
+    intersected with the band the DUT actually radiates. Which floor is the
+    caller's: :func:`pre_post_gate_delta` prices the gate over the trusted
+    floor (``2.5/T``), while
+    :func:`jasper.audio_measurement.program_analysis.crossover_region_band_hz`
+    grades over the validity floor (``1/T``), the trusted floor bounding only
+    the flat spec's own bands
+    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
+    An empty intersection or an unusable input yields ``None``, itself the
+    finding: no band, so no number invented for one.
 
     ``radiated_band_hz`` is the caller's; this module does not guess it.
     Falling back to :data:`DELTA_CEILING_HZ` when it is absent would
     reproduce exactly the over-report E5 measured, so an absent band yields
     ``None`` rather than a default.
     """
-    if radiated_band_hz is None or trusted_floor_hz is None:
+    if radiated_band_hz is None or floor_hz is None:
         return None
     lo_r, hi_r = float(radiated_band_hz[0]), float(radiated_band_hz[1])
-    trusted = float(trusted_floor_hz)
-    if not all(math.isfinite(v) for v in (lo_r, hi_r, trusted)):
+    floor = float(floor_hz)
+    if not all(math.isfinite(v) for v in (lo_r, hi_r, floor)):
         return None
-    lo = max(trusted, lo_r)
+    lo = max(floor, lo_r)
     return (lo, hi_r) if lo < hi_r else None
 
 
