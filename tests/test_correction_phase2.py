@@ -31,7 +31,7 @@ from .correction_session_fixtures import (
 
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
-    """Legacy direct-apply tests now state their flat-graph authority."""
+    """apply() checks the generated graph against the saved output topology."""
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
@@ -400,7 +400,18 @@ async def test_verify_pass_after_apply(tmp_path: Path):
     async def fake_play(path, **kw):
         return None
 
+    from .correction_session_fixtures import (
+        default_bass_profile_summary,
+        seed_prior_sound_config,
+        stateful_camilla_stub,
+    )
+
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     # Run a single-position measurement.
@@ -412,7 +423,11 @@ async def test_verify_pass_after_apply(tmp_path: Path):
     await sess.on_capture_uploaded(cap_path)
     assert sess.state == SessionState.READY
 
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     assert sess.state == SessionState.APPLIED
 
     # Now verify.

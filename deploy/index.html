@@ -566,7 +566,10 @@
           </p>
         </section>
 
-        <section class="control-section" data-requires="voice_brain" hidden>
+        <!-- wake_detection, not voice_brain: this card is the always-on
+             listen state, and its Pause posts /mic/mute — off a streambox's
+             control route table (jasper/control/server.py). See ADR-0217. -->
+        <section class="control-section" data-requires="wake_detection" hidden>
           <div class="control-head">
             <h2 class="eyebrow">Voice assistant</h2>
             <span class="status-val" id="mic-state">Checking</span>
@@ -682,7 +685,7 @@
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
-          <a class="setting-row" href="/wake/">
+          <a class="setting-row" href="/wake/" data-requires="wake_detection" hidden>
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wake"></use></svg></span>
             <span class="setting-copy">
               <span class="setting-title">Voice assistant</span>
@@ -1391,6 +1394,11 @@
     // voice capture. The independent USB microphone export is unaffected.
     (function() {
       var button = document.getElementById('mic-toggle');
+      // applyCapabilities() ran above, so a tier without wake_detection has
+      // already hidden this card: don't wire the 3 s /mic poll a hidden card
+      // has no route for.
+      var card = button && button.closest('.control-section');
+      if (!button || (card && card.hidden)) return;
       var stateEl = document.getElementById('mic-state');
       var dot = document.getElementById('mic-dot');
       var title = document.getElementById('mic-title');

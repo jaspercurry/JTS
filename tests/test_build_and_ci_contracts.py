@@ -682,9 +682,12 @@ def test_linux_only_c_extensions_have_platform_markers() -> None:
         "evdev": "evdev>=1.7; sys_platform == 'linux'",
     }
 
+    # A package may appear in more than one extra (evdev is in both install
+    # profiles); every occurrence must carry the marker verbatim.
     for package, requirement in expected.items():
         matches = [dep for dep in dependencies if dep.startswith(f"{package}>=")]
-        assert matches == [requirement]
+        assert matches, package
+        assert set(matches) == {requirement}
 
 
 def test_documented_venv_build_commands_install_test_runtime_extras() -> None:

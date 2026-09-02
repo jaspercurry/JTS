@@ -2120,6 +2120,9 @@ _PARK_DRIVER = """set -euo pipefail
 # systemd-units.sh interpolates SYSTEMD_DIR into a top-level array literal, so
 # it must be set before the source (install.sh sets it at its own top).
 SYSTEMD_DIR="/etc/systemd/system"
+# install.sh also sets STATE_DIR; park_streambox_brain_units removes a marker
+# under it, so point it at the sandbox rather than the host's /var/lib/jasper.
+STATE_DIR="${JTS_FAKE_SYSTEMCTL_STATE}"
 source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
 build_swap_required() { return 0; }
@@ -2363,7 +2366,7 @@ def test_unpark_skips_a_unit_this_install_turned_off(tmp_path, verb, state):
     `park_streambox_brain_units` only ever produces `disabled`, so `masked`
     (an operator's own decision) needs its own case. `static` is what a
     socket-activated unit with no [Install] directives reports, and must still
-    be restored — that is what all four wizard `.service` units report, so
+    be restored — that is what every wizard `.service` unit reports, so
     `enable_streambox_web_sockets`' `disable` cannot reach this branch at all.
 
     `masked-runtime` is systemd's /run-scoped mask. No in-repo path produces

@@ -2018,7 +2018,7 @@ class MeasurementSession:
     async def apply(
         self,
         camilla_set_config: Callable[[str], Awaitable[bool]],
-        camilla_get_config: Callable[[], Awaitable[str | None]] | None = None,
+        camilla_get_config: Callable[[], Awaitable[str | None]],
         *,
         prepare_guard: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
     ) -> None:
@@ -2037,8 +2037,6 @@ class MeasurementSession:
                 PEQ(freq=p.freq_hz, q=p.q, gain=p.gain_db)
                 for p in self.peqs
             ]
-            from jasper.multiroom.member_config import member_camilla_kwargs
-            from jasper.sound.camilla_yaml import emit_sound_config
             from jasper.sound.profile import build_sound_filters, load_profile
         except Exception as e:  # noqa: BLE001
             async with self._lock:
@@ -2050,100 +2048,47 @@ class MeasurementSession:
             # DSP-writer lock. The web owner injects its Active-owned authority
             # check here so no legal writer can change Layer A between the
             # decision and carrier re-emission.
-            bass_profile_summary: Mapping[str, Any] | None = None
-            if camilla_get_config is not None:
-                if prepare_guard is None:
-                    raise RuntimeError(
-                        "room-correction bass authority evidence is missing"
-                    )
-                guarded_summary = await prepare_guard()
-                if not isinstance(guarded_summary, Mapping):
-                    raise RuntimeError(
-                        "room-correction bass authority evidence is invalid"
-                    )
-                bass_profile_summary = guarded_summary
+            if prepare_guard is None:
+                raise RuntimeError(
+                    "room-correction bass authority evidence is missing"
+                )
+            guarded_summary = await prepare_guard()
+            if not isinstance(guarded_summary, Mapping):
+                raise RuntimeError(
+                    "room-correction bass authority evidence is invalid"
+                )
+            bass_profile_summary: Mapping[str, Any] = guarded_summary
             profile = load_profile()
-            prior_config_path: str | None = None
-            if camilla_get_config is not None:
-                from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-                from jasper.sound.graph_carrier import carrier_for_loaded_config
+            from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+            from jasper.sound.graph_carrier import carrier_for_loaded_config
 
-                prior_config_path = await camilla_get_config()
-                if not prior_config_path:
-                    raise RuntimeError(
-                        "CamillaDSP did not report a loaded config path"
-                    )
-                # Remember the pre-swap graph so a P4 confirmed-regression
-                # auto-revert can restore it via the existing reset() path.
-                self.pre_apply_config_path = prior_config_path
-                carrier = carrier_for_loaded_config(
-                    prior_config_path,
-                    config_dir=self.cfg.config_dir,
+            prior_config_path = await camilla_get_config()
+            if not prior_config_path:
+                raise RuntimeError(
+                    "CamillaDSP did not report a loaded config path"
                 )
-                result = carrier.reemit(
-                    profile,
-                    room_peqs=peq_objs,
-                    out_path=out_path,
-                    profile_id=self.session_id,
-                    fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
-                )
-                from jasper.correction.runtime_safety import (
-                    assert_correction_graph_safe,
-                )
+            # Remember the pre-swap graph so a P4 confirmed-regression
+            # auto-revert can restore it via the existing reset() path.
+            self.pre_apply_config_path = prior_config_path
+            carrier = carrier_for_loaded_config(
+                prior_config_path,
+                config_dir=self.cfg.config_dir,
+            )
+            result = carrier.reemit(
+                profile,
+                room_peqs=peq_objs,
+                out_path=out_path,
+                profile_id=self.session_id,
+                fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
+            )
+            from jasper.correction.runtime_safety import (
+                assert_correction_graph_safe,
+            )
 
-                if bass_profile_summary is None:
-                    raise RuntimeError(
-                        "room-correction bass authority evidence is missing"
-                    )
-                assert_correction_graph_safe(
-                    result.yaml,
-                    bass_profile_summary=bass_profile_summary,
-                )
-            else:
-                # Compatibility for tests and older direct callers that provide
-                # only a setter. The web surface always passes camilla_get_config
-                # and therefore uses the topology-aware carrier above.
-                #
-                # SAFE BY CHECK, no longer by unreachability alone (#2185).
-                # This branch emits a plain 2-channel graph with no carrier and
-                # so no width match: on a MONO topology its second channel would
-                # land on an output the household never declared, and
-                # `assert_flat_apply_safe` does not stop it (that tests only the
-                # protected-tweeter predicate, which mono passes). Production
-                # still never arrives — the one caller supplies
-                # camilla_get_config and takes the carrier path above — so this
-                # makes adding a caller safe instead of silently wrong.
-                #
-                # REFUSES rather than folds: emitting the width-matched graph is
-                # the carrier's job, and a second emitter that knew the fold
-                # would be the drift site the single-owner plan prevents. The
-                # plan comes from that owner, so no topology rule is restated
-                # here; a non-empty plan means this box needs mutes or a fold
-                # that this branch cannot supply.
-                from jasper.correction.runtime_safety import (
-                    CorrectionRuntimeSafetyError,
-                    assert_flat_apply_safe,
-                )
-                from jasper.sound.camilla_yaml import (
-                    FLAT_GRAPH_WIDTH,
-                    FlatChannelPlan,
-                    flat_graph_channel_plan,
-                )
-
-                assert_flat_apply_safe()
-                if flat_graph_channel_plan(width=FLAT_GRAPH_WIDTH) != FlatChannelPlan():
-                    raise CorrectionRuntimeSafetyError(
-                        "room-correction apply without a CamillaDSP config "
-                        "reader cannot width-match this speaker layout; apply "
-                        "through the graph carrier instead"
-                    )
-                emit_sound_config(
-                    profile,
-                    room_peqs=peq_objs,
-                    out_path=out_path,
-                    profile_id=self.session_id,
-                    **member_camilla_kwargs(),
-                )
+            assert_correction_graph_safe(
+                result.yaml,
+                bass_profile_summary=bass_profile_summary,
+            )
             return {
                 "prior_config_path": prior_config_path,
                 "room_peq_count": len(peq_objs),
