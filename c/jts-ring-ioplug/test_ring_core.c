@@ -2,20 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-// Host unit test for the JTS Ring B writer core (jts_ring_shm.c). No ALSA, no
-// Rust — compiles and runs on any host (macOS/Linux) via the Makefile `test`
-// target. It exercises:
-//   - the `_Static_assert`ed header layout (compiled in from the header),
-//   - geometry validation,
-//   - create + writer publish + a simulated reader consume with the exact
-//     seq/ordering discipline (the reader half is inlined here so the test does
-//     not depend on the Rust crate),
-//   - ping-pong bounding at n_slots,
-//   - the no-live-reader free-run DROP path (the aplay-resolvability behavior).
+// Host unit test for the JTS ring core (jts_ring_shm.c). Links neither ALSA nor
+// Rust, so it builds and runs on any host (macOS/Linux) via the Makefile `test`
+// target; the reader half of the playback tests is inlined here for the same
+// reason rather than taken from the Rust crate.
 //
 // The cross-language C-writer -> Rust-reader interop is proven separately by
-// ring_writer_bench.c feeding jasper-outputd (on-Pi). This host test proves the
-// core is self-consistent.
+// ring_writer_bench.c feeding jasper-outputd (on-Pi).
 
 #include "jts_ring_shm.h"
 
@@ -172,19 +165,15 @@ static void remember_test_path(const char *path) {
     g_test_path_count++;
 }
 
-// Compose `<base><suffix>` into `out`, or return 0 if it would not fit.
+// TRUNCATION MUST NOT UNLINK: a truncated path is a DIFFERENT path, and these
+// composed strings are fed straight to unlink(2), so a silently shortened
+// `/tmp/…/foo.ring.writer.lock` could name some other file entirely and delete
+// it. Refusing instead leaks one lock file in a case the fixed-size test paths
+// this file builds cannot reach.
 //
-// TRUNCATION MUST NOT UNLINK. This is a correctness rule before it is a warning
-// fix: a truncated path is a DIFFERENT path, and these composed strings are fed
-// straight to unlink(2). Silently shortening `/tmp/…/foo.ring.writer.lock` could
-// name some other file entirely and delete it. Skipping instead leaks one lock
-// file in a case that cannot occur with the fixed-size test paths this file
-// builds — the safe direction by a wide margin.
-//
-// Matches acquire_writer_lock's own idiom in jts_ring_shm.c (check the snprintf
-// return against the buffer, treat >= size as failure). Also silences gcc's
-// -Wformat-truncation, which fires here and not under clang: the suffix is a
-// `const char *` the compiler cannot bound, so it assumes up to 65535 bytes.
+// Also silences gcc's -Wformat-truncation, which fires here and not under
+// clang: the suffix is a `const char *` the compiler cannot bound, so it
+// assumes up to 65535 bytes.
 static int compose_path(char *out, size_t out_size, const char *base,
                         const char *suffix) {
     int n = snprintf(out, out_size, "%s%s", base, suffix);
@@ -207,7 +196,7 @@ static void cleanup_all_test_paths(void) {
 
 // A minimal in-process reader mirroring rust/jasper-ring's try_consume_slot:
 // Acquire write_seq, if empty -> silence, else copy slot (r % n_slots), then
-// Release read_seq. Stamps reader pid/heartbeat so the writer sees it live.
+// Release read_seq.
 typedef struct {
     void *base;
     jts_ring_geometry_t geometry;
@@ -231,7 +220,6 @@ static void reader_attach(test_reader_t *r, const jts_ring_writer_t *w) {
                           memory_order_relaxed);
 }
 
-// Returns 1 if a slot was consumed into `out`, 0 if empty (out zero-filled).
 static int reader_consume(test_reader_t *r, int16_t *out) {
     jts_ring_header_t *h = (jts_ring_header_t *)r->base;
     atomic_store_explicit(&h->reader_heartbeat_ns, jts_ring_monotonic_ns(),
@@ -264,7 +252,6 @@ static jts_ring_geometry_t proto_geometry(void) {
     return g;
 }
 
-// Build a unique /tmp path outside the test-owned root.
 static void tmp_path(char *buf, size_t buflen, const char *tag) {
     snprintf(buf, buflen, "/tmp/jts-ring-ctest-%d-%s.ring", (int)getpid(), tag);
     unlink(buf); // fresh
@@ -316,10 +303,6 @@ static void test_geometry_math_and_validation(void) {
     bad.period_frames = 0;
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 0 period_frames");
 
-    // The two INVERSIONS ring v2 makes: S32LE and >2 channels are now inside the
-    // accept-set (they were rejected while the wire was pinned to S16/2ch). They
-    // are asserted positively here AND covered by the golden byte-math table
-    // below, which is what catches a copy path that still strides as if narrow.
     jts_ring_geometry_t wide = g;
     wide.sample_format = JTS_RING_SAMPLE_FORMAT_S32LE;
     CHECK(jts_ring_geometry_validate(&wide, &reason) == 0, "accept S32LE");
@@ -332,13 +315,9 @@ static void test_geometry_math_and_validation(void) {
     CHECK(jts_ring_geometry_validate(&wide, &reason) == 0, "accept S32LE x 8ch (the ceiling)");
 }
 
-// GOLDEN BYTE-MATH TABLE — the widened geometry arithmetic, hand-computed.
-//
-// The header `_Static_assert`s pin the field OFFSETS bit-for-bit, but nothing
-// pinned the math that turns (format, channels, period, slots) into slot bytes
-// and a file size — and that math is exactly what ring v2 widens. Each row is
-// computed by hand, not by re-deriving the formula the code uses, so a wrong
-// stride cannot agree with a wrong expectation.
+// GOLDEN BYTE-MATH TABLE. Each row is computed by hand rather than by
+// re-deriving the formula the code uses, so a wrong stride cannot agree with a
+// wrong expectation.
 //
 // The S16/6ch row is deliberate: with 2 channels an "S16" and a "2-channel"
 // stride bug are indistinguishable (both give 4 bytes/frame), so a surviving
@@ -413,11 +392,9 @@ static void test_golden_byte_math_table(void) {
           "boundary: one frame over the slot-bytes cap is rejected");
 }
 
-// The de-typed copy paths carry a WIDE slot end to end. This is the data-path
-// half of the golden table: the table pins the arithmetic, this pins that
-// publish + consume actually move slot_bytes of S32 6-channel payload with every
-// byte in place. A copy that still strided as i16/2ch would move a quarter of
-// the slot and mismatch here.
+// The data-path half of the golden table: publish + consume must move
+// slot_bytes of S32 6-channel payload with every byte in place. A copy path
+// that still strided as i16/2ch would move a quarter of the slot and mismatch.
 static void test_wide_slot_publish_consume_roundtrip(void) {
     char path[256];
     tmp_path(path, sizeof(path), "wide-roundtrip");
@@ -458,7 +435,6 @@ static void test_wide_slot_publish_consume_roundtrip(void) {
           "wide payload roundtrips byte-for-byte (no narrow stride)");
     CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_EMPTY,
           "wide ring empty after drain");
-    // The empty path zero-fills the WHOLE wide slot, not a narrow prefix.
     int all_zero = 1;
     for (size_t i = 0; i < n; i++)
         if (out[i] != 0) all_zero = 0;
@@ -492,7 +468,6 @@ static void test_publish_consume_roundtrip(void) {
     int16_t *out = calloc(n, sizeof(int16_t));
     CHECK(reader_consume(&r, out) == 1, "consume filled");
     CHECK(memcmp(out, payload, n * sizeof(int16_t)) == 0, "payload roundtrip");
-    // Ring empty again.
     CHECK(reader_consume(&r, out) == 0, "consume empty after drain");
 
     free(payload);
@@ -518,14 +493,12 @@ static void test_ping_pong_bounding(void) {
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish slot 1");
     CHECK(jts_ring_writer_occupancy_slots(&w) == 2, "occupancy 2 (full)");
 
-    // The ring is full and the reader IS live (attached above). A third publish
-    // must wait then, since the reader never advances here, DROP after the
-    // bounded tick cap (not hang). This proves the bounded-wait -> drop guard.
+    // Full ring, LIVE reader that never advances: publish waits, then DROPs
+    // after the bounded tick cap rather than hanging.
     jts_ring_publish_result_t pr = jts_ring_writer_publish(&w, s);
     CHECK(pr == JTS_RING_PUBLISH_DROPPED, "full-ring bounded wait -> drop");
     CHECK(w.full_waits >= 1, "counted a full wait");
 
-    // Consume one; now a publish succeeds again (ping-pong).
     int16_t *out = calloc(n, sizeof(int16_t));
     CHECK(reader_consume(&r, out) == 1, "consume one");
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish after consume");
@@ -537,9 +510,9 @@ static void test_ping_pong_bounding(void) {
 }
 
 static void test_no_reader_free_run_drop(void) {
-    // No reader ever attaches (reader_pid stays 0). The writer must fill the
-    // ring, then FREE-RUN DROP rather than block — this is the behavior that
-    // keeps Camilla from wedging when outputd's flag is off and that makes the
+    // No reader ever attaches (reader_pid stays 0), so the writer fills the ring
+    // then FREE-RUN DROPs rather than blocking. That is what keeps CamillaDSP
+    // from wedging when outputd's flag is off, and what makes the
     // `aplay -D jts_ring_playback ... /dev/zero` resolvability probe terminate.
     char path[256];
     tmp_path(path, sizeof(path), "noreader");
@@ -549,7 +522,6 @@ static void test_no_reader_free_run_drop(void) {
 
     size_t n = w.samples_per_slot;
     int16_t *s = calloc(n, sizeof(int16_t));
-    // Publish more slots than the ring holds; the overflow must drop, not hang.
     int ok = 0, dropped = 0;
     for (int i = 0; i < 10; i++) {
         jts_ring_publish_result_t pr = jts_ring_writer_publish(&w, s);
@@ -567,27 +539,25 @@ static void test_no_reader_free_run_drop(void) {
 
 // --- ioplug pointer/avail model (drives the SHARED jts_ring_pointer_report) ---
 //
-// The B1 wedge lives at the ALSA `avail` gate, NOT in publish: ALSA grants
-// `transfer` (publish's only playback caller) at most `avail` frames, so a test
-// that calls publish UNCONDITIONALLY can never reproduce the hang. This model
-// reproduces the gate faithfully in TWO respects the round-3 review found the
-// old model missing:
+// ALSA grants `transfer` (publish's only playback caller) at most `avail`
+// frames, so the wedge these tests reproduce lives at the `avail` gate, not in
+// publish: a test that calls publish UNCONDITIONALLY cannot reach it. The model
+// reproduces the gate in two respects:
 //
 //   1. It calls the SHARED jts_ring_pointer_report (jts_ring_shm.h) — the exact
 //      function the plugin returns from `pointer` — rather than hand-copying the
-//      dual-mode/clamp logic. A regression in pcm_jts_ring.c's core now fails
-//      `make test` (it did not before; the model was a parallel copy).
+//      dual-mode/clamp logic, so a regression in pcm_jts_ring.c's core fails
+//      `make test`.
 //
-//   2. It models ALSA's REAL hw_ptr inference (snd_pcm_ioplug_hw_ptr_update):
+//   2. It models ALSA's hw_ptr inference (snd_pcm_ioplug_hw_ptr_update):
 //      `pointer()` returns a value mod buffer_size; ALSA computes
 //        delta = (ret >= last_hw) ? ret - last_hw : buffer_size + ret - last_hw
 //      and ADDS it to a running (boundary-space) hw_ptr, then stores ret as
-//      last_hw. avail is derived from THAT accumulated hw_ptr. This is the layer
-//      all three round-4 alias wedges live in: a raw report advance of exactly
+//      last_hw. avail is derived from THAT accumulated hw_ptr, which is the
+//      layer the alias wedges live in: a raw report advance of exactly
 //      buffer_size makes ret == last_hw (mod buffer_size) -> delta 0 -> the
-//      accumulated hw_ptr falls a lap behind -> avail pins at 0. The old model
-//      read avail straight off the raw pre-modulo hw_ptr, so it could not SEE
-//      the alias (green tests while hardware hung).
+//      accumulated hw_ptr falls a lap behind -> avail pins at 0. Reading avail
+//      off the raw pre-modulo hw_ptr instead cannot SEE the alias.
 //
 // stage_frames is 0 here (the writer core stages nothing; the ioplug does), so
 // jts_ring_pointer_report's in_flight is purely occupancy-derived when live and
@@ -603,17 +573,14 @@ typedef struct {
     // Pacing governor. The plugin samples CLOCK_MONOTONIC_RAW in its `pointer`
     // prologue; the model lets the TEST advance `now_ns` instead, which is what
     // makes a rate property checkable without sleeping. pace_nominal 0 =>
-    // ungoverned, so every test written before the governor keeps its exact prior
-    // behavior.
+    // ungoverned.
     int pace_nominal;
     uint64_t now_ns;
 } ioplug_model_t;
 
 // One `pointer` read + ALSA's hw_ptr inference, EXACTLY as
 // snd_pcm_ioplug_hw_ptr_update does it (no BOUNDARY_WA flag, so wrap_point ==
-// buffer_size). Calls the shared core for the mod-buffer return value, then
-// accumulates the mod-buffer delta into m->alsa_hw_ptr. Returns nothing; read
-// m->alsa_hw_ptr / ioplug_model_avail after.
+// buffer_size).
 static void ioplug_model_pointer_tick(ioplug_model_t *m, jts_ring_writer_t *w) {
     jts_ring_pointer_inputs_t in = {
         .appl_frames = m->appl_frames,
@@ -641,8 +608,7 @@ static void ioplug_model_pointer_tick(ioplug_model_t *m, jts_ring_writer_t *w) {
 }
 
 // ALSA hw_avail for a playback ioplug, off ALSA's ACCUMULATED hw_ptr (not the
-// raw pre-modulo value): buffer_size - (appl_ptr - hw_ptr). Ticks the pointer
-// first so the accumulation reflects this call.
+// raw pre-modulo value): buffer_size - (appl_ptr - hw_ptr).
 static uint64_t ioplug_model_avail(ioplug_model_t *m, jts_ring_writer_t *w) {
     ioplug_model_pointer_tick(m, w);
     uint64_t used = (m->appl_frames >= m->alsa_hw_ptr) ? (m->appl_frames - m->alsa_hw_ptr)
@@ -650,7 +616,6 @@ static uint64_t ioplug_model_avail(ioplug_model_t *m, jts_ring_writer_t *w) {
     return (used <= m->buffer_size) ? (m->buffer_size - used) : 0;
 }
 
-// Zero-init an ioplug model for a given geometry.
 static ioplug_model_t ioplug_model_new(const jts_ring_geometry_t *g) {
     ioplug_model_t m;
     memset(&m, 0, sizeof(m));
@@ -660,19 +625,12 @@ static ioplug_model_t ioplug_model_new(const jts_ring_geometry_t *g) {
 }
 
 static void test_no_reader_pointer_keeps_advancing(void) {
-    // B1 regression (Blocker), GATE-FAITHFUL. The prior version of this test
-    // called publish unconditionally and passed while the hardware HUNG — because
-    // the wedge is at ALSA's `avail` gate, upstream of publish. This version
-    // models that gate: it computes `avail` from the pointer path exactly as
-    // pcm_jts_ring.c does, drives publish ONLY when a whole period of avail
-    // exists (the ALSA discipline), and asserts the avail/pointer path opens on
-    // a readerless full ring WITHOUT any special publish call — i.e. the dual-
-    // mode pointer (in_flight = 0 when the reader is dead) is what unwedges it.
-    //
-    // Pre-fix (honest in_flight even with no reader): avail would pin at 0 the
-    // moment occupancy hit n_slots and this loop would spin forever making no
-    // progress. With the dual-mode fix, avail stays ~= buffer, publish keeps
-    // being called, and its drop-oldest branch bounds occupancy.
+    // Gate-faithful: `avail` comes from the pointer path exactly as
+    // pcm_jts_ring.c computes it, and publish runs ONLY when a whole period of
+    // avail exists (the ALSA discipline). With a dead reader the dual-mode
+    // pointer discounts in_flight to 0, which is what keeps avail open on a full
+    // ring; an honest in_flight pins avail at 0 the moment occupancy hits
+    // n_slots and this loop makes no progress at all.
     char path[256];
     tmp_path(path, sizeof(path), "noreaderptr");
     jts_ring_geometry_t g = proto_geometry();
@@ -686,31 +644,22 @@ static void test_no_reader_pointer_keeps_advancing(void) {
 
     ioplug_model_t m = ioplug_model_new(&g);
 
-    // Fill the ring readerless via the gate FIRST, with NO publish helper — this
-    // is the exact ALSA wait loop. Assert that once the ring is full the avail
-    // path still reports >= one period open (the dual-mode pointer), so the loop
-    // below never stalls. If avail ever hit 0 here (the pre-fix wedge) the assert
-    // would fire immediately on a full readerless ring.
     int publishes = 0;
     uint64_t prev_hw_ptr = 0;
     for (int tick = 0; tick < 200; tick++) {
         uint64_t avail = ioplug_model_avail(&m, &w);
-        // On a readerless ring the dual-mode pointer MUST keep avail open. This
-        // is the core B1 assertion: the gate never wedges without any publish.
         CHECK(avail >= period,
               "readerless avail stays >= one period (dual-mode pointer, no wedge)");
         uint64_t hw = m.alsa_hw_ptr; // ALSA's accumulated hw_ptr after this read
         CHECK(hw >= prev_hw_ptr, "hw_ptr monotonic non-decreasing (never back-jumps)");
         prev_hw_ptr = hw;
-        // ALSA would now transfer up to `avail`; the ioplug stages+publishes whole
-        // slots. Model one period per tick.
+        // ALSA would transfer up to `avail` and the ioplug publishes whole slots,
+        // so model one period per tick.
         jts_ring_publish_result_t pr = jts_ring_writer_publish(&w, s);
         CHECK(pr == JTS_RING_PUBLISH_OK || pr == JTS_RING_PUBLISH_DROPPED,
               "publish returns (never hangs) with no reader");
         m.appl_frames += period;
         publishes++;
-        // Occupancy stays bounded at the ring depth — never pinned to the buffer
-        // with read_seq stuck at 0.
         CHECK(jts_ring_writer_occupancy_slots(&w) <= (uint64_t)g.n_slots,
               "occupancy bounded by ring depth (not pinned full-forever)");
     }
@@ -724,13 +673,10 @@ static void test_no_reader_pointer_keeps_advancing(void) {
 }
 
 static void test_gate_faithful_dead_ring_opens_without_publish(void) {
-    // B1 regression, the SHARPEST form the mandate asks for: fill the ring
-    // readerless (occupancy == n_slots), then WITHOUT calling publish at all,
-    // read avail from the pointer path repeatedly and assert it is non-zero and
-    // stays non-zero across ticks. This isolates the fix to the pointer/avail
-    // path itself: on a full readerless ring the gate must be OPEN with zero
-    // writer activity, because the dual-mode pointer discounts the (unreadable)
-    // published slots to 0 in-flight. Pre-fix this avail would be exactly 0.
+    // On a full readerless ring the gate must be OPEN with zero writer activity:
+    // the dual-mode pointer discounts the (unreadable) published slots to 0
+    // in-flight. Probing avail without any publish isolates that to the
+    // pointer/avail path.
     char path[256];
     tmp_path(path, sizeof(path), "gatefaithful");
     jts_ring_geometry_t g = proto_geometry();
@@ -742,12 +688,9 @@ static void test_gate_faithful_dead_ring_opens_without_publish(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     const uint32_t period = g.period_frames;
 
-    // Fill to the brim via the drop-oldest free-run (no reader). appl_frames
-    // tracks each accepted period so the model's used = appl - hw is correct.
-    // The pointer is ticked each publish so ALSA's accumulated hw_ptr keeps up
-    // with appl exactly as it would in live playback (the dead-mode discount
-    // makes honest hw_ptr == appl each tick, and the clamp lets it track since
-    // each step is one period < buffer_size).
+    // Tick the pointer on every publish so ALSA's accumulated hw_ptr keeps up
+    // with appl: the dead-mode discount makes honest hw_ptr == appl each tick,
+    // and the clamp lets it track since each step is one period < buffer_size.
     ioplug_model_t m = ioplug_model_new(&g);
     for (uint32_t i = 0; i < g.n_slots + 2; i++) { // +2 = force the full state
         (void)jts_ring_writer_publish(&w, s);
@@ -758,15 +701,11 @@ static void test_gate_faithful_dead_ring_opens_without_publish(void) {
           "ring full (occupancy == n_slots) before the no-publish avail probe");
     CHECK(!jts_ring_writer_reader_is_live(&w), "reader is dead (never attached)");
 
-    // Now probe avail across several ticks with NO further publish. The gate must
-    // be open AND STAY open every time — this is the SHARPEST alias assertion:
-    // with appl_frames frozen and the reader dead, honest hw_ptr == appl is also
-    // frozen, so the pointer returns the SAME value each tick. ALSA's mod-buffer
-    // delta inference therefore adds 0 each tick (ret == last_hw). The gate must
-    // remain open at that steady value — pre-round-4 the dead-mode discount could
-    // have delivered ONE full-buffer jump on the flip that aliased to delta 0 and
-    // parked avail at 0 forever. Here we assert avail is a stable positive value
-    // (>= a period of headroom) that never decays across the probe.
+    // With appl_frames frozen and the reader dead, honest hw_ptr == appl is also
+    // frozen, so the pointer returns the SAME value each tick and ALSA's
+    // mod-buffer delta inference adds 0 (ret == last_hw). The gate must stay open
+    // at that steady value: a dead-mode discount delivering ONE full-buffer jump
+    // on the flip would alias to delta 0 and park avail at 0 permanently.
     uint64_t first_avail = ioplug_model_avail(&m, &w);
     CHECK(first_avail >= period,
           "full readerless ring: avail is OPEN (>= one period) without any publish");
@@ -783,18 +722,13 @@ static void test_gate_faithful_dead_ring_opens_without_publish(void) {
 }
 
 static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
-    // B1 transition edge (round-4 alias trigger (c): dead->live recovery). A
-    // reader that appears MID-WRITE must not make ALSA's hw_ptr jump backward
+    // A reader that appears MID-WRITE must not make ALSA's hw_ptr jump backward
     // (ALSA requires it monotonic) AND must not alias a full-buffer step to a
     // zero delta (which would pin avail at 0 forever). While dead, the pointer
     // runs hw_ptr near appl (in_flight = 0). On attach the reader resyncs
-    // read_seq = write_seq (occupancy -> 0), so honest hw_ptr == appl
-    // (convergent). Then, before the reader consumes, occupancy re-grows and
-    // honest hw_ptr would step BACK; the reported-position clamp holds it. This
-    // test drives the shared pointer core through ALSA's real accumulated-hw_ptr
-    // inference and asserts (i) ALSA's hw_ptr never regresses, (ii) avail never
-    // pins at 0 through the transition, and (iii) after full drain the gate is
-    // healthy (avail == buffer, ring empty).
+    // read_seq = write_seq (occupancy -> 0), so honest hw_ptr == appl. Then,
+    // before the reader consumes, occupancy re-grows and honest hw_ptr would
+    // step BACK; the reported-position clamp holds it.
     char path[256];
     tmp_path(path, sizeof(path), "attachmidplay");
     jts_ring_geometry_t g = proto_geometry();
@@ -809,9 +743,8 @@ static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
 
     ioplug_model_t m = ioplug_model_new(&g);
 
-    // Phase 1: readerless free-run for a while. ALSA's hw_ptr tracks appl (dead
-    // -> in_flight 0), one period per tick — every step visible (< buffer), so
-    // no alias, and monotonic.
+    // Phase 1: readerless free-run. hw_ptr tracks appl (dead -> in_flight 0) one
+    // period per tick, so every step is < buffer and no step can alias.
     uint64_t prev = 0;
     for (int i = 0; i < 12; i++) {
         (void)jts_ring_writer_publish(&w, s);
@@ -822,25 +755,20 @@ static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
         prev = m.alsa_hw_ptr;
     }
 
-    // Phase 2: reader attaches mid-play (resyncs read_seq = write_seq).
     test_reader_t r;
     reader_attach(&r, &w);
     CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "occupancy collapses to 0 on attach");
     CHECK(jts_ring_writer_reader_is_live(&w), "reader now live");
-    // First live tick: occupancy 0 -> honest hw_ptr == appl. Convergent, no
-    // jump, avail stays open (the dead->live edge does NOT alias).
     uint64_t avail_first_live = ioplug_model_avail(&m, &w);
     CHECK(avail_first_live > 0, "dead->live transition keeps avail open (no alias)");
     CHECK(m.alsa_hw_ptr >= prev, "dead->live transition is monotonic (no back-jump)");
     prev = m.alsa_hw_ptr;
 
-    // Phase 3: writer publishes ahead of the reader (occupancy grows); honest
-    // hw_ptr WOULD step back one period per publish, but the clamp holds the
-    // reported position at its floor, so ALSA's hw_ptr never regresses. As the
-    // ring genuinely fills with a LIVE lagging reader, avail correctly shrinks
-    // toward 0 (a full ring with a live reader IS not-writable — that is the
-    // honest back-pressure, not a wedge). We assert only the monotonicity here;
-    // the no-wedge (avail reopens) property is the dedicated alias tests' job.
+    // Phase 3: the writer publishes ahead of the reader. Honest hw_ptr WOULD
+    // step back one period per publish; the clamp holds the reported position at
+    // its floor. A full ring with a LIVE lagging reader is legitimately
+    // not-writable — honest back-pressure, not a wedge — so only monotonicity is
+    // asserted here; the alias tests own the avail-reopens property.
     for (int i = 0; i < 6; i++) {
         (void)jts_ring_writer_publish(&w, s); // occupancy climbs (reader idle)
         m.appl_frames += period;
@@ -848,19 +776,15 @@ static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
         CHECK(m.alsa_hw_ptr >= prev, "phase3 hw_ptr never regresses while reader lags (clamped)");
         prev = m.alsa_hw_ptr;
     }
-    // Reader now drains everything; hw_ptr must climb, monotonic, and the gate
-    // must reopen (avail grows back).
     while (jts_ring_writer_occupancy_slots(&w) > 0) {
         CHECK(reader_consume(&r, out) == 1, "reader drains a slot");
         (void)ioplug_model_avail(&m, &w);
         CHECK(m.alsa_hw_ptr >= prev, "drain phase hw_ptr monotonic non-decreasing");
         prev = m.alsa_hw_ptr;
     }
-    // Fully drained with a live reader + a settle tick for the clamp to finish
-    // catching up: the ring is empty and the gate is wide open again. (avail
-    // settles to buffer minus ALSA's one-period first-read seed lag — a benign
-    // constant of ALSA's own hw_ptr model, not a wedge — so we assert avail is
-    // near-full and STABLE rather than an exact == buffer.)
+    // avail settles to buffer minus ALSA's one-period first-read seed lag — a
+    // constant of ALSA's own hw_ptr model, not a wedge — so the assertion is
+    // near-full and STABLE rather than an exact == buffer.
     (void)ioplug_model_avail(&m, &w);
     uint64_t avail_a = ioplug_model_avail(&m, &w);
     uint64_t avail_b = ioplug_model_avail(&m, &w);
@@ -875,7 +799,7 @@ static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
     unlink(path);
 }
 
-// --- Round-4 mod-buffer full-lap ALIAS regressions (the round-3 review Blocker)
+// --- mod-buffer full-lap ALIAS regressions ---
 //
 // Each of the three below constructs the exact state where the HONEST reported
 // position would advance by ~one full buffer between two consecutive pointer
@@ -884,8 +808,8 @@ static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
 // reported-position clamp (jts_ring_pointer_report) spreads the catch-up over
 // several sub-buffer ticks so ALSA always sees a positive delta and avail stays
 // open. Each test also computes what an UNCLAMPED honest pointer WOULD have
-// returned at the alias step and asserts it aliases — the not-a-tautology proof
-// that the clamp is what keeps these green (remove the clamp and these fail).
+// returned at the alias step and asserts it aliases, so the clamp — not the
+// test's own arithmetic — is what keeps these green.
 
 // Helper: what ALSA's mod-buffer delta inference yields for two raw reported
 // positions (verbatim snd_pcm_ioplug_hw_ptr_update, no BOUNDARY_WA).
@@ -896,8 +820,8 @@ static uint64_t alsa_delta(uint64_t prev_raw, uint64_t cur_raw, uint64_t buffer)
 }
 
 static void test_alias_live_reader_drain_gap(void) {
-    // TRIGGER (a): a LIVE reader drains a full ring during an app-side gap >= one
-    // buffer duration. Before the gap: occupancy == n_slots, honest hw_ptr lags
+    // A LIVE reader drains a full ring during an app-side gap >= one buffer
+    // duration. Before the gap: occupancy == n_slots, honest hw_ptr lags
     // appl by a full buffer. During the gap the reader drains everything
     // (occupancy -> 0), so the NEXT pointer read jumps honest hw_ptr forward by
     // exactly buffer_size — the alias. The clamp must spread it so avail reopens
@@ -917,7 +841,6 @@ static void test_alias_live_reader_drain_gap(void) {
     const uint32_t period = g.period_frames;
     ioplug_model_t m = ioplug_model_new(&g);
 
-    // Fill the ring to the brim with a live reader that does NOT yet drain.
     for (uint32_t i = 0; i < g.n_slots; i++) {
         CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish to brim");
         m.appl_frames += period;
@@ -928,7 +851,7 @@ static void test_alias_live_reader_drain_gap(void) {
     uint64_t hw_before = m.alsa_hw_ptr;
 
     // The app-side GAP: no pointer read happens while the reader drains the WHOLE
-    // ring. (This is the "app is outside a PCM call" window the review named.)
+    // ring — the window where the app is outside a PCM call.
     while (jts_ring_writer_occupancy_slots(&w) > 0) {
         CHECK(reader_consume(&r, out) == 1, "reader drains during app gap");
     }
@@ -942,9 +865,6 @@ static void test_alias_live_reader_drain_gap(void) {
     CHECK(alsa_delta(raw_before, honest_unclamped, m.buffer_size) == 0,
           "unclamped: full-buffer jump aliases to ZERO delta (would wedge)");
 
-    // The CLAMPED path: the next pointer read advances ALSA's hw_ptr by a visible
-    // (sub-buffer) delta, not 0. Drive several ticks with no publish; avail must
-    // climb back open and hw_ptr must strictly advance until it catches appl.
     int saw_progress = 0;
     for (int tick = 0; tick < (int)g.n_slots + 2; tick++) {
         uint64_t hw_prev = m.alsa_hw_ptr;
@@ -954,7 +874,6 @@ static void test_alias_live_reader_drain_gap(void) {
         if (m.alsa_hw_ptr > hw_before) saw_progress = 1;
     }
     CHECK(saw_progress, "clamped: hw_ptr made real forward progress (unwedged)");
-    // Fully caught up: one buffer of drain is now reflected.
     CHECK(m.alsa_hw_ptr - hw_before == m.buffer_size,
           "clamped: the full buffer of drain is eventually reflected (spread, not lost)");
 
@@ -965,8 +884,8 @@ static void test_alias_live_reader_drain_gap(void) {
 }
 
 static void test_alias_dead_flip_at_full_ring(void) {
-    // TRIGGER (b): the reader dies MID-PLAY at a full ring (occupancy == n_slots)
-    // — the operational outputd-restart case. While live+full, honest hw_ptr lags
+    // The reader dies MID-PLAY at a full ring (occupancy == n_slots) — the
+    // operational outputd-restart case. While live+full, honest hw_ptr lags
     // appl by a full buffer (in_flight = n_slots*period). The instant the reader
     // heartbeat goes stale, the dual-mode discount flips in_flight to 0, so honest
     // hw_ptr jumps forward by exactly buffer_size — the alias. free-run never even
@@ -987,7 +906,6 @@ static void test_alias_dead_flip_at_full_ring(void) {
     const uint32_t period = g.period_frames;
     ioplug_model_t m = ioplug_model_new(&g);
 
-    // Fill to full with a live reader (occupancy == n_slots), ticking the pointer.
     for (uint32_t i = 0; i < g.n_slots; i++) {
         CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish to brim");
         m.appl_frames += period;
@@ -1013,9 +931,6 @@ static void test_alias_dead_flip_at_full_ring(void) {
     CHECK(alsa_delta(raw_before, honest_unclamped, m.buffer_size) == 0,
           "unclamped: dead-flip full-buffer jump aliases to ZERO delta (would wedge)");
 
-    // Clamped: transfer resumes (avail > 0). Now model ALSA's transfer -> publish
-    // loop: each tick, if avail >= a period, publish one slot (free-run drop). The
-    // gate must stay open every tick and free-run must bound the ring.
     int publishes = 0;
     for (int tick = 0; tick < 40; tick++) {
         uint64_t avail = ioplug_model_avail(&m, &w);
@@ -1040,7 +955,7 @@ static void test_alias_dead_flip_at_full_ring(void) {
 }
 
 static void test_alias_dead_to_live_recovery(void) {
-    // TRIGGER (c): dead->live recovery. A readerless free-run stream (dead-mode,
+    // dead->live recovery. A readerless free-run stream (dead-mode,
     // hw_ptr near appl) then a reader attaches. The attach resyncs occupancy -> 0
     // (honest hw_ptr == appl, convergent) but the reader has NOT drained yet, so
     // the next few ticks the writer keeps publishing and occupancy grows while the
@@ -1061,8 +976,6 @@ static void test_alias_dead_to_live_recovery(void) {
     const uint32_t period = g.period_frames;
     ioplug_model_t m = ioplug_model_new(&g);
 
-    // Dead free-run phase: fill+overflow with no reader. avail stays open the
-    // whole time (dead-mode discount), hw_ptr tracks appl.
     for (int i = 0; i < 12; i++) {
         uint64_t avail = ioplug_model_avail(&m, &w);
         CHECK(avail >= period, "dead free-run avail open");
@@ -1071,9 +984,6 @@ static void test_alias_dead_to_live_recovery(void) {
     }
     uint64_t hw_before = m.alsa_hw_ptr;
 
-    // Reader attaches (resync occupancy -> 0) then stays idle for a stretch while
-    // the writer keeps publishing (the recovery window). avail must never pin at 0
-    // and hw_ptr must never regress.
     test_reader_t r;
     reader_attach(&r, &w);
     CHECK(jts_ring_writer_reader_is_live(&w), "reader live after attach");
@@ -1082,17 +992,14 @@ static void test_alias_dead_to_live_recovery(void) {
         (void)jts_ring_writer_publish(&w, s); // reader idle: occupancy climbs
         m.appl_frames += period;
         (void)ioplug_model_avail(&m, &w);
-        // The reader is idle so the ring legitimately fills and avail correctly
-        // shrinks toward 0 (honest back-pressure); the invariant that matters
-        // across the transition is that hw_ptr never REGRESSES (no back-jump from
-        // the discount flip). The no-wedge (avail reopens) property is proven by
-        // the paced phase below.
+        // The reader is idle, so the ring legitimately fills and avail shrinks
+        // toward 0 (honest back-pressure). Only hw_ptr monotonicity across the
+        // discount flip is asserted here; the paced phase below proves avail
+        // reopens.
         CHECK(m.alsa_hw_ptr >= prev, "recovery: hw_ptr never regresses");
         prev = m.alsa_hw_ptr;
     }
 
-    // Reader now paces: drain one, publish one, repeatedly. The gate tracks real
-    // drain, avail stays open, hw_ptr climbs monotonically.
     for (int i = 0; i < 12; i++) {
         if (jts_ring_writer_occupancy_slots(&w) > 0)
             CHECK(reader_consume(&r, out) == 1, "reader paces a drain");
@@ -1112,11 +1019,9 @@ static void test_alias_dead_to_live_recovery(void) {
 }
 
 static void test_reader_returns_after_free_run_resyncs(void) {
-    // B1 regression (Blocker) part (b): after a stretch of readerless free-run
-    // (writer advanced read_seq on the absent reader's behalf), a reader that
-    // attaches must resync cleanly to the writer tip — read_seq = write_seq,
-    // occupancy collapses to 0 — with no lost-lap corruption, and normal
-    // publish/consume ping-pong resumes.
+    // After a stretch of readerless free-run the writer has advanced read_seq on
+    // the absent reader's behalf; a reader attaching then must resync to the
+    // writer tip with no lost-lap corruption.
     char path[256];
     tmp_path(path, sizeof(path), "resyncafterfreerun");
     jts_ring_geometry_t g = proto_geometry();
@@ -1144,10 +1049,8 @@ static void test_reader_returns_after_free_run_resyncs(void) {
     reader_attach(&r, &w);
     CHECK(r.read_seq == wseq_before_attach, "reader resynced read_seq to write tip");
     CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "occupancy collapses to 0 on attach");
-    // Empty read right after attach (nothing new published yet).
     CHECK(reader_consume(&r, out) == 0, "empty read immediately after resync");
 
-    // Distinct payload, publish one, reader must read exactly it — no stale lap.
     for (size_t i = 0; i < n; i++) s[i] = (int16_t)(i + 100);
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK,
           "publish OK to a live reader after free-run");
@@ -1169,14 +1072,11 @@ static void test_attach_second_writer_bumps_epoch(void) {
     jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
     uint64_t e1 = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
     uint64_t wseq1 = w1.write_seq;
-    // A second writer attaching to the SAME file bumps the epoch again.
-    //
     // Writer 1 is CLOSED first: that is what a reattach IS in production (the
-    // old writer's process exits, or the ioplug closes its PCM). Since U3/P6a a
-    // writer holds an EXCLUSIVE flock for the life of its mapping, so two live
-    // writers on one ring is refused rather than modelled. The epoch and
-    // write_seq both live in the HEADER and survive the close, which is exactly
-    // what this test asserts.
+    // old writer's process exits, or the ioplug closes its PCM). A writer holds
+    // an EXCLUSIVE flock for the life of its mapping, so two live writers on one
+    // ring is refused rather than modelled; the epoch and write_seq both live in
+    // the HEADER and survive the close.
     jts_ring_writer_close(&w1);
     h = NULL; // w1's mapping is gone; do not read through it again.
     jts_ring_writer_t w2;
@@ -1196,7 +1096,6 @@ static void test_geometry_mismatch_is_fatal(void) {
     jts_ring_geometry_t g = proto_geometry();
     jts_ring_writer_t w;
     CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open 128");
-    // Second opener expecting period_frames=256 -> fatal mismatch.
     jts_ring_geometry_t wrong = g;
     wrong.period_frames = 256;
     jts_ring_writer_t w2;
@@ -1215,14 +1114,13 @@ static void test_geometry_mismatch_is_fatal(void) {
 }
 
 static void test_writer_creates_missing_parent_dir(void) {
-    // B1 regression: the writer must mkdir -p its parent before O_EXCL create.
-    // On a fresh box (or after disarm.sh's `rm -rf /dev/shm/jts-ring`) the
-    // directory does not exist; without ensure_parent_dir the create fails
-    // ENOENT and arm.sh's aplay probe (step 3) dies before outputd ever runs.
+    // The writer must mkdir -p its parent before O_EXCL create. On a fresh box
+    // (or after disarm.sh's `rm -rf /dev/shm/jts-ring`) the directory does not
+    // exist; without ensure_parent_dir the create fails ENOENT and arm.sh's
+    // aplay probe dies before outputd ever runs.
     char dir[256];
     char path[320];
     snprintf(dir, sizeof(dir), "/tmp/jts-ring-ctest-%d-mkparent", (int)getpid());
-    // Best-effort clean any prior run's tree.
     char rm[512];
     snprintf(rm, sizeof(rm), "rm -rf '%s'", dir);
     (void)!system(rm);
@@ -1325,11 +1223,11 @@ static void test_magicless_foreign_file_is_rejected_without_reclaim(void) {
 }
 
 static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
-    // Exact A -> B -> C regression: A holds the transaction lock after O_EXCL
-    // create but before ftruncate; B and C both prove they are blocked on that
-    // SAME adjacent lock. Releasing A lets it initialize + verify pathname
-    // ownership, after which B and C attach serially. Nobody may classify A's
-    // zero-size live inode as torn or replace it.
+    // A holds the transaction lock after O_EXCL create but before ftruncate; B
+    // and C both prove they are blocked on that SAME adjacent lock. Releasing A
+    // lets it initialize + verify pathname ownership, after which B and C attach
+    // serially. Nobody may classify A's zero-size live inode as torn or replace
+    // it.
     char path[320];
     owned_tmp_path(path, sizeof(path), "first-open-race");
     jts_ring_geometry_t g = proto_geometry();
@@ -1796,7 +1694,7 @@ static void test_owned_reclaim_failure_is_logged_and_fail_closed(void) {
 }
 
 static void test_can_accept_semantics(void) {
-    // N1 regression: jts_ring_writer_can_accept must be TRUE when space exists,
+    // jts_ring_writer_can_accept must be TRUE when space exists,
     // FALSE when full WITH a live reader (so the ioplug withholds POLLOUT and
     // re-polls instead of busy-spinning), and TRUE when full with NO live reader
     // (free-run drop is "writable"). This is the honest poll the ioplug reports.
@@ -1809,7 +1707,6 @@ static void test_can_accept_semantics(void) {
     size_t n = w.samples_per_slot;
     int16_t *s = calloc(n, sizeof(int16_t));
 
-    // Empty ring, no reader -> space available -> can accept.
     CHECK(jts_ring_writer_can_accept(&w) == 1, "empty ring accepts");
 
     test_reader_t r;
@@ -1817,11 +1714,8 @@ static void test_can_accept_semantics(void) {
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish 0");
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish 1");
     CHECK(jts_ring_writer_occupancy_slots(&w) == 2, "full");
-    // Full WITH a live reader that stamped a fresh heartbeat -> not writable.
     CHECK(jts_ring_writer_can_accept(&w) == 0, "full+live-reader does NOT accept");
 
-    // Now make the reader look dead (stale heartbeat) -> free-run-drop path ->
-    // reports writable again.
     jts_ring_header_t *h = (jts_ring_header_t *)w.base;
     atomic_store_explicit(&h->reader_heartbeat_ns, 1, memory_order_relaxed);
     CHECK(jts_ring_writer_can_accept(&w) == 1, "full+dead-reader accepts (free-run drop)");
@@ -1834,9 +1728,7 @@ static void test_can_accept_semantics(void) {
 static void test_deep_ring_16_slots(void) {
     // The 16-slot ceiling gives CamillaDSP's playback BufferManager an ALSA
     // buffer (n_slots * period_frames = 16*128 = 2048 frames) that clears its
-    // negotiated buffer and target_level. Prove the core is correct at the
-    // ceiling: geometry validates, file size is right,
-    // and publish/consume ping-pongs cleanly all the way to full and back.
+    // negotiated buffer and target_level.
     char path[256];
     tmp_path(path, sizeof(path), "deep16");
     jts_ring_geometry_t g = proto_geometry();
@@ -1854,14 +1746,11 @@ static void test_deep_ring_16_slots(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     int16_t *out = calloc(n, sizeof(int16_t));
 
-    // Fill exactly to the brim (16 slots), occupancy tracks each publish.
     for (uint32_t i = 0; i < 16; i++) {
         CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish to brim");
         CHECK(jts_ring_writer_occupancy_slots(&w) == (uint64_t)(i + 1), "occupancy climbs");
     }
-    // Full with a live reader -> not writable (honest poll withholds POLLOUT).
     CHECK(jts_ring_writer_can_accept(&w) == 0, "16/16 full+live does NOT accept");
-    // Drain one, publish one — ping-pong holds at depth.
     CHECK(reader_consume(&r, out) == 1, "drain one from a deep ring");
     CHECK(jts_ring_writer_occupancy_slots(&w) == 15, "occupancy drops after drain");
     CHECK(jts_ring_writer_can_accept(&w) == 1, "space freed -> writable");
@@ -1879,12 +1768,8 @@ static void test_occupancy_tracks_reader_drain(void) {
     //   hw_ptr = appl_frames - in_flight
     //   in_flight = occupancy_slots * period_frames + stage_frames
     // so ALSA's avail/delay reflect the READER's real drain progress, not
-    // "everything accepted is already played". This test pins the core invariant
-    // the pointer depends on: occupancy_slots == write_seq - read_seq falls by
-    // exactly one per reader consume, so appl_frames - in_flight advances by one
-    // period each time the reader drains a slot (a monotonic, non-stalling
-    // hardware pointer). Regression for the accept-tracking pointer bug that made
-    // camilla see delay ~= 0 and flap between stalled/resumed.
+    // "everything accepted is already played". An accept-tracking pointer makes
+    // camilla see delay ~= 0 and flap between stalled and resumed.
     char path[256];
     tmp_path(path, sizeof(path), "drainptr");
     jts_ring_geometry_t g = proto_geometry();
@@ -1901,7 +1786,6 @@ static void test_occupancy_tracks_reader_drain(void) {
     const uint32_t period = g.period_frames;
     uint64_t appl_frames = 0; // mirrors the ioplug's accept counter
 
-    // Accept (publish) 3 slots. in_flight == 3*period; hw_ptr lags by that much.
     for (int i = 0; i < 3; i++) {
         CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish");
         appl_frames += period;
@@ -1911,14 +1795,12 @@ static void test_occupancy_tracks_reader_drain(void) {
     uint64_t hw_ptr = appl_frames - in_flight;
     CHECK(hw_ptr == 0, "hw_ptr still 0 (reader has drained nothing)");
 
-    // Reader drains one slot: hw_ptr must advance by exactly one period.
     CHECK(reader_consume(&r, out) == 1, "drain one");
     in_flight = jts_ring_writer_occupancy_slots(&w) * (uint64_t)period;
     CHECK(in_flight == 2ull * period, "in_flight fell one period");
     hw_ptr = appl_frames - in_flight;
     CHECK(hw_ptr == (uint64_t)period, "hw_ptr advanced one period on drain");
 
-    // Drain the rest: hw_ptr catches up to appl_frames (device fully drained).
     CHECK(reader_consume(&r, out) == 1, "drain two");
     CHECK(reader_consume(&r, out) == 1, "drain three");
     in_flight = jts_ring_writer_occupancy_slots(&w) * (uint64_t)period;
@@ -1933,15 +1815,11 @@ static void test_occupancy_tracks_reader_drain(void) {
 }
 
 static void test_drain_flush_partial_slot(void) {
-    // S1 regression: the ioplug's `.drain` callback publishes the partial
-    // staged slot (zero-padding the remainder) so drain can reach an empty ring
-    // — without it, a partially-staged slot leaves `delay` pinned above 0 and
-    // ALSA's drain loop HANGS. This test pins the CORE primitive the drain
-    // callback relies on: a zero-padded final slot publishes as a normal whole
-    // slot, the reader consumes exactly it (real samples then silence pad), and
-    // the ring drains to empty (occupancy 0) — the terminal state drain waits
-    // for. (The ioplug's flush + bounded-wait loop itself is ALSA-linked and
-    // Pi-only; this proves its building blocks on the host.)
+    // The ioplug's `.drain` callback publishes the partial staged slot
+    // (zero-padding the remainder) so drain can reach an empty ring — without
+    // it, a partially-staged slot leaves `delay` pinned above 0 and ALSA's drain
+    // loop HANGS. The flush + bounded-wait loop itself is ALSA-linked and
+    // Pi-only; only its building blocks are host-testable.
     char path[256];
     tmp_path(path, sizeof(path), "drainflush");
     jts_ring_geometry_t g = proto_geometry();
@@ -1960,7 +1838,6 @@ static void test_drain_flush_partial_slot(void) {
     for (uint32_t f = 0; f < k; f++)
         for (uint32_t c = 0; c < g.channels; c++)
             stage[f * g.channels + c] = (int16_t)(f + 1); // nonzero real audio
-    // frames [k, period) stay zero (the drain zero-pad).
 
     CHECK(jts_ring_writer_publish(&w, stage) == JTS_RING_PUBLISH_OK,
           "padded partial slot publishes as a whole slot");
@@ -1968,7 +1845,6 @@ static void test_drain_flush_partial_slot(void) {
 
     int16_t *out = calloc(n, sizeof(int16_t));
     CHECK(reader_consume(&r, out) == 1, "reader consumes the flushed slot");
-    // Real audio survived; the pad tail is silence.
     int real_ok = 1, pad_ok = 1;
     for (uint32_t f = 0; f < k; f++)
         for (uint32_t c = 0; c < g.channels; c++)
@@ -1978,7 +1854,6 @@ static void test_drain_flush_partial_slot(void) {
             if (out[f * g.channels + c] != 0) pad_ok = 0;
     CHECK(real_ok, "flushed slot preserves the real (pre-pad) frames");
     CHECK(pad_ok, "flushed slot zero-pads the tail (no stale/garbage frames)");
-    // Ring drained to empty — the terminal state jts_ring_drain waits for.
     CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "ring empty after drain flush+consume");
 
     free(stage);
@@ -2004,10 +1879,8 @@ static void mark_slot(int16_t *buf, size_t samples, int16_t marker) {
 }
 
 static void test_reader_roundtrip_vs_writer(void) {
-    // Real writer publishes distinct slots; real reader consumes them oldest-
-    // first with exact payload fidelity. Proves the C-writer<->C-reader wire
-    // format (the same format the Rust writer emits — proven on-Pi by the reader
-    // bench).
+    // The C-writer <-> C-reader wire format is the same format the Rust writer
+    // emits; that half is proven on-Pi by the reader bench.
     char path[256];
     tmp_path(path, sizeof(path), "rdr-roundtrip");
     jts_ring_geometry_t g = proto_geometry();
@@ -2021,7 +1894,6 @@ static void test_reader_roundtrip_vs_writer(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     int16_t *out = calloc(n, sizeof(int16_t));
 
-    // Publish three marked slots, consume, assert oldest-first + fidelity.
     for (int16_t k = 0; k < 3; k++) {
         mark_slot(s, n, (int16_t)(1000 + k * 100));
         CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish marked slot");
@@ -2032,9 +1904,7 @@ static void test_reader_roundtrip_vs_writer(void) {
         CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_FILLED, "consume filled");
         CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "oldest-first payload fidelity");
     }
-    // Empty now.
     CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_EMPTY, "empty after drain");
-    // Empty-read zero-fills.
     int all_zero = 1;
     for (size_t i = 0; i < n; i++) if (out[i] != 0) all_zero = 0;
     CHECK(all_zero, "empty read zero-fills out");
@@ -2061,7 +1931,6 @@ static void test_reader_attach_resync_drops_stale(void) {
 
     size_t n = w.samples_per_slot;
     int16_t *s = calloc(n, sizeof(int16_t));
-    // Writer publishes with no reader (free-run drop keeps write_seq climbing).
     for (int i = 0; i < 10; i++) {
         mark_slot(s, n, (int16_t)(i * 10));
         (void)jts_ring_writer_publish(&w, s);
@@ -2184,18 +2053,16 @@ static void test_reader_ebusy_second_reader(void) {
 }
 
 static void test_writer_ebusy_second_writer(void) {
-    // The SPSC guard's WRITER half (U3 / P6a) — the exact mirror of
+    // The SPSC guard's WRITER half — the mirror of
     // test_reader_ebusy_second_reader above.
     //
-    // Why it exists now and not before: until renderer-ingress rings, every ring
-    // WRITER was a single controlled daemon and a second one was unreachable. A
-    // renderer lane's ring is written by a renderer whose ALSA device name is
-    // public and DELIBERATELY probed — jasper-doctor runs `aplay -D <device>` as
-    // the renderer user on every install (the PR #214 class). Without this guard
-    // that probe's open would SUCCEED and two writers advancing write_seq would
-    // interleave their slots, injecting the probe's silence into live music. On
-    // an snd-aloop lane the same probe bounces off with EBUSY, which the doctor
-    // accepts as proof the incumbent owns the lane; this restores that property.
+    // A renderer lane's ring is written by a renderer whose ALSA device name is
+    // public and DELIBERATELY probed: jasper-doctor runs `aplay -D <device>` as
+    // the renderer user on every install. Without this guard that probe's open
+    // would SUCCEED and two writers advancing write_seq would interleave their
+    // slots, injecting the probe's silence into live music. On an snd-aloop lane
+    // the same probe bounces off with EBUSY, which the doctor accepts as proof
+    // the incumbent owns the lane.
     char path[256];
     tmp_path(path, sizeof(path), "wtr-ebusy");
     jts_ring_geometry_t g = proto_geometry();
@@ -2223,12 +2090,10 @@ static void test_writer_ebusy_second_writer(void) {
     // ring.
     jts_ring_writer_t w2;
     memset(&w2, 0, sizeof(w2));
-    // TIME the refusal. The wait's only SAFETY requirement is that it is
-    // FINITE (see acquire_writer_lock), and nothing else in this suite pins
-    // that: raising the ceiling 10x leaves every assertion green and merely
-    // slower, and removing the deadline entirely makes the whole binary HANG —
-    // caught today only by CI's 15-minute job timeout. One elapsed-time bound
-    // turns both into an immediate, local failure.
+    // TIME the refusal. The wait's only requirement is that it is FINITE (see
+    // acquire_writer_lock), and nothing else in this suite pins that: raising
+    // the ceiling 10x leaves every assertion green and merely slower, and
+    // removing the deadline entirely hangs the whole binary.
     //
     // The bound is deliberately generous. This is ONE lock wait
     // (JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS = 500 ms; measured ~501 ms here), and
@@ -2255,13 +2120,13 @@ static void test_writer_ebusy_second_writer(void) {
 
     // --- (2) A PAUSED-BUT-OPEN writer stays protected ---------------------
     //
-    // THE HOLE THE LOCK EXISTS TO CLOSE. `writer_heartbeat_ns` is stamped on
-    // PUBLISH paths only, so a renderer that holds its PCM open and stops
-    // writing — an ordinary pause — goes heartbeat-stale within
-    // JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. Under the heartbeat test alone its
-    // ring would become takeable while it still owned the device, and a probe
-    // could then interleave slots into a stream it resumes into. The lock is
-    // held for the LIFE OF THE MAPPING, so it survives the pause.
+    // `writer_heartbeat_ns` is stamped on PUBLISH paths only, so a renderer that
+    // holds its PCM open and stops writing — an ordinary pause — goes
+    // heartbeat-stale within JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. Under the
+    // heartbeat test alone its ring would become takeable while it still owned
+    // the device, and a probe could then interleave slots into a stream it
+    // resumes into. The lock is held for the LIFE OF THE MAPPING, so it survives
+    // the pause.
     atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed); // ancient
     jts_ring_writer_t w_paused;
     memset(&w_paused, 0, sizeof(w_paused));
@@ -2445,7 +2310,6 @@ static void test_writer_lock_survives_a_sigkilled_incumbent(void) {
           "writer even though its lock is already free — the secondary guard's "
           "<=2s window is real, and this is where RestartSec matters");
 
-    // Once the frozen heartbeat ages past the window, the ring is claimable.
     atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
     CHECK(jts_ring_writer_open(path, &g, &w) == 0,
           "past the liveness window the killed writer's ring is reclaimable");
@@ -2497,15 +2361,11 @@ static void test_reader_epoch_reset_on_writer_reattach(void) {
     (void)jts_ring_reader_consume(&r, out); // observes epoch 1
     CHECK(r.epoch_resets == 0, "no epoch reset yet");
 
-    // Second writer attaches to the SAME ring -> epoch++.
-    //
     // Writer 1 is CLOSED first, which is what a reattach actually is in
     // production: the old writer's process exits (or the ioplug closes its PCM)
-    // and a new one opens. This used to leave writer 1 mapped, which worked only
-    // because the pid guard exempted our own pid; since U3/P6a a writer holds an
-    // EXCLUSIVE flock for the life of its mapping, so two live writers on one
-    // ring is refused rather than simulated. The epoch lives in the HEADER and
-    // survives the close, so this still exercises exactly what it always did.
+    // and a new one opens. A writer holds an EXCLUSIVE flock for the life of its
+    // mapping, so two live writers on one ring is refused rather than simulated;
+    // the epoch lives in the HEADER and survives the close.
     jts_ring_writer_close(&w1);
     jts_ring_writer_t w2;
     CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 reattach (epoch++)");
@@ -2530,8 +2390,9 @@ static void test_reader_epoch_reset_on_writer_reattach(void) {
 // plugin does: a slot destaged is one period of readable; the poll tick ARMS a
 // period of pending silence when the writer is dead and the real ring is empty
 // (bounded to one period); the transfer CONSUMES the armed silence, advancing
-// appl. cap_model_avail includes cap_model_poll_arm so every avail read reflects
-// the poll-tick arming, exactly as the ALSA rw loop interleaves poll + pointer.
+// appl. The service work lives in cap_model_poll_arm, which
+// cap_model_poll_then_avail runs before the avail read, mirroring the ALSA rw
+// loop's poll-then-pointer interleave.
 typedef struct {
     uint64_t appl_frames;         // ALSA appl_ptr mirror (frames the app READ)
     jts_ring_pointer_state_t ptr; // reported-position state
@@ -2600,15 +2461,15 @@ static void cap_model_pointer_tick(cap_model_t *m, jts_ring_reader_t *r) {
 
 // ALSA capture avail off the ACCUMULATED hw_ptr: hw_ptr - appl_ptr (readable).
 // PURE pointer read (no service work) in the MODEL. The real plugin's `pointer`
-// runs capture_service_tick (drain + arm + resync), but the model deliberately
-// keeps this call pure and drives the service work through cap_model_poll_arm
-// (cap_model_poll_then_avail) so the ALSA rw-loop ordering the silence tests
-// depend on is preserved: an initial `pointer` read (baseline, pending==0)
-// BEFORE the first arming, so the first avail read establishes hw_ptr==0 and
-// armed silence only ever shows up as a POSITIVE delta on a later read. This
-// stays faithful because neither arming nor a resync can fire at baseline
-// (writer live, occupancy 0); a real plugin pointer at baseline is likewise a
-// no-op service tick.
+// runs capture_service_tick (drain + arm + resync); keeping this call pure and
+// driving the service work through cap_model_poll_arm
+// (cap_model_poll_then_avail) preserves the ALSA rw-loop ordering the silence
+// tests depend on: an initial `pointer` read (baseline, pending == 0) BEFORE the
+// first arming, so the first avail read establishes hw_ptr == 0 and armed
+// silence only ever shows up as a POSITIVE delta on a later read. That stays
+// faithful because neither arming nor a resync can fire at baseline (writer
+// live, occupancy 0); a real plugin pointer at baseline is likewise a no-op
+// service tick.
 static uint64_t cap_model_avail(cap_model_t *m, jts_ring_reader_t *r) {
     cap_model_pointer_tick(m, r);
     uint64_t readable =
@@ -2656,7 +2517,6 @@ static int cap_model_read_period(cap_model_t *m, jts_ring_reader_t *r, int16_t *
             }
         }
     }
-    // Deliver a period from the destage buffer.
     m->destage_frames -= m->period; // one whole period consumed
     m->appl_frames += m->period;
     return 1;
@@ -2664,8 +2524,7 @@ static int cap_model_read_period(cap_model_t *m, jts_ring_reader_t *r, int16_t *
 
 static void test_capture_pointer_advances_on_publish(void) {
     // The core capture-pointer honesty: hw_ptr advances on the WRITER's PUBLISH,
-    // so ALSA's capture avail = readable frames. Publish slots (no read yet) and
-    // avail must climb to occupancy*period; read them and avail must fall back.
+    // so ALSA's capture avail = readable frames.
     char path[256];
     tmp_path(path, sizeof(path), "cap-pointer");
     jts_ring_geometry_t g = proto_geometry();
@@ -2683,8 +2542,6 @@ static void test_capture_pointer_advances_on_publish(void) {
     (void)cap_model_avail(&m, &r);
     CHECK(cap_model_avail(&m, &r) == 0, "empty ring + live writer: avail 0 (block=pacing)");
 
-    // Publish 3 slots; avail climbs toward 3 periods as the pointer reflects the
-    // writer's publish.
     for (int i = 0; i < 3; i++) {
         jts_ring_writer_publish(&w, s);
     }
@@ -2692,7 +2549,6 @@ static void test_capture_pointer_advances_on_publish(void) {
     for (int tick = 0; tick < 6; tick++) avail = cap_model_avail(&m, &r); // let the clamp catch up
     CHECK(avail == 3 * (uint64_t)g.period_frames, "avail == 3 periods after 3 publishes");
 
-    // App reads all 3 periods; avail falls to 0.
     for (int i = 0; i < 3; i++) CHECK(cap_model_read_period(&m, &r, out) == 1, "read a period");
     for (int tick = 0; tick < 6; tick++) avail = cap_model_avail(&m, &r);
     CHECK(avail == 0, "avail back to 0 after reading everything");
@@ -2705,8 +2561,8 @@ static void test_capture_pointer_advances_on_publish(void) {
 }
 
 static void test_capture_alias_writer_burst_gap(void) {
-    // CAPTURE alias TRIGGER (a) — mirror of the playback drain-gap: while the app
-    // is mid-gap (no pointer read), the WRITER publishes a full buffer of slots.
+    // Mirror of the playback drain-gap: while the app is mid-gap (no pointer
+    // read), the WRITER publishes a full buffer of slots.
     // The next pointer read would jump hw_ptr forward by exactly buffer_size — the
     // alias to a ZERO delta that pins avail at 0 and wedges camilla reading a
     // producer that is actually full. The clamp must spread it into sub-buffer
@@ -2741,8 +2597,6 @@ static void test_capture_alias_writer_burst_gap(void) {
     CHECK(alsa_delta(raw_before, honest_unclamped, m.buffer_size) == 0,
           "unclamped: full-buffer writer burst aliases to ZERO delta (would wedge)");
 
-    // Clamped: avail reopens over successive ticks (sub-buffer deltas), hw_ptr
-    // monotonic, and eventually reflects the full buffer of readable data.
     uint64_t avail = 0;
     int saw_open = 0;
     for (int tick = 0; tick < (int)g.n_slots + 2; tick++) {
@@ -2761,8 +2615,8 @@ static void test_capture_alias_writer_burst_gap(void) {
 }
 
 static void test_capture_alias_writer_death_flip(void) {
-    // CAPTURE alias TRIGGER (b) — mirror of the playback dead-flip: the ring is
-    // full of unread slots and the WRITER dies. The app must keep pulling those
+    // Mirror of the playback dead-flip: the ring is full of unread slots and the
+    // WRITER dies. The app must keep pulling those
     // real slots, then transition to fabricated silence. The alias risk is the
     // readable value stepping by a full buffer in one pointer read across the
     // silence transition; the clamp must keep avail open (POLLIN armed) the whole
@@ -2792,8 +2646,6 @@ static void test_capture_alias_writer_death_flip(void) {
     atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
     CHECK(!jts_ring_reader_writer_is_live(&r), "writer now dead (stale heartbeat)");
 
-    // The app keeps reading: first the real slots, then fabricated silence — avail
-    // must stay open (POLLIN) the whole time (no wedge on a gone producer).
     int silence_seen = 0, real_seen = 0;
     for (int i = 0; i < 3 * (int)g.n_slots; i++) {
         uint64_t before_sil = m.silence_periods;
@@ -2818,8 +2670,8 @@ static void test_capture_alias_writer_death_flip(void) {
 }
 
 static void test_capture_alias_dead_to_live_recovery(void) {
-    // CAPTURE alias TRIGGER (c) — writer dies, app free-runs on fabricated
-    // silence, then a NEW writer reattaches (epoch++). hw_ptr must never regress
+    // Writer dies, app free-runs on fabricated silence, then a NEW writer
+    // reattaches (epoch++). hw_ptr must never regress
     // across the transition and real audio must resume once the writer publishes.
     char path[256];
     tmp_path(path, sizeof(path), "cap-alias-recover");
@@ -2834,20 +2686,14 @@ static void test_capture_alias_dead_to_live_recovery(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     int16_t *out = calloc(n, sizeof(int16_t));
 
-    // Writer 1 DIES; the app free-runs on silence.
-    //
-    // Death is modelled by CLOSING the writer rather than by stamping a stale
-    // heartbeat under a still-open mapping. That is what dying is: the process
-    // exits, its fd closes, and the kernel drops the writer's flock — which is
-    // precisely the property that lets a new writer reclaim the ring without
-    // waiting on heartbeat timing (U3/P6a).
-    //
-    // NOTE what this CHANGED, honestly: the reader still sees a dead writer,
-    // but via a DIFFERENT branch of `writer_is_live` — the `pid == 0` test
-    // (close clears writer_pid), not the heartbeat-age test. So this test no
-    // longer exercises the stale-heartbeat branch at all. That coverage lives
-    // in test_capture_alias_writer_death_flip, which stamps an ancient
-    // heartbeat without closing and is unaffected by this change.
+    // Writer 1 DIES, modelled by CLOSING the writer rather than by stamping a
+    // stale heartbeat under a still-open mapping. That is what dying is: the
+    // process exits, its fd closes, and the kernel drops the writer's flock —
+    // the property that lets a new writer reclaim the ring without waiting on
+    // heartbeat timing. The reader therefore sees a dead writer via the
+    // `pid == 0` branch of `writer_is_live` (close clears writer_pid), not the
+    // heartbeat-age branch; test_capture_alias_writer_death_flip covers that
+    // branch by stamping an ancient heartbeat without closing.
     jts_ring_writer_close(&w1);
     (void)cap_model_avail(&m, &r);
     uint64_t hw_before = m.alsa_hw_ptr;
@@ -2866,7 +2712,6 @@ static void test_capture_alias_dead_to_live_recovery(void) {
     }
     CHECK(silence_periods == 6, "fabricated silence periods while writer dead");
 
-    // A NEW writer reattaches (epoch++), fresh heartbeat. It publishes real slots.
     jts_ring_writer_t w2;
     CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 reattach (epoch++)");
     for (int i = 0; i < 3; i++) {
@@ -2875,7 +2720,6 @@ static void test_capture_alias_dead_to_live_recovery(void) {
     }
     CHECK(jts_ring_reader_writer_is_live(&r), "writer live again after reattach");
 
-    // Real audio resumes; hw_ptr keeps climbing, never regresses, no silence now.
     int real_periods = 0;
     for (int i = 0; i < 6; i++) {
         uint64_t before_sil = m.silence_periods;
@@ -2915,12 +2759,10 @@ static void test_capture_silence_mode_entry_exit(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     int16_t *out = calloc(n, sizeof(int16_t));
 
-    // Empty + writer ALIVE: the app must BLOCK (no fabricated silence).
     CHECK(cap_model_read_period(&m, &r, out) == 0,
           "empty + writer alive: block (no silence), that IS the pacing");
     CHECK(m.silence_periods == 0, "no silence fabricated while writer is alive");
 
-    // Writer DIES: now the app fabricates timer-paced silence and never blocks.
     jts_ring_header_t *h = (jts_ring_header_t *)w.base;
     atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
     CHECK(cap_model_read_period(&m, &r, out) == 1, "writer dead: fabricate a silence period");
@@ -2929,7 +2771,6 @@ static void test_capture_silence_mode_entry_exit(void) {
     for (size_t i = 0; i < n; i++) if (out[i] != 0) all_zero = 0;
     CHECK(all_zero, "fabricated silence is zeros");
 
-    // Writer RETURNS (fresh heartbeat + a real slot): silence stops, audio flows.
     atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
                           memory_order_relaxed);
     mark_slot(s, n, 4242);
@@ -2947,12 +2788,11 @@ static void test_capture_silence_mode_entry_exit(void) {
 }
 
 // Model the plugin's jts_ring_capture_poll_revents ARM predicate exactly, so the
-// wall-clock silence pacing is host-tested (finding 5 closed the "host-untested"
-// gap). Given a monotonic clock `now`, arm one period iff the writer is dead, the
-// ring is empty, no period is already armed, and either this is the first arm
-// (last_silence_ns == 0) or a full period_ns has elapsed. On arm, re-anchor
-// last_silence_ns to `now` (the tick time — the source of the ~14% slow, safe-
-// direction drift). Returns 1 if a period was armed this tick, 0 otherwise.
+// wall-clock silence pacing is host-tested. Given a monotonic clock `now`, arm
+// one period iff the writer is dead, the ring is empty, no period is already
+// armed, and either this is the first arm (last_silence_ns == 0) or a full
+// period_ns has elapsed. On arm, re-anchor last_silence_ns to `now` (the tick
+// time — the source of the ~14% slow, safe-direction drift).
 static int cap_pacing_arm_tick(uint64_t now, uint64_t period_ns,
                                int writer_dead, int ring_empty,
                                uint64_t *pending, uint64_t *last_silence_ns,
@@ -2968,15 +2808,13 @@ static int cap_pacing_arm_tick(uint64_t now, uint64_t period_ns,
 }
 
 static void test_capture_silence_pacing_never_faster_than_realtime(void) {
-    // Finding 5: the writer-dead silence pacing was host-untested. Pin the two
-    // load-bearing properties of jts_ring_capture_poll_revents' arm step:
+    // The two load-bearing properties of jts_ring_capture_poll_revents' arm step:
     //   (1) the per-tick BOUND — pending_silence_frames never exceeds one period
     //       (avail can never run away), AND
     //   (2) the SAFE-DIRECTION guarantee — over any real-time window, silence is
     //       never armed FASTER than realtime. Slow is fine (measured ~14% slow);
     //       fast would pre-consume a returning writer's audio as silence.
-    // We simulate the ALSA rw loop's poll cadence (a tick every period/4) over a
-    // fixed wall-clock window with the writer dead + ring empty, and count arms.
+    // The ALSA rw loop's poll cadence is one tick every period/4.
     const uint32_t period_frames = 128;
     const uint64_t period_ns = (uint64_t)period_frames * 1000000000ull / 48000; // 2666666 ns
     const uint64_t tick_ns = period_ns / 4; // the plugin's arm_timer cadence
@@ -2995,7 +2833,6 @@ static void test_capture_silence_pacing_never_faster_than_realtime(void) {
         arms += cap_pacing_arm_tick(now, period_ns, /*writer_dead=*/1,
                                     /*ring_empty=*/1, &pending, &last_silence_ns,
                                     period_frames);
-        // (1) The per-tick bound: never more than one period armed at once.
         CHECK(pending <= (uint64_t)period_frames, "pending silence bounded to <= one period");
         // Drain the armed period (the app read it) so the next tick can re-arm.
         if (pending >= (uint64_t)period_frames) pending -= (uint64_t)period_frames;
@@ -3006,27 +2843,23 @@ static void test_capture_silence_pacing_never_faster_than_realtime(void) {
     uint64_t realtime_periods = window_ns / period_ns + 1;
     CHECK((uint64_t)arms <= realtime_periods,
           "silence armed no FASTER than realtime (safe direction; slow is fine)");
-    // And it actually paced (not stuck): at least half of realtime, proving the
-    // gate opens (a totally stuck pacer would fail the writer-return handoff too).
     CHECK((uint64_t)arms >= realtime_periods / 2,
           "silence pacing actually advances (not wedged)");
 }
 
 static void test_capture_armed_silence_commitment_no_phantom_avail(void) {
-    // The RTTIME-spin debt regression (2026-07-11 camilla SIGKILL diagnosis).
-    // Once the service tick ARMS a period of silence, the pointer REPORTS it to
-    // ALSA as readable — and the reported position is forward-only by design
-    // (the alias clamp). The pre-fix refill DISCARDED an armed-but-unconsumed
-    // period when the writer's first slot raced in, leaving hw_ptr one period
-    // ahead of anything the refill could ever serve: PERMANENT phantom avail.
-    // ALSA's rw loop only poll-waits at avail == 0, so every genuinely-empty
-    // moment then became a hot 0-frame-transfer spin — on camilla's SCHED_FIFO
-    // capture thread, the RLIMIT_RTTIME SIGKILL. The fixed contract: an armed
-    // period is a delivery COMMITMENT, served BEFORE real data (it belongs to
-    // the silence gap that just ended), so the books stay exact and the one
-    // extra ~2.7 ms of zeros lands contiguous with the gap — never spliced into
-    // steady-state music later (the concern that motivated the old discard;
-    // pinned in step 5).
+    // The RTTIME-spin debt regression. Once the service tick ARMS a period of
+    // silence, the pointer REPORTS it to ALSA as readable — and the reported
+    // position is forward-only by design (the alias clamp). A refill that
+    // DISCARDS an armed-but-unconsumed period when the writer's first slot races
+    // in leaves hw_ptr one period ahead of anything the refill can ever serve:
+    // PERMANENT phantom avail. ALSA's rw loop only poll-waits at avail == 0, so
+    // every genuinely-empty moment then becomes a hot 0-frame-transfer spin — on
+    // camilla's SCHED_FIFO capture thread, the RLIMIT_RTTIME SIGKILL. The
+    // contract: an armed period is a delivery COMMITMENT, served BEFORE real data
+    // (it belongs to the silence gap that just ended), so the books stay exact
+    // and the one extra ~2.7 ms of zeros lands contiguous with the gap — never
+    // spliced into steady-state music later.
     char path[256];
     tmp_path(path, sizeof(path), "cap-armed-commitment");
     jts_ring_geometry_t g = proto_geometry();
@@ -3044,9 +2877,9 @@ static void test_capture_armed_silence_commitment_no_phantom_avail(void) {
     // Seed the pointer baseline (ALSA's first read establishes last_hw).
     (void)cap_model_avail(&m, &r);
 
-    // 1. Writer DIES and the ring is empty: a service tick ARMS one period and
-    // the pointer REPORTS it (avail opens) — armed but not yet consumed, exactly
-    // the rw loop's poll-before-transfer window.
+    // 1. Writer DIES with an empty ring: a service tick ARMS one period and the
+    // pointer REPORTS it — armed but not yet consumed, the rw loop's
+    // poll-before-transfer window.
     atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
     uint64_t avail = cap_model_poll_then_avail(&m, &r);
     CHECK(m.pending_silence_frames == g.period_frames, "silence armed while writer dead");
@@ -3054,13 +2887,12 @@ static void test_capture_armed_silence_commitment_no_phantom_avail(void) {
     CHECK(m.silence_periods == 0, "armed but not yet consumed");
 
     // 2. Writer RETURNS (fresh heartbeat) and PUBLISHES a real slot BEFORE the
-    // armed silence is consumed — the race that used to mint the debt.
+    // armed silence is consumed — the race that mints the debt.
     atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
                           memory_order_relaxed);
     mark_slot(s, n, 1717);
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "writer publishes a real slot");
 
-    // 3. First read serves the COMMITTED silence period (zeros), not the real slot.
     CHECK(cap_model_read_period(&m, &r, out) == 1, "read the committed silence period");
     CHECK(m.silence_periods == 1, "the armed period was SERVED, not discarded");
     int all_zero = 1;
@@ -3068,15 +2900,14 @@ static void test_capture_armed_silence_commitment_no_phantom_avail(void) {
     CHECK(all_zero, "committed period is zeros");
     CHECK(m.pending_silence_frames == 0, "commitment consumed");
 
-    // 4. Second read serves the real slot, payload intact.
     CHECK(cap_model_read_period(&m, &r, out) == 1, "read the real slot");
     CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "real audio intact after the boundary");
 
-    // 5. THE DEBT REGRESSION: everything reported was delivered, so avail must
-    // return to EXACTLY 0 — and stay 0 across service ticks (writer alive: no
-    // new arms, no spurious silence in live audio). With the old discard, hw
-    // sat one period ahead of appl forever: avail pinned at period_frames with
-    // read_period returning 0 — the poll-less spin precondition.
+    // Everything reported was delivered, so avail must return to EXACTLY 0 — and
+    // stay 0 across service ticks (writer alive: no new arms, no spurious
+    // silence in live audio). Under a discard, hw sits one period ahead of appl
+    // forever: avail pinned at period_frames with read_period returning 0, the
+    // poll-less spin precondition.
     for (int tick = 0; tick < 6; tick++) avail = cap_model_poll_then_avail(&m, &r);
     CHECK(avail == 0, "books exact after the boundary: avail 0, no phantom debt");
     CHECK(cap_model_read_period(&m, &r, out) == 0,
@@ -3157,14 +2988,13 @@ static void test_capture_occupancy_clamp_prevents_phantom_avail(void) {
     // A transient out-of-range occupancy (W - local R > n_slots — a wedged
     // reader whose heartbeat staled while the writer free-ran, or u64 garbage)
     // must (1) be REPORTED as 0 readable — an unbounded report would ratchet the
-    // forward-only reported position and mint permanent phantom avail (same
+    // forward-only reported position and mint permanent phantom avail (the same
     // RTTIME-spin debt class as the armed-silence discard) — AND (2) SELF-HEAL
-    // on the per-wake service tick, NOT only when transfer runs. The wedge SF-A
-    // (2026-07-11 review) is the second half: at avail 0 alsa-lib never calls
-    // transfer, so if the resync lived only in consume the reader would sit
-    // permanently silent with a live writer. jts_ring_reader_resync_if_overrun
-    // in capture_service_tick (modeled here in cap_model_poll_arm) gives it an
-    // avail-visible recovery path.
+    // on the per-wake service tick, NOT only when transfer runs: at avail 0
+    // alsa-lib never calls transfer, so a resync living only in consume would
+    // leave the reader permanently silent with a live writer.
+    // jts_ring_reader_resync_if_overrun in capture_service_tick (modeled here in
+    // cap_model_poll_arm) gives it an avail-visible recovery path.
     CHECK(jts_ring_capture_occupancy_bounded(0, 4) == 0, "bounded: 0 -> 0");
     CHECK(jts_ring_capture_occupancy_bounded(4, 4) == 4, "bounded: n_slots passes");
     CHECK(jts_ring_capture_occupancy_bounded(5, 4) == 0, "bounded: n_slots+1 -> 0 (resync outcome)");
@@ -3194,12 +3024,11 @@ static void test_capture_occupancy_clamp_prevents_phantom_avail(void) {
     CHECK(jts_ring_reader_occupancy_slots(&r) > (uint64_t)g.n_slots,
           "precondition: raw local occupancy out of range");
 
-    // (1) The garbage is reported as 0 readable — never phantom avail.
     uint64_t avail = cap_model_poll_then_avail(&m, &r);
     CHECK(avail == 0, "out-of-range occupancy reports 0 readable (no phantom avail)");
-    // (2) SELF-HEAL: that same wake resynced the reader WITHOUT any transfer at
-    // avail 0. This is the SF-A fix — recovery through an avail-visible flow, not
-    // a read alsa-lib would never issue.
+    // SELF-HEAL: that same wake resynced the reader WITHOUT any transfer at
+    // avail 0 — recovery through an avail-visible flow, not a read alsa-lib
+    // would never issue.
     CHECK(r.reader_resyncs == 1, "the per-wake service tick self-healed via resync");
     CHECK(jts_ring_reader_occupancy_slots(&r) == 0, "local read_seq caught up to the tip");
 
@@ -3222,10 +3051,9 @@ static void test_capture_occupancy_clamp_prevents_phantom_avail(void) {
 static void test_capture_destage_partial_reads(void) {
     // Sub-slot reads: the app reads FEWER frames than a whole slot at a time. The
     // destage buffer must serve the slot across multiple readi()s with exact byte
-    // continuity (no dropped or duplicated frames at the sub-slot boundary). This
-    // models the plugin's jts_ring_capture_transfer copy loop directly (the
-    // cap_model reads whole periods, so this test drives the real reader + a
-    // hand destage to prove the partial-read arithmetic).
+    // continuity (no dropped or duplicated frames at the sub-slot boundary).
+    // cap_model reads whole periods, so this drives the real reader plus a hand
+    // destage to reach the plugin's jts_ring_capture_transfer copy arithmetic.
     char path[256];
     tmp_path(path, sizeof(path), "cap-partial");
     jts_ring_geometry_t g = proto_geometry();
@@ -3319,11 +3147,11 @@ static jts_ring_pointer_state_t pace_state_started(void) {
     return st;
 }
 
-// FROZEN copy of the reported-position clamp as it stood BEFORE the governor —
-// identical in both cores then, and unchanged by this wave. Byte-identity against
-// a frozen copy is the only way to assert an ungoverned path did not move; this
-// deliberately does NOT call the header (that would make the comparison a
-// tautology) and must never be "shared" with it.
+// FROZEN copy of the reported-position clamp as it stood BEFORE the governor,
+// identical in both cores then. Byte-identity against a frozen copy is the only
+// way to assert an ungoverned path did not move; this deliberately does NOT call
+// the header (that would make the comparison a tautology) and must never be
+// "shared" with it.
 static uint64_t legacy_clamp(jts_ring_pointer_state_t *st, uint64_t honest,
                              uint64_t buffer_size, uint32_t period_frames) {
     uint64_t last = st->last_reported;
@@ -3504,17 +3332,16 @@ static void test_pace_is_inert_when_the_device_binds_first(void) {
 
 static void test_pace_prepared_writer_is_paced_before_start(void) {
     // THE HOLE prepare-arming closes. A PCM can transfer while still PREPARED —
-    // with start_threshold > period and a dead reader, ALSA's start condition never
-    // trips against the dead-reader discount, so the stream may never leave
-    // PREPARED at all. Armed at `start`, that window was ungoverned free-run:
-    // pace_apply early-returns on an unarmed bucket. So the transition function has
-    // to arm, and this drives it exactly as the plugin's prepare callback does —
-    // with NO start step at all after it.
+    // with start_threshold > period and a dead reader, ALSA's start condition
+    // never trips against the dead-reader discount, so the stream may never leave
+    // PREPARED at all. pace_apply early-returns on an unarmed bucket, so arming
+    // only at `start` leaves that window ungoverned; the prepare transition has
+    // to arm. Driven here exactly as the plugin's prepare callback does, with NO
+    // start step at all after it.
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
     jts_ring_pointer_prepare(&st, 1, 1, 1, PACE_BUFFER);
 
-    // A maximally greedy writer, dead reader, one simulated second, never started.
     uint64_t reported = 0;
     for (uint64_t ms = 1; ms <= 1000; ms++) {
         uint64_t now = 1 + ms * 1000000ull;
@@ -3531,10 +3358,10 @@ static void test_pace_prepared_writer_is_paced_before_start(void) {
 }
 
 static void test_pace_start_grants_the_prefill_without_binding(void) {
-    // A clean start must absorb its prefill the way a real device does — instantly,
-    // with no bind edge. Starting empty paced legitimate prefill at the ceiling: on
-    // 2026-08-20 that read as a 57 s startup bind where the ungoverned build had
-    // back-pressure in ~5 s.
+    // A clean start must absorb its prefill the way a real device does —
+    // instantly, with no bind edge. Starting the bucket empty rations legitimate
+    // prefill at the ceiling: measured on hardware as a 57 s startup bind where
+    // the ungoverned build had back-pressure in ~5 s.
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
     jts_ring_pace_arm(&st, 1, 1, 1, PACE_BUFFER);
@@ -3562,7 +3389,6 @@ static void test_pace_reader_reattach_reseeds_the_prefill(void) {
     memset(&st, 0, sizeof(st));
     jts_ring_pace_arm(&st, 1, 1, 1, PACE_BUFFER);
     uint64_t now = 1;
-    // Reader stalls; a greedy app drains the seeded bucket over 200 ms.
     for (uint64_t ms = 1; ms <= 200; ms++) {
         now = 1 + ms * 1000000ull;
         pace_report_rl(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now, 0);
@@ -3631,7 +3457,6 @@ static void test_pace_bound_ns_measures_time_not_call_rate(void) {
                         1 + c * step_ns);
         }
         measured[i] = st.pace_bound_ns;
-        // Within one call interval of the true window at either rate.
         CHECK(measured[i] + step_ns >= window_s * PACE_NS_PER_S &&
                   measured[i] <= window_s * PACE_NS_PER_S,
               "bound time reads the wall-clock window it was bound for");
@@ -3673,7 +3498,6 @@ static void test_pace_log_step_edges_and_rate_limit(void) {
     jts_ring_pace_log_state_t ls;
     memset(&ls, 0, sizeof(ls));
 
-    // Healthy: bound_ns never advances, so nothing is ever said.
     for (int i = 0; i < 10; i++) {
         CHECK(jts_ring_pace_log_step(&ls, 0, (uint64_t)i * PACE_NS_PER_S, interval) ==
                   JTS_RING_PACE_LOG_NONE,
@@ -3686,7 +3510,6 @@ static void test_pace_log_step_edges_and_rate_limit(void) {
     CHECK(jts_ring_pace_log_step(&ls, 100, 5 * PACE_NS_PER_S, interval) ==
               JTS_RING_PACE_LOG_BIND,
           "the first bind is announced even seconds after boot");
-    // Still bound: no repeat.
     CHECK(jts_ring_pace_log_step(&ls, 200, 6 * PACE_NS_PER_S, interval) ==
               JTS_RING_PACE_LOG_NONE,
           "a standing bind is not re-announced per call");
@@ -3704,7 +3527,6 @@ static void test_pace_log_step_edges_and_rate_limit(void) {
               JTS_RING_PACE_LOG_NONE,
           "and its release is suppressed with it — pairs stay balanced");
 
-    // Past the window, the next bind speaks again.
     CHECK(jts_ring_pace_log_step(&ls, 400, 5 * PACE_NS_PER_S + interval + 1, interval) ==
               JTS_RING_PACE_LOG_BIND,
           "the next window's bind is announced");
@@ -3720,14 +3542,13 @@ static void test_pace_log_survives_a_reprepare_with_a_bind_standing(void) {
     const uint64_t interval = 60 * PACE_NS_PER_S;
     jts_ring_pace_log_state_t ls;
     memset(&ls, 0, sizeof(ls));
-    // Establish a standing, announced bind.
     CHECK(jts_ring_pace_log_step(&ls, 1000000, 5 * PACE_NS_PER_S, interval) ==
               JTS_RING_PACE_LOG_BIND,
           "a bind is standing before the re-prepare");
     uint64_t bind_bound_ns = 1000000; // what the plugin anchors its delta on
 
-    // THE HAZARD, shown rather than assumed: the counter resets, the log state does
-    // not, and the very next call manufactures a release out of nothing.
+    // THE HAZARD: the counter resets, the log state does not, and the very next
+    // call manufactures a release out of nothing.
     jts_ring_pace_log_state_t stale = ls;
     CHECK(jts_ring_pace_log_step(&stale, 0, 6 * PACE_NS_PER_S, interval) ==
               JTS_RING_PACE_LOG_RELEASE,
@@ -3758,14 +3579,14 @@ static void test_pace_burst_is_capped_at_one_buffer_however_long_the_idle(void) 
     // governed stream sits idle, ONE wake may advance the report by at most one
     // buffer. An uncapped accumulator would hand back the whole idle window at
     // once — which for a 60 s gap is hundreds of buffers of instantaneous burst.
+    //
     // Driven as a real app catches up — ONE PERIOD PER CALL with the clock FROZEN
-    // — not as a single enormous jump. Two reasons, both learned the hard way:
-    // the reported-position clamp already bounds any ONE call to buffer - period,
-    // so a single-call assertion measures the clamp rather than the bucket; and a
-    // single huge `honest` drains the bucket in that one call, so an UNCAPPED
-    // bucket would destroy its own surplus and look capped. Period-by-period is
-    // the shape that actually spends a surplus, which is the shape a returning app
-    // has.
+    // — not as a single enormous jump, for two reasons: the reported-position
+    // clamp already bounds any ONE call to buffer - period, so a single-call
+    // assertion measures the clamp rather than the bucket; and a single huge
+    // `honest` drains the bucket in that one call, so an UNCAPPED bucket would
+    // destroy its own surplus and look capped. Period-by-period is the shape that
+    // actually spends a surplus, which is the shape a returning app has.
     const uint64_t idles_s[] = {1, 10, 60, 600};
     for (size_t i = 0; i < sizeof(idles_s) / sizeof(idles_s[0]); i++) {
         jts_ring_pointer_state_t st = pace_state_started();
@@ -3798,7 +3619,6 @@ static void test_pace_short_stall_catches_up_in_one_call(void) {
         pace_report(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now);
     }
     uint64_t settled = st.last_reported;
-    // Sleep exactly gap_frames worth of realtime, then one greedy wake.
     now += gap_frames * PACE_NS_PER_S / PACE_RATE;
     uint64_t after = pace_report(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now);
     uint64_t advanced = after - settled;
@@ -3906,7 +3726,6 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
     }
     CHECK(st.pace_bound_ns == 0, "an unarmed governor accrues no bound time");
 
-    // PREPARE arms it; the governor now binds a greedy app.
     jts_ring_pointer_state_reset(&st);
     jts_ring_pace_arm(&st, 1, 1, 5 * PACE_NS_PER_S, PACE_BUFFER);
     CHECK(st.pace_last_ns == 5 * PACE_NS_PER_S, "arming anchors the bucket at now");
@@ -3974,7 +3793,7 @@ static void test_pace_timer_cadence(void) {
 
 static void test_pace_off_is_byte_identical_to_the_pre_governor_core(void) {
     // Opt-out is bit-for-bit. Every ring PCM except the grouping one omits
-    // `pace_nominal`, so this is what keeps this wave off Ring A, Ring B, the
+    // `pace_nominal`, so this is what keeps the governor off Ring A, Ring B, the
     // renderer lanes and the active ring. The state is ANCHORED and the clock is
     // driven, so a leaked governor would bind.
     static const uint32_t periods[] = {128, 256};
@@ -4007,7 +3826,7 @@ static void test_pace_off_is_byte_identical_to_the_pre_governor_core(void) {
 }
 
 static void test_pace_capture_core_is_ungoverned(void) {
-    // Capture reverts to EXACTLY its pre-wave behavior, and stays there. Its
+    // Capture reverts to EXACTLY its pre-governor behavior, and stays there. Its
     // inputs carry no governor fields (a compile-level fact), and its report must
     // equal the frozen clamp over an arbitrary readable/appl sweep — including the
     // shapes a governor would have throttled: a huge readable arriving in one step.
@@ -4046,10 +3865,10 @@ static void test_pace_capture_core_is_ungoverned(void) {
 }
 
 static void test_pace_readerless_writer_is_clock_paced_not_free_running(void) {
-    // THE FIX, at the ALSA gate rather than at the core. A readerless ring with the
-    // governor on: the gate must grant frames at the nominal rate instead of as
-    // fast as the loop spins. The model's loop never sleeps, which is the shape
-    // that stormed on metal.
+    // The governor at the ALSA gate rather than at the core. A readerless ring
+    // with the governor on: the gate must grant frames at the nominal rate
+    // instead of as fast as the loop spins. The model's loop never sleeps, which
+    // is the shape that stormed on metal.
     //
     // Anti-wedge is asserted in the same loop: the gate must REOPEN on every clock
     // advance, so the writer is paced, never blocked, and occupancy stays bounded
@@ -4114,24 +3933,16 @@ static void test_pace_readerless_writer_is_clock_paced_not_free_running(void) {
     unlink(path);
 }
 int main(void) {
-    // BACKSTOP for a true hang — a wait that never returns at all.
+    // BACKSTOP for a true hang: a wait whose holder never releases, where no
+    // elapsed bound is ever reached because the CHECK is never evaluated.
     //
-    // It is NOT what catches a lost or raised deadline; be precise about that,
-    // because overstating it would let someone delete the assertion that does
-    // the real work. The elapsed-time bound in
-    // test_writer_ebusy_second_writer ("the writer-lock wait must be BOUNDED")
-    // is the primary detector: with the deadline removed, the incumbent in the
-    // concurrent-open test still eventually releases, so the mutated wait
-    // returns LATE rather than never — measured at 11 s, caught locally by that
-    // named assertion, not by this alarm.
+    // It is NOT what catches a lost or raised deadline. The elapsed-time bound
+    // in test_writer_ebusy_second_writer is the primary detector there: with the
+    // deadline removed the incumbent still eventually releases, so the mutated
+    // wait returns LATE (measured at 11 s), not never.
     //
-    // This covers only the residue that leaves behind: a wait whose holder never
-    // releases, where no elapsed bound is ever reached because the CHECK is
-    // never evaluated. Nothing has triggered it — it is untriggered insurance,
-    // and its value is turning that case into a prompt signal instead of CI's
-    // 15-minute job timeout. The budget is far above any legitimate run (the
-    // whole suite is ~1 s wall-clock; the slowest single test is one 500 ms
-    // lock wait).
+    // The budget is far above any legitimate run — the whole suite is ~1 s
+    // wall-clock and the slowest single test is one 500 ms lock wait.
     alarm(120);
     snprintf(g_owned_dir, sizeof(g_owned_dir), "/tmp/jts-ring-ctest-owned-%d",
              (int)getpid());
@@ -4186,7 +3997,7 @@ int main(void) {
     test_capture_avail_implies_deliverable();
     test_capture_occupancy_clamp_prevents_phantom_avail();
     test_capture_destage_partial_reads();
-    // Pacing governor (the S0 fix wave): a token bucket on the PLAYBACK core.
+    // Pacing governor: a token bucket on the PLAYBACK core.
     test_pace_clock_source_advances();
     test_pace_refill_overflow_bound();
     test_pace_bucket_binds_when_the_app_outruns_the_clock();
