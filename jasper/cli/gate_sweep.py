@@ -16,9 +16,6 @@ to make (#3495).
 was missing — no captures, no programs, a capture whose program could not be
 matched by content hash — as JSON on stdout and one sentence on stderr.
 
-**Exit codes are the contract**: 0 swept, 1 refused, 2 the round could not be
-read at all.
-
 Applying anything this reports is NOT this tool's job. It plays nothing,
 changes nothing, and its numbers are evidence for an attribution argument,
 never an EQ instruction.

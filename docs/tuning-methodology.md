@@ -56,7 +56,7 @@ round's receipts.
 | microphone tier | `MIC_TIERS` = `reference`/`consumer`/`phone` | `mic_trust_limit` ceiling, σ tolerance |
 | microphone calibration | per-serial cal file | absolute SPL — unavailable ⇒ refused, never guessed |
 | gate window | **measured per capture** | `f_valid_floor_hz(T)`, `f_trusted_floor_hz(T) ≈ 2.5/T` (`gating.py`), carried as `GateDisclosure.f_min_hz` / `f_trusted_hz` |
-| rig geometry | `jasper-declare-geometry` → `/var/lib/jasper/measurement_geometry.json` | `entanglement_floor_hz` — the room's floor, which no window choice can lower |
+| rig geometry | `jasper-declare-geometry` → `/var/lib/jasper/measurement_geometry.json` | `entanglement_floor_hz` — the room's floor (§6) |
 
 **Ask the operator for the rig's geometry before the first capture.** Speaker
 acoustic-centre height, microphone height, speaker-to-mic distance, and the
@@ -84,13 +84,9 @@ lets a row that carries its own distance be graded at it later. Nothing is
 clamped and no grade moves: the floor only marks which bins no window could have
 separated from the room (§9).
 
-Skipping this is allowed and warns about nothing, but it is not clean. This rig
-class's first bounce arrives while the direct sound is still decaying, so the
-measured reflection finder structurally never fires (#3502) — with no
-declaration, `entanglement_floor_source` stays `unknown` on every capture of
-every round, and "unknown" means no bin between the trusted floor and the room's
-floor is proven clean. Declaring the geometry is what resolves it; measuring
-harder is not.
+Skipping this is allowed and warns about nothing, but it is not clean: with no
+declaration, `entanglement_floor_source` stays `unknown` every capture, every
+round (§6). Declaring the geometry resolves it; measuring harder does not.
 
 **Three inputs the literature assumes and this system does not carry.** Do not
 write a sentence that pretends otherwise.
@@ -667,20 +663,18 @@ continuation rather than a measured claim discloses as
 
 ### 6a. Room or speaker — the ladder for a feature between the two floors
 
-A feature above the trusted floor and below the entanglement floor is resolved
-and room-entangled at once, and no window length separates it there. Climb the
-rungs in order, stop at the first one that answers, and hold the frame rule the
-whole way: **each instrument states its dB in its own frame**, so what carries
-across two of them is a ratio, never a level. A sweep's dB is not a spec-table
-dB and the two must never be subtracted.
+A feature between the two floors is §6's entangled case. Climb the rungs in
+order, stop at the first one that answers, and hold the frame rule the whole
+way: **each instrument states its dB in its own frame**, so what carries across
+two of them is a ratio, never a level. A sweep's dB is not a spec-table dB and
+the two must never be subtracted.
 
 **Rung 1 — the two floors, off the spec report.** Read
-`entanglement_floor_source` BEFORE `entanglement_floor_hz`: `unknown` means
-nothing was proven, and the climb then starts at §0's declaration rather than
-here. Then `trusted_floor_hz`, and the failing band's own
-`room_entangled_below_hz` for how far up the reservation reaches. A feature
-above the entanglement floor needs no ladder — measured window-invariance and
-directivity already carry it.
+`entanglement_floor_source` BEFORE `entanglement_floor_hz`: `unknown` (§6)
+sends the climb to §0's declaration rather than here. Then `trusted_floor_hz`,
+and the failing band's own `room_entangled_below_hz` for how far up the
+reservation reaches. A feature above the entanglement floor needs no ladder —
+measured window-invariance and directivity already carry it.
 
 **Rung 2 — `jasper-gate-sweep`: is this feature the room or the speaker?**
 Run it on a banked verify or cloud round (across-pose σ needs two poses):

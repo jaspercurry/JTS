@@ -159,7 +159,7 @@ class BandResult:
         whose worst bin sits inside the graded span and on an untruncated
         band; ``None`` when unevaluable, or on a report without the field.
       room_entangled_below_hz: the upper edge of the sub-span of this band
-        below the room's floor, where no window separates speaker from room
+        below the room's floor
         (:func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`;
         unknown marks nothing) -- ``min(entanglement_floor_hz,
         graded_hi_hz)``, or ``None``. Disclosure only: the grade above is
@@ -566,9 +566,9 @@ def _room_entangled_below_hz(
 ) -> float | None:
     """The upper edge of one band's room-entangled sub-span, or ``None``.
 
-    Below the room's floor no window separates speaker from room
-    (:func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`; unknown
-    marks nothing). The mirror of :func:`_graded_lo_hz` in spirit and its
+    The room's floor is
+    :func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`'s; unknown
+    marks nothing. The mirror of :func:`_graded_lo_hz` in spirit and its
     opposite in effect: that one MOVES an edge and changes what is graded,
     this one only marks.
 
@@ -643,8 +643,7 @@ def evaluate_flat_spec(
             in the reference band still raises even when an override is
             supplied. ``None`` (the default) computes the reference the
             ordinary way.
-        entanglement_floor_hz: the ROOM's floor in Hz, below which no window
-            separates speaker from room
+        entanglement_floor_hz: the ROOM's floor in Hz
             (:func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`;
             unknown marks nothing). **Nothing is clamped and no grade
             changes**: it only sets each band's

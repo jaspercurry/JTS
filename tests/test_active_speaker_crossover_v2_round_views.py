@@ -61,15 +61,10 @@ from tests.crossover_v2_banked_round import (
     bank_measure_round,
     bank_verify_round,
 )
-# The gate sweep's own synthetic round builder, reused rather than copied: it
-# writes real capture WAVs whose impulse responses are known in advance, which
-# is the only fixture shape ``discover_captures`` can deconvolve. A second copy
-# here would be a second place for the round's on-disk shape to drift.
-from tests.test_crossover_v2_gate_sweep import (
-    FEATURE_HZ,
-    _pose_ir,
-    _write_round,
-)
+from tests.crossover_v2_fixtures import bank_capture_round
+# The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
+# round's answer is as knowable here as it is there.
+from tests.test_crossover_v2_gate_sweep import FEATURE_HZ, _pose_ir
 
 #: A live session bundle resolves its three non-bundle inputs to the on-speaker
 #: SSOT paths; no test may read whatever sits at those absolute paths on the
@@ -1892,7 +1887,7 @@ def _banked_for_sweep(round_dir: Path, report) -> BankedRound:
 def swept_low_band(tmp_path_factory):
     """A three-pose round whose graded low band is worst at the feature the
     captures actually carry, swept and stamped."""
-    round_dir = _write_round(
+    round_dir = bank_capture_round(
         tmp_path_factory.mktemp("swept"),
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
     )
@@ -1960,7 +1955,7 @@ def test_stamping_the_sweep_moves_no_grade(swept_low_band):
 def test_a_single_pose_round_is_named_as_not_swept(tmp_path):
     """Across-pose sigma has no meaning on one pose, so there is no number and
     the reason says which kind of nothing it is."""
-    round_dir = _write_round(tmp_path, [_pose_ir(0, late_copy_ms=8.0)])
+    round_dir = bank_capture_round(tmp_path, [_pose_ir(0, late_copy_ms=8.0)])
     report = evaluate_flat_spec(
         GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
     )
@@ -2020,7 +2015,7 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
     # The captures live INSIDE the session bundle, where a real banked round
     # carries them, so one directory answers both readers: the evidence packet
     # for the verdict and the raw WAVs for the ladder.
-    captures = _write_round(
+    captures = bank_capture_round(
         tmp_path / "captures",
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
     )

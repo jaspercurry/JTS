@@ -5,12 +5,12 @@
 """A close capture, corrected to the far distance, says how much of the far
 read was the room (#3501).
 
-Between the gate's resolution floor (2.5/T) and the room's entanglement floor
-(2.5/t_first_bounce) no window length separates speaker from room at one
-point: the limit is information-theoretic, not tooling. One extra capture
-breaks it. Move the mic from ~1 m to ~12 in on the woofer axis — still inside
-the driver's far field — and the direct sound gains ``20*log10(r_far/r_close)``
-on the room while the bounce paths barely move.
+Between :func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` and
+:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz` ONE point
+cannot separate speaker from room; the limit is information-theoretic, not
+tooling, and one extra capture breaks it. Move the mic from ~1 m to ~12 in on
+the woofer axis — still inside the driver's far field — and the direct sound
+gains ``20*log10(r_far/r_close)`` on the room while the bounce paths hardly move.
 
 What this module computes, given the two impulse responses:
 
@@ -66,6 +66,7 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.alignment import GCC_UPSAMPLE, gcc_phat
 from jasper.audio_measurement.gating import (
+    ENTANGLEMENT_SOURCE_DECLARED,
     TAPER_FRACTION,
     f_trusted_floor_hz,
     intersect_bands,
@@ -199,9 +200,9 @@ def _fractional_shift(x: np.ndarray, samples: float) -> np.ndarray:
     return np.fft.irfft(spectrum * np.exp(-2j * np.pi * freqs * samples), n=n)
 
 
-#: Where the gate length actually used came from.
+#: Where the gate length actually used came from. The declared word is the
+#: gating vocabulary's, not a second spelling of it.
 GATE_SOURCE_CALLER = "caller"
-GATE_SOURCE_DECLARED = "declared_geometry"
 GATE_SOURCE_DEFAULT = "default"
 
 
@@ -210,24 +211,8 @@ def _gate(explicit_ms: float | None, declared_ms: float | None) -> tuple[float, 
     if explicit_ms is not None:
         return float(explicit_ms), GATE_SOURCE_CALLER
     if declared_ms is not None:
-        return float(declared_ms), GATE_SOURCE_DECLARED
+        return float(declared_ms), ENTANGLEMENT_SOURCE_DECLARED
     return DEFAULT_GATE_MS, GATE_SOURCE_DEFAULT
-
-
-def _segment(
-    ir: np.ndarray, sample_rate: int, *, gate_ms: float, peak_idx: int
-) -> np.ndarray:
-    """The pipeline gate at a DECLARED length, sliced to its own support.
-
-    :func:`~.gate_sweep.gated_segment` is the one owner of a forced-span
-    window, lead included; this comparison gates two IRs with it at the same
-    length so that what survives the subtraction is the speaker, not the two
-    windows disagreeing.
-    """
-    return gated_segment(
-        ir, sample_rate, gate_ms=gate_ms, peak_idx=peak_idx,
-        lead_ms=PHASE_GATE_LEAD_MS,
-    )[0]
 
 
 def declared_clean_window_ms(
@@ -473,8 +458,8 @@ def compare_impulse_responses(
     comparison_band_hz = (lo_edge, max(lo_edge, hi_edge))
 
     align_lo, align_hi = comparison_band_hz
-    far_align = _segment(far, sr, gate_ms=align_ms, peak_idx=far_peak)
-    close_align = _segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak)
+    far_align = gated_segment(far, sr, gate_ms=align_ms, peak_idx=far_peak)[0]
+    close_align = gated_segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak)[0]
     lag, _sign, confidence, at_edge = gcc_phat(
         far_align,
         close_align,
@@ -486,7 +471,7 @@ def compare_impulse_responses(
     corrected = _fractional_shift(corrected, lag)
     refined = gcc_phat(
         far_align,
-        _segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak),
+        gated_segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak)[0],
         sample_rate=sr,
         band_hz=(align_lo, align_hi),
         upsample=GCC_UPSAMPLE,
@@ -506,8 +491,8 @@ def compare_impulse_responses(
         (WINDOW_FAR, far_gate_ms, far_span, far_gate_source, declared_far_ms),
         (WINDOW_CLOSE, close_gate_ms, close_span, close_gate_source, declared_close_ms),
     ):
-        far_seg = _segment(far, sr, gate_ms=gate_ms, peak_idx=far_peak)
-        close_seg = _segment(corrected, sr, gate_ms=gate_ms, peak_idx=far_peak)
+        far_seg = gated_segment(far, sr, gate_ms=gate_ms, peak_idx=far_peak)[0]
+        close_seg = gated_segment(corrected, sr, gate_ms=gate_ms, peak_idx=far_peak)[0]
         residual_seg = far_seg - close_seg
         freqs, far_power = _band_spectra(far_seg, sr)
         _, direct_power = _band_spectra(close_seg, sr)

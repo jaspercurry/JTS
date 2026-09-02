@@ -233,10 +233,9 @@ def gated_segment(
     """One rung's windowed segment, peak-aligned. Returns ``(segment, lead)``.
 
     The window is :func:`~jasper.audio_measurement.gating.build_gate_window`'s
-    — the shipped gate's own shape at a forced span — with a 1.0 ms lead. The
-    lead is load-bearing and measured: a zero-lead window truncates the direct
-    arrival's own low-frequency pre-ringing and reads a sub-500 Hz feature
-    many dB too deep (P1).
+    — the shipped gate's own shape at a forced span — led by
+    :data:`~.feature_optics.PHASE_GATE_LEAD_MS`, which states why that lead is
+    load-bearing.
     """
     span = int(round(gate_ms * 1e-3 * sample_rate))
     lead = int(round(lead_ms * 1e-3 * sample_rate))

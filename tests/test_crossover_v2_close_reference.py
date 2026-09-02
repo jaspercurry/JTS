@@ -23,7 +23,6 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     ALIGNMENT_CONFIDENCE_FLOOR,
     DEFAULT_GATE_MS,
     GATE_SOURCE_CALLER,
-    GATE_SOURCE_DECLARED,
     GATE_SOURCE_DEFAULT,
     MIN_BAND_POINTS,
     REFUSE_UNREADABLE_ROUND,
@@ -40,6 +39,7 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     select_capture,
 )
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 
 SAMPLE_RATE = 48000
@@ -242,7 +242,7 @@ def test_a_declared_geometry_gates_each_window_at_its_own_first_bounce():
     assert windows["far_window"]["gate_ms"] == pytest.approx(far_ms)
     assert windows["close_window"]["gate_ms"] == pytest.approx(close_ms)
     assert {window["gate_source"] for window in windows.values()} == {
-        GATE_SOURCE_DECLARED
+        gating.ENTANGLEMENT_SOURCE_DECLARED
     }
 
     overridden = _report(reflection=True, geometry=geometry, close_gate_ms=3.0)

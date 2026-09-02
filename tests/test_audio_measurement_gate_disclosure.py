@@ -22,41 +22,24 @@ against the corpus out of band; see the PR body for the transcript.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
-from scipy.signal import firwin, lfilter
 
 from jasper.audio_measurement import gate_disclosure, gating
+from tests.test_audio_measurement_gating import _band_limited_ir
 
 SR = 48000
 
 
-def _bandlimited_ir(
-    lo_hz: float,
-    hi_hz: float,
-    *,
-    reflection_offset_ms: float | None = None,
-    reflection_db: float = -11.6,
-    noise_db: float = -50.0,
-    seed: int = 1966,
-) -> np.ndarray:
-    """A physically realizable IR: a band-limited arrival on a noise floor.
+def _bandlimited_ir(lo_hz: float, hi_hz: float, **kwargs: Any) -> np.ndarray:
+    """The gating suite's own band-limited IR, at THIS suite's floor and seed.
 
-    Band-limited on purpose. A bare delta has infinite bandwidth and no
-    passband, so it cannot exhibit the "evaluated where the DUT does not
-    radiate" failure these tests are about.
+    Both are load-bearing: the numbers below were reproduced against the jts3
+    corpus on this noise realization, so a different one re-banks them.
     """
-    rng = np.random.default_rng(seed)
-    n = int(0.030 * SR)
-    x = np.zeros(n)
-    x[500] = 1.0
-    if reflection_offset_ms is not None:
-        x[500 + int(round(reflection_offset_ms * 1e-3 * SR))] = 10 ** (
-            reflection_db / 20
-        )
-    taps = firwin(511, [lo_hz / (SR / 2), hi_hz / (SR / 2)], pass_zero=False)
-    ir = lfilter(taps, 1.0, x)
-    return ir / np.abs(ir).max() + rng.normal(0, 10 ** (noise_db / 20), n)
+    return _band_limited_ir(lo_hz, hi_hz, noise_db=-50.0, seed=1966, **kwargs)
 
 
 # ---------- evaluation band: the E5 intersection --------------------------
