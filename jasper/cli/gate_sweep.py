@@ -58,16 +58,24 @@ def _refused(reason: str, detail: str) -> int:
 
 
 def _sensitivity_line(label: str, payload: Mapping[str, Any]) -> str:
-    """One report entry as the operator reads it: its label, then its numbers."""
+    """One report entry as the operator reads it: label, numbers, verdict.
+
+    The verdict is the engine's own word, and the routes that produced it are
+    printed with it — a reader who sees ``moved`` without them cannot tell the
+    room-owned features apart from the ones only one route flagged.
+    """
+    verdict = payload["window_verdict"]
+    reasons = ", ".join(payload["window_verdict_reasons"])
     sensitivity = payload["sensitivity"]
     if sensitivity is None:
-        return f"{label}: no sensitivity ({payload['sensitivity_null_reason']})"
+        return f"{label}: no sensitivity ({reasons}) -> {verdict}"
     return (
         f"{label}: sigma growth "
         f"{sensitivity['sigma_growth_ratio']:.2f}x over "
         f"{sensitivity['shortest_valid_rung_ms']:g}-"
         f"{sensitivity['longest_valid_rung_ms']:g} ms, corrected long-rung "
-        f"delta {sensitivity['corrected_delta_db']:+.2f} dB"
+        f"delta {sensitivity['corrected_delta_db']:+.2f} dB -> {verdict}"
+        + (f" ({reasons})" if reasons else "")
     )
 
 

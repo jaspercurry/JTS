@@ -35,8 +35,11 @@ needs no flag to be split correctly.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
 classified and filed, ``1`` the round could not be read, ``2`` the instrument
-refused (its controls failed, the captures are the wrong shape, or nothing
-stood above the round's own scatter), ``3`` the verdict could not be written.
+refused (the captures are the wrong shape, or nothing stood above the round's
+own scatter), ``3`` the verdict could not be written. A round whose
+known-answer controls failed exits ``0`` with an artifact: it costs the phase
+class, not the round, so every row reads ``egd=ambiguous`` and the summary
+carries the artifact's own ``controls_disclosure`` line.
 ``2`` and ``3`` are separate because they send an operator to different places:
 ``2`` means fix the round, ``3`` means fix the filesystem. A refusal is the
 instrument working — ``--json`` prints its named ``reason`` and the evidence
@@ -62,12 +65,12 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
-    GATE_LADDER_MS,
     FeatureClassificationRefused,
     classify_round,
     load_round_captures,
     load_round_pose_curves,
 )
+from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 
 EXIT_OK = 0
 EXIT_ROUND_UNREADABLE = 1
@@ -159,10 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="MS",
         help=(
-            "add this gate to the invariance ladder, repeatable. Rungs above "
-            "the primary window are legal -- they re-admit reflections, so "
-            "convergence vs fan-out across the ladder is readable. Omitted, "
-            f"the shipped ladder is used ({', '.join(f'{g:g}' for g in GATE_LADDER_MS)} ms)"
+            "one rung of the window ladder, repeatable -- REPLACING the "
+            "shipped one rather than adding to it. Rungs above the primary "
+            "window are legal: they re-admit reflections, so convergence vs "
+            "fan-out across the ladder is readable. Omitted, the gate sweep's "
+            f"own ladder is used ({', '.join(f'{g:g}' for g in DEFAULT_RUNGS_MS)} ms)"
         ),
     )
     parser.add_argument(
@@ -242,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
             captures,
             at=args.at,
             gate_ms=args.gate_ms,
-            gates_ms=tuple(args.gates_ms) if args.gates_ms else GATE_LADDER_MS,
+            gates_ms=tuple(args.gates_ms) if args.gates_ms else None,
             pose_curves=pose_curves,
         )
     except FeatureClassificationRefused as refusal:
@@ -293,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
         f"-> {destination}",
         file=sys.stderr,
     )
+    # An exit-0 round whose controls failed must not read as a clean one.
+    if artifact["controls_disclosure"] is not None:
+        print(f"  controls: {artifact['controls_disclosure']}", file=sys.stderr)
     for row in rows:
         print(
             f"  {row['hz']:8.0f} Hz  {row['classification']:<34} "

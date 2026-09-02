@@ -95,6 +95,12 @@ __all__ = [
 #: a large fraction of the matched non-minimum-phase scale is a cancellation,
 #: and EQ is structurally the wrong tool for one: a filter aimed at a null
 #: lowers the direct sound and the delayed copy together.
+#:
+#: A row carries two of these: ``egd_verdict`` is what the instrument ASSERTS
+#: and ``egd_verdict_raw`` is what the numbers said before the known-answer
+#: controls gate it. The ``_raw`` suffix elsewhere in this package
+#: (:mod:`.evidence_packet`) means bytes before parsing, which is a different
+#: thing entirely.
 EGD_MIN_PHASE = "MIN-PHASE"
 EGD_NON_MIN_PHASE = "NON-MIN-PHASE"
 EGD_AMBIGUOUS = "ambiguous"
@@ -102,7 +108,10 @@ EGD_AMBIGUOUS = "ambiguous"
 #: The gate-invariance test's answer, against a matched-Q minimum-phase null
 #: model so ordinary gate-driven shrinkage is subtracted rather than misread.
 #: ``MOVED`` means the feature is a property of the window — a room arrival,
-#: not the driver.
+#: not the driver. A row whose ladder did not run carries neither: it reports
+#: :data:`UNRESOLVED`, the register's shared word for "this test did not
+#: answer", because ``STABLE`` is a finding and reading an unrun test as one
+#: would vouch for a filter with no window evidence at all.
 GATE_STABLE = "STABLE"
 GATE_MOVED = "MOVED"
 
@@ -219,11 +228,11 @@ LAB_ROW_FIELDS: tuple[str, ...] = (
     "resolved_gates",
     "excess_loss_vs_null",
     "gate_slack",
-    "centre_shift_oct",
     "gate_notes",
     "controls_ok",
     "timing_corroborated",
     "gate_rungs",
+    "gate_sensitivity",
     "pose_persistence",
     "decay",
     "fdw_rungs",
@@ -257,8 +266,9 @@ UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
 #: block, whose ``uncertainty.unseparated`` is what that looks like.
 #:
 #: The alternative was to call such a figure "not an uncertainty" the way
-#: ``gate_slack`` is, and that is the right answer for a THRESHOLD that merely
-#: mixes two kinds in its definition. It is the wrong answer for a genuine
+#: ``gate_slack`` is, and that is the right answer for a THRESHOLD, which
+#: bounds a verdict rather than describing a reading. It is the wrong answer
+#: for a genuine
 #: spread about a reading: the honest statement is that it IS one, and that
 #: which kind it is is something the evidence carrying it cannot say. A block
 #: publishing one owes the reader what WOULD say it.
@@ -316,9 +326,9 @@ LAB_ROW_UNCERTAINTY: dict[str, dict[str, str]] = {
 #:
 #: Named rather than left out. Both read like a spread and sit in the same row
 #: as three that ARE uncertainties, and ``gate_slack`` is the reason this second
-#: list exists at all: it is the LARGER of a fixed floor and a random 3-sigma,
-#: which is exactly the shape that mixes the two kinds in a single figure. It is
-#: not an uncertainty, and saying so is the only way to publish it without
+#: list exists at all: a dB figure beside a dB reading, which invites being read
+#: as that reading's error bar when it is the bar the reading is TESTED against.
+#: It is not an uncertainty, and saying so is the only way to publish it without
 #: breaking the rule above.
 LAB_ROW_NOT_AN_UNCERTAINTY: dict[str, str] = {
     "p2p_us": (
@@ -329,11 +339,11 @@ LAB_ROW_NOT_AN_UNCERTAINTY: dict[str, str] = {
         "reading"
     ),
     "gate_slack": (
-        "the per-gate DECISION threshold excess_loss_vs_null is tested "
-        "against: the larger of the instrument's fixed retention slack and "
-        "three times the paired retention standard error. It bounds a verdict "
-        "rather than quantifying one, and reading it as an uncertainty would "
-        "pool a systematic floor with a random scale"
+        "the DECISION threshold, in dB, that excess_loss_vs_null is tested "
+        "against: how far the null-model-corrected depth may move across the "
+        "window ladder before the feature is called the room's. It bounds a "
+        "verdict rather than quantifying one — a fixed instrument choice, not "
+        "a spread about any reading"
     ),
 }
 

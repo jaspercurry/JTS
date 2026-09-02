@@ -816,19 +816,40 @@ Four outcomes, in this exact precedence:
 |---|---|
 | `egd_verdict = NON-MIN-PHASE` | `interference-barred` |
 | else `gate_verdict = MOVED` | `room` |
-| else `egd_verdict = MIN-PHASE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
+| else `egd_verdict = MIN-PHASE` **and** `gate_verdict = STABLE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
 | else | `ambiguous` |
 
-`room` is decided by the **gate ladder**, not by moving the microphone. And
-`GATE_MOVED` has **two independent routes** — either one alone sets it, at any
-gate in the ladder: **excess retention loss below slack**
-(`excess_loss_vs_null < -slack`, slack being
-`max(RETENTION_SLACK, 3 × standard error)`, with **no resolved-gate guard**, so
-it fires even at a gate that could not resolve the feature) and **centre shift**
-(`|centre_shift_oct| > CENTRE_SHIFT_OCT`, 1/24 octave, **at a gate that resolved
-it**). So a `room` verdict sitting beside a small centre shift is not the
-classifier contradicting itself — the retention route fired. A loss between
-`-0.5 × slack` and `-slack` sets `tension` instead, which does not classify.
+**Both tests must have answered before a filter is vouched for.** A
+`gate_verdict` of `ambiguous` means the window ladder did not run — the round
+had one capture, or its sidecars bank no radiated band — and that is not
+`STABLE`, which is a finding. `gate_notes` names the reason.
+
+`room` is decided by the **window ladder**, not by moving the microphone, and
+the ladder is the gate-sweep engine's — verdict included. The row's
+`gate_verdict` is that engine's `window_verdict` translated into this table's
+words, and `gate_sensitivity.window_verdict_reasons` names which route fired
+("Reading a gate sweep" below is the engine's own guide, bars and all —
+#3557). `MOVED` has **three independent routes**, any one alone:
+
+- **across-pose sigma that GROWS** with the window, between the shortest and
+  longest resolution-valid rung. Sigma that is merely LARGE is not evidence:
+  an azimuth-only pose cloud gives big, perfectly window-invariant HF scatter
+  that is pure directivity (#3495). The ratio is **not read at all** below the
+  sigma floor — repeat takes at one pose have no across-pose disagreement, and
+  the ratio there is their own capture noise; `sigma_growth_readable` says so.
+- **a corrected depth change**, published per row as `excess_loss_vs_null`
+  against `gate_slack`. It is the depth change across the ladder with the
+  WINDOW's own share subtracted (the fitted notch is synthesized, injected
+  into a real capture IR and re-read through the same rungs), so it is a
+  smaller quantity than a raw swing and not comparable with one. A delta over
+  half the slack that does not reach it sets `tension` instead, which does not
+  classify.
+- **a centre that WALKS** between the two rungs. This is the one the other two
+  are blind to: a window that re-makes a feature at a different frequency has
+  moved it even when the depth it reads there barely changes.
+
+So a `room` verdict beside a flat sigma ratio is not the classifier
+contradicting itself — read `window_verdict_reasons` for which route fired.
 
 **Discriminator 2 — position invariance across the capture cloud**
 ([`interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py),
@@ -1008,8 +1029,10 @@ round, gates each one at a ladder of window lengths (`--rungs-ms`, default
 and writes only its report — `<round_dir>/gate_sweep.json` unless `--out` says
 otherwise, so give `--out` a path of your own and a banked round stays
 untouched. Exit codes are the contract: `0` swept, `1` refused, `2` the round
-could not be read. When to reach for it at all, and what its numbers license,
-are [`tuning-methodology.md`](tuning-methodology.md) §6a's.
+could not be read. Each stderr line ends with that row's `window_verdict` and
+the routes that produced it, so the headline is readable without opening the
+JSON. When to reach for it at all, and what its numbers license, are
+[`tuning-methodology.md`](tuning-methodology.md) §6a's.
 
 **Read `frame` before any number.** One capture and one feature read a
 materially different depth under each defensible frame, so the report states
@@ -1018,10 +1041,14 @@ fractions, the analysis grid
 (200–20000 Hz, 1/48 octave), the FFT length, the resolution bars in cycles, and
 the `reference` policy. That reference is **one constant per capture** taken
 from 2500–8000 Hz at the 7 ms rung and applied to every rung, and it is
-deliberately not the feature classifier's 400–8000 Hz per-rung median: a
-reference must not drift with the thing it is referencing. **A dB in this report
-is stated against that constant, so it is not a spec-table dB and never a
-`gate_rungs` dB.** What travels between instruments is a ratio.
+deliberately not the feature classifier's own 400–8000 Hz per-rung median,
+which its primary window and every `depth_db` still use: a reference must not
+drift with the thing it is referencing. **A dB in this report is stated against
+that constant, so it is not a spec-table dB and not a classification row's
+`depth_db`.** What travels between instruments is a ratio. The one exception is
+a classification row's `gate_rungs` / `gate_sensitivity`, which ARE this
+report's numbers — the classifier runs this engine for its window verdict
+rather than a ladder of its own — so those two blocks share this frame exactly.
 
 | Block | What it holds |
 |---|---|
@@ -1047,8 +1074,10 @@ A band row and a feature row carry the same reading fields:
 | `resolution_by_rung` | `invalid` (< 2.5 cycles, the gate's own trusted floor read as cycles), `grey` (< 5), `ok`. Flags on the table; only `invalid` bounds the headline |
 | `sigma_db_by_rung` | across-pose σ at this bin, per rung — the discriminator's raw material |
 | `valid_rungs_ms` / `n_valid_rungs` | the rungs the headline may span. Under two, there is no headline |
-| `poses[]` | that bin's `value_db_by_rung` and `detrended_db_by_rung` per pose, so the σ is reproducible in place |
+| `poses[]` | that bin's `value_db_by_rung` and `detrended_db_by_rung` per pose, labelled with `pose_key`. Who that pose IS does not vary with the bin, so it is in the report's own `poses[]` block, once — **in the same order**, which is the join: a round whose captures declare no pose has one `pose_key` on all of them |
 | `band_mean_sigma_db_by_rung` | bands only: mean σ over every graded bin at each rung, including bins below their own resolution floor at the short rungs. **No ratio is published for it** — a ratio over hundreds of bins is set by its smallest denominator, not by the room |
+| `window_verdict` | `stable`, `moved` or `unresolved` — the engine's own room/speaker call for this bin. `unresolved` is the ladder not answering, never a pass |
+| `window_verdict_reasons` | which routes fired (`sigma_growth`, `depth_delta`, `centre_shift`); empty on `stable`; the `sensitivity_null_reason` on `unresolved` |
 
 `sensitivity` is the headline, `null` with a named `sensitivity_null_reason`
 whenever it cannot be formed:
@@ -1056,11 +1085,14 @@ whenever it cannot be formed:
 | Field | Meaning |
 |---|---|
 | `shortest_valid_rung_ms` / `longest_valid_rung_ms` | the span the headline is over — **resolution-valid rungs only**, so it is often not 3→20 ms |
-| `sigma_growth_ratio` | σ at the longest valid rung over σ at the shortest. Growth is the room; ≈ 1 with large σ is directivity |
+| `sigma_growth_ratio` | σ at the longest valid rung over σ at the shortest. Growth is the room; ≈ 1 with large σ is directivity. **≥ 2.0 is `moved`** (measured: the features the room owns read 3.6–5.5×, directivity 0.94–1.4×) |
+| `sigma_growth_readable` | whether the ratio was read at all. `false` below **0.2 dB** of σ at the long rung — repeat takes at one pose have no across-pose disagreement, and the ratio there is their own capture noise. The floor is on the LONG rung deliberately: a room feature is exactly a tiny short-rung σ that grows |
 | `raw_delta_db` | median detrended level at the long rung minus at the short one |
 | `bias_delta_db` | what the WINDOW alone does to a feature of this shape, from a notch fitted across poses, synthesized, injected into this round's own capture IR and re-read through the same two rungs |
-| `corrected_delta_db` | `raw_delta_db − bias_delta_db`. **This is the delta to read**; the raw one conflates the window with the room, and the window's bias is not small and never vanishes |
+| `corrected_delta_db` | `raw_delta_db − bias_delta_db`. **This is the delta to read**; the raw one conflates the window with the room, and the window's bias is not small and never vanishes. **Past ±0.5 dB is `moved`** — a smaller quantity than a raw swing, and not comparable with one |
+| `centre_shift_oct` | `log2` of the long-rung fitted centre over the short-rung one, with both in `centre_hz_by_rung`. **Past ±1/24 octave is `moved`**: a window that re-makes the feature at a different frequency has moved it, which the two depth routes can miss entirely |
 | `bias_delta_synthetic_host_db` | the same bias through a bare-impulse host. It corrects nothing — it discloses whether the real host was still additive at this depth |
+| `bias_delta_narrow_q_db` | the same bias off a notch of the same depth at 1.5× the fitted Q. Also disclosure: how much of the correction the width fit is worth |
 | `null_model` | the fit behind the correction: `centre_hz`, `depth_db`, `q` and their per-pose values, `host_capture_id`, and what the model read at each of the two rungs (`read_db_by_rung`, `synthetic_host_read_db_by_rung`) |
 
 | `sensitivity_null_reason` | What was missing |

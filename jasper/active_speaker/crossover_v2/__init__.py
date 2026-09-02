@@ -81,6 +81,11 @@ order — so this list is what exists, not a plan:
   layout those two readers open, out of WAVs and records the bundle already has.
 * :mod:`.feature_classifier` — what KIND of feature is that, measured from a
   round's own banked captures.
+* :mod:`.feature_optics` — how a feature is read off a magnitude curve: the
+  smoothing and detrend fractions, the spans its size and width are read over,
+  the window lead, and the minimum-phase section that synthesizes one. The
+  shared bottom the classifier, the gate sweep and the close reference all
+  read through, so no two of them read one feature differently.
 * :mod:`.close_reference` — a close capture corrected to the far distance,
   sub-sample aligned and subtracted, so each spec band says whether the far
   read was the speaker or the room.
