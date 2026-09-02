@@ -1910,7 +1910,7 @@ def _anchor_entry_baseline(c, error_db=0.0):
     error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
     # measured_pre = predicted_raw + error, and predicted_raw is the post-apply
     # prediction with the command taken back out — the same recovery
-    # ``_entry_delta_db`` performs.
+    # ``entry_delta_db`` performs.
     measured_pre = (predicted - commanded) + error
     banked = c.measure_entry_baseline
     assert banked is not None, "walk the session past ENTRY_BASELINE first"

@@ -899,14 +899,14 @@ def _repeat_round_axes():
 
 
 def _entry_baseline(session, measured_pre):
-    """A PRE-apply capture the session's ``_entry_delta_db`` can read.
+    """A PRE-apply capture ``delta_probe_run.entry_delta_db`` can read.
 
-    The real record, not a stub: that method reads ``curve``, ``excluded`` and
+    The real record, not a stub: it reads ``curve``, ``excluded`` and
     ``program_id``, and a duck-typed trio would keep passing if it started
     reading a fourth field.
 
     ``program_id`` is this SESSION's own VERIFY program, not a placeholder,
-    because ``_entry_delta_db`` refuses an anchor measured through another
+    because ``entry_delta_db`` refuses an anchor measured through another
     program (series-2 D1: an anchor is a subtraction, so a curve from a
     different capture cancels a real finding as readily as a phantom). A
     fixture stating a stand-in id here would exercise the refusal instead of
@@ -1571,8 +1571,8 @@ def test_a_round_with_no_entry_baseline_at_all_says_so_on_the_journal(caplog):
     capture never landed, or a truncated record
     (``entry_baseline_prior_from_state`` enumerates the three). **Not** by a
     first-ever round: that one has no nameable previous graph, so its commanded
-    axis is absent and ``_run_delta_probe`` takes the ``state_axis_only`` branch
-    without calling ``_entry_delta_db`` at all.
+    axis is absent and ``run_delta_probe`` takes the ``state_axis_only`` branch
+    without calling ``entry_delta_db`` at all.
 
     Since D1 this arm decides whether the realized-energy half of the safety
     axis runs, so it is a named journal line rather than an absent field a
@@ -1630,7 +1630,7 @@ def test_neither_axis_leaves_the_probe_absent_exactly_as_before(caplog):
     """(d) No change axis AND no state axis is still ``None``.
 
     The pre-#2614 answer for a round nothing can grade, and
-    ``_declared_transfer_db`` has already named the reason on the journal — so
+    ``declared_transfer_db`` has already named the reason on the journal — so
     this path gains no new vocabulary and loses no disclosure.
     """
     import logging

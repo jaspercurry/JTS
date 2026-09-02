@@ -116,8 +116,8 @@ def _round(tag: str) -> dict:
         "predicted": predicted,
         "commanded": commanded,
         "declared": arr("declared_transfer_db"),
-        # The two curves the flow reconstructs, by the flow's own arithmetic
-        # (``crossover_v2_flow._run_delta_probe`` / ``._entry_delta_db``).
+        # The two curves the round reconstructs, by its own arithmetic
+        # (``delta_probe_run.run_delta_probe`` / ``.entry_delta_db``).
         "realized": (measured - predicted) + commanded,
         "entry": (arr("entry_baseline_db") - predicted) + commanded,
         "offset": float(data["expected_offset_db"]),
