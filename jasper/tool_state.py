@@ -88,23 +88,6 @@ def read_tool_state(path: str | os.PathLike = DEFAULT_PATH) -> ToolState:
     )
 
 
-def read_disabled_tools(path: str | os.PathLike = DEFAULT_PATH) -> frozenset[str]:
-    """Return the set of tool names the user turned OFF."""
-    return read_tool_state(path).disabled_tools
-
-
-def read_disabled_packs(path: str | os.PathLike = DEFAULT_PATH) -> frozenset[str]:
-    """Return the set of catalog pack ids the user turned OFF."""
-    return read_tool_state(path).disabled_packs
-
-
-def read_setup_enabled_packs(
-    path: str | os.PathLike = DEFAULT_PATH,
-) -> frozenset[str]:
-    """Return unconfigured pack ids the user intentionally turned ON."""
-    return read_tool_state(path).setup_enabled_packs
-
-
 def write_tool_state(path: str | os.PathLike, state: ToolState) -> None:
     """Atomically write the disabled pack/tool sets. Mode 0644 (no secret;
     jasper-doctor + non-root readers inspect it)."""

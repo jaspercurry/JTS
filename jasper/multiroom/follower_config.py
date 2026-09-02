@@ -328,15 +328,6 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
     return FOLLOWER_CONFIG_PATH
 
 
-async def apply_active_follower_config(
-    cfg: GroupingConfig, *, camilla_factory=_camilla, validate=None,
-) -> str:
-    """Combined precheck + apply (direct callers / tests). The reconciler uses
-    the two phases separately (gate early, swap late)."""
-    await precheck_active_follower(cfg, validate=validate)
-    return await apply_prebuilt_follower_config(camilla_factory=camilla_factory)
-
-
 async def restore_active_camilla_solo(
     *,
     camilla_factory=_camilla,

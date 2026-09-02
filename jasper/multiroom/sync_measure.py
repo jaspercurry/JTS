@@ -16,7 +16,6 @@ import io
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -100,18 +99,6 @@ def write_marker_wav(path: str | Path, sample_rate: int = SAMPLE_RATE) -> None:
         f.setsampwidth(2)
         f.setframerate(sample_rate)
         f.writeframes(pcm.tobytes())
-
-
-def marker_wav_bytes(sample_rate: int = SAMPLE_RATE) -> bytes:
-    buf = io.BytesIO()
-    stereo = render_marker_stereo(sample_rate)
-    pcm = (np.clip(stereo, -1.0, 1.0) * 32767.0).astype("<i2")
-    with wave.open(buf, "wb") as f:
-        f.setnchannels(2)
-        f.setsampwidth(2)
-        f.setframerate(sample_rate)
-        f.writeframes(pcm.tobytes())
-    return buf.getvalue()
 
 
 def read_wav_mono(data: bytes) -> tuple[np.ndarray, int]:
@@ -322,22 +309,3 @@ def recommend_channel_delays(delta_ms: float) -> DelayRecommendation:
     return DelayRecommendation(left_delay_ms=0.0, right_delay_ms=-delta_ms)
 
 
-def aggregate_measurements(items: Iterable[SyncMeasurement]) -> SyncMeasurement:
-    good = [m for m in items if m.ok]
-    if not good:
-        raise ValueError("no valid sync measurements")
-    deltas = np.array([m.delta_ms for m in good], dtype=np.float64)
-    median_delta = float(np.median(deltas))
-    spread = float(np.max(np.abs(deltas - median_delta))) if deltas.size else 0.0
-    confidence = min(m.confidence for m in good)
-    warnings = []
-    if spread > 0.35:
-        warnings.append("repeatability_low")
-    return SyncMeasurement(
-        left_arrival_s=float(np.median([m.left_arrival_s for m in good])),
-        right_arrival_s=float(np.median([m.right_arrival_s for m in good])),
-        delta_ms=median_delta,
-        confidence=confidence,
-        ok=not warnings,
-        warnings=tuple(warnings),
-    )

@@ -525,15 +525,6 @@ def relay_session_token() -> tuple[int | None, str | None]:
         return int(_state["session_token"]), None
 
 
-def relay_precheck() -> str | None:
-    """Whether a phone-relay sync capture can start now. The browser flow's
-    handle_start must have opened the session window first (phase == measuring),
-    so the relay capture only swaps the recording transport. Returns an error
-    message or None."""
-    _session_token, error = relay_session_token()
-    return error
-
-
 async def relay_run_and_consume(
     client: Any,
     pi_session: Any,

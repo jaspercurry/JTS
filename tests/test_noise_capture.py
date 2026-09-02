@@ -23,21 +23,8 @@ from jasper.cli import noise_capture
 
 
 # ---------------------------------------------------------------------------
-# noise_dirs + noise_filename — pure naming
+# noise_filename — pure naming
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("condition,expected", [
-    ("quiet", ("aec_on_nomusic", "aec_off_nomusic")),
-    ("music", ("aec_on_music", "aec_off_music")),
-])
-def test_noise_dirs(condition: str, expected: tuple[str, str]) -> None:
-    assert noise_capture.noise_dirs(condition) == expected
-
-
-def test_noise_dirs_rejects_unknown() -> None:
-    with pytest.raises(ValueError, match="unknown condition"):
-        noise_capture.noise_dirs("loud")
 
 
 def test_noise_filename_format() -> None:

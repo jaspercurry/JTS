@@ -138,10 +138,3 @@ def wake_input_legs() -> tuple[LegSpec, ...]:
     return tuple(leg for leg in REGISTRY if leg.wake_input)
 
 
-def all_ports() -> dict[str, int]:
-    """Every registered leg's ``token`` -> ``udp_port``.
-
-    Sweep variants are parametric and live in ``jasper.aec_sweep``;
-    ``jasper.wake_ports`` merges them on top of this for tooling.
-    """
-    return {leg.token: leg.udp_port for leg in REGISTRY}

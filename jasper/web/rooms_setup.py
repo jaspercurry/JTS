@@ -995,22 +995,6 @@ def _get_remote_json_result(
     return parsed, None
 
 
-def _get_remote_json(
-    target: str,
-    path: str,
-    *,
-    timeout: float,
-) -> dict | None:
-    """GET a JSON object from an already-approved peer target and path.
-
-    Callers own LAN-target validation, constant path selection, timeout policy,
-    and domain parsing. This private transport seam only performs bounded HTTP
-    and returns ``None`` for every status, transport, or decode failure.
-    """
-    payload, _error = _get_remote_json_result(target, path, timeout=timeout)
-    return payload
-
-
 def _preflight_grouping_target(
     addr: str, body: dict, known: set[str] | None = None,
 ) -> tuple[bool, str]:

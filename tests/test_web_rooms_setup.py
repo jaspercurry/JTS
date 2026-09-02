@@ -1967,9 +1967,9 @@ def test_remote_json_get_success_forwards_request_and_timeout(monkeypatch):
 
     monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
 
-    assert rooms_setup._get_remote_json(
+    assert rooms_setup._get_remote_json_result(
         "192.168.1.9", "/state", timeout=0.375,
-    ) == {"ok": True}
+    ) == ({"ok": True}, None)
     assert captured == {
         "url": "http://192.168.1.9:8780/state",
         "method": "GET",
@@ -2138,9 +2138,9 @@ def test_remote_json_get_fails_soft_on_transport_timeout(monkeypatch):
         raise TimeoutError("peer timed out")
 
     monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", timeout)
-    assert rooms_setup._get_remote_json(
+    assert rooms_setup._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.125,
-    ) is None
+    ) == (None, "speaker is unreachable — check its power and network")
 
 
 def test_get_member_grouping_forwards_timeout_then_parses_domain(monkeypatch):

@@ -20,7 +20,6 @@ the stalest, never the current one).
 """
 from __future__ import annotations
 
-import errno
 import threading
 import time
 from typing import Callable
@@ -77,23 +76,3 @@ class TransitionLog:
             return len(self._state)
 
 
-def os_fault_cause(exc: BaseException) -> str:
-    """Name a fault the way an operator acts on it: class, errno code, path.
-
-    Walks ``__cause__`` for the deepest OS error -- a permission fault on one
-    file arrives several wrapper links down -- and renders ``class:CODE:path``.
-    Falls back to the exception's own class when no OS error is under it.
-    """
-
-    seen: set[int] = set()
-    os_error: OSError | None = None
-    cursor: BaseException | None = exc
-    while cursor is not None and id(cursor) not in seen:
-        seen.add(id(cursor))
-        if isinstance(cursor, OSError):
-            os_error = cursor
-        cursor = cursor.__cause__
-    if os_error is None:
-        return type(exc).__name__
-    code = errno.errorcode.get(os_error.errno or 0, str(os_error.errno or ""))
-    return f"{type(os_error).__name__}:{code}:{os_error.filename or ''}"
