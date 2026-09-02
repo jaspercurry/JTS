@@ -285,6 +285,84 @@ def test_no_code_agent_trusts_only_bonded_devices(authorization, paired):
     assert calls == ([("Trusted", True)] if paired else [])
 
 
+def test_unbonded_trust_sweep_drops_and_reports(caplog):
+    """Trust must not outlive the bond.
+
+    Granting trust only to a bonded device is not enough: a pairing that was
+    never bonded disappears on the next disconnect and leaves the trust
+    behind, which is what strands a remote. The sweep also heals a device
+    stranded before that guard existed.
+    """
+    async def sweep():
+        return ("CA:AC:04:04:09:D7",)
+
+    with caplog.at_level("INFO"):
+        dropped = asyncio.run(
+            no_code_agent._sweep_unbonded_trust_once(sweep=sweep),
+        )
+
+    assert dropped == ("CA:AC:04:04:09:D7",)
+    assert any(
+        "bluetooth_agent.untrusted_unbonded" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_unbonded_trust_sweep_survives_a_failing_probe():
+    """A sweep that cannot read BlueZ must not kill the agent's poll loop."""
+    async def sweep():
+        raise RuntimeError("bluez unreachable")
+
+    assert asyncio.run(
+        no_code_agent._sweep_unbonded_trust_once(sweep=sweep),
+    ) == ()
+
+
+def test_floor_watch_runs_the_unbonded_trust_sweep():
+    """The sweep must run from the agent's existing poll, not just exist.
+
+    Tested separately from the sweep itself: an isolated sweep test stays
+    green when the call site is deleted, which leaves a stranded device
+    un-healed with nothing failing.
+    """
+    swept = 0
+
+    async def read_state():
+        return {"pairable": False, "discoverable": False}
+
+    async def close_pairing_window(_value):
+        raise AssertionError("must not close a window it did not open")
+
+    stop = asyncio.Event()
+
+    async def sweep():
+        nonlocal swept
+        swept += 1
+        stop.set()
+        return ()
+
+    async def scenario():
+        # Bounded on purpose: a watch that never calls the sweep leaves `stop`
+        # unset and would otherwise spin forever instead of failing.
+        await asyncio.wait_for(
+            no_code_agent._pairable_floor_watch(
+                stop,
+                interval=0.01,
+                read_state=read_state,
+                close_pairing_window=close_pairing_window,
+                sweep=sweep,
+            ),
+            timeout=2.0,
+        )
+
+    try:
+        asyncio.run(scenario())
+    except asyncio.TimeoutError:
+        pass
+
+    assert swept == 1
+
+
 def test_no_code_agent_release_notifies_owner():
     released = False
 

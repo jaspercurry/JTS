@@ -313,6 +313,40 @@ async def test_trust_follows_the_bond(bond_succeeds: bool):
         assert stages.index("trusting") < stages.index("connecting")
 
 
+@pytest.mark.parametrize("already_pairable", (False, True))
+async def test_pair_raises_the_bondable_flag_and_restores_it(
+    monkeypatch,
+    already_pairable: bool,
+):
+    """BlueZ reads Pairable when it builds the pairing request.
+
+    Left low it sends "No bonding": the pair succeeds, no long-term key is
+    stored, and the bond dies on the next disconnect. Restored afterwards so
+    a pair does not leave the speaker admitting inbound pairings -- unless it
+    was already open, which is the user's own pairing window.
+    """
+    calls: list[bool] = []
+
+    async def fake_state(_adapter=None):
+        return {"pairable": already_pairable}
+
+    async def fake_set_pairable(value, _adapter=None):
+        calls.append(bool(value))
+
+    monkeypatch.setattr("jasper.bluetooth.adapter.state", fake_state)
+    monkeypatch.setattr("jasper.bluetooth.adapter.set_pairable", fake_set_pairable)
+    engine = _engine([])
+
+    events = [
+        event
+        async for event in engine.pair("CA:AC:04:04:09:D7", timeout_s=1.0)
+    ]
+
+    assert events[-1]["stage"] != "error"
+    assert calls[0] is True, "the pairing request must carry the bondable flag"
+    assert calls == ([True] if already_pairable else [True, False])
+
+
 async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     reasons: list[str] = []
     engine = _engine(reasons)

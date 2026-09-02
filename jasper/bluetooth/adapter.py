@@ -142,13 +142,19 @@ async def set_discoverable(
 ) -> None:
     """Open or close the JTS pairing window.
 
-    BlueZ separates visibility (`Discoverable`) from whether incoming
-    pairing requests are accepted (`Pairable`). For JTS the UI intentionally
-    treats the Discoverable toggle as "pairing mode": turning it on makes the
-    speaker visible and pairable for a bounded window; turning it off closes
-    both knobs. Already-paired devices can still reconnect after Pairable is
-    false; BlueZ documents Pairable as affecting only incoming pairing
-    requests.
+    BlueZ separates visibility (`Discoverable`) from `Pairable`. For JTS the
+    UI intentionally treats the Discoverable toggle as "pairing mode":
+    turning it on makes the speaker visible and pairable for a bounded
+    window; turning it off closes both knobs. Already-paired devices can
+    still reconnect after Pairable is false.
+
+    `Pairable` is NOT incoming-only. It maps to the kernel's bondable flag,
+    which sets the Bonding bit of the SMP pairing request we send when WE
+    initiate. With it off, a pair still succeeds but stores no long-term
+    key, so the bond evaporates on the next disconnect. Captured on jts4
+    pairing a WiiM Remote 2: ours "No bonding", the remote's "Bonding".
+    Anything initiating a pair must therefore raise it first -- see
+    `set_pairable`.
     """
     async with _system_bus() as bus:
         _, props = await _adapter(bus, adapter)
@@ -222,3 +228,60 @@ async def remove_device(
             f"/org/bluez/{adapter}/dev_{mac.upper().replace(':', '_')}"
         )
         await a.call_remove_device(dev_path)
+
+
+async def set_pairable(value: bool, adapter: str = DEFAULT_ADAPTER) -> None:
+    """Raise or lower the adapter's bondable flag on its own.
+
+    Narrower than `set_discoverable`, which also makes the speaker visible.
+    An outbound pair needs the bondable flag but has no reason to advertise.
+    """
+    async with _system_bus() as bus:
+        _, props = await _adapter(bus, adapter)
+        await props.call_set(
+            "org.bluez.Adapter1", "Pairable", Variant("b", bool(value)),
+        )
+
+
+async def untrust_unbonded(adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
+    """Drop Trusted from every device BlueZ no longer holds a bond for.
+
+    Trust is what makes BlueZ auto-reconnect a device on every advertisement.
+    Outliving the bond is the stranding case: an unbonded HID cannot bring
+    its profile up (`input-hog profile accept failed`), the reconnect repeats
+    for as long as it is in range, and the device stops advertising as
+    pairable -- so it can be neither used nor paired again. Granting trust
+    only to a bonded device is not enough on its own, because a pairing that
+    was never bonded disappears on the next disconnect and leaves the trust
+    behind.
+
+    Returns the addresses it untrusted, for the caller to log.
+    """
+    untrusted: list[str] = []
+    async with _system_bus() as bus:
+        intro = await bus.introspect(BLUEZ_BUS, "/")
+        om = bus.get_proxy_object(
+            BLUEZ_BUS, "/", intro,
+        ).get_interface("org.freedesktop.DBus.ObjectManager")
+        managed = await om.call_get_managed_objects()
+        for path, ifaces in managed.items():
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev:
+                continue
+
+            def _flag(key: str) -> bool:
+                raw = dev.get(key)
+                return bool(getattr(raw, "value", raw))
+
+            if not _flag("Trusted") or _flag("Paired"):
+                continue
+            dev_intro = await bus.introspect(BLUEZ_BUS, path)
+            props = bus.get_proxy_object(
+                BLUEZ_BUS, path, dev_intro,
+            ).get_interface("org.freedesktop.DBus.Properties")
+            await props.call_set(
+                "org.bluez.Device1", "Trusted", Variant("b", False),
+            )
+            address = dev.get("Address")
+            untrusted.append(str(getattr(address, "value", address) or path))
+    return tuple(untrusted)

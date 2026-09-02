@@ -89,6 +89,48 @@ def _stop_discovery_already_idle(err: DBusError) -> bool:
     )
 
 
+@contextlib.asynccontextmanager
+async def _bondable_for_pair(adapter: str):
+    """Raise the adapter's bondable flag for one pairing request.
+
+    BlueZ reads `Pairable` when it builds the SMP pairing request, and with
+    it low the request carries "No bonding": the pair succeeds, no long-term
+    key is stored, and the bond dies on the next disconnect. Restored
+    afterwards so a pair does not leave the speaker admitting inbound
+    pairings outside its own window.
+
+    Best-effort on both edges. A speaker that cannot raise the flag should
+    still attempt the pair -- unbonded is how it behaved before this existed,
+    and `untrust_unbonded` keeps that from stranding the device.
+    """
+    from .adapter import set_pairable, state as adapter_state
+
+    was_pairable = False
+    try:
+        was_pairable = bool((await adapter_state(adapter)).get("pairable"))
+        await set_pairable(True, adapter)
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger,
+            "bluetooth.bondable_raise_failed",
+            err=repr(exc),
+            level=logging.WARNING,
+        )
+    try:
+        yield
+    finally:
+        if not was_pairable:
+            try:
+                await set_pairable(False, adapter)
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    logger,
+                    "bluetooth.bondable_restore_failed",
+                    err=repr(exc),
+                    level=logging.WARNING,
+                )
+
+
 class BluetoothEngine:
     """Owns the bus connection + observer. Singleton on the
     daemon. Pair streams progress events; connect, disconnect, and forget
@@ -466,7 +508,8 @@ class BluetoothEngine:
 
         yield {"stage": "pairing"}
         try:
-            await self._call_pair_with_timeout(dev_iface, timeout_s)
+            async with _bondable_for_pair(self._adapter):
+                await self._call_pair_with_timeout(dev_iface, timeout_s)
         except asyncio.CancelledError:
             yield {"stage": "error", "message": "pair operation was cancelled"}
             return

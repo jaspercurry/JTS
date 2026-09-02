@@ -16,7 +16,11 @@ from dbus_next.aio import MessageBus  # type: ignore
 
 from jasper.log_event import log_event
 
-from .adapter import set_discoverable, state as adapter_state
+from .adapter import (
+    set_discoverable,
+    state as adapter_state,
+    untrust_unbonded,
+)
 from .agent import NoCodeAgent, register_agent, unregister_agent
 
 logger = logging.getLogger(__name__)
@@ -72,18 +76,50 @@ async def _enforce_pairable_floor_once(
     return False
 
 
+async def _sweep_unbonded_trust_once(
+    *,
+    sweep=untrust_unbonded,
+) -> tuple[str, ...]:
+    """Drop trust from any device whose bond is gone.
+
+    Granting trust only to a bonded device is not enough: a pairing that was
+    never bonded disappears on the next disconnect and leaves the trust
+    behind, which is the stranding case. This also heals a device stranded
+    before that guard existed.
+    """
+    try:
+        dropped = await sweep()
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger,
+            "bluetooth_agent.unbonded_trust_sweep_failed",
+            err=repr(exc),
+            level=logging.WARNING,
+        )
+        return ()
+    for address in dropped:
+        log_event(
+            logger,
+            "bluetooth_agent.untrusted_unbonded",
+            address=address,
+        )
+    return dropped
+
+
 async def _pairable_floor_watch(
     stop: asyncio.Event,
     *,
     interval: float = PAIRABLE_FLOOR_POLL_SEC,
     read_state=adapter_state,
     close_pairing_window=set_discoverable,
+    sweep=untrust_unbonded,
 ) -> None:
     while not stop.is_set():
         await _enforce_pairable_floor_once(
             read_state=read_state,
             close_pairing_window=close_pairing_window,
         )
+        await _sweep_unbonded_trust_once(sweep=sweep)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except asyncio.TimeoutError:
