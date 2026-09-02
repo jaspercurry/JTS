@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A program's anchor-relative level, resolved to absolute dB SPL — or refused.
+"""The banked anchor's level, resolved to absolute dB SPL — or refused.
 
 The load-bearing property: there is no relative fallback. Every missing input
 (no banked anchor, no readable mic calibration, no preset behind the ceiling)
@@ -12,12 +12,9 @@ was guessed is worse than no number.
 
 from __future__ import annotations
 
-import dataclasses
-
 import pytest
 
 from jasper.active_speaker import measurement_level as ml
-from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     write_seat_level_reference,
@@ -53,29 +50,28 @@ def anchor(tmp_path, monkeypatch):
     return path
 
 
-def _program(level_re_anchor_db: float) -> mp.MeasurementProgram:
-    return dataclasses.replace(
-        mp.program("baseline", "express"), level_re_anchor_db=level_re_anchor_db
-    )
-
-
 @pytest.mark.parametrize(
-    ("banked", "cal_text", "level_re_anchor_db", "reason"),
+    ("banked", "cal_text", "ceiling_db_spl", "reason"),
     [
-        pytest.param(True, CAL_WITH_SENS, 0.0, None, id="at_the_anchor"),
-        # The mutation guard on the ceiling: +7 clears 85 and resolves, +10
-        # does not and refuses, so a dropped comparison fails the second row.
-        pytest.param(True, CAL_WITH_SENS, 7.0, None, id="under_the_ceiling"),
+        pytest.param(True, CAL_WITH_SENS, CEILING_DB_SPL, None, id="under_the_ceiling"),
+        # The mutation guard on the ceiling: the anchor exactly at it resolves,
+        # a hair under it refuses, so a dropped comparison fails the second row.
+        pytest.param(True, CAL_WITH_SENS, ANCHOR_DB_SPL, None, id="at_the_ceiling"),
         pytest.param(
-            True, CAL_WITH_SENS, 10.0, ml.LEVEL_OVER_CEILING, id="over_the_ceiling"
+            True,
+            CAL_WITH_SENS,
+            ANCHOR_DB_SPL - 0.5,
+            ml.LEVEL_OVER_CEILING,
+            id="over_the_ceiling",
         ),
         pytest.param(
-            False, CAL_WITH_SENS, 0.0, ml.SEAT_REFERENCE_MISSING, id="no_anchor"
+            False, CAL_WITH_SENS, CEILING_DB_SPL, ml.SEAT_REFERENCE_MISSING,
+            id="no_anchor",
         ),
         pytest.param(
             True,
             CAL_CURVE_ONLY,
-            0.0,
+            CEILING_DB_SPL,
             REFUSE_MIC_CALIBRATION_UNAVAILABLE,
             id="no_absolute_mic_reference",
         ),
@@ -84,13 +80,16 @@ def _program(level_re_anchor_db: float) -> mp.MeasurementProgram:
         # still resolves, so neither dropping the comparison nor tightening it
         # to equality passes both rows.
         pytest.param(
-            True, CAL_RECALIBRATED, 0.0, ml.MIC_CALIBRATION_CHANGED, id="recalibrated"
+            True, CAL_RECALIBRATED, CEILING_DB_SPL, ml.MIC_CALIBRATION_CHANGED,
+            id="recalibrated",
         ),
-        pytest.param(True, CAL_REQUOTED, 0.0, None, id="requoted_within_tolerance"),
+        pytest.param(
+            True, CAL_REQUOTED, CEILING_DB_SPL, None, id="requoted_within_tolerance",
+        ),
     ],
 )
 def test_a_level_resolves_or_names_the_input_it_is_missing(
-    tmp_path, monkeypatch, anchor, banked, cal_text, level_re_anchor_db, reason
+    tmp_path, monkeypatch, anchor, banked, cal_text, ceiling_db_spl, reason
 ):
     if not banked:
         monkeypatch.setenv(
@@ -102,9 +101,7 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
 
     def _resolve():
         return ml.resolve_program_level(
-            _program(level_re_anchor_db),
-            ceiling_db_spl=CEILING_DB_SPL,
-            calibration_file=str(cal),
+            ceiling_db_spl=ceiling_db_spl, calibration_file=str(cal),
         )
 
     if reason is not None:
@@ -116,24 +113,11 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
         return
 
     assert _resolve() == ml.ResolvedLevel(
-        target_db_spl=ANCHOR_DB_SPL + level_re_anchor_db,
+        target_db_spl=ANCHOR_DB_SPL,
         anchor_db_spl=ANCHOR_DB_SPL,
-        level_re_anchor_db=level_re_anchor_db,
         reference_volume_db=REFERENCE_VOLUME_DB,
         mic_serial="8108494",
     )
-
-
-def test_a_walk_with_no_program_drives_at_the_anchor_itself(tmp_path, anchor):
-    """``None`` is the free-form walk: anchor-relative zero, one receipt shape."""
-    cal = tmp_path / "mic.txt"
-    cal.write_text(CAL_WITH_SENS)
-
-    level = ml.resolve_program_level(
-        None, ceiling_db_spl=CEILING_DB_SPL, calibration_file=str(cal)
-    )
-
-    assert (level.level_re_anchor_db, level.target_db_spl) == (0.0, ANCHOR_DB_SPL)
 
 
 def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeypatch):
@@ -147,7 +131,7 @@ def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeyp
     monkeypatch.setattr(ml, "resolve_mic_sensitivity", _capture)
 
     with pytest.raises(ml.LevelUnresolved) as excinfo:
-        ml.resolve_program_level(_program(0.0), ceiling_db_spl=CEILING_DB_SPL)
+        ml.resolve_program_level(ceiling_db_spl=CEILING_DB_SPL)
 
     assert excinfo.value.reason == REFUSE_MIC_CALIBRATION_UNAVAILABLE
     assert seen == {"calibration_file": None, "mic_serial": "8108494"}

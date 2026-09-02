@@ -80,12 +80,6 @@ def test_full_baseline_matches_the_plans_pose_set() -> None:
         f"one side moved; {RECONCILE}"
     )
 
-    plan_distance = float(_search(r"poses at ([\d.]+) m", bullet).group(1))
-    assert full.mark_distance_m == plan_distance, (
-        f"plan measures at {plan_distance} m, table at {full.mark_distance_m} m — "
-        f"one side moved; {RECONCILE}"
-    )
-
     plan_horizontal = _angles(_search(r"horizontal ((?:±?\d+°,? ?)+)", bullet).group(1))
     table_horizontal = {p.azimuth_deg for p in full.poses if p.elevation_deg == 0}
     assert table_horizontal == plan_horizontal, (
@@ -148,10 +142,6 @@ def test_shipped_rows(
     assert len(row.poses) == poses
     assert row.mic_move_count == moves
     assert row.capture_count == captures
-    assert row.mark_distance_m == 1.0
-    # Every shipped row drives AT the anchor: the plan states the level
-    # relative, and 0 is what "the ratified measurement anchor" means.
-    assert row.level_re_anchor_db == 0.0
 
 
 def test_express_geometry() -> None:
@@ -231,6 +221,4 @@ def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -
     assert row.poses == (mp.ProgramPose(azimuth, elevation, 1),)
     assert (row.mic_move_count, row.capture_count) == (1, 1)
     assert (row.program_id, row.size) == ("spot", "express")
-    assert row.mark_distance_m == 1.0
-    assert row.level_re_anchor_db == 0.0
 

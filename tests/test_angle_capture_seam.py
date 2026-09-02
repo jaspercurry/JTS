@@ -986,18 +986,6 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     )
 
 
-def test_a_program_measured_at_another_distance_is_refused() -> None:
-    """The walk derives every pose at one distance, so it refuses the others."""
-    elsewhere = dataclasses.replace(
-        mp.program("baseline", "express"), mark_distance_m=0.3,
-    )
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.request_for_program(elsewhere)
-
-    assert excinfo.value.reason == ac.WALK_DISTANCE_UNSUPPORTED
-    assert ac.WALK_DISTANCE_UNSUPPORTED in ac.WALK_REFUSAL_REASONS
-
-
 def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
     """A program says WHERE to measure; the mover says what it can reach."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
@@ -1006,18 +994,6 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
         )
 
     assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
-
-
-def test_mutation_the_distance_guard_cannot_be_dropped() -> None:
-    """A guard that passed everything would pass this too."""
-    assert ac.request_for_program(mp.program("baseline", "express")).stops
-    with pytest.raises(ac.LateralWalkRefused):
-        ac.request_for_program(
-            dataclasses.replace(
-                mp.program("baseline", "express"),
-                mark_distance_m=ac.MARK_DISTANCE_M * 2,
-            )
-        )
 
 
 # --------------------------------------------------------------------------- #

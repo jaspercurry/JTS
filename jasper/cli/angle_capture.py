@@ -68,7 +68,7 @@ import argparse
 import json
 import logging
 import sys
-from typing import Any, NamedTuple, Sequence
+from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
 
@@ -288,19 +288,7 @@ def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
     return measurement_programs.program(args.program, args.size)
 
 
-class _Stated(NamedTuple):
-    """The stated walk, and the program row it came from (``None`` free-form).
-
-    The row is carried alongside rather than read back off ``request.program``:
-    that field is an identity STRING, and ``spot`` is not a registry row, so
-    there is nothing to look the level statement back up in.
-    """
-
-    request: AngleCaptureRequest
-    program: MeasurementProgram | None
-
-
-def _build_request(args: argparse.Namespace) -> _Stated:
+def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     """The request the operator stated, through the seam's own constructors.
 
     Two doors, one seam. ``--program`` hands a
@@ -314,12 +302,10 @@ def _build_request(args: argparse.Namespace) -> _Stated:
     ``AngleCaptureRequest``, which every route goes through.
     """
     if args.program:
-        program = _chosen_program(args)
-        return _Stated(
-            request_for_program(
-                program, candidates=_resolved_candidates(args), **_graph_flags(args)
-            ),
-            program,
+        return request_for_program(
+            _chosen_program(args),
+            candidates=_resolved_candidates(args),
+            **_graph_flags(args),
         )
     if args.candidates:
         args.parser.error(
@@ -327,22 +313,17 @@ def _build_request(args: argparse.Namespace) -> _Stated:
             "no candidate cycle"
         )
     regimes = _REGIME_STOPS[args.regime or REGIME_PER_DRIVER]
-    return _Stated(
-        AngleCaptureRequest(
-            stops=tuple(
-                AngleStop(angle, regime)
-                for angle in _parse_angles(args.angles)
-                for regime in regimes
-            ),
-            **_graph_flags(args),
+    return AngleCaptureRequest(
+        stops=tuple(
+            AngleStop(angle, regime)
+            for angle in _parse_angles(args.angles)
+            for regime in regimes
         ),
-        None,
+        **_graph_flags(args),
     )
 
 
-def _resolved_level(
-    program: MeasurementProgram | None,
-) -> ResolvedLevel | LevelUnresolved:
+def _resolved_level() -> ResolvedLevel | LevelUnresolved:
     """This walk's absolute level, or the refusal that stops it being knowable.
 
     Resolved ONCE per verb and carried as the object it is: ``plan`` prints the
@@ -350,7 +331,7 @@ def _resolved_level(
     verb rebuilds one from the receipt it just flattened.
     """
     try:
-        return resolve_program_level(program)
+        return resolve_program_level()
     except LevelUnresolved as exc:
         return exc
 
@@ -367,7 +348,6 @@ def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
         "resolved": True,
         "target_db_spl": round(level.target_db_spl, 2),
         "anchor_db_spl": round(level.anchor_db_spl, 2),
-        "level_re_anchor_db": level.level_re_anchor_db,
         "reference_volume_db": round(level.reference_volume_db, 2),
         "mic_serial": level.mic_serial,
     }
@@ -528,8 +508,8 @@ def _print_walk(payload: dict[str, Any]) -> None:
         "  level: "
         + (
             f"{level['target_db_spl']:.1f} dB SPL at the mic (anchor "
-            f"{level['anchor_db_spl']:.1f} {level['level_re_anchor_db']:+.1f} re "
-            f"anchor; reference volume {level['reference_volume_db']:.1f} dB; "
+            f"{level['anchor_db_spl']:.1f}; reference volume "
+            f"{level['reference_volume_db']:.1f} dB; "
             f"mic {level['mic_serial']})"
             if level["resolved"]
             else f"unresolved -- {level['reason']}: {level['detail']}"
@@ -572,7 +552,7 @@ def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
 
 def _cmd_plan(args: argparse.Namespace) -> int:
     try:
-        stated = _build_request(args)
+        request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
@@ -581,7 +561,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         return _refuse(exc, as_json=args.json)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
-    payload = _walk_payload(stated.request, _resolved_level(stated.program))
+    payload = _walk_payload(request, _resolved_level())
     if args.json:
         print(json.dumps({"ok": True, **payload}, indent=2))
     else:
@@ -591,7 +571,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 def _cmd_stage(args: argparse.Namespace) -> int:
     try:
-        stated = _build_request(args)
+        request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
@@ -602,12 +582,12 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     # door cannot resolve names the step the operator skipped rather than
     # staging a walk whose captures nobody could read absolutely. It is not
     # written to the spool -- nothing downstream reads a level yet.
-    level = _resolved_level(stated.program)
+    level = _resolved_level()
     if isinstance(level, LevelUnresolved):
         return _refuse(level, as_json=args.json)
-    payload = _walk_payload(stated.request, level)
+    payload = _walk_payload(request, level)
     try:
-        path = stage_angle_request(stated.request)
+        path = stage_angle_request(request)
     except AngleRequestRefused as exc:
         return _refuse(exc, as_json=args.json)
     except OSError as exc:

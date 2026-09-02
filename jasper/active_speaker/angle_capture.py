@@ -140,7 +140,6 @@ __all__ = [
     "program_for_stop",
     "index_phase_map",
     "announced_indexes",
-    "WALK_DISTANCE_UNSUPPORTED",
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
@@ -639,13 +638,6 @@ def request_for_program(
     pose beyond the stated mover's envelope, in the vocabulary this module
     shares with the session.
     """
-    if program.mark_distance_m != MARK_DISTANCE_M:
-        raise LateralWalkRefused(
-            WALK_DISTANCE_UNSUPPORTED,
-            f"program {program.program_id}/{program.size} measures at "
-            f"{program.mark_distance_m} m and this walk derives every pose at "
-            f"{MARK_DISTANCE_M} m",
-        )
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
@@ -846,13 +838,6 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
 
 
-#: A program row names a mark distance this walk cannot honour. The walk's
-#: geometry is derived at :data:`MARK_DISTANCE_M` and only there
-#: (:func:`pose_at_angle`, and the prompt copy that states the distance), so a
-#: row naming another one is refused rather than silently measured at 1 m.
-#: The close-reference row lifts this when the engine learns distance.
-WALK_DISTANCE_UNSUPPORTED = "walk_distance_unsupported"
-
 #: A stop is not per-driver. A session lateral group plays MEASURE's per-driver
 #: object at every pose, so a summed stop would be measured as something else.
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
@@ -961,7 +946,6 @@ WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 WALK_CANDIDATE_CORNER_MISMATCH = "walk_candidate_corner_mismatch"
 
 WALK_REFUSAL_REASONS = frozenset({
-    WALK_DISTANCE_UNSUPPORTED,
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,

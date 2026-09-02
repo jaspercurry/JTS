@@ -26,17 +26,15 @@ Deliberate omissions, so absence reads as a decision:
   (``crossover_v2.capture_plan.CLOUD_VERIFY_POSE_PROMPTS`` and
   ``verify_pose_table``, re-exported by ``crossover_v2_flow``); a second copy
   would be a second definition of one thing.
-* No absolute level. ``level_re_anchor_db`` is the only level a program
-  states; :mod:`jasper.active_speaker.measurement_level` turns it into dB SPL
-  against the banked seat-level anchor.
+* No level and no mark distance. Every program measures at the walk's own
+  :data:`~jasper.active_speaker.crossover_v2_flow.MARK_DISTANCE_M`, driven at
+  the banked seat-level anchor's own SPL.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Mapping
-
-from .crossover_v2.capture_plan import MARK_DISTANCE_M
 
 # Repeats at the on-axis anchor, per the plan's ratified position-major
 # structure: x4 at the 0 deg anchor pose, x1 at every other pose.
@@ -59,15 +57,11 @@ class ProgramPose:
 
 @dataclass(frozen=True)
 class MeasurementProgram:
-    """One named menu item: an ordered pose list, at one mark distance."""
+    """One named menu item: an ordered pose list."""
 
     program_id: str
     size: str
     poses: tuple[ProgramPose, ...]
-    mark_distance_m: float = MARK_DISTANCE_M
-    # dB relative to the measurement anchor, never an absolute constant (plan,
-    # "Drive level is anchor-relative, never an absolute program constant").
-    level_re_anchor_db: float = 0.0
 
     @property
     def mic_move_count(self) -> int:
