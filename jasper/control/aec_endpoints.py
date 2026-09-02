@@ -31,12 +31,7 @@ from ..audio_profile_state import (
     profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
-    validation_profile,
 )
-from ..audio_validation import (
-    current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
-)
-from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
 from ..usb_mic import (
@@ -696,14 +691,6 @@ def _build_aec_full_status() -> dict:
         bridge_active=bridge_active,
         profile_status=profile_status["audio_profile"],
     )
-    requested_profile = (
-        profile_status["audio_profile"].get("validation_profile")
-        or validation_profile(profile_status["audio_profile"].get("requested"))
-    )
-    validation_filters = _audio_validation_filter_kwargs(
-        requested_profile=requested_profile,
-        system_env=env,
-    )
     payload = {
         "mode": effective.mode,
         "profile": state["profile"],
@@ -806,7 +793,6 @@ def _build_aec_full_status() -> dict:
         "chip_aec_gate": chip_gate,
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
-        "validation": _audio_validation_summary(**validation_filters),
         "firmware_update": _xvf_firmware_update_status(),
         "commission": _commission_status(),
     }

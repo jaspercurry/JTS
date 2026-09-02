@@ -118,7 +118,6 @@ from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
 AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
-AEC3_SWEEP_INPUT_SOURCE = AEC3_SWEEP_SOURCE_XVF
 
 # 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
 # requirement (160 samples); the binding splits 320 → 2×160 internally per
@@ -163,11 +162,6 @@ OUT_RATE = 16000
 # of utterances. It consumes this leg only when the reconciler configures
 # `JASPER_MIC_DEVICE_RAW`; otherwise the extra packets are ignored.
 OUT_PORT_RAW = _leg_default_port("off")
-# Optional 3rd UDP stream: DTLN-aec output, off unless
-# JASPER_AEC_DTLN_ENABLED=1. Shares the mic + ref capture with the AEC3
-# engine — each input chunk is fed to BOTH engines. Adds ~95 MB RAM and
-# ~12% of one Pi 5 core.
-OUT_PORT_DTLN = _leg_default_port("dtln")
 # 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the chip-direct
 # stream on OUT_PORT_RAW (chip channel 1 = ASR beam, with chip BF+NS+AGC+HPF
 # applied), channel 2 is the raw mic 0 ADC output with NO chip DSP whatsoever
@@ -189,8 +183,6 @@ OUT_PORT_USB_WEBRTC = _leg_default_port("usb_webrtc")
 OUT_PORT_USB_DTLN = _leg_default_port("usb_dtln")
 OUT_PORT_CHIP_AEC_150 = _leg_default_port("chip_aec_150")
 OUT_PORT_CHIP_AEC_210 = _leg_default_port("chip_aec_210")
-OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = _leg_default_port("xvf_raw0_webrtc_aec3")
-OUT_PORT_XVF_RAW0_DTLN = _leg_default_port("xvf_raw0_dtln")
 OUTPUTD_REF_UDP_HOST = "127.0.0.1"
 OUTPUTD_REF_UDP_PORT = 9891
 # The bridge's only reference source. Software AEC3, chip-AEC, corpus,
@@ -1244,67 +1236,6 @@ def _select_engine(
     return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
 
 
-class _SimpleAGC:
-    """Frame-rate peak-tracking AGC for the raw mic UDP leg.
-    EXPERIMENTAL — gated off by default.
-
-    Tracks per-frame peak with asymmetric attack/release smoothing and
-    computes the gain that brings the envelope toward `target_dbfs`, capped
-    at `max_gain_db`. Mirrors WebRTC AGC1 (kAdaptiveDigital) without a second
-    AudioProcessing instance — vectorised numpy, ~tens of microseconds per
-    80 ms frame on a Pi 5. Defaults match the AGC1 settings the AEC pipeline
-    already uses so both legs land at a similar output level.
-
-    Keep `JASPER_AEC_RAW_AGC_ENABLED` OFF in production: the release
-    coefficient raises gain during quiet periods, so a sudden loud syllable
-    pushes the output past int16 max where `np.clip` hard-clips it — audible
-    distortion that has cost whole transcripts. Making it production-ready
-    needs a soft limit or one-frame look-ahead in place of that clip.
-    """
-
-    def __init__(
-        self,
-        target_dbfs: float,
-        max_gain_db: float,
-        attack_sec: float = 0.010,
-        release_sec: float = 0.500,
-        frame_sec: float = 0.080,
-    ) -> None:
-        import math
-        self._target = 10.0 ** (-abs(target_dbfs) / 20.0)
-        self._max_gain = 10.0 ** (max_gain_db / 20.0)
-        self._attack_c = math.exp(-frame_sec / max(attack_sec, 1e-4))
-        self._release_c = math.exp(-frame_sec / max(release_sec, 1e-4))
-        self._envelope = 1e-6
-        self._gain = 1.0
-        # Gain glide: smooths gain transitions over ~3 frames (~240 ms) so
-        # adapt steps don't introduce audible pumping.
-        self._gain_smooth_c = 0.5
-
-    def process(self, pcm_int16: bytes) -> bytes:
-        arr = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
-        frame_peak = float(np.abs(arr).max())
-        if frame_peak > self._envelope:
-            self._envelope = (
-                self._attack_c * self._envelope
-                + (1.0 - self._attack_c) * frame_peak
-            )
-        else:
-            self._envelope = (
-                self._release_c * self._envelope
-                + (1.0 - self._release_c) * frame_peak
-            )
-        desired = self._target / max(self._envelope, 1e-6)
-        target_gain = min(desired, self._max_gain)
-        self._gain = (
-            self._gain_smooth_c * self._gain
-            + (1.0 - self._gain_smooth_c) * target_gain
-        )
-        out = arr * self._gain
-        np.clip(out, -1.0, 1.0, out=out)
-        return (out * 32767.0).astype(np.int16).tobytes()
-
-
 def _resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
     """Return `config` with a supported `ref_source`, or reject it.
 
@@ -2142,33 +2073,6 @@ def _aec_loop(  # noqa: PLR0915
     global _ref_starved_frames
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
-    # Raw-leg AGC: optional adaptive level normalization for the chip-direct
-    # UDP stream, off by default, mirroring the AEC pipeline's AGC1 settings
-    # so both legs land at a similar level. Needed when the raw leg goes to
-    # the LLM: without it the chip's mic output sits below the server-VAD
-    # threshold for most of a typical utterance, so the model sees only a
-    # fraction of the phrase.
-    raw_agc_enabled = (
-        _env_bool("JASPER_AEC_RAW_AGC_ENABLED", "0")
-        and not production_chip_aec_enabled
-    )
-    raw_agc_target_dbfs = int(os.environ.get(
-        "JASPER_AEC_RAW_AGC_TARGET_DBFS",
-        os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
-    ))
-    raw_agc_max_gain_db = int(os.environ.get(
-        "JASPER_AEC_RAW_AGC_MAX_GAIN_DB",
-        os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"),
-    ))
-    raw_agc = (
-        _SimpleAGC(raw_agc_target_dbfs, raw_agc_max_gain_db)
-        if raw_agc_enabled else None
-    )
-    logger.info(
-        "raw_agc=%s (target=%d max=%ddB)",
-        "on" if raw_agc_enabled else "off",
-        raw_agc_target_dbfs, raw_agc_max_gain_db,
-    )
     # Stall-recovery threshold: consecutive seconds of empty mic_q before
     # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
     stall_restart_sec = int(
@@ -2489,15 +2393,9 @@ def _aec_loop(  # noqa: PLR0915
 
             # Emit the chip-direct mic BEFORE running the AEC engine, so the
             # "AEC OFF" leg carries the same bytes AEC3 is about to receive
-            # as near-end input. Its optional AGC must not touch that input:
-            # engine.process below still gets ungained `mic_bytes`, so AEC3's
-            # adaptive filter never sees a moving level target.
+            # as near-end input.
             if not production_chip_aec_enabled:
-                raw_emit_bytes = (
-                    raw_agc.process(mic_bytes) if raw_agc is not None
-                    else mic_bytes
-                )
-                raw_emitter.emit(raw_emit_bytes)
+                raw_emitter.emit(mic_bytes)
 
             # Truly-raw mic 0 (chip channel 2, no chip DSP), drained
             # independently of mic_q so a backlog on one cannot stall the
