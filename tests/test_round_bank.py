@@ -12,6 +12,7 @@ the flow actually produces — and every layout assertion here goes through
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 
@@ -134,6 +135,40 @@ def test_banked_bundle_files_are_hard_linked_not_copied(tmp_path):
         if source_file.is_file():
             banked_file = banked_session_dir / source_file.relative_to(session_dir)
             assert banked_file.stat().st_ino == source_file.stat().st_ino
+    assert load_banked_round(banked.path).session_dir == banked_session_dir
+
+
+def test_banked_bundle_falls_back_to_a_copy_when_linking_is_forbidden(
+    tmp_path, monkeypatch
+):
+    """Raspberry Pi OS's fs.protected_hardlinks=1 makes ``os.link`` raise
+    EPERM for a non-root, non-owning operator -- ``bank_round`` must still
+    complete, by copying, rather than surfacing that as a bank failure."""
+    # Build the fixture bundle before patching os.link -- the fixture writer
+    # (bundles.open_bundle) links its own admission marker and must not see
+    # the forbidden stub meant only for bank_round's copy.
+    session_dir, state_path = _live_session(tmp_path)
+
+    def _forbidden_link(source, destination):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr("jasper.active_speaker.round_bank.os.link", _forbidden_link)
+
+    banked = bank_round(
+        session_dir,
+        campaign_root=tmp_path / "campaigns",
+        state_path=state_path,
+        **_ssot(tmp_path, present=False),
+    )
+
+    banked_session_dir = _bundle_session_dir(banked.path)
+    linked_any = False
+    for source_file in session_dir.rglob("*"):
+        if source_file.is_file():
+            banked_file = banked_session_dir / source_file.relative_to(session_dir)
+            assert banked_file.stat().st_ino != source_file.stat().st_ino
+            linked_any = True
+    assert linked_any
     assert load_banked_round(banked.path).session_dir == banked_session_dir
 
 

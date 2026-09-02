@@ -113,17 +113,24 @@ def _ssot_documents(
     )
 
 
+#: A campaign root on another filesystem (EXDEV), or a non-root operator
+#: hitting Raspberry Pi OS's fs.protected_hardlinks=1 (EPERM/EACCES: linking
+#: requires being root, the file's owner, or write access to it) — both fall
+#: back to a real copy rather than failing the bank.
+_LINK_FALLBACK_ERRNOS = (errno.EXDEV, errno.EPERM, errno.EACCES)
+
+
 def _link_or_copy(source: str, destination: str) -> None:
     """Hard-link the banked bundle instead of copying its bytes.
 
     The source session bundle is immutable once banked, so a hard link is
-    safe and shares bytes with the (later-unlinked) sessions-ring copy;
-    only a campaign root on another filesystem falls back to a real copy.
+    safe and shares bytes with the (later-unlinked) sessions-ring copy; see
+    :data:`_LINK_FALLBACK_ERRNOS` for when a real copy is used instead.
     """
     try:
         os.link(source, destination)
     except OSError as exc:
-        if exc.errno != errno.EXDEV:
+        if exc.errno not in _LINK_FALLBACK_ERRNOS:
             raise
         shutil.copy2(source, destination)
 
