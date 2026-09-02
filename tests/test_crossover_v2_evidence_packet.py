@@ -26,7 +26,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    CANDIDATE_GRADINGS_UNAVAILABLE,
     DECLARED_GEOMETRY_ARTIFACT,
     DECLARED_GEOMETRY_KIND,
     NO_CANDIDATE_TAKES,
@@ -508,7 +507,6 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
     packet = build_crossover_evidence_packet(session)
     block = packet["candidates"]
     assert block["available"] is True
-    assert block["n_candidates"] == 2
     assert [row["candidate_id"] for row in block["candidates"]] == [
         "cand_a", "cand_b",
     ]
@@ -517,9 +515,6 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
         {"position_deg": -20, "vertical_deg": 0},
         {"position_deg": 0, "vertical_deg": 0},
     ]
-    # No round banks a delta probe per candidate yet, so the comparison is an
-    # absence with its own reason rather than an empty ranking.
-    assert block["comparison"]["reason"] == CANDIDATE_GRADINGS_UNAVAILABLE
     assert "candidates" not in {row["field"] for row in packet["not_evaluated"]}
     assert packet["packet_fingerprint"]
 

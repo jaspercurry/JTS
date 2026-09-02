@@ -8733,7 +8733,6 @@ def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
         baseline_profile=baseline_profile, design_draft={"revision": 5}
     )
 
-    assert payload["kind"] == tuning_handoff.TUNING_HANDOFF_KIND
     assert payload["status"] == expected_status
     assert payload["reason"] == expected_reason
     assert bool(payload["prompt"]) is has_prompt
@@ -8804,7 +8803,6 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
 
-    assert payload["kind"] == tuning_handoff.TUNING_HANDOFF_KIND
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
     assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(

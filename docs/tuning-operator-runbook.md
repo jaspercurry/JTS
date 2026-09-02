@@ -74,8 +74,7 @@ while the result is still getting flatter.
   delay, level match) play through the per-driver MEASURE graph; a candidate
   carrying linearization EQ refuses `walk_candidate_not_measurable`. The
   evidence packet's `candidates` block reports which candidates were measured
-  at which poses, and `crossover_v2/candidate_comparator.py` ranks them once
-  per-candidate gradings exist.
+  at which poses; ranking them is not built.
 - **A crossover corner is declared and executed, never measured-searched**
   (invariant 2). `crossover_v2/{search,objective,candidate_space}.py`,
   `fc_sweep`'s sweep half and `active_speaker/fc_selector.py` were cancelled
