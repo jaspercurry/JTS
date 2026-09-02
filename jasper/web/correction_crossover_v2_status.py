@@ -646,6 +646,16 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         needs_recovery = True  # unreadable volume state fails closed
     block: dict[str, Any] = {
         "phase": _phase_from_state(state),
+        # The session's own clock (#1947), and the ONLY one this flow needs:
+        # ``save_v2_state`` stamps it on every write, and every write site is a
+        # session TRANSITION — a consumed capture, a review decision, an apply,
+        # a terminal failure, a start-over. No poll writes state, so the file's
+        # last write IS the session's last real activity, and a second
+        # per-record stamp would be a second clock to keep honest. The envelope
+        # reads it to tell a session the household is still inside from one that
+        # ended (``crossover_envelope_v2._session_is_live``). ``None`` when
+        # there is no state file, which reads as "cannot say this is current".
+        "updated_at": (state or {}).get("updated_at"),
         # The commission tier behind whatever this block reports, or ``None``
         # when the durable state does not say (pre-tier state, or a session
         # that declared none). Never defaulted to "full" — see
