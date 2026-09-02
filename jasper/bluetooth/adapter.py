@@ -244,19 +244,24 @@ async def set_pairable(value: bool, adapter: str = DEFAULT_ADAPTER) -> None:
 
 
 async def untrust_unbonded(adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
-    """Drop Trusted from every device BlueZ no longer holds a bond for.
+    """Drop Trusted from every device on this adapter that is not Paired.
 
     Trust is what makes BlueZ auto-reconnect a device on every advertisement.
-    Outliving the bond is the stranding case: an unbonded HID cannot bring
+    Outliving the pairing is the stranding case: an unbonded HID cannot bring
     its profile up (`input-hog profile accept failed`), the reconnect repeats
     for as long as it is in range, and the device stops advertising as
     pairable -- so it can be neither used nor paired again. Granting trust
-    only to a bonded device is not enough on its own, because a pairing that
-    was never bonded disappears on the next disconnect and leaves the trust
+    only to a paired device is not enough on its own, because a pairing that
+    never bonded disappears on the next disconnect and leaves the trust
     behind.
+
+    `Paired` rather than `Bonded`: Paired is what BlueZ drops when an
+    unbonded pairing evaporates, and it is the flag whose absence strands
+    the device.
 
     Returns the addresses it untrusted, for the caller to log.
     """
+    prefix = f"/org/bluez/{adapter}/"
     untrusted: list[str] = []
     async with _system_bus() as bus:
         intro = await bus.introspect(BLUEZ_BUS, "/")
@@ -266,22 +271,36 @@ async def untrust_unbonded(adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
         managed = await om.call_get_managed_objects()
         for path, ifaces in managed.items():
             dev = ifaces.get("org.bluez.Device1")
-            if not dev:
+            if not dev or not str(path).startswith(prefix):
                 continue
 
-            def _flag(key: str) -> bool:
-                raw = dev.get(key)
+            def _flag(key: str, props=dev) -> bool:
+                raw = props.get(key)
                 return bool(getattr(raw, "value", raw))
 
             if not _flag("Trusted") or _flag("Paired"):
                 continue
-            dev_intro = await bus.introspect(BLUEZ_BUS, path)
-            props = bus.get_proxy_object(
-                BLUEZ_BUS, path, dev_intro,
-            ).get_interface("org.freedesktop.DBus.Properties")
-            await props.call_set(
-                "org.bluez.Device1", "Trusted", Variant("b", False),
-            )
             address = dev.get("Address")
-            untrusted.append(str(getattr(address, "value", address) or path))
+            address = str(getattr(address, "value", address) or path)
+            try:
+                dev_intro = await bus.introspect(BLUEZ_BUS, path)
+                props = bus.get_proxy_object(
+                    BLUEZ_BUS, path, dev_intro,
+                ).get_interface("org.freedesktop.DBus.Properties")
+                await props.call_set(
+                    "org.bluez.Device1", "Trusted", Variant("b", False),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # A device BlueZ pruned between the listing and this write is
+                # the common case, and it is already the outcome we wanted.
+                # One unreachable device must not abandon the rest of the sweep.
+                log_event(
+                    logger,
+                    "bluetooth.untrust_unbonded_skipped",
+                    address=address,
+                    err=repr(exc),
+                    level=logging.WARNING,
+                )
+                continue
+            untrusted.append(address)
     return tuple(untrusted)

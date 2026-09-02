@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 from dbus_next import Variant
@@ -285,6 +286,82 @@ def test_no_code_agent_trusts_only_bonded_devices(authorization, paired):
     assert calls == ([("Trusted", True)] if paired else [])
 
 
+class _FakeManagedProps:
+    def __init__(self, writes: list[tuple[str, bool]], path: str) -> None:
+        self._writes = writes
+        self._path = path
+
+    async def call_set(self, _iface: str, key: str, value) -> None:
+        self._writes.append((self._path, bool(value.value)))
+
+
+class _FakeManagedBus:
+    """Enough ObjectManager to exercise untrust_unbonded's own decision."""
+
+    def __init__(self, managed: dict, writes: list[tuple[str, bool]]) -> None:
+        self._managed = managed
+        self.writes = writes
+
+    async def introspect(self, _service: str, _path: str):
+        return object()
+
+    def get_proxy_object(self, _service: str, path: str, _intro):
+        managed = self._managed
+        writes = self.writes
+
+        class _Obj:
+            def get_interface(self, name: str):
+                if name == "org.freedesktop.DBus.ObjectManager":
+                    class _OM:
+                        async def call_get_managed_objects(self):
+                            return managed
+                    return _OM()
+                return _FakeManagedProps(writes, path)
+
+        return _Obj()
+
+    def disconnect(self) -> None:
+        return None
+
+
+def _device(paired: bool, trusted: bool, address: str) -> dict:
+    return {
+        "org.bluez.Device1": {
+            "Paired": Variant("b", paired),
+            "Trusted": Variant("b", trusted),
+            "Address": Variant("s", address),
+        },
+    }
+
+
+def test_untrust_unbonded_drops_only_trusted_and_unpaired(monkeypatch):
+    """The sweep's own decision, not a stand-in for it.
+
+    Faking the sweep function pins the caller but leaves this predicate free:
+    inverting the Paired test would untrust every healthy remote on the box
+    and no bluetooth test would notice.
+    """
+    writes: list[tuple[str, bool]] = []
+    managed = {
+        "/org/bluez/hci0/dev_AA": _device(False, True, "AA"),   # strand -> drop
+        "/org/bluez/hci0/dev_BB": _device(True, True, "BB"),    # healthy -> keep
+        "/org/bluez/hci0/dev_CC": _device(False, False, "CC"),  # already off
+        "/org/bluez/hci1/dev_DD": _device(False, True, "DD"),   # other adapter
+    }
+    bus = _FakeManagedBus(managed, writes)
+
+    @contextlib.asynccontextmanager
+    async def fake_bus():
+        yield bus
+
+    monkeypatch.setattr(adapter, "_system_bus", fake_bus)
+
+    dropped = asyncio.run(adapter.untrust_unbonded("hci0"))
+
+    assert dropped == ("AA",)
+    assert writes == [("/org/bluez/hci0/dev_AA", False)]
+
+
 def test_unbonded_trust_sweep_drops_and_reports(caplog):
     """Trust must not outlive the bond.
 
@@ -361,6 +438,56 @@ def test_floor_watch_runs_the_unbonded_trust_sweep():
         pass
 
     assert swept == 1
+
+
+def test_floor_needs_two_observations_before_closing_a_window():
+    """A single observation would lower the bondable flag mid-pair.
+
+    An outbound pair raises Pairable for the whole Pair() call -- up to its
+    60 s timeout on a remote that needs a button press -- from a different
+    process, and reads pairable-without-discoverable the entire time. Closing
+    on the first sighting makes the bond silently not form, which is the
+    defect this watch would cause rather than catch.
+    """
+    closes: list[bool] = []
+    stop = asyncio.Event()
+    passes = 0
+
+    async def read_state():
+        return {"pairable": True, "discoverable": False}
+
+    async def close_pairing_window(value):
+        closes.append(value)
+
+    async def sweep():
+        nonlocal passes
+        passes += 1
+        # Observe how many closes happened after ONE pass, then let a second
+        # pass run and stop.
+        if passes == 1:
+            assert closes == [], "closed on a single observation"
+        if passes >= 2:
+            stop.set()
+        return ()
+
+    async def scenario():
+        await asyncio.wait_for(
+            no_code_agent._pairable_floor_watch(
+                stop,
+                interval=0.01,
+                read_state=read_state,
+                close_pairing_window=close_pairing_window,
+                sweep=sweep,
+            ),
+            timeout=2.0,
+        )
+
+    try:
+        asyncio.run(scenario())
+    except asyncio.TimeoutError:
+        pass
+
+    assert closes == [False], "second consecutive observation must close"
 
 
 def test_no_code_agent_release_notifies_owner():

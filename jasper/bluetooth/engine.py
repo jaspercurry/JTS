@@ -105,7 +105,12 @@ async def _bondable_for_pair(adapter: str):
     """
     from .adapter import set_pairable, state as adapter_state
 
-    was_pairable = False
+    # Tri-state on purpose. `False` and "could not read" are different
+    # answers: treating an unreadable adapter as "was off" makes the restore
+    # lower Pairable under a pairing window the user opened, leaving
+    # Discoverable=yes with Pairable=no -- which the floor watch never heals,
+    # because it only closes a window that is still pairable.
+    was_pairable: bool | None = None
     try:
         was_pairable = bool((await adapter_state(adapter)).get("pairable"))
         await set_pairable(True, adapter)
@@ -119,7 +124,7 @@ async def _bondable_for_pair(adapter: str):
     try:
         yield
     finally:
-        if not was_pairable:
+        if was_pairable is False:
             try:
                 await set_pairable(False, adapter)
             except Exception as exc:  # noqa: BLE001

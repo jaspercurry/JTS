@@ -347,6 +347,36 @@ async def test_pair_raises_the_bondable_flag_and_restores_it(
     assert calls == ([True] if already_pairable else [True, False])
 
 
+async def test_pair_leaves_an_open_pairing_window_alone_when_it_cannot_read_it(
+    monkeypatch,
+):
+    """An unreadable adapter is not the same answer as "was off".
+
+    Restoring on a failed pre-read lowers Pairable under a window the user
+    opened, leaving Discoverable=yes with Pairable=no -- a state the floor
+    watch never heals, because it only closes a window that is still pairable.
+    """
+    calls: list[bool] = []
+
+    async def failing_state(_adapter=None):
+        raise RuntimeError("adapter unreadable")
+
+    async def fake_set_pairable(value, _adapter=None):
+        calls.append(bool(value))
+
+    monkeypatch.setattr("jasper.bluetooth.adapter.state", failing_state)
+    monkeypatch.setattr("jasper.bluetooth.adapter.set_pairable", fake_set_pairable)
+    engine = _engine([])
+
+    events = [
+        event
+        async for event in engine.pair("CA:AC:04:04:09:D7", timeout_s=1.0)
+    ]
+
+    assert events[-1]["stage"] != "error"
+    assert calls == [], "must not write Pairable it could not read"
+
+
 async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     reasons: list[str] = []
     engine = _engine(reasons)
