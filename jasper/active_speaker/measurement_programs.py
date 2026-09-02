@@ -38,11 +38,6 @@ from typing import Mapping
 # structure: x4 at the 0 deg anchor pose, x1 at every other pose.
 ANCHOR_REPEATS = 4
 
-# Seconds a single hold may wait: ten minutes covers the slower mover — a
-# person walking a tape to the next bearing and posting the release. The web
-# gate that spends it, ``REMOTE_POSITION_HOLD_BUDGET_S``, reads it here.
-HOLD_BUDGET_S = 600
-
 
 @dataclass(frozen=True)
 class ProgramPose:
