@@ -81,8 +81,8 @@ CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_
 RASPOTIFY_VERSION="0.48.1"
 RASPOTIFY_URL="https://github.com/dtcooper/raspotify/releases/download/${RASPOTIFY_VERSION}/raspotify_${RASPOTIFY_VERSION}.librespot.v0.8.0-ea81314_arm64.deb"
 RASPOTIFY_SHA256="dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a717"
-SHAIRPORT_SYNC_VERSION="4.3.7"
-SHAIRPORT_SYNC_COMMIT="0b1c4391ffd398e7b145eb4b98416261380adeea"
+SHAIRPORT_SYNC_VERSION="5.2.3"
+SHAIRPORT_SYNC_COMMIT="7b1bee65b2b0f8fee2e34684db4e20a53cd6c13a"
 NQPTP_COMMIT="c925f27c1fd12e4033ac477e5a405969b0b0260b"
 # Upstream provenance (auto-generated archive, not fetched by install.sh):
 # https://github.com/mikebrady/nqptp/archive/${NQPTP_COMMIT}.tar.gz
@@ -90,8 +90,8 @@ NQPTP_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-de
 NQPTP_SHA256="d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
 # Upstream provenance (auto-generated archive, not fetched by install.sh):
 # https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz
-SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-0b1c4391ffd3.tar.gz"
-SHAIRPORT_SYNC_SHA256="7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865"
+SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-7b1bee65b2b0.tar.gz"
+SHAIRPORT_SYNC_SHA256="c8d860c68723d78aea3d3eef0861bfbd01aa2f52d81c768c4e359ccabf42cbb5"
 print_install_usage() {
     cat <<'EOF'
 Usage: bash deploy/install.sh [--dry-run|--plan]
@@ -397,7 +397,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils rfkill avahi-daemon avahi-utils.
+     libswresample-dev xxd libplist-utils bluez-alsa-utils rfkill
+     avahi-daemon avahi-utils.
 
 3. Downloaded or built inputs
    - CamillaDSP: ${CAMILLA_URL}
@@ -557,8 +558,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils rfkill avahi-daemon
-     avahi-utils.
+     libswresample-dev xxd libplist-utils bluez-alsa-utils rfkill
+     avahi-daemon avahi-utils.
 
 2. Downloaded or built inputs
    - CamillaDSP: ${CAMILLA_URL}
@@ -822,7 +823,7 @@ _install_renderer_native_deps() {
         libssl-dev libsoxr-dev libplist-dev libsodium-dev \
         libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
-        xxd \
+        xxd libplist-utils \
         bluez-alsa-utils rfkill avahi-daemon avahi-utils
 }
 
