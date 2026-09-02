@@ -806,10 +806,10 @@ def test_remote_is_never_offered_in_the_household_chooser():
 
 
 def test_every_tier_has_household_copy_on_both_surfaces():
-    """Two label tables already exist (the wizard's and the capture page's,
-    across a layering boundary that forbids an import). A tier missing from
-    either leaks a raw slug or drops a consent line."""
-    from jasper.capture_relay.spec import _GUIDED_TIER_LABELS
+    """Two label tables already exist (the wizard's and the consent screen's,
+    across a boundary that forbids an import). A tier missing from either leaks
+    a raw slug or drops a consent line."""
+    from jasper.active_speaker.crossover_v2.sweep_spec import _GUIDED_TIER_LABELS
 
     assert set(_TIER_LABELS) == set(flow.TIERS)
     assert set(_TIER_CLAIMS) == set(flow.TIERS)

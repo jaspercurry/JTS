@@ -14,10 +14,10 @@ it, while a plan builder still has to know what a plan may legally say.
 Stdlib-only on purpose: the socket-activated wizard builds specs on a light
 process, and both sides import this unconditionally.
 
-The rest of the wire contract — ``CaptureSpec`` itself, its per-kind builders,
-its UI token allowlists — stays with the transport in
-``jasper.capture_relay.spec``, which imports these names back so there is one
-definition of each.
+The rest of the wire contract — ``CaptureSpec`` itself, its validation and its
+consent-surface vocabulary — lives in
+``jasper.active_speaker.crossover_v2.sweep_spec``, which imports these names
+back so there is one definition of each.
 """
 from __future__ import annotations
 

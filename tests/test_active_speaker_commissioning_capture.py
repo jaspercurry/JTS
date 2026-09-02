@@ -1025,15 +1025,15 @@ def _reference_axis_proof(
 
 def test_placement_proof_allowlist_contains_the_current_capture_protocol():
     """The allowlist duplicates its members as literals because
-    capture_relay.spec imports capture_geometry (not the other way round), so
-    the module cannot import the constant back without inverting that
+    crossover_v2.sweep_spec imports capture_geometry (not the other way round),
+    so the module cannot import the constant back without inverting that
     dependency. Pin CONTAINMENT here — not equality: the allowlist is
     deliberately WIDER than the emitted protocol, because it reads persisted
     proofs (see the next test)."""
     from jasper.active_speaker.capture_geometry import (
         PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS,
     )
-    from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
+    from jasper.active_speaker.crossover_v2.sweep_spec import CAPTURE_PROTOCOL_VERSION
 
     assert (
         CAPTURE_PROTOCOL_VERSION in PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS

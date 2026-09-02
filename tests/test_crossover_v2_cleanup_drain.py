@@ -34,6 +34,10 @@ from typing import Any, Callable
 
 import pytest
 
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginRefused,
+    CaptureFailed,
+)
 from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_SESSION_CEILING_EXPIRED,
@@ -162,13 +166,13 @@ def _wired_row(
 ROWS = (
     _relay_row(
         "relay-refused", "_persist_terminal_failure",
-        raises=relay_session.CaptureBeginRefused(
+        raises=CaptureBeginRefused(
             REASON_SESSION_CEILING_EXPIRED, "out of time",
         ),
     ),
     _relay_row(
         "relay-transport", "_persist_terminal_failure",
-        raises=relay_session.CaptureFailed("the link died"),
+        raises=CaptureFailed("the link died"),
     ),
     _relay_row(
         "relay-catch-all", "_persist_terminal_failure",

@@ -33,6 +33,8 @@ from typing import Any, NamedTuple, TypeVar
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
+    CaptureFailed,
+    CaptureStopped,
 )
 # Re-exported: the relay's TTL ceiling now lives with the shared capture
 # contract, and the relay host still reads it off this module.
@@ -208,10 +210,6 @@ class CaptureTimeout(RuntimeError):
         self.phase = phase
 
 
-class CaptureFailed(RuntimeError):
-    """The relay-pulled blob failed decrypt or integrity (see __cause__)."""
-
-
 class CaptureAborted(RuntimeError):
     """The phone aborted mid-capture (e.g. backgrounded / screen locked).
 
@@ -228,10 +226,6 @@ class CaptureAborted(RuntimeError):
     def __init__(self, message: str, *, reason: str = "") -> None:
         super().__init__(message)
         self.reason = str(reason or "")
-
-
-class CaptureStopped(RuntimeError):
-    """The host explicitly stopped this capture."""
 
 
 class CapturePageIncompatible(RuntimeError):
@@ -795,7 +789,13 @@ def validate_capture_page(
     identity: dict | None,
     spec: CaptureSpec,
 ) -> dict:
-    """Validate the phone page identity before any host callback can play audio."""
+    """Validate the phone page identity before any host callback can play audio.
+
+    The spec's ``capture_protocol_version`` must appear in the page's
+    ``supported_capture_protocol_versions``, so a choreography change rolls out
+    page-first: bump ``capture-page/version.json`` before the Pi-side constant,
+    never the other way round.
+    """
     observed = identity if isinstance(identity, dict) else {}
     protocol = observed.get("capture_protocol_version")
     supported = observed.get("supported_capture_protocol_versions")

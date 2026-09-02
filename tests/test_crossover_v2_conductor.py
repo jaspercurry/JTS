@@ -5991,7 +5991,10 @@ def test_a_consent_walk_must_say_which_captures_announce():
     announces has no truthful sentence available — rendering "The first
     measurement has…" by default is exactly how the shipped defect happened.
     """
-    from jasper.capture_relay.spec import CaptureSpecError, build_crossover_sweep_spec
+    from jasper.active_speaker.crossover_v2.sweep_spec import (
+        CaptureSpecError,
+        build_crossover_sweep_spec,
+    )
 
     def _spec(announced):
         return build_crossover_sweep_spec(
@@ -6142,7 +6145,7 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
     # Stage 1's own target; ``cloud_capture_target()`` names the whole journey.
     assert spec.capture_plan.capture_target == resolve_plan_shape().measure_capture_target
     # Round-trips through the strict boundary validation.
-    from jasper.capture_relay.spec import CaptureSpec
+    from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec
 
     reparsed = CaptureSpec.from_dict(spec.to_dict())
     assert reparsed.capture_plan.entries == spec.capture_plan.entries

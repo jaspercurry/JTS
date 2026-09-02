@@ -1094,7 +1094,9 @@ def _run_relay_capture(
         rc = kind.open(client, relay_base, capture_origin, return_url)
 
         async def _run() -> None:
-            from jasper.capture_relay.session import CaptureStopped
+            from jasper.active_speaker.crossover_v2.capture_source import (
+                CaptureStopped,
+            )
 
             try:
                 await kind.run_and_consume(client, rc.pi_session)
@@ -4502,11 +4504,13 @@ async def _run_relay_level_match(
     host-event queue.  The ramp never performs a blocking relay request from its
     control loop and never gains a direct reference to the relay client.
     """
+    from jasper.active_speaker.crossover_v2.capture_source import (
+        CaptureFailed,
+        CaptureStopped,
+    )
     from jasper.capture_relay.integrity import CaptureIntegrityError
     from jasper.capture_relay.session import (
         CAPTURE_INCOMPATIBLE_USER_MESSAGE,
-        CaptureFailed,
-        CaptureStopped,
         PhoneEventVerifier,
         purge,
     )

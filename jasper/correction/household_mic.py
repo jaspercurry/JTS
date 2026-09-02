@@ -31,7 +31,8 @@ or explicit re-confirmation of the current one (a phone one-tap "Using
 whose ``mode="stored"`` branch is the re-confirm path) and the local/laptop
 flow (``_handle_calibration_fetch`` / ``_handle_calibration_upload`` in the
 same module). Downstream consumers — the capture-spec ``default_setup``
-prefill hint (``jasper/capture_relay/spec.py``) and the room wizard's
+prefill hint (``jasper/active_speaker/crossover_v2/sweep_spec.py``) and the
+room wizard's
 server-rendered mic selection — read it so the household does not re-enter
 what it already told JTS. A session that establishes a DIFFERENT mic is
 never blocked; the new success simply replaces the record (see

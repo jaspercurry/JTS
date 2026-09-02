@@ -559,10 +559,10 @@ def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
     not something read off ``analysis`` itself:
     ``analyze_program_capture`` HARD-REFUSES a capture whose sample rate
     disagrees with the program's own (``capture rate != program rate``,
-    ``jasper.audio_measurement.program_analysis``), and the relay capture
-    spec fixes every phone upload at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz,
-    ``jasper.capture_relay.spec``) — so no resampling ever runs between the
-    phone's WAV and this analysis, and ``SegmentLocation.residual_samples``
+    ``jasper.audio_measurement.program_analysis``), and the capture spec
+    fixes every capture at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz,
+    ``jasper.active_speaker.crossover_v2.sweep_spec``) — so no resampling ever
+    runs between the WAV and this analysis, and ``SegmentLocation.residual_samples``
     is always expressed in exactly that domain (the session's own composed
     program's ``sample_rate_hz``).
 
