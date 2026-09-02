@@ -40,6 +40,8 @@ This module does no I/O and holds no state:
   lower (#3495). This module states the formula and the provenance words;
   :mod:`~jasper.audio_measurement.gate_disclosure` decides which source a
   given capture has.
+* :class:`EntanglementFloor` is that floor and its provenance as one value,
+  and the single enforcer of the invariant binding them (#3522).
 
 Pipeline stage: **derive**. This module turns a deconvolved impulse
 response into a windowed one plus the record of what it did. It owns
@@ -427,6 +429,75 @@ def f_entanglement_floor_hz(t_first_bounce_s: float) -> float:
             f"t_first_bounce_s must be finite and positive (got {t_first_bounce_s!r})"
         )
     return TRUSTED_FLOOR_MULTIPLIER / t_first_bounce_s
+
+
+@dataclass(frozen=True)
+class EntanglementFloor:
+    """The room's floor and where it came from, as ONE value.
+
+    The invariant is single and it lives HERE: a floor is known exactly when
+    its source is not :data:`ENTANGLEMENT_SOURCE_UNKNOWN`, and a known floor
+    is a finite, positive frequency. Constructing this type is the only place
+    that rule is enforced, so a seam wanting it enforced builds one rather
+    than re-deriving the check — before #3522 four seams derived it four
+    ways, and a pair that disagrees is unreadable at every one of them.
+
+    Strict by default: a call site handing over a pair that cannot be true
+    has a bug, and :meth:`coerce` is the ONE lenient door, for persisted data.
+    """
+
+    hz: float | None
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, str) or self.source not in ENTANGLEMENT_SOURCES:
+            raise ValueError(
+                f"source must be one of {sorted(ENTANGLEMENT_SOURCES)} "
+                f"(got {self.source!r})"
+            )
+        if (self.hz is None) != (self.source == ENTANGLEMENT_SOURCE_UNKNOWN):
+            raise ValueError(
+                f"floor and source disagree (got {self.hz!r} and {self.source!r}): "
+                "a known floor names where it came from, and an unknown one "
+                "carries no number"
+            )
+        if self.hz is not None and not (math.isfinite(self.hz) and self.hz > 0.0):
+            raise ValueError(f"floor must be finite and positive (got {self.hz!r})")
+
+    @classmethod
+    def unknown(cls) -> "EntanglementFloor":
+        """Nothing measured and nothing declared — the ordinary state on this
+        rig class (#3502), read as :data:`ENTANGLEMENT_SOURCE_UNKNOWN` says."""
+        return cls(None, ENTANGLEMENT_SOURCE_UNKNOWN)
+
+    @classmethod
+    def from_bounce_s(cls, t_first_bounce_s: float, source: str) -> "EntanglementFloor":
+        """:func:`f_entanglement_floor_hz` of ``t_first_bounce_s``, named.
+
+        ``source`` says which bounce time this was and may not be
+        :data:`ENTANGLEMENT_SOURCE_UNKNOWN`: a floor derived from a time is
+        known by construction, so the unknown word would be a lie about the
+        number beside it. A non-physical time raises, from the formula.
+        """
+        if source == ENTANGLEMENT_SOURCE_UNKNOWN:
+            raise ValueError("a floor derived from a bounce time is never unknown")
+        return cls(f_entanglement_floor_hz(t_first_bounce_s), source)
+
+    @classmethod
+    def coerce(cls, hz: Any, source: Any) -> "EntanglementFloor":
+        """A PERSISTED pair, read leniently — anything inconsistent is unknown.
+
+        A document is not a call site: it was written by a build that may not
+        have had the field, and rehydrating a disagreement verbatim would
+        build a record that raises the moment anything re-reads it. So an
+        unreadable word, a floor with no provenance, a provenance with no
+        floor, and a non-physical number all become :meth:`unknown` here
+        rather than raising. This is the only place that leniency lives.
+        """
+        try:
+            return cls(None if hz is None else float(hz), source)
+        except (TypeError, ValueError):
+            return cls.unknown()
 
 
 def analytic_signal(x: np.ndarray) -> np.ndarray:

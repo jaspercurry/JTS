@@ -1482,14 +1482,12 @@ def test_the_entanglement_floor_moves_no_graded_number():
 @pytest.mark.parametrize(
     ("floor_hz", "source"),
     [
-        # Outside the vocabulary: a fourth word no consumer can read.
+        # A word outside the vocabulary, and a pair that disagrees about
+        # whether a floor is known -- the rule itself is pinned on
+        # `gating.EntanglementFloor`; what this pins is that the STRICT door
+        # is the one this seam takes.
         (1000.0, "measured"),
-        (None, "declared"),
-        (1000.0, {"source": gating.ENTANGLEMENT_SOURCE_DECLARED}),
-        # Inside it, but the pair disagrees about whether a floor is known.
-        (1000.0, gating.ENTANGLEMENT_SOURCE_UNKNOWN),
         (None, gating.ENTANGLEMENT_SOURCE_DECLARED),
-        (None, gating.ENTANGLEMENT_SOURCE_MEASURED),
     ],
 )
 def test_evaluate_flat_spec_refuses_a_provenance_it_cannot_publish(floor_hz, source):
@@ -1503,28 +1501,6 @@ def test_evaluate_flat_spec_refuses_a_provenance_it_cannot_publish(floor_hz, sou
             entanglement_floor_hz=floor_hz,
             entanglement_floor_source=source,
         )
-
-
-@pytest.mark.parametrize(
-    "stored", ["measured", "", {"source": "declared_geometry"}, 3, None, ["unknown"]]
-)
-def test_a_document_carrying_an_unreadable_source_word_rehydrates_as_unknown(stored):
-    """Rehydration is defensive where the evaluator is strict: a document is
-    not a call site, so an unrecognized word becomes ``unknown`` rather than
-    raising or being carried through as a fourth vocabulary entry."""
-    report = evaluate_flat_spec(
-        _FREQS_HZ,
-        _flat_db(),
-        entanglement_floor_hz=1000.0,
-        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_MEASURED,
-    )
-    raw = report.to_dict()
-    raw["entanglement_floor_source"] = stored
-
-    assert (
-        FlatSpecReport.from_dict(raw).entanglement_floor_source
-        == gating.ENTANGLEMENT_SOURCE_UNKNOWN
-    )
 
 
 def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
@@ -1554,10 +1530,8 @@ def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
 @pytest.mark.parametrize(
     ("floor_hz", "source"),
     [
-        (1000.0, gating.ENTANGLEMENT_SOURCE_UNKNOWN),
         (None, gating.ENTANGLEMENT_SOURCE_DECLARED),
-        (float("nan"), gating.ENTANGLEMENT_SOURCE_MEASURED),
-        # The coercion above this one leaves the source unknown; the number
+        # A word outside the vocabulary leaves the source unknown; the number
         # beside it must not survive that.
         (1000.0, "surveyed"),
     ],
@@ -1565,12 +1539,14 @@ def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
 def test_a_document_whose_floor_and_source_disagree_rehydrates_as_unknown(
     floor_hz, source
 ):
-    """The pair is read as a pair, so a rehydration cannot outlive the seam.
+    """This seam takes the LENIENT door, and what comes out survives the
+    strict one.
 
     ``evaluate_flat_spec`` refuses a known floor with no provenance and a
     provenance with no floor. A document carrying one is corrupt in exactly
     that way, and rehydrating it verbatim would build a report that raises the
-    moment anything re-grades in its frame.
+    moment anything re-grades in its frame. Which pairs are refusable is
+    pinned on ``gating.EntanglementFloor``, not here.
     """
     raw = evaluate_flat_spec(
         _FREQS_HZ,
