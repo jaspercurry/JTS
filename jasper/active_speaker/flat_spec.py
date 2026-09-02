@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import numpy as np
 
@@ -387,10 +387,7 @@ class FlatSpecReport:
         if graded_band is not None:
             kwargs["graded_band_hz"] = (float(graded_band[0]), float(graded_band[1]))
         entanglement_source = raw.get("entanglement_floor_source")
-        if (
-            not isinstance(entanglement_source, str)
-            or entanglement_source not in gating.ENTANGLEMENT_SOURCES
-        ):
+        if not _valid_entanglement_source(entanglement_source):
             entanglement_source = gating.ENTANGLEMENT_SOURCE_UNKNOWN
         entanglement_floor_hz = raw.get("entanglement_floor_hz")
         floor_known = entanglement_floor_hz is not None and math.isfinite(
@@ -413,7 +410,7 @@ class FlatSpecReport:
             trusted_floor_hz=raw.get("trusted_floor_hz"),
             trusted_ceiling_hz=raw.get("trusted_ceiling_hz"),
             entanglement_floor_hz=entanglement_floor_hz,
-            entanglement_floor_source=entanglement_source,
+            entanglement_floor_source=cast(str, entanglement_source),
             **kwargs,
         )
 
@@ -501,6 +498,10 @@ def _room_entangled_below_hz(
     if entanglement_floor_hz <= graded_lo_hz:
         return None
     return min(float(entanglement_floor_hz), float(graded_hi_hz))
+
+
+def _valid_entanglement_source(value: Any) -> bool:
+    return isinstance(value, str) and value in gating.ENTANGLEMENT_SOURCES
 
 
 def evaluate_flat_spec(
@@ -635,10 +636,7 @@ def evaluate_flat_spec(
             ``spec_smoothed_db``; and for an ``entanglement_floor_source``
             outside the vocabulary or disagreeing with the floor beside it.
     """
-    if (
-        not isinstance(entanglement_floor_source, str)
-        or entanglement_floor_source not in gating.ENTANGLEMENT_SOURCES
-    ):
+    if not _valid_entanglement_source(entanglement_floor_source):
         raise ValueError(
             "entanglement_floor_source must be one of "
             f"{sorted(gating.ENTANGLEMENT_SOURCES)} "
