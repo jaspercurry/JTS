@@ -166,6 +166,9 @@ from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH,
     REASON_ANSWER_LOST,
     SESSION_PATH,
+    STAGE_KEY,
+    STAGE_POST_APPLY,
+    TIERS,
     VERIFY_PATH,
     WizardClient,
     apply_by_fingerprint,
@@ -194,11 +197,6 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
 # and read here rather than copied for the same reason a bound is asked of its
 # owner everywhere else in this file.
 from jasper.cli.angle_capture import _REGIME_STOPS
-from jasper.active_speaker.crossover_v2_flow import TIERS
-from jasper.web.correction_crossover_v2 import (
-    VERIFY_STAGE_KEY,
-    VERIFY_STAGE_POST_APPLY,
-)
 
 # --------------------------------------------------------------------------- #
 # the endpoints and the vocabulary — the product's own, never restated
@@ -947,7 +945,7 @@ def _open_body(args: argparse.Namespace) -> tuple[str, dict[str, Any], int]:
     posted here would be a second, later answer to a question already settled.
     """
     if args.stage == "verify":
-        return VERIFY_PATH, {VERIFY_STAGE_KEY: VERIFY_STAGE_POST_APPLY}, EXIT_VERIFY
+        return VERIFY_PATH, {STAGE_KEY: STAGE_POST_APPLY}, EXIT_VERIFY
     body: dict[str, Any] = {"tier": args.tier}
     if args.alignment_prescription is not None:
         # Passed through as read. The gate that judges a prescription is the

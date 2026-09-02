@@ -43,6 +43,7 @@ from jasper.active_speaker.wizard_client import (
     SESSION_PATH,
     STAGE_MEASURE,
     STAGE_POST_APPLY,
+    TIERS,
     VERIFY_PATH,
     WizardClient,
     apply_by_fingerprint,
@@ -50,13 +51,6 @@ from jasper.active_speaker.wizard_client import (
     wait_for_round,
 )
 from jasper.identity import read_identity
-
-#: The measurement tiers `--tier` accepts. Restated rather than imported from
-#: :mod:`jasper.active_speaker.crossover_v2_flow` because that module (via
-#: capture_plan -> audio_measurement.program) pulls in numpy at import time,
-#: and this CLI must stay numpy-free on the Pi. Pinned equal to
-#: ``crossover_v2_flow.TIERS`` by tests/test_cli_round.py.
-TIERS = ("express", "full", "remote")
 
 #: The wizard answered and the verb did what it says.
 EXIT_OK = 0

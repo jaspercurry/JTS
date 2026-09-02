@@ -53,6 +53,13 @@ STAGE_KEY = "stage"
 STAGE_MEASURE = "measure"
 STAGE_POST_APPLY = "post_apply"
 
+#: The measurement tiers a measuring stage open may name. Restated rather than
+#: imported from :mod:`jasper.active_speaker.crossover_v2_flow` because that
+#: module (via capture_plan -> audio_measurement.program) pulls numpy in at
+#: import time, and the round CLIs on a 1 GB speaker must stay numpy-free.
+#: Pinned equal to ``crossover_v2_flow.TIERS`` by ``tests/test_cli_round.py``.
+TIERS = ("express", "full", "remote")
+
 #: The phases a stage is still WORKING in -- every capture phase, plus the two
 #: control-page phases that are a session mid-flight rather than a stopping
 #: point: ``closing`` (the measuring session's own tail while the fit runs)
