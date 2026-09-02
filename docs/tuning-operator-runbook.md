@@ -614,8 +614,9 @@ guard — not a selector**. Measurement-time activation of any graph goes throug
 
 Apply reopens and verifies the published candidate, composes without mutating
 state, then uses the baseline apply transaction with rollback. The same durable
-write retains the prior compiled profile and declaration undo; restore proves
-the retained path and digest before loading it. Apply does not move the
+write retains the prior compiled profile and
+`previous_candidate_fingerprint`; restore proves the retained path and digest
+before loading it. Apply does not move the
 session's commanded measurement level. Its headroom attenuation is instead
 banked as `expected_post_apply_offset_db`, and VERIFY measures at the unchanged
 commanded level.

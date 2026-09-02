@@ -507,7 +507,7 @@ function renderCandidateReview(review) {
 // `description` — a one-line claim, so far only the microphone_check
 // screen's tier chooser (flow-simplification PR-U3, crossover_envelope_v2.py's
 // `_tier_choice_actions`). Every other action on every other screen (Try
-// again, Undo, Re-measure, Continue, ...) has no `description` and this
+// again, Re-measure, Continue, ...) has no `description` and this
 // returns `control` untouched — no other screen's markup changes.
 //
 // S2 fix (adversarial review of PR #1780): the row's own title already
@@ -836,8 +836,9 @@ function renderActionRow(env) {
     || (env.next_action && env.next_action.show_during_relay);
   const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
   // Only alternates the envelope explicitly marks show_during_relay survive
-  // the gate — e.g. the verify_fail screen's Undo / Re-measure "get me out
-  // of this" affordances must stay visible even while a relay link is live.
+  // the gate — e.g. the verify_fail screen's "Go back to the previous
+  // tuning" / Re-measure "get me out of this" affordances must stay visible
+  // even while a relay link is live.
   // Every other alternate stays hidden while a relay is in flight.
   const shownAlternates = relayActive
     ? alternates.filter((action) => action && action.show_during_relay)
