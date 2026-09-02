@@ -150,6 +150,28 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
     )
 
 
+def _event_record(caplog, event: str):
+    """The ONE ``event=<name> k=v …`` record, plus its fields as a mapping.
+
+    Asserting on fields rather than the whole sentence keeps these pins off
+    log prose, and folding "exactly one record" in here makes that property
+    explicit at every call site.
+    """
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().split(" ", 1)[0] == f"event={event}"
+    ]
+    assert len(records) == 1, [record.getMessage() for record in records]
+    fields = dict(
+        token.split("=", 1)
+        for token in records[0].getMessage().split(" ")[1:]
+        if "=" in token
+    )
+    return records[0], fields
+
+
 def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
     """Stub the three audio sessions a topology mutation stops before parking.
 
@@ -632,19 +654,13 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload == {"error": str(error)}
-    records = [
-        record
-        for record in caplog.records
-        if record.getMessage().startswith("event=sound.post_dispatch_failed")
-    ]
-    assert len(records) == 1
-    assert records[0].getMessage() == (
-        "event=sound.post_dispatch_failed "
-        "path=/active-speaker/commission-ramp-abort "
-        f"error_type={error_type}"
-    )
-    assert records[0].exc_info is not None
-    assert records[0].exc_info[0] is type(error)
+    record, fields = _event_record(caplog, "sound.post_dispatch_failed")
+    assert fields == {
+        "path": "/active-speaker/commission-ramp-abort",
+        "error_type": error_type,
+    }
+    assert record.exc_info is not None
+    assert record.exc_info[0] is type(error)
 
 
 @pytest.mark.parametrize(
@@ -655,14 +671,14 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
             "/output-topology",
             "_output_topology_payload",
             "sound.output_topology",
-            "",
+            {},
         ),
         (
             "POST",
             "/active-speaker/channel-protection",
             "_active_speaker_channel_protection_save_payload",
             "sound.active_speaker_channel_protection",
-            " error=OSError",
+            {"error": "OSError"},
         ),
     ],
 )
@@ -700,12 +716,7 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload == {"error": str(error)}
-    messages = [
-        record.getMessage()
-        for record in caplog.records
-        if record.getMessage().startswith(f"event={event} ")
-    ]
-    assert messages == [f"event={event} result=error{extra_fields}"]
+    assert _event_record(caplog, event)[1] == {"result": "error", **extra_fields}
 
 
 def test_sound_post_does_not_secondary_send_after_response_write_failure(
@@ -4310,6 +4321,52 @@ def test_sound_channel_identity_route_marks_saved_topology_only(
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
 
 
+_PENDING_WOOFER_STEP = {
+    "role": "woofer",
+    "playback_id": "pb-woofer",
+    "gain_db": -80.0,
+}
+
+
+def _stub_confirmed_ramp_ack(monkeypatch) -> None:
+    """A pending woofer step whose operator ack comes back confirmed."""
+
+    async def fake_ack(*, outcome, load_config):
+        assert outcome == "heard_correct_driver"
+        assert load_config is not None
+        return {
+            "status": "confirmed",
+            "acknowledged_step": dict(_PENDING_WOOFER_STEP),
+            "issues": [],
+        }
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.load_ramp_state",
+        lambda: {
+            "speaker_group_id": "main",
+            "pending": dict(_PENDING_WOOFER_STEP),
+        },
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack", fake_ack
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    monkeypatch.setattr(
+        sound_setup, "commission_seams", lambda _cam: (object(), None, None)
+    )
+
+
+async def _ack_confirming_output_identity():
+    return await sound_setup._active_speaker_commission_ramp_ack_payload(
+        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
+        camilla_factory=lambda: object(),
+    )
+
+
 async def test_commission_ack_can_promote_output_identity_before_driver_proof(
     monkeypatch,
     tmp_path: Path,
@@ -4317,20 +4374,7 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     sound_setup._save_output_topology_payload(_bench_active_topology_payload())
-
-    async def fake_ack(*, outcome, load_config):
-        assert outcome == "heard_correct_driver"
-        assert load_config is not None
-        return {
-            "status": "confirmed",
-            "acknowledged_step": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-            "issues": [],
-        }
-
+    _stub_confirmed_ramp_ack(monkeypatch)
     recorded: dict[str, object] = {}
 
     def fake_record_driver_measurement(topology, raw, **_kwargs):
@@ -4347,21 +4391,6 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
         }
 
     monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.load_ramp_state",
-        lambda: {
-            "speaker_group_id": "main",
-            "pending": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-        },
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
-        fake_ack,
-    )
-    monkeypatch.setattr(
         "jasper.active_speaker.measurement.record_driver_measurement",
         fake_record_driver_measurement,
     )
@@ -4370,20 +4399,10 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
         lambda: {},
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.safe_playback.load_safe_playback_state",
-        lambda: {},
+        "jasper.active_speaker.safe_playback.load_safe_playback_state", lambda: {}
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(sound_setup, "commission_seams", lambda _cam: (object(), None, None))
 
-    payload = await sound_setup._active_speaker_commission_ramp_ack_payload(
-        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
-        camilla_factory=lambda: object(),
-    )
+    payload = await _ack_confirming_output_identity()
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert payload["status"] == "confirmed"
@@ -4394,6 +4413,7 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
     assert payload["topology_revision"].startswith("sha256:")
     assert payload["hardware_adoption"]["identity"].startswith("sha256:")
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
+    # The recorder saw the promoted lane, so the promotion precedes the proof.
     assert recorded["woofer_identity"] is True
     assert recorded["raw"]["role"] == "woofer"
     assert recorded["raw"]["playback_id"] == "pb-woofer"
@@ -4403,64 +4423,25 @@ async def test_commission_ack_fails_when_output_identity_cannot_save(
     monkeypatch,
     tmp_path: Path,
 ):
+    from jasper.output_topology import OutputTopologyMutation
+
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     sound_setup._save_output_topology_payload(_bench_active_topology_payload())
-
-    async def fake_ack(*, outcome, load_config):
-        return {
-            "status": "confirmed",
-            "acknowledged_step": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-            "issues": [],
-        }
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.load_ramp_state",
-        lambda: {
-            "speaker_group_id": "main",
-            "pending": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-        },
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
-        fake_ack,
-    )
-
-    from jasper.output_topology import OutputTopologyMutation
+    _stub_confirmed_ramp_ack(monkeypatch)
 
     def fail_save(_mutation, _topology):
         raise OSError("disk full")
 
-    monkeypatch.setattr(
-        OutputTopologyMutation,
-        "save",
-        fail_save,
-    )
+    monkeypatch.setattr(OutputTopologyMutation, "save", fail_save)
     monkeypatch.setattr(
         "jasper.active_speaker.measurement.record_driver_measurement",
         lambda *_args, **_kwargs: pytest.fail(
             "driver evidence must not be recorded when identity save fails"
         ),
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(sound_setup, "commission_seams", lambda _cam: (object(), None, None))
 
-    payload = await sound_setup._active_speaker_commission_ramp_ack_payload(
-        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
-        camilla_factory=lambda: object(),
-    )
+    payload = await _ack_confirming_output_identity()
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert payload["status"] == "failed"
@@ -5086,18 +5067,42 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
         assert profile_payload["permissions"]["may_apply"] is False
 
 
-async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
-    apply_kwargs = {}
+BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+
+
+def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
+    """Stand in for the whole baseline-apply backend behind the finish handoff.
+
+    Returns ``(apply_kwargs_seen, mux_commands)``: the kwargs of every
+    ``apply_baseline_profile`` call in order, and the mux commands the restore
+    issued. The fake invokes ``on_candidate_verified`` exactly as the real
+    apply does, so the finish route's cleanup runs.
+    """
+
+    apply_calls: list[dict] = []
+    mux_commands: list[str] = []
 
     async def fake_apply_baseline_profile(_topology, **kwargs):
-        apply_kwargs.update(kwargs)
-        return {
+        apply_calls.append(kwargs)
+        callback = kwargs.get("on_candidate_verified")
+        if callback is not None:
+            await callback()
+        applied = {
             "status": "applied",
-            "apply": {"result": "success"},
+            "apply": {"result": "success", "active_config_path": BASELINE_CONFIG_PATH},
             "issues": [],
         }
-
-    mux_commands: list[str] = []
+        if applied_profile:
+            applied["profile"] = {
+                "status": "applied",
+                "config": {
+                    "path": BASELINE_CONFIG_PATH,
+                    "basename": "active_speaker_baseline.yml",
+                },
+                "permissions": {"may_apply": False},
+                "issues": [],
+            }
+        return applied
 
     def fake_mux_command(command: str) -> dict:
         mux_commands.append(command)
@@ -5110,12 +5115,11 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
 
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
     monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda: {},
+        "jasper.active_speaker.design_draft.load_design_draft", lambda: {}
     )
     monkeypatch.setattr(
         "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **kwargs: {},
+        lambda **_kwargs: {},
     )
     monkeypatch.setattr(
         "jasper.active_speaker.measurement.load_measurement_state",
@@ -5126,9 +5130,22 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
         fake_apply_baseline_profile,
     )
     monkeypatch.setattr(
+        sound_setup, "_commission_tone_mux_command", fake_mux_command
+    )
+    return apply_calls, mux_commands
+
+
+def _reviewed_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(
         sound_setup,
-        "_commission_tone_mux_command",
-        fake_mux_command,
+        "_active_speaker_baseline_profile_payload",
+        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
+    )
+
+
+async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
+    apply_calls, mux_commands = _stub_baseline_apply(
+        monkeypatch, applied_profile=False
     )
 
     payload = await sound_setup._active_speaker_baseline_profile_apply_payload(
@@ -5137,7 +5154,7 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
     )
 
     assert mux_commands == ["AUTO"]
-    assert apply_kwargs["expected_candidate_fingerprint"] == "reviewed-candidate"
+    assert apply_calls[0]["expected_candidate_fingerprint"] == "reviewed-candidate"
     assert payload["source_selection_restore"]["status"] == "ok"
     assert payload["source_selection_restore"]["state"]["mode"] == "auto"
 
@@ -5145,78 +5162,15 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
 async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     monkeypatch,
 ):
-    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
-    apply_calls = 0
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
-
-    async def fake_apply_baseline_profile(_topology, **kwargs):
-        nonlocal apply_calls
-        apply_calls += 1
-        callback = kwargs.get("on_candidate_verified")
-        if callback is not None:
-            await callback()
-        return {
-            "status": "applied",
-            "profile": {
-                "status": "applied",
-                "config": {
-                    "path": baseline_path,
-                    "basename": "active_speaker_baseline.yml",
-                },
-                "permissions": {"may_apply": False},
-                "issues": [],
-            },
-            "apply": {
-                "result": "success",
-                "active_config_path": baseline_path,
-            },
-            "issues": [],
-        }
-
-    mux_commands: list[str] = []
-
-    def fake_mux_command(command: str) -> dict:
-        mux_commands.append(command)
-        return {
-            "mode": "auto",
-            "selected_source": None,
-            "active_source": "airplay",
-            "test_source": None,
-        }
-
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **kwargs: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.load_measurement_state",
-        lambda topology: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
-        fake_apply_baseline_profile,
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_mux_command",
-        fake_mux_command,
-    )
+    _reviewed_candidate(monkeypatch)
+    apply_calls, mux_commands = _stub_baseline_apply(monkeypatch)
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
         expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
-    assert apply_calls == 1
+    assert len(apply_calls) == 1
     assert mux_commands == ["AUTO"]
     assert payload["status"] == "applied"
     assert payload["profile"]["status"] == "applied"
@@ -5224,7 +5178,7 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     assert payload["output_safety"] == {
         "safety_muted": False,
         "reason": None,
-        "active_config_path": baseline_path,
+        "active_config_path": BASELINE_CONFIG_PATH,
     }
 
 
@@ -5313,78 +5267,25 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
         ramp_state_path,
     )
 
-    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
-        str(tmp_path / "ramp.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
-        str(tmp_path / "commission-load.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    _record_ramp_state(
-        {
-            **_ramp_base_state(ramp_state_path()),
-            "speaker_group_id": "main",
-            "confirmed_roles": ["woofer"],
-            "pending": {
-                "role": "tweeter",
-                "gain_db": -20.0,
-                "playback_id": "late-auto-ramp-step",
-            },
-            "last_action": "late_step",
-        }
-    )
-    async def fake_apply_baseline_profile(_topology, **kwargs):
-        callback = kwargs.get("on_candidate_verified")
-        if callback is not None:
-            await callback()
-        return {
-            "status": "applied",
-            "profile": {
-                "status": "applied",
-                "config": {
-                    "path": baseline_path,
-                    "basename": "active_speaker_baseline.yml",
-                },
-                "permissions": {"may_apply": False},
-                "issues": [],
-            },
-            "apply": {"result": "success", "active_config_path": baseline_path},
-            "issues": [],
-        }
-
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **kwargs: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.load_measurement_state",
-        lambda topology: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
-        fake_apply_baseline_profile,
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_mux_command",
-        lambda command: {"mode": "auto", "command": command},
-    )
+    _reviewed_candidate(monkeypatch)
+    for name, filename in (
+        ("JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE", "ramp.json"),
+        ("JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE", "commission-load.json"),
+        ("JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", "safe-playback.json"),
+    ):
+        monkeypatch.setenv(name, str(tmp_path / filename))
+    _record_ramp_state({
+        **_ramp_base_state(ramp_state_path()),
+        "speaker_group_id": "main",
+        "confirmed_roles": ["woofer"],
+        "pending": {
+            "role": "tweeter",
+            "gain_db": -20.0,
+            "playback_id": "late-auto-ramp-step",
+        },
+        "last_action": "late_step",
+    })
+    _stub_baseline_apply(monkeypatch)
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
         expected_candidate_fingerprint="reviewed-candidate",
@@ -5827,9 +5728,9 @@ async def test_reconcile_current_dsp_skips_unknown_config(
     assert payload["reason"] == "unknown_config"
     assert fake.loaded_path is None
     assert not (tmp_path / "dsp.json").exists()
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=skipped" in caplog.text
-    assert "reason=unknown_config" in caplog.text
+    _, fields = _event_record(caplog, "sound.reconcile_current_dsp")
+    assert fields["result"] == "skipped"
+    assert fields["reason"] == "unknown_config"
 
 
 async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
@@ -5918,8 +5819,9 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     # The on-disk file is left untouched — its original (timestamp) id survives,
     # proving reconcile took the no-op path rather than re-emitting.
     assert "id=1717000000000000001" in current.read_text()
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=unchanged" in caplog.text
+    assert _event_record(caplog, "sound.reconcile_current_dsp")[1]["result"] == (
+        "unchanged"
+    )
 
 
 def test_config_id_header_strip_only_touches_the_header_line():
