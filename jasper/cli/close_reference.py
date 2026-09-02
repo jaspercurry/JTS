@@ -21,8 +21,9 @@ Two verbs, both offline. **No audio plays and no device is opened.**
 
 **A refusal is an output, not an error.** A round with no on-axis summed
 capture, or a capture whose declared stimulus hash matches no banked program,
-prints the refusal that names the missing input and exits 1. Exit 2 is a round
-this cannot read at all.
+names the missing input rather than raising. It publishes the shared failure
+record under the shared exit-code rule; ``--help`` and
+docs/tuning-operator-runbook.md's "Exit codes" state both.
 
 Distances are DECLARED here, not read from the sidecar: today's sidecars pin
 ``mark_distance_m = 1.0`` for every pose (#3498). Both values are published.
@@ -47,11 +48,11 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.branch_chain import recommended_distance
-from jasper.active_speaker.crossover_v2.close_reference import (
-    REFUSE_UNREADABLE_ROUND,
-    compare_rounds,
+from jasper.active_speaker.crossover_v2.close_reference import compare_rounds
+from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND,
+    RoundCapturesRefused,
 )
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
@@ -60,29 +61,39 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 
 from ._logging import configure_verbose_logging
-from ._refusal import refused
+from ._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    failed,
+)
 from ._report import render_report
 from ._unit_pair import MILLIMETRES, add_unit_pair, unit_pair_meters
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
 
 #: `_cmd_distance` owns this refusal: the required argparse group refuses an
 #: ordinary call naming neither unit, but a hand-built Namespace (or `-O`
 #: stripping an assert) must not be able to feed `None` past it.
 REFUSE_NO_DRIVER_DIAMETER = "close_reference_no_driver_diameter"
 
+#: Compared, and only the filing failed. Its own code, because it sends an
+#: operator to the filesystem rather than back to the round.
+REFUSE_UNWRITABLE_OUT = "close_reference_unwritable_out"
+
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory (plays nothing)"
 
 
-def _refused(reason: str, detail: Mapping[str, Any]) -> int:
-    return refused(
+def _failed(reason: str, detail: Mapping[str, Any]) -> int:
+    """The STAGE this failure belongs to: a round nothing can read is not a
+    decline, and publishing it as one sends a reader after a reason no tool
+    ever named."""
+    unreadable = reason == REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND
+    return failed(
+        EXIT_UNREADABLE if unreadable else EXIT_REFUSED,
         reason,
         json.dumps(detail, sort_keys=True, default=str),
-        exit_code=EXIT_INPUT if reason == REFUSE_UNREADABLE_ROUND else EXIT_REFUSED,
     )
 
 
@@ -90,7 +101,7 @@ def _cmd_distance(args: argparse.Namespace) -> int:
     # Catches what the required argparse group cannot: a hand-built Namespace.
     diameter = unit_pair_meters(args, "driver-diameter", metric=MILLIMETRES)
     if diameter is None:
-        return _refused(
+        return _failed(
             REFUSE_NO_DRIVER_DIAMETER,
             {"missing": "--driver-diameter-in or --driver-diameter-mm"},
         )
@@ -139,15 +150,18 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             geometry=_geometry(args.geometry),
         )
     except RoundCapturesRefused as exc:
-        return _refused(exc.reason, exc.detail)
+        return _failed(exc.reason, exc.detail)
     except (ValueError, OSError) as exc:
-        return _refused(REFUSE_UNREADABLE_ROUND, {"error": str(exc)})
+        return _failed(REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND, {"error": str(exc)})
 
     # Echoed always, filed only on --out: the shared serialization, not
     # `write_report`'s out-or-default.
     text = render_report({"status": "compared", "close_reference": report})
     if args.out:
-        atomic_write_text(args.out, text + "\n")
+        try:
+            atomic_write_text(args.out, text + "\n")
+        except OSError as exc:
+            return failed(EXIT_WRITE_FAILED, REFUSE_UNWRITABLE_OUT, str(exc))
     print(text)
 
     alignment = report["alignment"]

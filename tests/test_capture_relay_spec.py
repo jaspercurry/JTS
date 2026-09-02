@@ -513,65 +513,60 @@ def test_schema_never_enumerates_kinds():
 # --- strict, loud validation --------------------------------------------------
 
 
-def test_rejects_wrong_sample_rate():
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"sample_rate_hz": 44100}, id="rejects_wrong_sample_rate"),
+        pytest.param({"channels": 2}, id="rejects_stereo"),
+        pytest.param({"kind": ""}, id="rejects_empty_kind"),
+        pytest.param({"output_format": "opus"}, id="rejects_non_wav_output"),
+        pytest.param(
+            {"duration_ms": 100, "pre_roll_ms": 800, "post_roll_ms": 700},
+            id="rejects_window_smaller_than_rolls",
+        ),
+        pytest.param(
+            {"max_upload_bytes": 1024 * 1024 * 1024},
+            id="rejects_oversize_upload_cap",
+        ),
+        pytest.param(
+            {"stimulus": CaptureStimulus(played_by="phone")},
+            id="rejects_unknown_stimulus_player",
+        ),
+        pytest.param(
+            {"theme": {"accent": "red; } body{}", "font": "figtree"}},
+            id="rejects_non_allowlisted_theme_accent",
+        ),
+        pytest.param(
+            {"theme": {"accent": "sage", "font": "figtree", "style": "x"}},
+            id="rejects_unknown_theme_key",
+        ),
+        pytest.param(
+            {"screen": ({"type": "iframe", "src": "javascript:alert(1)"},)},
+            id="rejects_unknown_ui_component_type",
+        ),
+        pytest.param(
+            {"screen": (ui_button("Go", action="exfiltrate"),)},
+            id="rejects_unknown_button_action",
+        ),
+        pytest.param(
+            {
+                "calibration_models": (
+                    {"key": "mic", "label": "Mic", "aliases": "mic"},
+                )
+            },
+            id="rejects_invalid_calibration_model_shape",
+        ),
+        pytest.param(
+            {"screen": ({"type": "steps", "items": ["ok", {"x": 1}]},)},
+            id="rejects_steps_with_non_string_items",
+        ),
+    ],
+)
+def test_rejects(overrides):
+    kwargs = dict(kind="room_sweep", duration_ms=1000, pre_roll_ms=0, post_roll_ms=0)
+    kwargs.update(overrides)
     with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            sample_rate_hz=44100,
-        ).validate()
-
-
-def test_rejects_stereo():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            channels=2,
-        ).validate()
-
-
-def test_rejects_empty_kind():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="", duration_ms=1000, pre_roll_ms=0, post_roll_ms=0
-        ).validate()
-
-
-def test_rejects_non_wav_output():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            output_format="opus",
-        ).validate()
-
-
-def test_rejects_window_smaller_than_rolls():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=100,
-            pre_roll_ms=800,
-            post_roll_ms=700,
-        ).validate()
-
-
-def test_rejects_oversize_upload_cap():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            max_upload_bytes=1024 * 1024 * 1024,
-        ).validate()
+        CaptureSpec(**kwargs).validate()
 
 
 def test_rejects_unsafe_return_url():
@@ -586,84 +581,7 @@ def test_rejects_unsafe_return_url():
             build_room_sweep_spec().with_return_url(url)
 
 
-def test_rejects_unknown_stimulus_player():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            stimulus=CaptureStimulus(played_by="phone"),
-        ).validate()
-
-
 # --- UI-is-data boundary ------------------------------------------------------
-
-
-def test_rejects_non_allowlisted_theme_accent():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            theme={"accent": "red; } body{}", "font": "figtree"},
-        ).validate()
-
-
-def test_rejects_unknown_theme_key():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            theme={"accent": "sage", "font": "figtree", "style": "x"},
-        ).validate()
-
-
-def test_rejects_unknown_ui_component_type():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            screen=({"type": "iframe", "src": "javascript:alert(1)"},),
-        ).validate()
-
-
-def test_rejects_unknown_button_action():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            screen=(ui_button("Go", action="exfiltrate"),),
-        ).validate()
-
-
-def test_rejects_invalid_calibration_model_shape():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            calibration_models=({"key": "mic", "label": "Mic", "aliases": "mic"},),
-        ).validate()
-
-
-def test_rejects_steps_with_non_string_items():
-    with pytest.raises(CaptureSpecError):
-        CaptureSpec(
-            kind="room_sweep",
-            duration_ms=1000,
-            pre_roll_ms=0,
-            post_roll_ms=0,
-            screen=({"type": "steps", "items": ["ok", {"x": 1}]},),
-        ).validate()
 
 
 def test_html_like_text_is_allowed_but_carried_as_data():

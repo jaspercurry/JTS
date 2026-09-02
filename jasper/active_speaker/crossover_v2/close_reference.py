@@ -51,7 +51,6 @@ published and the declared one is used.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -64,7 +63,11 @@ from jasper.active_speaker.branch_chain import (
     placement_tolerance_db,
 )
 from jasper.active_speaker.flat_spec import SPEC_BANDS
-from jasper.audio_measurement.alignment import GCC_UPSAMPLE, gcc_phat
+from jasper.audio_measurement.alignment import (
+    GCC_UPSAMPLE,
+    fractional_shift,
+    gcc_phat,
+)
 from jasper.audio_measurement.gating import (
     ENTANGLEMENT_SOURCE_DECLARED,
     TAPER_FRACTION,
@@ -92,10 +95,9 @@ from .feature_optics import (
 )
 from .gate_sweep import gated_segment
 from .round_captures import (
-    PoseCapture,
     RoundCapturesRefused,
-    discover_captures,
-    doc_pose_key,
+    capture_row,
+    select_capture,
 )
 
 __all__ = [
@@ -114,7 +116,6 @@ __all__ = [
     "compare_impulse_responses",
     "compare_rounds",
     "declared_clean_window_ms",
-    "select_capture",
 ]
 
 CLOSE_REFERENCE_SCHEMA_VERSION = 1
@@ -165,6 +166,10 @@ WINDOW_CLOSE = "close_window"
 #: ``+inf``, which the strict JSON writer cannot carry.
 REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 
+#: Two rounds captured at different rates cannot be subtracted. The selector's
+#: own two refusals live with it, in :mod:`.round_captures`.
+REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
+
 
 # --------------------------------------------------------------------------- #
 # what a subtraction can promise
@@ -190,14 +195,6 @@ def cancellation_depth_db(f_hz: float, lag_s: float) -> float | None:
 # --------------------------------------------------------------------------- #
 # the comparison
 # --------------------------------------------------------------------------- #
-
-
-def _fractional_shift(x: np.ndarray, samples: float) -> np.ndarray:
-    """Shift ``x`` right by ``samples`` (may be fractional) via linear phase."""
-    n = x.size
-    spectrum = np.fft.rfft(x)
-    freqs = np.fft.rfftfreq(n)
-    return np.fft.irfft(spectrum * np.exp(-2j * np.pi * freqs * samples), n=n)
 
 
 #: Where the gate length actually used came from. The declared word is the
@@ -468,7 +465,7 @@ def compare_impulse_responses(
         upsample=GCC_UPSAMPLE,
         max_lag_samples=float(lead + align_span),
     )
-    corrected = _fractional_shift(corrected, lag)
+    corrected = fractional_shift(corrected, lag)
     refined = gcc_phat(
         far_align,
         gated_segment(corrected, sr, gate_ms=align_ms, peak_idx=far_peak)[0],
@@ -616,95 +613,6 @@ def compare_impulse_responses(
     }
 
 
-# --------------------------------------------------------------------------- #
-# which capture of a banked round this comparison reads
-# --------------------------------------------------------------------------- #
-
-#: Named refusals this comparison owns. Discovery's own — a round with no
-#: captures, a capture whose declared program hash matches nothing — are
-#: :mod:`.round_captures`'s and are raised there.
-REFUSE_UNREADABLE_ROUND = "close_reference_unreadable_round"
-REFUSE_NO_CAPTURE = "close_reference_no_capture"
-REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
-
-
-def select_capture(
-    round_dir: Path, *, capture_id: str | None = None
-) -> PoseCapture:
-    """The one capture this comparison reads out of ``round_dir``.
-
-    ``capture_id`` selects by the capture's own id or its WAV stem. With none,
-    the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
-    Raises :class:`~.round_captures.RoundCapturesRefused` rather than guessing.
-
-    The choice is made on each sidecar DOC, through
-    :func:`~.round_captures.discover_captures`'s ``select``, so the poses this
-    comparison discards are never deconvolved. The predicate records what it
-    was shown, which is what a refusal here has to name.
-    """
-    root = Path(round_dir)
-    if not root.is_dir():
-        raise RoundCapturesRefused(REFUSE_UNREADABLE_ROUND, {"round_dir": str(root)})
-    seen: list[str] = []
-    if capture_id is not None:
-        def wanted(doc: Mapping[str, Any]) -> bool:
-            declared = doc.get("position_id")
-            seen.append(str(declared) if declared else "")
-            # A sidecar that declares no id takes its capture id from its own
-            # file name, which this predicate cannot see; it stays in and the
-            # WAV-stem match below decides.
-            return not declared or str(declared) == capture_id
-
-        named = [
-            capture
-            for capture in discover_captures(root, select=wanted)
-            if capture_id
-            in (capture.capture_id, capture.wav.stem if capture.wav else None)
-        ]
-        if not named:
-            raise RoundCapturesRefused(
-                REFUSE_NO_CAPTURE,
-                {
-                    "round_dir": str(root),
-                    "capture_id": capture_id,
-                    "captures": seen,
-                },
-            )
-        return named[0]
-
-    def on_axis_doc(doc: Mapping[str, Any]) -> bool:
-        seen.append(doc_pose_key(doc))
-        # A pose declared as anything but a number compares False here, the
-        # same answer the decoded ``None`` gave.
-        return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
-
-    on_axis = discover_captures(root, select=on_axis_doc)
-    if not on_axis:
-        raise RoundCapturesRefused(
-            REFUSE_NO_CAPTURE,
-            {
-                "round_dir": str(root),
-                "note": "no capture declares azimuth 0 / elevation 0",
-                "poses": seen,
-            },
-        )
-    return on_axis[0]
-
-
-def _capture_row(capture: PoseCapture) -> dict[str, Any]:
-    """What the report says about a capture it read."""
-    return {
-        "capture_id": capture.capture_id,
-        "phase": capture.phase,
-        "pose_key": capture.pose_key,
-        "wav": capture.wav.name if capture.wav else None,
-        "program": capture.program.name if capture.program else None,
-        "position_deg": capture.azimuth_deg,
-        "vertical_deg": capture.vertical_deg,
-        "mark_distance_m": capture.mark_distance_m,
-        "stimulus_wav_sha256": capture.program_sha256,
-    }
-
 def compare_rounds(
     far_round: Path,
     close_round: Path,
@@ -745,8 +653,8 @@ def compare_rounds(
         sound_speed_m_s=sound_speed_m_s,
     )
     report["captures"] = {
-        "far": _capture_row(far_capture) | {"round_dir": str(far_round)},
-        "close": _capture_row(close_capture) | {"round_dir": str(close_round)},
+        "far": capture_row(far_capture) | {"round_dir": str(far_round)},
+        "close": capture_row(close_capture) | {"round_dir": str(close_round)},
     }
     # The sidecar's own mark_distance_m is published beside the declared one
     # rather than silently overridden: today it is pinned to 1.0 for every

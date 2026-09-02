@@ -1536,8 +1536,8 @@ def build_driver_commission_load_preflight(
     # MIRROR of Gate 1, which proves the emitted graph's two ends name one
     # transport. Gate 1 lives in a PURE BUILDER and deliberately reads no daemon
     # env, so it proves coherence and not liveness: a ring/ring graph on a box
-    # whose fan-in is still loopback-coupled, or whose outputd endpoint was
-    # never armed, is self-consistent and passes it. That graph then loads
+    # whose fan-in parked on a coupling it refuses, or whose outputd endpoint
+    # was never armed, is self-consistent and passes it. That graph then loads
     # cleanly and plays to nobody — the sweep excites Ring A while nothing fills
     # it and nothing reads it, with every daemon healthy. This is the live half,
     # and it stands HERE because a config prepared on an unarmed box is
@@ -1550,63 +1550,41 @@ def build_driver_commission_load_preflight(
     # `fanin.env`, whose single writer is `jasper-fanin-coupling-reconcile`; the
     # ACTIVE-endpoint marker lives in `outputd.env`, whose single writer is
     # `jasper-audio-hardware-reconcile`. Two files, two reconcilers, two facts.
-    # Both are read through the terms that already own them in
-    # `jasper.fanin_coupling`, and both read their FILE FRESH rather than
+    # Both are read through the predicate that already owns each — coupling in
+    # `jasper.fanin.ring_health`, marker in `jasper.fanin_coupling` — so this
+    # site hand-rolls neither, and both read their FILE FRESH rather than
     # `os.environ`: this preflight runs inside the long-lived control daemon and
     # the socket-activated wizards, which never `EnvironmentFile=`d either file
     # and stay alive across a reconcile, so `os.environ` is a stale reader of
     # both keys.
-    from jasper.fanin_coupling import (
-        COUPLING_SHM_RING,
-        RING_PCM_DEVICES,
-        ring_active_endpoint_armed,
-    )
+    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed
 
     candidate_playback_device = candidate.get("playback_device")
     transport_is_ring = candidate_playback_device in RING_PCM_DEVICES
     ring_feed_armed = True
     ring_endpoint_armed = True
     if transport_is_ring:
-        # Lazy import, and NOT because a top-level one would be circular from
-        # here — it would not; `jasper.fanin.coupling_reconcile` imports
-        # `jasper.fanin_coupling`, and this module is in neither direction of
-        # that pair. It is lazy because that module is ~5k lines and this one is
-        # imported by the socket-activated wizards, which reach this branch only
-        # on a ring box. The PATH is passed rather than defaulted because
-        # `read_persisted_coupling`'s default argument binds the constant at
-        # import time, so passing it is what makes the read follow the module
-        # constant at CALL time — and what makes the freshness contract testable
-        # against a real file.
-        from jasper.fanin.ring_health import (
-            FANIN_ENV_PATH,
-            read_persisted_coupling,
-        )
+        # Lazy, and NOT to break a cycle — there is none. `ring_health`
+        # is large and this module is imported by the socket-activated
+        # wizards, which reach this branch only on a ring box. The PATH is
+        # passed rather than defaulted because a default argument binds the
+        # constant at import time, so passing it is what makes the read follow
+        # the module constant at CALL time.
+        from jasper.fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
 
-        # A CORRUPTED FILE IS AN UNARMED TRANSPORT, NOT A TRACEBACK. Both
-        # readers fail-safe on `OSError` (missing, unreadable) and both
-        # normalise every malformed VALUE — an empty file, a typo, garbage keys
-        # all resolve to no transport / marker-false. One input class escapes both:
-        # a non-UTF-8 byte makes `read_text` / `fh.read()` raise
-        # `UnicodeDecodeError`, which is a `ValueError` and not an `OSError`, so
-        # it would leave this function by exception. On a Pi that is the
-        # ordinary shape of SD-card corruption or a write truncated by a power
-        # cut, and the blocker it would suppress is the one naming the
-        # reconciler that REWRITES the corrupted file — crashing withholds
-        # exactly the sentence that fixes the box. Wave 1 wrote this rule down
-        # two functions over, for the same reason: a token nothing can resolve
-        # must reach the operator as this function's ordinary blocker.
+        # A CORRUPTED FILE IS AN UNARMED TRANSPORT, NOT A TRACEBACK. A non-UTF-8
+        # byte raises `UnicodeDecodeError` — a `ValueError`, not an `OSError` —
+        # and on a Pi that is the ordinary shape of SD-card corruption or a
+        # write truncated by a power cut. Crashing here withholds exactly the
+        # blocker that names the reconciler which REWRITES the bad file.
         #
         # Caught HERE and not in the shared readers, which the doctor and the
         # reconcilers also call: the observed-broken path is this call site.
         # Both conjuncts fail together because a decode failure says nothing
-        # about which file was bad — so a corrupt `fanin.env` also reports the
-        # endpoint unarmed. That over-reports one remedy and is the deliberate
-        # direction: both remedies are safe to run, and inventing a per-file
-        # verdict from an exception that carries none would be the guess.
+        # about which file was bad; both remedies are safe to run, and inventing
+        # a per-file verdict from an exception that carries none would be a guess.
         try:
-            ring_feed_armed = (
-                read_persisted_coupling(FANIN_ENV_PATH) == COUPLING_SHM_RING
-            )
+            ring_feed_armed = persisted_coupling_feeds_ring(FANIN_ENV_PATH)
             ring_endpoint_armed = ring_active_endpoint_armed()
         except (OSError, ValueError):
             ring_feed_armed = ring_endpoint_armed = False

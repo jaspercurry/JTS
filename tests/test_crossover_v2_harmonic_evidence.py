@@ -856,7 +856,7 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
     """The CLI-visible half of the should-fix: ``rebuild_measure_program``
     must reach the named ``program_not_reproducible`` refusal, never an
     escaped ``ValueError`` — that escape used to mis-classify the round at
-    ``jasper-read-distortion`` as ``EXIT_ROUND_UNREADABLE`` instead of
+    ``jasper-read-distortion`` as ``EXIT_UNREADABLE`` instead of
     ``EXIT_REFUSED``.
 
     The state file DOES carry a ``measure_sweep_durations_s`` entry here —

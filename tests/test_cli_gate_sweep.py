@@ -63,8 +63,13 @@ def test_a_refusal_is_an_output_naming_the_missing_input(
 def test_a_ladder_of_one_rung_is_an_input_error(
     round_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main([str(round_dir), "--rungs-ms", "7"]) == cli.EXIT_INPUT
+    assert cli.main([str(round_dir), "--rungs-ms", "7"]) == cli.EXIT_UNREADABLE
     assert not (round_dir / cli.DEFAULT_OUT_NAME).exists()
+
+    # The unreadable arm publishes the same record the refusal arm does.
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unreadable"
+    assert payload["reason"] == cli.REFUSE_UNUSABLE_REQUEST
 
 
 def test_at_hz_reports_the_named_bin(round_dir: Path) -> None:
@@ -78,6 +83,21 @@ def test_at_hz_reports_the_named_bin(round_dir: Path) -> None:
     assert feature["requested_hz"] == 800.0
 
 
+def test_an_unwritable_out_is_the_write_exit_not_an_unreadable_round(
+    round_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The round read and the sweep ran; only the filing failed."""
+    blocker = round_dir / "not-a-dir"
+    blocker.write_text("")
+
+    rc = cli.main([str(round_dir), "--rungs-ms", "5", "20", "--out", str(blocker / "x.json")])
+
+    assert rc == cli.EXIT_WRITE_FAILED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unwritable"
+    assert payload["reason"] == cli.REFUSE_UNWRITABLE_OUT
+
+
 def test_at_hz_off_the_analysis_grid_is_an_input_error(round_dir: Path) -> None:
-    assert cli.main([str(round_dir), "--at-hz", "100"]) == cli.EXIT_INPUT
+    assert cli.main([str(round_dir), "--at-hz", "100"]) == cli.EXIT_UNREADABLE
     assert not (round_dir / cli.DEFAULT_OUT_NAME).exists()

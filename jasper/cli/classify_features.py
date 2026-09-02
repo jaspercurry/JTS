@@ -14,7 +14,7 @@ beside ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``. The round
 directory inside it is found by the SAME rule the packet reader uses
 (:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`),
 so the artifact cannot land where the reader does not look, and a bundle
-carrying more than one round is refused rather than guessed at.
+carrying more than one round exits ``2`` rather than being guessed at.
 
 That round directory's ``<phase>_program.wav`` files are then read from
 either of two places, resolved by
@@ -34,9 +34,9 @@ stamps that id into ``jts_session_identity``, so a ring holding several rounds
 needs no flag to be split correctly.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
-classified and filed, ``1`` the round could not be read, ``2`` the instrument
-refused (the captures are the wrong shape, or nothing stood above the round's
-own scatter), ``3`` the verdict could not be written. A round whose
+classified and filed, ``1`` the instrument refused (the captures are the wrong
+shape, or nothing stood above the round's own scatter), ``2`` the round could
+not be read, ``3`` the verdict could not be written. A round whose
 known-answer controls failed exits ``0`` with an artifact: it costs the phase
 class, not the round, so every row reads ``egd=ambiguous`` and the summary
 carries the artifact's own ``controls_disclosure`` line.
@@ -52,7 +52,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
@@ -69,12 +68,14 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
 )
 from jasper.cli._report import write_report
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    fail_with_payload,
+)
 from jasper.cli.gate_sweep import add_rungs_ms_argument
-
-EXIT_OK = 0
-EXIT_ROUND_UNREADABLE = 1
-EXIT_REFUSED = 2
-EXIT_WRITE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -104,13 +105,13 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  classified; the verdict is filed and a summary printed\n"
-            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or the\n"
+            "  1  EXIT_REFUSED -- classification itself was refused (e.g.\n"
+            "     no captures to classify); \"refused: <reason> (...)\" on\n"
+            "     stderr, and as JSON with --json\n"
+            "  2  EXIT_UNREADABLE -- bundle_dir, info.json, or the\n"
             "     round shape itself could not be read -- the message names\n"
             "     which, and for the commonest cause (no admissible round\n"
             "     shape) names the two directory shapes this tool accepts\n"
-            "  2  EXIT_REFUSED -- classification itself was refused (e.g.\n"
-            "     no captures to classify); \"refused: <reason> (...)\" on\n"
-            "     stderr, and as JSON with --json\n"
             "  3  EXIT_WRITE_FAILED -- classified, but the verdict could\n"
             "     not be written to --out or the default artifact path"
         ),
@@ -170,22 +171,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) -> int:
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     round_dir, why = round_artifact_dir(args.bundle_dir)
     if round_dir is None:
+        # 2, not 1, for "bundle carries more than one round" too: the fix is
+        # to point at one round, and that is an input fix, not a named refusal.
         message = f"cannot read the round: {why}"
         if why == NO_ROUND_ARTIFACTS_REASON:
-            # Only on THIS reason: a bundle refused for carrying more than
+            # Only on THIS reason: a bundle stopped for carrying more than
             # one round has the right structure already, and telling that
             # operator to check for a second accepted shape is misleading —
             # the fix there is naming which round, not where programs live.
@@ -196,22 +191,22 @@ def main(argv: list[str] | None = None) -> int:
                 "the shape bank-crossover-round.sh pulls (program WAVs in a "
                 "sibling crossover_v2/<relay>/ directory instead)"
             )
-        return _fail(
+        return fail_with_payload(
             message,
             {"ok": False, "error": why},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     session_id: str | None = None
     try:
         info = json.loads((args.bundle_dir / "info.json").read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        return _fail(
+        return fail_with_payload(
             f"cannot read the bundle's info.json: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
     if isinstance(info, dict) and isinstance(info.get("session_id"), str):
         session_id = info["session_id"]
@@ -245,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             programs_dir_display = programs_dir.relative_to(args.bundle_dir)
         except ValueError:  # pragma: no cover - defensive, see round_program_dir
             programs_dir_display = programs_dir
-        return _fail(
+        return fail_with_payload(
             f"refused: {refusal.reason} (programs read from {programs_dir_display})",
             {
                 "ok": False,
@@ -257,18 +252,18 @@ def main(argv: list[str] | None = None) -> int:
             code=EXIT_REFUSED,
         )
     except (OSError, ValueError) as exc:
-        return _fail(
+        return fail_with_payload(
             f"cannot read the round: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     destination = args.out or (round_dir / CLASSIFICATION_ARTIFACT)
     try:
         write_report(artifact, None, destination, make_parents=True)
     except OSError as exc:
-        return _fail(
+        return fail_with_payload(
             f"classified, but could not write {destination}: {exc}",
             {"ok": False, "error": str(exc), "path": str(destination)},
             as_json=args.json,

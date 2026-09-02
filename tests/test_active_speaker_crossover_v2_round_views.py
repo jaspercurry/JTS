@@ -18,6 +18,7 @@ fails this suite instead of silently going unnoticed.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -257,7 +258,7 @@ def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
 
 def test_a_directory_of_neither_shape_refuses(tmp_path):
     """No ``bundle/`` and no ``info.json`` is neither round shape, and the
-    refusal keeps this module's own type so the CLI's exit-1 arm catches it."""
+    refusal keeps this module's own type so the CLI's load stage catches it."""
     neither = tmp_path / "neither"
     neither.mkdir()
     with pytest.raises(RoundViewsError):
@@ -1085,13 +1086,13 @@ def test_cli_frequency_accepts_a_standalone_analysis_document(tmp_path):
 
 
 def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
-    from jasper.cli.round_views import main
+    from jasper.cli import round_views as cli
 
     source = tmp_path / "notes.json"
     source.write_text(json.dumps({"notes": "not a measurement"}))
 
-    assert main(["frequency", str(source)]) == 1
-    assert "no usable frequency-response curves" in capsys.readouterr().err
+    assert cli.main(["frequency", str(source)]) == cli.EXIT_UNREADABLE
+    assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
 def test_cli_repeat_floor_writes_the_banked_record(tmp_path):
@@ -1122,17 +1123,19 @@ def test_cli_repeat_floor_refuses_stdout_as_a_destination(tmp_path, monkeypatch)
 
 
 def test_cli_repeat_floor_refuses_a_single_round(tmp_path, capsys):
-    from jasper.cli.round_views import main
+    from jasper.cli import round_views as cli
 
     r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    assert main(["repeat-floor", str(r1), "--out", str(tmp_path / "out.json")]) == 1
-    assert "error:" in capsys.readouterr().err
+    assert cli.main(
+        ["repeat-floor", str(r1), "--out", str(tmp_path / "out.json")]
+    ) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["status"] == "refused"
 
 
 def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path, capsys):
     """The record is written INSIDE the guarded block: an unwritable --out is
-    the same "could not be done" exit every other verb gives, not a traceback."""
-    from jasper.cli.round_views import main
+    the WRITE exit, not a traceback out of the record's own writer."""
+    from jasper.cli import round_views as cli
 
     r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
     r2 = _make_round_dir(
@@ -1143,8 +1146,10 @@ def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path
     # any uid, unlike a chmod-based unwritable directory (root ignores it).
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("")
-    assert main(["repeat-floor", str(r1), str(r2), "--out", str(blocker / "x.json")]) == 1
-    assert "error:" in capsys.readouterr().err
+    assert cli.main(
+        ["repeat-floor", str(r1), str(r2), "--out", str(blocker / "x.json")]
+    ) == cli.EXIT_WRITE_FAILED
+    assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
 
 
 def test_cli_repeat_floor_requires_an_explicit_out(tmp_path):
@@ -1157,30 +1162,89 @@ def test_cli_repeat_floor_requires_an_explicit_out(tmp_path):
         main(["repeat-floor", str(r1), str(r1)])
 
 
-def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
-    from jasper.cli.round_views import main
+def test_cli_reports_the_unreadable_exit_on_an_unreadable_round(tmp_path, capsys):
+    from jasper.cli import round_views as cli
 
-    rc = main(["per-seat", str(tmp_path / "nope")])
-    assert rc == 1
-    assert "error:" in capsys.readouterr().err
+    rc = cli.main(["per-seat", str(tmp_path / "nope")])
+    assert rc == cli.EXIT_UNREADABLE
+    assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
-def test_cli_reports_exit_1_when_the_view_cannot_be_written(tmp_path, capsys):
-    """An ``--out`` this process cannot create is the same contract an
-    unreadable round already has: the named exit code, not a traceback out of
-    the writer."""
-    from jasper.cli.round_views import main
+def test_cli_reports_the_write_exit_when_the_view_cannot_be_written(tmp_path, capsys):
+    """An ``--out`` this process cannot create has its own named exit code,
+    apart from the unreadable round's: the two send an operator to different
+    places, and neither is a traceback out of the writer."""
+    from jasper.cli import round_views as cli
 
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
 
-    rc = main([
+    rc = cli.main([
         "per-seat", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
     ])
 
-    assert rc == 1
-    assert "error:" in capsys.readouterr().err
+    assert rc == cli.EXIT_WRITE_FAILED
+    assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
+
+
+def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
+    tmp_path, capsys, monkeypatch
+):
+    """The WRITE stage claims ``OSError`` and nothing else.
+
+    The strict writer also rejects a payload carrying ``NaN`` — co-metrics over
+    partial bearing coverage builds one — and that is the run's doing, not the
+    filesystem's. Sending that operator to check permissions sends them to the
+    wrong place, so it falls to the refusal arm instead.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+
+    def _strict(*_args, **_kwargs):
+        raise ValueError("Out of range float values are not JSON compliant")
+
+    monkeypatch.setattr(cli, "write_report", _strict)
+
+    rc = cli.main(["per-seat", str(round_dir)])
+
+    assert rc == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["status"] == "refused"
+
+
+def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
+    tmp_path, capsys, monkeypatch
+):
+    """A packet with no ``entry_baseline`` key is corrupt, not a view declining.
+
+    The builder always emits the block — ``available: False`` is how it reports
+    a round that banked no take — so a bare ``KeyError`` there can only mean a
+    packet nothing built, which is the unreadable arm by the grade's own
+    docstring. Hand-built because no fixture can produce it.
+    """
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    read = cli.load_banked_round
+
+    def _without_the_block(path):
+        banked = read(path)
+        return dataclasses.replace(
+            banked,
+            packet={k: v for k, v in banked.packet.items() if k != "entry_baseline"},
+        )
+
+    monkeypatch.setattr(cli, "load_banked_round", _without_the_block)
+
+    rc = cli.main(["entry", str(round_dir)])
+
+    assert rc == cli.EXIT_UNREADABLE
+    assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
 def test_cli_writes_a_live_rounds_view_beside_the_caller(tmp_path, monkeypatch):
@@ -1315,8 +1379,8 @@ def test_the_position_graded_views_still_refuse_a_round_with_no_cloud_group(
 
     round_dir = bank_measure_round(tmp_path)
 
-    assert cli.main([*argv, str(round_dir)]) == 1
-    assert "error:" in capsys.readouterr().err
+    assert cli.main([*argv, str(round_dir)]) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["status"] == "refused"
 
 
 def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
@@ -1562,8 +1626,7 @@ def test_the_cli_entry_verb_writes_the_grade_beside_the_evidence(tmp_path, capsy
 def test_the_cli_entry_verb_exits_0_when_there_is_nothing_to_grade(tmp_path):
     """"No gradeable take" is an ANSWER, not an unreadable round.
 
-    Exit 1 is reserved for a round directory that could not be read at all, so
-    a caller can tell "I looked, and this round banked none" from "I could not
+    A caller can tell "I looked, and this round banked none" from "I could not
     look" by the exit code alone.
     """
     from jasper.cli import round_views as cli

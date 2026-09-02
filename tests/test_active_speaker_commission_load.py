@@ -827,8 +827,13 @@ def test_an_unarmed_ring_blocks_the_load_and_the_arming_is_what_lifts_it(
     stop working and the ring polarity above would be the only thing that
     noticed — a helper whose effect is asserted by one green test and nothing
     else. This runs the identical call with arming withheld and requires the
-    gate Wave 3 shipped to refuse it, naming BOTH conjuncts, so the helper's
-    two `setattr`s each have a failure that reaches an assertion.
+    gate Wave 3 shipped to refuse it.
+
+    Only the MARKER conjunct is asserted: with no `outputd.env` the endpoint
+    reads unarmed, while no `fanin.env` names no transport and ADR-0100 leaves
+    that a fan-in ON the ring, so the coupling half correctly does not refuse
+    here. Its refusal is pinned against real files in
+    `tests/test_transport_endpoint_preservation.py`.
     """
     result, *_ = _load(
         tmp_path,
@@ -846,7 +851,4 @@ def test_an_unarmed_ring_blocks_the_load_and_the_arming_is_what_lifts_it(
     )
     assert gate["passed"] is False, gate
     codes = {issue["code"] for issue in result["preflight"]["issues"]}
-    assert {
-        "commissioning_ring_feed_unarmed",
-        "commissioning_active_endpoint_unarmed",
-    } <= codes, codes
+    assert "commissioning_active_endpoint_unarmed" in codes, codes

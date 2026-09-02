@@ -815,8 +815,8 @@ class CamillaController:
         depth of the drop (ADR-0213).
 
         ``duck=False`` keeps the writer-lock serialization and drops the fader
-        bracket: a parameter write into running filters has no new graph whose
-        headroom could step, and the measurement session graph, through
+        bracket: a parameter write into running filters that moves no ``Gain``
+        steps no broadband level, and the measurement session graph, through
         :meth:`set_active_config_raw`, installs into a session that already
         holds the fader, so nothing is playing for a step to be loud against.
         """
@@ -899,22 +899,18 @@ class CamillaController:
         """Upload and apply a complete YAML config without changing the
         persisted config file path.
 
-        This is intentionally separate from ``set_config_file_path``:
-        live audition surfaces can change the running preference-EQ
-        draft without writing files or changing the durable rollback
-        anchor. Saved/apply flows should keep using the file-path
-        loader so validation, state recording, and rollback stay
-        boring and inspectable.
+        This is intentionally separate from ``set_config_file_path``: a live
+        audition surface, or a durable save rewriting the file already loaded,
+        can install a graph without moving the durable rollback anchor.
 
-        ``duck=False`` skips the fader bracket and keeps the writer lock. Taken
-        by the measurement session graph, whose graph is installed ONCE into a
-        session that has already claimed the fader and paused voice, so there
-        is no household programme for a gain step to be loud against; and by
-        the live preference-EQ edit, once
-        :func:`jasper.sound.live_edit.plan_live_edit` has established that
-        CamillaDSP will update the running filters in place rather than
-        rebuild the pipeline, so there is no gain step to hide. Every other
-        caller keeps ducking.
+        ``duck=False`` skips the fader bracket and keeps the writer lock. It is
+        only for a graph CamillaDSP will update in place with NO broadband gain
+        step, which the caller proves by comparing the running graph against
+        the wanted one
+        (:func:`jasper.sound.live_edit.plan_live_edit`) -- and for the
+        measurement session graph, installed ONCE into a session that has
+        already claimed the fader and paused voice, so there is no household
+        programme for a step to be loud against. Every other caller ducks.
         """
         if not isinstance(config, str) or not config.strip():
             if best_effort:

@@ -33,6 +33,7 @@ from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
+    coupling_value_removed,
     resolve_coupling,
 )
 
@@ -1482,3 +1483,25 @@ def read_persisted_coupling(
     except OSError:
         return None
     return resolve_coupling(read_value(text, COUPLING_ENV_VAR))
+
+
+def persisted_coupling_feeds_ring(
+    env_path: str | os.PathLike = FANIN_ENV_PATH,
+) -> bool:
+    """Does ``fanin.env`` leave fan-in filling Ring A?
+
+    ADR-0100 left one transport, so ``jasper-fanin`` serves an absent key, an
+    empty value and :data:`COUPLING_SHM_RING` alike — and no file at all, loaded
+    as ``EnvironmentFile=-`` — while refusing anything else as a config-class
+    fault (exit 78, the unit parks). Naming nothing is therefore a fan-in ON the
+    ring; only a value this repo no longer recognizes says the ring is unfed.
+
+    A file that EXISTS but cannot be read or decoded is corruption rather than a
+    declaration and raises, leaving the caller to pick a direction;
+    :func:`read_persisted_coupling` folds that into ``None`` instead.
+    """
+    try:
+        text = Path(env_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return True
+    return not coupling_value_removed(read_value(text, COUPLING_ENV_VAR))
