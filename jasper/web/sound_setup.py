@@ -21,6 +21,7 @@ URL surface (after nginx strips either public prefix):
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/measurements saved driver and summed validation evidence
   GET  /active-speaker/baseline-profile active baseline compile/apply state
+  GET  /active-speaker/tuning-handoff copyable AI-operator handoff prompt
   POST /preview  preview a draft profile's response without touching live audio
   POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
@@ -2576,6 +2577,34 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
         status=str(payload["state"].get("status")),
         preflight=str(payload["preflight"].get("status")),
         rollback_available=str(bool(payload["state"].get("rollback_available"))),
+    )
+    return payload
+
+
+def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
+    """Mint the AI-operator handoff prompt and the binding it was minted for.
+
+    Read-only and audio-free. Readiness is the applied-baseline SSOT — the
+    same "a baseline is playing" fact the page already renders the active
+    profile card from — rather than a second notion of ready.
+    """
+
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.tuning_handoff import build_tuning_handoff
+
+    payload = build_tuning_handoff(
+        applied_baseline=load_applied_baseline_profile_state(),
+        design_draft=load_design_draft(),
+    )
+    log_event(
+        logger,
+        "sound.active_speaker_tuning_handoff",
+        status=str(payload["status"]),
+        reason=str(payload["reason"]),
+        design_draft_revision=str(payload["binding"]["design_draft_revision"]),
     )
     return payload
 
@@ -5408,6 +5437,7 @@ def _make_handler(
                 "/active-speaker/crossover-preview",
                 "/active-speaker/measurements",
                 "/active-speaker/baseline-profile",
+                "/active-speaker/tuning-handoff",
                 "/active-speaker/environment",
                 "/active-speaker/safe-playback",
                 "/active-speaker/calibration-level",
@@ -5483,6 +5513,15 @@ def _make_handler(
                     send_route_failure(
                         self._send_json, e, logger=logger,
                         event="sound.active_speaker_baseline_profile",
+                    )
+                return
+            if path == "/active-speaker/tuning-handoff":
+                try:
+                    self._send_json(_active_speaker_tuning_handoff_payload())
+                except Exception as e:  # noqa: BLE001
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_tuning_handoff",
                     )
                 return
             if path == "/active-speaker/environment":

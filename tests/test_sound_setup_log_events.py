@@ -85,13 +85,16 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # INFO under the existing sound.active_speaker_commission name, so the
     # distinct-name count is unchanged.
     #
+    # The 42nd name is the tuning handoff card's mint (#2883), which adds the
+    # usual INFO/route-failure pair.
+    #
     # The route-failure half of the vocabulary is emitted by the shared
     # send_route_failure owner rather than rendered here; the totals span both
     # so converging a call site can never quietly retire its event.
-    assert len(calls) + len(route_failures) == 97
+    assert len(calls) + len(route_failures) == 99
     names = {call.args[1].value for call in calls}
     names |= {_route_failure_event_name(call) for call in route_failures}
-    assert len(names) == 41
+    assert len(names) == 42
 
     # The delegated half of the vocabulary: an event this file no longer emits
     # itself but still NAMES, handed to the shared owner. Without this the
@@ -128,11 +131,11 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The reset and re-pin completions are the INFO calls of the topology
     # transaction; each also owns one ERROR branch in the POST dispatcher.
     # The warning count stays fixed.
-    assert levels == {"INFO": 57, "WARNING": 11, "ERROR": 29}
+    assert levels == {"INFO": 58, "WARNING": 11, "ERROR": 30}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 127 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 130 affected parent `%s` positions, not hand-picked examples.
 
     This includes the topology transaction wrappers and #2603's
     ``safety_profile_evaluation`` design-draft field.
@@ -166,11 +169,13 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # was not. The reset and re-pin completions add a final pair: each gains
     # a `reconcile_converging` field alongside its existing `reconcile_ok`,
     # extending the save path's still-running-past-the-wait-budget distinction
-    # (#3094) to the two siblings that share `trigger_reconcile`.
+    # (#3094) to the two siblings that share `trigger_reconcile`. The tuning
+    # handoff mint (#2883) adds three: its status, its optional not-ready
+    # reason, and the declaration revision the prompt was bound to.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 127
+    assert len(wrapped_fields) == 130
     assert hashlib.sha256(signature).hexdigest() == (
-        "973fb96d13ef22c6de61ffa8e9f770689cecdceed3829803c57fa4fa74cfcbaf"
+        "76935a3d2040d4bae94526f39bae7b5f020be28c20c2ed61ed8757679bb7bd82"
     )
 
 

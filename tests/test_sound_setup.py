@@ -8679,3 +8679,115 @@ def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
         "speaker_group_id": "left", "role": "full_range", "identity_verified": False,
     })
     assert park_kwargs == {}
+
+
+@pytest.mark.parametrize(
+    "applied, expected_status, expected_reason, has_prompt",
+    [
+        ({"status": "applied"}, "ready", None, True),
+        (None, "not_ready", "no_applied_baseline", False),
+    ],
+)
+def test_tuning_handoff_is_gated_on_a_playing_baseline(
+    monkeypatch, applied, expected_status, expected_reason, has_prompt
+):
+    """The card mints only once the executor chain produced a playing baseline.
+
+    No tuning flow may be a prerequisite for USING the speaker (#2883), so the
+    absence of an applied profile is a named not-ready, never a failure.
+    """
+    from jasper.active_speaker import tuning_handoff
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    payload = tuning_handoff.build_tuning_handoff(
+        applied_baseline=applied, design_draft={"revision": 5}
+    )
+
+    assert payload["kind"] == tuning_handoff.TUNING_HANDOFF_KIND
+    assert payload["status"] == expected_status
+    assert payload["reason"] == expected_reason
+    assert bool(payload["prompt"]) is has_prompt
+    # The binding is minted either way: the card names the speaker while it is
+    # still holding the prompt back.
+    assert payload["binding"]["hostname"] == "jts7.local"
+    assert payload["binding"]["design_draft_revision"] == 5
+    assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/setup/"
+
+
+def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
+    monkeypatch,
+):
+    """Hostname-derived, revision-stamped, and free of anything secret.
+
+    A prompt is minted to be pasted into a third-party chat session, so every
+    field in it is disclosed by construction (non-negotiable 3). The default
+    ``jts.local`` must never leak in either: it resolves to *a* box, so a
+    printed one sends its reader to the wrong speaker silently.
+    """
+    from jasper.active_speaker import tuning_handoff
+    from jasper.identity import DEFAULT_HOSTNAME
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    payload = tuning_handoff.build_tuning_handoff(
+        applied_baseline={"status": "applied"}, design_draft={"revision": 5}
+    )
+    prompt = payload["prompt"]
+    binding = payload["binding"]
+
+    assert "jts7.local" in prompt
+    assert DEFAULT_HOSTNAME not in prompt
+    assert str(binding["design_draft_revision"]) in prompt
+    # The pointer targets: the orientation verb and the program door, by their
+    # installed paths. Their behaviour is theirs to own; the prompt only names
+    # them, and must keep naming ones that exist.
+    assert tuning_handoff.ORIENTATION_COMMAND in prompt
+    assert tuning_handoff.PROGRAM_DOOR_COMMAND in prompt
+
+    assert "peer_id" not in binding
+    for field in ("token", "secret", "psk", "password", "key="):
+        assert field not in prompt.lower()
+
+
+def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
+    from jasper.active_speaker import tuning_handoff
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: {"status": "applied"},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda *a, **k: {"status": "ready_for_review", "revision": 2},
+    )
+    server, base = _start_sound_server(tmp_path)
+    try:
+        with urllib.request.urlopen(base + "/active-speaker/tuning-handoff") as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert payload["kind"] == tuning_handoff.TUNING_HANDOFF_KIND
+    assert payload["status"] == "ready"
+    assert payload["binding"]["design_draft_revision"] == 2
+    assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
+        payload["binding"]
+    )
+
+
+def test_sound_module_hands_off_to_an_ai_operator_only_once_a_baseline_plays():
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+
+    proc = subprocess.run(
+        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert {"tuningHandoffCardMintsAndGoesStale": True} in out["results"]
