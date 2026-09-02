@@ -80,6 +80,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement import gating
+from jasper.json_fields import finite_float as _finite
 
 #: Transform length for the pre/post-gate magnitude comparison, and the
 #: ceiling of the "literal" (un-intersected) evaluation band. Both are the
@@ -325,13 +326,6 @@ def _relative_delay_ms(
     if reflection_toa_ms is None or direct_peak_ms is None:
         return None
     return reflection_toa_ms - direct_peak_ms
-
-
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    f = float(value)
-    return f if math.isfinite(f) else None
 
 
 def _entanglement_floor(

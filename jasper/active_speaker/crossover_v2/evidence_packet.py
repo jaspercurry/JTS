@@ -138,6 +138,7 @@ from jasper.audio_measurement.evidence_identity import (
 # constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.json_fields import finite_float
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
@@ -166,7 +167,6 @@ from .feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
-    finite_number,
     read_feature_verdicts,
 )
 from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
@@ -672,7 +672,7 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
     (``clean``, ``is_dip``, ``controls_ok``, ``gain_plan_snr_floor_ok``) falls
     through to the passthrough already — unlike in
-    :func:`~.feature_classification.finite_number`, which needs one because its
+    :func:`~jasper.json_fields.finite_float`, which needs one because its
     check includes ``int``.
 
     Scoped to the two blocks whose sources are written with a plain
@@ -859,7 +859,7 @@ def _member_curve(values: Any, n_bins: int) -> list[float] | None:
     was actually taken over in every bin. Refusing the whole row keeps one n for
     the whole curve — and the row is counted, never dropped silently.
 
-    :func:`~.feature_classification.finite_number` does the per-sample work
+    :func:`~jasper.json_fields.finite_float` does the per-sample work
     rather than a second copy of its three traps (``bool`` is an ``int``,
     ``float("1037")`` succeeds, an arbitrary-precision ``int`` raises on
     ``float()``).
@@ -868,7 +868,7 @@ def _member_curve(values: Any, n_bins: int) -> list[float] | None:
         return None
     curve: list[float] = []
     for value in values:
-        number = finite_number(value)
+        number = finite_float(value)
         if number is None:
             return None
         curve.append(number)
@@ -2135,7 +2135,7 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
             f"(null_registry.reason={registry.get('reason')!r}), so its "
             "tau_ladder_us is the no-ladder sentinel rather than a delay"
         )
-    tau_us = finite_number(registry.get("tau_ladder_us")) if not refusal else None
+    tau_us = finite_float(registry.get("tau_ladder_us")) if not refusal else None
     if not refusal and (tau_us is None or tau_us <= 0.0):
         refusal = (
             "the interference-null registry reported no usable fitted ladder "
@@ -2497,14 +2497,14 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
                 for role, value in _mapping(
                     candidate.get("role_attenuations_db")
                 ).items()
-                if finite_number(value) is not None
+                if finite_float(value) is not None
             },
             {
                 str(role): bool(_mapping(entry).get("trim_pinned") is True)
                 for role, entry in linearization.items()
             },
         ),
-        "delay_us": (finite_number(alignment.get("delay_us")), None),
+        "delay_us": (finite_float(alignment.get("delay_us")), None),
         "polarity": (
             polarity if isinstance(polarity, str) and polarity else None,
             (
@@ -2514,7 +2514,7 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
             ),
         ),
         "crossover_fc_hz": (
-            finite_number(_mapping(region).get("fc_hz")), None,
+            finite_float(_mapping(region).get("fc_hz")), None,
         ),
     }
     return {

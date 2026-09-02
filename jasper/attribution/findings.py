@@ -39,11 +39,12 @@ be checked rather than believed.
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
+
+from jasper.json_fields import finite_float
 
 from .closed_sets import CONFIDENCE_TIERS, CONFIDENCE_UNSURE, PROBES
 from .mechanisms import MechanismError, mechanism_spec
@@ -200,11 +201,9 @@ class FindingError(ValueError):
 
 
 def _finite(value: Any, *, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise FindingError(f"{field_name} must be a number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise FindingError(f"{field_name} must be finite")
+    number = finite_float(value)
+    if number is None:
+        raise FindingError(f"{field_name} must be a finite number")
     return number
 
 

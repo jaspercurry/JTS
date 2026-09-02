@@ -19,6 +19,22 @@ from typing import Any, Collection, Mapping
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 
+def finite_float(value: Any) -> float | None:
+    """One real number out of untyped JSON, or ``None`` — never a coercion.
+
+    ``bool`` is an ``int`` and a numeric string is something ``float`` accepts,
+    so both are rejected; an arbitrary-precision ``int`` is legal JSON and
+    raises ``OverflowError`` rather than returning ``inf``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 @dataclass(frozen=True)
 class JsonFields:
     """Parse common JSON field shapes using a domain-owned error type."""
@@ -147,7 +163,7 @@ class JsonFields:
     def finite_number(self, value: Any, field_name: str) -> float:
         try:
             result = float(value)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise self.error_type(f"{field_name} must be numeric") from exc
         if not math.isfinite(result):
             raise self.error_type(f"{field_name} must be finite")

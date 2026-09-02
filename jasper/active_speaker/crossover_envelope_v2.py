@@ -49,6 +49,7 @@ import logging
 import time
 from typing import Any, Mapping
 
+from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from .angle_capture import AngleCaptureRequest, walk_price
 from .angle_capture_spool import peek_staged_angle_request
@@ -280,21 +281,6 @@ _ROLE_ORDER = {"woofer": 0, "tweeter": 1}
 # disclosure only needs the top of the ladder, where an uncorrected driver's
 # natural rolloff is otherwise invisible on every other screen.
 _TOP_OCTAVES_HZ = ("8000", "12000", "16000")
-
-
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        # An unbounded JSON integer (``10 ** 400``) RAISES here rather than
-        # returning inf, and every caller is reading bytes off disk on the
-        # wizard's main GET — an escaping conversion is a 500 on the whole
-        # entry page. Unreadable answers None, like every other value this
-        # cannot believe.
-        return None
-    return number if number == number and abs(number) != float("inf") else None
 
 
 def _linearization_octave_rows(

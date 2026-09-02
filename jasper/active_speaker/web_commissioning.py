@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import socket
 import subprocess
@@ -82,6 +81,7 @@ from jasper.audio_measurement.correction_lane import (
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -1006,14 +1006,6 @@ def _crossover_frequency_for_group(
             if frequency > 0:
                 return frequency
     return None
-
-
-def _finite(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def _transient_summed_level(
@@ -2298,13 +2290,8 @@ async def play_driver_capture_sweep(
         topology,
         applied_profile,
     )
-    resolved_locked_volume = locked_main_volume_db
-    if (
-        isinstance(resolved_locked_volume, bool)
-        or not isinstance(resolved_locked_volume, (int, float))
-        or not math.isfinite(float(resolved_locked_volume))
-        or float(resolved_locked_volume) > 0.0
-    ):
+    resolved_locked_volume = _finite(locked_main_volume_db)
+    if resolved_locked_volume is None or resolved_locked_volume > 0.0:
         return _refused_capture_sweep(
             "automatic_crossover_driver_level_invalid",
             "run the protected level check for this driver before recording it",
@@ -2313,7 +2300,7 @@ async def play_driver_capture_sweep(
         topology,
         role,
         applied_profile=applied_profile,
-        locked_main_volume_db=float(resolved_locked_volume),
+        locked_main_volume_db=resolved_locked_volume,
     )
     if planned_excitation.get("status") != "ready":
         return _refused_capture_sweep(
@@ -2390,7 +2377,7 @@ async def play_driver_capture_sweep(
                     speaker_group_id=speaker_group_id,
                     role=role,
                     level_dbfs=commissioning_gain_db,
-                    volume_limit_db=float(resolved_locked_volume),
+                    volume_limit_db=resolved_locked_volume,
                     startup_gate_calibration_level=startup_gate_level,
                     preset=preset,
                     crossover_preview=None,
@@ -2448,7 +2435,7 @@ async def play_driver_capture_sweep(
                         speaker_group_id=speaker_group_id,
                         role=role,
                         commissioning_gain_db=commissioning_gain_db,
-                        expected_main_volume_db=float(resolved_locked_volume),
+                        expected_main_volume_db=resolved_locked_volume,
                         load_payload=load_payload,
                         read_running_config=read_running_config,
                         read_main_volume_db=read_main_volume_db,
