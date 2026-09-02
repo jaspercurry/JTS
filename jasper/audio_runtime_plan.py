@@ -49,10 +49,6 @@ from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     outputd_bridge_is_ring,
-    RING_CAMILLA_CHUNKSIZE,
-    RING_CAMILLA_ENABLE_RATE_ADJUST,
-    RING_CAMILLA_QUEUELIMIT,
-    RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
     capture_half,
     coupling_value_removed,
@@ -207,7 +203,6 @@ SourceKind = Literal[
     "generated_env",
     "device_profile",
     "packaged_default",
-    "route_policy",
     "lab_override",
 ]
 
@@ -454,8 +449,67 @@ class CorrectionLatencyEligibility:
 
 
 @dataclass(frozen=True)
+class EmittedCamillaGeometry:
+    """What the LOADED CamillaDSP config declares — read, never derived.
+
+    A DIFFERENT fact from the plan's ``JASPER_CAMILLA_*`` settings, which answer
+    what an emitter's fallback WOULD resolve. The two legitimately differ: a
+    graph built end-to-end on the ring passes
+    :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` explicitly, and an
+    ordinary graph's chunk is clamped to the ring's capacity by
+    ``resolve_camilla_latency_for_devices``. A surface that reports only the
+    settings therefore names a geometry no config on the box need carry.
+    """
+
+    config_path: str
+    chunksize: int | None
+    target_level: int | None
+    capture_device: str | None
+    playback_device: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "config_path": self.config_path,
+            "chunksize": self.chunksize,
+            "target_level": self.target_level,
+            "capture_device": self.capture_device,
+            "playback_device": self.playback_device,
+        }
+
+
+def _emitted_camilla_geometry(
+    config_path: str | None,
+    camilla_devices: Mapping[str, Any] | None,
+) -> EmittedCamillaGeometry | None:
+    if not config_path or not camilla_devices:
+        return None
+
+    def _int(key: str) -> int | None:
+        value = camilla_devices.get(key)
+        return value if isinstance(value, int) else None
+
+    def _text(key: str) -> str | None:
+        value = camilla_devices.get(key)
+        return value if isinstance(value, str) and value else None
+
+    return EmittedCamillaGeometry(
+        config_path=config_path,
+        chunksize=_int("chunksize"),
+        target_level=_int("target_level"),
+        capture_device=_text("capture_device"),
+        playback_device=_text("playback_device"),
+    )
+
+
+@dataclass(frozen=True)
 class AudioRuntimePlan:
-    """Resolved audio settings plus route-policy errors."""
+    """Resolved audio settings plus route-policy errors.
+
+    ``settings`` is POLICY — what the layered env/floor resolution answers, i.e.
+    what an emitter's fallback would read. ``camilla_emitted`` is OBSERVATION —
+    what the loaded config declares. Distinct facts that legitimately differ; see
+    :class:`EmittedCamillaGeometry`.
+    """
 
     profile_id: str
     profile_label: str
@@ -469,6 +523,7 @@ class AudioRuntimePlan:
     correction_latency_eligibility: CorrectionLatencyEligibility
     route_policy_errors: tuple[str, ...] = ()
     plan_warnings: tuple[str, ...] = ()
+    camilla_emitted: EmittedCamillaGeometry | None = None
 
     def setting(self, key: str) -> RuntimeSetting:
         for setting in self.settings:
@@ -513,6 +568,11 @@ class AudioRuntimePlan:
             "route_profile": self.route_profile.to_dict(),
             "route_config_hash": self.route_config_hash,
             "camilla_config_hash": self.camilla_config_hash,
+            "camilla_emitted": (
+                self.camilla_emitted.to_dict()
+                if self.camilla_emitted is not None
+                else None
+            ),
             "route_latency_identity": self.route_latency_identity(),
             "correction_latency_eligibility": (
                 self.correction_latency_eligibility.to_dict()
@@ -1307,10 +1367,6 @@ def build_audio_runtime_plan(
         override_label=override_label,
         fanin_label=fanin_env_label,
     )
-    camilla_chunksize_setting = _effective_camilla_chunksize_setting(
-        chunksize_setting=camilla_chunksize_setting,
-        coupling=str(coupling_setting.value),
-    )
     camilla_target_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_TARGET_LEVEL",
         default=DEFAULT_TARGET_LEVEL,
@@ -1322,10 +1378,6 @@ def build_audio_runtime_plan(
         override_label=override_label,
         generated_label=outputd_env_label,
         profile_id=profile_id,
-    )
-    camilla_target_setting = _effective_camilla_target_setting(
-        target_setting=camilla_target_setting,
-        coupling=str(coupling_setting.value),
     )
     outputd_period_setting = _resolve_profile_floor_int(
         key=OUTPUTD_PERIOD_KEY,
@@ -1441,6 +1493,9 @@ def build_audio_runtime_plan(
             camilla_devices=camilla_devices,
         ),
         plan_warnings=combined_plan_warnings,
+        camilla_emitted=_emitted_camilla_geometry(
+            correction_config_path, camilla_devices
+        ),
     )
 
 
@@ -1557,13 +1612,13 @@ def transport_topology_for_coupling(
                 "channels": post_dsp_channels,
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },
-            camilla={
-                "chunksize": RING_CAMILLA_CHUNKSIZE,
-                "target_level": RING_CAMILLA_TARGET_LEVEL,
-                "queuelimit": RING_CAMILLA_QUEUELIMIT,
-                "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
-                "capture_resampler": None,
-            },
+            # NO latency geometry here. A transport shape is one answer for
+            # every ring box, and the graphs on those boxes carry different
+            # chunk/target (a floor clamped to the ring's capacity, or the
+            # certified pair on an end-to-end ring graph). The plan answers
+            # that axis twice, per box: `settings` for policy and
+            # `camilla_emitted` for what the loaded config declares.
+            camilla={"capture_resampler": None},
             outputd_content_source="shm_ring",
         )
     loopback_playback = camilla_playback_device or DEFAULT_PLAYBACK_DEVICE
@@ -2172,7 +2227,7 @@ def outputd_latency_floor_actions(
             actions.append(RuntimeEnvAction("set", key, str(setting.value)))
         elif key in base_values:
             actions.append(RuntimeEnvAction("unset", key))
-        elif setting.source_kind in {"device_profile", "route_policy"}:
+        elif setting.source_kind == "device_profile":
             actions.append(RuntimeEnvAction("set", key, str(setting.value)))
         else:
             actions.append(RuntimeEnvAction("unset", key))
@@ -2416,97 +2471,6 @@ def _resolve_profile_floor_int(
         base_label=base_label,
         override_label=override_label,
         generated_label=generated_label,
-    )
-
-
-def _effective_camilla_target_setting(
-    *,
-    target_setting: RuntimeSetting,
-    coupling: str,
-) -> RuntimeSetting:
-    """Return the Camilla target this route's POLICY names.
-
-    In the ordinary ALSA loopback topology, CamillaDSP's target_level is a real
-    playback-buffer latency/stability knob. Under shm_ring the route policy is
-    the validated ring geometry, and the route plan/hash is kept on it so it
-    describes the transport rather than the loopback profiles' env floor.
-
-    NOT a claim about the emitted YAML, which this once said and did not check:
-    only the callers that pass the ring set explicitly (the armed active path,
-    the fresh-install boot graph) put target 128 in a config. Every other ring
-    graph carries the box's own floor — jts.local runs 1536 across the ring
-    healthily — because ``resolve_camilla_latency_for_devices`` clamps only
-    CHUNKSIZE, the one field the ring's capacity actually bounds.
-    """
-
-    normalized = resolve_coupling(coupling)
-    if normalized == COUPLING_SHM_RING:
-        if (
-            target_setting.value == RING_CAMILLA_TARGET_LEVEL
-            and target_setting.source_kind == "route_policy"
-        ):
-            return target_setting
-        warnings = list(target_setting.warnings)
-        if target_setting.value != RING_CAMILLA_TARGET_LEVEL:
-            warnings.append(
-                "JASPER_CAMILLA_TARGET_LEVEL effective value is "
-                f"{RING_CAMILLA_TARGET_LEVEL} under shm_ring; "
-                f"{target_setting.value} from {target_setting.source} is the "
-                "loopback/hardware-floor value, not the ring runtime value"
-            )
-        return RuntimeSetting(
-            key=target_setting.key,
-            value=RING_CAMILLA_TARGET_LEVEL,
-            source_kind="route_policy",
-            source="shm_ring validated ring geometry",
-            unit=target_setting.unit,
-            override_value=target_setting.override_value,
-            generated_value=target_setting.generated_value,
-            operator_value=target_setting.operator_value,
-            warnings=tuple(warnings),
-        )
-    return target_setting
-
-
-def _effective_camilla_chunksize_setting(
-    *,
-    chunksize_setting: RuntimeSetting,
-    coupling: str,
-) -> RuntimeSetting:
-    """Return the Camilla chunksize this route's POLICY names.
-
-    The twin of :func:`_effective_camilla_target_setting`, and the same
-    correction applies: this is the ring's certified geometry, not a read of the
-    emitted config. What a generated YAML carries is the box's floor clamped to
-    the ring's capacity (``resolve_camilla_latency_for_devices``), so a box whose
-    floor already fits — jts.local's 256 — emits that floor, not this value.
-    """
-
-    if resolve_coupling(coupling) != COUPLING_SHM_RING:
-        return chunksize_setting
-    if (
-        chunksize_setting.value == RING_CAMILLA_CHUNKSIZE
-        and chunksize_setting.source_kind == "route_policy"
-    ):
-        return chunksize_setting
-    warnings = list(chunksize_setting.warnings)
-    if chunksize_setting.value != RING_CAMILLA_CHUNKSIZE:
-        warnings.append(
-            "JASPER_CAMILLA_CHUNKSIZE effective value is "
-            f"{RING_CAMILLA_CHUNKSIZE} under shm_ring; "
-            f"{chunksize_setting.value} from {chunksize_setting.source} is the "
-            "loopback/hardware-floor value, not the ring runtime value"
-        )
-    return RuntimeSetting(
-        key=chunksize_setting.key,
-        value=RING_CAMILLA_CHUNKSIZE,
-        source_kind="route_policy",
-        source="shm_ring validated ring geometry",
-        unit=chunksize_setting.unit,
-        override_value=chunksize_setting.override_value,
-        generated_value=chunksize_setting.generated_value,
-        operator_value=chunksize_setting.operator_value,
-        warnings=tuple(warnings),
     )
 
 

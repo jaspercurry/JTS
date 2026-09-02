@@ -1283,6 +1283,43 @@ def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
     assert "one knob has two homes" in r.detail
 
 
+def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
+    monkeypatch, tmp_path
+):
+    """The line carries BOTH numbers, and a difference is not a finding.
+
+    Reporting policy alone printed a chunk no config on the box carried while
+    jts4 crash-looped on 1024. The difference is expected on a clamped box and
+    on the ACTIVE ring; the `camilla ring chunk` check owns the failure.
+    """
+    config = tmp_path / "sound_current.yml"
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 256\n"
+        "  target_level: 1536\n"
+    )
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        outputd_env={
+            "JASPER_CAMILLA_CHUNKSIZE": "1024",
+            "JASPER_CAMILLA_TARGET_LEVEL": "2048",
+        },
+        route_mode="solo",
+        correction_config_path=str(config),
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "ok"
+    assert "camilla_policy=1024/2048" in r.detail
+    assert "camilla_emitted=256/1536" in r.detail
+
+
 def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
     # The route is unsupported only when the bond actually reads outputd's
     # dac_content lane, so the plan carries that fact alongside the route mode.
