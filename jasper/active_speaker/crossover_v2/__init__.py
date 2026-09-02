@@ -68,6 +68,9 @@ order — so this list is what exists, not a plan:
 * :mod:`.commanded` — what an apply asks the summed response to CHANGE: the
   applied graph's predicted sum minus the predicted sum of the graph it
   replaces, which is the delta probe's commanded axis.
+* :mod:`.candidate_comparator` — N candidates played at one pose, ranked by
+  their own delta-probe gradings: which realized what it commanded best, and
+  whether the top two are further apart than the repeat floor.
 * :mod:`.evidence_packet` — one round's banked evidence, gathered into one
   document a reader can answer from.
 * :mod:`.harmonic_evidence` — H2/H3 read out of one round's banked MEASURE
