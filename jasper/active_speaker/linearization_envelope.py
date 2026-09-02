@@ -27,8 +27,6 @@ for the adopted design this module implements:
     allowed_depth(f) = min(
         mic_trust_limit(f, tier),
         repeatability_limit(f, sigma(f)),
-        linearity_limit(f),
-        invertibility_limit(f),
         class_prior_limit(f, class),
     )
 
@@ -93,8 +91,6 @@ class ReasonCode(StrEnum):
     FITTED = "envelope_fitted"
     LIMITED_BY_MIC_TIER = "envelope_limited_by_mic_tier"
     LIMITED_BY_REPEATABILITY = "envelope_limited_by_repeatability"
-    LIMITED_BY_NONLINEARITY = "envelope_limited_by_nonlinearity"
-    LIMITED_BY_EXCESS_PHASE = "envelope_limited_by_excess_phase"
     LIMITED_BY_CLASS_PRIOR = "envelope_limited_by_class_prior"
     LIMITED_BY_SPATIAL_EXCLUSION = "envelope_limited_by_spatial_exclusion"
     LIMITED_BY_POSITION_STABILITY = "envelope_limited_by_position_stability"
@@ -333,34 +329,6 @@ def class_prior_limit(freqs_hz: np.ndarray, *, driver_class: str) -> np.ndarray:
     return _flat_then_taper(freqs_hz, full_to_hz, taper_zero_hz)
 
 
-def linearity_limit(freqs_hz: np.ndarray) -> np.ndarray:
-    """STUB — design doc build-order item 5 ("multi-level linearity").
-    Returns the ceiling sentinel everywhere, imposing no constraint yet.
-
-    Finite sentinel, never ``np.inf``: ``inf`` would never win the min, but
-    mixing it into a stack of otherwise-finite values breaks any comparison,
-    sort, or serialization of the raw term array, and
-    :func:`compose_envelope`'s ``FITTED``-at-sentinel detection reads the
-    winning value against this exact constant. Every term here stays finite.
-    """
-    return np.full_like(freqs_hz, ENVELOPE_CEILING_SENTINEL_DB, dtype=np.float64)
-
-
-def invertibility_limit(freqs_hz: np.ndarray) -> np.ndarray:
-    """STUB — design doc build-order item 6 ("excess-phase ADVISORY — build
-    last"). Same finite-sentinel contract as :func:`linearity_limit`.
-
-    Excess-phase correction is explicitly advisory in the design doc:
-    "Evidence can EARN depth beyond the priors (clean measured excess phase +
-    closed-loop verification passing...) but never beyond what the
-    measurement chain resolves". An excess-phase estimate without that
-    verification backstop is exactly the unverified model claim this envelope
-    exists to bound, so do not wire this to a real computation before the
-    closed-loop achieved-vs-predicted check lands.
-    """
-    return np.full_like(freqs_hz, ENVELOPE_CEILING_SENTINEL_DB, dtype=np.float64)
-
-
 # --------------------------------------------------------------------------- #
 # Cloud-derived terms
 #
@@ -569,7 +537,7 @@ class EnvelopeCurve:
     final cliff-smoothing pass blended neighbouring bins' numbers together.
     ``terms`` holds every term's FULL, unmasked per-bin curve — not just
     where it won — for diagnostics. Its KEYS are the terms that actually
-    composed this curve: the five original ones always, plus
+    composed this curve: the three original ones always, plus
     ``LIMITED_BY_SPATIAL_EXCLUSION`` and/or
     ``LIMITED_BY_POSITION_STABILITY`` only when the caller supplied that
     cloud evidence, so a consumer must not assume a fixed key set.
@@ -620,8 +588,6 @@ def compose_envelope(
         allowed_depth(f) = min(
             mic_trust_limit(f, tier),
             repeatability_limit(f, sigma(f)),
-            linearity_limit(f),
-            invertibility_limit(f),
             class_prior_limit(f, class),
         )
 
@@ -794,7 +760,7 @@ def compose_envelope(
             f"sigma_db must be an ndarray, None, or omitted; got {type(sigma_db)!r}"
         )
 
-    # The five original terms keep their order, so an argmin tie among them
+    # The three original terms keep their order, so an argmin tie among them
     # resolves exactly as it always did; the optional cloud terms append.
     # Position stability joins the SMOOTHED group -- it is an ordinary
     # per-band limit whose octave-band steps should be blended like any other
@@ -805,8 +771,6 @@ def compose_envelope(
             ReasonCode.LIMITED_BY_REPEATABILITY,
             repeatability_limit(resolved_sigma_db, tier=mic_tier, grid_hz=grid_hz),
         ),
-        EnvelopeTerm(ReasonCode.LIMITED_BY_NONLINEARITY, linearity_limit(grid_hz)),
-        EnvelopeTerm(ReasonCode.LIMITED_BY_EXCESS_PHASE, invertibility_limit(grid_hz)),
         EnvelopeTerm(
             ReasonCode.LIMITED_BY_CLASS_PRIOR,
             class_prior_limit(grid_hz, driver_class=driver_class),
