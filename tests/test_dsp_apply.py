@@ -993,6 +993,54 @@ async def test_a_failed_prepare_leaves_the_candidate_as_it_was_found(tmp_path: P
     assert state.rollback_attempted is False
 
 
+def _never_valid(path: str | Path) -> CamillaConfigValidationResult:
+    return CamillaConfigValidationResult(
+        status=ValidationStatus.INVALID_CONFIG, path=str(path)
+    )
+
+
+@pytest.mark.parametrize(
+    ("validate", "expected_sha", "result"),
+    [
+        (_never_valid, None, "invalid_config"),
+        (_always_valid, "0" * 64, DSP_PROOF_CANDIDATE_CHANGED),
+    ],
+)
+async def test_a_candidate_refused_before_load_is_put_back_in_place(
+    tmp_path: Path, validate, expected_sha, result
+):
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nrunning: true\n")
+    pristine = cfg.read_text()
+    loaded: list[str] = []
+
+    def prepare() -> None:
+        cfg.write_text("---\nrejected: true\n")
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="sound_reconcile",
+            candidate_path=cfg,
+            prior_config_path=cfg,
+            load_config=load,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=validate,
+            expected_candidate_sha256=expected_sha,
+        )
+
+    state = excinfo.value.state
+    assert state.result == result
+    assert cfg.read_text() == pristine
+    assert loaded == []
+    assert state.rollback_attempted is False
+
+
 async def test_a_rejected_apply_keeps_the_graph_it_emitted_when_not_in_place(
     tmp_path: Path,
 ):

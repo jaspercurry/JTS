@@ -749,7 +749,7 @@ async def _maybe_call(fn: Callable[[], Any] | None) -> Any:
 
 # Phases from which CamillaDSP may already hold the candidate graph. Before
 # them there is nothing loaded, so no rollback verdict is meaningful.
-_PHASES_AFTER_LOAD_BEGINS = frozenset({"load", "confirm", "persist"})
+_PHASES_AFTER_LOAD_BEGINS = frozenset({"load", "confirm"})
 
 
 def _restore_candidate_bytes(candidate_restore: tuple[Path, str]) -> str | None:
@@ -767,6 +767,19 @@ def _restore_candidate_bytes(candidate_restore: tuple[Path, str]) -> str | None:
     except OSError as e:
         return f"candidate restore failed: {e}"
     return None
+
+
+def _abandon_candidate(
+    state: DspApplyState, candidate_restore: tuple[Path, str] | None
+) -> None:
+    """A candidate refused before load: put the file back, claim no rollback.
+
+    Not ``rollback_attempted``: that is what ``cli/doctor/audio`` turns red,
+    and nothing was loaded to roll back.
+    """
+
+    if candidate_restore is not None:
+        state.rollback_error = _restore_candidate_bytes(candidate_restore)
 
 
 async def _rollback(
@@ -925,13 +938,8 @@ async def apply_dsp_config(
                     state.result = "prepare_failed"
                     state.prepare_error = str(e)
                     # Half a graph is not evidence the way a rejected one is,
-                    # so this restores in place or not. Not
-                    # ``rollback_attempted``: that is what ``cli/doctor/audio``
-                    # turns red, and nothing was loaded to roll back.
-                    if candidate_restore is not None:
-                        state.rollback_error = _restore_candidate_bytes(
-                            candidate_restore
-                        )
+                    # so this restores in place or not.
+                    _abandon_candidate(state, candidate_restore)
                     state.finished_at = _utc_now()
                     record_dsp_apply_state(state, state_path=state_path)
                     raise DspApplyError(f"DSP config preparation failed: {e}", state) from e
@@ -960,6 +968,7 @@ async def apply_dsp_config(
             state.validator = validation.to_dict()
             if not validation.ok_to_apply:
                 state.result = validation.status.value
+                _abandon_candidate(state, candidate_restore)
                 state.finished_at = _utc_now()
                 record_dsp_apply_state(state, state_path=state_path)
                 raise DspApplyError(
@@ -975,6 +984,7 @@ async def apply_dsp_config(
                 )
                 if proof_failure is not None:
                     state.result, proof_message = proof_failure
+                    _abandon_candidate(state, candidate_restore)
                     state.finished_at = _utc_now()
                     record_dsp_apply_state(state, state_path=state_path)
                     raise DspApplyError(proof_message, state)
