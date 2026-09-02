@@ -20,7 +20,10 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    CANDIDATE_GRADINGS_UNAVAILABLE,
+    NO_CANDIDATE_TAKES,
     REPEAT_FLOOR_UNMEASURED,
     REPEAT_FLOOR_UNREADABLE,
     REPEAT_FLOOR_UNUSABLE,
@@ -34,6 +37,7 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
 )
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_evidence import (
     ITERATION_PLATEAU_DB,
     MEASURED_BENEFIT_MARGIN_DB,
@@ -440,3 +444,62 @@ def test_the_history_is_bounded_at_max_rounds(tmp_path):
     assert [row["round_id"] for row in history["rounds"]] == [
         f"relay_r{i}" for i in range(3, 11)
     ]
+
+
+# --------------------------------------------------------------------------- #
+# candidates (#3498 WP4)
+# --------------------------------------------------------------------------- #
+
+
+def _bank_candidate_take(
+    round_dir: Path, *, take_id: str, candidate_id: str, position_deg: int,
+) -> None:
+    """One banked lateral take carrying the candidate it measured — the shape
+    ``record_index.bundle_measurements`` selects on, written directly."""
+    positions = round_dir / "positions"
+    positions.mkdir(parents=True, exist_ok=True)
+    (positions / f"{take_id}.json").write_text(json.dumps({
+        "kind": POSITION_EVIDENCE_KIND,
+        "phase": PHASE_LATERAL,
+        "candidate_id": candidate_id,
+        "position_deg": position_deg,
+        "vertical_deg": 0,
+    }))
+
+
+def test_candidates_reads_absent_when_no_take_names_one(tmp_path):
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(session)
+    assert packet["candidates"]["available"] is False
+    assert packet["candidates"]["reason"] == NO_CANDIDATE_TAKES
+    assert "candidates" in {row["field"] for row in packet["not_evaluated"]}
+
+
+def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
+    session, _ = _bundle(tmp_path)
+    round_dir, _ = round_artifact_dir(session)
+    assert round_dir is not None
+    for take_id, candidate_id, deg in (
+        ("t1", "cand_b", 0), ("t2", "cand_a", 0), ("t3", "cand_a", -20),
+    ):
+        _bank_candidate_take(
+            round_dir, take_id=take_id, candidate_id=candidate_id,
+            position_deg=deg,
+        )
+    packet = build_crossover_evidence_packet(session)
+    block = packet["candidates"]
+    assert block["available"] is True
+    assert block["n_candidates"] == 2
+    assert [row["candidate_id"] for row in block["candidates"]] == [
+        "cand_a", "cand_b",
+    ]
+    assert block["candidates"][0]["n_takes"] == 2
+    assert block["candidates"][0]["poses"] == [
+        {"position_deg": -20, "vertical_deg": 0},
+        {"position_deg": 0, "vertical_deg": 0},
+    ]
+    # No round banks a delta probe per candidate yet, so the comparison is an
+    # absence with its own reason rather than an empty ranking.
+    assert block["comparison"]["reason"] == CANDIDATE_GRADINGS_UNAVAILABLE
+    assert "candidates" not in {row["field"] for row in packet["not_evaluated"]}
+    assert packet["packet_fingerprint"]
