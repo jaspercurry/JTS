@@ -1435,6 +1435,9 @@ class WakeLoop:
             def is_paused(self) -> bool:
                 return False
 
+            def last_failure_detail(self) -> str | None:
+                return None
+
             def supports_server_vad(self) -> bool:
                 return False
 
@@ -4968,6 +4971,9 @@ class WakeLoop:
             # the cap silently flatlining. See UsageStore.write_degraded.
             "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
+            # The provider's own reason for the outage that
+            # connection_paused only reports the existence of.
+            "connection_error": self._connection.last_failure_detail(),
             "mic_muted": self._mic_muted,
             "measurement_active": self._measurement_active.is_set(),
             "duck_active": self._ducker.is_ducked,

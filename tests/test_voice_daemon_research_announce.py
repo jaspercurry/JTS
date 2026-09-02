@@ -223,7 +223,9 @@ async def test_confirmation_guard_ladder_reads_immediately(gate: str):
     elif gate == "spend_cap":
         wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
     elif gate == "connection_paused":
-        wl._connection = types.SimpleNamespace(is_paused=lambda: True)
+        wl._connection = types.SimpleNamespace(
+            is_paused=lambda: True, last_failure_detail=lambda: None,
+        )
 
     scheduler = _MarkingScheduler()
     wl._play_dynamic_text = _play
