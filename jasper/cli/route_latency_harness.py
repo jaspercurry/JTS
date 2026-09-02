@@ -1042,7 +1042,9 @@ def _cmd_convert_pcap(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(result.summary_line())
-    return 0
+    # A refused capture produced a detections file that looks merely quiet.
+    # Fail so a harness run cannot pair against it (#3509).
+    return 1 if result.refusal else 0
 
 
 # --------------------------------------------------------------------------

@@ -18,15 +18,15 @@ import struct
 from jasper.route_latency import ref9891_pcap
 
 _DST_PORT = 9891
-_SAMPLE_COUNT = ref9891_pcap.PAYLOAD_BYTES // 2  # 256 int16s = 128 frames * 2 channels
+_FRAMES_PER_PKT = 128
 
 
-def _payload(peak_sample: int) -> bytes:
-    """One 512-byte S16LE stereo payload whose loudest sample is `peak_sample`."""
+def _payload(peak_sample: int, *, frames: int = _FRAMES_PER_PKT) -> bytes:
+    """One S16LE stereo payload of `frames` frames, loudest sample `peak_sample`."""
 
-    samples = [0] * _SAMPLE_COUNT
+    samples = [0] * (frames * 2)
     samples[0] = peak_sample
-    return struct.pack(f"<{_SAMPLE_COUNT}h", *samples)
+    return struct.pack(f"<{frames * 2}h", *samples)
 
 
 def _udp_packet(payload: bytes, *, dst_port: int = _DST_PORT) -> bytes:
@@ -75,8 +75,12 @@ def test_convert_pcap_to_detections_round_trip(tmp_path, monkeypatch):
     assert result.n_detections == 2
     assert result.threshold == ref9891_pcap.DEFAULT_THRESHOLD
     assert result.rt_minus_mono == float(base)
+    assert result.frames_per_packet == _FRAMES_PER_PKT
+    assert result.n_unexpected_size == 0
+    assert result.refusal is None
     assert result.summary_line() == (
-        "packets=6 detections=2 threshold=0.0060 rt_minus_mono=1700000000.000000"
+        "packets=6 detections=2 threshold=0.0060 rt_minus_mono=1700000000.000000 "
+        "frames_per_packet=128 unexpected_size=0 refusal=None"
     )
 
     # rt_ts and rt_minus_mono are both epoch-scale (~1.7e9); float64's ~15-17
@@ -97,8 +101,7 @@ def test_payloads_skips_non_9891_and_short_records(tmp_path):
     records = [
         _record(1, 0, _udp_packet(loud, dst_port=9999)),  # wrong port
         _record(1, 0, b"\x00" * 10),  # shorter than Ethernet+IPv4+UDP headers
-        _record(1, 0, _udp_packet(loud)[:-1]),  # truncated payload (511 bytes, not 512)
-        _record(1, 0, _udp_packet(loud)),  # the only packet that should survive
+        _record(1, 0, _udp_packet(loud)),  # the only packet on the port
     ]
     pcap_path = tmp_path / "ref9891.pcap"
     _write_pcap(pcap_path, records)
@@ -107,4 +110,61 @@ def test_payloads_skips_non_9891_and_short_records(tmp_path):
 
     assert len(yielded) == 1
     _ts, payload = yielded[0]
-    assert len(payload) == ref9891_pcap.PAYLOAD_BYTES
+    assert len(payload) == _FRAMES_PER_PKT * ref9891_pcap.BYTES_PER_FRAME
+
+
+def test_a_wider_period_is_read_as_frames_and_a_ragged_one_is_counted(tmp_path):
+    """#3509: the datagram's LENGTH is the period, not a 512-byte constant.
+
+    A box whose DAC runs a 1024-frame period publishes 4096-byte datagrams;
+    the old length equality dropped every one of them and reported a silent
+    capture. A payload that is not a whole number of frames is still not
+    decodable — it is counted rather than dropped in silence.
+    """
+    wide = _payload(20000, frames=1024)
+    records = [
+        _record(1, 0, _udp_packet(wide)),
+        _record(1, 100_000, _udp_packet(_payload(0, frames=1024))),
+        _record(1, 200_000, _udp_packet(wide[:-1])),  # 4095 B: not whole frames
+    ]
+    pcap_path = tmp_path / "ref9891.pcap"
+    _write_pcap(pcap_path, records)
+
+    result = ref9891_pcap.convert_pcap_to_detections(
+        pcap_path, tmp_path / "detections.jsonl"
+    )
+
+    assert result.frames_per_packet == 1024
+    assert result.n_packets == 2
+    assert result.n_detections == 1
+    assert result.n_unexpected_size == 1
+    assert result.refusal is None
+
+
+def test_an_all_zero_capture_is_refused_with_a_registered_code(tmp_path):
+    """A 150 s capture came back all zeros while music played (#3509).
+
+    Every downstream surface saw an empty detections file, which is what a
+    genuinely quiet room produces too — so the converter's own result has to
+    carry the difference.
+    """
+    silence = _payload(0)
+    records = [_record(1, us, _udp_packet(silence)) for us in (0, 100_000)]
+    pcap_path = tmp_path / "ref9891.pcap"
+    _write_pcap(pcap_path, records)
+
+    result = ref9891_pcap.convert_pcap_to_detections(
+        pcap_path, tmp_path / "detections.jsonl"
+    )
+
+    assert result.refusal == ref9891_pcap.REFUSAL_ALL_ZERO
+    assert result.refusal in ref9891_pcap.REFUSAL_CODES
+    assert result.n_packets == 2
+
+    empty = tmp_path / "empty.pcap"
+    _write_pcap(empty, [])
+    no_packets = ref9891_pcap.convert_pcap_to_detections(
+        empty, tmp_path / "none.jsonl"
+    )
+    assert no_packets.refusal == ref9891_pcap.REFUSAL_NO_PACKETS
+    assert no_packets.frames_per_packet is None

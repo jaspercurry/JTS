@@ -6,11 +6,14 @@
 route-latency harness's mic-detections JSONL (the electrical plane).
 
 Wire truth (``rust/jasper-outputd/src/main.rs``): headerless LE interleaved
-stereo int16 @ 48 kHz, one 128-frame period per datagram = 512 B payload.
+stereo int16 @ 48 kHz, one DAC period per datagram. The PERIOD is a per-box
+declaration, not a constant — this converter derives it from each datagram's
+length rather than assuming one, and reports every datagram that is not a whole
+number of frames instead of dropping it silently (#3509).
+
 Pcap timestamps are ``CLOCK_REALTIME``; the harness pairs on
 ``CLOCK_MONOTONIC``, so a single realtime-monotonic offset sampled on this
-host re-anchors them. Packet-granular peaks add a bounded 0-2.67 ms bias (one
-period).
+host re-anchors them. Packet-granular peaks add a bounded bias of one period.
 
 Exposed as the harness's ``convert-pcap`` subcommand
 (:mod:`jasper.cli.route_latency_harness`).
@@ -24,11 +27,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-PAYLOAD_BYTES = 512
-FRAMES_PER_PKT = 128
+# The tap is S16LE stereo BY CONTRACT (outputd's `i16_bytes` guard and the
+# chip-reference geometry validator both pin it), so a datagram's frame count
+# is its length divided by this and nothing has to be declared twice.
+BYTES_PER_FRAME = 2 * 2
 RATE = 48000
 DEFAULT_THRESHOLD = 0.006
 REFRACTORY_S = 0.250
+
+# Why a conversion is worthless, when it is. Closed vocabulary: the CLI keys
+# its exit status off these, so a new reason registers here.
+REFUSAL_NO_PACKETS = "no_packets"
+REFUSAL_ALL_ZERO = "all_zero"
+REFUSAL_CODES = frozenset({REFUSAL_NO_PACKETS, REFUSAL_ALL_ZERO})
 
 _REF_UDP_PORT = 9891
 
@@ -38,10 +49,13 @@ def payloads(path: Path) -> Iterator[tuple[float, bytes]]:
 
     Parses the global pcap header to detect byte order and timestamp
     resolution (legacy microsecond or nanosecond pcapng-style), then walks
-    packet records, defensively parsing Ethernet(14) + IPv4(IHL) + UDP(8) to
-    find UDP datagrams to port 9891 with exactly one period's payload.
-    Anything else (wrong port, truncated record, non-512-byte payload) is
-    silently skipped, mirroring tcpdump's own port filter at capture time.
+    packet records, defensively parsing Ethernet(14) + IPv4(IHL) + UDP(8).
+
+    Every datagram on the port is yielded WHATEVER its length: a payload that
+    is not a whole number of frames is the fact worth reporting, not one to
+    hide, so the caller classifies. Anything else (wrong port, a record too
+    short to hold the headers) is skipped, mirroring tcpdump's own port filter
+    at capture time.
     """
 
     with open(path, "rb") as f:
@@ -75,10 +89,7 @@ def payloads(path: Path) -> Iterator[tuple[float, bytes]]:
             dst_port = struct.unpack(">H", data[udp_off + 2 : udp_off + 4])[0]
             if dst_port != _REF_UDP_PORT:
                 continue
-            payload = data[udp_off + 8 :]
-            if len(payload) != PAYLOAD_BYTES:
-                continue
-            yield ts_s + ts_frac / ts_div, payload
+            yield ts_s + ts_frac / ts_div, data[udp_off + 8 :]
 
 
 @dataclass(frozen=True)
@@ -89,16 +100,25 @@ class ConversionResult:
     n_detections: int
     threshold: float
     rt_minus_mono: float
+    frames_per_packet: int | None
+    n_unexpected_size: int
+    refusal: str | None
 
     def summary_line(self) -> str:
-        """The operator-facing one-line summary (unchanged wording from the
-        original scratch script, so existing runbooks/logs stay comparable)."""
+        """The operator-facing one-line summary."""
 
-        return "packets=%d detections=%d threshold=%.4f rt_minus_mono=%.6f" % (
-            self.n_packets,
-            self.n_detections,
-            self.threshold,
-            self.rt_minus_mono,
+        return (
+            "packets=%d detections=%d threshold=%.4f rt_minus_mono=%.6f "
+            "frames_per_packet=%s unexpected_size=%d refusal=%s"
+            % (
+                self.n_packets,
+                self.n_detections,
+                self.threshold,
+                self.rt_minus_mono,
+                self.frames_per_packet,
+                self.n_unexpected_size,
+                self.refusal,
+            )
         )
 
 
@@ -118,17 +138,38 @@ def convert_pcap_to_detections(
     :class:`jasper.route_latency.impulse_detect.StreamingDetector`'s
     peak+refractory shape (this converter has no hysteresis band; see its
     module docstring for why the two aren't unified).
+
+    A capture carrying no usable datagram, or one carrying nothing but zeros,
+    is REFUSED (see ``REFUSAL_CODES``): the tap ran and the pipeline produced
+    an empty detections file, which is indistinguishable from "the speaker
+    played nothing" unless the result says so (#3509). The JSONL is still
+    written — a refusal is a verdict on the capture, not an I/O failure.
     """
 
     rt_minus_mono = time.clock_gettime(time.CLOCK_REALTIME) - time.monotonic()
-    n_pkts = n_det = 0
+    n_pkts = n_det = n_unexpected = 0
+    frames_per_packet: int | None = None
     last_det_mono: float | None = None
     above = False
+    all_zero = True
     with open(out_path, "w") as fo:
         for rt_ts, payload in payloads(pcap_path):
+            frames, remainder = divmod(len(payload), BYTES_PER_FRAME)
+            if frames == 0 or remainder:
+                n_unexpected += 1
+                continue
+            if frames_per_packet is None:
+                frames_per_packet = frames
+            elif frames != frames_per_packet:
+                # Still decodable, so it is converted — but a period that
+                # changes mid-capture means the datagram boundaries are not
+                # what the peak's ±1-period bias assumes.
+                n_unexpected += 1
             n_pkts += 1
-            vals = struct.unpack("<%dh" % (PAYLOAD_BYTES // 2), payload)
+            vals = struct.unpack("<%dh" % (frames * 2), payload)
             peak = max(abs(v) for v in vals) / 32768.0
+            if peak > 0.0:
+                all_zero = False
             mono = rt_ts - rt_minus_mono
             if peak >= threshold:
                 if not above and (
@@ -143,20 +184,31 @@ def convert_pcap_to_detections(
                 above = True
             else:
                 above = False
+    if n_pkts == 0:
+        refusal: str | None = REFUSAL_NO_PACKETS
+    elif all_zero:
+        refusal = REFUSAL_ALL_ZERO
+    else:
+        refusal = None
     return ConversionResult(
         n_packets=n_pkts,
         n_detections=n_det,
         threshold=threshold,
         rt_minus_mono=rt_minus_mono,
+        frames_per_packet=frames_per_packet,
+        n_unexpected_size=n_unexpected,
+        refusal=refusal,
     )
 
 
 __all__ = [
+    "BYTES_PER_FRAME",
     "DEFAULT_THRESHOLD",
-    "FRAMES_PER_PKT",
-    "PAYLOAD_BYTES",
     "RATE",
     "REFRACTORY_S",
+    "REFUSAL_ALL_ZERO",
+    "REFUSAL_CODES",
+    "REFUSAL_NO_PACKETS",
     "ConversionResult",
     "convert_pcap_to_detections",
     "payloads",
