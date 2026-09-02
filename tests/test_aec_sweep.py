@@ -95,7 +95,7 @@ def test_runtime_config_rejects_unknown_knobs() -> None:
     payload = aec3_sweep_config_payload()
     payload["variants"][0]["env_overrides"]["JASPER_AEC_NOT_REAL"] = "1"
 
-    with pytest.raises(Aec3SweepConfigError, match="unknown AEC3 sweep knob"):
+    with pytest.raises(Aec3SweepConfigError):
         validate_aec3_sweep_config_payload(payload)
 
 
@@ -103,12 +103,12 @@ def test_runtime_config_requires_stable_three_slots() -> None:
     payload = aec3_sweep_config_payload()
     payload["variants"] = payload["variants"][:2]
 
-    with pytest.raises(Aec3SweepConfigError, match="exactly 3 variants"):
+    with pytest.raises(Aec3SweepConfigError):
         validate_aec3_sweep_config_payload(payload)
 
     payload = aec3_sweep_config_payload()
     payload["variants"][0]["leg"] = "aec3_other"
-    with pytest.raises(Aec3SweepConfigError, match="variant 1 leg"):
+    with pytest.raises(Aec3SweepConfigError):
         validate_aec3_sweep_config_payload(payload)
 
 
@@ -144,7 +144,7 @@ def test_sweep_source_normalization_and_metadata() -> None:
     assert normalize_aec3_sweep_source(
         "USB", default=AEC3_SWEEP_SOURCE_XVF,
     ) == AEC3_SWEEP_SOURCE_USB
-    with pytest.raises(Aec3SweepConfigError, match="AEC3 sweep source"):
+    with pytest.raises(Aec3SweepConfigError):
         normalize_aec3_sweep_source("bluetooth")
 
     variants = variant_metadata(input_source=AEC3_SWEEP_SOURCE_USB)

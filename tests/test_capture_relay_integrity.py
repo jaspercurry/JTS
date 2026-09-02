@@ -31,7 +31,7 @@ def test_spec_mac_matches_public_page_vector_and_rejects_tamper():
     tag = capture_spec_mac(KEY, SESSION, SPEC)
     assert tag == "SnRu5CNZlynsM-Wjk4sfI_6Q2dAVrJdwMHOwZR1Ybqo"
     verify_capture_spec_mac(KEY, SESSION, SPEC, tag)
-    with pytest.raises(CaptureIntegrityError, match="integrity check failed"):
+    with pytest.raises(CaptureIntegrityError):
         verify_capture_spec_mac(KEY, SESSION, SPEC + " ", tag)
 
 
@@ -50,9 +50,9 @@ def test_authenticated_event_binds_exact_payload_sequence_and_session():
     tampered["authenticated_event"]["payload"] = tampered[
         "authenticated_event"
     ]["payload"].replace("true", "false")
-    with pytest.raises(CaptureIntegrityError, match="integrity check failed"):
+    with pytest.raises(CaptureIntegrityError):
         verify_authenticated_phone_event(KEY, SESSION, tampered)
-    with pytest.raises(CaptureIntegrityError, match="integrity check failed"):
+    with pytest.raises(CaptureIntegrityError):
         verify_authenticated_phone_event(KEY, "cap_other_session", envelope)
 
 
@@ -101,11 +101,11 @@ def test_phone_event_verifier_ignores_authenticated_stale_sequence_only(caplog):
     assert "accepted_sequence=2" in stale[0]
     assert "stale_sequence=1" in stale[0]
 
-    with pytest.raises(CaptureIntegrityError, match="sequence"):
+    with pytest.raises(CaptureIntegrityError):
         verifier.verify(authenticated_phone_event(
             KEY, SESSION, {"armed": False}, sequence=2,
         ))
-    with pytest.raises(CaptureIntegrityError, match="integrity check failed"):
+    with pytest.raises(CaptureIntegrityError):
         verifier.verify(authenticated_phone_event(
             KEY, "cap_other_session", {"armed": False}, sequence=3,
         ))

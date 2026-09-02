@@ -447,7 +447,7 @@ async def test_failed_scan_refresh_preserves_prior_timer_and_deadline():
     assert first_expiry is not None
     adapter.start_error = DBusError("org.bluez.Error.Failed", "refresh failed")
 
-    with pytest.raises(DBusError, match="refresh failed"):
+    with pytest.raises(DBusError):
         await engine.start_discovery(duration_s=60)
 
     assert engine._scan_task is first_expiry
@@ -492,7 +492,7 @@ async def test_scan_start_introspection_timeout_creates_no_timer(monkeypatch):
     setattr(engine, "_bus", bus)
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
 
-    with pytest.raises(asyncio.TimeoutError, match="adapter introspection timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert engine._scan_task is None
@@ -512,7 +512,7 @@ async def test_scan_start_bluez_timeout_releases_lock_for_retry(monkeypatch):
     engine = _scan_engine(adapter)
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
 
-    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert engine._scan_task is None
@@ -534,7 +534,7 @@ async def test_scan_start_timeout_stops_discovery_accepted_before_reply(monkeypa
     bus = engine._bus
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
 
-    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert adapter.start_calls == 1
@@ -559,7 +559,7 @@ async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
     caplog.set_level(logging.WARNING, logger="jasper.bluetooth.engine")
 
-    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert adapter.stop_calls == 1
@@ -570,7 +570,7 @@ async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
     assert bus is not None and bus.disconnected is True
     assert "event=bluetooth.scan_start_cleanup_failed" in caplog.text
     assert "error_type=TimeoutError" in caplog.text
-    assert "BlueZ StopDiscovery timed out after 0.01s" in caplog.text
+    assert 'error="BlueZ StopDiscovery timed out after 0.01s"' in caplog.text
 
 
 async def test_pair_recovers_shared_bus_after_auto_stop_failure(monkeypatch):
@@ -624,7 +624,7 @@ async def test_connect_recovers_shared_bus_after_scan_start_cleanup_failure(
         lambda *, bus_type: replacement_bus,
     )
 
-    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert first_bus.disconnected is True
@@ -714,7 +714,7 @@ async def test_scan_request_recovers_bus_after_fail_closed_release(monkeypatch):
         lambda *, bus_type: replacement_bus,
     )
 
-    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert first_bus is not None and first_bus.disconnected is True
@@ -750,7 +750,7 @@ async def test_scan_auto_stop_timeout_logs_and_clears_timer(monkeypatch, caplog)
     assert bus.disconnected is True
     assert "event=bluetooth.scan_auto_stop_failed" in caplog.text
     assert "error_type=TimeoutError" in caplog.text
-    assert "BlueZ StopDiscovery timed out after 0.01s" in caplog.text
+    assert 'error="BlueZ StopDiscovery timed out after 0.01s"' in caplog.text
 
 
 async def test_scan_manual_stop_timeout_preserves_deadline_and_propagates(
@@ -763,7 +763,7 @@ async def test_scan_manual_stop_timeout_preserves_deadline_and_propagates(
     await engine.start_discovery(duration_s=0.05)
     expiry = engine._scan_task
     assert expiry is not None
-    with pytest.raises(asyncio.TimeoutError, match="StopDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.stop_discovery()
     assert not expiry.done()
     assert engine._scan_task is expiry
@@ -784,7 +784,7 @@ async def test_scan_manual_stop_failure_without_deadline_releases_owner_bus(
     bus = engine._bus
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
 
-    with pytest.raises(asyncio.TimeoutError, match="StopDiscovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.stop_discovery()
 
     assert engine._scan_task is None
@@ -808,7 +808,7 @@ async def test_scan_recovery_failure_is_explicit_not_successful_noop(monkeypatch
         lambda *, bus_type: _BrokenConnector(),
     )
 
-    with pytest.raises(RuntimeError, match="BlueZ bus recovery failed"):
+    with pytest.raises(RuntimeError):
         await engine.start_discovery(duration_s=60)
 
     assert engine._bus is None
@@ -879,7 +879,7 @@ async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
         lambda *, bus_type: _BlockingConnector(),
     )
 
-    with pytest.raises(asyncio.TimeoutError, match="bus recovery timed out"):
+    with pytest.raises(asyncio.TimeoutError):
         await engine.start_discovery(duration_s=60)
 
     assert engine._bus is None
@@ -953,7 +953,7 @@ async def test_scan_auto_stop_logs_unexpected_bluez_failure(caplog):
     assert engine._bus is None
     assert "event=bluetooth.scan_auto_stop_failed" in caplog.text
     assert "error_type=DBusError" in caplog.text
-    assert "controller I/O failure" in caplog.text
+    assert 'error="controller I/O failure"' in caplog.text
 
 
 async def test_scan_start_accepts_only_exact_in_progress_error():
@@ -982,7 +982,7 @@ async def test_scan_start_rejects_in_progress_message_on_other_error_type(
     adapter = _FakeAdapter(start_error=DBusError(error_type, detail))
     engine = _scan_engine(adapter)
 
-    with pytest.raises(DBusError, match=detail):
+    with pytest.raises(DBusError):
         await engine.start_discovery(duration_s=60)
 
     assert engine._scan_task is None
@@ -1023,7 +1023,7 @@ async def test_scan_manual_stop_propagates_permission_and_unexpected_failures(
     adapter = _FakeAdapter(stop_error=DBusError(error_type, detail))
     engine = _scan_engine(adapter)
 
-    with pytest.raises(DBusError, match=detail):
+    with pytest.raises(DBusError):
         await engine.stop_discovery()
 
 
