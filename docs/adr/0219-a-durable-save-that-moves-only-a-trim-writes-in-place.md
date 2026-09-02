@@ -1,10 +1,10 @@
 # 0219 — A durable save that moves only a trim writes in place
 
 Date: 2026-09-02. Status: accepted. Supersedes exactly two things in
-[ADR-0218](0218-curve-slots-are-fixed-so-a-quiet-save-takes-the-live-edit-path.md):
+[ADR-0216](0216-curve-slots-are-fixed-so-a-quiet-save-takes-the-live-edit-path.md):
 the fourth item of its "Four cases are deliberately left ducking" bullet —
 the moved `Gain` — and the bullet after it, "The Gain hold-back has a cost
-worth naming". The rest of ADR-0218 stands, including its other three
+worth naming". The rest of ADR-0216 stands, including its other three
 hold-backs: a load of a different file, a controller with no raw-config API,
 and an in-place rollback.
 
