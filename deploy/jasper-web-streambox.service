@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper streambox web setup service (Spotify + AirPlay + Sources + Speaker + Wi-Fi + Sound + Rooms)
+Description=Jasper streambox web setup service (renderer/DSP + assistant wizards)
 # Socket-activated by the profile-scoped jasper-web.socket installed from
 # deploy/jasper-web-streambox.socket. The service exits after 10 min idle.
 Requires=jasper-web.socket
@@ -13,23 +13,31 @@ Type=notify
 WatchdogSec=30s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
-# Optional file written by the Spotify setup wizard when the user pastes their
-# Spotify Developer App credentials. Sourced after jasper.env so wizard-written
-# values win. WS1 Phase 4b keeps it in the shared integration-secret
-# compartment. Streambox does not source voice/Google/wake/transit/weather envs.
+# Every wizard this tier can host sources its own file, after jasper.env so
+# wizard values win. Wake-side (wake_model.env) is the one omission.
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
+EnvironmentFile=-/var/lib/jasper/voice_provider.env
+EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
+EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
+EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
+EnvironmentFile=-/var/lib/jasper/weather.env
+EnvironmentFile=-/var/lib/jasper/transit.env
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure
 RestartSec=2
 
 # Needs /var/lib/jasper for wizard state, /var/lib/jasper-intsecrets for
-# Spotify wizard credentials/token cache, generated CamillaDSP configs for
-# /sound/, BlueZ's local name for Bluetooth, and systemd-passed loopback fds.
+# Spotify/HA wizard credentials, /var/lib/jasper-secrets for the LLM keys the
+# /voice + /google wizards replace, generated CamillaDSP configs for /sound/,
+# BlueZ's local name for Bluetooth, and systemd-passed loopback fds.
+# No User= here (this unit still runs root — see
+# tests/test_systemd_hardening.py), so no SupplementaryGroups= is needed to
+# read voice_keys.env at 0640 root:jasper-secrets.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth
 
 [Install]
 # WantedBy left out intentionally — enabling the .socket pulls in the service

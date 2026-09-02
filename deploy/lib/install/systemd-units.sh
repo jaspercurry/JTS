@@ -277,6 +277,15 @@ install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.socket" \
         "${SYSTEMD_DIR}/jasper-system-web.socket"
+    # /chat/ is an ASSISTANT surface, so it ships wherever the assistant
+    # wizards do. Same unit as the full tier: socket-activated, stdlib +
+    # SQLite in the shared venv, idle-exits after 30 min.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.service" \
+        "${SYSTEMD_DIR}/jasper-chat-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.socket" \
+        "${SYSTEMD_DIR}/jasper-chat-web.socket"
 }
 
 # Renderer/DSP + assistant wizard ports; the assistant ones are bound
@@ -330,6 +339,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-correction-web.socket"
             "${SYSTEMD_DIR}/jasper-system-web.service"
             "${SYSTEMD_DIR}/jasper-system-web.socket"
+            "${SYSTEMD_DIR}/jasper-chat-web.service"
+            "${SYSTEMD_DIR}/jasper-chat-web.socket"
             "${SYSTEMD_DIR}/librespot.service"
             "${SYSTEMD_DIR}/shairport-sync.service"
             "${SYSTEMD_DIR}/nqptp.service"
@@ -1081,7 +1092,8 @@ park_streambox_brain_units() {
 
 enable_streambox_web_sockets() {
     local unit
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
+                jasper-system-web jasper-chat-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
             systemctl disable "${unit}.service" 2>/dev/null || true
@@ -1175,7 +1187,8 @@ start_streambox_runtime_units() {
         shairport-sync.service librespot.service bt-agent.service \
         2>/dev/null || true
     reapply_source_intent
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
+                jasper-system-web jasper-chat-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state

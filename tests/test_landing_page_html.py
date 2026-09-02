@@ -738,3 +738,74 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     # nginx exposes GET /grouping on the landing origin.
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
     assert "location = /grouping" in nginx
+
+
+def _nginx_locations(nginx: str) -> set[str]:
+    return set(re.findall(r"^    location (?:= )?(/[^\s{]*)", nginx, re.M))
+
+
+def _capability_gated_sections(html: str, capability: str) -> list[str]:
+    """Each <section> whose own data-requires is ``capability``."""
+    out = []
+    for part in re.split(r"(?=<section\b)", html):
+        head = part.split(">", 1)[0]
+        if f'data-requires="{capability}"' in head:
+            out.append(part.split("</section>", 1)[0])
+    return out
+
+
+def test_voice_brain_rows_resolve_on_streambox_unless_wake_gated() -> None:
+    """Every link a voice_brain section shows must exist on the streambox site.
+
+    The tier grants ASSISTANT without WAKE_DETECTION (a streambox driving the
+    assistant from a mic-bearing remote), so these sections unhide there while
+    the wake surfaces stay off. A row pointing at a route that profile does not
+    serve is a 404 the page cannot report — it renders as a normal row. Rows
+    that ARE wake-side carry their own data-requires="wake_detection" and are
+    exempt, because that gate is what keeps them hidden.
+    """
+    html = _index_html()
+    locations = _nginx_locations(_STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"))
+    sections = _capability_gated_sections(html, "voice_brain")
+    assert sections, "no voice_brain-gated sections found — selector drifted"
+
+    unresolved: list[str] = []
+    for section in sections:
+        for element in re.findall(r"<a\b[^>]*>", section):
+            href = re.search(r'href="(/[^"]*)"', element)
+            if href is None:
+                continue
+            if 'data-requires="wake_detection"' in element:
+                assert " hidden" in element, (
+                    f"{href.group(1)} is wake-gated but not hidden by default"
+                )
+                continue
+            prefix = "/" + href.group(1).strip("/").split("/")[0] + "/"
+            if href.group(1) not in locations and prefix not in locations:
+                unresolved.append(href.group(1))
+
+    assert not unresolved, (
+        "voice_brain rows point at routes the streambox nginx site does not "
+        f"serve: {sorted(unresolved)}. Either serve them there or gate the row "
+        'on data-requires="wake_detection".'
+    )
+
+
+def test_mic_pause_card_follows_wake_detection() -> None:
+    """The /mic card is the always-on listen state, not the assistant.
+
+    A push-to-talk tier holds no mic open and the streambox site proxies no
+    /mic route, so this card must ride WAKE_DETECTION rather than voice_brain.
+    """
+    html = _index_html()
+    card = re.search(
+        r'<section class="control-section" data-requires="(\w+)" hidden>\s*'
+        r'<div class="control-head">\s*<h2 class="eyebrow">Voice assistant</h2>',
+        html,
+    )
+    assert card is not None, "mic pause card markup drifted"
+    assert card.group(1) == "wake_detection"
+    assert "fetch('/mic'" in html
+    assert "/mic" not in _nginx_locations(
+        _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
+    )
