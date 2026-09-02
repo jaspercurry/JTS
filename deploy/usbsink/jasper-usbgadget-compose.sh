@@ -52,7 +52,9 @@ JASPER_ENV_FILE="${JASPER_USBGADGET_ENV_FILE:-/etc/jasper/jasper.env}"
 # never sets the override; the units that run those callers strip it.
 SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
 
-AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
+# The verdict is a marker file the source coordinator publishes (ADR-0220):
+# present = allowed, absent (including the whole directory) = blocked.
+AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/usr/bin/test -e /run/jasper-source-intent/allowed/usbsink}"
 HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
 USB_MIC_ENABLED_CMD="${JASPER_USBGADGET_USB_MIC_ENABLED_CMD:-/opt/jasper/.venv/bin/python -m jasper.usb_mic --check-intent}"
 

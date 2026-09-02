@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.local_sources import guard
+from jasper.local_sources import markers
 from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
     DEFAULT_CODEC,
@@ -43,18 +43,14 @@ def test_claim_restore_rechecks_current_policy_instead_of_entry_snapshot():
     assert "systemctl is-active --quiet librespot" not in text
     assert "sudo systemctl start librespot" in text  # early-exit cleanup
     assert "sudo systemctl restart librespot" in text  # credential reload
-    assert (
-        "sudo /opt/jasper/.venv/bin/jasper-local-source-allowed "
-        "--source spotify"
-    ) in text
+    assert markers.marker_path(Source.SPOTIFY.value) in text
     assert "RESTORE_COMPLETED" in text
     assert "CLAIM_STARTED" not in text
     assert "/tmp/.last-claim-pid" not in text
     assert "pkill -F ${CLAIM_PID_FILE}" in text
     assert "pkill -f 'librespot --enable-oauth'" not in text
     assert (
-        "ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed "
-        "--source spotify"
+        f"ConditionPathExists={markers.marker_path(Source.SPOTIFY.value)}"
     ) in unit
 
 
@@ -62,20 +58,20 @@ def test_spotify_off_landing_mid_claim_wins_final_restart(monkeypatch):
     """The exact start boundary observes Off written during the OAuth wait."""
 
     intent = {Source.SPOTIFY: True}
-    monkeypatch.setattr(guard, "load_config", _leader_config)
+    monkeypatch.setattr(markers, "load_config", _leader_config)
     monkeypatch.setattr(
-        guard,
+        markers,
         "source_intent_enabled",
         lambda source: intent[source],
     )
 
     # Claim entered while Spotify was allowed and then waited for the human.
-    assert guard.local_source_allowed(Source.SPOTIFY) == (True, None)
+    assert markers.local_source_allowed(Source.SPOTIFY) == (True, None)
 
     # Household Off lands before the script's final systemctl restart. The
     # service ExecCondition executes here, immediately before ExecStart.
     intent[Source.SPOTIFY] = False
-    assert guard.local_source_allowed(Source.SPOTIFY) == (
+    assert markers.local_source_allowed(Source.SPOTIFY) == (
         False,
         "source_intent_disabled",
     )

@@ -47,7 +47,7 @@ def _directive_index(unit_text: str, prefix: str, needle: str) -> int:
 def test_readiness_marker_keeps_both_guards_before_bounded_card_wait():
     body = UNIT_PATH.read_text()
     assert "ExecCondition=" in body
-    assert "jasper-local-source-allowed --source usbsink" in body
+    assert "ConditionPathExists=/run/jasper-source-intent/allowed/usbsink" in body
     assert (
         "ExecCondition=/bin/test -d "
         "/sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0"

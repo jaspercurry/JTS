@@ -88,6 +88,7 @@ _USB_DIRECT_SETTLE_SECONDS = 0.25
 _BLUETOOTH_SERVICE = "bluetooth.service"
 _ACCESSORY_RECONCILE_UNIT = "jasper-accessory-reconcile.service"
 _USB_COUPLING_UNIT = "jasper-fanin-coupling-auto.service"
+_MUX_UNIT = "jasper-mux.service"
 # Every blocking source-unit action has two finite layers: the systemd unit's
 # explicit TimeoutStartSec/TimeoutStopSec contract, then this client's slightly
 # longer subprocess bound.  A client must never report timeout while PID 1 may
@@ -367,6 +368,7 @@ class ReconcileOps:
     bluez_powered: Callable[[], bool | None]
     set_bluez_powered: Callable[[bool], tuple[int, str]]
     settle: Callable[[float], None]
+    publish_markers: Callable[[], None]
 
 
 def _env_slug(value: str) -> str:
@@ -979,7 +981,7 @@ def _local_sources_allowed() -> bool:
             install_profile_allows_local_sources,
             read_install_profile,
         )
-        from jasper.local_sources.guard import local_sources_allowed
+        from jasper.local_sources.markers import local_sources_allowed
 
         if not install_profile_allows_local_sources(read_install_profile()):
             return False
@@ -1089,6 +1091,23 @@ def _set_bluez_powered(enabled: bool) -> tuple[int, str]:
     return 0, ""
 
 
+def _publish_markers() -> None:
+    # Deferred: jasper.local_sources.markers imports this module.
+    from jasper.local_sources.markers import (
+        SHARED_LABEL,
+        publish_allowed_markers,
+    )
+
+    verdicts = publish_allowed_markers()
+    # jasper-mux is the only gated unit no source lifecycle owns, so nothing
+    # else re-starts it once its marker reappears. Never stopped here: the gate
+    # has always been start-boundary only. One extra
+    # _DEFAULT_UNIT_ACTION_TIMEOUT_SEC of blocking, outside the enumerated
+    # worst-case start path below; mux is Type=simple and its rc is ignored.
+    if verdicts[SHARED_LABEL][0]:
+        _run_unit_action(_MUX_UNIT, "start")
+
+
 def default_reconcile_ops() -> ReconcileOps:
     return ReconcileOps(
         set_enabled=_run_systemctl,
@@ -1107,6 +1126,7 @@ def default_reconcile_ops() -> ReconcileOps:
         bluez_powered=_read_bluez_powered,
         set_bluez_powered=_set_bluez_powered,
         settle=time.sleep,
+        publish_markers=_publish_markers,
     )
 
 
@@ -1204,7 +1224,7 @@ def _reconcile_systemd_source(
     else:
         # Off and follower parking are safety transitions. A failed unit-file
         # mutation must not prevent later resources from being stopped; the
-        # final ExecCondition also blocks any stale/queued restart.
+        # marker gate also blocks any stale/queued restart.
         teardown_errors: list[str] = []
         for unit in lifecycle.runtime_units:
             _attempt_teardown(
@@ -1695,6 +1715,18 @@ def _reconcile_once(
         log_event(logger, problem.event, level=logging.WARNING, **fields)
 
     allowed = operations.local_sources_allowed()
+    try:
+        operations.publish_markers()
+    except OSError as exc:
+        # An unpublishable marker leaves the previous verdict standing; every
+        # source still converges below and the pass still reports.
+        failures += 1
+        log_event(
+            logger,
+            "local_sources.marker_publish_failed",
+            error=str(exc)[:300],
+            level=logging.WARNING,
+        )
     applied = 0
     for source in source_intent_sources():
         if source not in intents:

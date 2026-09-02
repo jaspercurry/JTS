@@ -1,8 +1,10 @@
 # ADR-0148: Every source-owned unit re-reads canonical intent at its own start boundary; derived enablement is never household preference
 
 - **Date:** 2026-08-26
-- **Status:** Accepted (recorded when HANDOFF-source-lifecycle.md was trimmed
-  to its operational spine)
+- **Status:** Superseded by
+  [ADR-0220](0220-source-start-gates-are-marker-files-published-by-the-coordinator.md)
+  (recorded when HANDOFF-source-lifecycle.md was trimmed to its operational
+  spine)
 
 ## Context
 

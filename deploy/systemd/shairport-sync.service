@@ -9,12 +9,13 @@ Wants=network-online.target jasper-fanin.service jasper-outputd.service
 # that wasn't followed by a `start`, or a clean shutdown path inside
 # shairport itself — would, with Restart=on-failure, leave the device
 # silently invisible to AirPlay clients until the next reboot.
-# Restart=always covers crash AND clean-exit paths; the ExecCondition below
+# Restart=always covers crash AND clean-exit paths; the marker gate below
 # prevents it from overriding household Off or follower parking. The start-limit guard
 # is intentionally generous so transient OOM/update pressure does not park
 # AirPlay permanently, while genuine config breakage still stops looping.
 StartLimitIntervalSec=600
 StartLimitBurst=20
+ConditionPathExists=/run/jasper-source-intent/allowed/airplay
 
 [Service]
 # Stage 2 audio-protection: pages never swap to zram.
@@ -38,7 +39,6 @@ TimeoutStopSec=5s
 # up to two quick python ring-conf-parse fallbacks. No hard total bound
 # from the code; TimeoutStartSec is the real backstop.
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
-ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source airplay
 ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode
 ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync

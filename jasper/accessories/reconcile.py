@@ -38,7 +38,7 @@ from jasper.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
-from jasper.local_sources.guard import local_sources_allowed
+from jasper.local_sources.markers import local_sources_allowed
 from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.source_intent import source_intent_enabled

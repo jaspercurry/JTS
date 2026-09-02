@@ -6,6 +6,7 @@ After=bluetooth.service
 # BlueZ stack does not spin forever.
 StartLimitIntervalSec=600
 StartLimitBurst=20
+ConditionPathExists=/run/jasper-source-intent/allowed/bluetooth
 
 [Service]
 Type=simple
@@ -14,7 +15,6 @@ TimeoutStartSec=2s
 # NoInputNoOutput so pairing is no-code "Just Works"; PIN/passkey/numeric
 # comparison flows are rejected as unsupported.
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
-ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source bluetooth
 ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-agent
 TimeoutStopSec=10s
 Restart=always

@@ -2,18 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Systemd start gate for local music sources.
+"""Start verdicts for local music sources, published as marker files.
 
-Systemd units call this via ``ExecCondition``.  The generic form protects
-shared infrastructure from follower-role parking; ``--source <id>`` also
-checks that source's current household intent.  The latter is the final,
-fail-closed start boundary: stale systemd enablement, boot ordering, and a
-maintenance restore cannot resurrect a source the household turned Off.
+The verdict for one source is household intent plus current grouping role
+(plus, for USB, the physical data-role capability); the shared verdict is role
+only, for infrastructure with no single source intent.  The source coordinator
+(:mod:`jasper.source_intent`) is the single writer: it publishes one marker per
+label under ``MARKER_DIR`` and every gated unit consumes it as
+``ConditionPathExists=``.  Absent marker blocks the start, so an unwritten
+directory fails closed.  See ADR-0220 (supersedes ADR-0148).
 """
 from __future__ import annotations
 
-import argparse
 import logging
+import os
 
 from ..log_event import log_event
 from ..music_sources import Source
@@ -28,6 +30,33 @@ from .registry import local_source_lifecycles
 
 logger = logging.getLogger(__name__)
 
+MARKER_DIR = "/run/jasper-source-intent/allowed"
+# Not a source id: the role-only verdict carried by shared infrastructure that
+# has no single source intent (jasper-mux). Cannot collide with a Source value.
+SHARED_LABEL = "shared"
+_MARKER_MODE = 0o644
+
+
+def marker_path(label: str) -> str:
+    return f"{MARKER_DIR}/{label}"
+
+
+def _set_marker(label: str, allowed: bool) -> None:
+    path = marker_path(label)
+    if not allowed:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return
+    os.close(
+        os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            _MARKER_MODE,
+        )
+    )
+
 
 def local_sources_allowed() -> tuple[bool, str | None]:
     """Return whether this speaker may run/advertise local sources.
@@ -36,14 +65,14 @@ def local_sources_allowed() -> tuple[bool, str | None]:
     reconciler-owned deny remains authoritative, though: losing the requested
     config must not reopen sources midway through a role transition. Missing or
     untrusted status still fails open so a solo speaker is not bricked because
-    this tiny guard could not read state.
+    this check could not read state.
     """
     try:
         cfg = load_config()
     except Exception as e:  # noqa: BLE001
         log_event(
             logger,
-            "local_sources.guard_read_failed",
+            "local_sources.role_read_failed",
             error=e,
             level=logging.WARNING,
         )
@@ -75,7 +104,7 @@ def local_source_allowed(source: Source) -> tuple[bool, str | None]:
     except RuntimeError as exc:
         log_event(
             logger,
-            "local_sources.guard_intent_failed",
+            "local_sources.intent_read_failed",
             source=source.value,
             error=exc,
             level=logging.WARNING,
@@ -89,7 +118,7 @@ def local_source_allowed(source: Source) -> tuple[bool, str | None]:
         except (OSError, RuntimeError, ValueError) as exc:
             log_event(
                 logger,
-                "local_sources.guard_usb_role_failed",
+                "local_sources.usb_role_failed",
                 error=exc,
                 level=logging.WARNING,
             )
@@ -99,35 +128,30 @@ def local_source_allowed(source: Source) -> tuple[bool, str | None]:
     return True, None
 
 
-def _source_choices() -> tuple[str, ...]:
-    """Fixed CLI vocabulary derived from the lifecycle registry."""
+def publish_allowed_markers() -> dict[str, tuple[bool, str | None]]:
+    """Mirror every start verdict into ``MARKER_DIR`` and return the verdicts.
 
-    return tuple(lifecycle.source.value for lifecycle in local_source_lifecycles())
+    The source coordinator is the single writer.  Units consume the result as
+    ``ConditionPathExists=``, so an absent marker — including the whole
+    directory being absent before this process first runs — blocks the start.
+    Publish before the coordinator's apply loop: the markers must state intent
+    and role, never whether an apply later succeeded (ADR-0191).
+    """
 
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="jasper-local-source-allowed")
-    selector = parser.add_mutually_exclusive_group()
-    selector.add_argument("--source", choices=_source_choices())
-    args = parser.parse_args(argv)
-
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    source = Source(args.source) if args.source is not None else None
-    if source is None:
-        allowed, reason = local_sources_allowed()
-    else:
-        allowed, reason = local_source_allowed(source)
-    if allowed:
-        return 0
-    log_event(
-        logger,
-        "local_sources.guard_parked",
-        source=source.value if source is not None else "(shared)",
-        reason=reason,
-        level=logging.INFO,
-    )
-    return 1
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+    os.makedirs(MARKER_DIR, mode=0o755, exist_ok=True)
+    verdicts: dict[str, tuple[bool, str | None]] = {
+        SHARED_LABEL: local_sources_allowed(),
+    }
+    for lifecycle in local_source_lifecycles():
+        verdicts[lifecycle.source.value] = local_source_allowed(lifecycle.source)
+    for label, (allowed, reason) in verdicts.items():
+        _set_marker(label, allowed)
+        log_event(
+            logger,
+            "local_sources.marker_published",
+            label=label,
+            allowed=allowed,
+            reason=reason,
+            level=logging.INFO,
+        )
+    return verdicts

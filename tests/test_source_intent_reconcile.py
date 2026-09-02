@@ -89,6 +89,9 @@ class _FakeHost:
     calls: list[tuple] = field(default_factory=list)
     fail: set[tuple[str, str]] = field(default_factory=set)
     available: set[str] = field(default_factory=set)
+    # Length of `calls` at each publish: 0 proves markers land before any
+    # systemd action in the pass.
+    published_markers: list[int] = field(default_factory=list)
 
     def set_enabled(self, unit: str, enabled: bool) -> tuple[int, str]:
         verb = "enable" if enabled else "disable"
@@ -202,6 +205,7 @@ class _FakeHost:
             bluez_powered=lambda: self.bluez,
             set_bluez_powered=self.set_bluez,
             settle=lambda _seconds: None,
+            publish_markers=lambda: self.published_markers.append(len(self.calls)),
         )
 
 
@@ -1901,3 +1905,41 @@ def test_main_passes_install_status_invalidation_to_reconcile(tmp_path, monkeypa
     ) == 0
     assert seen["status_path"] == str(status)
     assert seen["invalidate_status_before"] is True
+
+
+def test_markers_are_published_before_any_unit_action(tmp_path):
+    """A unit the coordinator starts must already see its fresh marker."""
+
+    host = _FakeHost()
+    rc = source_intent.reconcile(
+        env_path=str(tmp_path / "missing.env"),
+        ops=host.ops(),
+    )
+
+    assert rc == 0
+    assert host.published_markers == [0]
+
+
+@pytest.mark.parametrize("shared_allowed", (True, False))
+def test_mux_is_started_only_when_the_shared_verdict_allows(
+    monkeypatch, shared_allowed
+):
+    """Nothing else restarts mux once its marker returns; nothing stops it."""
+
+    from jasper.local_sources import markers
+
+    actions: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        markers,
+        "publish_allowed_markers",
+        lambda: {markers.SHARED_LABEL: (shared_allowed, None)},
+    )
+    monkeypatch.setattr(
+        source_intent,
+        "_run_unit_action",
+        lambda unit, verb: (actions.append((verb, unit)), (0, ""))[1],
+    )
+
+    source_intent._publish_markers()
+
+    assert actions == ([("start", source_intent._MUX_UNIT)] if shared_allowed else [])
