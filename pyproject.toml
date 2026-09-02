@@ -22,7 +22,7 @@ streambox = [
     "openai>=2.36.0",
     "audioop-lts>=0.2; python_version >= '3.13'",
     "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
-    "sounddevice==0.5.5",
+    "sounddevice==0.5.6",
     "numpy>=1.26,<3",
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
@@ -67,7 +67,7 @@ full = [
     # because its transitive tflite-runtime dep has no Python 3.13 wheel
     # (PiOS Trixie's default python). We use ONNX models exclusively, so
     # tflite-runtime is never imported at runtime. See install.sh.
-    "sounddevice==0.5.5",
+    "sounddevice==0.5.6",
     "numpy>=1.26,<3",
     # SciPy is needed for room-correction v2 (jasper.correction.*):
     # synchronized swept-sine generation, FFT-based deconvolution,
