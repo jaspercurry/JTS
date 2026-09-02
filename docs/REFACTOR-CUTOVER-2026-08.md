@@ -244,8 +244,7 @@ cannot be lost):
 1. Build the three missing retention paths (CHECK / MEASURE / VERIFY takes)
    **at the destination**, retaining into #3064's `take_id` convention.
 2. Flip the sidecar's **seven** readers. Seven is right; the composition is
-   **3 + 4**, not 4 + 3 (`cutover-briefs-w1.md` D7, D8 — both halves of the
-   original sentence were wrong). **Three** call `.glob(RING_SIDECAR_GLOB)` —
+   **3 + 4**, not 4 + 3. **Three** call `.glob(RING_SIDECAR_GLOB)` —
    `evidence_packet.py:1246`, `harmonic_evidence.py:603`,
    `feature_classifier.py:456`; `round_views` globs nothing and reaches the ring
    through the first of those, by passing `dump_ring_dir=`. **Four** glob flat
@@ -1397,8 +1396,7 @@ half of those same rows and move in those same PRs. **No new home, no deletion,
 no third `AnalyzeOutcome` field *for the emitters*, and no row of its own in the
 deletion order.**
 
-**Narrowed when W2-c landed, exactly as `cutover-briefs-w2.md` §2.1 says it must
-be.** The ruling above refutes turning the emitters into `analyze`'s journal, on
+**Narrowed when W2-c landed.** The ruling above refutes turning the emitters into `analyze`'s journal, on
 the ground that doing so would mean inventing a third field **and** wiring the
 conductor to the engine — a §6 row quietly acquiring W5-b. `AnalyzeOutcome.skipped`
 is neither: it is W2-c's own named deliverable, it carries the not-run disclosure

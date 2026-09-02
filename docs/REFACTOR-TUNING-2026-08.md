@@ -4,10 +4,7 @@
 > fragments `00`–`11` cited throughout — lives in
 > `captures/tuning-stack-inventory-2026-08/` on the bench machine
 > (gitignored bench evidence). The numbers those citations back are stated
-> inline here. The coordination boundary with the repo-wide audit program is
-> [REFACTOR-COORDINATION-2026-08.md](REFACTOR-COORDINATION-2026-08.md),
-> now superseded in part by the reconciliation terms recorded in this
-> plan's R5 (acknowledged 2026-08-25, both directions).
+> inline here.
 
 
 **Status: final.** Every gate the inventory escalated is closed — twelve owner
