@@ -2551,7 +2551,6 @@ happened; do not assume it.
 | slug | why |
 |---|---|
 | `walk_regime_unsupported` | per-driver stops only: a lateral group plays MEASURE's program at every pose |
-| `walk_distance_unsupported` | a program row names a mark distance other than the 1 m every pose is derived at; refused at `plan`/`stage` rather than silently measured at 1 m |
 | `walk_mover_mismatch` | the walk's mover must match the session's tier, or the session stalls |
 | `walk_over_mover_envelope` | a stop is outside the stated mover's own reach (arm ±45°, person ±80°). Normally refused far earlier — see below — so reaching the take means a document was banked before that bound existed, or edited by hand |
 | `walk_over_relay_capacity` | the plan this session would emit needs more relay blob indexes than exist — reachable with a pre-apply cloud, and never for a legally staged walk on the shipped 3-capture shape |
