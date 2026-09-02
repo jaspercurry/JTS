@@ -177,13 +177,17 @@ class BandResult:
         -- the denominator behind the two numbers above. Present whenever the
         ladder ran, including when it then declined to publish a ratio.
       gate_sensitivity_note: WHY the three fields above are ``None``, or
-        ``None`` when they carry numbers. Two vocabularies, deliberately
-        distinguishable: a bare slug is the ladder's own refusal
-        (``gate_sweep.NULL_*``), a ``not_swept_`` prefix means the ladder
-        never ran on this band
-        (:mod:`~jasper.active_speaker.crossover_v2.round_views`).
+        ``None`` when they carry numbers. The two-vocabulary distinction
+        (the ladder's own refusal versus a band it never ran on) is
+        explained once, beside the constants that spell it, in
+        :mod:`~jasper.active_speaker.crossover_v2.round_views` -- not
+        restated here.
+      gate_sensitivity_detail: the ``RoundCapturesRefused`` behind a
+        capture-refusal note -- ``{"reason": ..., **exc.detail}`` -- so the
+        specific missing input survives a bucket slug that only names the
+        general shape. ``None`` for every other note, swept or not.
 
-    The four gate fields are DISCLOSURE ONLY and are stamped after the fact,
+    The five gate fields are DISCLOSURE ONLY and are stamped after the fact,
     by a reader that holds the round's captures as well as its verdict
     (:func:`~jasper.active_speaker.crossover_v2.round_views.spec_with_gate_sensitivity`).
     Nothing in this module computes them, no grade reads them, and a report
@@ -235,6 +239,7 @@ class BandResult:
     sigma_growth_ratio: float | None = None
     n_valid_rungs: int | None = None
     gate_sensitivity_note: str | None = None
+    gate_sensitivity_detail: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -259,6 +264,7 @@ class BandResult:
             "sigma_growth_ratio": self.sigma_growth_ratio,
             "n_valid_rungs": self.n_valid_rungs,
             "gate_sensitivity_note": self.gate_sensitivity_note,
+            "gate_sensitivity_detail": self.gate_sensitivity_detail,
         }
 
     @classmethod
@@ -273,7 +279,7 @@ class BandResult:
         legitimately ``None`` on an unevaluable band, which ``raw["..."]``
         preserves; the hardening is against the KEY being absent.) Only the
         dataclass-defaulted fields, ``level_deviation_db`` through
-        ``gate_sensitivity_note``, are read with :meth:`dict.get`, so a document
+        ``gate_sensitivity_detail``, are read with :meth:`dict.get`, so a document
         without them rehydrates with the same ``None`` a hand-built report
         would carry.
         """
@@ -299,6 +305,7 @@ class BandResult:
             sigma_growth_ratio=raw.get("sigma_growth_ratio"),
             n_valid_rungs=raw.get("n_valid_rungs"),
             gate_sensitivity_note=raw.get("gate_sensitivity_note"),
+            gate_sensitivity_detail=raw.get("gate_sensitivity_detail"),
         )
 
 

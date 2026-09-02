@@ -503,11 +503,13 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "sigma_growth_ratio",
             "n_valid_rungs",
             "gate_sensitivity_note",
+            "gate_sensitivity_detail",
         }
         assert band_dict["gate_sensitivity_db"] is None
         assert band_dict["sigma_growth_ratio"] is None
         assert band_dict["n_valid_rungs"] is None
         assert band_dict["gate_sensitivity_note"] is None
+        assert band_dict["gate_sensitivity_detail"] is None
         for key in (
             "f_lo_hz",
             "f_hi_hz",
@@ -569,7 +571,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     """
     import dataclasses
 
-    assert len(dataclasses.fields(BandResult)) == 21
+    assert len(dataclasses.fields(BandResult)) == 22
     assert len(dataclasses.fields(FlatSpecReport)) == 13
 
     band = BandResult(
@@ -581,6 +583,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
         room_entangled_below_hz=150.0,
         gate_sensitivity_db=-1.25, sigma_growth_ratio=2.4, n_valid_rungs=5,
         gate_sensitivity_note="short_rung_sigma_is_zero",
+        gate_sensitivity_detail={"reason": "round_no_captures", "round_dir": "/r"},
     )
     report = FlatSpecReport(
         reference_db=-20.0, bands=(band,), overall_passed=False,

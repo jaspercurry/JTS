@@ -82,7 +82,6 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
     BankedRound,
@@ -113,6 +112,7 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
+from jasper.cli.gate_sweep import add_rungs_ms_argument
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -571,14 +571,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="the round's spec verdict with room-or-speaker answered at each band's worst bin",
     )
     spec_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
-    spec_sweep.add_argument(
-        "--rungs-ms", type=float, nargs="+", default=list(DEFAULT_RUNGS_MS),
-        metavar="MS",
-        help=(
-            "gate ladder, in milliseconds "
-            f"(default: {' '.join(f'{r:g}' for r in DEFAULT_RUNGS_MS)})"
-        ),
-    )
+    add_rungs_ms_argument(spec_sweep)
     spec_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
     spec_sweep.set_defaults(func=_cmd_spec_sweep)
 

@@ -400,15 +400,20 @@ def _stamped_band(
     band: flat_spec.BandResult,
     feature: Mapping[str, Any] | None,
     note: str | None,
+    detail: dict[str, Any] | None,
 ) -> flat_spec.BandResult:
     """One band plus the ladder's read at its own worst bin, or the reason why not.
 
     ``n_valid_rungs`` is stamped whenever the ladder RAN, including on a null:
     it is the denominator behind the two numbers beside it, and a reader
     weighing ``insufficient_valid_rungs`` needs to see how few.
+
+    ``detail`` carries only beside a capture-refusal note -- the two
+    ``RoundCapturesRefused`` buckets -- and is ``None`` for every other note,
+    swept or not.
     """
     if feature is None:
-        return replace(band, gate_sensitivity_note=note)
+        return replace(band, gate_sensitivity_note=note, gate_sensitivity_detail=detail)
     sensitivity = feature.get("sensitivity")
     return replace(
         band,
@@ -463,7 +468,9 @@ def spec_with_gate_sensitivity(
     Every way there can be no number is named in
     ``gate_sensitivity_note`` and none of them raises: a round whose
     captures cannot be read is a round with an ungraded window, not an
-    ungraded spec.
+    ungraded spec. A capture refusal additionally stamps
+    ``gate_sensitivity_detail`` with the specific input that was missing —
+    the note names the bucket, the detail names the evidence.
     """
     report = banked.graded_report
     targets: list[tuple[int, float]] = []
@@ -481,6 +488,7 @@ def spec_with_gate_sensitivity(
             targets.append((index, float(worst_hz)))
 
     features: dict[int, Mapping[str, Any]] = {}
+    details: dict[int, dict[str, Any]] = {}
     frame: dict[str, Any] | None = None
     if targets:
         rungs = tuple(sorted(float(rung) for rung in rungs_ms))
@@ -500,6 +508,12 @@ def spec_with_gate_sensitivity(
                 else NOT_SWEPT_CAPTURES_UNREADABLE
             )
             notes.update({index: refused for index, _hz in targets})
+            # The bucket slug names only the shape; what was actually missing
+            # rides on the exception the engine already raised, so a reader
+            # of this ONE band need not go re-run the ladder to see it.
+            details.update(
+                {index: {"reason": exc.reason, **exc.detail} for index, _hz in targets}
+            )
         else:
             # Positional, never keyed by frequency: two bands asking about one
             # bin is a coincidence, not a reason to share an answer.
@@ -512,7 +526,7 @@ def spec_with_gate_sensitivity(
     return replace(
         report,
         bands=tuple(
-            _stamped_band(band, features.get(index), notes.get(index))
+            _stamped_band(band, features.get(index), notes.get(index), details.get(index))
             for index, band in enumerate(report.bands)
         ),
         gate_sweep_frame=frame,

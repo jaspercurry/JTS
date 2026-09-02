@@ -51,6 +51,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     spec_with_gate_sensitivity,
     verify_pose_curve,
 )
+from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
@@ -1925,7 +1926,7 @@ def test_the_spec_verdict_carries_the_sweep_at_each_bands_worst_bin(swept_low_ba
 
 
 def test_stamping_the_sweep_moves_no_grade(swept_low_band):
-    """Disclosure only. Strip the five new fields and the report is the one
+    """Disclosure only. Strip the six new fields and the report is the one
     `evaluate_flat_spec` produced, band for band and verdict for verdict.
     """
     from dataclasses import replace
@@ -1938,6 +1939,7 @@ def test_stamping_the_sweep_moves_no_grade(swept_low_band):
             replace(
                 band, gate_sensitivity_db=None, sigma_growth_ratio=None,
                 n_valid_rungs=None, gate_sensitivity_note=None,
+                gate_sensitivity_detail=None,
             )
             for band in stamped.bands
         ),
@@ -1986,6 +1988,9 @@ def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
 
     assert stamped.bands[-1].gate_sensitivity_note == NOT_SWEPT_BAND_NOT_EVALUABLE
     assert stamped.bands[0].gate_sensitivity_note == NOT_SWEPT_CAPTURES_UNREADABLE
+    # The bucket slug is one word; the detail behind it still names which
+    # RoundCapturesRefused this round actually hit.
+    assert stamped.bands[0].gate_sensitivity_detail["reason"] == REFUSE_NO_CAPTURES
     assert stamped.gate_sweep_frame is None
     assert stamped.overall_passed == report.overall_passed
 
