@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper import source_intent
+from jasper.accessories import reconcile as accessory_reconcile
 from jasper.music_sources import Source
 
 
@@ -214,6 +215,20 @@ def _bluetooth_runtime_units() -> set[str]:
         "bluealsa-aplay.service",
         "bt-agent.service",
     }
+
+
+@pytest.fixture(autouse=True)
+def accessory_request_file(tmp_path, monkeypatch) -> Path:
+    """Redirect the accessory request file every Bluetooth transaction writes.
+
+    Autouse because the write is unconditional in `reconcile_accessories`; the
+    real path is `/var/lib/jasper`, which no test may touch.
+    """
+    request = tmp_path / "accessory-reconcile.request"
+    monkeypatch.setattr(
+        accessory_reconcile, "DEFAULT_RECONCILE_REQUEST_FILE", str(request),
+    )
+    return request
 
 
 def test_allowlist_and_legacy_keys_are_registry_derived():
@@ -1736,24 +1751,28 @@ def test_bluetooth_disable_attempts_rfkill_after_service_and_power_failures(tmp_
     assert host.rfkill.soft_blocked is True
 
 
-def test_bluetooth_toggle_delegates_optional_accessories_to_their_owner(tmp_path):
+def test_bluetooth_toggle_delegates_optional_accessories_to_their_owner(
+    tmp_path,
+    accessory_request_file,
+):
+    """A request file, never a `systemctl start`: this coordinator holds no
+    opinion about the accessory owner's units, and the owner's own claim is
+    what makes the pass fresh."""
     host = _FakeHost(available={source_intent._ACCESSORY_RECONCILE_UNIT})
     assert (
         source_intent.reconcile(env_path=str(tmp_path / "missing.env"), ops=host.ops())
         == 0
     )
-    assert (
-        host.calls.count(
-            (
-                "start",
-                source_intent._ACCESSORY_RECONCILE_UNIT,
-            )
-        )
-        == 2
+    assert accessory_request_file.read_text(encoding="utf-8") == "source-intent"
+    assert not any(
+        call[1] == source_intent._ACCESSORY_RECONCILE_UNIT for call in host.calls
     )
 
 
-def test_converged_bluetooth_still_self_heals_accessory_owner(tmp_path):
+def test_converged_bluetooth_still_self_heals_accessory_owner(
+    tmp_path,
+    accessory_request_file,
+):
     units = _bluetooth_runtime_units()
     host = _FakeHost(
         enabled={unit: True for unit in units},
@@ -1768,15 +1787,7 @@ def test_converged_bluetooth_still_self_heals_accessory_owner(tmp_path):
         )
         == 0
     )
-    assert (
-        host.calls.count(
-            (
-                "start",
-                source_intent._ACCESSORY_RECONCILE_UNIT,
-            )
-        )
-        == 2
-    )
+    assert accessory_request_file.read_text(encoding="utf-8") == "source-intent"
 
 
 def test_parked_bluetooth_keeps_intent_enabled_without_touching_radio(tmp_path):
