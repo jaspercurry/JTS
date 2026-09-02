@@ -65,12 +65,12 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
-    GATE_LADDER_MS,
     FeatureClassificationRefused,
     classify_round,
     load_round_captures,
     load_round_pose_curves,
 )
+from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 
 EXIT_OK = 0
 EXIT_ROUND_UNREADABLE = 1
@@ -162,10 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="MS",
         help=(
-            "add this gate to the invariance ladder, repeatable. Rungs above "
-            "the primary window are legal -- they re-admit reflections, so "
-            "convergence vs fan-out across the ladder is readable. Omitted, "
-            f"the shipped ladder is used ({', '.join(f'{g:g}' for g in GATE_LADDER_MS)} ms)"
+            "one rung of the window ladder, repeatable -- REPLACING the "
+            "shipped one rather than adding to it. Rungs above the primary "
+            "window are legal: they re-admit reflections, so convergence vs "
+            "fan-out across the ladder is readable. Omitted, the gate sweep's "
+            f"own ladder is used ({', '.join(f'{g:g}' for g in DEFAULT_RUNGS_MS)} ms)"
         ),
     )
     parser.add_argument(
@@ -245,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
             captures,
             at=args.at,
             gate_ms=args.gate_ms,
-            gates_ms=tuple(args.gates_ms) if args.gates_ms else GATE_LADDER_MS,
+            gates_ms=tuple(args.gates_ms) if args.gates_ms else None,
             pose_curves=pose_curves,
         )
     except FeatureClassificationRefused as refusal:

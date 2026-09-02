@@ -51,6 +51,14 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     defect_boostable_at,
     read_feature_verdicts,
 )
+from jasper.active_speaker.crossover_v2.gate_sweep import (
+    DEFAULT_RUNGS_MS,
+    frame_descriptor,
+)
+from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_RADIATED_BAND_MISSING,
+)
+from jasper.active_speaker.crossover_v2.gate_sweep import analysis_grid as sweep_grid
 from jasper.cli import classify_features as cli
 
 SR = 48000
@@ -116,6 +124,7 @@ def _bundle(
     phases: tuple[str, ...] = ("verify", "cloud_verify", "cloud_verify"),
     session_id: str = SESSION_ID,
     seed: int = 11,
+    band_hz: tuple[float, float] | None = (150.0, 20000.0),
     bank_shape: bool = False,
     stimulus_sha: Callable[[str, dict[str, str]], str | None] | None = None,
 ) -> tuple[Path, Path]:
@@ -159,7 +168,15 @@ def _bundle(
         doc: dict = {
             "phase": phase,
             "jts_session_identity": {"session_id": session_id},
+            # The band the DUT radiates, exactly as a real summed sidecar
+            # banks it. The window ladder normalises on a reference band
+            # intersected with this one and refuses without it (E5, #1969).
+            "curves": [
+                {"role": "summed", "band_hz": list(band_hz or ())}
+            ],
         }
+        if band_hz is None:
+            doc.pop("curves")
         banked = shas[phase] if stimulus_sha is None else stimulus_sha(phase, shas)
         if banked is not None:
             doc["provenance"] = {"stimulus": {"wav_sha256": banked}}
@@ -266,6 +283,11 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     beyond anything the matched-Q null model loses, which is
     :data:`~jasper.active_speaker.crossover_v2.feature_classifier.GATE_MOVED`
     and therefore ``room``.
+
+    These captures are repeat takes at ONE pose, so their across-pose sigma is
+    capture noise and the growth ratio is not read — this is the corrected-
+    delta route deciding alone, which is the route a round with no real pose
+    cloud still has.
     """
     ir = fx.add_delayed_copy(_flat_ir(), _ROOM_ARRIVAL_GAIN, _ROOM_ARRIVAL_MS, SR)
     bundle, dumps = _bundle(tmp_path, ir)
@@ -279,7 +301,22 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     assert row["egd_verdict"] == EGD_MIN_PHASE
     assert row["gate_verdict"] == fx.GATE_MOVED
     assert row["classification"] == ROOM
-    assert row["excess_loss_vs_null"]["3"] < -row["gate_slack"]["3"]
+    # One entry, keyed by the rung the corrected delta was read at against the
+    # shortest resolution-valid one. The delta is the WINDOW's doing with the
+    # window's own bias already subtracted, so exceeding the slack is the
+    # finding.
+    (rung_key, loss), = row["excess_loss_vs_null"].items()
+    assert abs(loss) > row["gate_slack"][rung_key]
+    sensitivity = row["gate_sensitivity"]["sensitivity"]
+    assert f"{sensitivity['longest_valid_rung_ms']:g}" == rung_key
+    # The reflection is at 4 ms: the 3 ms rung excludes it and every longer one
+    # admits it, so the feature reads ~1.0 dB bigger at the top of the ladder
+    # once the window's own bias is subtracted. A literal, not a multiple of
+    # the bar it clears -- a case written as a multiple of the constant it
+    # tests moves with the constant and pins nothing.
+    assert sensitivity["corrected_delta_db"] > 0.9
+    # ...and the growth route did NOT decide it, because it was not readable.
+    assert any("did not disagree" in note for note in row["gate_notes"])
 
 
 #: A custom ladder that deliberately reaches past SEARCH_T_MAX_MS (7 ms):
@@ -291,11 +328,12 @@ _WIDE_LADDER_MS = (3.0, 5.0, 7.0, 9.0, 11.0)
 def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
     """6.1: every commanded rung, including ones past SEARCH_T_MAX_MS, is a fact.
 
-    ``_gate_invariance`` already built this table internally and only its
-    DERIVED columns (``excess_loss_vs_null``, ``centre_shift_oct``,
-    ``gate_slack``) ever reached a row -- the raw per-rung depth/centre never
-    did. A caller who commands a wider ladder must get every rung's own
-    reading back, additively, with nothing clamped at the shipped ceiling.
+    A caller who commands a wider ladder gets every rung's own reading back,
+    additively, with nothing clamped at the shipped ceiling. The ladder is the
+    gate sweep's and the PRIMARY window is this instrument's, and the two are
+    independent: a commanded ladder replaces the engine's rungs and leaves the
+    primary — the window the phase test, the detector and the trusted band are
+    read through — exactly where it was.
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     round_dir, _ = round_artifact_dir(bundle)
@@ -303,26 +341,52 @@ def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
     captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
     artifact = fx.classify_round(captures, at=[RESONANCE_HZ], gates_ms=_WIDE_LADDER_MS)
     assert artifact["measurement"]["gate_ladder_ms"] == list(_WIDE_LADDER_MS)
-    # A rung past the primary never DISPLACES the primary: the verdict
-    # reference, and with it the trusted floor, stays on the commanded
-    # ``gate_ms`` (the shipped default here) — not on the ladder's max,
-    # which re-admits reflections.
     assert artifact["measurement"]["gate_ms_primary"] == fx.DEFAULT_GATE_MS
     row = artifact["rows"][0]
     rungs = row["gate_rungs"]
-    assert set(rungs) == {f"{g:.0f}" for g in _WIDE_LADDER_MS}
+    assert set(rungs) == {f"{g:g}" for g in _WIDE_LADDER_MS}
     for entry in rungs.values():
         assert isinstance(entry["pooled_db"], float)
-        assert isinstance(entry["centre_hz"], float)
+        assert isinstance(entry["sigma_db"], float)
+        assert isinstance(entry["cycles"], float)
         assert isinstance(entry["resolved"], bool)
-    # The primary rung has nothing to compare itself to, so the DERIVED
-    # per-gate maps exclude it; every other rung — the 11 ms one past the
-    # primary included — is compared against the primary, and the raw rung
-    # table reports them all, which is the additive fact this ticket is
-    # about.
-    assert f"{fx.DEFAULT_GATE_MS:.0f}" not in row["excess_loss_vs_null"]
-    assert "11" in row["excess_loss_vs_null"]
+    # The 11 ms rung past the primary is read like any other, and the ladder's
+    # own longest resolution-valid rung -- not the primary -- is what the
+    # corrected delta is keyed by.
     assert "11" in rungs
+    assert set(row["excess_loss_vs_null"]) == {"11"}
+
+
+def test_a_round_banking_no_radiated_band_refuses_the_ladder_not_the_round(
+    tmp_path,
+):
+    """The LADDER is refused by name; every other fact still reports.
+
+    The ladder normalises each capture on a reference band intersected with
+    the band its own DUT radiates, and no declared band substitutes for one
+    the capture did not bank (E5, #1969). That costs the window verdict, and
+    it costs nothing else: the phase class, the decay reads and the per-pose
+    facts are all still measured, and the refusal is named in the artifact and
+    in every row rather than showing up as a suspiciously stable window.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), band_hz=None)
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    assert all(capture.radiated_band_hz is None for capture in captures)
+
+    artifact = fx.classify_round(captures, at=[RESONANCE_HZ])
+    refusal = artifact["measurement"]["gate_ladder_refused"]
+    assert refusal["reason"] == REFUSE_RADIATED_BAND_MISSING
+    assert refusal["captures"] == [capture.wav.name for capture in captures]
+    row = artifact["rows"][0]
+    assert row["gate_verdict"] == UNRESOLVED
+    assert row["classification"] == UNRESOLVED
+    assert row["gate_rungs"] == {}
+    assert row["gate_sensitivity"]["ladder_refused"] == refusal
+    # The phase test never needed the ladder and still answers.
+    assert row["egd_verdict"] == EGD_MIN_PHASE
+    assert row["depth_db"] > 0.5
 
 
 def test_the_fdw_rungs_carry_pooled_db_and_centre_hz_for_both_cycle_counts(
@@ -403,7 +467,13 @@ def test_the_egd_window_source_names_the_gate_and_lead_it_reads(peak_artifact):
 
 
 def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
-    """6.1: ``--gates-ms`` is not merely parsed -- it reaches classify_round."""
+    """6.1: ``--gates-ms`` is not merely parsed -- it reaches classify_round.
+
+    It REPLACES the engine's ladder rather than adding to it, and the primary
+    window is not folded in: the two are independent choices now that the
+    ladder compares its own shortest and longest valid rungs instead of
+    everything against the primary.
+    """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
         str(bundle), "--dumps", str(dumps),
@@ -414,15 +484,49 @@ def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
     banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
-    assert banked["measurement"]["gate_ladder_ms"] == [3.0, 7.0, 9.0, 11.0]
-    assert set(banked["rows"][0]["gate_rungs"]) == {"3", "7", "9", "11"}
+    assert banked["measurement"]["gate_ladder_ms"] == [3.0, 9.0, 11.0]
+    assert set(banked["rows"][0]["gate_rungs"]) == {"3", "9", "11"}
+
+
+#: A ladder whose poses genuinely disagree, so the sigma-growth route is
+#: readable. 0.5 dB at both ends is comfortably over the floor below which the
+#: ratio is the round's own capture noise.
+_READABLE_SIGMA_DB = 0.5
+
+
+def _swept(*, sigma_growth=1.0, corrected_delta_db=0.0, long_sigma_db=None):
+    """One feature's gate-sweep result, window-stable by default."""
+    long_sigma = _READABLE_SIGMA_DB if long_sigma_db is None else long_sigma_db
+    return {
+        "bin_hz": RESONANCE_HZ,
+        "cycles_by_rung": {"3": 9.0, "20": 60.0},
+        "resolution_by_rung": {"3": "ok", "20": "ok"},
+        "sigma_db_by_rung": {"3": long_sigma / sigma_growth, "20": long_sigma},
+        "n_valid_rungs": 2,
+        "valid_rungs_ms": [3.0, 20.0],
+        "poses": [
+            {
+                "pose_key": "az_na_el_na_d_na",
+                "capture_id": "one",
+                "detrended_db_by_rung": {"3": 1.0, "20": 1.0},
+                "value_db_by_rung": {"3": 1.0, "20": 1.0},
+            }
+        ],
+        "sensitivity": {
+            "shortest_valid_rung_ms": 3.0,
+            "longest_valid_rung_ms": 20.0,
+            "sigma_growth_ratio": sigma_growth,
+            "corrected_delta_db": corrected_delta_db,
+        },
+        "sensitivity_null_reason": None,
+    }
 
 
 def _composed(**overrides):
-    """One row through the composer, from a cell that is stable by default.
+    """One row through the composer, off a sweep that is stable by default.
 
     Lets a case move exactly one input and read the verdict, which is how the
-    two thresholds below are bracketed without either case being written as a
+    thresholds below are bracketed without either case being written as a
     multiple of the constant it is testing.
     """
     egd = {
@@ -433,29 +537,18 @@ def _composed(**overrides):
         "lead_sensitivity_us": 0.0,
         "clean": True,
     }
-    cell = {
-        "7": {"db_values": [1.0], "resolved": True},
-        "3": {
-            "db_values": [1.0],
-            "retention_per_capture_sd": 0.0,
-            "excess_loss_vs_null": 0.0,
-            "centre_shift_oct": overrides.pop("centre_shift_oct", 0.0),
-            "resolved": True,
-            "resolution_hz": 333.0,
-            "feature_width_hz": 400.0,
-        },
-    }
+    refusal = overrides.pop("ladder_refusal", None)
+    sweep = None if refusal else _swept(**overrides.pop("sweep_kwargs", {}))
+    gate = fx._gate_call(sweep, refusal)
     return fx._compose(
         RESONANCE_HZ,
         egd,
-        cell,
+        gate,
         {"nmp_delta_us": overrides.pop("nmp_scale_us", 500.0)},
         pooled_db=overrides.pop("pooled_db", 1.0),
         measured_q=6.0,
         controls_ok=True,
         timing_available=True,
-        primary_key="7",
-        gates_ms=(3.0, 7.0),
     )
 
 
@@ -494,31 +587,81 @@ def test_a_barred_feature_stays_barred_when_the_gate_also_moved():
     somewhere different, and `interference-barred` is the one that says no
     filter of either sign belongs here.
     """
-    composed = _composed(excursion_us=400.0, centre_shift_oct=0.10)
+    composed = _composed(
+        excursion_us=400.0, sweep_kwargs={"corrected_delta_db": 3.0}
+    )
     assert composed["gate_verdict"] == fx.GATE_MOVED
     assert composed["classification"] == INTERFERENCE_BARRED
 
 
 @pytest.mark.parametrize(
-    ("shift_oct", "expected_gate", "expected_class"),
-    # 0.10 and 0.01 octaves BRACKET the shipped 1/24-octave tolerance, and both
-    # are literals on purpose: a case written as a multiple of the constant it
-    # is testing moves with the constant and pins nothing.
-    [(0.10, fx.GATE_MOVED, ROOM), (0.01, GATE_STABLE, DEFECT_CUTTABLE)],
+    ("sweep_kwargs", "expected_gate", "expected_class"),
+    # Each case moves exactly ONE of the two routes and holds the other flat,
+    # and every number is a literal that brackets a shipped threshold from one
+    # side: a case written as a multiple of the constant it is testing moves
+    # with the constant and pins nothing.
+    [
+        # Route 1, across-pose sigma growth (bar 2.0x).
+        pytest.param({"sigma_growth": 4.0}, fx.GATE_MOVED, ROOM, id="sigma-grew"),
+        pytest.param({"sigma_growth": 1.2}, GATE_STABLE, DEFECT_CUTTABLE, id="sigma-flat"),
+        # Route 2, null-model-corrected depth change (bar 0.5 dB). Signed
+        # either way: a feature the window makes deeper and one it makes
+        # shallower are both the window's.
+        pytest.param({"corrected_delta_db": 3.0}, fx.GATE_MOVED, ROOM, id="grew-deeper"),
+        pytest.param({"corrected_delta_db": -3.0}, fx.GATE_MOVED, ROOM, id="grew-shallower"),
+        pytest.param({"corrected_delta_db": 0.1}, GATE_STABLE, DEFECT_CUTTABLE, id="delta-flat"),
+    ],
 )
-def test_centre_movement_decides_the_gate_verdict(
-    shift_oct, expected_gate, expected_class
+def test_either_window_route_alone_decides_the_gate_verdict(
+    sweep_kwargs, expected_gate, expected_class
 ):
-    """The other half of the gate rule, pinned where a real round cannot reach it.
+    """Both halves of the gate rule, pinned where a real round cannot reach them.
 
-    Centre movement is only evidence in a cell the gate RESOLVES, and a
-    1/12-octave feature at 3 kHz is unresolved at every rung below 7 ms — so no
-    integration fixture exercises this branch. Feed the composer a cell whose
-    retention is perfect and whose centre is the only thing that moved.
+    A round of repeat takes at one pose has no readable sigma growth, and a
+    real pose cloud is not something a synthetic fixture in this file banks --
+    so neither route is exercised end to end here. Feed the composer one
+    engine result at a time and read the verdict.
     """
-    composed = _composed(centre_shift_oct=shift_oct)
+    composed = _composed(sweep_kwargs=sweep_kwargs)
     assert composed["gate_verdict"] == expected_gate
     assert composed["classification"] == expected_class
+
+
+def test_a_sigma_growth_over_capture_noise_is_not_read_as_the_room():
+    """A ratio of two noise figures is a coin toss with a room's name on it.
+
+    Measured on this file's own fixtures: repeat takes at one pose produce
+    across-pose sigma of ~1e-4 dB whose ratio across the ladder read 2.3x --
+    over the room bar -- on a known minimum-phase resonance. The floor is what
+    stops the ratio being read there; the corrected-delta route still decides,
+    and the row says the ratio was withheld rather than reporting a stable
+    window it never established.
+    """
+    composed = _composed(
+        sweep_kwargs={"sigma_growth": 4.0, "long_sigma_db": 0.0001}
+    )
+    assert composed["gate_verdict"] == GATE_STABLE
+    assert any("did not disagree" in note for note in composed["gate_notes"])
+
+
+def test_a_ladder_that_did_not_run_never_vouches_for_a_filter():
+    """An unrun window test is ``ambiguous``, and never ``STABLE``.
+
+    ``STABLE`` is a finding -- the feature survived the ladder -- and it is
+    half of what a ``defect-*`` verdict vouches a filter with. A round whose
+    captures bank no radiated band, or that has one pose, gets no ladder at
+    all, and reading that silence as a pass would vouch for a filter aimed at
+    a feature nothing checked for the room.
+    """
+    composed = _composed(
+        ladder_refusal={"reason": "round_radiated_band_missing"}
+    )
+    assert composed["gate_verdict"] == UNRESOLVED
+    assert composed["classification"] == UNRESOLVED
+    assert composed["egd_verdict"] == EGD_MIN_PHASE
+    assert composed["gate_notes"] == [
+        "gate ladder refused: round_radiated_band_missing"
+    ]
 
 
 def test_a_flat_speaker_refuses_by_name(tmp_path):
@@ -1091,10 +1234,19 @@ def test_the_artifact_states_every_threshold_it_used(peak_artifact):
     assert thresholds["frac_nmp_min_phase"] == fx.FRAC_NMP_MIN_PHASE
     assert thresholds["frac_nmp_non_min_phase"] == fx.FRAC_NMP_NON_MIN_PHASE
     assert thresholds["z_local_flat"] == fx.Z_LOCAL_FLAT
-    assert thresholds["retention_slack"] == fx.RETENTION_SLACK
-    assert thresholds["centre_shift_oct"] == fx.CENTRE_SHIFT_OCT
+    assert thresholds["sigma_growth_room_ratio"] == fx.SIGMA_GROWTH_ROOM_RATIO
+    assert thresholds["sigma_growth_min_sigma_db"] == fx.SIGMA_GROWTH_MIN_SIGMA_DB
+    assert thresholds["gate_delta_slack_db"] == fx.GATE_DELTA_SLACK_DB
     measurement = peak_artifact["measurement"]
-    assert measurement["gate_ladder_ms"] == sorted(fx.GATE_LADDER_MS)
+    # The ladder is the engine's, and the frame every rung was read in rides
+    # beside it: the same capture and feature read materially different depths
+    # under each defensible frame (P1 sec 6), so a banked number without one is
+    # the frame's number rather than the speaker's.
+    assert measurement["gate_ladder_ms"] == list(DEFAULT_RUNGS_MS)
+    assert measurement["gate_ladder_frame"] == frame_descriptor(
+        DEFAULT_RUNGS_MS, sweep_grid()
+    )
+    assert measurement["gate_ladder_refused"] is None
     # The trusted floor is the gating module's, derived from the gate length —
     # never a number this instrument spells.
     assert measurement["trusted_band_hz"][0] == pytest.approx(

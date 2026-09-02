@@ -2999,8 +2999,8 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     ``uncertainty`` labels every spread the rows publish. Each is ``random`` or
     ``systematic`` and says what it is a spread of, and the two columns that
     merely LOOK like uncertainties say why they are not — ``gate_slack`` most of
-    all, since it is the larger of a fixed floor and a random 3-sigma and would
-    pool the two kinds in one figure if it were read as one.
+    all, since it is a dB figure sitting beside a dB reading and is the bar that
+    reading is tested against, not an error bar on it.
     """
     absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:

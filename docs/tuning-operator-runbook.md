@@ -813,19 +813,36 @@ Four outcomes, in this exact precedence:
 |---|---|
 | `egd_verdict = NON-MIN-PHASE` | `interference-barred` |
 | else `gate_verdict = MOVED` | `room` |
-| else `egd_verdict = MIN-PHASE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
+| else `egd_verdict = MIN-PHASE` **and** `gate_verdict = STABLE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
 | else | `ambiguous` |
 
-`room` is decided by the **gate ladder**, not by moving the microphone. And
-`GATE_MOVED` has **two independent routes** — either one alone sets it, at any
-gate in the ladder: **excess retention loss below slack**
-(`excess_loss_vs_null < -slack`, slack being
-`max(RETENTION_SLACK, 3 × standard error)`, with **no resolved-gate guard**, so
-it fires even at a gate that could not resolve the feature) and **centre shift**
-(`|centre_shift_oct| > CENTRE_SHIFT_OCT`, 1/24 octave, **at a gate that resolved
-it**). So a `room` verdict sitting beside a small centre shift is not the
-classifier contradicting itself — the retention route fired. A loss between
-`-0.5 × slack` and `-slack` sets `tension` instead, which does not classify.
+**Both tests must have answered before a filter is vouched for.** A
+`gate_verdict` of `ambiguous` means the window ladder did not run — the round
+had one capture, or its sidecars bank no radiated band — and that is not
+`STABLE`, which is a finding. `gate_notes` names the reason.
+
+`room` is decided by the **window ladder**, not by moving the microphone, and
+the ladder is the gate-sweep engine's (`jasper-gate-sweep`; "Reading a gate
+sweep" below is its own guide, landing with the tool — #3557). `MOVED` has
+**two independent routes**, either one alone:
+
+- **across-pose sigma that GROWS** with the window — `sigma_growth_ratio ≥ 2.0`
+  between the shortest and longest resolution-valid rung. Sigma that is merely
+  LARGE is not evidence: an azimuth-only pose cloud gives big, perfectly
+  window-invariant HF scatter that is pure directivity (#3495). The ratio is
+  **not read at all** below 0.2 dB of sigma at the long rung — repeat takes at
+  one pose have no across-pose disagreement, and the ratio there is their own
+  capture noise; `gate_notes` says when it was withheld.
+- **a corrected depth change** — `|corrected_delta_db| > 0.5 dB`, published per
+  row as `excess_loss_vs_null` against `gate_slack`. It is the depth change
+  across the ladder with the WINDOW's own share subtracted (the fitted notch is
+  synthesized, injected into a real capture IR and re-read through the same
+  rungs), so it is a smaller quantity than a raw swing and not comparable with
+  one. A delta between `0.5 × slack` and `slack` sets `tension` instead, which
+  does not classify.
+
+So a `room` verdict beside a flat sigma ratio is not the classifier
+contradicting itself — the delta route fired, or the ratio was withheld.
 
 **Discriminator 2 — position invariance across the capture cloud**
 ([`interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py),
@@ -992,10 +1009,14 @@ fractions, the analysis grid
 (200–20000 Hz, 1/48 octave), the FFT length, the resolution bars in cycles, and
 the `reference` policy. That reference is **one constant per capture** taken
 from 2500–8000 Hz at the 7 ms rung and applied to every rung, and it is
-deliberately not the feature classifier's 400–8000 Hz per-rung median: a
-reference must not drift with the thing it is referencing. **A dB in this report
-is stated against that constant, so it is not a spec-table dB and never a
-`gate_rungs` dB.** What travels between instruments is a ratio.
+deliberately not the feature classifier's own 400–8000 Hz per-rung median,
+which its primary window and every `depth_db` still use: a reference must not
+drift with the thing it is referencing. **A dB in this report is stated against
+that constant, so it is not a spec-table dB and not a classification row's
+`depth_db`.** What travels between instruments is a ratio. The one exception is
+a classification row's `gate_rungs` / `gate_sensitivity`, which ARE this
+report's numbers — the classifier runs this engine for its window verdict
+rather than a ladder of its own — so those two blocks share this frame exactly.
 
 | Block | What it holds |
 |---|---|

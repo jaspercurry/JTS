@@ -17,9 +17,11 @@ reader cannot drift.
   cancellation, where a filter lowers the direct sound and its delayed copy
   together)? Read as a fraction of what a genuine same-frequency cancellation
   produces through this exact pipeline, which is what the C4 control measures.
-* **Gate invariance** — re-window at 3 / 5 / 7 ms against a MATCHED-Q
-  minimum-phase null model, so the shrinkage a shorter gate does to *any*
-  narrow feature is subtracted rather than misread as a room arrival.
+* **Gate invariance** — the window ladder, run by :mod:`.gate_sweep`. This
+  module owns no second one: it hands the engine the captures it already
+  deconvolved and reads back per-feature across-pose sigma growth and a
+  null-model-corrected depth change, which is what :data:`GATE_MOVED` is
+  decided on.
 * **Timing scatter** — the sub-sample arrival residual between captures at the
   same angle, which is what survives into any phase comparison. It needs a
   repeated angle to run, says so when it has none, and never reads its own
@@ -111,7 +113,26 @@ from .feature_classification import (
     UNRESOLVED,
 )
 from .evidence_packet import RING_SIDECAR_GLOB
+from .feature_optics import (
+    CENTRE_SEARCH_OCT,
+    FEATURE_HALF_OCT,
+    MAGNITUDE_SMOOTH_FRACTION,
+    NEIGHBOURHOOD_OCT,
+    PHASE_GATE_LEAD_MS,
+    biquad_peaking,
+    detrend,
+    feature_q,
+    read_feature,
+)
+from .gate_sweep import DEFAULT_RUNGS_MS, frame_descriptor, sweep_features
+from .gate_sweep import analysis_grid as sweep_analysis_grid
 from .journey import PHASE_CLOUD_VERIFY, PHASE_LATERAL, PHASE_VERIFY
+from .round_captures import (
+    REFUSE_RADIATED_BAND_MISSING,
+    PoseCapture,
+    RoundCapturesRefused,
+)
+from .round_captures import _radiated_band as radiated_band_of
 
 __all__ = [
     "ADMISSIBLE_PHASES",
@@ -305,19 +326,6 @@ GENERATED_BY = "jasper.active_speaker.crossover_v2.feature_classifier"
 #: ever calls reflection-free. Overridable per run.
 DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
-#: The gate-invariance ladder, shortest first. Every retention is read against
-#: the commanded primary window (``gate_ms``) — the last entry here by
-#: default. A commanded rung longer than the primary stays a rung: it
-#: re-admits reflections as a readable fact and never displaces the primary.
-GATE_LADDER_MS: tuple[float, ...] = (3.0, 5.0, DEFAULT_GATE_MS)
-
-#: Pre-peak lead for the PHASE window only. A zero-lead window starts at
-#: ``argmax(|ir|)`` and so splits the direct arrival's own main lobe — harmless
-#: for magnitude, not harmless for phase, and at a crossover the other driver's
-#: arrival can lead the peak. The zero-lead reading is measured alongside and
-#: reported as ``lead_sensitivity_us`` so the choice is evidenced.
-PHASE_GATE_LEAD_MS = 1.0
-
 #: 6.11b's receipt: what :func:`excess_group_delay` actually windows with.
 #: Research 03's pitfall is real — a SHORT gate biases the Hilbert min-phase
 #: reconstruction — but the window this instrument reads EGD through is
@@ -332,30 +340,15 @@ PHASE_GATE_LEAD_MS = 1.0
 #: deliberate and defensible, so nothing about the window changed.
 EGD_WINDOW_KIND = "fixed_reflection_free_gate"
 
-#: Magnitude smoothing. 1/12 octave is fine enough to keep a feature's own
-#: shape and coarse enough that grid noise does not become one.
-MAGNITUDE_SMOOTH_FRACTION = 12
-
-#: The broad tilt removed before a feature's size is read. One octave passes
-#: the tilt and leaves a ~1/6-octave feature essentially intact; a half-octave
-#: baseline would eat it.
-DETREND_FRACTION = 1
-
 #: Complex smoothing for the phase chain, as a fraction of an octave. Finer
 #: than the magnitude chain because excess phase is the quantity under test.
 #: Smoothing magnitude and phase separately would break the pairing the whole
 #: test depends on, which is why this is applied to the complex spectrum.
 COMPLEX_SMOOTH_OCT = 1.0 / 24.0
 
-#: Half-width of a feature's own band, and of the span the group-delay slope is
-#: fitted over.
-FEATURE_HALF_OCT = 1.0 / 12.0
+#: Half-width of the span the group-delay slope is fitted over. The feature's
+#: own half-width it is paired with is :data:`.feature_optics.FEATURE_HALF_OCT`.
 GD_SPAN_OCT = 1.0 / 24.0
-
-#: The neighbourhood a feature's excess group delay is read against, and the
-#: span its centre is searched over when the gate ladder asks whether it moved.
-NEIGHBOURHOOD_OCT = 1.0 / 3.0
-CENTRE_SEARCH_OCT = 1.0 / 6.0
 
 #: Band the smoothed curve is normalised on, and the trusted ceiling. The
 #: trusted FLOOR is derived per run from the gate length
@@ -438,13 +431,52 @@ FRAC_NMP_NON_MIN_PHASE = 0.50
 #: must sit before it is a feature of the response rather than of the noise.
 Z_LOCAL_FLAT = 3.0
 
-#: Floor on how far outside the null model's own retention range a feature may
-#: drift before the gate is judged to have removed real energy. The live slack
-#: is the larger of this and three times the retention's own paired scatter.
-RETENTION_SLACK = 0.15
+#: Across-pose sigma growth, longest valid rung over shortest, at or above
+#: which the feature is the room's. It sits in a wide measured gap rather than
+#: on a convention: on the banked validation corpus
+#: (``captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md``
+#: and the P1 report it reproduces) the three sub-1.2 kHz features the room
+#: owns read 3.6x / 5.5x / 5.1x, and every HF feature — pure directivity,
+#: whose across-pose scatter is large and perfectly window-invariant — reads
+#: 0.94x to 1.4x. Sigma that is LARGE is not the discriminator and reading it
+#: as one mis-attributes directivity (#3495); sigma that GROWS is.
+SIGMA_GROWTH_ROOM_RATIO = 2.0
 
-#: Centre movement, in octaves, that counts as the feature having moved.
-CENTRE_SHIFT_OCT = 1.0 / 24.0
+#: ...and below this much across-pose sigma at the longest valid rung, the
+#: ratio above is not read at all.
+#:
+#: A round whose captures are repeat takes at ONE pose has across-pose sigma
+#: that is its own capture noise, and a ratio of two noise figures is a coin
+#: toss with a room's name on it: measured at 1e-4 dB on this instrument's
+#: synthetic fixtures, where it read 2.3x and would have called a known
+#: minimum-phase resonance the room. The floor is three orders of magnitude
+#: above that and an order below every real across-pose disagreement in the
+#: banked validation corpus (P1 sec 5b: 1.4-2.9 dB at 20 ms where the room
+#: owns the feature, 0.13-2.35 dB where directivity does), so it costs the
+#: discriminator nothing there. Below it the ladder still decides on the
+#: corrected delta, and the row's ``gate_notes`` says the ratio was not read.
+SIGMA_GROWTH_MIN_SIGMA_DB = 0.2
+
+#: The second route to :data:`GATE_MOVED`: how far the null-model-corrected
+#: depth may move between the shortest and longest resolution-valid rung
+#: before the window is judged to have been reading the room.
+#:
+#: **This is dB, and the constant it replaced was a RATIO.** The old test
+#: compared a retention fraction against its own null model's fraction with a
+#: 0.15 floor; the engine publishes a corrected dB delta instead — the fitted
+#: notch synthesized, injected into a real capture IR and re-read through the
+#: same rungs, so the window's own bias is subtracted rather than divided out.
+#: A number from the old field cannot be compared with one from this one.
+#:
+#: 0.5 dB is docs/tuning-methodology.md sec 6's own ~1-2 dB prudence bar
+#: carried onto the corrected quantity: on the banked validation corpus the
+#: null model removes ~1.1 dB of window bias from a sub-500 Hz feature's raw
+#: 3->20 ms swing (441.6 Hz: raw -2.89, corrected -1.74; 1000 Hz: raw -1.23,
+#: corrected -0.14), so the raw bar lands here once the window's own share is
+#: subtracted. It keeps a wide margin either side: the window-invariant HF
+#: bins of that corpus correct to 0.06-0.11 dB, and the features the room owns
+#: correct to 1.7-3.2 dB.
+GATE_DELTA_SLACK_DB = 0.5
 
 # --- control specifications and their bars ---------------------------------- #
 
@@ -528,6 +560,12 @@ class RoundCapture:
     stamp: float
     #: Commanded turntable angle, when a walk log covered this capture.
     degrees: int | None
+    #: The band this capture's DUT actually radiates, off its own sidecar
+    #: curves. ``None`` when the sidecar banks none, which refuses the window
+    #: LADDER for the round rather than substituting a declared band: the
+    #: un-intersected band priced a tweeter from 357 Hz where it has no output
+    #: and over-reported by 3x (E5, #1969).
+    radiated_band_hz: tuple[float, float] | None = None
 
 
 def _read_wav(path: Path) -> tuple[np.ndarray, int]:
@@ -719,6 +757,9 @@ def load_round_captures(
                 phase=phase,
                 stamp=stamp,
                 degrees=_bind_angle(stamp, releases),
+                # One owner for the E5 rule, and one parse of it: the sibling
+                # round loader the gate sweep reads through owns this.
+                radiated_band_hz=radiated_band_of(doc),
             )
         )
 
@@ -882,11 +923,16 @@ def gate(
     """A FIXED-length window from the IR peak, optionally with a pre-peak lead.
 
     Deliberately not :func:`~jasper.audio_measurement.gating.gate_impulse_response`,
-    whose window is sized from a DETECTED reflection. The gate-invariance test's
-    whole subject is what a window of a stated length does to a feature, so the
-    length must be the caller's, identical for the measured IR and for the null
-    model it is compared against. The window shape is the same family: flat to
-    the peak, decaying half-Hann after it, raised-cosine fade into any lead.
+    whose window is sized from a DETECTED reflection: the length here is the
+    caller's, so a control's known answer and the capture it is injected into
+    are read through the identical window. The shape is the same family: flat
+    to the peak, decaying half-Hann after it, raised-cosine fade into any lead.
+
+    This is the PRIMARY and phase window only. The window LADDER has its own
+    shape — :func:`~jasper.audio_measurement.gating.build_gate_window` at a
+    forced span, which is a different family — and it belongs to
+    :func:`~.gate_sweep.gated_segment`. The two are not interchangeable and
+    their numbers are not comparable (P1 sec 6, rows D and F).
     """
     if peak is None:
         peak = int(np.argmax(np.abs(ir)))
@@ -927,58 +973,6 @@ def smoothed_curve(
     curve = np.interp(grid, freqs[keep], smoothed)
     band = (grid >= NORMALISE_BAND_HZ[0]) & (grid <= NORMALISE_BAND_HZ[1])
     return curve - float(np.median(curve[band]))
-
-
-def detrend(curve: np.ndarray, grid: np.ndarray) -> np.ndarray:
-    """Remove the broad tilt so a narrow feature's own size is what is read."""
-    return curve - smooth_fractional_octave(grid, curve, DETREND_FRACTION)
-
-
-def read_feature(det_curve: np.ndarray, grid: np.ndarray, fc: float) -> float:
-    """A feature's size: the mean of the detrended curve over its own band."""
-    band = (grid >= fc * 2 ** -FEATURE_HALF_OCT) & (grid <= fc * 2 ** FEATURE_HALF_OCT)
-    return float(np.mean(det_curve[band]))
-
-
-#: Width used when a feature never returns to half amplitude inside its search
-#: span. Wide enough that the null model built from it is not accidentally
-#: narrower than the feature, which is the error direction that makes a real
-#: feature look reflection-contaminated.
-_Q_FALLBACK = 4.0
-
-
-def feature_q(det_curve: np.ndarray, grid: np.ndarray, fc: float) -> float:
-    """Measured Q of a feature, from its own half-amplitude width.
-
-    The gate null model is only as good as the width it assumes: too low a Q
-    makes a speaker-own feature look reflection-contaminated by comparison. So
-    the width is measured off the feature rather than guessed, and falls back
-    to a wide-but-plausible value when the curve never returns to half
-    amplitude inside the search span.
-    """
-    search = (grid >= fc * 2 ** -NEIGHBOURHOOD_OCT) & (
-        grid <= fc * 2 ** NEIGHBOURHOOD_OCT
-    )
-    freqs, values = grid[search], det_curve[search]
-    if freqs.size < 3:
-        return _Q_FALLBACK
-    apex = int(np.argmax(np.abs(values)))
-    height = values[apex]
-    if height == 0:
-        return _Q_FALLBACK
-    below = (values / height) < 0.5
-    lo, hi = freqs[0], freqs[-1]
-    for i in range(apex, -1, -1):
-        if below[i]:
-            lo = freqs[i]
-            break
-    for i in range(apex, freqs.size):
-        if below[i]:
-            hi = freqs[i]
-            break
-    if hi <= lo:
-        return _Q_FALLBACK
-    return float(np.sqrt(lo * hi) / (hi - lo))
 
 
 # --------------------------------------------------------------------------- #
@@ -1205,18 +1199,6 @@ def egd_excursion(
 # --------------------------------------------------------------------------- #
 # synthetic perturbations — the controls' known answers
 # --------------------------------------------------------------------------- #
-
-
-def biquad_peaking(
-    f0: float, gain_db: float, q: float, sample_rate: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """RBJ peaking EQ. Minimum phase by construction."""
-    amp = 10 ** (gain_db / 40)
-    w0 = 2 * np.pi * f0 / sample_rate
-    alpha = np.sin(w0) / (2 * q)
-    b = np.array([1 + alpha * amp, -2 * np.cos(w0), 1 - alpha * amp])
-    a = np.array([1 + alpha / amp, -2 * np.cos(w0), 1 - alpha / amp])
-    return b / a[0], a / a[0]
 
 
 def biquad_allpass(
@@ -1619,160 +1601,80 @@ def _run_controls(
     }
 
 
-def _gate_invariance(
+def _sweep_ladder(
+    captures: Sequence[RoundCapture],
     irs: Sequence[np.ndarray],
     peaks: Sequence[int],
-    host: np.ndarray,
-    host_peak: int,
     sample_rate: int,
     features: Sequence[float],
-    grid: np.ndarray,
-    gates_ms: Sequence[float],
-    *,
-    primary_ms: float,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, float]]:
-    """Retention and centre movement across the gate ladder, against a null model.
+    rungs_ms: Sequence[float],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+    """Every feature through :func:`~.gate_sweep.sweep_features`, plus its frame.
 
-    A shorter gate shrinks ANY narrow feature, reflection or not, so raw
-    retention is uninterpretable alone. The null model is a minimum-phase
-    peaking filter of the feature's OWN pooled size at its OWN measured Q,
-    injected into a real IR and gated identically — speaker-own by
-    construction, so whatever retention it loses is the gate alone. A
-    1.5x-narrower companion brackets the width rather than betting on one.
-
-    ``primary_ms`` is passed, never derived from the ladder: a commanded rung
-    longer than the primary must stay a rung, or every verdict reference
-    silently moves onto a reflection-admitting window.
+    Returns ``(by_feature, frame, refusal)``. ``refusal`` is ``None`` when the
+    ladder ran; otherwise it names why it could not, and ``by_feature`` is
+    empty — the LADDER is refused for the round, never the classification. A
+    round with one capture, or with sidecars banking no radiated band, still
+    gets its phase class, its decay reads and its per-pose facts; what it does
+    not get is a window verdict, and every row says so by name rather than
+    reading :data:`GATE_STABLE` off a test that never ran.
     """
-    primary = float(primary_ms)
-    primary_key = f"{primary:.0f}"
-
-    pooled = np.mean(
-        [
-            detrend(
-                smoothed_curve(
-                    gate(ir, sample_rate, gate_ms=primary, peak=peak), sample_rate, grid
+    rungs = tuple(sorted(float(rung) for rung in rungs_ms))
+    frame = frame_descriptor(rungs, sweep_analysis_grid())
+    # Everything but `radiated_band_hz`, `sample_rate`, `ir` and `peak_idx` is
+    # disclosure: the engine echoes it into its `poses` rows so a report can
+    # name the capture it read, and none of it moves a number. A commanded
+    # turntable angle is the one pose fact a ring capture carries, and the
+    # program digest is not one this loader keeps.
+    poses: list[PoseCapture] = []
+    unbanded: list[str] = []
+    for capture, ir, peak in zip(captures, irs, peaks):
+        band = capture.radiated_band_hz
+        if band is None:
+            unbanded.append(capture.wav.name)
+            continue
+        poses.append(
+            PoseCapture(
+                capture_id=capture.wav.stem,
+                phase=capture.phase,
+                wav=capture.wav,
+                program=capture.program,
+                program_sha256="",
+                azimuth_deg=(
+                    None if capture.degrees is None else float(capture.degrees)
                 ),
-                grid,
+                vertical_deg=None,
+                mark_distance_m=None,
+                radiated_band_hz=band,
+                sample_rate=sample_rate,
+                ir=ir,
+                peak_idx=peak,
             )
-            for ir, peak in zip(irs, peaks)
-        ],
-        axis=0,
+        )
+    if unbanded:
+        return (
+            {},
+            frame,
+            {
+                "reason": REFUSE_RADIATED_BAND_MISSING,
+                "captures": unbanded,
+                "note": (
+                    "the ladder normalises each capture on a reference band "
+                    "intersected with the band its own DUT radiates, and no "
+                    "declared band substitutes for one the capture did not "
+                    "bank (E5, #1969)"
+                ),
+            },
+        )
+    try:
+        swept = sweep_features(poses, rungs_ms=rungs, at_hz=list(features))
+    except RoundCapturesRefused as refusal:
+        return {}, frame, {"reason": refusal.reason, **refusal.detail}
+    return (
+        {f"{fc:.0f}": result for fc, result in zip(features, swept)},
+        frame,
+        None,
     )
-    measured_q = {f"{fc:.0f}": feature_q(pooled, grid, fc) for fc in features}
-    pooled_db = {f"{fc:.0f}": read_feature(pooled, grid, fc) for fc in features}
-
-    null_model: dict[str, Any] = {}
-    for fc in features:
-        key = f"{fc:.0f}"
-        null_model[key] = {}
-        for tag, q in (("matched", measured_q[key]), ("narrow", measured_q[key] * 1.5)):
-            injected = _apply(
-                host, biquad_peaking(fc, pooled_db[key], q, sample_rate)
-            )
-            recovered: dict[str, float] = {}
-            for gate_ms in gates_ms:
-                with_feature = detrend(
-                    smoothed_curve(
-                        gate(injected, sample_rate, gate_ms=gate_ms, peak=host_peak),
-                        sample_rate,
-                        grid,
-                    ),
-                    grid,
-                )
-                without = detrend(
-                    smoothed_curve(
-                        gate(host, sample_rate, gate_ms=gate_ms, peak=host_peak),
-                        sample_rate,
-                        grid,
-                    ),
-                    grid,
-                )
-                recovered[f"{gate_ms:.0f}"] = read_feature(
-                    with_feature - without, grid, fc
-                )
-            at_primary = recovered[primary_key]
-            null_model[key][tag] = {
-                "q": float(q),
-                "injected_db": pooled_db[key],
-                "recovered_db": recovered,
-                "retention": {
-                    k: (v / at_primary if at_primary else float("nan"))
-                    for k, v in recovered.items()
-                },
-            }
-
-    sizes: dict[str, dict[float, list[float]]] = {
-        f"{g:.0f}": {fc: [] for fc in features} for g in gates_ms
-    }
-    centres: dict[str, dict[float, list[float]]] = {
-        f"{g:.0f}": {fc: [] for fc in features} for g in gates_ms
-    }
-    for ir, peak in zip(irs, peaks):
-        for gate_ms in gates_ms:
-            key = f"{gate_ms:.0f}"
-            curve = detrend(
-                smoothed_curve(
-                    gate(ir, sample_rate, gate_ms=gate_ms, peak=peak), sample_rate, grid
-                ),
-                grid,
-            )
-            for fc in features:
-                sizes[key][fc].append(read_feature(curve, grid, fc))
-                _, centre_hz = _extremum_reading(
-                    curve, grid, fc, pooled_db[f"{fc:.0f}"] < 0
-                )
-                centres[key][fc].append(centre_hz)
-
-    table: dict[str, Any] = {}
-    for fc in features:
-        key = f"{fc:.0f}"
-        cell: dict[str, Any] = {}
-        for gate_ms in gates_ms:
-            gate_key = f"{gate_ms:.0f}"
-            values = np.array(sizes[gate_key][fc])
-            centre = np.array(centres[gate_key][fc])
-            width_hz = fc * (2**FEATURE_HALF_OCT - 2**-FEATURE_HALF_OCT)
-            cell[gate_key] = {
-                "db_mean": float(values.mean()),
-                "db_values": [float(v) for v in values],
-                "centre_hz_mean": float(centre.mean()),
-                "resolution_hz": 1e3 / gate_ms,
-                "feature_width_hz": width_hz,
-                # 1/gate is a hard limit and is not negotiable: at 1037 Hz a
-                # 3 ms gate resolves 333 Hz against a ~120 Hz feature. In an
-                # unresolved cell the DEPTH is still comparable against the
-                # null model (both are smeared identically); the CENTRE is not.
-                "resolved": bool(1e3 / gate_ms <= width_hz),
-            }
-        reference = np.array(cell[primary_key]["db_values"])
-        reference_mean = cell[primary_key]["db_mean"]
-        for gate_ms in gates_ms:
-            gate_key = f"{gate_ms:.0f}"
-            entry = cell[gate_key]
-            entry["retention"] = (
-                float(entry["db_mean"] / reference_mean)
-                if reference_mean
-                else float("nan")
-            )
-            # PAIRED: each capture's retention against ITS OWN primary-gate
-            # reading. Propagating the two gates' scatter as independent
-            # inflated the slack enough that the test could never say MOVED.
-            paired = np.array(entry["db_values"]) / reference
-            entry["retention_per_capture_sd"] = (
-                float(paired.std(ddof=1)) if paired.size > 1 else 0.0
-            )
-            model = [
-                null_model[key][tag]["retention"][gate_key]
-                for tag in ("matched", "narrow")
-            ]
-            entry["null_model_retention"] = model
-            entry["excess_loss_vs_null"] = float(entry["retention"] - min(model))
-            entry["centre_shift_oct"] = float(
-                np.log2(entry["centre_hz_mean"] / cell[primary_key]["centre_hz_mean"])
-            )
-        table[key] = cell
-    return table, null_model, pooled_db
 
 
 def _timing_scatter(
@@ -2069,8 +1971,8 @@ def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any
 # --------------------------------------------------------------------------- #
 
 #: The two cycle counts research 03's Stage 3 names: a narrow one that best
-#: rejects reflections and a wide one closer to the shipped gate ladder's own
-#: primary length. ADR-0201 binds what this buys: re-analysis EVIDENCE only
+#: rejects reflections and a wide one closer to the shipped primary window's
+#: own length. ADR-0201 binds what this buys: re-analysis EVIDENCE only
 #: -- no FDW output here may feed a target or a grade, and the diagnostic
 #: reading rule (a dip that fills in under FDW but stays deep under the
 #: fixed gate is reflection-caused) is guide content, not code.
@@ -2079,9 +1981,9 @@ FDW_CYCLES: tuple[float, ...] = (5.0, 15.0)
 #: Half-width of the band an FDW rung is read over. Reused rather than
 #: re-picked: :data:`NEIGHBOURHOOD_OCT` is already this module's standing
 #: "local context" width, and both :func:`read_feature`'s and
-#: :func:`_extremum_reading`'s search spans fit inside it -- so the exact
-#: readers :func:`_gate_rungs` is built from serve the FDW curve unmodified,
-#: rather than a second "how big is this feature" implementation.
+#: :func:`_extremum_reading`'s search spans fit inside it -- so this module's
+#: existing feature readers serve the FDW curve unmodified, rather than a
+#: second "how big is this feature" implementation.
 FDW_BAND_OCT = NEIGHBOURHOOD_OCT
 
 #: Points across that band, log-spaced. Hundreds, not the ~2000/octave main
@@ -2133,9 +2035,8 @@ def _fdw_local_curve(
     """One capture's FDW-``cycles`` curve across ``fc``'s own local band.
 
     ``(grid, db)``, so the caller reuses :func:`detrend`, :func:`read_feature`
-    and :func:`_extremum_reading` unmodified -- the same readers
-    :func:`_gate_rungs` is built from, rather than a second "how big is this
-    feature" for one more window shape.
+    and :func:`_extremum_reading` unmodified, rather than a second "how big is
+    this feature" for one more window shape.
     """
     grid = np.geomspace(fc * 2**-FDW_BAND_OCT, fc * 2**FDW_BAND_OCT, FDW_GRID_POINTS)
     db = np.array(
@@ -2153,10 +2054,10 @@ def _fdw_rungs(
 ) -> dict[str, Any]:
     """This feature's :data:`FDW_CYCLES` variants, pooled like a gate rung.
 
-    Diagnostic only (ADR-0201) -- shape analogous to :func:`_gate_rungs`
-    (``pooled_db`` / ``centre_hz`` per cycle count), pooled across the
-    round's own captures the identical way the primary curve is. Never a
-    target, never a grade: nothing downstream reads this key for either.
+    Diagnostic only (ADR-0201) -- ``pooled_db`` / ``centre_hz`` per cycle
+    count, pooled across the round's own captures the identical way the
+    primary curve is. Never a target, never a grade: nothing downstream reads
+    this key for either.
     """
     out: dict[str, Any] = {}
     for cycles in FDW_CYCLES:
@@ -2175,18 +2076,123 @@ def _fdw_rungs(
     return out
 
 
+def _gate_call(
+    sweep: Mapping[str, Any] | None, refusal: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """One feature's window verdict and its working, off the engine's result.
+
+    Two independent routes to :data:`GATE_MOVED`, either one alone:
+    across-pose sigma that GROWS with the window past
+    :data:`SIGMA_GROWTH_ROOM_RATIO`, and a null-model-corrected depth that
+    moves past :data:`GATE_DELTA_SLACK_DB`. The first is the P1 discriminator
+    and the second is what a single-pose-cloud round still has; a room feature
+    usually trips both, directivity trips neither.
+
+    A verdict of :data:`UNRESOLVED` is the register's own ambiguous word doing
+    the job it does everywhere else: the test did not answer. It is never
+    :data:`GATE_STABLE`, which is a finding.
+    """
+    notes: list[str] = []
+    if refusal is not None:
+        notes.append(f"gate ladder refused: {refusal['reason']}")
+    sensitivity = None if sweep is None else sweep.get("sensitivity")
+    if sweep is not None and sensitivity is None:
+        notes.append(
+            f"no window sensitivity: {sweep.get('sensitivity_null_reason')}"
+        )
+
+    excess_loss: dict[str, float] = {}
+    slack_by_rung: dict[str, float] = {}
+    tension = False
+    if sweep is None or sensitivity is None:
+        gate_verdict = UNRESOLVED
+    else:
+        long_key = f"{sensitivity['longest_valid_rung_ms']:g}"
+        delta = float(sensitivity["corrected_delta_db"])
+        growth = float(sensitivity["sigma_growth_ratio"])
+        long_sigma = float(sweep["sigma_db_by_rung"][long_key])
+        # Keyed by the rung the delta was read AT, against the shortest valid
+        # one; both endpoints are named in `gate_sensitivity`.
+        excess_loss[long_key] = delta
+        slack_by_rung[long_key] = GATE_DELTA_SLACK_DB
+        sigma_readable = long_sigma >= SIGMA_GROWTH_MIN_SIGMA_DB
+        if not sigma_readable:
+            notes.append(
+                f"across-pose sigma is {long_sigma:.3f} dB at {long_key} ms, "
+                f"under the {SIGMA_GROWTH_MIN_SIGMA_DB:g} dB floor: these "
+                "captures did not disagree, so the growth ratio is their own "
+                "noise and is not read"
+            )
+        grew = sigma_readable and growth >= SIGMA_GROWTH_ROOM_RATIO
+        deepened = abs(delta) > GATE_DELTA_SLACK_DB
+        moved = grew or deepened
+        gate_verdict = GATE_MOVED if moved else GATE_STABLE
+        tension = not moved and abs(delta) > 0.5 * GATE_DELTA_SLACK_DB
+
+    rungs = _gate_rungs(sweep)
+    for rung_key, entry in rungs.items():
+        if not entry["resolved"]:
+            notes.append(
+                f"{rung_key} ms is resolution-invalid at {entry['cycles']:.1f} "
+                "cycles in the window: it is read but it bounds no sensitivity"
+            )
+    return {
+        "gate_verdict": gate_verdict,
+        "excess_loss_vs_null": excess_loss,
+        "gate_slack": slack_by_rung,
+        "gate_notes": notes,
+        "resolved_gates": 0 if sweep is None else int(sweep["n_valid_rungs"]),
+        "gate_rungs": rungs,
+        "gate_sensitivity": (
+            {"ladder_refused": dict(refusal or {})}
+            if sweep is None
+            else {
+                "bin_hz": sweep["bin_hz"],
+                "sensitivity": sensitivity,
+                "null_reason": sweep.get("sensitivity_null_reason"),
+                "poses": sweep["poses"],
+            }
+        ),
+        "tension": tension,
+    }
+
+
+def _gate_rungs(sweep: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Every rung's own facts, additive to the verdict the ladder composed.
+
+    ``_gate_call`` carries only what the verdict turned on — one corrected
+    delta between two rungs. A reader auditing the ladder itself needs every
+    rung, including the ones whose own resolution bars them from bounding a
+    sensitivity, which is what this publishes. The per-pose values are in
+    ``gate_sensitivity``; this is their pooled form.
+    """
+    if sweep is None:
+        return {}
+    poses = sweep["poses"]
+    return {
+        rung_key: {
+            "pooled_db": float(
+                np.median([pose["detrended_db_by_rung"][rung_key] for pose in poses])
+            ),
+            "sigma_db": sigma,
+            "cycles": sweep["cycles_by_rung"][rung_key],
+            "resolution": sweep["resolution_by_rung"][rung_key],
+            "resolved": sweep["resolution_by_rung"][rung_key] != "invalid",
+        }
+        for rung_key, sigma in sweep["sigma_db_by_rung"].items()
+    }
+
+
 def _compose(
     fc: float,
     egd: Mapping[str, Any],
-    cell: Mapping[str, Any],
+    gate: Mapping[str, Any],
     control_pair: Mapping[str, Any],
     pooled_db: float,
     measured_q: float,
     *,
     controls_ok: bool,
     timing_available: bool,
-    primary_key: str,
-    gates_ms: Sequence[float],
 ) -> dict[str, Any]:
     """One feature's row: the two component verdicts, the composed one, and why."""
     excursion = egd["pooled_excursion_us"]
@@ -2204,43 +2210,17 @@ def _compose(
     # assert a phase class. `egd_verdict_raw` keeps what the numbers said.
     egd_verdict = raw_egd if controls_ok else EGD_AMBIGUOUS
 
-    moved = False
-    tension = False
-    notes: list[str] = []
-    excess_loss: dict[str, float] = {}
-    slack_by_gate: dict[str, float] = {}
-    for gate_ms in gates_ms:
-        gate_key = f"{gate_ms:.0f}"
-        if gate_key == primary_key:
-            continue
-        entry = cell[gate_key]
-        n = len(entry["db_values"])
-        standard_error = entry["retention_per_capture_sd"] / math.sqrt(n)
-        slack = max(RETENTION_SLACK, 3.0 * standard_error)
-        loss = entry["excess_loss_vs_null"]
-        excess_loss[gate_key] = loss
-        slack_by_gate[gate_key] = slack
-        if loss < -slack:
-            moved = True
-        elif loss < -0.5 * slack:
-            tension = True
-        if abs(entry["centre_shift_oct"]) > CENTRE_SHIFT_OCT and entry["resolved"]:
-            moved = True
-        if not entry["resolved"]:
-            notes.append(
-                f"{gate_key} ms unresolved ({entry['resolution_hz']:.0f} Hz vs "
-                f"{entry['feature_width_hz']:.0f} Hz feature): depth is still "
-                "comparable against the matched-Q null model, centre is not"
-            )
-    gate_verdict = GATE_MOVED if moved else GATE_STABLE
-    resolved_gates = sum(1 for g in gates_ms if cell[f"{g:.0f}"]["resolved"])
-
+    gate_verdict = gate["gate_verdict"]
     is_dip = pooled_db < 0
     if egd_verdict == EGD_NON_MIN_PHASE:
         classification = INTERFERENCE_BARRED
     elif gate_verdict == GATE_MOVED:
         classification = ROOM
-    elif egd_verdict == EGD_MIN_PHASE:
+    elif egd_verdict == EGD_MIN_PHASE and gate_verdict == GATE_STABLE:
+        # A defect verdict is what a filter is vouched by, so it needs BOTH
+        # tests to have answered. A ladder that did not run is not a stable
+        # one, and reading it as one would vouch for a filter aimed at a
+        # feature nothing checked for the room.
         classification = DEFECT_BOOSTABLE if is_dip else DEFECT_CUTTABLE
     else:
         classification = UNRESOLVED
@@ -2256,6 +2236,7 @@ def _compose(
     decisive = (egd_verdict == EGD_MIN_PHASE and frac < 0.10 and z_local < 2.0) or (
         egd_verdict == EGD_NON_MIN_PHASE and frac > 0.75
     )
+    resolved_gates = gate["resolved_gates"]
     # The three words are quality_model's shared TrustLevel — `medium` spelled
     # in full. This instrument wrote `med` until 2026-08-22, alone against
     # every sibling that answers "how much do I trust this number?"; a banked
@@ -2264,7 +2245,7 @@ def _compose(
     confidence: TrustLevel
     if classification == UNRESOLVED:
         confidence = "low"
-    elif tension:
+    elif gate["tension"]:
         confidence = "medium"
     elif agree and decisive and resolved_gates >= 2 and timing_available:
         # A `high` reading is not earned while a corroborating test never ran.
@@ -2295,34 +2276,11 @@ def _compose(
         "lead_sensitivity_us": egd["lead_sensitivity_us"],
         "clean": egd["clean"],
         "resolved_gates": resolved_gates,
-        "excess_loss_vs_null": excess_loss,
-        "gate_slack": slack_by_gate,
-        "centre_shift_oct": {
-            f"{g:.0f}": cell[f"{g:.0f}"]["centre_shift_oct"]
-            for g in gates_ms
-            if f"{g:.0f}" != primary_key
-        },
-        "gate_notes": notes,
+        "excess_loss_vs_null": gate["excess_loss_vs_null"],
+        "gate_slack": gate["gate_slack"],
+        "gate_notes": gate["gate_notes"],
         "controls_ok": controls_ok,
         "timing_corroborated": timing_available,
-    }
-
-
-def _gate_rungs(cell: Mapping[str, Any]) -> dict[str, Any]:
-    """Every commanded gate's own depth/centre, additive to the composed row.
-
-    ``_compose`` only carries what a rung MOVED against, so it excludes the
-    primary key -- there is nothing to compare the primary to. A reader
-    auditing the ladder itself, rather than the STABLE/MOVED call, needs
-    every rung including the primary, which is what this publishes.
-    """
-    return {
-        gate_key: {
-            "pooled_db": entry["db_mean"],
-            "centre_hz": entry["centre_hz_mean"],
-            "resolved": entry["resolved"],
-        }
-        for gate_key, entry in cell.items()
     }
 
 
@@ -2331,13 +2289,19 @@ def classify_round(
     *,
     at: Sequence[float] | None = None,
     gate_ms: float = DEFAULT_GATE_MS,
-    gates_ms: Sequence[float] = GATE_LADDER_MS,
+    gates_ms: Sequence[float] | None = None,
     pose_curves: Sequence[RoundPoseCurve] = (),
 ) -> dict[str, Any]:
     """Classify one round's features and return the artifact to bank.
 
     ``at`` pins the frequencies to classify; omitted, they are detected from
     the round's own pooled response (:func:`_detect_features`).
+
+    ``gate_ms`` is the PRIMARY window — the one the phase test, the feature
+    detector and the trusted band are read through. ``gates_ms`` is the
+    window LADDER, which is :mod:`.gate_sweep`'s and defaults to its
+    :data:`~.gate_sweep.DEFAULT_RUNGS_MS`. The two are independent: the ladder
+    no longer references the primary, so the primary is not forced into it.
 
     ``pose_curves`` is this round's banked lateral-walk curves
     (:func:`load_round_pose_curves`), optional and orthogonal to ``captures``:
@@ -2357,9 +2321,8 @@ def classify_round(
     """
     if not captures:
         raise FeatureClassificationRefused(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
-    ladder = tuple(sorted({float(g) for g in gates_ms} | {float(gate_ms)}))
+    ladder = tuple(sorted(float(g) for g in (gates_ms or DEFAULT_RUNGS_MS)))
     primary = float(gate_ms)
-    primary_key = f"{primary:.0f}"
     trusted_band_hz = (f_trusted_floor_hz(primary * 1e-3), TRUSTED_CEILING_HZ)
     grid = analysis_grid()
 
@@ -2477,9 +2440,15 @@ def classify_round(
             "n": int(values.size),
         }
 
-    gate_table, null_model, pooled_db = _gate_invariance(
-        irs, peaks, irs[host_index], peaks[host_index], sample_rate, features, grid,
-        ladder, primary_ms=primary,
+    # The feature's own pooled size and width, off the PRIMARY window — the
+    # curves this function already built. Not the ladder's: the ladder's job is
+    # what changes across windows, and the row's depth is what one window read.
+    pooled = detrended.mean(axis=0)
+    pooled_db = {f"{fc:.0f}": read_feature(pooled, grid, fc) for fc in features}
+    measured_q = {f"{fc:.0f}": feature_q(pooled, grid, fc) for fc in features}
+
+    swept, frame, ladder_refusal = _sweep_ladder(
+        captures, irs, peaks, sample_rate, features, ladder
     )
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
 
@@ -2493,19 +2462,19 @@ def classify_round(
     rows = []
     for fc in features:
         key = f"{fc:.0f}"
+        gate_call = _gate_call(swept.get(key), ladder_refusal)
         row = _compose(
             fc,
             egd_rows[key],
-            gate_table[key],
+            gate_call,
             controls["C4_pair"]["at"][key],
             pooled_db[key],
-            null_model[key]["matched"]["q"],
+            measured_q[key],
             controls_ok=controls_ok,
             timing_available=bool(timing["available"]),
-            primary_key=primary_key,
-            gates_ms=ladder,
         )
-        row["gate_rungs"] = _gate_rungs(gate_table[key])
+        row["gate_rungs"] = gate_call["gate_rungs"]
+        row["gate_sensitivity"] = gate_call["gate_sensitivity"]
         row["pose_persistence"] = [
             _pose_reading(curve, detrended, fc, pooled_db[key] < 0)
             for curve, detrended in zip(pose_curves, pose_detrended)
@@ -2532,8 +2501,9 @@ def classify_round(
             "frac_nmp_min_phase": FRAC_NMP_MIN_PHASE,
             "frac_nmp_non_min_phase": FRAC_NMP_NON_MIN_PHASE,
             "z_local_flat": Z_LOCAL_FLAT,
-            "retention_slack": RETENTION_SLACK,
-            "centre_shift_oct": CENTRE_SHIFT_OCT,
+            "sigma_growth_room_ratio": SIGMA_GROWTH_ROOM_RATIO,
+            "sigma_growth_min_sigma_db": SIGMA_GROWTH_MIN_SIGMA_DB,
+            "gate_delta_slack_db": GATE_DELTA_SLACK_DB,
             "feature_stability_z": FEATURE_STABILITY_Z,
             "feature_min_departure_db": FEATURE_MIN_DEPARTURE_DB,
             "feature_min_separation_oct": FEATURE_MIN_SEPARATION_OCT,
@@ -2544,6 +2514,20 @@ def classify_round(
             "sample_rate": sample_rate,
             "gate_ms_primary": primary,
             "gate_ladder_ms": list(ladder),
+            "gate_ladder_frame": frame,
+            "gate_ladder_refused": ladder_refusal,
+            # P1 sec 6 measured one capture's 441.6 Hz feature through both
+            # window families and they disagree by 1.72 dB on the same 7->20 ms
+            # change (row D, this ladder's shape, against row F, the shape it
+            # replaced). Ladder numbers banked before this instrument moved
+            # onto the engine are row F and are not comparable with these.
+            "gate_ladder_window_changed": (
+                "the ladder's window family changed with the move onto "
+                "jasper.active_speaker.crossover_v2.gate_sweep; ladder numbers "
+                "banked earlier were read through a full-span half-Hann tail "
+                "with no lead (P1 sec 6 row F) and are not comparable with "
+                "these (row D). gate_ladder_frame states this frame in full"
+            ),
             "phase_gate_lead_ms": PHASE_GATE_LEAD_MS,
             "egd_window_source": {
                 "kind": EGD_WINDOW_KIND,
@@ -2564,7 +2548,6 @@ def classify_round(
         "controls_ok": controls_ok,
         "controls_disclosure": None if controls_ok else CONTROLS_FAILED_DISCLOSURE,
         "controls": controls,
-        "gate_invariance_null_model": null_model,
         "timing_scatter": timing,
         "pose_bank": _pose_bank_block(pose_curves),
         "rows": rows,

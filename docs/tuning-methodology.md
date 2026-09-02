@@ -539,13 +539,34 @@ provenance stated — never vetoes:
   feature, and the rule is one rule: **a feature that moves with the gate is
   the gate's.**
   [Geometry, not convention: the comb spacing is the arrival delay's reciprocal.]
-- `gate_rungs` — every commanded window's own depth/centre, the primary
-  included. The ladder is a jackknife over the analysis window (research 03
-  grounds it in multitaper practice): a feature whose level swings more than
-  ~1–2 dB across rungs is window-dominated — ineligible for a narrow boost,
-  suspect for any filter. Rungs past the primary re-admit reflections
-  deliberately: convergence there is evidence of a real feature, fan-out of a
-  reflection. [The 1–2 dB bar is prudence, not a published law.]
+- `gate_rungs` / `gate_sensitivity` — the window ladder, run by the gate-sweep
+  engine (`jasper-gate-sweep`; when to reach for it is §6a below and its
+  field-by-field guide is the runbook's "Reading a gate sweep", neither
+  restated here — and a classification row's ladder numbers are in that
+  report's frame, not this section's `depth_db` frame). `gate_rungs` is every
+  rung's pooled depth,
+  across-pose sigma and cycles-in-window; `gate_sensitivity` is what the
+  verdict turned on. **Sigma that GROWS with the window is the room; sigma that
+  is merely LARGE is directivity** — an azimuth-only pose cloud produces big,
+  perfectly window-invariant HF scatter, and reading that as the room
+  mis-attributes it (#3495). `MOVED` fires on either of two routes alone:
+  `sigma_growth_ratio` at or above 2.0 (measured: the features the room owns
+  read 3.6–5.5×, directivity 0.94–1.4×), or a `corrected_delta_db` past 0.5 dB
+  — the depth change across the ladder with the WINDOW's own share subtracted,
+  which is a different and smaller quantity than the raw swing this bullet used
+  to bound at ~1–2 dB. The growth ratio is not read at all when across-pose
+  sigma stays under 0.2 dB at the longest valid rung: repeat takes at one pose
+  have no across-pose disagreement, and the ratio there is their own capture
+  noise (the row says so in `gate_notes`). Rungs past the primary re-admit
+  reflections deliberately: convergence there is evidence of a real feature,
+  fan-out of a reflection. [Both bars are read off the banked validation
+  corpus; neither is a published law.]
+- **Ladder numbers banked before 2026-09-02 are in a different frame.** The
+  ladder moved onto the engine's window family then (P1 §6 row D — 25 % tail,
+  1 ms lead) from the classifier's own (row F, a full-span half-Hann tail with
+  no lead), and the two disagree by 1.72 dB on the same 7→20 ms change of the
+  same capture. `measurement.gate_ladder_frame` states the frame in full;
+  compare numbers only within one.
 - `pose_persistence` — the feature's depth/centre at each banked lateral pose.
   Stable within ~±0.5 dB across the walk: a source property, correctable.
   Shrinking by more than ~2 dB or migrating in frequency off-axis: axis-local

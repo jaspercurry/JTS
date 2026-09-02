@@ -67,7 +67,7 @@ from jasper.audio_measurement.gating import (
     build_gate_window,
 )
 
-from .feature_classifier import (
+from .feature_optics import (
     CENTRE_SEARCH_OCT,
     DETREND_FRACTION,
     MAGNITUDE_SMOOTH_FRACTION,
@@ -310,7 +310,7 @@ def fit_notch(
 ) -> NotchFit:
     """Centre, depth and Q of the feature at ``nominal_hz``, median of poses.
 
-    The centre is searched over +/-:data:`.feature_classifier.CENTRE_SEARCH_OCT`
+    The centre is searched over +/-:data:`.feature_optics.CENTRE_SEARCH_OCT`
     (1/6 octave), NOT the classifier's 1/3-octave neighbourhood: the wider
     span walked off onto a neighbouring feature on half the poses and fitted
     the null model to the wrong thing (P1).
@@ -377,7 +377,7 @@ def window_bias_db(
     """How much of a feature of ``fit``'s shape each rung's WINDOW invents.
 
     The fitted notch is synthesized as a minimum-phase RBJ peaking section
-    (:func:`.feature_classifier.biquad_peaking`), injected into ``host``, and
+    (:func:`.feature_optics.biquad_peaking`), injected into ``host``, and
     re-read at every rung. Each read is with-notch minus without-notch
     through identical windows, so the host's own structure cancels and what
     is left is the window's doing.
