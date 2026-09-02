@@ -162,19 +162,19 @@ except ModuleNotFoundError as exc:
         raise
     from scripts import _pi_target
 
-from jasper.active_speaker.arm_walk import (
-    CSRF_PAGE_PATH,
-    STATUS_PATH,
-    WizardClient,
-)
 from jasper.active_speaker.arm_walk import EXIT_NAMES as ARM_WALK_EXIT_NAMES
+from jasper.active_speaker.wizard_client import (
+    CSRF_PAGE_PATH,
+    REASON_ANSWER_LOST,
+    SESSION_PATH,
+    VERIFY_PATH,
+    WizardClient,
+    apply_by_fingerprint,
+    error_of,
+    wait_for_round,
+)
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KEY,
-)
-from jasper.active_speaker.crossover_v2.journey import (
-    CAPTURE_PHASES,
-    PHASE_APPLYING,
-    PHASE_CLOSING,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
@@ -205,28 +205,6 @@ from jasper.web.correction_crossover_v2 import (
 # the endpoints and the vocabulary — the product's own, never restated
 # --------------------------------------------------------------------------- #
 
-#: The two stage-opening POSTs and the apply. Members of ``correction_setup``'s
-#: ``_POST_ROUTES`` under the wizard's ``/correction`` prefix — pinned against
-#: that frozenset by ``tests/test_run_crossover_round.py`` so a renamed route
-#: fails here instead of 404ing mid-round.
-SESSION_PATH = "/correction/crossover/v2/session"
-VERIFY_PATH = "/correction/crossover/v2/verify"
-APPLY_PATH = "/correction/crossover/v2/apply"
-
-#: The phases a stage is still WORKING in — every capture phase, plus the two
-#: control-page phases that are a session mid-flight rather than a stopping
-#: point.
-#:
-#: ``CAPTURE_PHASES`` alone is NOT the whole set and cannot be: ``journey.py``
-#: says a control-page phase is *deliberately* excluded from it (no excitation
-#: plays, no evidence binds), and two of those — ``closing``, the measuring
-#: session's own tail while the fit runs, and ``applying``, the machine-paced
-#: window between MEASURE-accepted and apply-observed — are exactly the moments
-#: a poller must keep waiting through. Treating either as terminal banks a
-#: round mid-flight. So this is stated, and the complement is pinned: what is
-#: left over must be exactly ``{review, done}``, the two phases where a
-#: household is being asked something and nothing is running.
-RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {PHASE_CLOSING, PHASE_APPLYING}
 
 #: Where ``install.sh`` puts the runtime the two Pi-side CLIs live in.
 PI_VENV_BIN = "/opt/jasper/.venv/bin"
@@ -257,7 +235,8 @@ EXIT_OPEN = 4
 EXIT_WALK = 5
 #: ``POST …/v2/verify`` did not open.
 EXIT_VERIFY = 6
-#: The stage never left its running phases inside ``--stage-timeout-s``.
+#: The stage did not stop: it never left its running phases inside
+#: ``--stage-timeout-s``, or the status read it is polled with went unanswered.
 EXIT_INCOMPLETE = 7
 #: The session itself reported a failure. Its own error is on the line.
 EXIT_SESSION_FAILED = 8
@@ -439,56 +418,14 @@ def resolve_target(hostname_override: str | None = None,
 # --------------------------------------------------------------------------- #
 # the wizard, over the LAN
 # --------------------------------------------------------------------------- #
-
-
-class Wizard(WizardClient):
-    """The wizard as a ROUND reads it: the shared transport, JSON on top.
-
-    The Host header, the cookie jar and the double-submit CSRF pair are
-    ``arm_walk.WizardClient``'s — one implementation, used from the speaker by
-    the walk and from the laptop by this. What is added here is only what a
-    round needs and a position gate does not: JSON parsing, and the one
-    envelope read every phase makes.
-
-    Reached across the LAN rather than over loopback, so ``base_url`` is the
-    Pi's address while ``host_header`` stays the speaker's own name — the two
-    are separate facts (AGENTS.md's PI_HOST vs JASPER_HOSTNAME split) and the
-    management-host guard reads the second.
-    """
-
-    def get_json(self, path: str) -> tuple[int, Any]:
-        status, body = self.open(path)
-        return status, _as_json(body)
-
-    def post_json(self, path: str, payload: Mapping[str, Any]) -> tuple[int, Any]:
-        status, body = self.post(path, payload)
-        return status, _as_json(body)
-
-    def v2_block(self) -> dict[str, Any]:
-        """``status["crossover_v2"]`` — phase, candidate, failure, session id.
-
-        ``{}`` when the envelope is unreadable or carries no v2 block, which
-        every caller here treats as "nothing known yet" rather than as a
-        verdict.
-        """
-        status, payload = self.get_json(STATUS_PATH)
-        if status != 200 or not isinstance(payload, Mapping):
-            return {}
-        block = payload.get("crossover_v2")
-        return dict(block) if isinstance(block, Mapping) else {}
-
-
-def _as_json(body: str) -> Any:
-    try:
-        return json.loads(body)
-    except ValueError:
-        return body
-
-
-def _error_of(payload: Any) -> str:
-    if isinstance(payload, Mapping):
-        return str(payload.get("error") or payload.get("status") or payload)[:200]
-    return str(payload)[:200]
+#
+# The transport, the JSON on top of it and the two round verbs are
+# `jasper.active_speaker.wizard_client` — one implementation, used from the
+# speaker by the arm walk and `jasper-round`, and from the laptop by this.
+# Reached across the LAN rather than over loopback, so `base_url` is the Pi's
+# address while `host_header` stays the speaker's own name: the two are
+# separate facts (AGENTS.md's PI_HOST vs JASPER_HOSTNAME split) and the
+# management-host guard reads the second.
 
 
 # --------------------------------------------------------------------------- #
@@ -673,43 +610,36 @@ def _walk_exit_name(code: int) -> str:
 
 
 def await_stage(
-    wizard: Wizard,
+    wizard: WizardClient,
     *,
     prior_session_id: str,
     timeout_s: float,
     poll_s: float,
     trail: Trail,
 ) -> int:
-    """Poll until THIS session's phases are all accepted, or it fails.
-
-    Two conditions, and the first one is why a sleep was never enough: the
-    session id must have MOVED off the one that was there before the open, or a
-    previous round's terminal phase would read as this round's completion the
-    moment the poll started. Then the phase must leave the running set, which
-    is the flow's own answer to "is every phase this session ran accepted"
-    (``_phase_from_state`` reads ``session_phases`` against
-    ``accepted_phases``).
-    """
-    deadline = time.monotonic() + timeout_s
-    phase = ""
-    while time.monotonic() < deadline:
-        block = wizard.v2_block()
-        phase = str(block.get("phase") or "")
-        failure = block.get("failure")
-        if failure:
-            trail.emit("await", ok=False, phase=phase, failure=_render(failure))
-            return EXIT_SESSION_FAILED
-        session_id = str(block.get("session_id") or "")
-        if session_id and session_id != prior_session_id and phase not in RUNNING_PHASES:
-            trail.emit("await", phase=phase, session_id=session_id)
-            return EXIT_OK
-        time.sleep(poll_s)
-    trail.emit("await", ok=False, phase=phase or "(unreadable)",
-               waited_s=round(timeout_s, 1))
-    return EXIT_INCOMPLETE
+    """:func:`wait_for_round`, with this runner's trail rows and exit codes."""
+    result = wait_for_round(
+        wizard, prior_session_id=prior_session_id,
+        timeout_s=timeout_s, poll_s=poll_s,
+    )
+    phase = str(result["phase"])
+    if result["status"] == "failed":
+        trail.emit("await", ok=False, phase=phase,
+                   failure=_render(result["failure"]))
+        return EXIT_SESSION_FAILED
+    if result["status"] == "lost":
+        trail.emit("await", ok=False, reason=REASON_ANSWER_LOST,
+                   detail="the status read was not answered")
+        return EXIT_INCOMPLETE
+    if result["status"] == "timed_out":
+        trail.emit("await", ok=False, phase=phase or "(unreadable)",
+                   waited_s=round(timeout_s, 1))
+        return EXIT_INCOMPLETE
+    trail.emit("await", phase=phase, session_id=result["session_id"])
+    return EXIT_OK
 
 
-def round_graded_this_session(wizard: Wizard, prior_session_id: str) -> bool:
+def round_graded_this_session(wizard: WizardClient, prior_session_id: str) -> bool:
     """Did THIS session's round grade and bank a receipt? (#3486)
 
     The one fact that separates "the stage failed with nothing to pull" from
@@ -903,7 +833,7 @@ def summarise_controllability(block: Mapping[str, Any], trail: Trail) -> None:
     )
 
 
-def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
+def summarise_candidate(wizard: WizardClient, trail: Trail) -> str:
     """Print the live candidate the round just produced.
 
     Every scalar the candidate block carries is printed, sorted — never a
@@ -941,83 +871,42 @@ def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
     return fingerprint
 
 
-def apply_candidate(wizard: Wizard, fingerprint: str, trail: Trail) -> int:
-    """The gate, then the apply. A mismatch POSTs nothing at all.
+def apply_candidate(wizard: WizardClient, fingerprint: str, trail: Trail) -> int:
+    """:func:`apply_by_fingerprint`, with this runner's trail rows and codes.
 
-    **The endpoint runs the same comparison server-side** and would refuse the
-    same request, so this is not a second opinion about the candidate. What it
-    adds is that nothing is SENT: a mistyped or stale fingerprint ends on the
-    laptop rather than becoming a state-changing request against a speaker,
-    and both values are named where the operator can read them instead of
-    arriving as one sentence inside a 400.
-
-    What actually closes the hole is upstream of either check — that an apply
-    is a separate invocation naming the fingerprint at all. The chain that
-    applied a candidate nobody had sanctioned filled that field in for itself.
+    What actually closes the hole is upstream of the guard — that an apply is a
+    separate invocation naming the fingerprint at all. The chain that applied a
+    candidate nobody had sanctioned filled that field in for itself.
     """
-    if not fingerprint.strip():
-        # The CLI refuses this at parse time, and this is the same refusal at
-        # the function boundary -- because an ABSENT live candidate also reads
-        # as "", so an empty argument would compare EQUAL and POST. Stated here
-        # too so the docstring above is true of the FUNCTION rather than of its
-        # callers, which is where a guard belongs when its absence would send a
-        # request.
-        trail.emit("apply", ok=False, named="(empty)",
-                   detail="refused: no fingerprint was named")
-        return EXIT_FINGERPRINT
-    live = ""
-    block = wizard.v2_block()
-    candidate = block.get("candidate")
-    if isinstance(candidate, Mapping):
-        live = str(candidate.get("fingerprint") or "")
-    if live != fingerprint:
-        # An empty block and a published-but-different candidate are the same
-        # refusal and DIFFERENT diagnoses: the first is usually an unreadable
-        # envelope (wrong host, wizard down), and reporting it as "no candidate
-        # yet" would send an operator to measure again over a broken link.
-        trail.emit("apply", ok=False, named=fingerprint,
-                   live=live or ("(no candidate is published)" if block
-                                 else "(the envelope carried no v2 state)"),
-                   detail="refused before any request left the laptop")
-        return EXIT_FINGERPRINT
-    status, payload = wizard.post_json(
-        APPLY_PATH, {"expected_candidate_fingerprint": fingerprint}
-    )
-    # WHAT THE ROUTE ACTUALLY ANSWERS (correction_setup's `/crossover/v2/apply`
-    # dispatch, which computes the code from the payload):
-    #
-    #   status="applied"      -> 200      the candidate is on the speaker
-    #   status="blocked"      -> 409      always; the ONE status that moves the
-    #                                     code off 200
-    #   status="apply_failed" -> 200      always; a 200 whose graph did not
-    #                                     change, which is exactly why a caller
-    #                                     reading only the code would call this
-    #                                     a success
-    #   a refusal             -> 400      CrossoverV2Refused is a ValueError and
-    #                                     the handler answers {"ok": false,
-    #                                     "error": ...} with NO status field
-    #   an internal error     -> 500      likewise no status field
-    #
-    # So neither half decides alone: the code alone passes `apply_failed`, and
-    # the body alone has nothing to read on the 400/500 arms. Requiring 200 AND
-    # "applied" is the one test that is correct on every row, including a
-    # status this runner has never seen.
-    outcome = (
-        str(payload.get("status") or "")
-        if isinstance(payload, Mapping) else ""
-    )
-    if status != 200 or outcome != "applied":
-        trail.emit("apply", ok=False, fingerprint=fingerprint, http=status,
-                   outcome=outcome or "(none)", detail=_error_of(payload))
+    result = apply_by_fingerprint(wizard, fingerprint)
+    named = str(result["expected_candidate_fingerprint"])
+    if result["status"] == "applied":
+        payload = result["payload"]
+        trail.emit(
+            "apply", fingerprint=named, http=result["http"],
+            outcome=result["outcome"],
+            expected_post_apply_offset_db=(
+                payload.get("expected_post_apply_offset_db")
+                if isinstance(payload, Mapping) else None
+            ),
+        )
+        return EXIT_OK
+    if result["reason"] == REASON_ANSWER_LOST:
+        # NOT a refusal: the apply POST left the laptop and nothing came back,
+        # so whether the graph changed is unknown here and the crossover status
+        # is what settles it.
+        trail.emit("apply", ok=False, fingerprint=named, reason=REASON_ANSWER_LOST,
+                   detail=error_of(result["payload"]))
         return EXIT_APPLY
-    trail.emit(
-        "apply", fingerprint=fingerprint, http=status, outcome=outcome,
-        expected_post_apply_offset_db=(
-            payload.get("expected_post_apply_offset_db")
-            if isinstance(payload, Mapping) else None
-        ),
-    )
-    return EXIT_OK
+    if result["refused_by"] == "wizard":
+        trail.emit("apply", ok=False, fingerprint=named, http=result["http"],
+                   outcome=result["outcome"] or "(none)",
+                   detail=error_of(result["payload"]))
+        return EXIT_APPLY
+    trail.emit("apply", ok=False, named=named or "(empty)",
+               live=result["candidate_fingerprint"], reason=result["reason"],
+               detail="refused before any request left the laptop")
+    return EXIT_FINGERPRINT
 
 
 # --------------------------------------------------------------------------- #
@@ -1060,7 +949,7 @@ def _open_failure_detail(status: int, payload: Any, target: Target) -> str:
     possibility named for the reader, not a verdict: the guard also refuses for
     reasons that have nothing to do with a split identity.
     """
-    detail = _error_of(payload)
+    detail = error_of(payload)
     if status == 403:
         detail += (
             f" [two things answer 403 here. The management-host guard, for a "
@@ -1073,7 +962,7 @@ def _open_failure_detail(status: int, payload: Any, target: Target) -> str:
     return detail
 
 
-def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
+def run_round(args: argparse.Namespace, target: Target, wizard: WizardClient,
               trail: Trail) -> int:
     dest = args.campaign / args.label
     # UTC with the suffix spelled out: journalctl reads a naive timestamp in
@@ -1515,7 +1404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # and that failure is the first thing worth a row.
     trail = Trail(args.trail)
     target = resolve_target(args.hostname, trail)
-    wizard = Wizard(
+    wizard = WizardClient(
         base_url=args.base_url or target.base_url, host_header=target.hostname
     )
     try:

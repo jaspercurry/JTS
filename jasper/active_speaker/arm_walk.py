@@ -73,16 +73,12 @@ zero-validity state machine: one flag, one honest void condition.
 
 from __future__ import annotations
 
-import http.cookiejar
 import json
 import logging
-import re
 import signal
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -90,6 +86,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from jasper.log_event import log_event
 
 from .angle_capture import ARM_ENVELOPE_DEG
+from .wizard_client import STATUS_PATH, WizardClient
 
 logger = logging.getLogger(__name__)
 
@@ -421,109 +418,11 @@ class TurntableMover:
 # the correction wizard, as a Session
 # --------------------------------------------------------------------------- #
 
-#: The page that mints the correction backend's CSRF cookie + meta token pair,
-#: and this client's default. A caller POSTing to a DIFFERENT wizard daemon
-#: passes that daemon's own page as ``csrf_page_path`` -- see the constructor.
-CSRF_PAGE_PATH = "/sound/crossover/"
-STATUS_PATH = "/correction/crossover/status"
+#: The position gate's own two POSTs. The transport under them, and the status
+#: read they are polled against, is :mod:`jasper.active_speaker.wizard_client`.
 POSITION_READY_PATH = "/correction/crossover/v2/position-ready"
 COMPLETE_PATH = "/correction/crossover/v2/complete"
 
-_CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
-
-
-class WizardClient:
-    """The correction wizard over HTTP: the speaker's Host, and CSRF handled.
-
-    The transport every caller of that wizard needs and none of them should own
-    a second copy of. Two rules live here:
-
-    * **An explicit** ``Host:`` **header**, the shape the deploy's
-      management-surface probe and ``jasper-doctor``'s
-      ``check_management_surface`` already use. It is required rather than
-      stylistic: the management-host guard rejects a request whose Host is
-      ``127.0.0.1``, and it equally rejects one carrying a DIFFERENT speaker's
-      name -- so this header is the caller's claim about which speaker it
-      believes it is talking to.
-    * **The double-submit CSRF pair** on every mutating POST -- the cookie from
-      the jar and the token from the page's ``<meta name="jts-csrf">`` --
-      exactly as a browser's ``fetch()`` does. ``csrf_page_path`` names which
-      page mints it, because nginx fronts SEVERAL wizard daemons on one host
-      (``/sound/crossover/`` is jasper-correction-web, ``/sound/setup/`` is
-      jasper-web) and a caller should mint from the daemon it is about to POST
-      to rather than rely on the two keeping one token scheme.
-
-    Bodies come back as TEXT, not parsed: the two consumers want different
-    things from them (this module's ``poll`` builds a typed Poll, the laptop
-    round runner wants JSON), and a client that guessed would make one of them
-    unwrap the guess.
-    """
-
-    def __init__(
-        self,
-        *,
-        host_header: str,
-        base_url: str = "http://127.0.0.1",
-        timeout_s: float = 30.0,
-        opener: Any | None = None,
-        csrf_page_path: str = CSRF_PAGE_PATH,
-    ) -> None:
-        self._host = host_header
-        self._base = base_url.rstrip("/")
-        self._timeout = timeout_s
-        self._csrf_page = csrf_page_path
-        if opener is None:
-            jar = http.cookiejar.CookieJar()
-            opener = urllib.request.build_opener(
-                urllib.request.HTTPCookieProcessor(jar)
-            )
-        self._opener = opener
-        self._csrf: str | None = None
-
-    # -- transport ---------------------------------------------------------- #
-
-    def open(self, path: str, *, data: bytes | None = None,
-             headers: Mapping[str, str] | None = None) -> tuple[int, str]:
-        request = urllib.request.Request(
-            self._base + path,
-            data=data,
-            headers={"Host": self._host, **(headers or {})},
-            method="POST" if data is not None else "GET",
-        )
-        try:
-            with self._opener.open(request, timeout=self._timeout) as response:
-                return int(response.status), response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            return int(exc.code), exc.read().decode("utf-8", "replace")
-        except (OSError, ValueError) as exc:
-            return 0, f"{type(exc).__name__}: {exc}"
-
-    def _csrf_token(self) -> str:
-        """The page's token, minted once and reused -- but only once MINTED.
-
-        A failed first mint (the wizard still starting, a blipped connection)
-        used to cache ``""`` forever, so every later POST in the run carried an
-        empty token and was refused 403 with nothing saying why. Only a real
-        token is cached; a failure leaves the slot empty and the next POST that
-        needs one tries again.
-        """
-        if self._csrf:
-            return self._csrf
-        _, body = self.open(self._csrf_page)
-        match = _CSRF_META_RE.search(body)
-        self._csrf = match.group(1) if match else None
-        return self._csrf or ""
-
-    def post(self, path: str, payload: Mapping[str, Any]) -> tuple[int, str]:
-        """One JSON POST, carrying the double-submit pair."""
-        return self.open(
-            path,
-            data=json.dumps(dict(payload)).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-CSRF-Token": self._csrf_token(),
-            },
-        )
 
 
 class LoopbackSession(WizardClient):
@@ -1091,9 +990,7 @@ def staged_walk_pending() -> bool:
 __all__: Sequence[str] = (
     "ARM_ENVELOPE_DEG",
     "COMPLETE_PATH",
-    "CSRF_PAGE_PATH",
     "POSITION_READY_PATH",
-    "STATUS_PATH",
     "ArmWalk",
     "ArmWalkRefused",
     "LoopbackSession",
@@ -1131,7 +1028,6 @@ __all__: Sequence[str] = (
     "Session",
     "Trail",
     "TurntableMover",
-    "WizardClient",
     "WalkConfig",
     "parse_power",
     "pending_from_relay",
