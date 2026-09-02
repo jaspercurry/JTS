@@ -30,8 +30,6 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Mapping
 
-from .crossover_v2.journey import CAPTURE_PHASES, PHASE_APPLYING, PHASE_CLOSING
-
 #: The page that mints the correction backend's CSRF cookie + meta token pair,
 #: and this client's default. A caller POSTing to a DIFFERENT wizard daemon
 #: passes that daemon's own page as ``csrf_page_path`` -- see the constructor.
@@ -57,13 +55,28 @@ STAGE_POST_APPLY = "post_apply"
 
 #: The phases a stage is still WORKING in -- every capture phase, plus the two
 #: control-page phases that are a session mid-flight rather than a stopping
-#: point. ``CAPTURE_PHASES`` alone is not the whole set: ``closing`` (the
-#: measuring session's own tail while the fit runs) and ``applying`` (the
-#: machine-paced window between MEASURE-accepted and apply-observed) are
-#: exactly the moments a poller must keep waiting through, and treating either
-#: as terminal banks a round mid-flight. The complement is pinned to
-#: ``{review, done}`` by ``tests/test_cli_round.py``.
-RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {PHASE_CLOSING, PHASE_APPLYING}
+#: point: ``closing`` (the measuring session's own tail while the fit runs)
+#: and ``applying`` (the machine-paced window between MEASURE-accepted and
+#: apply-observed) are exactly the moments a poller must keep waiting
+#: through, and treating either as terminal banks a round mid-flight.
+#: Restated rather than derived from :mod:`.crossover_v2.journey` because
+#: importing that package pulls its ``contracts`` re-export, and with it
+#: numpy, onto a round CLI's import path for the sake of reading phase
+#: strings. Pinned against ``journey`` -- the complement (``{review, done}``)
+#: and ``CAPTURE_PHASES`` as a subset both -- by ``tests/test_cli_round.py``.
+RUNNING_PHASES = frozenset(
+    {
+        "check",
+        "measure",
+        "lateral",
+        "cloud_measure",
+        "entry_baseline",
+        "verify",
+        "cloud_verify",
+        "closing",
+        "applying",
+    }
+)
 
 #: Why a round verb refused, or could not say, as a slug a script can branch
 #: on. The first four are this client's own pre-flight refusals -- nothing was
