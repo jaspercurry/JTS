@@ -17,7 +17,6 @@ from jasper.active_speaker.runtime_contract import (
 from jasper.correction.runtime_safety import (
     CorrectionRuntimeSafetyError,
     assert_correction_graph_safe,
-    assert_flat_apply_safe,
     reset_config_path,
 )
 
@@ -120,30 +119,6 @@ def test_reset_rejects_corrupt_saved_topology(
         reset_config_path(base)
 
 
-def test_assert_flat_apply_safe_rejects_protected_tweeter_topology() -> None:
-    # Apply-time backstop: room correction emits a flat 2-channel graph, which
-    # must not go live under a protected-tweeter topology (stale measurements
-    # applied after a driver was reassigned to an active role).
-    with pytest.raises(CorrectionRuntimeSafetyError, match="tweeter/protected"):
-        assert_flat_apply_safe(_active_topology("stereo", "active_2_way"))
-
-
-def test_assert_flat_apply_safe_rejects_unconfigured_topology() -> None:
-    from jasper.output_topology import new_topology_draft
-
-    with pytest.raises(
-        CorrectionRuntimeSafetyError,
-        match="saved passive speaker layout: no speaker layout is configured",
-    ):
-        assert_flat_apply_safe(new_topology_draft())
-
-
-def test_assert_flat_apply_safe_allows_full_range() -> None:
-    # No protected tweeter -> the common room-correction apply is unaffected.
-    assert_flat_apply_safe(_full_range_stereo())
-    assert_flat_apply_safe(_full_range_mono())
-
-
 def test_assert_correction_graph_safe_rejects_mono_width_mismatch() -> None:
     # A hand-built 2-channel graph on a mono topology puts its second channel on
     # an output the household never declared. Refused; the reason now NAMES the
@@ -200,14 +175,6 @@ def test_assert_correction_graph_safe_judges_bytes_not_the_lane() -> None:
     Carrier-produced bytes carry the mute and pass; a bare `emit_sound_config`
     graph does not and is refused. That is a property of
     `assert_correction_graph_safe`, which reads the graph it is handed.
-
-    It is NOT a property of the correction lane as a whole. `CorrectionSession.
-    _prepare_config`'s compatibility branch (no `camilla_get_config`) calls
-    `assert_flat_apply_safe`, which checks only the protected-tweeter predicate —
-    a mono topology passes it, so that branch would emit unmuted with nothing
-    stopping it. It is safe by UNREACHABILITY in production, not by width
-    refusal; see the comment at that branch and issue #2185. Do not read this
-    test as covering it.
     """
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
@@ -218,11 +185,6 @@ def test_assert_correction_graph_safe_judges_bytes_not_the_lane() -> None:
         CorrectionRuntimeSafetyError, match="emits on physical output\\(s\\) 1"
     ):
         assert_correction_graph_safe(direct, topology=_full_range_mono())
-
-    # The other half of the asymmetry, stated so the contrast is explicit:
-    # assert_flat_apply_safe does NOT refuse a mono topology (no protected
-    # tweeter to protect), which is exactly why the compat branch is unguarded.
-    assert_flat_apply_safe(_full_range_mono())
 
 
 def test_assert_correction_graph_safe_preserves_active_baseline_omission() -> None:
@@ -299,15 +261,3 @@ def test_assert_correction_graph_safe_keeps_flat_omission_legal() -> None:
         _flat_yaml(),
         topology=_full_range_stereo(),
     )
-
-
-def test_assert_flat_apply_safe_fail_closed_on_corrupt_topology(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    topology_path = tmp_path / "output_topology.json"
-    topology_path.write_text("{not json", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
-    with pytest.raises(CorrectionRuntimeSafetyError):
-        assert_flat_apply_safe()
