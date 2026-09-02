@@ -52,8 +52,8 @@ google-api-core==2.34.0
 google-api-python-client==2.199.0
 google-auth-httplib2==0.4.2
 google-auth-oauthlib==1.4.1
-google-auth==2.53.0
-google-genai==2.9.0
+google-auth==2.57.0
+google-genai==2.22.0
 googleapis-common-protos==1.75.2
 gtfs-realtime-bindings==2.2.0
 h11==0.16.0

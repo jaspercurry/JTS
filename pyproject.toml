@@ -18,7 +18,7 @@ streambox = [
     # through a paired remote's mic (push-to-talk, no wake word). Exactly
     # [full] minus the wake/mic/AEC/XVF runtimes that path never loads.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
-    "google-genai==2.9.0",
+    "google-genai==2.22.0",
     "openai>=2.36.0",
     "audioop-lts>=0.2; python_version >= '3.13'",
     "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
@@ -30,7 +30,7 @@ streambox = [
     "gtfs-realtime-bindings==2.2.0",
     "protobuf==7.36.0",
     "rapidfuzz>=3.6,<4",
-    "google-auth>=2.36",
+    "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
     "evdev>=2.0; sys_platform == 'linux'",
@@ -41,7 +41,7 @@ streambox = [
 ]
 
 full = [
-    "google-genai==2.9.0",
+    "google-genai==2.22.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
@@ -104,7 +104,7 @@ full = [
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;
     # google-api-python-client is the discovery-based service factory
     # (resource shapes for `calendar` and `gmail`). Pure-Python, tiny.
-    "google-auth>=2.36",
+    "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
     # jasper-input: third-party HID accessory bridge (volume knobs,
