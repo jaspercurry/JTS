@@ -516,8 +516,8 @@ pub(super) fn read_direct_and_render(
     // while Absent / priming). Advance the tap's capture cursor only by frames
     // actually read this period (done inside drain_direct_capture).
     // Render into whichever buffer this lane's width owns. `read_buf_wide` is
-    // non-empty only for the USB DIRECT lane on a wide wire; on every narrow box
-    // this is the same `render_period` into the same `read_buf` as before.
+    // non-empty on a wide wire; on a narrow box this is the same
+    // `render_period` into the same `read_buf`.
     let real_frames = if input.read_buf_wide.is_empty() {
         match input.resampler.as_mut() {
             Some(r) => r.render_period(&mut input.read_buf),

@@ -124,9 +124,9 @@ const SILENCE_FLOOR_I16: u16 = 4;
 /// one dBFS figure covers both lane widths.
 const SILENCE_FLOOR_I32: u32 = (SILENCE_FLOOR_I16 as u32) << 16;
 
-/// A lane period sample, at either of the two scales a lane can carry (`i16` for
-/// an aloop/ring lane, `i32` for the spine-scale USB DIRECT lane on a wide
-/// wire). The state machine is identical at both, so it is written once.
+/// A lane period sample, at either of the two scales a lane can carry (`i16` on
+/// a narrow wire, `i32` at spine scale on a wide one). The state machine is
+/// identical at both, so it is written once.
 pub(super) trait FadeSample: Copy {
     /// Whether this sample is silence for fade purposes: at or below the
     /// [`SILENCE_FLOOR_I16`] floor, not necessarily exactly zero.

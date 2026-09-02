@@ -19,7 +19,7 @@ from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import read_camilla_device_field
 from ...env_load import merged_env_files
-from ...fanin_coupling import RING_SLOT_FRAMES
+from ...fanin_coupling import RING_SLOT_FRAMES, read_declared_ring_wire_format
 from ._registry import doctor_check
 from ...output_hardware import active_dac_profile_id
 from ._shared import CheckResult, _run
@@ -413,8 +413,18 @@ def check_fanin_asound_wiring() -> CheckResult:
         "bluealsa_substream": "hw:Loopback,0,2",
         CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
     }
+    # The lane WIDTH is not this file's to choose: snd-aloop pins both halves of
+    # a cable to one format, and the reader half is jasper-fanin, which opens
+    # every capture side at the box's one resolved wire. So the expectation is
+    # that wire, and an operator's narrow rollback pin that did not also narrow
+    # /etc/asound.conf shows up here rather than as a renderer whose open fails.
+    try:
+        wire = read_declared_ring_wire_format()
+    except ValueError as e:
+        return CheckResult(label, "fail", str(e))
     missing: list[str] = []
     wrong: list[str] = []
+    sheared: list[str] = []
     for alias, slave in expected_aliases.items():
         block = _asound_pcm_block(active, alias)
         if block is None:
@@ -423,20 +433,31 @@ def check_fanin_asound_wiring() -> CheckResult:
             f'pcm "{slave}"' not in block
             or "rate 48000" not in block
             or "channels 2" not in block
-            or "format S16_LE" not in block
         ):
             wrong.append(f"{alias}≠{slave}")
-    if missing or wrong:
+        elif f"format {wire}" not in block:
+            # Reported apart from a wrong slave: the lane is wired correctly and
+            # only its WIDTH disagrees with the box's resolved wire, which has
+            # its own remedy (narrow the shipped asoundrc and redeploy, or drop
+            # the pin) and would be misdiagnosed as a broken lane.
+            sheared.append(alias)
+    if missing or wrong or sheared:
         parts = []
         if missing:
             parts.append("missing " + ", ".join(missing))
         if wrong:
             parts.append("wrong slave " + ", ".join(wrong))
+        if sheared:
+            parts.append(
+                f"lane width ≠ {wire} (this box's resolved wire): "
+                + ", ".join(sheared)
+            )
         return CheckResult(
             label,
             "fail",
-            "; ".join(parts) + ". Re-run deploy/install.sh to restore "
-            "the fan-in asoundrc.",
+            "; ".join(parts) + f". Every slave must be 48000/2/{wire} over its "
+            "own substream. Re-run deploy/install.sh to restore the fan-in "
+            "asoundrc.",
         )
 
     stale_state = Path("/var/lib/jasper/audio_topology.env")
